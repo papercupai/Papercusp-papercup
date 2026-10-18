@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * sentinel-pane-input — write a line of user input into the dock's 🛡 Sentinel
  * pane (a `psu --role=sentinel` Claude-Code TUI) so it lands in THE one Sentinel
@@ -83,7 +84,7 @@ async function listLiveDockSessions(): Promise<string[]> {
  */
 function readSentinelPaneReg(): { session: string; paneId: string } | null {
   try {
-    const raw = readFileSync(join(homedir(), '.papercusp', 'sentinel-pane'), 'utf8').trim();
+    const raw = readFileSync(papercuspPath('sentinel-pane'), 'utf8').trim();
     const sp = raw.indexOf(' ');
     if (sp <= 0) return null;
     const session = raw.slice(0, sp).trim();
@@ -168,7 +169,7 @@ export async function writeToSentinelPane(
   // writing — delayed a few seconds, not dropped. Bounded; a stat failure
   // skips the gate.
   try {
-    const ageMs = Date.now() - statSync(join(homedir(), '.papercusp', 'sentinel-pane')).mtimeMs;
+    const ageMs = Date.now() - statSync(papercuspPath('sentinel-pane')).mtimeMs;
     if (ageMs >= 0 && ageMs < SENTINEL_WARMUP_MS) {
       await new Promise((r) => setTimeout(r, SENTINEL_WARMUP_MS - ageMs));
     }

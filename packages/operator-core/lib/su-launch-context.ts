@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Launch-context composer for the `psu` / `*-su` launch path.
  *
@@ -133,7 +134,7 @@ export function composeLaunchContext(input: LaunchContextInput): string {
  * relocating the runtime dir); defaults under `~/.papercusp`.
  */
 export function launchContextDir(): string {
-  return process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR || join(homedir(), '.papercusp', 'launch-context');
+  return process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR || papercuspPath('launch-context');
 }
 
 /** Absolute path of the context file for a given launch key (session id or nonce). */

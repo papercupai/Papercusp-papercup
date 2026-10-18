@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { createWorkItem, linkWorkItem } from '../../work-items';
@@ -186,7 +186,8 @@ export default defineTool({
 
     const id = resolveAgentIdentity(ctx);
     const draft = buildFilingClassItemDraft(cls, { nowMs: Date.now(), minMembers: census.minMembers });
-    const harness = resolveConcreteHarnessSlug(args.harnessSlug, ctx) ?? 'papercusp';
+    const harness = resolveConcreteHarnessSlug(args.harnessSlug, ctx);
+    if (!harness) return harnessRequiredResult('improvements:filing-classes');
     const item = await createWorkItem({
       kind: 'change',
       title: draft.title,

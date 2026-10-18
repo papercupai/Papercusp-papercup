@@ -4,7 +4,7 @@ import { platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { defaultEvidenceRoot } from './evidence-root.js';
+import { canonicalEvidenceRootBase, defaultEvidenceRoot, isLegacyEvidenceRoot, legacyEvidenceRoot } from './evidence-root.js';
 
 const base = '/mnt/data/offload/verification-harness';
 const legacy = '/fixture-home/.local/state/verification-harness/proof';
@@ -38,6 +38,10 @@ describe('verification evidence placement (P-009)', () => {
   it('defaults new evidence to an existing writable separate data volume without creating it', () => {
     expect(root()).toBe(`${base}/proof`);
     expect(host.access).toHaveBeenCalledWith('/mnt/data/offload', 3);
+    expect(canonicalEvidenceRootBase(host)).toBe(base);
+    expect(legacyEvidenceRoot('proof', env)).toBe(legacy);
+    expect(isLegacyEvidenceRoot('proof', legacy, env, host)).toBe(true);
+    expect(isLegacyEvidenceRoot('proof', `${base}/proof`, env, host)).toBe(false);
   });
 
   it('honors the explicit evidence base before every other setting', () => {
@@ -48,6 +52,7 @@ describe('verification evidence placement (P-009)', () => {
   it('preserves an explicit XDG state location', () => {
     expect(defaultEvidenceRoot('proof', { ...env, XDG_STATE_HOME: '/state' }, host)).toBe('/state/verification-harness/proof');
     expect(host.stat).not.toHaveBeenCalled();
+    expect(isLegacyEvidenceRoot('proof', '/state/verification-harness/proof', { ...env, XDG_STATE_HOME: '/state' }, host)).toBe(false);
   });
 
   it('does not treat an unmounted data directory as separate storage', () => {

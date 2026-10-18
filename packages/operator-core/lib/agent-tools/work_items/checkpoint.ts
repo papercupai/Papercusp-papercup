@@ -161,7 +161,11 @@ import {
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
 import { changeKindsArg, changeKindReasonArg } from '../../change-kind-catalog';
-import { declareChangeKinds } from '../../work-item-change-kinds';
+import {
+  attachChangeKindDeclarations,
+  declaredChangeKindsById,
+  writeSucceededEligibility,
+} from '../../work-item-change-kinds';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   carryProvenanceFields,
@@ -829,14 +833,11 @@ function rowsModeSpec() {
     .enum(['replace', 'merge'])
     .optional()
     .describe(
-      'P-013: how supplied `checks` rows are applied. `merge` (default) unions ' +
-        'supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + ' +
-        '`checks:[]` is a no-op under either mode unless `retireIds` names individual rows. This controls CHECK ROWS only, ' +
-        "and `retireIds` is rejected unless `rowsMode:'replace'` is explicit — it is never silently ignored on a merge. " +
-        "never the checkpoint body. With `append:true` + `rowsMode:'replace'`, row retirement requires exact `retireIds`, " +
-        "even with `confirmRetire:true`. A full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
-        'confirmShrink:true, retireIds:[...]`. Without retireIds, omitted carried rows survive. ' +
-        'confirmRetire never authorizes omission or cap eviction. Without confirmShrink a >50% body shrink is auto-preserved.',
+      'Controls CHECK ROWS only. `merge` (default) unions rows; `replace` applies rows. ' +
+        "`retireIds` requires explicit `rowsMode:'replace'`. " +
+        "With `append:true` + `rowsMode:'replace'`, `retireIds` are required for retired rows; `confirmRetire:true` alone is not enough. " +
+        "Full replacement: `append:false, rowsMode:'replace', confirmShrink:true, retireIds:[...]`. " +
+        'Absent `retireIds`, omitted rows survive. `confirmShrink` preserves >50% shrinks.',
     );
 }
 
@@ -858,12 +859,9 @@ function retireIdsSpec() {
     .max(CARRY_NOTE_MAX_CHECKS * 2)
     .optional()
     .describe(
-      "rowsMode:'replace' safety: name exactly the " +
-        'carried row `id`s (or claim text for a row with no `id` — the same identity `carryRowKey` uses) you intend ' +
-        'to retire. The write refuses — even with confirmRetire:true — unless this set EXACTLY matches what would ' +
-        'actually be dropped, naming both any row you missed and any name that would not have dropped, so an ' +
-        'unlisted stored row can never be dropped by omission. Required for retirement under every append/body shape. ' +
-        'Call work_items:get { checksOnly:true } for stored ids before choosing which rows to close.',
+      "With rowsMode:'replace', name the exact carried row IDs (or claim text for rows without IDs) to retire. " +
+        'Every dropped row must be named and every name must match a dropped row, or the write refuses. ' +
+        'Read current IDs with work_items:get { checksOnly:true }.',
     )
     .meta({
       'x-papercusp-call-constraint':
@@ -3225,35 +3223,16 @@ export default defineTool({
     );
     // change-kind-declared-proof P-001 (D-001): record declared kinds for each entry whose
     // checkpoint write succeeded, keyed by the requested id runBulk echoes on each result.
-    const declaredById = new Map(
-      items
-        .filter((it) => (it.changeKinds?.length ?? 0) > 0)
-        .map((it) => [it.id, { kinds: it.changeKinds!, reason: it.changeKindReason }] as const),
-    );
+    const declaredById = declaredChangeKindsById(items);
     if (declaredById.size === 0) return bulkContent(env);
-    const results = await Promise.all(
-      env.results.map(async (r) => {
-        const declared = typeof r.id === 'string' ? declaredById.get(r.id) : undefined;
-        if (!declared) return r;
-        if (!r.ok) {
-          return {
-            ...r,
-            changeKinds: { recorded: false as const, error: 'changeKinds were not recorded: the checkpoint write did not succeed.' },
-          };
-        }
-        return {
-          ...r,
-          changeKinds: await declareChangeKinds({
-            workspaceId: ident.workspaceId ?? c.workspaceId ?? 'default',
-            featureId: r.id as string,
-            kinds: declared.kinds,
-            step: 'checkpoint',
-            declaredBy: ident.ownerId,
-            reason: declared.reason ?? null,
-          }),
-        };
-      }),
-    );
+    const results = await attachChangeKindDeclarations({
+      declared: declaredById,
+      results: env.results,
+      step: 'checkpoint',
+      declaredBy: ident.ownerId,
+      workspaceId: ident.workspaceId ?? c.workspaceId ?? 'default',
+      eligible: writeSucceededEligibility('checkpoint write'),
+    });
     return bulkContent({ ...env, results });
   },
 });

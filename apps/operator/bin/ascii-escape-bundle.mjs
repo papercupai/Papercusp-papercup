@@ -38,17 +38,22 @@
  * rewrite if any String.raw template contains a char it would escape. (Scanned
  * 2026-08-12 on the live bundle: 57 String.raw sites, 0 of them affected.)
  *
- * SAFETY POSTURE: never fail the build. A host that boots on an UN-escaped
+ * SAFETY POSTURE: escaping alone never fails the build. A host that boots on an UN-escaped
  * bundle is completely correct — just fatter. So every failure path here leaves
  * the input file byte-intact and exits 0 with a loud warning, rather than
  * risking the ExecStartPre fallback-to-stale path over a pure optimization.
  *
- * Usage: node ascii-escape-bundle.mjs <file>
+ * With --check, also validate the FINAL bytes, including an unchanged input.
+ * Builders use this instead of parsing a successful rewrite a second time.
+ * An invalid original still fails; a failed optimization may keep a valid original.
+ *
+ * Usage: node ascii-escape-bundle.mjs <file> [--check]
  */
-import { readFileSync, writeFileSync, renameSync, unlinkSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, unlinkSync, statSync, openSync, closeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const file = process.argv[2];
+const checkFinal = process.argv.includes('--check');
 const mb = (n) => (n / 1048576).toFixed(1);
 
 /** Escape every non-ASCII char. U+0080..U+00FF is NOT safe for module source (see header). */
@@ -58,9 +63,34 @@ function warn(msg) {
   console.warn(`⚠ ascii-escape: ${msg} — leaving the bundle un-escaped (correct, just larger).`);
 }
 
+function checkSyntax(target) {
+  // stdin pins ESM grammar even for the builders' extensionless temporary files.
+  // Pass an fd so a large bundle is not copied into another parent-side buffer.
+  const fd = openSync(target, 'r');
+  try {
+    return spawnSync(process.execPath, ['--input-type=module', '--check'], {
+      encoding: 'utf8', stdio: [fd, 'pipe', 'pipe'],
+    });
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function finishUnescaped() {
+  if (!checkFinal) process.exit(0);
+  try {
+    const check = checkSyntax(file);
+    if (check.status === 0) process.exit(0);
+    console.error(`ERROR: final bundle failed node --check: ${check.stderr || check.error?.message || check.signal || check.status}`);
+  } catch (error) {
+    console.error(`ERROR: final bundle could not be syntax-checked: ${error?.message ?? error}`);
+  }
+  process.exit(1);
+}
+
 if (!file) {
   warn('no file argument');
-  process.exit(0);
+  process.exit(checkFinal ? 1 : 0);
 }
 
 try {
@@ -70,7 +100,7 @@ try {
   const hits = src.match(ESCAPE_RE);
   if (!hits) {
     console.log('→ ascii-escape: bundle is already all ASCII, nothing to do');
-    process.exit(0);
+    finishUnescaped();
   }
 
   // Refuse if any String.raw template would change meaning (see header).
@@ -78,7 +108,7 @@ try {
     if (ESCAPE_RE.test(m[1])) {
       ESCAPE_RE.lastIndex = 0;
       warn('a String.raw template contains a char that would need escaping');
-      process.exit(0);
+      finishUnescaped();
     }
     ESCAPE_RE.lastIndex = 0;
   }
@@ -90,7 +120,7 @@ try {
   // the host will use. A corrupt rewrite therefore never reaches $OUTFILE.
   const staged = `${file}.ascii.tmp.mjs`;
   writeFileSync(staged, escaped);
-  const check = spawnSync(process.execPath, ['--check', staged], { encoding: 'utf8' });
+  const check = checkSyntax(staged);
   if (check.status !== 0) {
     try {
       unlinkSync(staged);
@@ -98,7 +128,7 @@ try {
       /* best effort */
     }
     warn(`the escaped bundle failed \`node --check\`: ${(check.stderr || '').split('\n')[0]}`);
-    process.exit(0);
+    finishUnescaped();
   }
   renameSync(staged, file);
 
@@ -110,5 +140,5 @@ try {
   );
 } catch (err) {
   warn(String(err?.message ?? err));
-  process.exit(0);
+  finishUnescaped();
 }

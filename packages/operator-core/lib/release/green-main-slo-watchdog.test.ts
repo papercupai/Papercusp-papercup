@@ -220,6 +220,7 @@ describe('checkGreenMainSlo (production wiring)', () => {
     const lastGreen = NOW - 14 * HOUR;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await checkGreenMainSlo(fakeSql([{ workspace_id: 'ws-1', last_green_at: String(lastGreen) }]), {
+      installSlug: 'papercusp',
       nowMs: () => NOW,
     });
     expect(warn).toHaveBeenCalledWith(`[green-main-slo] papercusp: delivered page green-main-slo:papercusp:time-since-green:${lastGreen}`);
@@ -246,6 +247,7 @@ describe('checkGreenMainSlo (production wiring)', () => {
   it('an unreadable frozen queue records a FAILED pass instead of reading as "no queue"', async () => {
     mocks.readFrozenCandidateRepairQueueState.mockResolvedValue({ status: 'unreadable', reason: 'invalid-shape', schemaVersion: null });
     const res = await checkGreenMainSlo(fakeSql([{ workspace_id: 'ws-1', last_green_at: String(NOW - 1 * HOUR) }]), {
+      installSlug: 'papercusp',
       nowMs: () => NOW,
     });
     expect(res?.readErrors).toEqual([{ input: 'queue', message: 'frozen repair queue unreadable: invalid-shape' }]);
@@ -256,14 +258,14 @@ describe('checkGreenMainSlo (production wiring)', () => {
 
   it('reports a failed reason read through watchdog health instead of a measured zero', async () => {
     mocks.readGateNonVerdictReasons.mockRejectedValue(new Error('reason ledger down'));
-    const res = await checkGreenMainSlo(fakeSql([{ workspace_id: 'ws-1', last_green_at: String(NOW) }]), { nowMs: () => NOW });
+    const res = await checkGreenMainSlo(fakeSql([{ workspace_id: 'ws-1', last_green_at: String(NOW) }]), { installSlug: 'papercusp', nowMs: () => NOW });
     expect(res?.slo.metrics.nonVerdictReasons).toBeNull();
     expect(res?.readErrors).toContainEqual({ input: 'nonVerdictReasons', message: 'reason ledger down' });
     expect(String(mocks.recordWatchdogPassOutcome.mock.calls[0][3])).toContain('reason ledger down');
   });
 
   it('does nothing (and records a healthy pass) when the install has no gate routine', async () => {
-    const res = await checkGreenMainSlo(fakeSql([]), { nowMs: () => NOW });
+    const res = await checkGreenMainSlo(fakeSql([]), { installSlug: 'papercusp', nowMs: () => NOW });
     expect(res).toBeNull();
     expect(mocks.notifyAttentionOnce).not.toHaveBeenCalled();
     expect(mocks.recordWatchdogPassOutcome).toHaveBeenCalledWith(expect.anything(), 'green-main-slo', expect.anything(), undefined);

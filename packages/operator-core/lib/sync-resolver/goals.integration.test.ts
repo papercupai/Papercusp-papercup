@@ -545,6 +545,61 @@ describe('goals.* resolvers against real SQL', () => {
     expect(stored.properties.worklist_policy).toEqual(policy);
   });
 
+  it('starts the declared collection portfolio while holder liveness is pending', async () => {
+    await goal();
+    await agentOnGoal('su-overlapping-holder');
+    await plan('overlapping-plan', { harness: 'alpha', title: 'Overlapping reads', status: 'active' });
+    const ref = 'plan:alpha/overlapping-plan';
+    const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+        selectable: true, defaultSelected: false } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: [], excluded: [] } } };
+    const properties = { worklist: { value: [ref], version: 7 },
+      worklist_policy: { value: { order: [ref], included: [ref], excluded: [] }, version: 3,
+        provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' } };
+    await sql`UPDATE harness_shared.goals SET property_schema=${sql.json(schema)}, properties=${sql.json(properties)}
+      WHERE workspace_id=${WS} AND id=${GOAL}`;
+    const [{ resolveGoalDetail }, holderReader, portfolioReader] = await Promise.all([
+      import('./goals'), import('../goals/holder'), import('../goal-launch-settings'),
+    ]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let releaseHolder!: () => void;
+    const holderPending = new Promise<void>(resolve => { releaseHolder = resolve; });
+    const original = holderReader.resolveHolderLiveness;
+    const holder = vi.spyOn(holderReader, 'resolveHolderLiveness').mockImplementation(async ids => {
+      await holderPending;
+      return original(ids);
+    });
+    const portfolio = vi.spyOn(portfolioReader, 'readGoalPortfolioBrief');
+    const read = resolveGoalDetail({ workspaceId: WS, goalId: GOAL });
+    try {
+      await expect.poll(() => holder.mock.calls.length, { timeout: 3000 }).toBeGreaterThan(0);
+      // Holding liveness open must not prevent the independent collection
+      // read from starting. A longer outer resolver timeout cannot pass this.
+      await expect.poll(() => portfolio.mock.calls.length, { timeout: 1000 }).toBe(1);
+      releaseHolder();
+      const detail = await read as { goalData: { collections: { worklist: {
+        selection: { ok: boolean; selected: string[] };
+      } } } };
+      expect(detail.goalData.collections.worklist.selection).toMatchObject({ ok: true, selected: [ref] });
+      expect(portfolio).toHaveBeenCalledTimes(1);
+      for (const [message] of warn.mock.calls) {
+        expect(message).toBe("[bounded-timeout] agent-obligations:plan-acceptance:overlapping-plan failed: no acceptance-gate verdict has been recorded for 'overlapping-plan' yet — degrading to fallback");
+      }
+      const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${WS} AND id=${GOAL}`;
+      expect(saved.properties).toEqual(properties);
+    } finally {
+      releaseHolder();
+      // The failing ordering control must drain and restore both spies too.
+      try { await read; } finally {
+        holder.mockRestore();
+        portfolio.mockRestore();
+        warn.mockRestore();
+      }
+    }
+  });
+
   it('starts stewardship while the shared portfolio read is pending', async () => {
     await goal();
     await plan('concurrent-plan', { harness: 'alpha', title: 'Concurrent evidence', status: 'active' });

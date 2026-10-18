@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * LIVE competitor drivers (impartial-benchmark-suite-2026-06-15 P-028/P-032, D-010). Binds the real
  * OpenHands / CrewAI / LangGraph orchestrators as fleet arms: for each backlog task, clone the repo @ base,
@@ -284,7 +285,7 @@ export function makeCompetitorDriver(cfg: CompetitorDriverConfig): CompetitorBac
 
 /** Default home for the framework venvs (installed at pilot-prep), overridable per env. */
 function venvPython(competitorId: CompetitorArmId): string {
-  const base = join(homedir(), '.papercusp', 'competitors');
+  const base = papercuspPath('competitors');
   if (competitorId === 'openhands-async') {
     return process.env.PAPERCUSP_COMPETITOR_OPENHANDS_VENV ?? join(base, 'openhands-venv', 'bin', 'python');
   }

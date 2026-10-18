@@ -191,6 +191,21 @@ describe('native operational execution witnesses', () => {
     expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ ok: false, error: 'ledger_write_failed' });
   });
 
+  it('records a source-only execution under its committed check identity without inventing a runtime witness', async () => {
+    const f = fixture();
+    const result = await executeOperationalRun({ ...f.definition, runtimeUnits: [] }, f.ctx, f.deps);
+    expect(result).toMatchObject({ ok: true, status: 'pass', testRunIds: [123], runtimeEnvironmentMeasured: false });
+    expect(f.definition.run).toHaveBeenCalledOnce();
+    expect(f.deps.snapshot).toHaveBeenCalledTimes(2);
+    expect(f.deps.readRuntime).not.toHaveBeenCalled();
+    const recorded = f.deps.persist.mock.calls[0][0];
+    expect(recorded.worktreeDirty).toBe(false);
+    expect(recorded.rows[0].filePath).toBe('scripts/check.ts');
+    expect(recorded.rows[0].execution).not.toHaveProperty('runtimeEnvironmentBefore');
+    expect(recorded.rows[0].execution).not.toHaveProperty('runtimeEnvironmentAfter');
+    expect(recorded.rows[0].execution).not.toHaveProperty('testLayer');
+  });
+
   it('refuses a future output artifact before executing or publishing a clean ledger row', async () => {
     const f = fixture();
     f.deps.verifyDefinition.mockResolvedValue(false);

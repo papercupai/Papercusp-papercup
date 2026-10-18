@@ -1,3 +1,4 @@
+import { papercuspPtyPath } from '@papercusp/host-platform/home';
 /**
  * interactive-claude-config.ts — materialize a per-session `CLAUDE_CONFIG_DIR`
  * for an INTERACTIVE claude session (psu su / psu --role on the claude backend).
@@ -259,7 +260,7 @@ const MARKER_AWARE_RECOVERY = ${JSON.stringify(MARKER_AWARE_POST_COMPACTION_RECO
 // EI-13477: same layout psu-pty-host.mjs's appendHostEvent / sanitizeKey use —
 // MUST match byte-for-byte so latestRespawnNativeId (psu-pty-discovery.ts)
 // finds this event under the same per-owner log it already reads.
-const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
+const PSU_PTY_DIR = papercuspPtyPath();
 const RESPAWN_EVENT_LOG_MAX_BYTES = 2 * 1024 * 1024;
 function sanitizeOwnerKey(ownerId) {
   return String(ownerId || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200);

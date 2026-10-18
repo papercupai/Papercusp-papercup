@@ -95,6 +95,18 @@ describe('desktopHostPlatform', () => {
     });
   });
 
+  describe('papercuspHome', () => {
+    it('resolves under the host home by default', () => {
+      expect(desktopHostPlatform.papercuspHome()).toBe(join(tmp, '.papercusp'));
+    });
+
+    it('honors PAPERCUSP_HOME as the isolation pin', () => {
+      const scoped = join(tmp, 'scoped', '.papercusp');
+      process.env.PAPERCUSP_HOME = scoped;
+      expect(desktopHostPlatform.papercuspHome()).toBe(scoped);
+    });
+  });
+
   describe('getHarnessAdminUrl', () => {
     it('prefers HARNESS_ADMIN_DATABASE_URL when set', () => {
       process.env.HARNESS_ADMIN_DATABASE_URL = 'postgresql://primary/x';

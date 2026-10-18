@@ -1,10 +1,11 @@
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 const PROCESS_START_PPID = process.ppid;
-const PAPERCUSP_DIR = process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp');
+const PAPERCUSP_DIR = papercuspHome();
 const log = (message: string): void => console.log(`[serve] ${message}`);
 
 /**
@@ -19,7 +20,7 @@ function parentDeathLogPath(): string {
   if (process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === "1") {
     return (
       process.env.PAPERCUSP_GATEWAY_LOG ||
-      join(homedir(), ".papercusp", "gateway.log")
+      papercuspPath("gateway.log")
     );
   }
   return join(PAPERCUSP_DIR, "parent-death.log");

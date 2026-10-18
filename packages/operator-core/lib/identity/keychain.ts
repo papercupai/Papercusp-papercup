@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * keychain — OS-level (or encrypted-file fallback) persistence for an
  * Ed25519 private key. Originally the device key (Phase 1b attestation,
@@ -84,7 +85,7 @@ export function identityWritesAllowed(env: NodeJS.ProcessEnv = process.env): boo
 
 /** Read-only producer path, also used by whole-install census/export. */
 export function identityDir(): string {
-  return process.env.PAPERCUSP_IDENTITY_DIR || join(homedir(), '.papercusp', 'identity');
+  return process.env.PAPERCUSP_IDENTITY_DIR || papercuspPath('identity');
 }
 
 // AES-256-GCM constants
@@ -438,7 +439,7 @@ function encFileName(keychainId: string): string {
  */
 function identityReadDirs(): string[] {
   const primary = identityDir();
-  const legacy = join(homedir(), '.papercusp', 'identity');
+  const legacy = papercuspPath('identity');
   return primary === legacy ? [primary] : [primary, legacy];
 }
 

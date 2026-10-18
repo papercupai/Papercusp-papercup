@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * native-compaction-audit — the P-022 (WI-4998) zero-invocation audit.
  *
@@ -62,8 +63,8 @@ export function defaultClaudeProjectsRoot(): string {
  * roots so filesystem tests/audits stay hermetic; pass `codexRoots` explicitly. */
 export function defaultCodexRolloutRoots(): string[] {
   return [
-    join(homedir(), '.papercusp', 'su-codex-homes'),
-    join(homedir(), '.papercusp', 'role-codex-homes'),
+    papercuspPath('su-codex-homes'),
+    papercuspPath('role-codex-homes'),
     join(homedir(), '.codex', 'sessions'),
   ];
 }

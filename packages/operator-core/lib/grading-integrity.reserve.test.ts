@@ -11,8 +11,6 @@ import {
 } from './grading-integrity';
 import type { ScorecardGradingAuditCurrentness } from './scorecards';
 
-type QueryResult = Record<string, unknown>[];
-
 function transactionHarness(options: {
   claim: boolean;
   currentState?: string;
@@ -26,43 +24,49 @@ function transactionHarness(options: {
   priorLastReservation?: unknown;
 }) {
   const statements: Array<{ text: string; values: unknown[] }> = [];
-  const tx = (async (strings: TemplateStringsArray, ...values: unknown[]): Promise<QueryResult> => {
-    const text = strings.join('?');
-    statements.push({ text, values });
+  const emptySqlFragment = Symbol('empty-sql-fragment');
+  const tx = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    // Postgres.js's SQL tag can compose a nested empty fragment. Keep that
+    // fragment out of the mocked query log instead of treating it as a query.
+    if (strings.length === 1 && strings[0] === '' && values.length === 0) return emptySqlFragment;
+    const text = strings.reduce((acc, part, index) =>
+      acc + part + (index < values.length && values[index] !== emptySqlFragment ? '?' : ''), '');
+    const queryValues = values.filter((value) => value !== emptySqlFragment);
+    statements.push({ text, values: queryValues });
     if (text.includes('AS prior_reservation')) {
-      return [
+      return Promise.resolve([
         {
           feature_id: 'EI-prior',
           prior_state: options.priorState === undefined ? 'pending' : options.priorState,
           prior_reservation: options.priorReservation ?? null,
           prior_last_reservation: options.priorLastReservation ?? null,
         },
-      ];
+      ]);
     }
     if (text.includes('RETURNING feature_id')) {
-      return options.claim ? [{ feature_id: 'EI-legacy-settled' }] : [];
+      return Promise.resolve(options.claim ? [{ feature_id: 'EI-legacy-settled' }] : []);
     }
     if (text.includes('SELECT scorecard.feature_id') && text.includes("dispatchReservation'->>'key'")) {
-      return options.confirmReservation ? [{ feature_id: 'EI-reserved' }] : [];
+      return Promise.resolve(options.confirmReservation ? [{ feature_id: 'EI-reserved' }] : []);
     }
-    if (text.includes("payload #- '{observation,gradingAudit,dispatchReservation}'")) return [];
-    if (text.includes("jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}'")) return [];
-    if (text.includes("'{observation,gradingAudit}'")) return [];
+    if (text.includes("payload #- '{observation,gradingAudit,dispatchReservation}'")) return Promise.resolve([]);
+    if (text.includes("jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}'")) return Promise.resolve([]);
+    if (text.includes("'{observation,gradingAudit}'")) return Promise.resolve([]);
     if (text.includes("SELECT payload->'observation'->'gradingAudit'->>'state'")) {
-      return [
+      return Promise.resolve([
         {
           state: options.currentState ?? 'failed',
           has_reservation: options.hasReservation ?? false,
           backoff: options.backoff ?? null,
           retracted: options.retracted ?? false,
         },
-      ];
+      ]);
     }
     if (
       text.trim() === 'FALSE' ||
       text.includes("gradingAudit'->>'state' IN ('passed', 'failed')") ||
       text.includes("payload->'observation'->'retracted' IS NULL")
-    ) return [];
+    ) return Promise.resolve([]);
     throw new Error(`unexpected query: ${text}`);
   }) as never;
   h.boundedOrgTxn.mockImplementation(async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx));

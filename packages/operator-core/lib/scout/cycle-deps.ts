@@ -598,7 +598,7 @@ export function buildScoutCycleDeps(
             const { createScoutPlanDraft } = await import('./scout-plan-draft');
             await authorRubricGapPlans(
               digest.rubricGaps,
-              { harnessSlug: opts.harnessSlug },
+              { harnessSlug: opts.harnessSlug, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) },
               opts.onScoutDraftCreated
                 ? {
                     createDraft: async (input) => {

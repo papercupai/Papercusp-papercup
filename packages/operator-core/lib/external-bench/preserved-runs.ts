@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Preserved external-bench run reader (impartial-benchmark-suite — Evaluation
  * "Preserved runs" surface).
@@ -31,7 +32,7 @@ import { isScoredStopReason } from './types';
 
 /** Default base dir for preserved runs (`~/.papercusp/bench-results`). */
 export function defaultBenchResultsDir(): string {
-  return join(homedir(), '.papercusp', 'bench-results');
+  return papercuspPath('bench-results');
 }
 
 /** One per-task row as persisted by the arm runner (lenient — additive fields ignored). */

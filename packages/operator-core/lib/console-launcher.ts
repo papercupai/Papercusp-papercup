@@ -1,3 +1,4 @@
+import { papercuspPath as hostPapercuspPath } from '@papercusp/host-platform/home';
 /**
  * console-launcher.ts — build the envelope the Tauri Rust side needs to
  * open an OS-native terminal in the right cwd, with the right env, and
@@ -381,7 +382,7 @@ export async function buildConsoleEnvelope(
   // The psu/ptool shims (installPapercuspFiles) live in ~/.papercusp/bin. Pass
   // it so the spawner can prepend it to PATH — that's what makes `psu` runnable
   // from the in-app terminal (psu-in-desktop-builds-2026-06-23 A2b).
-  env.PAPERCUSP_BIN_DIR = join(homedir(), '.papercusp', 'bin');
+  env.PAPERCUSP_BIN_DIR = hostPapercuspPath('bin');
 
   // WI-37920 / P-001 — make the spawned window's env SELF-SUFFICIENT.
   //

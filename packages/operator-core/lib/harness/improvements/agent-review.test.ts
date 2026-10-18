@@ -114,6 +114,11 @@ function harness(initial: WorkItem = issue()) {
   });
   const deliverRevision = vi.fn(async () => ({ woken: 1 }));
   const resolveSubmitterLiveness = vi.fn(async () => state.submitterLiveness);
+  const clearLedgerGrade = vi.fn(async (ideaId: string) => {
+    if (state.ledger?.ideaId !== ideaId) return;
+    if (state.ledger.gradedBy === 'owner') return;
+    state.ledger = { ...state.ledger, grade: null, feedback: null, gradedBy: null };
+  });
   // WI-10006314: the real heal's WHERE clause IS the identity check — only an own-node
   // origin='remote' row moves to 'local'; a foreign remote row is left untouched.
   const healOwnNodeOrigin = vi.fn(async (_workspaceId: string, _id: string, _harnessSlug?: string | null) => {
@@ -148,6 +153,7 @@ function harness(initial: WorkItem = issue()) {
     recordRoutedIdea,
     resolveLedgerIdeaId,
     readLedgerGrade: vi.fn(async () => state.ledger),
+    clearLedgerGrade,
     deliverRevision,
     resolveSubmitterLiveness,
     resolveVerifiedSubmitterAlias: vi.fn(async () => null),
@@ -165,6 +171,7 @@ function harness(initial: WorkItem = issue()) {
     commentWorkItem,
     deliverRevision,
     resolveSubmitterLiveness,
+    clearLedgerGrade,
   };
 }
 
@@ -1181,6 +1188,48 @@ describe('agent-review grading lifecycle', () => {
         evidence: { review: { submittedBy: 'su-filer', round: 2 } },
       },
     });
+  });
+
+  it('clears the prior reviewer grade so a resubmitted round cannot replay stale feedback (WI-10005365)', async () => {
+    const h = harness(issue({
+      assignee: 'su-filer',
+      payload: {
+        agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      },
+    }));
+    h.state.ledger = {
+      ideaId: 'WI-7',
+      workItemId: 'WI-7',
+      grade: 2,
+      feedback: 'old round feedback',
+      gradedBy: 'su-reviewer',
+    };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: true,
+      state: { status: 'pending', round: 2 },
+    });
+    expect(h.clearLedgerGrade).toHaveBeenCalledWith('WI-7', 'WI-7');
+    expect(h.state.ledger).toMatchObject({ grade: null, feedback: null, gradedBy: null });
+    // A reconciliation from an older reader cannot apply the previous round's verdict.
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps))
+      .rejects.toThrow('no standing grade');
+    expect(readAgentReviewState(h.state.issue.payload)).toMatchObject({ status: 'pending', round: 2 });
+    expect(h.deliverRevision).not.toHaveBeenCalled();
+  });
+
+  it('does not admit a new pending round if resetting the old grade fails', async () => {
+    const h = harness(issue({
+      payload: {
+        agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      },
+    }));
+    h.clearLedgerGrade.mockRejectedValueOnce(new Error('ledger write failed'));
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps))
+      .rejects.toThrow('ledger write failed');
+    expect(readAgentReviewState(h.state.issue.payload)).toMatchObject({ status: 'revision-requested', round: 1 });
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
   });
 
   it('requires the real legacy reviser to hold the item, then rebinds submittedBy on resubmission', async () => {

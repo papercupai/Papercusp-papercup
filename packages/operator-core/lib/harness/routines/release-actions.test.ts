@@ -2073,6 +2073,17 @@ describe('checkReleaseFixerCandidateStale — live re-verify (EI-8718)', () => {
     expect(r).toEqual({ candidateExists: true, candidatePromoted: true });
   });
 
+  it('uses the target gate release ref instead of the operator home main ref', async () => {
+    const calls: string[][] = [];
+    const runner = fakeRunner((args) => {
+      calls.push(args);
+      return args[0] === 'cat-file' ? { ok: true, stdout: '' } : { ok: true, stdout: '0' };
+    });
+    const r = await checkReleaseFixerCandidateStale('/repo', 'cafe1234', runner, 'refs/heads/release-candidate');
+    expect(r).toEqual({ candidateExists: true, candidatePromoted: true });
+    expect(calls[1]).toEqual(['rev-list', '--count', 'origin/release-candidate..cafe1234']);
+  });
+
   it('a transient git error on the ancestor check fails CLOSED to not-promoted, not stale', async () => {
     const runner = fakeRunner((args) =>
       args[0] === 'cat-file' ? { ok: true, stdout: '' } : { ok: false, stdout: '' },

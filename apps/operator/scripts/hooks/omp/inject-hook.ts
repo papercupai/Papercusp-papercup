@@ -158,6 +158,8 @@ export function papercuspHomeDir(env: NodeJS.ProcessEnv = process.env): string {
   //
   // It is ALSO where the miss log below is written, which is what keeps that
   // diagnostic inside the same isolation boundary as everything else here.
+  // This raw hook is copied outside the checkout with only its local .ts
+  // siblings, so it cannot import a workspace package for this fallback.
   return env.PAPERCUSP_HOME || join(homedir(), '.papercusp');
 }
 

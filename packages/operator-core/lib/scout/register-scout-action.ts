@@ -47,7 +47,7 @@ import { runScoutCycle } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
 import { applyDedupBurnToConfig, readDedupBurnVerdict } from './dedup-burn-guard';
 import { DEFAULT_SCOUT_CONFIG } from './config';
-import { createScoutPlanDraft } from './scout-plan-draft';
+import { createScoutPlanDraft, scoutPlanHarnessSlug } from './scout-plan-draft';
 import { buildScoutArchivePort, type ScoutArchivePort } from './scout-archive-port';
 import { nicheKey, type ArchivePort } from './gym-bridge';
 import { scoutCoordOwnerId } from './coord-identity';
@@ -280,8 +280,8 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   onPhase?.('llm-client-import');
   const { llmCall: rawLlmCall, backendForLlmCall } = await import('../llm-testing/llm-client');
   const { SCOUT_IDEATOR_MODEL } = await import('./ideators');
-  const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
   const providerCapacity = await cachedScoutProviderCapacity();
+  const planHarnessSlug = scoutPlanHarnessSlug(harnessSlug, workspaceId);
 
   // Gateway admission-tier label (gateway-priority-tiers-2026-06-22): stamp every
   // in-process Scout LLM call (ideators/critics/recombine/revise) with the `scout`
@@ -352,8 +352,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   };
   const mugNotifyPorts: MugNotifyPorts = {
     // resolveMugOwner takes workspaceId explicitly (no ALS needed); the routine's
-    // ctx workspace is where the hive's adv_sessions / coord live (NOT the DEFAULT
-    // plan workspace the drafts are pinned to).
+    // ctx workspace is where both the Hive's coord and plan artifacts live.
     resolveMugOwner: async () => {
       const { getOrgPg } = await import('@papercusp/db-org');
       const { resolveMugOwner } = await import('../pot/placement-watchdog');
@@ -397,8 +396,8 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     onPhase?.('ideate');
     const result = await runScoutRevisionCycle(revisionRequests, {
       llmCall,
-      planWorkspaceId: DEFAULT_WORKSPACE_ID,
-      harnessSlug,
+      planWorkspaceId: workspaceId,
+      harnessSlug: planHarnessSlug,
       ...(scoutConfig ? { model: scoutConfig.models.revision } : {}),
     });
     try {
@@ -434,18 +433,14 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     workspaceId,
     llmCall,
     deferDispatch,
-    // Draft plans are pinned to the DEFAULT workspace, NOT the routine's ctx
-    // workspace: the whole plan surface (plans:* dispatch, Create tab, plan
-    // projections) lives under 'default', so a draft written under the
-    // routine's 'papercusp-workspace' is invisible to every plan UI/read
-    // (live miss 2026-06-11 — 3 routed drafts stranded). The routed-idea
-    // LEDGER row keeps the ctx workspace (learning.scout reads it there).
+    // Plans and revisions share the caller's workspace and real Hive scope.
+    // The workspace-singleton tick key remains the cycle/ledger identity only.
     // route→coord:send (D-003 #1): a NEWLY-routed draft pings the Mug so it
     // reviews it — this is what STARTS the feedback loop. Only on `created` (a
     // re-derived/idempotent existing slug is not re-announced). Best-effort: the
     // ping never fails the routing path.
     createPlanDraft: async (args) => {
-      const res = await createScoutPlanDraft({ ...args, harnessSlug, workspaceId: DEFAULT_WORKSPACE_ID });
+      const res = await createScoutPlanDraft({ ...args, harnessSlug: planHarnessSlug, workspaceId });
       if (res.created) {
         try {
           await notifyMugDraftRouted(mugNotifyPorts, { slug: res.slug, title: args.title, scoutOwner });

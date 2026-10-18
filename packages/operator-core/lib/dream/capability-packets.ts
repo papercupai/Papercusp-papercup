@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { open, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -95,7 +96,7 @@ const defaultDeps: CapabilityPacketDeps = {
   neighbors: (direction, repositoryId, name) => gitnexusFacade(direction, { repo: repositoryId, name, limit: 12 }),
   graph: queryCapabilityGraph,
   readArtifact: async (path) => {
-    const root = await realpath(join(homedir(), '.papercusp', 'scratch', 'packs'));
+    const root = await realpath(papercuspPath('scratch', 'packs'));
     const artifact = await withinRoot(root, path);
     return readBounded(artifact, MAX_ARTIFACT_BYTES);
   },

@@ -20,7 +20,7 @@ import { promisify } from 'node:util';
 import { stat as statCb, statfs as statfsCb, statSync } from 'node:fs';
 import { tmpdir, homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
-import { RETENTION_POLICY, type RetentionClass } from './retention-policy';
+import { retentionPolicyForWorkspaceRoot, type RetentionClass } from './retention-policy';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
@@ -76,7 +76,7 @@ export function mountPointOf(path: string, stat: (p: string) => { dev: number } 
  *  release gate reuses that set for WRITE admission, and a volume the suite never writes
  *  to must not hold the gate. `~` roots resolve under the home volume, already watched. */
 export function alarmWatchedPaths(
-  policy: readonly RetentionClass[] = RETENTION_POLICY,
+  policy: readonly RetentionClass[] = retentionPolicyForWorkspaceRoot(),
   stat?: (p: string) => { dev: number },
 ): string[] {
   const out = new Set(watchedPaths());

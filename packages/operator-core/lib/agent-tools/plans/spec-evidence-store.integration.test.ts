@@ -2210,6 +2210,80 @@ describe('recorded retraction is the one sanctioned repair for a malformed bindi
     expect(await visibleIds(true)).toContain(firstId);
   });
 
+  it('repairs an incomplete automatic fixture recipe only after attributable withdrawal, retaining the original receipt and history', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const originalRecipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/reconnect.ts'],
+      testPaths: ['test/reconnect.test.ts'],
+    };
+    const original = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, originalRecipe);
+    const identity = {
+      harnessSlug: HARNESS, planSlug: 'reconnect-plan', workItemId: 'WI-101',
+      specId: 'SPEC-003-01', specRevision: 1, evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.test.ts', testRunId,
+    };
+    const first = await evidenceStore.bindSpecEvidence({
+      ...identity,
+      sourceFingerprint: original.sourceFingerprint,
+      testFingerprint: original.testFingerprint,
+      details: { currentMeasurement: originalRecipe, measurementPin: original.pin },
+      actorId: 'system:spec-evidence-autobind',
+    });
+    expect(first).toMatchObject({ status: 'created' });
+    const firstId = Number((first as { id: number }).id);
+    const correctedRecipe = { ...originalRecipe, fixturePaths: ['test/reconnect.test.ts'] };
+    const corrected = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, correctedRecipe);
+    expect(corrected.sourceFingerprint).toBe(original.sourceFingerprint);
+    expect(corrected.testFingerprint).toBe(original.testFingerprint);
+    expect(corrected.fixtureFingerprint).toBeTruthy();
+    const replacement = {
+      ...identity,
+      sourceFingerprint: corrected.sourceFingerprint,
+      testFingerprint: corrected.testFingerprint,
+      fixtureFingerprint: corrected.fixtureFingerprint,
+      details: { currentMeasurement: correctedRecipe, measurementPin: corrected.pin },
+      actorId: RETRACTOR,
+    };
+
+    // The ordinary immutable-recipe guard must keep refusing this live-row update.
+    expect(await evidenceStore.bindSpecEvidence(replacement)).toMatchObject({
+      status: 'test_run_measurement_recipe_changed', testRunId,
+    });
+    expect(await evidenceStore.retractSpecEvidence({
+      harnessSlug: HARNESS, bindingId: firstId, actorId: RETRACTOR,
+      reason: 'automatic first binding omitted the authored inline fixture measurement',
+    })).toMatchObject({ status: 'retracted', bindingId: firstId });
+    const rebound = await evidenceStore.bindSpecEvidence(replacement);
+    expect(rebound).toMatchObject({ status: 'created' });
+    const reboundId = Number((rebound as { id: number }).id);
+    expect(await visibleIds()).toEqual([reboundId]);
+    expect(await visibleIds(true)).toEqual(expect.arrayContaining([firstId, reboundId]));
+
+    const rows = await db.sql`
+      SELECT id, test_run_id, source_fingerprint, test_fingerprint, fixture_fingerprint,
+             details, created_by, retracted_by, retraction_reason
+        FROM harness_shared.spec_evidence_bindings
+       WHERE id IN (${firstId}, ${reboundId}) ORDER BY id`;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      id: firstId, test_run_id: testRunId,
+      source_fingerprint: original.sourceFingerprint, test_fingerprint: original.testFingerprint,
+      fixture_fingerprint: null, created_by: 'system:spec-evidence-autobind',
+      retracted_by: RETRACTOR,
+      retraction_reason: 'automatic first binding omitted the authored inline fixture measurement',
+      details: { currentMeasurement: originalRecipe },
+    });
+    expect(rows[1]).toMatchObject({
+      id: reboundId, test_run_id: testRunId,
+      source_fingerprint: original.sourceFingerprint, test_fingerprint: original.testFingerprint,
+      fixture_fingerprint: corrected.fixtureFingerprint, retracted_by: null,
+      details: { currentMeasurement: correctedRecipe },
+    });
+  });
+
   it('accepts one complete stamp, then hides the row from default reads but not from an audit read', async () => {
     const id = await bindOne();
     expect(await visibleIds()).toContain(id);

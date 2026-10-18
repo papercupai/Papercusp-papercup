@@ -18,21 +18,34 @@
  *     (the condition bridge mints exactly ONE owning work-item — the same
  *     singleton machinery as `gate-red-streak:<harness>`, P-014/D-010);
  *   - on a successful GENUINE GREEN deploy: resolve the condition (the bridge
- *     settles the item), retract the fact, and VERIFY local `main` ==
- *     `origin/main` — reporting non-unified refs loudly in the resolution.
+ *     settles the item), retract the fact, and VERIFY the configured release ref
+ *     against its origin tracking ref — reporting divergence in the resolution.
  *
- * ⚠ Deliberately NO auto-fast-forward of local `main` toward `origin/main`:
- * `plan.green` is REF-ANCHORED (deploy.ts: `green = targetSha === readySha`
- * where readySha is LOCAL `main`), so moving local `main` to a force-promoted
- * `origin/main` sha would LAUNDER an untested sha into the green pin and defeat
- * the deploy gate itself. Ref unification happens at the first genuine green by
- * the gate's own FF+push (D-004: "local main re-syncs to origin/main on that
- * first real green"); this module only OBSERVES and reports.
+ * ⚠ Deliberately NO auto-fast-forward of the configured release ref toward its
+ * origin tracking ref: `plan.green` is ref-anchored, so moving the local release
+ * ref to an unjudged remote sha would launder it into the green pin. Ref
+ * unification happens at the first genuine green by the gate's own FF+push; this
+ * module only OBSERVES and reports.
  *
  * Best-effort by construction (like recordRefusedDeploy / recordCoalescedDeploy
  * in deploy-cli.ts): a telemetry/honesty failure must never change a deploy's
  * outcome or exit code — every leg is individually guarded.
  */
+
+import { releaseConfig } from './release-config';
+
+export interface DeployParityRefs {
+  localRef: string;
+  originRef: string;
+}
+
+/** Resolve the configured local release ref and its origin tracking ref. */
+export function deployParityRefs(releaseRef: string): DeployParityRefs {
+  const localRef = releaseRef.trim();
+  if (localRef.startsWith('refs/remotes/')) return { localRef, originRef: localRef };
+  const branch = localRef.replace(/^refs\/heads\//, '').replace(/^origin\//, '');
+  return { localRef, originRef: branch ? `refs/remotes/origin/${branch}` : '' };
+}
 
 /** Condition-lifecycle key for the tested≠deployed divergence on one harness.
  *  Same family as `gateRedStreakConditionKey` (coord/gate-ownership.ts) but
@@ -63,8 +76,10 @@ export interface DeployParityEvent {
 
 /** Ref-unification observation for the genuine-green resolution. */
 export interface RefUnification {
-  localMain: string | null;
-  originMain: string | null;
+  localRef: string;
+  originRef: string;
+  localSha: string | null;
+  originSha: string | null;
   /** true when both resolve and are equal; null when either ref is unreadable. */
   unified: boolean | null;
 }
@@ -102,13 +117,14 @@ export interface DeployParityDeps {
   hasOpenParityCondition: (installSlug: string) => Promise<boolean>;
   /** Fallback guard: the standing fact's live state ('live' | anything else). */
   factKeyState: (installSlug: string) => Promise<string>;
-  /** Read local main vs origin/main (NO fetch — same no-fetch model as the gate). */
+  /** Read the configured release ref vs its origin tracking ref (NO fetch). */
   readRefUnification: (integrationRoot: string) => Promise<RefUnification>;
   now?: () => Date;
 }
 
 /** Real wiring — lazy imports so `import`ing this module (or deploy-cli) stays light. */
 export async function realDeployParityDeps(): Promise<DeployParityDeps> {
+  const refs = deployParityRefs(releaseConfig().releaseRef);
   const { assertFact, retractFact, findFactKeyState } = await import(
     '@papercusp/operator-core/lib/agent-facts/store'
   );
@@ -160,12 +176,14 @@ export async function realDeployParityDeps(): Promise<DeployParityDeps> {
           return null;
         }
       };
-      const localMain = await rev('main');
-      const originMain = await rev('refs/remotes/origin/main');
+      const localSha = await rev(refs.localRef);
+      const originSha = await rev(refs.originRef);
       return {
-        localMain,
-        originMain,
-        unified: localMain && originMain ? localMain === originMain : null,
+        localRef: refs.localRef,
+        originRef: refs.originRef,
+        localSha,
+        originSha,
+        unified: localSha && originSha ? localSha === originSha : null,
       };
     },
   };
@@ -245,7 +263,13 @@ export async function recordDeployParity(ev: DeployParityEvent, deps: DeployPari
     }
   }
 
-  let unification: RefUnification = { localMain: null, originMain: null, unified: null };
+  let unification: RefUnification = {
+    localRef: 'configured release ref',
+    originRef: 'origin tracking ref',
+    localSha: null,
+    originSha: null,
+    unified: null,
+  };
   try {
     unification = await deps.readRefUnification(ev.integrationRoot);
   } catch {
@@ -253,13 +277,14 @@ export async function recordDeployParity(ev: DeployParityEvent, deps: DeployPari
   }
   const refsLine =
     unification.unified === true
-      ? `Refs unified: local main == origin/main (${(unification.localMain ?? '').slice(0, 12)}).`
+      ? `Refs unified: ${unification.localRef} == ${unification.originRef} (${(unification.localSha ?? '').slice(0, 12)}).`
       : unification.unified === false
-        ? `⚠ Refs NOT unified: local main ${(unification.localMain ?? 'unreadable').slice(0, 12)} vs ` +
-          `origin/main ${(unification.originMain ?? 'unreadable').slice(0, 12)} — something moved ` +
-          `origin/main outside the gate (the D-002 force-promote class). Do NOT fast-forward local ` +
-          `main to origin/main by hand: green is ref-anchored to local main, so that would launder ` +
-          `an unjudged sha into the green pin. Investigate which ref reflects a real green verdict.`
+        ? `⚠ Refs NOT unified: ${unification.localRef} ${(unification.localSha ?? 'unreadable').slice(0, 12)} vs ` +
+          `${unification.originRef} ${(unification.originSha ?? 'unreadable').slice(0, 12)} — something moved ` +
+          `${unification.originRef} outside the gate (the D-002 force-promote class). Do NOT fast-forward local ` +
+          `${unification.localRef} to ${unification.originRef} by hand: green is ref-anchored to the local ` +
+          `release ref, so that would launder an unjudged sha into the green pin. Investigate which ref reflects ` +
+          `a real green verdict.`
         : `Ref unification UNVERIFIED (a ref was unreadable) — not a divergence claim in either direction.`;
 
   await deps

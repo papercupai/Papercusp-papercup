@@ -2,13 +2,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   AGENT_MAX_AGE_HOURS,
   AGENT_ROOT_MAX_BYTES,
   BUILD_DIR_MAX_AGE_HOURS,
   CACHEDIR_TAG_SIGNATURE,
   RETENTION_POLICY,
+  retentionPolicyForWorkspaceRoot,
   buildDirsEligible,
   isBuildDirName,
   isCacheDirTag,
@@ -28,6 +29,21 @@ const del = (p: string) => deletionClassFor(p, policy)?.id ?? null;
 describe('retention policy (disk-headroom P-003 / R-2)', () => {
   it('the shipped policy passes every structural check', () => {
     expect(validatePolicy(RETENTION_POLICY, HOME)).toEqual([]);
+  });
+
+  it('materializes checkout retention roots from PAPERCUSP_WORKSPACE_ROOT', () => {
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ROOT', '/srv/custom-workspaces/');
+    try {
+      const roots = retentionPolicyForWorkspaceRoot().flatMap((cls) => cls.roots);
+      expect(roots).toContain('/srv/custom-workspaces/*');
+      expect(roots).toContain('/srv/custom-workspaces/papercusp-relcut-*');
+      expect(roots).toContain('/srv/custom-workspaces/*/.papercusp/scratch');
+      expect(roots).toContain('/srv/custom-workspaces/papercusp-staging.generations');
+      expect(roots.some((root) => root.includes('__PAPERCUSP_WORKSPACE_ROOT__'))).toBe(false);
+      expect(roots.some((root) => root.startsWith('~/papercupai-workspace/'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('declares the same finite cap enforced by the private Cargo-slot owner', () => {

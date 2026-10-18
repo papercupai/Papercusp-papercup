@@ -14,6 +14,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir as osHomedir } from 'node:os';
 import { join } from 'node:path';
 import type { HostPlatform } from './index';
+import { papercuspHome as resolvePapercuspHome } from './home.mjs';
 
 const NATIVE_FALLBACK =
   'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
@@ -36,7 +37,7 @@ function resolveHarnessAdminUrl(): string {
   // the matching fix in connection.ts / serve.ts. A caller with its own isolated
   // PAPERCUSP_HOME (a gate/smoke-test instance) must discover ITS OWN discovery
   // file, never the box-canonical one.
-  const papercuspDir = process.env.PAPERCUSP_HOME || join(osHomedir(), '.papercusp');
+  const papercuspDir = resolvePapercuspHome();
   const discoveryPath = join(papercuspDir, 'embedded-pg.json');
   try {
     const raw = readFileSync(discoveryPath, 'utf8');
@@ -73,6 +74,10 @@ export const desktopHostPlatform: HostPlatform = {
 
   homedir(): string {
     return osHomedir();
+  },
+
+  papercuspHome(): string {
+    return resolvePapercuspHome();
   },
 
   getHarnessAdminUrl(): string {

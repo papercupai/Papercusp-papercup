@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /** Customer-host custody for authorized desktop Noise public keys. */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -54,7 +55,7 @@ export function defaultByocClientAuthorizationDirectory(env: NodeJS.ProcessEnv =
   if (systemdState?.startsWith('/')) return join(systemdState, 'byoc-client-authorizations');
   const configured = env.PAPERCUSP_BYOC_AUTHORIZATION_DIR?.trim();
   if (configured?.startsWith('/')) return configured;
-  return join(homedir(), '.papercusp', 'workspace-host', 'byoc-client-authorizations');
+  return papercuspPath('workspace-host', 'byoc-client-authorizations');
 }
 
 export class FileByocClientAuthorizationStore implements ByocClientAuthorizationStore {

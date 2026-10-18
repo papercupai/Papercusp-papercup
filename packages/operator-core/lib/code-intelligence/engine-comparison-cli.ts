@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * engine-comparison-cli.ts — P-005 four-arm code-intelligence comparison (plan
  * `gitnexus-selective-hardening-and-comparison-2026-09-13`, WI-10001405).
@@ -33,14 +34,14 @@ import { phaseCostFromTimeLogs, withPrecomputedIndex } from './engine-comparison
 import { runEngineArm, type ArmReport, type EngineArm, type EngineComparisonDeps, type EngineRunMeta } from './engine-comparison';
 import { ARM_ORDER, deriveRunMeta, orderReports, parseCliArgs, preregHash, renderEvidence, type CliArmId } from './engine-comparison-report';
 
-const BENCH = process.env.PAPERCUSP_ENGINE_BENCH_ROOT ?? path.join(os.homedir(), '.papercusp/bench/engine-comparison-2026-10');
+const BENCH = process.env.PAPERCUSP_ENGINE_BENCH_ROOT ?? papercuspPath('bench/engine-comparison-2026-10');
 const ARM_DIR: Readonly<Record<CliArmId, string>> = {
   'baseline-lsp-rg': 'baseline',
   'gitnexus-installed': 'gitnexus-installed',
   'gitnexus-candidate': 'gitnexus-candidate',
   'codebase-memory': 'codebase-memory',
 };
-const INSTALLED_GITNEXUS_BIN = path.join(os.homedir(), '.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus');
+const INSTALLED_GITNEXUS_BIN = papercuspPath('vendor/gitnexus/node_modules/.bin/gitnexus');
 const CANDIDATE_GITNEXUS_DIR = path.join(BENCH, 'vendor/gitnexus-1.6.12');
 const CBM_DIR = path.join(BENCH, 'vendor/cbm');
 const CBM_BIN = path.join(CBM_DIR, 'build/bench/codebase-memory-mcp');

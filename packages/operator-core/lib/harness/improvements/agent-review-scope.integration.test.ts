@@ -16,7 +16,7 @@ vi.mock('../../workspace-registry', async (orig) => ({
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { FEATURE_COLS, featureRowToWorkItem } = await import('../../work-items');
-const { adoptNextAgentReviewRevision, claimNextAgentReview, claimNextVerificationTask } = await import('./agent-review');
+const { adoptNextAgentReviewRevision, claimNextAgentReview, claimNextVerificationTask, resubmitAgentReview } = await import('./agent-review');
 const { LEGACY_AGENT_REVIEW_SUBMITTER } = await import('./agent-review-policy');
 const { buildP2pLaneFence } = await import('../../scheduler/p2p-lane-fence');
 const WS = 'ws-verifier-scope';
@@ -80,6 +80,43 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
     };
     return { deps, claimWorkItem };
   }
+
+  it.each(['su-reviewer', 'owner'])('resubmit resets only the matching agent verdict; gradedBy=%s (EI-26211005060590945)', async (gradedBy) => {
+    const id = `WI-RESUBMIT-${gradedBy}`;
+    await seed(id, true, 0, null);
+    await db.adminSql`UPDATE harness_shared.work_items
+      SET taken_by='su-filer', payload=jsonb_set(payload, '{agentReview,status}', '"revision-requested"')
+      WHERE workspace_id=${WS} AND feature_id=${id}`;
+    for (const ideaId of [id, `${id}-unrelated`]) {
+      await db.adminSql`INSERT INTO harness_shared.scout_routed_ideas
+        (idea_id, workspace_id, harness_slug, lens, rail, routed_ref, routed_at,
+         human_grade, human_feedback, graded_by, graded_at)
+        VALUES (${ideaId}, ${WS}, ${HARNESS}, 'first-principles', 'improvement', ${'wi:' + ideaId}, 0,
+          2, 'previous round feedback', ${gradedBy}, now())`;
+    }
+    const { deps } = writer();
+    const mergeWorkItemPayload = vi.fn(async (_id: string, patch: object) => {
+      await db.adminSql`UPDATE harness_shared.work_items SET payload=payload || ${JSON.stringify(patch)}::jsonb
+        WHERE workspace_id=${WS} AND feature_id=${id}`;
+      return deps.getWorkItem(id);
+    });
+    const result = await resubmitAgentReview({ id, submittedBy: 'su-filer' }, {
+      ...deps, mergeWorkItemPayload,
+      resolveSubmitterLiveness: vi.fn(async () => ({ sessionState: 'live' as const })),
+    } as never);
+    expect(result).toMatchObject({ resubmitted: true, state: { status: 'pending', round: 3 } });
+    const [row] = await db.adminSql`SELECT human_grade, human_feedback, graded_by, graded_at
+      FROM harness_shared.scout_routed_ideas WHERE idea_id=${id}`;
+    if (gradedBy === 'owner') {
+      expect(row).toMatchObject({ human_grade: 2, human_feedback: 'previous round feedback', graded_by: 'owner' });
+      expect(row.graded_at).not.toBeNull();
+    } else {
+      expect(row).toEqual({ human_grade: null, human_feedback: null, graded_by: null, graded_at: null });
+    }
+    const [unrelated] = await db.adminSql`SELECT human_grade, human_feedback, graded_by
+      FROM harness_shared.scout_routed_ideas WHERE idea_id=${`${id}-unrelated`}`;
+    expect(unrelated).toEqual({ human_grade: 2, human_feedback: 'previous round feedback', graded_by: gradedBy });
+  });
 
   it.each([
     [true, 'change'],

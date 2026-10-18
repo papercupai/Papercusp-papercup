@@ -581,6 +581,24 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }).class).toBe('caller');
   });
 
+  it('classifies admission recovery binding refusals as expected caller control flow', () => {
+    const errorCode = 'admission_recovery_refused';
+    const message =
+      'Dispatching WI-2037678 with resumeAdmission:true was refused because the authenticated recovery binding is missing.';
+    expect(classifyToolError(errorCode, 'refused', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'coord:dispatch',
+      errorCode,
+      status: 'refused',
+      message,
+      directEvidence: {
+        kind: 'server-contract-mismatch',
+        expected: 'Authenticated recovery binding is accepted by the resumeAdmission dispatch path.',
+        actual: message,
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies typed unknown and ambiguous owner-filter refusals as caller input', () => {
     for (const [errorCode, message] of [
       ['owner_not_found', "Owner 'system:judge/su-owner' matches no known ownerId; pass the full ownerId."],

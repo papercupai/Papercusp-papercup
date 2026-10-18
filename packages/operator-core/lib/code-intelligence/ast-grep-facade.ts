@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * `ast-grep` — the STRUCTURAL leg of the code-intelligence triad
  * (plan `code-intelligence-routing-lsp-gitnexus-2026-08-20`, P-014).
@@ -80,7 +81,7 @@ let execFileAsync: ((...args: any[]) => Promise<any>) | undefined;
 const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) as any)(...args);
 
 /** The pinned vendor root. Provisioned by P-014, never installed at runtime. */
-export const AST_GREP_VENDOR_DIR = join(homedir(), '.papercusp', 'vendor', 'ast-grep');
+export const AST_GREP_VENDOR_DIR = papercuspPath('vendor', 'ast-grep');
 
 /**
  * The pinned binary, or `null` when it is not provisioned.

@@ -50,6 +50,7 @@ import { join, basename } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listAllProjectedTools } from '@papercusp/tooldef';
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { PAPERCUSP_MCP_SERVER_NAMES } from '../papercusp-mcp-servers';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -1143,7 +1144,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
       // ~/.claude/projects/<munged-cwd>/<uuid>.jsonl
       { root: join(HOME, '.claude', 'projects'), dirDepth: 1 },
       // ~/.papercusp/session-claude/<ownerId>/projects/<munged-cwd>/<uuid>.jsonl
-      { root: join(HOME, '.papercusp', 'session-claude'), dirDepth: 3 },
+      { root: papercuspPath('session-claude'), dirDepth: 3 },
     ],
     parseLine: parseClaudeLine,
     classifyLine: classifyClaudeLine,
@@ -1166,7 +1167,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
       // carried its psu root for a while; this pair must not drift again — guarded by
       // session-ingest-psu-roots.test.ts.
       // ~/.papercusp/su-omp-homes/session-<advSessionId>/agent/sessions/<munged-cwd>/<ts>_<uuid>.jsonl
-      { root: join(HOME, '.papercusp', 'su-omp-homes'), dirDepth: 4 },
+      { root: papercuspPath('su-omp-homes'), dirDepth: 4 },
     ],
     parseLine: parseOmpLine,
     classifyLine: classifyOmpLine,
@@ -1183,7 +1184,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
       // walked. descend pins level 2 to 'sessions' so the walk never
       // enumerates the ~20 unrelated subdirs of every home.
       {
-        root: join(HOME, '.papercusp', 'su-codex-homes'),
+        root: papercuspPath('su-codex-homes'),
         dirDepth: 5,
         descend: (name, level) => (level === 2 ? name === 'sessions' : true),
       },
@@ -1521,7 +1522,7 @@ async function indexedClaudeOwner(sessionId: string): Promise<string | null> {
   let owner: string | null = null;
   try {
     const indexed = JSON.parse(await readFile(
-      join(HOME, '.papercusp', 'psu-session-owners', sessionId), 'utf8',
+      papercuspPath('psu-session-owners', sessionId), 'utf8',
     )) as { ownerId?: unknown };
     owner = typeof indexed.ownerId === 'string' && indexed.ownerId ? indexed.ownerId : null;
   } catch { /* older/untracked sessions have no birth index */ }

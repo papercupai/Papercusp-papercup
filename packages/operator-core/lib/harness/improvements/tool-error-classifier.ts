@@ -276,6 +276,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    errorCodes: ['admission_recovery_refused'],
+    why: 'coord:dispatch resumeAdmission deliberately refuses calls that lack the original authenticated recovery binding or fail current recovery gates; this is expected admission control, not a structural dispatch defect',
+  },
+  {
+    class: 'caller',
     messagePattern: PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN,
     why: 'dev:pg_query wraps a caller-authored SQL 42703 undefined-column refusal with knownColumns guidance; tools:invoke must not turn that target refusal into a structural wrapper bug',
   },
@@ -842,6 +847,8 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     'i',
   ).test(input.message);
   const nativeShellCleanupRefusal = isExpectedNativeShellCleanupRefusal(input);
+  const expectedAdmissionRecoveryRefusal = [input.errorCode, input.status]
+    .some((value) => value?.trim().toLowerCase() === 'admission_recovery_refused');
   // A 42703 response carrying dev:pg_query's knownColumns correction is the
   // expected refusal of caller-authored SQL with a nonexistent column. The
   // capture shorthand report may paraphrase the JSON envelope, and reporter
@@ -855,7 +862,8 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     !pgQueryUndefinedColumnCallerRefusal &&
     !structuredResultShapeCallerDiagnostic &&
     !processNamespacePermissionRefusal &&
-    !nativeShellCleanupRefusal;
+    !nativeShellCleanupRefusal &&
+    !expectedAdmissionRecoveryRefusal;
   const attested = structuredAttested || (legacyAttested && klass !== 'caller');
   const deferredWrapperUnavailable = [input.errorCode, input.status]
     .some((value) => [
@@ -882,7 +890,7 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     // that discovery report into a claimable server defect.
     direct: attested && !knownExternal && !deferredWrapperUnavailable &&
       !expectedSelfAwaitRefusal && !processNamespacePermissionRefusal &&
-      !nativeShellCleanupRefusal,
+      !nativeShellCleanupRefusal && !expectedAdmissionRecoveryRefusal,
     knownExternal,
   };
 }

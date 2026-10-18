@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * GAIA CLI (plan `benchmark-suite-gaia-2026-06-17`) — the operational entrypoint. Run with tsx:
  *
@@ -56,7 +57,7 @@ function log(...a: unknown[]): void {
   console.log(...a);
 }
 
-const DEFAULT_VENV_PYTHON = join(homedir(), '.papercusp', 'competitors', 'venv', 'bin', 'python');
+const DEFAULT_VENV_PYTHON = papercuspPath('competitors', 'venv', 'bin', 'python');
 
 /** True iff the validation corpus is already on disk. */
 function corpusPresent(): boolean {
@@ -65,7 +66,7 @@ function corpusPresent(): boolean {
 
 /** Run the gated download for a split with a resolved token. Returns true on success. */
 async function runDownload(token: string, split: 'validation' | 'test'): Promise<boolean> {
-  const destRoot = arg('--dest', join(homedir(), '.papercusp', 'bench-results', 'gaia')) as string;
+  const destRoot = arg('--dest', papercuspPath('bench-results', 'gaia')) as string;
   const pythonBin = arg('--python', DEFAULT_VENV_PYTHON) as string;
   const { cmd, args } = buildGaiaDownloadCommand({ pythonBin, destRoot, split });
   const { spawn } = await import('node:child_process');
@@ -77,7 +78,7 @@ async function runDownload(token: string, split: 'validation' | 'test'): Promise
 
 async function provision(): Promise<void> {
   const split = (arg('--split', 'validation') as 'validation' | 'test') ?? 'validation';
-  const destRoot = arg('--dest', join(homedir(), '.papercusp', 'bench-results', 'gaia')) as string;
+  const destRoot = arg('--dest', papercuspPath('bench-results', 'gaia')) as string;
   const pythonBin = arg('--python', DEFAULT_VENV_PYTHON) as string;
   const { cmd } = buildGaiaDownloadCommand({ pythonBin, destRoot, split });
   log('GAIA is a GATED dataset. Unblock with EITHER:');
@@ -111,7 +112,7 @@ async function ensureProvisioned(): Promise<boolean> {
 
 async function selfcheck(): Promise<void> {
   log('GAIA wiring self-check (no LLM calls)\n');
-  const scratch = join(homedir(), '.papercusp', 'bench-results', 'gaia', '_selfcheck');
+  const scratch = papercuspPath('bench-results', 'gaia', '_selfcheck');
   mkdirSync(scratch, { recursive: true });
   const tools = makeLiveGaiaToolset({ scratchDir: scratch });
 
@@ -161,7 +162,7 @@ async function runTasks(tasks: GaiaTask[], label: string): Promise<GaiaRunResult
   // starved behind the fleet's batch work.
   const priority = arg('--priority', 'interactive');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const dir = join(homedir(), '.papercusp', 'bench-results', 'gaia', 'runs', `${label}-${stamp}`);
+  const dir = papercuspPath('bench-results', 'gaia', 'runs', `${label}-${stamp}`);
   mkdirSync(dir, { recursive: true });
   const partialPath = join(dir, 'predictions.partial.jsonl');
 
@@ -258,7 +259,7 @@ async function hiveL3(): Promise<void> {
   const runAgent = (task: GaiaTask) => runHiveArm(task, { llm: planLlm, runSubAgent });
   const result = await runGaiaSuite(l3, { runAgent }, { concurrency: Number(arg('--concurrency', '2')) });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const dir = join(homedir(), '.papercusp', 'bench-results', 'gaia', 'runs', `hive-l3-${stamp}`);
+  const dir = papercuspPath('bench-results', 'gaia', 'runs', `hive-l3-${stamp}`);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'predictions.jsonl'), predictionsToJsonl(result.predictions));
   writeFileSync(join(dir, 'report.json'), JSON.stringify({ report: result.report, totals: result.totals }, null, 2));

@@ -24,8 +24,9 @@ import {
   isProvenanceOnlyReprojection,
   synchronizeAcceptanceBarRevision,
 } from './acceptance-bar-amendment';
-import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
+import { acceptanceBarBehaviorClass, buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { specClauseContentHash, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
+import { validExplicitExemption } from './agent-tools/plans/spec-quality';
 import { computeAcceptanceBarHash, computeAcceptanceBarSetHash, formatRubricRevisionSnapshot } from './rubrics';
 
 const RUBRIC = 'acceptance-subject-plan';
@@ -101,8 +102,11 @@ const criterionOf = (barKey: string): Criterion => {
 function storedClause(barKey: string, planItemId: string, overrides: {
   barHash?: string; rubricSlug?: string; storedSetHash?: string | null; storedRubricRevision?: number | null;
   behaviorClass?: SpecClauseWrite['behaviorClass']; mutationRequired?: boolean; requiredTestLayers?: string[];
+  lifecycleStatus?: 'active' | 'exempt'; exemption?: Record<string, unknown> | null;
 } = {}) {
   const criterion = criterionOf(barKey);
+  const lifecycleStatus = overrides.lifecycleStatus ?? 'active';
+  const exemption = overrides.exemption ?? null;
   const specId = `AUTO-BAR-${barKey}-${planItemId}`;
   const row = {
     spec_id: specId,
@@ -117,10 +121,10 @@ function storedClause(barKey: string, planItemId: string, overrides: {
     required_evidence: ['tree'],
     required_test_layers: overrides.requiredTestLayers ?? [],
     mutation_required: overrides.mutationRequired ?? false,
-    lifecycle_status: 'active' as const,
+    lifecycle_status: lifecycleStatus,
     supersedes_spec_id: null,
     supersedes_revision: null,
-    exemption: null,
+    exemption,
     acceptance_ref: `${RUBRIC}@3:${barKey}`,
     source_bar_set_hash: overrides.storedSetHash === undefined ? OLD_SET_HASH : overrides.storedSetHash,
     source_rubric_revision: overrides.storedRubricRevision === undefined ? 3 : overrides.storedRubricRevision,
@@ -129,7 +133,7 @@ function storedClause(barKey: string, planItemId: string, overrides: {
     planSlug: 'subject-plan', specId, expectedRevision: 4, planItemId,
     behavior: row.behavior, behaviorClass: row.behavior_class,
     requiredEvidence: row.required_evidence, requiredTestLayers: row.required_test_layers,
-    mutationRequired: row.mutation_required, lifecycleStatus: 'active', exemption: null, supersedes: null, falsifier: null,
+    mutationRequired: row.mutation_required, lifecycleStatus, exemption, supersedes: null, falsifier: null,
     acceptanceRef: row.acceptance_ref,
     sourceBar: {
       barKey, barHash: row.source_bar_hash, barSetHash: OLD_SET_HASH,
@@ -250,6 +254,55 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     expect(write).toMatchObject({ requiredTestLayers: expected, mutationRequired: false });
     expect(write?.behaviorClass).toBe(expected.length === 0 ? 'non-automated' : 'happy-path');
   });
+
+  // WI-6554700010017078: an exempt projection carries its lifecycle and exemption
+  // forward, but its 'non-automated' class was recomputed from the BAR's automated
+  // proof contract (a `unit` BAR -> happy-path). Spec quality accepts an exemption
+  // only on a non-automated clause, so the amendment silently invalidated it and
+  // plans:start refused (change-kind-declared-proof-2026-10-15 AUTO-BAR-R-2-P-005,
+  // revisions 3 and 5).
+  it.each([{ reworded: false }, { reworded: true }])(
+    'keeps an exempt projection non-automated so its carried exemption stays valid: %j', async ({ reworded }) => {
+      type Bar = Criterion & { model?: string; requiredTestLayers?: string[] };
+      const priorCriteria = (template.criteria as Bar[]).map((criterion) => {
+        if (criterion.barKey !== 'R-1') return criterion;
+        const automated = { ...criterion, requiredTestLayers: ['unit'] };
+        return { ...automated, barHash: computeAcceptanceBarHash(automated as never) };
+      });
+      const priorR1 = priorCriteria.find((criterion) => criterion.barKey === 'R-1')!;
+      const amendedCriteria = !reworded ? priorCriteria : priorCriteria.map((criterion) => {
+        if (criterion.barKey !== 'R-1') return criterion;
+        const next = { ...criterion, model: `${criterion.model ?? ''} (reworded)` };
+        return { ...next, barHash: computeAcceptanceBarHash(next as never) };
+      });
+      // Fixture sanity: the automated BAR alone would classify a re-projection as
+      // happy-path, which is exactly the class an exemption may not carry.
+      expect(acceptanceBarBehaviorClass(priorR1.evidencePlane!, ['unit'], undefined)).toBe('happy-path');
+      const exemption = {
+        justification: 'Proven by a sibling automated clause; this projection is a manual live re-run.',
+        provenance: 'subject-plan:activation-audit-1',
+      };
+      const row = storedClause('R-1', 'P-001', {
+        barHash: priorR1.barHash, requiredTestLayers: ['unit'], behaviorClass: 'non-automated',
+        lifecycleStatus: 'exempt', exemption,
+      });
+      const rows = [row, storedClause('R-2', 'P-002')];
+      const priorTemplate = { ...template, criteria: priorCriteria, barSetHash: computeAcceptanceBarSetHash(priorCriteria as never) };
+      const amendedTemplate = { ...template, criteria: amendedCriteria, barSetHash: computeAcceptanceBarSetHash(amendedCriteria as never) };
+      await synchronizeAcceptanceBarRevision(sqlStub(rows, rows, subjectPlan(), [
+        formatRubricRevisionSnapshot('', { ...priorTemplate, barSetHash: OLD_SET_HASH }, null, 3),
+      ]) as never, {
+        workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+        templateData: amendedTemplate, previousTemplateData: priorTemplate, actorId: 'amender',
+      });
+      const write = h.setSpecClause.mock.calls.find(([candidate]) => candidate.specId === row.spec_id)?.[0];
+      // A reworded BAR must re-project the clause; an unchanged one may keep the
+      // stored revision. Either way the EFFECTIVE clause is what spec quality reads.
+      if (reworded) expect(write).toBeDefined();
+      const effective = write ?? { lifecycleStatus: row.lifecycle_status, behaviorClass: row.behavior_class, exemption: row.exemption };
+      expect(effective).toMatchObject({ lifecycleStatus: 'exempt', behaviorClass: 'non-automated', exemption });
+      expect(validExplicitExemption(effective as never)).toBe(true);
+    });
 
   it.each([
     { behaviorClass: 'concurrency' as const },

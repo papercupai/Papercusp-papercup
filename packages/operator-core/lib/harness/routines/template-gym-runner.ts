@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Template gym for the official mobile template closure.
  *
@@ -435,7 +436,7 @@ export async function runGym(
     green: legs.length > 0 && legs.every((leg) => leg.ok),
   };
   try {
-    const recordDir = path.join(os.homedir(), '.papercusp', 'template-gym');
+    const recordDir = papercuspPath('template-gym');
     mkdirSync(recordDir, { recursive: true });
     writeFileSync(path.join(recordDir, 'last-run.json'), JSON.stringify(summary, null, 2));
     appendFileSync(

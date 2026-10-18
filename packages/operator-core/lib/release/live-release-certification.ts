@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Exact-SHA certification projected from the live-federation gate's durable
  * verdict bank.
@@ -94,7 +95,7 @@ const SHA_RE = /^[0-9a-f]{7,64}$/i;
 export function liveReleaseCertificationBankPath(): string {
   return (
     process.env[LIVE_RELEASE_CERTIFICATION_BANK_ENV]?.trim() ||
-    path.join(homedir(), '.papercusp', 'live-fed-gate', 'verdicts.jsonl')
+    papercuspPath('live-fed-gate', 'verdicts.jsonl')
   );
 }
 

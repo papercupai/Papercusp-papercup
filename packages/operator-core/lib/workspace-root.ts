@@ -10,7 +10,7 @@ import { join } from 'node:path';
  * during startup, so it must not pull in the database-backed operator graph.
  */
 export function resolveHostWorkspaceRoot(
-  env: Pick<NodeJS.ProcessEnv, 'PAPERCUSP_WORKSPACE_ROOT' | 'HOME'> = process.env,
+  env: Partial<Pick<NodeJS.ProcessEnv, 'PAPERCUSP_WORKSPACE_ROOT' | 'HOME'>> = process.env,
   fallbackHome = homedir(),
 ): string {
   const configured = env.PAPERCUSP_WORKSPACE_ROOT?.trim();
@@ -25,7 +25,7 @@ export function resolveHostWorkspaceRoot(
  * home, which keeps policy tests and isolated homes deterministic.
  */
 export function hostWorkspaceRootPattern(
-  env: Pick<NodeJS.ProcessEnv, 'PAPERCUSP_WORKSPACE_ROOT'> = process.env,
+  env: Partial<Pick<NodeJS.ProcessEnv, 'PAPERCUSP_WORKSPACE_ROOT'>> = process.env,
 ): string {
   const configured = env.PAPERCUSP_WORKSPACE_ROOT?.trim();
   return configured ? configured.replace(/\/+$/, '') || '/' : '~/papercupai-workspace';

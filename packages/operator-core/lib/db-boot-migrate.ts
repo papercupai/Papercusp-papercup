@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Boot-time migration apply for the NATIVE :5432 operator
  * (handoff-coordination-dx-followups-2026-06-04 §A1).
@@ -379,7 +380,7 @@ type MigrationCooldownState = Record<string, MigrationCooldownEntry>;
  *  for test isolation — mirrors the PAPERCUSP_PG_DATA_DIR override convention already
  *  used by @papercusp/embedded-postgres-server for the same reason. */
 export function resolveMigrationCooldownFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PAPERCUSP_MIGRATION_COOLDOWN_FILE || join(homedir(), '.papercusp', 'migration-failure-cooldown.json');
+  return env.PAPERCUSP_MIGRATION_COOLDOWN_FILE || papercuspPath('migration-failure-cooldown.json');
 }
 
 async function readMigrationCooldownState(path: string): Promise<MigrationCooldownState> {

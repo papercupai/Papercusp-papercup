@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * native-bg-task-ledger — read the launch ledger written by the PreToolUse bash
  * gate and answer ONE question: does this session have native background Bash
@@ -37,7 +38,7 @@ import { join } from 'node:path';
 
 /** Matches the gate's `_BG_TRACK_FILE`. Both sides resolve `~` for the same user. */
 export function defaultLedgerPath(): string {
-  return join(homedir(), '.papercusp', 'tracking', 'bg-output-tracking.json');
+  return papercuspPath('tracking', 'bg-output-tracking.json');
 }
 
 /** The gate prunes at 2h regardless of liveness; mirror it so the two agree. */

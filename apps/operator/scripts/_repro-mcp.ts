@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * P5 diagnostic — does omp connect the `agentmcp` HTTP MCP server when
  * spawned exactly the way operator:converse spawns it?
@@ -9,7 +10,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentChat } from '../../../libs/papercusp-shared/src/agent/chat-stream';
 
-const token = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
+const token = readFileSync(papercuspPath('superuser-token'), 'utf8').trim();
 const mcpUrl = 'http://127.0.0.1:3070/api/mcp?superuser=1&workspace=default';
 
 const mcpConfig = {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import type { FlagAttestation } from '@papercusp/flags/server';
-import { assessDreamActionDecisions, assessDreamAdmission, assessGymAdmissionDecisions, assessDreamControlObservationCurrentness, readDreamControlObservations, type ControlObservationScope } from './dream-control-observations';
+import { assessDreamActionDecisions, assessDreamAdmission, assessGymAdmissionDecisions, assessDreamControlObservationCurrentness, assessDreamR2ClauseAssertions, readDreamControlObservations, type ControlObservationScope } from './dream-control-observations';
 import { DREAM_ACTION_DECISION_PREFIX, DREAM_ADMISSION_GATES } from './dream-config';
 import { GYM_ADMISSION_DECISION_PREFIX, GYM_ADMISSION_GATES } from '../gym/autoloop-tick';
 import type { JournalReadResult } from '../journal-read';
@@ -46,6 +46,102 @@ function fixture(change: Record<string, readonly Row[]> = {}) {
 
 afterEach(() => vi.unstubAllEnvs());
 describe('mutation-free Dream/Gym/Scout control observations', () => {
+  async function clauseFixture(fault = '') {
+    const scoped = { ...scope, actionJournalUnit: 'bg.service', expectedActionRuntime: runtime,
+      gymJournalUnit: 'bg.service', expectedGymRuntime: runtime };
+    const tick = (id: string, lens: string): Row => ({ id, workspace_id: 'ws', pot_slug: 'pot', install_slug: 'pot',
+      origin: 'scout', tick_at: new Date(now - 2000).toISOString(), status: 'ran', ideas_routed: 0, budget_used_usd: 0.12,
+      detail: { ideators: [{ lens, ok: true, raw: 0, produced: 0 }], budgetProvenance: { schemaVersion: 1,
+        supplied: { maxIdeators: 1, maxCostUsd: 0.2 }, resolved: { maxIdeators: 1, maxCostUsd: 0.2, maxCriticsPerIdea: 2 } } } });
+    let ticks = [tick('t1', 'analogical'), tick('t2', fault === 'unchanged-lens' ? 'analogical' : 'counterfactual')];
+    if (fault === 'missing-cap') delete (ticks[0].detail as Row).budgetProvenance;
+    if (fault === 'over-cap') ticks[0].budget_used_usd = 0.3;
+    if (fault === 'ideator-excess') (ticks[0].detail as Row).ideators = [
+      { lens: 'analogical', ok: true, raw: 0, produced: 0 }, { lens: 'counterfactual', ok: true, raw: 0, produced: 0 },
+    ];
+    if (fault === 'early-skip-no-slots' || fault === 'early-skip-empty-slots') for (const row of ticks) {
+      row.status = 'gated'; row.gate = 'generation-preflight'; row.budget_used_usd = null;
+      if (fault === 'early-skip-no-slots') delete (row.detail as Row).ideators;
+      else (row.detail as Row).ideators = [];
+    }
+    if (fault === 'foreign-origin') ticks[0].origin = 'su-ideate';
+    if (fault === 'truncated-scout') ticks = Array.from({ length: 21 }, (_, i) => tick(String(i), i % 2 ? 'analogical' : 'counterfactual'));
+    const attempt = fault === 'usage-null' || fault === 'measured-attempt';
+    const action = { schemaVersion: 1, actionId: 'a', workspaceId: 'ws', potSlug: 'pot', capturedAt: scope.since,
+      runtime, source: 'dream/dream-cycle-action:makeDreamCycleAction', mode: 'auto',
+      reason: attempt ? 'completed' : 'owner-idle-disabled', disposition: attempt ? 'cycle-result' : 'pre-attempt-policy-skip',
+      paidCalls: attempt ? 1 : 0, model: null, usage: null, costUsd: attempt ? 0.12 : 0,
+      ...(attempt ? { attempts: 1, runRefs: ['run-1'] } : {}),
+      admission: DREAM_ADMISSION_GATES.map((gate, i) => ({ gate,
+        status: attempt || i === 0 ? 'passed' : i === 1 ? 'refused' : 'not-reached', inputs: {} })) };
+    const gym = ['owner-idle', ...GYM_ADMISSION_GATES].map(gate => ({ schemaVersion: 1, actionId: 'g',
+      workspaceId: 'ws', potSlug: gate === 'owner-idle' ? null : 'pot', capturedAt: scope.since, runtime,
+      source: 'harness/routines/gym-actions:runGymCycleInline', gate, status: 'passed', inputs: {} }));
+    const journal = (rows: Row[], prefix: string): JournalReadResult => ({ journalAvailable: true, journalError: null,
+      backend: 'systemd', matched: rows.length, collapsed: 0, truncated: false,
+      window: { since: scope.since, until: scope.until, resolved: null }, units: ['bg.service'], unitsUnknown: [],
+      windowOutsideJournal: null, command: 'fixture:captured-journal',
+      entries: rows.map(row => ({ ts: scope.since, unit: 'bg.service',
+        level: 'info', repeat: 1, message: prefix + JSON.stringify(row) })) });
+    const { sql } = fixture({ 'FROM harness_shared.scout_ticks': ticks, 'FROM harness_shared.dream_runs': attempt ? [{
+      id: 'run-1', workspace_id: 'ws', pot_slug: 'pot', started_at: new Date(now - 1000).toISOString(),
+      dreamer_model: 'fixture-model', dream_usage: fault === 'usage-null' ? null : { inputTokens: 2, outputTokens: 1 }, cost_usd: 0.12,
+    }] : [] });
+    return readDreamControlObservations(sql, scoped, { ...deps,
+      runtime: () => fault === 'wrong-runtime' ? { ...runtime, buildSha: 'other' } : runtime,
+      journal: async request => request.grep === DREAM_ACTION_DECISION_PREFIX
+        ? journal(fault === 'dispatch-only' ? [] : [action], DREAM_ACTION_DECISION_PREFIX)
+        : journal(fault === 'absent-gym' ? [] : gym, GYM_ADMISSION_DECISION_PREFIX),
+    });
+  }
+
+  it.each(['policy-skip', 'measured-attempt'])(
+    'emits maintained typed clauses with authoritative scope, refs and timestamps for %s', async kind => {
+      const value = await clauseFixture(kind);
+      expect(value.r2Assertions.healthy).toBe(true);
+      expect(value.r2Assertions.clauses.map(row => row.id)).toEqual([
+        'r2:dream-action-decisions', 'r2:gym-admission-decisions', 'r2:full-admission-and-spend',
+        'r2:scout-zero-route-lens-cap-provenance', 'r2:actual-attempts-or-explicit-policy-skips',
+      ]);
+      for (const row of value.r2Assertions.clauses) {
+        expect(row).toMatchObject({ status: 'pass', healthy: true, scope: value.scope,
+          source: { path: 'packages/operator-core/lib/dream/dream-control-observations.ts', runtime },
+          capturedAt: value.capturedAt, expiresAt: value.expiresAt });
+        expect(row.reason.length).toBeGreaterThan(0);
+        expect(row.rawRefs.length).toBeGreaterThan(0);
+        expect(row.sourceRefs.length).toBeGreaterThan(0);
+      }
+    },
+  );
+  it.each(['absent-gym', 'dispatch-only', 'missing-cap', 'over-cap', 'unchanged-lens', 'foreign-origin',
+    'truncated-scout', 'wrong-runtime', 'stale', 'usage-null', 'early-skip-no-slots', 'early-skip-empty-slots', 'ideator-excess'])(
+    'keeps %s unhealthy without treating missing evidence as successful execution', async fault => {
+      const value = await clauseFixture(fault);
+      const result = assessDreamR2ClauseAssertions(value, fault === 'stale' ? now + 60_000 : now);
+      expect(result.healthy).toBe(false);
+      expect(result.clauses.some(row => row.status !== 'pass')).toBe(true);
+      expect(result.clauses.filter(row => row.status === 'unknown').every(row => !row.healthy)).toBe(true);
+      for (const row of result.clauses) for (const ref of row.rawRefs) {
+        const retained = ref.slice(1).split('/').reduce<unknown>((cursor, key) =>
+          cursor && typeof cursor === 'object' ? (cursor as Row)[key] : undefined, value);
+        expect(retained, ref).not.toBeUndefined();
+      }
+      if (fault === 'over-cap' || fault === 'ideator-excess') expect(result.clauses.find(row => row.id === 'r2:scout-zero-route-lens-cap-provenance'))
+        .toMatchObject({ status: 'fail', healthy: false, reason: 'supplied-scout-cap-violated' });
+      if (fault === 'early-skip-no-slots' || fault === 'early-skip-empty-slots') {
+        expect(result.clauses.find(row => row.id === 'r2:scout-zero-route-lens-cap-provenance'))
+          .toMatchObject({ status: 'unknown', healthy: false });
+        if (value.observations?.activity.status === 'observed') expect(
+          value.observations.activity.value.scout.observations.every(row => row.suppliedOneIdeatorCapRespected === null),
+        ).toBe(true);
+      }
+      if (fault === 'absent-gym') expect(result.clauses.find(row => row.id === 'r2:gym-admission-decisions'))
+        .toMatchObject({ status: 'unknown', healthy: false, reason: 'no-actual-gym-admission-records' });
+      if (fault === 'usage-null') expect(result.clauses.find(row => row.id === 'r2:actual-attempts-or-explicit-policy-skips'))
+        .toMatchObject({ status: 'unknown', healthy: false });
+    },
+  );
+
   it.each(['valid', 'missing-gates', 'unknown', 'wrong-prefix', 'dispatch-only'])(
     'requires an actual complete Dream refusal chain: %s', fault => {
       const gates = DREAM_ADMISSION_GATES.map((gate, i) => ({ gate,
@@ -135,7 +231,7 @@ describe('mutation-free Dream/Gym/Scout control observations', () => {
       expect(activity?.status).toBe('observed');
       if (activity?.status !== 'observed') throw new Error('missing activity');
       expect(activity.value.scout.observations[0].suppliedOneIdeatorCapRespected).toBe(
-        fault === 'valid' ? true : ['overspend', 'missing-cost'].includes(fault) ? false : null);
+        fault === 'valid' ? true : fault === 'overspend' ? false : null);
       expect(activity.value.scout.rows[0]).toEqual(tick);
     });
   it('reads actual persisted per-mode limits, loaded floor and NULL budgets without setup or paid dispatch', async () => {

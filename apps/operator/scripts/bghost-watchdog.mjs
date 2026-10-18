@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * bg-host (DBOS routines / git-sync / substrate) ticker watchdog — 2026-06-20; freeze-signal rewritten
  * 2026-06-22 (EI-2421/EI-2434).
@@ -314,7 +315,7 @@ const HEARTBEAT_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HEARTBEAT_MS) 
 const HOT_PATH_ACTIVATION_CHECK_MS =
   Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HOT_PATH_ACTIVATION_CHECK_MS) || 5 * 60_000;
 /** Durable, journald-INDEPENDENT decision log (EI-2434: journald can't be trusted to capture stdout). */
-const LOG_FILE = process.env.PAPERCUSP_BGHOST_WATCHDOG_LOG || join(homedir(), '.papercusp', 'bghost-watchdog.log');
+const LOG_FILE = process.env.PAPERCUSP_BGHOST_WATCHDOG_LOG || papercuspPath('bghost-watchdog.log');
 /** deploys:vintage self-report sink (fleet-reliability-verification-2026-07-10 P-008) — see the
  *  matching constant in inference-gateway/watchdog.mjs for the rationale (this watchdog is itself
  *  a tracked runtime). Default target :3070 (always-up release operator, two-port model). */

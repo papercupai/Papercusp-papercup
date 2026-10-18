@@ -707,6 +707,7 @@ async function defaultReadWindows(m: DegradationMechanism, windowMs: number, now
   const options = {
     now,
     workspaceId: resolveObservationWorkspaceId(m),
+    ...(m.scopeIsSessionOwner ? { sessionOwnerScope: true } : {}),
     ...(m.observationProcessTag ? { processTag: m.observationProcessTag } : {}),
   };
   if (m.scopeKeyed) return fo.readFallbackWindowsByScope(m.mechanism, windowMs, options);
@@ -723,6 +724,7 @@ async function defaultReadPreviousWindows(
   const options = {
     now: previousEnd,
     workspaceId: resolveObservationWorkspaceId(m),
+    ...(m.scopeIsSessionOwner ? { sessionOwnerScope: true } : {}),
     ...(m.observationProcessTag ? { processTag: m.observationProcessTag } : {}),
   };
   if (m.scopeKeyed) return fo.readFallbackWindowsByScope(m.mechanism, windowMs, options);

@@ -239,8 +239,7 @@ bundle_host_spawner() { # <repo root> <out dir> [esbuild boundary args...]
     rm -f "$tmp" "$meta" "$stamp"
     return 1
   fi
-  bundle_host_run_step spawner-ascii "${run_node[@]}" "$repo_root/apps/operator/bin/ascii-escape-bundle.mjs" "$tmp" || return 1
-  if ! bundle_host_run_step spawner-syntax node --input-type=module --check < "$tmp"; then
+  if ! bundle_host_run_step spawner-ascii-and-syntax "${run_node[@]}" "$repo_root/apps/operator/bin/ascii-escape-bundle.mjs" "$tmp" --check; then
     rm -f "$tmp" "$meta" "$stamp"
     return 1
   fi

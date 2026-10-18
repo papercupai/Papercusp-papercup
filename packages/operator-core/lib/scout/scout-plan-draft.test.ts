@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildScoutPlanTemplate, ensureDatedSlug, createScoutPlanDraft, type ScoutPlanDraftDeps } from './scout-plan-draft';
 import { specTriadGate } from '../agent-tools/plans/spec-triad-policy';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 describe('ensureDatedSlug', () => {
   it('appends today when no date suffix', () => {
@@ -52,12 +53,13 @@ describe('buildScoutPlanTemplate', () => {
 describe('createScoutPlanDraft', () => {
   function fakeLock(over: { current?: string | null; busy?: boolean; stampThrows?: boolean } = {}): {
     deps: ScoutPlanDraftDeps;
-    captured: { body: string | null; revisionCalls: unknown[]; stampCalls: unknown[] };
+    captured: { body: string | null; revisionCalls: unknown[]; stampCalls: unknown[]; lockScopes: unknown[] };
   } {
     const captured = {
       body: null as string | null,
       revisionCalls: [] as unknown[],
       stampCalls: [] as unknown[],
+      lockScopes: [] as unknown[],
     };
     const deps: ScoutPlanDraftDeps = {
       // Always injected, so no test can reach the real helper (which opens the org PG).
@@ -67,6 +69,7 @@ describe('createScoutPlanDraft', () => {
         return 'goal-from-owner-context';
       }) as NonNullable<ScoutPlanDraftDeps['stampPlanGoalProvenance']>,
       withPlanLock: (async (_ctx, opts, mutator) => {
+        captured.lockScopes.push({ harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId });
         if (over.busy) return { kind: 'busy', busy: [] };
         const { newBody, value } = await mutator(over.current ?? null, null, { workspaceId: 'ws-test', harnessSlug: 'papercup' });
         captured.body = newBody;
@@ -82,6 +85,18 @@ describe('createScoutPlanDraft', () => {
     };
     return { deps, captured };
   }
+
+  it('homes a workspace-singleton draft to the platform Hive while retaining its workspace', async () => {
+    const { deps, captured } = fakeLock();
+    await createScoutPlanDraft({ slug: 'singleton', title: 'T', harnessSlug: 'ws-scout', workspaceId: 'ws-scout' }, deps);
+    expect(captured.lockScopes).toEqual([{ harnessSlug: operatorHomeHarnessSlug(), workspaceId: 'ws-scout' }]);
+  });
+
+  it('preserves an explicit member Hive scope for the canonical plan writer to resolve', async () => {
+    const { deps, captured } = fakeLock();
+    await createScoutPlanDraft({ slug: 'member', title: 'T', harnessSlug: 'team-member', workspaceId: 'ws-team' }, deps);
+    expect(captured.lockScopes).toEqual([{ harnessSlug: 'team-member', workspaceId: 'ws-team' }]);
+  });
 
   it('creates a new draft (created:true) and writes the templated body', async () => {
     const { deps, captured } = fakeLock({ current: null });

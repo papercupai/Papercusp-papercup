@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * FrontierSWE corpus ingest (plan benchmark-coverage-frontierswe-v2-2026-10-10 P-002; D-002).
  *
@@ -457,5 +458,5 @@ export function nodeIngestFs(): FrontierSweIngestFs {
 }
 
 export function defaultFrontierSweCorpusDir(): string {
-  return join(homedir(), '.papercusp', 'bench-results', 'frontier-swe-v2');
+  return papercuspPath('bench-results', 'frontier-swe-v2');
 }

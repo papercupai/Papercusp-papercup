@@ -55,6 +55,7 @@
  * does not, after every retry — run `npm run install:safe -- install --legacy-peer-deps`.
  */
 import { spawnSync } from "node:child_process";
+import { createRequire } from 'node:module';
 import { existsSync as fsExistsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, matchesGlob, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,6 +63,7 @@ import { satisfies, UnsupportedRange } from './check-peer-dep-conflicts.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(import.meta.url);
 
 /**
  * Runtime entrypoints whose real import graph is load-bearing for ptool and the
@@ -89,9 +91,20 @@ export const RUNTIME_CONTENT_PROBES = Object.freeze([
   'react-icons/ai',
   // operator-vite's typecheck depends on Lucide's published declaration bundle.
   'lucide-react',
+  // Browser SDKs need declaration verification without executing browser code
+  // inside the Node installer. Keep the existing lock-selected probe registry.
+  { specifier: 'posthog-js', declarationsOnly: true },
+  { specifier: '@assistant-ui/react', declarationsOnly: true },
+  // React's public declarations re-export this locked transitive package. Its
+  // manifest can survive while missing declarations make those exports `any`.
+  { specifier: '@assistant-ui/core', declarationsOnly: true },
+  { specifier: '@azure/identity', declarationsOnly: true },
+  // Production CSS imports can retain their entry file while losing fonts.
+  { specifier: '@blocknote/core/fonts/inter.css', css: true },
 ]);
 
 export function packageNameFromSpecifier(specifier) {
+  if (typeof specifier === 'object') specifier = specifier.specifier;
   const parts = String(specifier).split('/');
   return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
 }
@@ -474,6 +487,7 @@ const RUNTIME_IMPORT_CHILD = `
 import { fileURLToPath } from 'node:url';
 try {
   await import(process.argv[1]);
+  console.log('PAPERCUSP_RUNTIME_ENTRY=' + JSON.stringify({ path: fileURLToPath(import.meta.resolve(process.argv[1])) }));
 } catch (error) {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'IMPORT_FAILED';
   const message = error instanceof Error ? error.message : String(error);
@@ -497,7 +511,13 @@ function defaultRuntimeImportProbe({ repoRoot, specifier }) {
       timeout: 15_000,
     },
   );
-  if (result.status === 0) return { ok: true };
+  if (result.status === 0) {
+    const line = String(result.stdout ?? '').split('\n').findLast(line => line.startsWith('PAPERCUSP_RUNTIME_ENTRY='));
+    try {
+      const { path } = JSON.parse(line.slice('PAPERCUSP_RUNTIME_ENTRY='.length));
+      return { ok: true, resolvedPath: path };
+    } catch { return { ok: true }; }
+  }
   const detail =
     result.error?.message ??
     String(result.stderr ?? "")
@@ -512,10 +532,66 @@ function defaultRuntimeImportProbe({ repoRoot, specifier }) {
   return { ok: false, detail };
 }
 
+/** Let the maintained CSS bundler resolve local URLs; do not execute browser code. */
+function defaultCssContentProbe({ repoRoot, specifier }) {
+  try {
+    const entry = createRequire(join(repoRoot, 'package.json')).resolve(specifier);
+    require('esbuild').buildSync({
+      absWorkingDir: repoRoot, entryPoints: [entry], bundle: true, write: false,
+      outdir: join(repoRoot, '.papercusp-css-content-probe'), logLevel: 'silent',
+      loader: Object.fromEntries(['.woff', '.woff2', '.ttf', '.otf', '.eot',
+        '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif'].map(ext => [ext, 'file'])),
+    });
+    return { ok: true, resolvedPath: entry };
+  } catch (error) {
+    for (const failure of error.errors ?? []) {
+      if (!failure.location || !failure.text.startsWith('Could not resolve ')) continue;
+      let reference;
+      try { reference = JSON.parse(failure.text.slice('Could not resolve '.length)); } catch { continue; }
+      if (typeof reference !== 'string' || !reference.startsWith('.')) continue;
+      const missingPath = resolve(repoRoot, dirname(failure.location.file), reference.split(/[?#]/)[0]);
+      if (fsExistsSync(missingPath)) continue;
+      return { ok: false, code: 'ERR_MODULE_NOT_FOUND', missingPath,
+        detail: `CSS asset is missing: ${missingPath}` };
+    }
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Match type declarations to the entrypoint Node actually imported. Inspecting
+// every export would reject unused, unpublished SDK root entries. Prefer an
+// exact runtime target over a wildcard alias of the same file (SDK 1.29).
+function runtimeExportTypes(exports, packageDir, runtimePath) {
+  if (typeof runtimePath !== 'string') return [];
+  const runtime = `./${relative(packageDir, runtimePath).split(sep).join('/')}`;
+  const matches = [];
+  const visit = (value, inheritedTypes) => {
+    if (!value || typeof value !== 'object') return;
+    const types = typeof value.types === 'string' ? value.types : inheritedTypes;
+    for (const [condition, target] of Object.entries(value)) {
+      if (condition === 'types' || condition === 'require') continue;
+      if (typeof target !== 'string') { visit(target, types); continue; }
+      if (typeof types !== 'string' || !target.startsWith('./')) continue;
+      const star = target.indexOf('*');
+      if (star === -1) {
+        if (target === runtime && !types.includes('*')) matches.push({ score: Infinity, types });
+      } else if (target.lastIndexOf('*') === star) {
+        const prefix = target.slice(0, star), suffix = target.slice(star + 1);
+        if (runtime.startsWith(prefix) && runtime.endsWith(suffix) && runtime.length >= prefix.length + suffix.length) {
+          const captured = runtime.slice(prefix.length, runtime.length - suffix.length);
+          matches.push({ score: target.length, types: types.replaceAll('*', captured) });
+        }
+      }
+    }
+  };
+  visit(exports);
+  const score = Math.max(...matches.map(match => match.score));
+  return [...new Set(matches.filter(match => match.score === score).map(match => match.types))];
+}
+
 /**
- * Import critical runtime entrypoints in isolated child processes. Directory
- * existence alone cannot detect a package whose manifest survived but dist/native
- * contents were only partly extracted; a real import also walks transitive imports.
+ * Import critical runtime entrypoints, then verify advertised declaration content.
+ * Declaration-only probes need no import to check browser packages' types.
  */
 export function findUnusableRuntimeDeps({
   repoRoot = REPO_ROOT,
@@ -529,8 +605,30 @@ export function findUnusableRuntimeDeps({
   const exists = deps.existsSync ?? fsExistsSync;
   const readJson = deps.readJson ?? ((path) => JSON.parse(readFileSync(path, 'utf8')));
   const failures = [];
-  for (const specifier of specifiers) {
-    const result = probe({ repoRoot, specifier });
+  const checkTypes = (specifier, packageDir, entries) => {
+    for (const entry of new Set(entries)) {
+      const typePath = resolve(packageDir, entry);
+      const rel = relative(packageDir, typePath);
+      if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || exists(typePath)) continue;
+      // `types: "lib/main"` is valid (elkjs): let TypeScript resolve the
+      // extension/index rules instead of treating a healthy package as damaged.
+      const ts = require('typescript');
+      const resolved = ts.resolveModuleName(`./${rel.split(sep).join('/')}`, join(packageDir, 'package.json'), {
+        module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      }, { ...ts.sys, fileExists: exists }).resolvedModule;
+      if (resolved && [ts.Extension.Ts, ts.Extension.Tsx, ts.Extension.Dts,
+        ts.Extension.Mts, ts.Extension.Dmts, ts.Extension.Cts, ts.Extension.Dcts].includes(resolved.extension)) continue;
+      if (failures.some(failure => failure.missingPath === typePath)) continue;
+      failures.push({ specifier, detail: `declared type entrypoint is missing: ${typePath}`,
+        code: 'ERR_MODULE_NOT_FOUND', missingPath: typePath });
+    }
+  };
+  const topLevelTypes = manifest => typeof manifest?.types === 'string' ? [manifest.types]
+    : typeof manifest?.typings === 'string' ? [manifest.typings] : [];
+  for (const entry of specifiers) {
+    const specifier = typeof entry === 'string' ? entry : entry.specifier;
+    const result = entry?.css === true ? defaultCssContentProbe({ repoRoot, specifier })
+      : entry?.declarationsOnly === true ? { ok: true } : probe({ repoRoot, specifier });
     if (result !== true && result?.ok !== true) {
       failures.push({
         specifier,
@@ -545,10 +643,7 @@ export function findUnusableRuntimeDeps({
       continue;
     }
 
-    // A runtime import can succeed while TypeScript still fails if npm kept the
-    // manifest and JS entrypoint but omitted the package's declared declaration
-    // file. Check the advertised top-level `types`/`typings` file for the same
-    // critical packages whose import graph is already verified.
+    // Imports alone do not prove that the package's declaration files survived.
     const packageDir = resolvedDepDir(
       repoRoot,
       repoRoot,
@@ -562,26 +657,12 @@ export function findUnusableRuntimeDeps({
     } catch {
       continue;
     }
-    const typeEntry =
-      typeof manifest?.types === 'string'
-        ? manifest.types
-        : typeof manifest?.typings === 'string'
-          ? manifest.typings
-          : null;
-    if (typeEntry === null) continue;
-    const typePath = resolve(packageDir, typeEntry);
-    if (!exists(typePath)) {
-      failures.push({
-        specifier,
-        detail: `declared type entrypoint is missing: ${typePath}`,
-        // Reuse install:safe's existing exact-file repair path. It validates
-        // that this absolute missing path belongs to the locked package before
-        // removing and re-extracting that package.
-        code: 'ERR_MODULE_NOT_FOUND',
-        missingPath: typePath,
-      });
-    }
+    checkTypes(specifier, packageDir, [
+      ...topLevelTypes(manifest),
+      ...runtimeExportTypes(manifest.exports, packageDir, result?.resolvedPath),
+    ]);
   }
+
   return failures;
 }
 

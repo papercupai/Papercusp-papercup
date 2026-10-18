@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import * as coldEnvironment from '../../storage/cold-tier-evidence';
+import * as verificationHarness from '@papercusp/verification-harness';
 
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
@@ -428,6 +429,47 @@ describe('completed isolated runtime certification', () => {
     expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
   });
+  it.each(['native', 'integration'] as const)(
+    'reads original retained %s proof after the default evidence root moves', async kind => {
+      if (kind === 'native') await setup(); else await setupIntegration();
+      const legacyHome = await mkdtemp(join(tmpdir(), 'completed-runtime-legacy-home-'));
+      const canonical = await mkdtemp(join(tmpdir(), 'completed-runtime-new-default-'));
+      const legacy = join(legacyHome, '.local/state/verification-harness');
+      const roots = kind === 'native' ? ['verify-tauri-headless', 'native-journey'] : ['isolated-integration'];
+      const relocated = vi.spyOn(verificationHarness, 'defaultEvidenceRoot')
+        .mockImplementation(harness => join(canonical, harness));
+      try {
+        for (const harness of roots) {
+          const runId = harness === 'verify-tauri-headless' ? verifierRunId
+            : harness === 'native-journey' ? journeyRunId : '20261008T000021Z-201';
+          await cp(join(artifacts, harness, runId), join(legacy, harness, 'retained', runId), { recursive: true });
+        }
+        vi.stubEnv('VH_EVIDENCE_ROOT_BASE', '');
+        vi.stubEnv('XDG_STATE_HOME', '');
+        vi.stubEnv('HOME', legacyHome);
+        expect((await read()).currentness.dimensions.environment).toBe('current');
+
+        // A real artifact at the current root remains authoritative: invalid
+        // custody there must not be hidden by a valid historical copy.
+        const harness = roots[0];
+        const runId = kind === 'native' ? verifierRunId : '20261008T000021Z-201';
+        const current = join(canonical, harness, runId);
+        await mkdir(current, { recursive: true });
+        await writeFile(join(current, 'result.json'), '{}');
+        expect((await read()).currentness.dimensions.environment).not.toBe('current');
+        await rm(join(canonical, harness), { recursive: true, force: true });
+
+        // An explicit evidence location is a boundary, not a request to search
+        // the caller's historical home directory.
+        vi.stubEnv('VH_EVIDENCE_ROOT_BASE', canonical);
+        expect((await read()).currentness.dimensions.environment).not.toBe('current');
+      } finally {
+        relocated.mockRestore();
+        await rm(legacyHome, { recursive: true, force: true });
+        await rm(canonical, { recursive: true, force: true });
+      }
+    },
+  );
   it.each([['independent-verification', 'current'], ['manual', 'unknown']] as const)(
     'certifies a completed harness run on a %s row only for test or independent-verification (EI-25847620673275477)',
     async (kind, expected) => {

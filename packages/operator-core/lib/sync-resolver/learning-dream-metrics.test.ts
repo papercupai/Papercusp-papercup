@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRegistryEntryV2, resolveNamedQueryV2 } from './index';
 import { queryNamesForTriggerEvent } from './table-to-query-names';
+import { DREAM_ACTION_DECISION_PREFIX } from '../dream/dream-config';
+import { GYM_ADMISSION_DECISION_PREFIX } from '../gym/autoloop-tick';
 
 const mocks = vi.hoisted(() => ({
   metrics: vi.fn(), controls: vi.fn(), history: vi.fn(), detail: vi.fn(), observations: vi.fn(), journal: vi.fn(), tx: {},
@@ -14,6 +16,7 @@ vi.mock('../dream/dream-control-observations', () => ({ readDreamControlObservat
 vi.mock('../journal-read', () => ({ readJournal: mocks.journal }));
 
 describe('learning.dream metrics use the existing scoped sync path', () => {
+  afterEach(() => vi.useRealTimers());
   beforeEach(() => {
     mocks.metrics.mockReset().mockResolvedValue({ schemaVersion: 'dream-metrics-v1', population: { attempts: 501 } });
     mocks.controls.mockReset().mockResolvedValue({ potSlug: 'pot', manual: { active: false } });
@@ -101,5 +104,31 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     const supplied = mocks.observations.mock.calls.at(-1)!;
     expect(supplied[1]).toMatchObject({ gymJournalUnit: 'gym.service', expectedGymRuntime: { processId: 'gym-1' } });
     expect(await supplied[2].journal({ grep: 'GYM_ADMISSION_DECISION ' })).toMatchObject({ units: ['gym.service'] });
+  });
+
+  it.each(['pending', 'rejected'] as const)('preserves an unavailable %s journal without losing the other source or timing out the query', async failure => {
+    vi.useFakeTimers();
+    const began = Date.now();
+    const runtime = { host: 'read', processId: 'p', buildSha: 'current' };
+    const args = { potSlug: 'pot', view: 'observations', since: '2026-10-16T12:00:00Z', until: '2026-10-17T12:00:00Z',
+      expectedRuntime: runtime, actionJournalUnit: 'bg.service', expectedActionRuntime: runtime,
+      gymJournalUnit: 'bg.service', expectedGymRuntime: runtime };
+    const retained = { journalAvailable: true, entries: [{ message: 'retained-actual-dream-record' }] };
+    mocks.journal.mockReset().mockImplementation(({ grep }) => grep === DREAM_ACTION_DECISION_PREFIX
+      ? Promise.resolve(retained)
+      : failure === 'pending' ? new Promise(() => {}) : Promise.reject(new Error('gym journal unavailable')));
+    const pending = resolveNamedQueryV2('learning.dream', args);
+    await vi.waitFor(() => expect(mocks.journal).toHaveBeenCalledTimes(2));
+    if (failure === 'pending') {
+      expect(mocks.observations).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(6_000);
+    }
+    await pending;
+    expect(Date.now() - began).toBeLessThan(10_000);
+    expect(mocks.observations).toHaveBeenCalledTimes(1);
+    const supplied = mocks.observations.mock.calls[0][2];
+    await expect(supplied.journal({ grep: DREAM_ACTION_DECISION_PREFIX })).resolves.toBe(retained);
+    await expect(supplied.journal({ grep: GYM_ADMISSION_DECISION_PREFIX })).rejects.toThrow(
+      failure === 'pending' ? 'gym-admission-journal exceeded the read budget' : 'gym journal unavailable');
   });
 });

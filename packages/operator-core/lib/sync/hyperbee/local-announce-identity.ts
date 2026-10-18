@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * local-announce-identity — resolve THIS peer's identity for the Model B
  * signed announce (Stage 4b).
@@ -182,7 +183,7 @@ const FRESH_IDENTITY_CACHE_TTL_MS = 60_000;
 
 function defaultCachePath(): string {
   return process.env.PAPERCUSP_ANNOUNCE_IDENTITY_CACHE ||
-    join(homedir(), '.papercusp', 'local-announce-identity.json');
+    papercuspPath('local-announce-identity.json');
 }
 
 function cachePathFor(opts: ResolveLocalAnnounceIdentityOpts): string | false {

@@ -48,6 +48,7 @@ import {
   type SymbolSite,
   toOneIndexed,
 } from './contracts';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** The read-only operations this facade exposes. */
 export type GitnexusFacadeOp =
@@ -742,7 +743,7 @@ export async function gitnexusFacade(
   counters.dispatched += 1;
   counters.byOp[op] = (counters.byOp[op] ?? 0) + 1;
 
-  const repo = args.repo ?? 'papercusp';
+  const repo = args.repo?.trim() || operatorHomeHarnessSlug();
 
   try {
     // Freshness is a property of the index, not of whether this particular

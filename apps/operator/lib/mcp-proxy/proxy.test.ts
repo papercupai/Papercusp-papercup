@@ -5357,6 +5357,41 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         ),
       ),
     ).toBe(false);
+    expect(
+      isReservedControlPlaneCall(
+        targetedCall("work_items:list", {
+          harness: "papercusp",
+          assignee: "self",
+          state: "open",
+          limit: 10,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        targetedCall("work_items:list", {
+          harness: "papercusp",
+          state: "open",
+          limit: 10,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__work_items_list",
+                args: { mine: true, notTerminal: true, limit: 10 },
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
     expect(isReservedControlPlaneCall(Buffer.from("{bad json"))).toBe(false);
   });
 
@@ -5364,6 +5399,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ["events:status", { event: "unit:liveness" }],
     ["facts:list", { scope: "workspace" }],
     ["loop:status", {}],
+    ["work_items:list", { mine: true, notTerminal: true, limit: 10 }],
     // Recording a typed external blocker parks the claim and frees a scheduler slot.
     ["work_items:set_blocker", { id: "WI-1", kind: "event", ref: "event:unit" }],
   ])(

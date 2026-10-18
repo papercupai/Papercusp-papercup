@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Release-gating shared config — plan release-gate-ready-branch-2026-06-04.
  *
@@ -369,7 +370,7 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
     checkpointLogDir:
       overrides.checkpointLogDir ??
       process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ??
-      path.join(homedir(), '.papercusp', 'checkpoint-logs'),
+      papercuspPath('checkpoint-logs'),
     memoryCanaryPolicy:
       overrides.memoryCanaryPolicy ??
       (process.env.PAPERCUSP_MEMORY_CANARY_POLICY as 'off' | 'report' | 'block' | undefined) ??

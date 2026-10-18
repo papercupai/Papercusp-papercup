@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * createPotHarness — provision a new local pot's home harness
  * (hive-tool-namespace-2026-06-08 P-004, D-005).
@@ -217,7 +218,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
     };
   }
 
-  const parentDir = opts.parentDir ?? join(homedir(), '.papercusp', 'hives');
+  const parentDir = opts.parentDir ?? papercuspPath('hives');
   // Fresh-install fix (shared-pot-member-content-federation D-035): on a brand-new
   // machine the DEFAULT pot-home parent (~/.papercusp/hives) does not exist yet, and
   // initLocalHarnessDir hard-fails ('parent_missing') rather than creating it — so the

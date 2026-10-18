@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
-import { withWorkspace } from '@papercusp/db-org';
 import { lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { markAdvSessionEnded } from '../adv-sessions';
@@ -113,7 +112,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function resultData(result: unknown): Record<string, unknown> | null {
   const root = asRecord(result);
   const structured = asRecord(root?.structuredContent);
-  return asRecord(structured?.data) ?? asRecord(root?.data) ?? structured ?? root;
+  const direct = asRecord(structured?.data) ?? asRecord(root?.data) ?? structured;
+  if (direct) return direct;
+  // `dispatchProjectedToolToMcp` intentionally omits structuredContent unless
+  // the caller negotiated it. The launch tool still returns its lossless `data`
+  // in the text body, so the watchdog must accept that canonical MCP shape too.
+  const text = resultText(result);
+  if (text) {
+    try {
+      const parsed = JSON.parse(text);
+      return asRecord(parsed);
+    } catch {
+      /* keep the unstructured result below */
+    }
+  }
+  return root;
 }
 
 function resultText(result: unknown): string | null {
@@ -171,37 +184,37 @@ export async function dispatchCompactionForceSuccessor(
     idempotencyKey: forceSuccessorIdempotencyKey(target),
   };
 
-  const result = await withWorkspace(target.workspaceId, async (tx) => {
-    const source = await reconcileHostlessSource(target);
-    if (!source.ok) return { isError: true, content: [{ type: 'text', text: source.detail }] };
-    const ctx = {
+  const source = await reconcileHostlessSource(target);
+  if (!source.ok) return { verified: false, detail: source.detail };
+  // capability:launch-agent waits for spawn and positive first-turn evidence.
+  // Keep that non-DB work outside a workspace transaction: PostgreSQL's
+  // idle_in_transaction_session_timeout otherwise closes the backend at 60s.
+  const ctx = {
+    workspaceId: target.workspaceId,
+    harnessSlug: target.harnessSlug,
+    role: 'operator',
+    featureId: null,
+    chunkId: null,
+    runId: `compaction-force-successor-${target.advSessionId}`,
+    spawnId: 'compaction-compliance-watchdog',
+    parentSpawnId: null,
+    uiClientId: actor,
+    isSuperuser: false,
+    gateBypass: { capability: true, quota: true },
+    profile: 'engineer',
+    transport: 'in_process',
+    log: () => {},
+    progress: () => {},
+    emit: () => {},
+    signal: new AbortController().signal,
+    principal: {
+      slug: actor,
       workspaceId: target.workspaceId,
-      harnessSlug: target.harnessSlug,
-      role: 'operator',
-      featureId: null,
-      chunkId: null,
-      runId: `compaction-force-successor-${target.advSessionId}`,
-      spawnId: 'compaction-compliance-watchdog',
-      parentSpawnId: null,
-      uiClientId: actor,
-      isSuperuser: false,
-      gateBypass: { capability: true, quota: true },
-      profile: 'engineer',
-      transport: 'in_process',
-      log: () => {},
-      progress: () => {},
-      emit: () => {},
-      signal: new AbortController().signal,
-      tx,
-      principal: {
-        slug: actor,
-        workspaceId: target.workspaceId,
-        capabilities: new Set(['*']),
-      },
-    } as UnifiedToolContext & { [INTERNAL_EXPECTED_SUCCESSOR_BINDING]?: InternalExpectedSuccessorBinding };
-    ctx[INTERNAL_EXPECTED_SUCCESSOR_BINDING] = expected;
-    return dispatchProjectedToolToMcp(tool, toolName, args, ctx, PROJECTED_DEPS);
-  });
+      capabilities: new Set(['*']),
+    },
+  } as UnifiedToolContext & { [INTERNAL_EXPECTED_SUCCESSOR_BINDING]?: InternalExpectedSuccessorBinding };
+  ctx[INTERNAL_EXPECTED_SUCCESSOR_BINDING] = expected;
+  const result = await dispatchProjectedToolToMcp(tool, toolName, args, ctx, PROJECTED_DEPS);
 
   if (verifiedSuccessorResult(result, target.ownerId)) {
     return { verified: true, detail: 'The successor launch and first turn were positively verified.' };

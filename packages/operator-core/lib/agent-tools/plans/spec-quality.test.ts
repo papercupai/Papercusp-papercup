@@ -208,6 +208,109 @@ describe('evaluatePlanSpecQuality', () => {
       expect(result.ratings['item-contract-coverage'].evidence).toContain('AUTO-BAR-R-1-P-001 on P-001 -> P-002');
     });
 
+    it.each(['active', 'accepted'] as const)(
+      'blocks runtime BARs on a manual %s prerequisite when a dependent implementation owns the same BAR',
+      (lifecycleStatus) => {
+        const manualInventoryContract = clause({
+          specId: 'INVENTORY-P-001',
+          sourceValId: null,
+          planItemId: 'P-001',
+          behaviorClass: 'non-automated',
+          requiredTestLayers: [],
+          requiredEvidence: ['manual'],
+          mutationRequired: false,
+          lifecycleStatus,
+          exemption: null,
+        });
+        const inventoryProjection = clause({
+          specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, planItemId: 'P-001', sourceBar: { ...sourceBar },
+        });
+        const implementationProjection = clause({
+          specId: 'AUTO-BAR-R-1-P-002', sourceValId: null, planItemId: 'P-002', sourceBar: { ...sourceBar },
+        });
+        const implementationContract = clause({
+          specId: 'CONTRACT-P-002',
+          sourceValId: null,
+          planItemId: 'P-002',
+          behavior: 'A valid event request returns 202.',
+        });
+        const result = evaluatePlanSpecQuality({
+          planSlug: 'quality-plan',
+          harnessSlug: 'papercusp',
+          planItemIds: ['P-001', 'P-002'],
+          planItems: [
+            { id: 'P-001', blockedBy: [] },
+            { id: 'P-002', blockedBy: ['P-001'] },
+          ],
+          clauses: [manualInventoryContract, inventoryProjection, implementationProjection, implementationContract],
+          classRef: 'plan-class-feature-ship',
+        });
+
+        expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+        expect(result.wouldBlock).toContain('item-contract-coverage');
+        expect(result.details.prerequisiteRuntimeBarMismatches).toEqual([{
+          prerequisiteItemId: 'P-001',
+          barKey: 'R-1',
+          projectionSpecId: 'AUTO-BAR-R-1-P-001',
+          dependentImplementationItemIds: ['P-002'],
+        }]);
+        expect(result.ratings['item-contract-coverage'].evidence).toContain('AUTO-BAR-R-1-P-001 on P-001 -> P-002');
+      },
+    );
+
+    it('keeps a prerequisite with its own executable implementation out of the manual-only classification', () => {
+      const manualInventoryContract = clause({
+        specId: 'INVENTORY-P-001',
+        sourceValId: null,
+        planItemId: 'P-001',
+        behaviorClass: 'non-automated',
+        requiredTestLayers: [],
+        requiredEvidence: ['manual'],
+        mutationRequired: false,
+        lifecycleStatus: 'active',
+        exemption: null,
+      });
+      const independentImplementationContract = clause({
+        specId: 'IMPLEMENT-P-001',
+        sourceValId: null,
+        planItemId: 'P-001',
+        behaviorClass: 'happy-path',
+        requiredTestLayers: ['integration'],
+        requiredEvidence: ['tree'],
+      });
+      const inventoryProjection = clause({
+        specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, planItemId: 'P-001', sourceBar: { ...sourceBar },
+      });
+      const implementationProjection = clause({
+        specId: 'AUTO-BAR-R-1-P-002', sourceValId: null, planItemId: 'P-002', sourceBar: { ...sourceBar },
+      });
+      const dependentImplementationContract = clause({
+        specId: 'CONTRACT-P-002',
+        sourceValId: null,
+        planItemId: 'P-002',
+        behavior: 'A valid event request returns 202.',
+      });
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan',
+        harnessSlug: 'papercusp',
+        planItemIds: ['P-001', 'P-002'],
+        planItems: [
+          { id: 'P-001', blockedBy: [] },
+          { id: 'P-002', blockedBy: ['P-001'] },
+        ],
+        clauses: [
+          manualInventoryContract,
+          independentImplementationContract,
+          inventoryProjection,
+          implementationProjection,
+          dependentImplementationContract,
+        ],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.details.prerequisiteRuntimeBarMismatches).toEqual([]);
+    });
+
     it('blocks an active BAR projection on a later exempt verification item', () => {
       const verificationExemption = clause({
         specId: 'VERIFY-P-002',

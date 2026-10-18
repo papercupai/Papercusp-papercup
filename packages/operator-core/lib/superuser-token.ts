@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Superuser-mode bearer token validation.
  *
@@ -25,7 +26,7 @@ import { currentLoopbackPeerIsForeign } from './auth/loopback-peer-trust';
 import { externalIngressReason, forwardedRequestVerdict } from './auth/forwarded-request-trust';
 
 function tokenPath(): string {
-  return join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token');
+  return papercuspPath('superuser-token');
 }
 
 function loadToken(): string | null {

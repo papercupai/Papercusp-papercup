@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * GET  /api/flags/testing-features  - returns { testingFeatures, source }
  * POST /api/flags/testing-features  - { enabled } persists to ~/.papercusp/posthog.json
@@ -17,7 +18,7 @@ import {
 import { clearAllFlagOverrides } from '@papercusp/flags/server';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const CONFIG_PATH = path.join(os.homedir(), '.papercusp', 'posthog.json');
+const CONFIG_PATH = papercuspPath('posthog.json');
 const Body = z.object({ enabled: z.boolean() });
 
 const get = defineTool({

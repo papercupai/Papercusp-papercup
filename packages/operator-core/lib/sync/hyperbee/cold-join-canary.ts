@@ -23,6 +23,7 @@
  */
 
 import { recordFire, recentWatchdogFires } from '../../pot/watchdog';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Interval between forced cold joins. `<= 0` DISABLES the canary (the default —
@@ -90,7 +91,7 @@ export async function runColdJoinCanarySweep(opts: ColdJoinCanarySweepOpts = {})
   if (intervalSec <= 0) return { outcome: 'skipped', reason: 'disabled (interval <= 0)' };
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const windowHours = coldJoinCanaryWindowHours(intervalSec);
   const recentFires = opts.recentFires ?? ((ws, slug, h) => recentWatchdogFires(ws, slug, h, SOURCE));
   const record =

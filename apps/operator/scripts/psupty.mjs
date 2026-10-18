@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * psupty — SPIKE / PROTOTYPE (not a finalized tool).
  *
@@ -48,7 +49,7 @@ import {
 import net from 'node:net';
 
 const require = createRequire(import.meta.url);
-const SOCK_DIR = join(homedir(), '.papercusp', 'psupty');
+const SOCK_DIR = papercuspPath('psupty');
 
 const HELP = `psupty — SPIKE: run a command through a managed PTY (wake-inject demo)
 

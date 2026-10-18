@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * cold-boot-drill-live — P-020's opt-in chaos actuator + mechanical grader.
  *
@@ -53,7 +54,7 @@ export const DEFAULT_COLD_BOOT_DRILL_INTERVAL_MS = 30 * 60_000;
 export const DEFAULT_COLD_BOOT_DRILL_WINDOW_TOKENS = 200_000;
 const DRILL_LEDGER_MAX_BYTES = 1024 * 1024;
 const DRILL_LEDGER_FILE = 'carry-drills.events.jsonl';
-const CARRY_ROOT = join(homedir(), '.papercusp', 'launch-context');
+const CARRY_ROOT = papercuspPath('launch-context');
 
 /**
  * EI-18133456688790756 (P-021 class-name mismatch): `startColdBootDrill` now

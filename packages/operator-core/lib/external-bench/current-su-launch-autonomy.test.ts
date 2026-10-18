@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { applyScopedNativeGateway, effectiveAutoMode, parseArgs, prepareCodexGatewayLaunch,
+import { applyScopedNativeGateway, effectiveAutoMode, mintCarryRespawnArgs, parseArgs, prepareCodexGatewayLaunch,
   sanitizeInheritedEnv } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 import { resolveBackendLaunch } from '../backend-bin-resolve.mjs';
 import { SCOPED_INFERENCE_GATEWAY_ENV } from '@papercusp/orchestrator/codex-gateway-config';
@@ -38,6 +38,17 @@ describe('current-su native assignment launch authority', () => {
       const config = readFileSync(join(home, 'config.toml'), 'utf8');
       expect(config).toContain(gateway.baseURL + '/v1');
       expect(config).toContain(gateway.token);
+      writeFileSync(join(home, 'AGENTS.md'), 'Frozen benchmark assignment instructions.\n');
+      const carry = mintCarryRespawnArgs(args, { agent: 'codex', ownerId: 'su-private-benchmark',
+        codexHome: home, home, systemPromptAddendum: 'Continue the same isolated benchmark assignment.' });
+      expect(carry.nativeId).toBeNull();
+      expect(carry.args).not.toContain('resume');
+      expect(carry.args).not.toContain('fork');
+      expect(resolveBackendLaunch('codex', { env })).toMatchObject({ bin: backend, override: true });
+      expect(JSON.parse(env[SCOPED_INFERENCE_GATEWAY_ENV])).toEqual(gateway);
+      expect(prepareCodexGatewayLaunch(env, carry.args)).toContain('model_provider="papercusp-codex-gateway"');
+      expect(readFileSync(join(home, 'config.toml'), 'utf8')).toContain(gateway.baseURL + '/v1');
+      expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain('Frozen benchmark assignment instructions.');
       expect(resolveBackendLaunch('codex', { env: { ...env, PAPERCUSP_BACKEND_BIN_CODEX: join(home, 'missing') } })).toBeNull();
       expect(() => applyScopedNativeGateway({ ...env, [SCOPED_INFERENCE_GATEWAY_ENV]: '{}' }))
         .toThrow(/Invalid scoped inference gateway/);

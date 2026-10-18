@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * fetch-weather — local weather for the operator dashboard
  * (platform-ops-batch-2026-07-09 P-003).
@@ -36,7 +37,7 @@ export interface FetchWeatherOptions {
 export class WeatherConfigError extends Error {}
 export class WeatherFetchError extends Error {}
 
-const DEFAULT_WEATHER_API_KEY_FILE = join(homedir(), '.papercusp', 'local-secrets', 'weatherapi-key');
+const DEFAULT_WEATHER_API_KEY_FILE = papercuspPath('local-secrets', 'weatherapi-key');
 
 function readWeatherApiKey(opts: FetchWeatherOptions): string | undefined {
   // An explicit option, including an empty string, is authoritative. Tests use

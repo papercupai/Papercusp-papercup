@@ -99,6 +99,7 @@ import {
   mainBehindRecoverySummary,
   computeMainBehindStaging,
   checkMainBehindStaging,
+  runInstallScopedWatchdogs,
   evaluateReleaseTriggerFreeze,
   checkReleaseTriggerFreeze,
   lastReleaseTriggerPauseOwner,
@@ -127,6 +128,41 @@ import { RECORDED_INCONCLUSIVE_STATUSES, classifyGateAbort } from './gate-abort-
 
 const H = 60 * 60 * 1000;
 const NOW = 1_750_000_000_000; // fixed epoch ms
+
+describe('install-scoped watchdog dispatch', () => {
+  it('runs each sibling check for every matching install, including non-home hives', async () => {
+    const rows = [
+      { install_slug: 'papercusp', name: 'green-checkpoint', target_role: 'system:green-checkpoint' },
+      { install_slug: 'oddsmith', name: 'green-checkpoint', target_role: 'system:green-checkpoint' },
+      { install_slug: 'sidestage', name: 'release-trigger', target_role: null },
+      { install_slug: 'papercusp', name: 'release-trigger', target_role: null },
+      { install_slug: '', name: 'release-trigger', target_role: null },
+    ];
+    const sql = (async () => rows) as unknown as Sql;
+    const checks = {
+      releaseTriggerFreeze: vi.fn(async () => undefined),
+      releaseTriggerFireStale: vi.fn(async () => undefined),
+      strandedRepairQueue: vi.fn(async () => undefined),
+      idleRepairQueue: vi.fn(async () => undefined),
+      gateLiveInvariants: vi.fn(async () => undefined),
+      greenMainSlo: vi.fn(async () => undefined),
+    };
+
+    const result = await runInstallScopedWatchdogs(sql, checks);
+
+    expect(result.targets).toEqual({
+      greenCheckpoint: ['oddsmith', 'papercusp'],
+      releaseTrigger: ['papercusp', 'sidestage'],
+    });
+    expect(result.failures).toEqual([]);
+    for (const check of [checks.strandedRepairQueue, checks.idleRepairQueue, checks.gateLiveInvariants, checks.greenMainSlo]) {
+      expect((check.mock.calls as Array<[string]>).map(([slug]) => slug)).toEqual(['oddsmith', 'papercusp']);
+    }
+    for (const check of [checks.releaseTriggerFreeze, checks.releaseTriggerFireStale]) {
+      expect((check.mock.calls as Array<[string]>).map(([slug]) => slug)).toEqual(['papercusp', 'sidestage']);
+    }
+  });
+});
 
 function mockGitStdout(...outputs: string[]): void {
   childProcessMocks.execFile.mockImplementation(
@@ -2213,6 +2249,37 @@ describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () =
     );
   });
 
+  it('uses the configured release and integration refs by default', async () => {
+    const oldReleaseRef = process.env.PAPERCUSP_RELEASE_REF;
+    const oldIntegrationBranch = process.env.PAPERCUSP_INTEGRATION_BRANCH;
+    process.env.PAPERCUSP_RELEASE_REF = 'release-candidate';
+    process.env.PAPERCUSP_INTEGRATION_BRANCH = 'workstream';
+    childProcessMocks.execFile.mockClear();
+    mockGitStdout('2\n', '1792280000\n');
+    try {
+      await computeMainBehindStaging('/fake/repo');
+      expect(execFile).toHaveBeenNthCalledWith(
+        1,
+        'git',
+        ['-C', '/fake/repo', 'rev-list', '--count', 'release-candidate..workstream'],
+        { encoding: 'utf8' },
+        expect.any(Function),
+      );
+      expect(execFile).toHaveBeenNthCalledWith(
+        2,
+        'git',
+        ['-C', '/fake/repo', 'log', 'release-candidate..workstream', '--format=%ct', '--reverse'],
+        { encoding: 'utf8' },
+        expect.any(Function),
+      );
+    } finally {
+      if (oldReleaseRef === undefined) delete process.env.PAPERCUSP_RELEASE_REF;
+      else process.env.PAPERCUSP_RELEASE_REF = oldReleaseRef;
+      if (oldIntegrationBranch === undefined) delete process.env.PAPERCUSP_INTEGRATION_BRANCH;
+      else process.env.PAPERCUSP_INTEGRATION_BRANCH = oldIntegrationBranch;
+    }
+  });
+
   it('EI-9922: fails open (all-null) without throwing when async git rejects (non-repo)', async () => {
     childProcessMocks.execFile.mockImplementationOnce(
       (_command: string, _args: string[], _options: object, callback: (error: Error) => void) => {
@@ -3591,7 +3658,9 @@ describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
     const src = readFileSync(subject, 'utf8');
     const starter = src.slice(src.indexOf('export function startGreenStallWatchdog('));
     expect(starter.length).toBeGreaterThan(0);
-    expect(starter).toMatch(/\n\s*void checkStrandedRepairQueue\(sql\);/);
+    expect(starter).toMatch(/\n\s*void runInstallScopedWatchdogs\(sql,/);
+    expect(starter).toMatch(/checkStrandedRepairQueue\(sql,\s*\{\s*installSlug\s*\}\)/);
+    expect(starter).not.toMatch(/checkStrandedRepairQueue\(sql\)/);
   });
 });
 

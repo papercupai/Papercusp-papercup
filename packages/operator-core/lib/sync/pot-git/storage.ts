@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * pot-git/storage.ts — the per-hive bare-repo store with per-device ref
  * namespaces (cross-machine-coord-parity-and-trust-2026-07-01 Phase 7 G-1,
@@ -416,7 +417,7 @@ export function potGitRoot(): string {
   return (
     process.env.PAPERCUSP_POT_GIT_ROOT ||
     process.env.PAPERCUSP_HIVE_GIT_ROOT || // legacy env name — dual-accept until callers migrate
-    join(homedir(), '.papercusp', 'pot-git')
+    papercuspPath('pot-git')
   );
 }
 

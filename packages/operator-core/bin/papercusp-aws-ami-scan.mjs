@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * papercusp-aws-ami-scan — real SBOM + vulnerability + secret scan of an AWS workspace-host
  * candidate AMI, emitting evidence bound to the exact release identity (WI-10005587).
@@ -58,7 +59,7 @@ const TOOL_ENV = {
 };
 const WORK_ROOT = process.env.PAPERCUSP_AWS_AMI_SCAN_WORKDIR?.trim() || tmpdir();
 const EVIDENCE_ROOT =
-  process.env.PAPERCUSP_AWS_AMI_SCAN_EVIDENCE_DIR?.trim() || join(homedir(), '.papercusp', 'evidence', 'aws-ami-scan');
+  process.env.PAPERCUSP_AWS_AMI_SCAN_EVIDENCE_DIR?.trim() || papercuspPath('evidence', 'aws-ami-scan');
 const DOWNLOAD_TIMEOUT_MS = AWS_AMI_SCAN_BUDGETS.downloadMs;
 const SCAN_TIMEOUT_MS = AWS_AMI_SCAN_BUDGETS.scanMs;
 const GIB = 1024 ** 3;

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /** Host independent, task-managed runner for the frozen repair admission pre-check. */
 import { dirname, join } from 'node:path';
 import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
@@ -76,7 +77,7 @@ export async function startAdmissionPrecheckWorker(
     ...plan.env,
     [ADMISSION_PRECHECK_WORKER_INPUT_ENV]: JSON.stringify(input),
   };
-  const logDir = options.logDir ?? join(homedir(), '.papercusp', 'checkpoint-logs');
+  const logDir = options.logDir ?? papercuspPath('checkpoint-logs');
   mkdirSync(logDir, { recursive: true, mode: 0o700 });
   const logPath = join(logDir, `admission-precheck-worker-${input.taskId}.log`);
   const logFd = openSync(logPath, 'a', 0o600);

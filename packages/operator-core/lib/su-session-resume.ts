@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /** Restore PUI's structured engines through the existing SU configuration and
  * keyed resume lease. No new session, credential store or launch registry. */
 import { existsSync } from 'node:fs';
@@ -221,7 +222,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
       throw new Error('The saved full SU instruction artifact is unavailable');
     }
     stage?.('resume-prepared');
-    const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
+    const coordExt = papercuspPath('papercusp-coord.ts');
     const boot: BootstrapSuResult = { status: 'ok', sessionId: row.id, nativeSessionId: nativeId,
       agent: record.backend, workspaceId: record.workspaceId, harnessSlug: record.harnessSlug,
       planSlug: spec.planSlug, cwd: row.cwd, promptFile, envelopeEnv: env,

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * env-operator-launcher — install-time provisioning of the local env operators
  * (dogfood-silent-canonical-hive-join P-017, owner directives D-006/D-007/D-009).
@@ -759,7 +760,7 @@ export function openEnvOperatorLog(id: string): {
   fd: number | null;
 } {
   try {
-    const dir = join(homedir(), '.papercusp', 'logs');
+    const dir = papercuspPath('logs');
     mkdirSync(dir, { recursive: true });
     const logPath = join(dir, `env-operator-${id}.log`);
     const fd = openSync(logPath, 'a');

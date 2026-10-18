@@ -30,6 +30,7 @@ import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { HostedTenantContextRunner } from '../auth/hosted/service-adapters';
 import type { SyncEvent } from '../sync-sse';
+import { readWorkspaceHostControl } from '../workspace-host/observability-store';
 import type {
   HostedDelegationOrganization,
   HostedProviderDelegationAdapter,
@@ -345,6 +346,25 @@ afterAll(async () => {
 });
 
 describe.sequential('assembled hosted two-tenant acceptance', () => {
+  it('keeps tenant reads usable when the optional connector ledger is outside the tenant role', async () => {
+    await runTenant(tenantContext(sessionA), async tx => {
+      const [{ allowed }] = await tx<{ allowed: boolean }[]>`SELECT has_table_privilege(
+        current_user, 'papercusp_auth.hosted_workspace_connectors', 'SELECT') AS allowed`;
+      expect(allowed).toBe(false);
+      const rows = await readWorkspaceHostControl(CONTROL, tx) as Array<{
+        kind: string; id: string; hostedConnector?: unknown;
+      }>;
+      expect(rows.find(row => row.kind === 'workspace' && row.id === HOST_A)).toMatchObject({
+        id: HOST_A, hostedConnector: undefined,
+      });
+      expect(rows.some(row => row.id === HOST_B)).toBe(false);
+      // This real query fails with 25P02 if a caught optional SELECT poisoned
+      // the transaction. The role and its original RLS scope must also survive.
+      expect(await tx`SELECT current_user AS role, current_setting('app.organization_id') AS organization_id`)
+        .toEqual([{ role: 'hosted_app', organization_id: ORG_A }]);
+    });
+  });
+
   it('exports customer data over private HTTP using persisted cookies and server-derived tenant and user scope', async () => {
     // A role-only fixture must fail the same SQL guard that caused the HTTP
     // exporter to return 503. Keep that guard intact while using the full

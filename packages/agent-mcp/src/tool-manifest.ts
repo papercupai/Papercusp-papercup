@@ -35,7 +35,7 @@ let cache: Manifest | null | undefined;
 function manifestPath(): string {
   return (
     process.env.AGENT_MCP_TOOL_MANIFEST ||
-    path.join(getHostPlatform().homedir(), '.papercusp', 'tool-manifest.json')
+    path.join(getHostPlatform().papercuspHome(), 'tool-manifest.json')
   );
 }
 

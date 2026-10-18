@@ -12,6 +12,7 @@
  */
 
 import type { Sql } from 'postgres';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { diagnoseGoalOwnerReportEnvelope } from '../goal-owner-report';
 import type {
   EscrowGateReading,
@@ -210,7 +211,7 @@ export async function readGoalEscrowSnapshot(args: ReadGoalEscrowSnapshotArgs): 
       FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId}
        AND name = 'green-checkpoint'
-       AND install_slug = ${args.gateInstallSlug ?? 'papercusp'}
+       AND install_slug = ${args.gateInstallSlug?.trim() || operatorHomeHarnessSlug()}
      LIMIT 1
   `) as unknown as Row[];
   const { gate, noGoReason } = mapGateReading(gateRows[0]?.gate_health);

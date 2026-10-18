@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * hive-release-env — resolve a hive's effective staging→main release gate and the env
  * overlay the green-checkpoint / deploy SUBPROCESS runs under.
@@ -263,7 +264,7 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     // papercusp/apps/<slug>) must not get these trees derived inside that enclosing tree.
     PAPERCUSP_RELEASE_ROOT: releaseRoot,
     PAPERCUSP_CHECKPOINT_ROOT: checkpointRoot,
-    PAPERCUSP_CHECKPOINT_LOG_DIR: join(homedir(), '.papercusp', 'checkpoint-logs', slug),
+    PAPERCUSP_CHECKPOINT_LOG_DIR: papercuspPath('checkpoint-logs', slug),
   };
   // WI-2828: ALWAYS thread the resolved value (now always a string — resolveHiveReleaseGate
   // defaults it to '' rather than null) so a subject hive can never fall through to

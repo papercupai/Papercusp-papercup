@@ -218,7 +218,7 @@ function graderReadingInstructions(
   return (
     `Because your session may be in a different hive, keep the plan harness explicit: read the plan ` +
     `(${planRead}) + the acceptance rubric '${rubricId}' + the completion evidence, then emit ONE complete ` +
-    `scorecard: scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, ratings:{ <every criterion key> } } ` +
+    `scorecard: scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, subject:{ kind:"plan", ref:${JSON.stringify(planSlug)} }, ratings:{ <every criterion key> } } ` +
     `with concrete evidence per rating. ${ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE} ${ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE} The targetHive makes ` +
     `deterministic checks run against the subject ` +
     `tree rather than the grader's checkout. ${ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE} ` +

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Per-conversation claude-code brain session registry (WI-5071).
  *
@@ -40,7 +41,7 @@ const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 /** Re-key after this many turns — bounds claude-side context growth. */
 const MAX_SESSION_TURNS = 40;
 
-const ROOT = () => join(homedir(), '.papercusp', 'chat-brains');
+const ROOT = () => papercuspPath('chat-brains');
 
 export interface ChatBrainSession {
   /** The claude `--session-id` uuid (create-or-resume). */

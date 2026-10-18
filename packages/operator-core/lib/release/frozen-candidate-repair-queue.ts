@@ -26,6 +26,7 @@ import {
   type RepairManifestSummary,
 } from './repair-manifest';
 import { createHash } from 'node:crypto';
+import { casesForFile, newRepairSignatureKeys } from './case-level-signature';
 import type { AdmissionRadius, FixPrecheckVerdict } from './admission-fix-precheck';
 import { roundMeasurementFromKinds, type FrozenRepairRoundMeasurement } from './round-one-measurement';
 
@@ -98,6 +99,14 @@ export interface RepairSignatureEntry {
   admittedRound: number;
   /** The head this entry was most recently measured red at. */
   measuredHead: string;
+  /**
+   * P-017 (green-main-ratchet-convergence-2026-10-17, D-005): a `test-file` entry's failed case
+   * names at `measuredHead`, so the signature keys on file + case (`./case-level-signature`).
+   * Absent = the run named no case (a collection crash): the entry then covers every case.
+   */
+  cases?: string[];
+  /** P-017 (D-007): a `lint-leg` entry's per-error keys, `<file>|<TS code or lint rule>`. */
+  errors?: string[];
 }
 
 /** The judge-supplied half of an entry: everything but the round/head bookkeeping the
@@ -222,13 +231,29 @@ export interface RepairSignatureRedInput {
   signatureContext?: RepairSignatureContext;
   /** WI-10007489: the radius this run actually EXECUTED, recorded on the round it produces. */
   executed?: FrozenRepairRoundExecution;
+  /** P-017: failed case names per failing test file, from the judging run's own output.
+   *  ABSENT = this round did not measure cases (entries keep their last measured cases);
+   *  PRESENT (even empty) = measured, and a file it does not name has no case detail. */
+  casesByFile?: Readonly<Record<string, readonly string[]>> | ReadonlyMap<string, readonly string[]>;
+  /** P-017: per-error keys per red lint leg id, from `parseLegErrorKeys` over its output.
+   *  Same absent-vs-present contract as `casesByFile`. */
+  legErrors?: Readonly<Record<string, readonly string[]>>;
+  /** P-008 (#D-015): failing entries the judging gate removed from its count; recorded on the
+   *  round this red produces (see `FrozenRepairConvergenceRound.excludedFromCount`). */
+  excludedFromCount?: readonly string[];
 }
 
 function boundedSignature(entries: readonly RepairSignatureEntry[]): RepairSignatureEntry[] {
+  // P-017 / D-005: case names and error keys are NOT count-capped (a failing set is recorded
+  // whole); each string is length-bounded like the id it belongs to.
+  const boundStrings = (values: readonly string[] | undefined) =>
+    values?.map((value) => value.slice(0, MAX_PERSISTED_FAILURE_CHARS));
   return entries.slice(0, MAX_PERSISTED_FAILURES).map((entry) => ({
     ...entry,
     id: entry.id.slice(0, MAX_PERSISTED_FAILURE_CHARS),
     recipe: entry.recipe.slice(0, MAX_PERSISTED_FAILURE_CHARS),
+    ...(entry.cases ? { cases: boundStrings(entry.cases) } : {}),
+    ...(entry.errors ? { errors: boundStrings(entry.errors) } : {}),
   }));
 }
 
@@ -257,10 +282,28 @@ export function nextRepairSignature(
   const next: RepairSignatureEntry[] = [];
   for (const entry of fresh.values()) {
     const before = priorById.get(entry.id);
+    // P-017: an ABSENT `casesByFile` / `legErrors` means this round did not measure that detail
+    // (a targeted repair-head re-run reports pass/fail only), so the entry keeps its last
+    // measured detail. Dropping it would read as "now red on its id alone" — a crash — and
+    // attribute a new failure that was never observed. A PRESENT map is a measurement: a file
+    // it does not name has no case detail this round.
+    const sameKind = before?.kind === entry.kind ? before : undefined;
+    const cases = entry.kind !== 'test-file'
+      ? undefined
+      : input.casesByFile
+        ? casesForFile(input.casesByFile, entry.id)
+        : sameKind?.cases;
+    const errors = entry.kind !== 'lint-leg'
+      ? undefined
+      : input.legErrors
+        ? input.legErrors[entry.id]?.filter(nonBlank)
+        : sameKind?.errors;
     next.push({
       ...entry,
       admittedRound: before?.admittedRound ?? input.round,
       measuredHead: input.head,
+      ...(cases ? { cases } : {}),
+      ...(errors && errors.length > 0 ? { errors: [...errors] } : {}),
     });
   }
   for (const entry of prior ?? []) {
@@ -270,6 +313,13 @@ export function nextRepairSignature(
   }
   const signature = boundedSignature(next);
   return { signature, failingTests: signature.map((entry) => entry.id) };
+}
+
+/** A persisted P-017 detail list: a non-empty array of non-blank strings, else nothing. */
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const list = value.filter(nonBlank).map((v) => (v as string).trim());
+  return list.length > 0 ? list : undefined;
 }
 
 /** PURE: interpret a persisted `signature` array against the row's flat list. Malformed
@@ -298,6 +348,8 @@ function parseRepairSignature(
             ? (row.admittedRound as number)
             : fallback.round,
         measuredHead: nonBlank(row.measuredHead) ? (row.measuredHead as string) : fallback.head,
+        ...(stringList(row.cases) ? { cases: stringList(row.cases) as string[] } : {}),
+        ...(stringList(row.errors) ? { errors: stringList(row.errors) as string[] } : {}),
       });
     }
   }
@@ -1060,6 +1112,11 @@ export interface FrozenRepairConvergenceRound {
    *  the test population (`suite`) or stopped before the sweep (`non-test-only`, whose count is
    *  carried entries plus non-test ids). Absent on legacy rows, which read as `suite`. */
   measurement?: FrozenRepairRoundMeasurement;
+  /** P-008 (green-main-ratchet-convergence-2026-10-17#D-015): failing entries this round's gate
+   *  removed from its count (a flaky quarantine, `quarantine.txt`, an active downgrade). The
+   *  convergence trajectory removes the union of every round's exclusions from every round, so
+   *  rounds compare over one population. Absent = nothing excluded, or a legacy row. Bounded. */
+  excludedFromCount?: string[];
   /**
    * P-007 (green-main-cycle-time-2026-10-08#D-040): each entry this round newly turned red,
    * attributed to the admissions in the round's window. Absent = nothing newly red, a legacy
@@ -1212,6 +1269,13 @@ export function attributeRoundReds(
   measuredHead: string,
 ): FrozenRepairRedAttribution[] {
   const prior = new Set((queue.signature ?? []).map((entry) => `${entry.kind}:${entry.id}`));
+  // P-017 (D-005 / D-007): an entry already red is still NEWLY red when it gained a failing case
+  // or a lint/typecheck error since the last judged round — keyed by file + case, not file alone.
+  const priorByKey = new Map((queue.signature ?? []).map((entry) => [`${entry.kind}:${entry.id}`, entry] as const));
+  const gainedCaseKeys = (entry: RepairSignatureEntry): boolean => {
+    const before = priorByKey.get(`${entry.kind}:${entry.id}`);
+    return before !== undefined && newRepairSignatureKeys([before], [entry]).length > 0;
+  };
   const wholeTaskRed = wholeTestTaskRedWorkspaces(queue.signature ?? []);
   const coveredByWholeTaskRed = (entry: RepairSignatureEntry): boolean =>
     (entry.kind === 'test-file' && entry.workspace !== undefined && wholeTaskRed.has(entry.workspace)) ||
@@ -1221,7 +1285,7 @@ export function attributeRoundReds(
   const out: FrozenRepairRedAttribution[] = [];
   for (const entry of nextSignature) {
     const key = `${entry.kind}:${entry.id}`;
-    if (prior.has(key)) continue;
+    if (prior.has(key) && !gainedCaseKeys(entry)) continue;
     if (coveredByWholeTaskRed(entry)) continue;
     if (out.length >= FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP) break;
     const ranked = window
@@ -2109,6 +2173,11 @@ function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] 
       rawFailures.every((id) => nonBlank(id) && id.length <= MAX_PERSISTED_FAILURE_CHARS) &&
       new Set(rawFailures).size === rawFailures.length
       ? [...rawFailures] as string[] : undefined;
+    const rawExcluded = row.excludedFromCount;
+    const excludedFromCount = Array.isArray(rawExcluded) && rawExcluded.length > 0 &&
+      rawExcluded.length <= MAX_PERSISTED_FAILURES &&
+      rawExcluded.every((id) => nonBlank(id) && id.length <= MAX_PERSISTED_FAILURE_CHARS)
+      ? [...new Set(rawExcluded as string[])] : undefined;
     const parsed: FrozenRepairConvergenceRound = {
       round: row.round as number,
       head: row.head as string,
@@ -2119,6 +2188,7 @@ function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] 
       ...(row.measurement === 'suite' || row.measurement === 'non-test-only'
         ? { measurement: row.measurement as FrozenRepairRoundMeasurement }
         : {}),
+      ...(excludedFromCount ? { excludedFromCount } : {}),
       ...(attributions ? { attributions } : {}),
     };
     // Rounds are append-only history: carry a newer build's keys forward (see trackEntryReads).
@@ -2154,6 +2224,8 @@ function appendConvergenceRound(
     attributions?: readonly FrozenRepairRedAttribution[];
     /** P-016: the kinds this round's run measured; decides `measurement`. */
     measuredKinds?: readonly RepairSignatureKind[];
+    /** P-008 (#D-015): failing entries this round's gate removed from its count. */
+    excludedFromCount?: readonly string[];
   },
 ): FrozenRepairConvergenceRound[] {
   const existing = queue.convergenceRounds ?? [];
@@ -2161,6 +2233,7 @@ function appendConvergenceRound(
   const executed = normalizeRoundExecution(input.executed);
   const attributions = (input.attributions ?? []).slice(0, FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP);
   const failingTests = boundedFailures(input.failingTests);
+  const excludedFromCount = boundedFailures([...new Set(input.excludedFromCount ?? [])]);
   return capConvergenceRounds([
     ...existing,
     {
@@ -2174,6 +2247,7 @@ function appendConvergenceRound(
       ...(roundMeasurementFromKinds(input.measuredKinds) === 'non-test-only'
         ? { measurement: 'non-test-only' as const }
         : {}),
+      ...(excludedFromCount.length > 0 ? { excludedFromCount } : {}),
       ...(attributions.length > 0 ? { attributions: [...attributions] } : {}),
     },
   ]);
@@ -2952,6 +3026,7 @@ export function markFrozenCandidateVerificationRed(
       nowMs: input.nowMs,
       executed: input.executed,
       ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
+      excludedFromCount: input.excludedFromCount,
     }),
     failingTests: boundedFailures(failingTests),
     signature,
@@ -3390,6 +3465,7 @@ export function markFrozenRepairVerificationRed(
       executed: input.executed,
       ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
       attributions: attributeRoundReds(queue, signature, input.repairHead),
+      excludedFromCount: input.excludedFromCount,
     }),
     failingTests: boundedFailures(failingTests),
     signature,
@@ -3454,6 +3530,7 @@ export function recordFrozenRepairSupersededRed(
       executed: input.executed,
       ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
       attributions: attributeRoundReds(queue, signature, input.measuredHead),
+      excludedFromCount: input.excludedFromCount,
     }),
     failingTests: boundedFailures(failingTests),
     signature,

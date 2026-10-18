@@ -44,6 +44,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseli
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
 import { armTargetedTaskReuse } from '../../../../scripts/lib/targeted-task-reuse.mjs';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 
 const WS = 'ws-degradation-watchdog-it';
 const H = 'papercusp';
@@ -203,6 +204,67 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     });
     expect(prior).toEqual([]);
     expect(current).toMatchObject([{ scope: 'boundary-task', window: { eligible: 1, applied: 0 } }]);
+  }, 120_000);
+
+  it('does not reopen a superseded session condition from predecessor observations', async () => {
+    const owner = `su-${randomUUID()}`;
+    const conditionKey = degradationConditionKey('compaction-force-respawn', owner, 'force-unavailable');
+    const sessionStartedAt = new Date(Date.now() + 30_000);
+    const sweepAt = new Date(sessionStartedAt.getTime() + 3_000);
+    const mechanism = getDegradationMechanism('compaction-force-respawn');
+    if (!mechanism) throw new Error('compaction-force-respawn mechanism is not registered');
+
+    expect(observeFallback('compaction-force-respawn', {
+      eligible: 8, applied: 0, reason: 'force-unavailable', scope: owner,
+    }, {
+      workspaceId: WS,
+      observedAt: new Date(sessionStartedAt.getTime() - 60_000),
+    })).toBe(true);
+    await flushFallbackObservations();
+    expect(await broadcastSevereEvent({
+      summary: `Degraded compaction force for ${owner}`,
+      body: 'Predecessor session observations opened this condition.',
+      conditionKey,
+      oneShot: true,
+    })).toBe(true);
+
+    await db.adminSql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, coord_owner_id, agent, session_id, started_at)
+      VALUES (${WS}, ${owner}, 'codex', ${`fixture-${owner}`}, ${sessionStartedAt})
+    `;
+    expect(observeFallback('compaction-force-respawn', {
+      eligible: 1, applied: 1, reason: 'applied', scope: owner,
+    }, {
+      workspaceId: WS,
+      observedAt: new Date(sessionStartedAt.getTime() + 1_000),
+    })).toBe(true);
+    await flushFallbackObservations();
+
+    const scoped = await readFallbackWindowsByScope('compaction-force-respawn', 60 * 60 * 1000, {
+      sql: db.adminSql, workspaceId: WS, now: sweepAt, sessionOwnerScope: true,
+    });
+    expect(scoped.map(({ scope, window }) => [scope, window.samples, window.eligible, window.applied]))
+      .toEqual([[owner, 1, 1, 1]]);
+
+    const first = await runDegradationSweepOnce({
+      mechanisms: () => [mechanism],
+      readEndedSessionOwners: async () => new Set(),
+      prune: null,
+      now: () => sweepAt,
+    });
+    expect(first.resolved).toEqual([conditionKey]);
+    expect(first.opened).toEqual([]);
+    expect(await alarmCount(conditionKey)).toBe(1);
+
+    const second = await runDegradationSweepOnce({
+      mechanisms: () => [mechanism],
+      readEndedSessionOwners: async () => new Set(),
+      prune: null,
+      now: () => sweepAt,
+    });
+    expect(second.opened).toEqual([]);
+    expect(await alarmCount(conditionKey)).toBe(1);
   }, 120_000);
 
   it('drives armTargetedTaskReuse through its proof-read timeout and bridges the yield-decline condition to one owner item', async () => {

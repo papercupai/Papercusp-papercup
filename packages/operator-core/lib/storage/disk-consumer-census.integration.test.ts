@@ -13,7 +13,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
@@ -32,6 +32,11 @@ import { devToMajorMinor, type CensusConsumer } from './usage';
 import { detectDiskGrowthWarnings, runDiskHeadroomAlarmOnce, emitStorageGrowthToast,
   DISK_HEADROOM_OBSERVATION_ACTION, measureNativeDiskHeadroomAlarm, type DiskHeadroomObservation } from './storage-growth-alarm';
 
+// Toast/audit persistence uses the real throwaway PG below. The host SSE sink
+// resolves its own live org pool, so keep that separate outbound boundary local.
+const invalidation = vi.hoisted(() => ({ notify: vi.fn(async () => {}) }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: invalidation.notify }));
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_PATH = resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1472-disk-consumer-census.sql');
 const MIGRATION = readFileSync(existsSync(MIGRATION_PATH) ? MIGRATION_PATH : `${MIGRATION_PATH}.DRAFT`, 'utf8');
@@ -44,6 +49,8 @@ let rootSql: postgres.Sql;
 let notificationSql: postgres.Sql;
 let sql: CensusSql;
 let fixture: string;
+
+beforeEach(() => { invalidation.notify.mockClear(); });
 
 /** du's own number for one path — the comparison R-1's method names. */
 function duBytes(path: string): number {
@@ -145,6 +152,8 @@ describe('disk consumer census (real du, real PG)', () => {
     expect(listed.get(unattributedKey(fixture))).toMatchObject({ kind: 'unattributed', bytes: 5 * MIB });
     // No baseline 24h earlier yet: growth is unknown, never a made-up zero.
     expect(view.baselineAt).toBeNull();
+    expect(view.baselineStatus).toBe('unavailable');
+    expect(view.coverageIssues).toEqual([]);
     expect(view.baselineAvailBytes).toBeNull();
     expect(view.consumers!.every((c) => c.growth24hBytes === null)).toBe(true);
   }, 120_000);
@@ -205,8 +214,11 @@ describe('disk consumer census (real du, real PG)', () => {
     expect(receipt.growth).toEqual(warnings);
     expect(receipt.notification).toMatchObject({ id: String(saved[0]!.id), message: saved[0]!.message,
       description: saved[0]!.description });
+    expect(invalidation.notify).toHaveBeenCalledWith('toastLog.recent', undefined);
+    expect(invalidation.notify).toHaveBeenCalledTimes(1);
     const toast = { level: 'warning', message: 'refuse-notification', description: 'must not leave evidence' };
     await expect(emitStorageGrowthToast(toast, receipt, options)).rejects.toThrow();
+    expect(invalidation.notify).toHaveBeenCalledTimes(1);
     expect((await rootSql`SELECT count(*)::int n FROM harness_shared.audit_log`)[0]!.n).toBe(1);
     // Evidence failure must roll back the notification too, keeping their linkage atomic.
     await rootSql.unsafe('ALTER TABLE harness_shared.audit_log ADD CONSTRAINT refuse_evidence CHECK (false) NOT VALID');
@@ -307,12 +319,14 @@ describe('disk consumer census (real du, real PG)', () => {
     await write('00000000-0000-4000-8000-000000000083', 0, 'du walked as root (sudo -n)', 40 * G);
     const unknown = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
     expect(unknown.baselineRunId).toBeNull();
+    expect(unknown.baselineStatus).toBe('visibility-mismatch');
     expect(unknown.baselineAt).toBeNull(); expect(unknown.consumers![0]!.growth24hBytes).toBeNull();
     expect(unknown.baselineAvailBytes).toBeNull();
     await write('00000000-0000-4000-8000-000000000084', 22, 'du walked as root (sudo -n)', 38 * G);
     const calibrated = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
     expect(calibrated.baselineAt).toBe(new Date(at.getTime() - 22 * HOUR).toISOString());
     expect(calibrated.baselineRunId).toBe('00000000-0000-4000-8000-000000000084');
+    expect(calibrated.baselineStatus).toBe('comparable');
     expect(calibrated.consumers![0]!.growth24hBytes).toBe(2 * G);
   });
 
@@ -321,6 +335,63 @@ describe('disk consumer census (real du, real PG)', () => {
     await writeCensusRun(sql, { runId: '00000000-0000-4000-8000-000000000085', host: 'legacy-denied-host', device: device({ device: '/denied' }), startedAt: at, finishedAt: at, attributedBytes: G, complete: true, note: '3 unreadable path(s), e.g. /db', consumers: [dir('/denied/data', G)] });
     const view = (await readDiskConsumerCensus(sql, { host: 'legacy-denied-host', now: at })).devices[0]!;
     expect(view.complete).toBe(false); expect(view.baselineAt).toBeNull();
+    expect(view.coverageIssues).toContain('unreadable-paths');
+    expect(view.baselineStatus).toBe('latest-incomplete');
+  });
+
+  it('reports recorded scan failures without guessing why an unexplained run is incomplete', async () => {
+    const at = new Date('2026-10-13T17:00:00Z');
+    for (const [host, complete, note, issues] of [
+      ['recorded-coverage-host', true, 'du timed out; du failed: exit 1; du returned no root record; 3 unreadable path(s); own files of /db may be incomplete (find failed)',
+        ['walk-timeout', 'walk-error', 'root-record-missing', 'unreadable-paths', 'own-files-incomplete']],
+      ['unexplained-coverage-host', false, 'du walked unprivileged (sudo -n unavailable)', ['incomplete-run']],
+    ] as const) {
+      await writeCensusRun(sql, { runId: randomUUID(), host, device: device(), startedAt: at, finishedAt: at,
+        attributedBytes: 50 * G, complete, note, consumers: [dir('/data', 50 * G)] });
+      const view = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+      expect(view).toMatchObject({ complete: false, coverageGap: false, coverageIssues: issues,
+        baselineStatus: 'latest-incomplete', baselineRunId: null, baselineAt: null });
+      expect(view.consumers![0]!.growth24hBytes).toBeNull();
+    }
+  });
+
+  it('persists a missing root record as an explicit producer coverage failure', async () => {
+    const at = new Date('2026-10-13T17:00:00Z'); const host = 'missing-root-record-host';
+    const result = await runDiskConsumerCensusOnce({ sql, host, devices: [device()], now: () => at,
+      statDevice: null, resolveSudo: async () => null,
+      measurePostgres: async () => null, measureDocker: async () => null,
+      runDu: async () => ({ summary: { rootBytes: null, consumers: [dir('/test-dev/data', 2 * G)], ownFiles: [], records: 1 },
+        deniedCount: 0, deniedSample: [], timedOut: false, exitCode: 0 }),
+    });
+    expect(result.failures).toEqual([]);
+    expect(result.runs[0]!.complete).toBe(false);
+    const view = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+    expect(view.note).toContain('du returned no root record; sizes are lower bounds');
+    expect(view).toMatchObject({ complete: false, coverageIssues: ['root-record-missing', 'unattributed-bytes'],
+      baselineStatus: 'latest-incomplete', baselineAt: null });
+    expect(view.consumers!.find(c => c.consumer === '/test-dev/data')!.growth24hBytes).toBeNull();
+  });
+
+  it('distinguishes unreadable baseline candidates from an absent qualified baseline', async () => {
+    const at = new Date('2026-10-13T17:00:00Z'); const host = 'unreadable-baseline-host';
+    await writeCensusRun(sql, { runId: randomUUID(), host, device: device(), startedAt: new Date(at.getTime() - 24 * HOUR),
+      finishedAt: new Date(at.getTime() - 24 * HOUR), attributedBytes: 50 * G, complete: true,
+      note: 'du walked as root (sudo -n); 3 unreadable path(s)', consumers: [dir('/data', 50 * G)] });
+    await writeCensusRun(sql, { runId: randomUUID(), host, device: device(), startedAt: at, finishedAt: at,
+      attributedBytes: 50 * G, complete: true, note: 'du walked as root (sudo -n)', consumers: [dir('/data', 50 * G)] });
+    const view = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+    expect(view).toMatchObject({ complete: true, coverageIssues: [], baselineStatus: 'incomplete-candidates', baselineAt: null });
+    expect(view.consumers![0]!.growth24hBytes).toBeNull();
+  });
+
+  it('keeps a byte-attribution gap distinct from an incomplete scan', async () => {
+    const at = new Date('2026-10-13T17:00:00Z'); const host = 'attribution-gap-host';
+    await writeCensusRun(sql, { runId: randomUUID(), host, device: device(), startedAt: at, finishedAt: at,
+      attributedBytes: 30 * G, complete: true, note: null, consumers: [dir('/data', 30 * G)] });
+    const view = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+    expect(view).toMatchObject({ complete: true, coverageGap: true, coverageIssues: ['unattributed-bytes'],
+      baselineStatus: 'unavailable', baselineAt: null });
+    expect(view.consumers![0]!.growth24hBytes).toBeNull();
   });
 
   it('flags a device whose latest run is older than 24h as stale, and a watched device with no rows as missing', async () => {

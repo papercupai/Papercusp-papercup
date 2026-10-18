@@ -16,7 +16,9 @@ import { computeRunCostCents, autoPauseOnCostBreach } from './plan-run-cost';
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-cost';
-const HARNESS = 'papercup';
+// Retired aliases (papercup/papercup-hive) are rewritten by migration 656.
+// Keep every fixture relation in one isolated, non-alias harness namespace.
+const HARNESS = 'plan-run-cost-it';
 const SLUG = 'pricey-monitor';
 
 beforeAll(async () => {
@@ -44,6 +46,11 @@ async function seedRun(opts: { capCents?: number; scheduleActive?: boolean; samp
     VALUES (${WS}, ${HARNESS}, ${SLUG}, 'Pricey', 'active', '# Pricey', 'h',
             ${JSON.stringify(schedule)}::text::jsonb, ${opts.scheduleActive ?? true})
   `;
+  const [template] = await sql<Array<{ schedule_active: boolean }>>`
+    SELECT schedule_active FROM harness_shared.harness_plans
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+  expect(template, 'the migrated database must preserve the fixture harness scope')
+    .toEqual({ schedule_active: opts.scheduleActive ?? true });
   const runRows = await sql<Array<{ id: number }>>`
     INSERT INTO harness_shared.plan_runs
       (harness_slug, plan_slug, plan_content_hash, session_id, launched_by, launched_at, status, run_type, updated_at)

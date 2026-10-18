@@ -1903,14 +1903,14 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(await admissionOf('WI-request')).toBe('pending');
     }, 90_000);
 
-    it('defers a row whose only twin is protected, holds one with a movable twin, and releases both when the protection lifts', async () => {
+    it.each(['pending', 'unreviewed'] as const)('defers a row whose only twin is protected, holds one with a movable twin, and releases both when the protection lifts (%s)', async (admission) => {
       // alpha: the pending row's ONLY twin is claimed → deferred (no slot, no model).
       await seedItem({ id: 'WI-alpha-claimed', title: 'alpha finding', admission: 'admitted', vector: '[1,0,0]', takenBy: 'su-holder', createdAtMs: NOW - 50_000 });
       await seedItem({ id: 'WI-alpha-new', title: 'alpha finding', vector: '[1,0,0]', createdAtMs: NOW - 10_000 });
       // beta: one claimed twin + one movable twin → judged on the movable pair, then HELD.
       await seedItem({ id: 'WI-beta-claimed', title: 'beta finding', admission: 'admitted', vector: '[0,0,1]', takenBy: 'su-holder', createdAtMs: NOW - 40_000 });
       await seedItem({ id: 'WI-beta-free', title: 'beta finding', admission: 'admitted', vector: '[0,0,1]', createdAtMs: NOW - 30_000 });
-      await seedItem({ id: 'WI-beta-new', title: 'beta finding', vector: '[0,0,1]', createdAtMs: NOW - 5_000 });
+      await seedItem({ id: 'WI-beta-new', title: 'beta finding', admission, vector: '[0,0,1]', createdAtMs: NOW - 5_000 });
 
       const first = distinctCall();
       const tick1 = await runWorkItemAdmissionPromoter({
@@ -1921,10 +1921,13 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(tick1).toMatchObject({ promoted: 0, held: 1, guardRefusals: [] });
       expect(tick1.prescreen).toMatchObject({ selected: 1, deferred: 1, protectedPairs: 2, forcedHolds: 1 });
       expect(await admissionOf('WI-alpha-new')).toBe('pending');
-      expect(await admissionOf('WI-beta-new')).toBe('pending');
-      const [held] = await db.sql`SELECT payload->'admissionHold' AS hold FROM harness_shared.work_items
+      expect(await admissionOf('WI-beta-new')).toBe(admission);
+      const [held] = await db.sql`SELECT payload->'admissionHold' AS hold,
+                                   payload#>>'{admissionReview,lastRetryAt}' AS retry
+                                 FROM harness_shared.work_items
                                  WHERE feature_id = 'WI-beta-new'`;
       expect(held?.hold.screeningDeferred).toBe(true);
+      expect(held?.retry).toBeNull();
       expect(
         await db.sql`SELECT verdict FROM harness_shared.dedup_adjudications WHERE a = 'WI-beta-free' AND b = 'WI-beta-new'`,
       ).toEqual([{ verdict: 'distinct' }]);

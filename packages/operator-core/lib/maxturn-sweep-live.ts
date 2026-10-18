@@ -1,3 +1,5 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 /**
  * maxturn-sweep-live — P-024's LIVE cell driver + the pure transcript→metrics
  * extractor (deterministic-context-carry-2026-07-14, WI-5002).
@@ -100,7 +102,7 @@ export const DEFAULT_SWEEP_ACCOUNT_ROUTING: SweepAccountRouting = 'auto';
 export const DEFAULT_SWEEP_TASK_TIMEOUT_MS = 15 * 60_000;
 
 /** Where benchmark sessions do their file work — NEVER the shared repo tree. */
-export function sweepWorkDir(cellId: string, base: string = join(homedir(), '.papercusp', 'sweep-bench')): string {
+export function sweepWorkDir(cellId: string, base: string = papercuspPath('sweep-bench')): string {
   return join(base, cellId.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120));
 }
 
@@ -607,7 +609,7 @@ export function makeHeadlessPsuCellDriver(deps: HeadlessCellDriverDeps = {}): Ce
   const timeoutMs = deps.taskTimeoutMs ?? DEFAULT_SWEEP_TASK_TIMEOUT_MS;
   const pollIntervalMs = deps.pollIntervalMs ?? 5_000;
   const repoRoot = deps.repoRoot ?? process.cwd();
-  const harness = deps.harness ?? 'papercusp';
+  const harness = deps.harness?.trim() || operatorHomeHarnessSlug();
   const account = deps.account ?? DEFAULT_SWEEP_ACCOUNT_ROUTING;
   const spawnSession = deps.spawnSession ?? ((input: SweepSpawnInput) => defaultSpawnSession(input, repoRoot));
 

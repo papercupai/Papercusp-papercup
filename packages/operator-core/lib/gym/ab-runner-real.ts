@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Real-adapter wiring for the P-014 A/B harness (`ab-runner.ts`).
  *
@@ -110,7 +111,7 @@ export interface RealAbDepsConfig {
 
 export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
   const sql = cfg.gymSql;
-  const traceRoot = resolve(cfg.traceRoot ?? join(homedir(), '.papercusp', 'gym', 'traces'));
+  const traceRoot = resolve(cfg.traceRoot ?? papercuspPath('gym', 'traces'));
   const fromScratch = relative(resolve(cfg.scratchRoot), traceRoot);
   if (fromScratch === '' || (fromScratch !== '..' && !fromScratch.startsWith(`..${sep}`) && !isAbsolute(fromScratch))) {
     throw new Error('Gym traceRoot must be outside pipeline scratchRoot');

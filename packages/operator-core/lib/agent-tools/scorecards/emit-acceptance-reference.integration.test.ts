@@ -204,6 +204,55 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
     await insertAcceptanceRubric(db);
   });
 
+  it.each([false, true])('binds an omitted grader subject to the rubric plan and permits author adoption (author omits subject: %s)', async (omitAuthorSubject) => {
+    const grading = await emitScorecard({
+      rubricRef: RUBRIC,
+      ratings: GRADER_RATINGS,
+    } as never, { createdBy: GRADER, workspaceId: activeWorkspaceId() });
+    expect(grading, JSON.stringify(grading)).toMatchObject({ ok: true, created: true });
+
+    const rows = await db.adminSql<Array<{ issue_id: string; observation: Record<string, unknown> }>>`
+      SELECT issue_id, payload -> 'observation' AS observation
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${issuesScopeWorkspace()}
+         AND created_by = ${GRADER}
+         AND payload -> 'observation' ->> 'rubricRef' = ${RUBRIC}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].observation.subject).toEqual({ kind: 'plan', ref: SUBJECT_PLAN });
+
+    const args = acceptanceArgs(rows[0].issue_id);
+    if (omitAuthorSubject) delete (args as { subject?: unknown }).subject;
+    const accepted = await emitScorecard(args as never, asAuthor as never);
+    expect(accepted, JSON.stringify(accepted)).toMatchObject({ ok: true, created: true });
+    const persisted = await readBackAcceptanceCard(db);
+    expect(persisted!.observation).toMatchObject({
+      subject: { kind: 'plan', ref: SUBJECT_PLAN },
+      ratings: GRADER_RATINGS,
+      acceptance: { verdict: 'accept', adoptedRatingsFrom: { scorecardId: rows[0].issue_id } },
+    });
+  });
+
+  it('preserves an explicitly different grader subject and refuses its adoption for the rubric plan', async () => {
+    const subject = { kind: 'plan', ref: 'a-completely-different-plan' };
+    const grading = await emitScorecard({
+      rubricRef: RUBRIC,
+      subject,
+      ratings: GRADER_RATINGS,
+    } as never, { createdBy: GRADER, workspaceId: activeWorkspaceId() });
+    expect(grading, JSON.stringify(grading)).toMatchObject({ ok: true, created: true });
+    const rows = await db.adminSql<Array<{ issue_id: string; observation: Record<string, unknown> }>>`
+      SELECT issue_id, payload -> 'observation' AS observation
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${issuesScopeWorkspace()}
+         AND created_by = ${GRADER}
+         AND payload -> 'observation' ->> 'rubricRef' = ${RUBRIC}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].observation.subject).toEqual(subject);
+    expect(await emitScorecard(acceptanceArgs(rows[0].issue_id) as never, asAuthor as never))
+      .toMatchObject({ ok: false, code: 'acceptance_of_wrong_subject' });
+    expect(await readBackAcceptanceCard(db)).toBeNull();
+  });
+
   it('adopts the cited card ratings and PERSISTS them — readback proves the round trip', async () => {
     const independentId = await fileIndependentGrading({ createdBy: GRADER });
 

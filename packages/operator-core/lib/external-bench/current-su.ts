@@ -2816,12 +2816,14 @@ export function liveCurrentSuBenchPorts(
         featureId: input.workItemId, worktreePath: input.checkout });
       verifySession();
       // Server-side operations run outside the native OS boundary. Only local
-      // assignment progress/completion (when its frozen arm enables them) and identity are admitted here; the native sandbox supplies
+      // assignment progress/completion (when its frozen arm enables them),
+      // identity and deterministic managed self-compaction are admitted here; the native sandbox supplies
       // coding tools. Discovery, remote brains, arbitrary server execution and
       // lifecycle fan-out cannot cause unmetered inference for this assignment.
       const confinement = Object.freeze({ denyTools: Object.freeze([] as string[]),
         denyOutside: Object.freeze(ledger
-          ? ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'] : ['coord:whoami']),
+          ? ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']
+          : ['coord:whoami', 'session:request-compaction']),
         denyAmbientContext: true as const,
         // Observer ownership/authorization is identical in both arms; the
         // experimental tool ceiling cannot widen this exact-item boundary.

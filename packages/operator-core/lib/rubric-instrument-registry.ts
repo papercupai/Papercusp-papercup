@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Rubric instrument registry (test-rubric-unification-2026-10-12 P-005 / R-5, plan D-006).
  *
@@ -505,7 +506,7 @@ const APP_PERFORMANCE_INSTRUMENTS: readonly CommandInstrument[] = [
       '~/.papercusp/loop-profiles saturation profiles against 5 and the worst profile p95 lag ' +
       'against 500 ms.',
     unit: '%',
-    argv: ['ls', '-1', join(homedir(), '.papercusp', 'loop-profiles')],
+    argv: ['ls', '-1', papercuspPath('loop-profiles')],
     timeoutMs: 10_000,
     parse: (stdout, ctx) => parseLoopProfileBudgetPct(stdout, ctx, { maxPerDay: 5, maxP95Ms: 500 }),
   },

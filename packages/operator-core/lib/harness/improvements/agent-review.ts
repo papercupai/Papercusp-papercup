@@ -136,6 +136,8 @@ export interface AgentReviewDeps {
   recordRoutedIdea: typeof recordRoutedIdea;
   resolveLedgerIdeaId: (workItemId: string) => Promise<string>;
   readLedgerGrade: (ideaId: string) => Promise<AgentReviewLedgerGrade | null>;
+  /** Clear a prior non-owner review grade when a new content round is resubmitted. */
+  clearLedgerGrade?: (ideaId: string, workItemId: string) => Promise<void>;
   deliverRevision: (input: {
     to: string;
     workItemId: string;
@@ -186,6 +188,26 @@ async function readLedgerGrade(ideaId: string): Promise<AgentReviewLedgerGrade |
     feedback: row.human_feedback,
     gradedBy: row.graded_by,
   };
+}
+
+/**
+ * A review grade belongs to one content round. Resubmission advances the work-item round, so
+ * retaining the old ledger grade/feedback lets a reviewer or reconciliation path replay the
+ * previous verdict instead of requiring a fresh grade (WI-10005365). Owner grades are sovereign
+ * and remain untouched; ordinary reviewer grades are cleared while the round history remains in
+ * the work-item comments.
+ */
+async function clearLedgerGrade(ideaId: string, workItemId: string): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.scout_routed_ideas
+       SET human_grade = NULL,
+           human_feedback = NULL,
+           graded_by = NULL,
+           graded_at = NULL
+     WHERE idea_id = ${ideaId}
+       AND routed_ref = ${`wi:${workItemId}`}
+       AND graded_by IS DISTINCT FROM 'owner'`;
 }
 
 /**
@@ -427,6 +449,7 @@ const defaultDeps: AgentReviewDeps = {
   recordRoutedIdea,
   resolveLedgerIdeaId,
   readLedgerGrade,
+  clearLedgerGrade,
   deliverRevision,
   resolveSubmitterLiveness,
   resolveVerifiedSubmitterAlias,
@@ -1110,6 +1133,10 @@ export async function resubmitAgentReview(
     round: current.round + 1,
     timing: { round: current.round + 1, enteredAt: new Date().toISOString() },
   };
+  // Clear the prior reviewer verdict before publishing the new pending round. If this write
+  // fails, leave the item revision-requested rather than admitting a round that can replay stale
+  // feedback. The comment history is the durable record of the prior grade.
+  await (deps.clearLedgerGrade ?? clearLedgerGrade)(current.ledgerIdeaId, workItem.id);
   const merged = await deps.mergeWorkItemPayload(
     workItem.id,
     {

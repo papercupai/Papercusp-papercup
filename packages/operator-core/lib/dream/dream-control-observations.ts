@@ -79,11 +79,15 @@ function scoutObservation(row: Row) {
   const supplied = cap.success ? cap.data.supplied : null;
   const suppliedCap = capMatches && supplied && typeof supplied.maxCostUsd === 'number' && Number.isFinite(supplied.maxCostUsd) && supplied.maxCostUsd >= 0 &&
     supplied.maxIdeators === 1 && cap.data.resolved.maxIdeators === 1 && cap.data.resolved.maxCostUsd === supplied.maxCostUsd;
-  const withinCap = suppliedCap && slots.success && slots.data.length === 1 && row.budget_used_usd != null &&
-    Number(row.budget_used_usd) >= 0 && Number(row.budget_used_usd) <= cap.data.resolved.maxCostUsd;
+  const measuredCost = row.budget_used_usd != null && nonnegative(Number(row.budget_used_usd)) ? Number(row.budget_used_usd) : null;
+  const capRespected = suppliedCap
+    ? slots.success && slots.data.length > cap.data.resolved.maxIdeators ||
+      measuredCost !== null && measuredCost > cap.data.resolved.maxCostUsd ? false
+      : slots.success && slots.data.length === 1 && measuredCost !== null ? true : null
+    : null;
   return { raw: row, origin: 'scout' as const,
     budgetProvenance: capMatches ? { status: 'observed' as const, ...cap.data } : { status: 'unknown' as const, reason: 'missing-or-invalid-tick-budget-provenance' },
-    suppliedOneIdeatorCapRespected: suppliedCap ? Boolean(withinCap) : null,
+    suppliedOneIdeatorCapRespected: capRespected,
     ideatorCount: slots.success ? slots.data.length : null,
     lenses: slots.success ? slots.data.map(s => s.lens) : null,
     ideasRouted: typeof row.ideas_routed === 'number' ? row.ideas_routed : null,
@@ -240,6 +244,109 @@ export function assessGymAdmissionDecisions(journal: JournalReadResult, scope: C
  * Read the exact pot row here and reuse the maintained native Gym predicate.
  * Missing stores/invalid rows remain unknown rather than taking fail-open defaults.
  */
+interface R2ObservationInput {
+  schemaVersion: string; status: string; reason?: string | null; scope: ControlObservationScope; runtime: ServingHostIdentity;
+  capturedAt: string; expiresAt: string;
+  observations: Record<string, ControlObservation<unknown>> | null;
+  actionDecisions?: ControlObservation<{ journal: JournalReadResult; assessment: ReturnType<typeof assessDreamActionDecisions> }>;
+  gymDecisions?: ControlObservation<{ journal: JournalReadResult; assessment: ReturnType<typeof assessGymAdmissionDecisions> }>;
+  productionAdmission?: ControlObservation<unknown>;
+}
+export interface R2ClauseAssertion {
+  id: string; status: 'pass' | 'fail' | 'unknown'; healthy: boolean; reason: string;
+  rawRefs: string[]; sourceRefs: string[]; scope: ControlObservationScope;
+  source: { path: string; runtime: ServingHostIdentity };
+  capturedAt: string; expiresAt: string;
+}
+
+/** Maintained source assertions for D-007. These measure the named R2 clauses;
+ * they do not certify output quality, benefit, independent acceptance or shipment. */
+export function assessDreamR2ClauseAssertions(value: R2ObservationInput, nowMs: number = Date.now()) {
+  const clauses: R2ClauseAssertion[] = [];
+  const current = value.schemaVersion === 'dream-control-observations-v1' && Number.isFinite(nowMs) && sameRuntime(value.runtime, value.scope.expectedRuntime) &&
+    nowMs >= timestamp(value.capturedAt) && nowMs < timestamp(value.expiresAt) &&
+    timestamp(value.expiresAt) - timestamp(value.capturedAt) === CONTROL_OBSERVATION_TTL_MS;
+  const emit = (id: string, status: R2ClauseAssertion['status'], reason: string, rawRefs: string[], sourceRefs: string[]) => {
+    if (!current || value.status !== 'observed') {
+      status = 'unknown'; reason = !current ? 'stale-or-wrong-serving-runtime' : value.reason ?? 'incomplete-observations';
+    }
+    // An unread/unavailable source still has a measured envelope. Point to its
+    // nearest retained ancestor rather than publishing a dangling raw ref.
+    const retainedRefs = rawRefs.map(ref => {
+      let cursor: unknown = value, retained = '';
+      for (const segment of ref.slice(1).split('/')) {
+        if (!cursor || typeof cursor !== 'object' || !Object.hasOwn(cursor, segment)) break;
+        cursor = (cursor as Row)[segment]; retained += '/' + segment;
+      }
+      return retained || '/status';
+    });
+    clauses.push({ id, status, healthy: status === 'pass', reason, rawRefs: [...new Set(retainedRefs)], sourceRefs, scope: value.scope,
+      source: { path: 'packages/operator-core/lib/dream/dream-control-observations.ts', runtime: value.runtime },
+      capturedAt: value.capturedAt, expiresAt: value.expiresAt });
+  };
+  const action = value.actionDecisions?.status === 'observed' ? value.actionDecisions.value.assessment : null;
+  const gym = value.gymDecisions?.status === 'observed' ? value.gymDecisions.value.assessment : null;
+  const completeAction = action?.status === 'observed' && action.value.admission.every(row => row.assessment.status === 'observed');
+  emit('r2:dream-action-decisions', completeAction ? 'pass' : 'unknown',
+    completeAction ? 'actual-complete-dream-decisions' : action?.status === 'unknown' ? action.reason : 'incomplete-dream-decisions',
+    ['/actionDecisions'], ['journal:readJournal', 'dream/dream-cycle-action:makeDreamCycleAction']);
+  emit('r2:gym-admission-decisions', gym?.status === 'observed' ? 'pass' : 'unknown',
+    gym?.status === 'observed' ? 'actual-complete-gym-decisions' : gym && 'reason' in gym ? gym.reason : 'gym-decisions-not-observed',
+    ['/gymDecisions'], ['journal:readJournal', 'gym/autoloop-tick:runGymAutoloopTick']);
+
+  const governors = value.observations?.governors;
+  const spend = value.observations?.rollingSpend;
+  const full = value.productionAdmission?.status === 'observed' && completeAction && gym?.status === 'observed' &&
+    governors?.status === 'observed' && spend?.status === 'observed';
+  emit('r2:full-admission-and-spend', full ? 'pass' : 'unknown',
+    full ? 'production-decisions-reservations-and-spend-observed' : 'complete-production-admission-and-spend-required',
+    ['/productionAdmission', '/observations/governors', '/observations/rollingSpend'],
+    ['dream-governor:preflightDreamCycle', 'learning-governor:checkLoopVerdict', 'dream-governor:sumDreamSpendSince']);
+
+  const activity = value.observations?.activity;
+  const data = activity?.status === 'observed' ? activity.value as {
+    scout?: { hasMore: boolean; observations: ReturnType<typeof scoutObservation>[] };
+    dream?: { rows: Row[] };
+  } : null;
+  const ticks = data?.scout?.observations ?? [];
+  const scoped = ticks.every(t => t.origin === 'scout' && t.raw.origin === 'scout' &&
+    t.raw.workspace_id === value.scope.workspaceId &&
+    (t.raw.pot_slug === value.scope.potSlug || t.raw.pot_slug == null && t.raw.install_slug === value.scope.potSlug));
+  const overCap = scoped && ticks.some(t => t.suppliedOneIdeatorCapRespected === false);
+  const provenance = scoped && data?.scout?.hasMore === false && ticks.length >= 2 && ticks.every(t =>
+    t.budgetProvenance.status === 'observed' && t.suppliedOneIdeatorCapRespected === true &&
+    t.oneIdeatorZeroRoute === true && t.ideatorCount === 1 && t.lenses?.length === 1) &&
+    new Set(ticks.flatMap(t => t.lenses ?? [])).size >= 2;
+  emit('r2:scout-zero-route-lens-cap-provenance', overCap ? 'fail' : provenance ? 'pass' : 'unknown',
+    overCap ? 'supplied-scout-cap-violated' : provenance ? 'same-origin-one-ideator-zero-route-cap-and-changing-lenses-observed'
+      : 'qualifying-complete-scout-cap-lens-origin-window-required',
+    ['/observations/activity/value/scout'], ['harness_shared.scout_ticks', 'scout/scheduler:runScoutTick', 'scout/run:runScoutCycleTick']);
+
+  let attempts: R2ClauseAssertion['status'] = 'unknown';
+  let attemptReason = 'actual-attempt-usage-or-explicit-policy-skip-required';
+  if (completeAction && action?.status === 'observed') {
+    const rows = data?.dream?.rows ?? [];
+    const measured = action.value.records.every(r => {
+      if (r.disposition === 'pre-attempt-policy-skip')
+        return r.paidCalls === 0 && r.model === null && r.usage === null && r.costUsd === 0;
+      const refs = z.array(nonempty).min(1).safeParse(r.runRefs);
+      if (!refs.success || typeof r.attempts !== 'number' || r.attempts < 1) return false;
+      return refs.data.every(ref => rows.some(row => {
+        const usage = z.object({ inputTokens: z.number().nonnegative(), outputTokens: z.number().nonnegative() })
+          .passthrough().safeParse(row.dream_usage);
+        return row.id === ref && row.workspace_id === value.scope.workspaceId && row.pot_slug === value.scope.potSlug &&
+          typeof row.dreamer_model === 'string' && row.dreamer_model.trim().length > 0 && usage.success &&
+          row.cost_usd != null && nonnegative(Number(row.cost_usd));
+      }));
+    });
+    if (measured) { attempts = 'pass'; attemptReason = 'actual-ledger-usage-or-authoritative-pre-attempt-skip'; }
+  }
+  emit('r2:actual-attempts-or-explicit-policy-skips', attempts, attemptReason,
+    ['/actionDecisions', '/observations/activity/value/dream'],
+    ['dream/dream-cycle-action:makeDreamCycleAction', 'harness_shared.dream_runs']);
+  return { schemaVersion: 1 as const, healthy: clauses.every(row => row.healthy), clauses };
+}
+
 export async function readDreamControlObservations(
   sql: Sql, input: ControlObservationScope, overrides: Partial<ControlObservationReadDeps> = {},
 ) {
@@ -256,12 +363,15 @@ export async function readDreamControlObservations(
   const runtime = deps.runtime();
   const runtimeMatches = sameRuntime(runtime, scope.expectedRuntime);
   // A read on the operator cannot certify bg-host's loaded environment or code.
-  if (!runtimeMatches) return {
+  if (!runtimeMatches) {
+    const value = {
     schemaVersion: 'dream-control-observations-v1' as const, status: 'unknown' as const,
     reason: 'wrong-or-unproven-serving-runtime', scope, runtime,
     capturedAt: new Date(startedAt).toISOString(), expiresAt: new Date(startedAt + CONTROL_OBSERVATION_TTL_MS).toISOString(),
-    observations: null,
-  };
+      observations: null,
+    };
+    return { ...value, r2Assertions: assessDreamR2ClauseAssertions(value, startedAt) };
+  }
 
   const [flags, dream, gym, governors, activity, rollingSpend] = await Promise.all([
     observe(['flags:DREAM_CYCLE', 'flags:LEARNING_GOVERNOR'], async () => {
@@ -405,13 +515,14 @@ export async function readDreamControlObservations(
   const completedAt = deps.now();
   const fresh = completedAt >= startedAt && completedAt - startedAt < CONTROL_OBSERVATION_TTL_MS;
   const observations = { flags, dream, gym, governors, activity, rollingSpend };
-  return {
+  const value = {
     schemaVersion: 'dream-control-observations-v1' as const,
     status: fresh && Object.values(observations).every(o => o.status === 'observed') ? 'observed' as const : 'unknown' as const,
     reason: !fresh ? 'read-expired-or-clock-invalid' : Object.values(observations).some(o => o.status === 'unknown') ? 'incomplete-observations' : null,
     scope, runtime, capturedAt: new Date(startedAt).toISOString(),
     expiresAt: new Date(startedAt + CONTROL_OBSERVATION_TTL_MS).toISOString(), observations, actionDecisions, gymDecisions, productionAdmission,
   };
+  return { ...value, r2Assertions: assessDreamR2ClauseAssertions(value, completedAt) };
 }
 
 export type DreamControlObservations = Awaited<ReturnType<typeof readDreamControlObservations>>;

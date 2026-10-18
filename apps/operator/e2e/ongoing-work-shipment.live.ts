@@ -32,22 +32,59 @@ test('the explicitly enrolled goal renders its real declared collection through 
       writes.push(new URL(request.url()).pathname);
     }
   });
-  await page.goto(`/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${encodeURIComponent(goalId!)}&welcome=0&ws=${encodeURIComponent(workspaceId!)}`);
-  const editor = page.getByTestId('goal-data');
+  async function navigateToGoal(phase: string, navigate: () => Promise<unknown>) {
+    const started = Date.now();
+    // The shell can mount while this exact detail read is still queued. Make
+    // receipt of its data a prerequisite, then judge the resulting editor.
+    const receipt = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      if (!url.pathname.endsWith('/rest-query') || url.searchParams.get('name') !== 'goals.detail') return false;
+      return JSON.parse(url.searchParams.get('args') ?? '{}').goalId === goalId;
+    }, { timeout: 60_000 });
+    try {
+      const [, response] = await Promise.all([navigate(), receipt]);
+      await info.attach(`enrolled-goal-${phase}-timing`, {
+        body: JSON.stringify({ goalId, phase, elapsedMs: Date.now() - started, status: response.status() }),
+        contentType: 'application/json',
+      });
+      expect(response.ok(), 'The navigated goal detail must be readable').toBe(true);
+      return response;
+    } catch (error) {
+      await info.attach(`enrolled-goal-${phase}-failure`, {
+        body: JSON.stringify({ goalId, phase, elapsedMs: Date.now() - started, url: page.url(),
+          error: error instanceof Error ? error.message : String(error) }),
+        contentType: 'application/json',
+      });
+      throw error;
+    }
+  }
+  // This declared worklist opens the dedicated goal console. Exercise its
+  // actual editor, including plans hidden by the default empty-plan filter.
+  const initial = await navigateToGoal('initial', () => page.goto(
+    `/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${encodeURIComponent(goalId!)}&hudwoeempty=true&hudwoesort=rank&welcome=0&ws=${encodeURIComponent(workspaceId!)}`,
+    { waitUntil: 'domcontentloaded' },
+  ));
+  expect((await initial.json()).rows[0].goal.id).toBe(goalId);
+  const editor = page.getByTestId('work-on-everything-console');
   await expect(editor).toBeVisible({ timeout: 30_000 });
-  await expect(editor.getByText('Order sets priority.', { exact: false })).toBeVisible();
+  await expect(editor.getByRole('heading', { name: before.goal.title, exact: true })).toBeVisible();
+  await editor.getByRole('button', { name: 'Edit priorities', exact: true }).click();
+  await expect(editor.getByRole('table', { name: 'Plans', exact: true })).toBeVisible();
 
   // Await the actual HTTP snapshot after reload. A cached first DOM sample
   // cannot establish the current policy or discovery order.
-  const readback = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    if (!url.pathname.endsWith('/rest-query') || url.searchParams.get('name') !== 'goals.detail') return false;
-    return JSON.parse(url.searchParams.get('args') ?? '{}').goalId === goalId;
-  });
-  await page.reload();
-  const after = (await (await readback).json()).rows[0];
+  const readback = await navigateToGoal('reload', () => page.reload({ waitUntil: 'domcontentloaded' }));
+  const after = (await readback.json()).rows[0];
   const collection = after.goalData.collections.worklist;
   expect(collection.selection).toMatchObject({ ok: true, configured: true });
+  expect(collection.selection.collection).toEqual(before.goalData.collections.worklist.selection.collection);
+  expect(collection.selection.policyVersion).toBe(before.goalData.collections.worklist.selection.policyVersion);
+  expect(collection.selection.policy).toEqual(before.goalData.collections.worklist.selection.policy);
+  expect(after.goalData.properties).toEqual(before.goalData.properties);
+  expect(after.goalData.propertySchema).toEqual(before.goalData.propertySchema);
+  expect(after.goal.id).toBe(before.goal.id);
+  expect(after.goal.status).toBe(before.goal.status);
+  expect(after.launchSettings).toEqual(before.launchSettings);
   expect(collection.rows.map((row: { id: string }) => row.id))
     .toEqual(collection.selection.items.map((row: { id: string }) => row.id));
   await info.attach('real-enrolled-collection-readback', {
@@ -57,14 +94,21 @@ test('the explicitly enrolled goal renders its real declared collection through 
   });
   // Read the entire population in one browser round trip. Per-row assertions
   // exhaust the fixed journey deadline on a large workspace plan pool.
-  await expect.poll(() => editor.locator('li').evaluateAll((nodes) => nodes.map((node) => {
-    const checkbox = node.querySelector('[role="checkbox"]');
-    return { label: checkbox?.getAttribute('aria-label')?.replace(/^Include /, ''),
-      selected: checkbox?.getAttribute('aria-checked') === 'true',
-      reason: node.querySelector('small')?.textContent?.trim() ?? '' };
-  })), { timeout: 15_000 }).toEqual(collection.rows.map((row: { label: string; selected: boolean; reason?: string | null }) => ({
-    label: row.label, selected: row.selected, reason: row.reason ?? '',
-  })));
+  const renderedRows = () => editor.getByTestId('ongoing-worklist-row').evaluateAll((nodes) => nodes.map((node) => {
+    const action = node.querySelector('button[aria-label^="Add "], button[aria-label^="Remove "]');
+    const label = action?.getAttribute('aria-label') ?? '';
+    return { id: node.getAttribute('data-worklist-id'), label: label.replace(/^(?:Add|Remove) /, ''),
+      selected: label.startsWith('Remove ') };
+  }));
+  // Compare the complete population independently of the editor's sort for
+  // unselected plans; selected rows must retain the saved priority order.
+  const byId = (a: { id: string | null }, b: { id: string | null }) => (a.id ?? '').localeCompare(b.id ?? '');
+  await expect.poll(async () => (await renderedRows()).sort(byId), { timeout: 15_000 })
+    .toEqual(collection.rows.map((row: { id: string; label: string; selected: boolean }) => ({
+      id: row.id, label: row.label, selected: row.selected,
+    })).sort(byId));
+  expect((await renderedRows()).filter((row) => row.selected).map((row) => row.id))
+    .toEqual(collection.rows.filter((row: { selected: boolean }) => row.selected).map((row: { id: string }) => row.id));
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await editor.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(false);
   await page.screenshot({ path: info.outputPath('real-enrolled-collection.png') });

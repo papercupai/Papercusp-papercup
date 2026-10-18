@@ -421,6 +421,10 @@ afterEach(() => {
 });
 
 describe('launch-tool routing guidance', () => {
+  it('does not hold a workspace transaction across external launch and first-turn proof', () => {
+    expect((launchAgent as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('identifies capability:launch-agent as the ad-hoc/recovery door, not the existing-plan fleet door', () => {
     expect(launchAgent.guidance?.when).toContain('AD-HOC/RECOVERY AGENT-LAUNCH DOOR');
     expect(launchAgent.guidance?.when).toContain('visible or headless');

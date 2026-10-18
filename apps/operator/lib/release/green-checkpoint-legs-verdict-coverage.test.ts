@@ -121,6 +121,33 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     });
     expect(withRepairManifest(admitted, 5).manifest.rows.find((row) => row.legId === id)?.status.kind).toBe('admitted');
   });
+  it('P-017 (R-14): a failed leg keys every error from its FULL output, not the stored tail', async () => {
+    const id = 'lint:mock-cast-escape';
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (cmd === 'git') return { code: 1, stdout: '', stderr: '' };
+      return npmScriptOf(cmd, args) === id
+        ? {
+            code: 1,
+            stdout:
+              'lib/a.ts(3,5): error TS2322: Type mismatch.\n' +
+              'lib/a.ts(9,1): error TS2322: Type mismatch.\n' +
+              'lib/b.ts:4:2 - error TS2345: Bad argument.\n' +
+              'generic trailer\n'.repeat(600),
+            stderr: '',
+          }
+        : ok;
+    };
+    const legs = await runPostSuiteLegs(ROOT, process.env, exec, '@papercusp/operator-vite', {
+      identity: { candidate: 'a'.repeat(40), headAtStart: 'a'.repeat(40), runId: 'p017-error-keys' },
+    });
+    const leg = legs.records.find((record) => record.id === id)!;
+    expect(leg.status).toBe('failed');
+    // The errors are gone from the stored tail, yet every one is keyed (the repeat is indexed).
+    expect(leg.executionIdentity?.result.output).not.toContain('TS2322');
+    expect(leg.errorKeys).toEqual(['lib/a.ts|TS2322', 'lib/a.ts|TS2322#2', 'lib/b.ts|TS2345']);
+    // A passing leg carries no keys.
+    expect(legs.records.filter((record) => record.status === 'passed').every((record) => record.errorKeys === undefined)).toBe(true);
+  });
   it('runs a discoverable set of npm-script legs on the happy path', async () => {
     const { legs, invokedScripts } = await runLegs(null);
     // Sanity: the chain really ran (a zero-leg run would make every assertion below vacuous

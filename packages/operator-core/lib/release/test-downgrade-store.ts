@@ -34,8 +34,16 @@ export interface TestDowngradeRequest {
   acknowledgement?: CriticalAreaAcknowledgement | null;
 }
 
+/**
+ * What made the test non-blocking. `downgrade` = an agent's written downgrade (P-002, R-1).
+ * `flaky-quarantine` = the gate's automatic quarantine of a test whose verdict flipped on one
+ * commit (P-008, R-7); its `bugId` is the de-quarantine work-item.
+ */
+export type TestDowngradeKind = 'downgrade' | 'flaky-quarantine';
+
 export interface TestDowngradeRecord {
   id: number;
+  kind: TestDowngradeKind;
   testFile: string;
   testCase: string;
   reason: string;
@@ -49,7 +57,10 @@ export interface TestDowngradeRecord {
   revokedAt: string | null;
 }
 
-export type NewTestDowngrade = Omit<TestDowngradeRecord, 'id' | 'createdAt' | 'ownerNotifiedAt' | 'revokedAt'>;
+/** A row to insert. `kind` defaults to `downgrade`. */
+export type NewTestDowngrade = Omit<TestDowngradeRecord, 'id' | 'kind' | 'createdAt' | 'ownerNotifiedAt' | 'revokedAt'> & {
+  kind?: TestDowngradeKind;
+};
 
 export type TestDowngradeValidation =
   | { ok: true; record: NewTestDowngrade; criticalArea: CriticalArea | null; warning: string }
@@ -138,7 +149,14 @@ export function memoryTestDowngradeStore(now: () => Date = () => new Date()): Te
       const key = testDowngradeKey(record.testFile, record.testCase);
       const existing = rows.find((row) => row.revokedAt === null && testDowngradeKey(row.testFile, row.testCase) === key);
       if (existing) return { conflict: existing };
-      const row: TestDowngradeRecord = { ...record, id: nextId++, createdAt: now().toISOString(), ownerNotifiedAt: null, revokedAt: null };
+      const row: TestDowngradeRecord = {
+        ...record,
+        kind: record.kind ?? 'downgrade',
+        id: nextId++,
+        createdAt: now().toISOString(),
+        ownerNotifiedAt: null,
+        revokedAt: null,
+      };
       rows.push(row);
       return row;
     },
@@ -167,7 +185,7 @@ export interface TestDowngradeSql {
 }
 
 const COLUMNS =
-  'id, test_file, test_case, reason, owner, bug_id, author, created_at, critical_area, risk_acknowledgement, owner_notified_at, revoked_at';
+  'id, kind, test_file, test_case, reason, owner, bug_id, author, created_at, critical_area, risk_acknowledgement, owner_notified_at, revoked_at';
 
 function iso(value: unknown): string | null {
   if (value === null || value === undefined) return null;
@@ -177,6 +195,7 @@ function iso(value: unknown): string | null {
 function fromRow(row: Record<string, unknown>): TestDowngradeRecord {
   return {
     id: Number(row.id),
+    kind: row.kind === 'flaky-quarantine' ? 'flaky-quarantine' : 'downgrade',
     testFile: String(row.test_file),
     testCase: String(row.test_case ?? ''),
     reason: String(row.reason),
@@ -201,11 +220,22 @@ export function pgTestDowngradeStore(sql: TestDowngradeSql, scope: TestDowngrade
       const inserted = rowsOf(
         await sql.unsafe(
           `INSERT INTO harness_shared.test_downgrades
-             (workspace_id, harness_slug, test_file, test_case, reason, owner, bug_id, author, critical_area, risk_acknowledgement)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             (workspace_id, harness_slug, test_file, test_case, reason, owner, bug_id, author, critical_area, risk_acknowledgement, kind)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            ON CONFLICT (workspace_id, harness_slug, test_file, test_case) WHERE revoked_at IS NULL DO NOTHING
            RETURNING ${COLUMNS}`,
-          [...base, record.testFile, record.testCase, record.reason, record.owner, record.bugId, record.author, record.criticalArea, record.riskAcknowledgement],
+          [
+            ...base,
+            record.testFile,
+            record.testCase,
+            record.reason,
+            record.owner,
+            record.bugId,
+            record.author,
+            record.criticalArea,
+            record.riskAcknowledgement,
+            record.kind ?? 'downgrade',
+          ],
         ),
       );
       if (inserted[0]) return fromRow(inserted[0]);

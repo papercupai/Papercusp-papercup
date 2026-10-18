@@ -27,6 +27,7 @@ import { checkScorecardFreshness, type ScorecardFreshness } from './scorecard-fr
 import { recentWatchdogFires, recordFire } from './pot/watchdog';
 import { openEscalation } from './agent-tools/coordination/escalations';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from './severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from './alarm-attention';
 import { activeWorkspaceId } from './workspace-registry';
@@ -282,7 +283,7 @@ export async function rubricStalenessSweep(
   const thresholdMs = thresholdSec * 1_000;
   const now = deps.now ?? Date.now();
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const results: RubricStalenessSweepResult[] = [];
   const alarm = rubricAlarmDeps(deps.alarm);
   try {
@@ -396,7 +397,7 @@ export async function rubricProposalDwellSweep(
   const thresholdMs = thresholdSec * 1_000;
   const now = deps.now ?? Date.now();
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const results: RubricStalenessSweepResult[] = [];
   const alarm = rubricAlarmDeps(deps.alarm);
   try {

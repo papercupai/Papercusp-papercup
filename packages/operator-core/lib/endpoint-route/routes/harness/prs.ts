@@ -449,7 +449,7 @@ const reviewPr = defineTool({
     // human (the same identity the producer records as PR author + the EN-2 P-RATE
     // bucket). The caller may still override via the body (e.g. a multi-user hive).
     let reviewerGithubId = body.reviewer_github_id ?? 0;
-    let reviewerLogin = body.reviewer_login ?? 'papercusp';
+    let reviewerLogin = body.reviewer_login ?? '';
     if (body.reviewer_github_id === undefined) {
       const operator = await resolveLocalGithubIdentity();
       if (operator.kind === 'ok') {

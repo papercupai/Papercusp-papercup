@@ -264,6 +264,12 @@ import { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX } from '../../coord/actionab
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, bulkEnvelopeSchema, type BulkItemResult } from '../_bulk';
+import { changeKindsArg, changeKindReasonArg } from '../../change-kind-catalog';
+import {
+  attachChangeKindDeclarations,
+  completeChangeKindEligibility,
+  declaredChangeKindsById,
+} from '../../work-item-change-kinds';
 import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import {
   COMPLETION_OBJECT_EXAMPLE,
@@ -1042,6 +1048,9 @@ const itemSpec = z.object({
     .describe(
       'Optional successor/boundary note to append after a terminal close and finish cleanup; ignored for record-only or non-terminal results.',
     ),
+  /** change-kind-declared-proof P-001: the kinds of change this close covers (recorded at step 'complete'). */
+  changeKinds: changeKindsArg().optional(),
+  changeKindReason: changeKindReasonArg().optional(),
 });
 
 type CompleteItem = z.infer<typeof itemSpec>;
@@ -6220,6 +6229,8 @@ const workItemsCompleteTool = defineTool({
             validateOnly: z.boolean().optional(),
             /** Required only when this single item requests a terminal close. */
             assumptions: closeAssumptionsField,
+            changeKinds: changeKindsArg().optional(),
+            changeKindReason: changeKindReasonArg().optional(),
             // Keep the union's handler type uniform while ensuring a bulk payload
             // cannot accidentally parse through this branch and have `items` stripped.
             items: z.never().optional(),
@@ -6264,6 +6275,9 @@ const workItemsCompleteTool = defineTool({
             /** Read-only preflight for every item in this envelope unless an item overrides it. */
             validateOnly: z.boolean().optional(),
             assumptions: closeAssumptionsField,
+            /** Default change kinds for items that omit their own. */
+            changeKinds: changeKindsArg().optional(),
+            changeKindReason: changeKindReasonArg().optional(),
             items: z
               .array(itemSpec)
               .min(1)
@@ -6323,6 +6337,8 @@ const workItemsCompleteTool = defineTool({
           recordOnly: it.recordOnly ?? args.recordOnly,
           boundaryNote: it.boundaryNote ?? args.boundaryNote,
           validateOnly: it.validateOnly ?? args.validateOnly,
+          changeKinds: it.changeKinds ?? args.changeKinds,
+          changeKindReason: it.changeKindReason ?? args.changeKindReason,
         }))
       : [
           {
@@ -6336,9 +6352,25 @@ const workItemsCompleteTool = defineTool({
             assumptions: args.assumptions,
             boundaryNote: args.boundaryNote,
             validateOnly: args.validateOnly,
+            changeKinds: args.changeKinds,
+            changeKindReason: args.changeKindReason,
           },
         ];
     const env = await runBulk(list, (it) => completeOne(it, completionIdent, ctx), { keyOf: (it) => ({ id: it.id }) });
+    const declared = declaredChangeKindsById(list);
+    const declaredEnv = declared.size
+      ? {
+          ...env,
+          results: await attachChangeKindDeclarations({
+            declared,
+            results: env.results,
+            step: 'complete',
+            declaredBy: ident.ownerId,
+            workspaceId: ident.workspaceId ?? ctx.workspaceId ?? 'default',
+            eligible: completeChangeKindEligibility,
+          }),
+        }
+      : env;
     // EI-14676 asked that a non-convergent completion be "impossible to miss": the
     // caller-visible `ok` must be false at the TOP level, not just buried per-item, so an
     // agent cannot read `ok:true` and write a "TERMINAL — do not re-open" checkpoint off a
@@ -6353,8 +6385,9 @@ const workItemsCompleteTool = defineTool({
     // just the n=1 case of that conjunction, so the override is redundant and removing it
     // keeps ONE definition of the rule rather than a general one plus a local restatement
     // that could drift from it.
-    return bulkContent(env);
+    return bulkContent(declaredEnv);
   },
 });
+
 
 export default workItemsCompleteTool;

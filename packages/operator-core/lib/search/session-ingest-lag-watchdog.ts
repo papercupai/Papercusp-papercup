@@ -33,12 +33,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import {
   readInteractiveUsageFreshness,
   type InteractiveUsageFreshness,
 } from '../interactive-usage/freshness';
+import { activeWorkspaceId } from '../workspace-registry';
 
 const CONDITION_PREFIX = 'alarm:session-ingest:';
 type IngestConditionKind = 'backlog' | 'parts' | 'usage';
@@ -388,8 +390,8 @@ export async function sessionIngestLagSweep(
   const thresholdSec = ingestLagThresholdSec();
   if (thresholdSec <= 0) return [{ sourceKind: '*', outcome: 'skipped', reason: 'kill switch' }];
   const thresholdMs = thresholdSec * 1_000;
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const results: IngestLagSweepResult[] = [];
   try {
     const observations = await (deps.observe ?? observeAdapterLag)();
@@ -727,8 +729,8 @@ export async function sessionPartsWriterSweep(
   const windowSec = partsWriterWindowSec();
   if (windowSec <= 0) return [{ sourceKind: '*', outcome: 'skipped', reason: 'kill switch' }];
   const windowMs = windowSec * 1_000;
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const results: IngestLagSweepResult[] = [];
   try {
     const observations = await (deps.observe ?? observePartsWriter)(windowMs);

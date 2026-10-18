@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * artifact-url-delivery-guard — stop an artifact URL from being reported to the
  * owner as delivered when no artifact was ever published (EI-21844056581395228,
@@ -67,7 +68,7 @@ const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 
 /** Where a session's verified-id ledger lives (overridable for tests). */
 export function ledgerPathFor(sessionId, env = process.env) {
-  const root = env.PAPERCUSP_ARTIFACT_LEDGER_DIR || join(homedir(), '.papercusp', 'artifact-url-ledger');
+  const root = env.PAPERCUSP_ARTIFACT_LEDGER_DIR || papercuspPath('artifact-url-ledger');
   const safe = String(sessionId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 120);
   return join(root, `${safe}.ids`);
 }

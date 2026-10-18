@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * record-release-cli — write a cut into the release registry, and regenerate the
  * static beta release-history site from it. (WI-4446.)
@@ -40,6 +41,7 @@ import {
 } from '@papercusp/operator-core/lib/owner-directives';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
+import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 import { POSTHOG_PUBLIC_DEFAULTS } from '@papercusp/operator-core/lib/posthog-public-defaults';
 import {
   hydrateRelease,
@@ -331,7 +333,7 @@ export function releaseTag(version: string, channel: string): string {
  * files, and a no-op re-run is instant. The cache is advisory — a miss (or an
  * absent/corrupt cache file) simply re-hashes, so it can never ship a wrong sum.
  */
-const SHA_CACHE_PATH = path.join(os.homedir(), '.papercusp', 'release-sha256-cache.json');
+const SHA_CACHE_PATH = papercuspPath('release-sha256-cache.json');
 type ShaCacheEntry = { size: number; mtimeMs: number; sha256: string };
 let shaCache: Record<string, ShaCacheEntry> | null = null;
 function loadShaCache(): Record<string, ShaCacheEntry> {
@@ -1278,7 +1280,7 @@ export function assertPapercuspMobileProductName(productName: string): string {
  * scripts ever read.
  */
 export function holdMarkerPath(): string {
-  return path.join(os.homedir(), '.papercusp', 'release-page-held');
+  return papercuspPath('release-page-held');
 }
 
 /** True when the releases page is currently held back behind the holding page. */
@@ -1994,7 +1996,7 @@ export function buildRunOpts(argv: string[]): RecordOpts {
   const outDir = arg(argv, '--out') ?? path.join(bundleDir, 'release-history');
   const scope: Scope = {
     workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',
-    harnessSlug: arg(argv, '--harness') ?? 'papercusp',
+    harnessSlug: arg(argv, '--harness') ?? operatorHomeHarnessSlug(),
   };
   return {
     version: (arg(argv, '--version') ?? '') as string,

@@ -11,6 +11,7 @@ function makeFakePlatform(): HostPlatform {
     readTextFileSync: () => 'fake',
     fileExistsSync: () => true,
     homedir: () => '/fake/home',
+    papercuspHome: () => '/fake/home/.papercusp',
     getHarnessAdminUrl: () => 'postgresql://fake/db',
   };
 }

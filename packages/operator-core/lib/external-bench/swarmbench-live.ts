@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * swarmbench-live.ts — the live `RunSwarmSim` port (plan benchmark-suite-swarmbench-2026-06-17 P-002/P-003).
  *
@@ -127,7 +128,7 @@ export interface SwarmLiveDeps {
 }
 
 export function swarmbenchRepoDir(): string {
-  return process.env.PAPERCUSP_SWARMBENCH_DIR ?? join(homedir(), '.papercusp', 'bench-harnesses', 'swarmbench');
+  return process.env.PAPERCUSP_SWARMBENCH_DIR ?? papercuspPath('bench-harnesses', 'swarmbench');
 }
 
 /** Build the LIVE {@link RunSwarmSim} — shells out to the vendored `swarmbench_run.py`. */

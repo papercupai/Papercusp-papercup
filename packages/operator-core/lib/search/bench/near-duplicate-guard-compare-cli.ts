@@ -39,6 +39,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { dupeThresholds } from '../../agent-tools/work_items/semantic-dupe-guard';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import { observationLaneExclusionSql } from '../../work-items';
@@ -57,7 +58,7 @@ import {
 import { DEFAULT_BACKGROUND_SAMPLE_LIMIT, DEFAULT_NEAR_DUPLICATE_QUANTILE } from '../../../../../libs/generic/search/src/near-duplicate';
 
 const WORKSPACE = process.env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace';
-const HARNESS = process.env.PAPERCUSP_HARNESS ?? 'papercusp';
+const HARNESS = process.env.PAPERCUSP_HARNESS?.trim() || operatorHomeHarnessSlug();
 const DEFAULT_OUT = 'docs/evidence/shared-vector-search-libraries-2026-09-29/p004-dupe-guard-comparison.json';
 
 function arg(name: string): string | undefined {

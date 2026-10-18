@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * claude-sessions — find / search / read Claude Code chat transcripts
  * (~/.claude/projects/<encoded-cwd>/<session-id>.jsonl), the Claude-Code analogue
@@ -31,7 +32,7 @@ export function defaultClaudeProjectsRoot(): string {
  * NOT under ~/.claude/projects (EI-5790 / reference_session_launch_dirs_unified_keying).
  */
 export function papercuspSessionClaudeBase(): string {
-  return join(homedir(), '.papercusp', 'session-claude');
+  return papercuspPath('session-claude');
 }
 
 /**

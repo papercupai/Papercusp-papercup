@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Hyperswarm join + corestore.replicate plumbing for one harness.
  *
@@ -3759,7 +3760,7 @@ export function readExpectedDhtBootstrap(): string | undefined {
     const path = require('node:path') as typeof import('node:path');
     const filePath =
       process.env.PAPERCUSP_EXPECTED_DHT_BOOTSTRAP_FILE?.trim() ||
-      path.join(os.homedir(), '.papercusp', 'expected-dht-bootstrap');
+      papercuspPath('expected-dht-bootstrap');
     const contents = fs.readFileSync(filePath, 'utf8').trim();
     return contents || undefined;
   } catch {
@@ -3804,7 +3805,7 @@ export function readEffectiveDhtBootstrapRaw(): string | undefined {
     // process (dev:service_health, WI-10005995) applies exactly the same rule.
     return resolveEffectiveDhtBootstrap({
       env: process.env,
-      defaultFilePath: path.join(os.homedir(), '.papercusp', 'dht-bootstrap'),
+      defaultFilePath: papercuspPath('dht-bootstrap'),
       readFile: (p) => fs.readFileSync(p, 'utf8'),
     }).raw;
   } catch {

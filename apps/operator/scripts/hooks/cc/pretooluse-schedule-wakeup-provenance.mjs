@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * PreToolUse (matcher "ScheduleWakeup") — best-effort turn-provenance
  * ENROLLMENT for the Claude-CLI-native ScheduleWakeup tool
@@ -72,7 +73,7 @@ function sanitizeSid(sid) {
 }
 
 function turnProvenanceDir(env = process.env) {
-  return env.PAPERCUSP_TURN_PROVENANCE_DIR || join(homedir(), '.papercusp', 'turn-provenance');
+  return env.PAPERCUSP_TURN_PROVENANCE_DIR || papercuspPath('turn-provenance');
 }
 
 const LEDGER_COMPACT_BYTES = 32 * 1024;

@@ -1,3 +1,4 @@
+import { papercuspPtyPath } from '@papercusp/host-platform/home';
 /**
  * psu-pty-host — the production managed-PTY host for interactive psu sessions
  * (turn-lifecycle-control-2026-06-08 Phase 3, P-012/P-013/P-014; D-006/D-011).
@@ -507,7 +508,7 @@ export function interactiveAdoptionOptIn(env = process.env) {
 // into the operator's live corpus. Production keeps the home-directory default;
 // PAPERCUSP_PSU_PTY_DIR is an explicit, process-scoped override for isolated
 // test/probe hosts.
-export const PSU_PTY_DIR = process.env.PAPERCUSP_PSU_PTY_DIR || join(homedir(), '.papercusp', 'psu-pty');
+export const PSU_PTY_DIR = papercuspPtyPath();
 
 /** How long the host waits for the user's input line to go idle before writing
  *  an injected turn into the pty (P-013 mid-keystroke safety). A burst of typing
@@ -710,7 +711,7 @@ export function tagSessionPortTurn(text, sid, env = process.env, nowMs = Date.no
   const sha256 = createHash('sha256')
     .update(String(text).replace(/\r\n?/g, '\n').trim(), 'utf8')
     .digest('hex');
-  const dir = env.PAPERCUSP_TURN_PROVENANCE_DIR || join(homedir(), '.papercusp', 'turn-provenance');
+  const dir = env.PAPERCUSP_TURN_PROVENANCE_DIR || papercuspPath('turn-provenance');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   const safe = sanitizeKey(sid);

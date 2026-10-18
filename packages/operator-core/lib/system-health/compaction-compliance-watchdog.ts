@@ -1352,7 +1352,7 @@ async function maybeCarryRespawn(
     const { findLiveHostAsync, hostSupports, injectIntoHost } = await import(
       '../events/await/psu-pty-discovery'
     );
-    const host = await findLiveHostAsync(ownerId);
+    const host = await findLiveHostAsync(ownerId, undefined, { workspaceId });
     if (!host || !hostSupports(host, 'carry-respawn')) return false;
 
     // EI-13477: reconciled — a same-pid self-relaunch's dead native id must not
@@ -1588,7 +1588,7 @@ async function maybeForceRespawn(
     const { findLiveHostAsync, hostSupports, injectIntoHost } = await import(
       '../events/await/psu-pty-discovery'
     );
-    const host = await findLiveHostAsync(ownerId);
+    const host = await findLiveHostAsync(ownerId, undefined, { workspaceId });
     // OMP self-compacts natively and is ineligible for both force paths. Resolve
     // this before the hostless successor fallback can record force-unavailable.
     const ref = await resolveSessionRefReconciled(ownerId);

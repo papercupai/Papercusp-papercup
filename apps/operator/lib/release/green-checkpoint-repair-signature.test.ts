@@ -269,6 +269,78 @@ describe("P-006 repairSignatureFromVerdict — a verdict names WHICH kinds it me
     expect(out.failingTests).toEqual(["lint:tsc"]);
     expect(out.measuredKinds).toEqual([]);
   });
+
+  it("P-017: the verdict carries failed cases per file and error keys per red leg onto the queue's entries", () => {
+    const out = repairSignatureFromVerdict({
+      failingTests: ["apps/operator/lib/a.test.ts"],
+      postSuiteMeasured: true,
+      postSuiteLegs: [
+        { id: "lint:tsc", status: "failed", errorKeys: ["lib/x.ts|TS2322", "lib/x.ts|TS2322#2"] },
+        { id: "lint:identity-leak", status: "failed" },
+        { id: "lint:plane-integrity", status: "passed", errorKeys: ["ignored|TS1"] },
+      ],
+      // Runner output names the file workspace-relative; the signature holds it repo-relative.
+      failingCasesByFile: new Map([["lib/a.test.ts", ["case one", "case two"]]]),
+    });
+    expect(out.casesByFile).toEqual({ "lib/a.test.ts": ["case one", "case two"] });
+    // Only a RED leg contributes keys; a red leg with no parsed errors stays keyed on its id.
+    expect(out.legErrors).toEqual({ "lint:tsc": ["lib/x.ts|TS2322", "lib/x.ts|TS2322#2"] });
+    // Plain objects, so the detail survives the queue's JSON persistence.
+    expect(JSON.parse(JSON.stringify(out.casesByFile))).toEqual(out.casesByFile);
+
+    const queue = queueWith([
+      entry({ kind: "test-file", id: "apps/operator/lib/a.test.ts", cases: ["case one"] }),
+      entry({ kind: "lint-leg", id: "lint:tsc", errors: ["lib/x.ts|TS2322"] }),
+    ]);
+    const next = markFrozenRepairVerificationRed(queue, { repairHead: HEAD, nowMs: 3, ...out });
+    const byId = new Map(next.signature.map((e) => [e.id, e]));
+    expect(byId.get("apps/operator/lib/a.test.ts")?.cases).toEqual(["case one", "case two"]);
+    expect(byId.get("lint:tsc")?.errors).toEqual(["lib/x.ts|TS2322", "lib/x.ts|TS2322#2"]);
+  });
+
+  it("P-017: a measured verdict with no detail says so; an unmeasured one carries neither field", () => {
+    const measured = repairSignatureFromVerdict({
+      failingTests: ["lib/a.test.ts"],
+      postSuiteMeasured: true,
+      postSuiteLegs: [{ id: "lint:tsc", status: "failed" }],
+      failingCasesByFile: new Map(),
+    });
+    expect(measured.casesByFile).toEqual({});
+    expect(measured.legErrors).toEqual({});
+
+    const unmeasured = repairSignatureFromVerdict({
+      failingTests: ["lint:tsc"],
+      typecheckPreflight: { status: "failed" },
+      postSuiteMeasured: false,
+      failingCasesByFile: new Map([["lib/a.test.ts", ["case"]]]),
+    });
+    expect(unmeasured).not.toHaveProperty("casesByFile");
+    expect(unmeasured).not.toHaveProperty("legErrors");
+  });
+
+  it("P-017: a round that did not measure cases keeps the last measured ones — no phantom crash", () => {
+    const queue = queueWith([
+      entry({ kind: "test-file", id: "lib/a.test.ts", cases: ["case one"] }),
+      entry({ kind: "lint-leg", id: "lint:tsc", errors: ["lib/x.ts|TS2322"] }),
+    ]);
+    // A targeted repair-head re-run: typed entries, no case / error measurement.
+    const carried = markFrozenRepairVerificationRed(queue, {
+      repairHead: HEAD, nowMs: 3, failingTests: ["lib/a.test.ts", "lint:tsc"],
+      signature: [
+        { kind: "test-file", id: "lib/a.test.ts", recipe: "npm run test:file -- lib/a.test.ts" },
+        { kind: "lint-leg", id: "lint:tsc", recipe: "npm run lint:tsc" },
+      ],
+    });
+    const byId = new Map(carried.signature.map((e) => [e.id, e]));
+    expect(byId.get("lib/a.test.ts")?.cases).toEqual(["case one"]);
+    expect(byId.get("lint:tsc")?.errors).toEqual(["lib/x.ts|TS2322"]);
+
+    // A measured round that names no case for the file: the detail is gone (a crash shape).
+    const crashed = markFrozenRepairVerificationRed(queue, {
+      repairHead: HEAD, nowMs: 4, failingTests: ["lib/a.test.ts"], casesByFile: {},
+    });
+    expect(crashed.signature.find((e) => e.id === "lib/a.test.ts")?.cases).toBeUndefined();
+  });
 });
 
 describe("P-006 verifyRepairHead — the typed signature drives the runners, at the repair head only", () => {

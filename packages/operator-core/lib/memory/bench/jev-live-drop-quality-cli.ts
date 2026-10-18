@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * jev-live-drop-quality-cli.ts — grade the Jev memory filter's live drops
  * (WI-10004485 step B). The method and the pure logic are in
@@ -100,7 +101,7 @@ async function mapPool<T, R>(items: readonly T[], width: number, fn: (item: T, i
 
 /** Every rebuilt query for SURFACE in one owner's transcripts, keyed by its gate state hash. */
 function queriesForOwner(owner: string, into: Map<string, string>): { files: number; batches: number } {
-  const root = path.join(os.homedir(), '.papercusp', 'session-claude', owner, 'projects');
+  const root = papercuspPath('session-claude', owner, 'projects');
   let files = 0;
   let batches = 0;
   let projects: string[] = [];

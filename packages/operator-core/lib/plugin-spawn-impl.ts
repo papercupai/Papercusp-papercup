@@ -9,6 +9,7 @@
  * over HTTP.
  */
 import { spawn as childSpawn } from 'node:child_process';
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, delimiter, resolve } from 'node:path';
 import type { PluginSpawn } from '@papercusp/plugin-sdk';
@@ -116,7 +117,7 @@ export function augmentedSpawnPath(cwd?: string): string {
     // interactive shell they are supposed to mirror. A test that asserted
     // `dirs.at(-1)` against the unpinned host PATH read this backwards and
     // red-pinned the fleet gate with a same-sha verdict flip (EI-21284542595660609).
-    process.env.HOME ? join(process.env.HOME, '.papercusp/bin') : '',
+    papercuspPath('bin'),
   ];
   const seen = new Set<string>();
   return [...prepend, ...(process.env.PATH ?? '').split(delimiter), ...extra]

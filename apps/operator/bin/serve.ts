@@ -1,3 +1,4 @@
+import { papercuspHome } from '@papercusp/host-platform/home';
 /**
  * `papercusp serve` — headless operator boot (SP1 C1 + C3).
  *
@@ -190,7 +191,7 @@ process.on('uncaughtException', (err) => {
 // stall) — see EI-13917. A process that already does the isolation-correct
 // thing (sets PAPERCUSP_HOME) now gets FULL isolation instead of only
 // half of it.
-const PAPERCUSP_DIR = process.env.PAPERCUSP_HOME || join(homedir(), ".papercusp");
+const PAPERCUSP_DIR = papercuspHome();
 const OPERATOR_JSON = join(PAPERCUSP_DIR, "operator.json");
 const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, "embedded-pg.json");
 

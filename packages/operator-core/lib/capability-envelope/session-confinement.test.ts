@@ -157,6 +157,20 @@ describe('session confinement — exact assignment arguments', () => {
     expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none', completion }).allowed).toBe(true);
     expect(evaluate('coord:whoami', {}).allowed).toBe(true);
   });
+  it('permits only an empty managed self-compaction request inside an exact assignment', () => {
+    const policy = { ...confinement, denyOutside: [...confinement.denyOutside, 'session:request-compaction'] };
+    const evaluateCarry = (args: unknown) => evaluateSessionConfinement({
+      toolName: 'session:request-compaction', args, confinement: policy });
+    expect(evaluateCarry({}).allowed).toBe(true);
+    expect(evaluateSessionConfinement({ toolName: 'session:request-compaction',
+      confinement: policy, purpose: 'listing' }).allowed).toBe(true);
+    for (const args of [undefined, null, [], { focus: 'WI-other' }, { continueNote: 'Use another assignment' },
+      { autoContinue: true }, { respawn: true }, { ownerId: 'su-other' }, { reason: 'caller hint' }])
+      expect(evaluateCarry(args)).toMatchObject({ allowed: false, matchedGlob: 'outside-exact-carry' });
+    expect(evaluate('session:request-compaction', {}).allowed).toBe(false);
+    expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {},
+      confinement: { ...policy, denyTools: ['session:*'] } }).allowed).toBe(false);
+  });
   it('exposes permitted metadata only when the host explicitly requests listing; missing dispatch args still deny', () => {
     for (const toolName of ['work_items:get', 'work_items:checkpoint', 'work_items:complete']) {
       expect(evaluateSessionConfinement({ toolName, confinement, purpose: 'listing' }).allowed).toBe(true);

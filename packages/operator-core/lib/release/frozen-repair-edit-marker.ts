@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * P-004/P-005 (frozen-candidate-compliance-enforcement-2026-08-30): the edit-time half of
  * frozen-candidate compliance.
@@ -76,7 +77,7 @@ function concreteTarget(target: GateVerdictTarget | null | undefined): target is
 /** Each workspace/install pair gets a separate file under the shared state directory. */
 export function frozenRepairMarkerPath(target: GateVerdictTarget | null | undefined): string | null {
   if (!concreteTarget(target)) return null;
-  const base = process.env.PAPERCUSP_STATE_DIR ?? join(homedir(), '.papercusp', 'state');
+  const base = process.env.PAPERCUSP_STATE_DIR ?? papercuspPath('state');
   const scopeKey = createHash('sha256')
     .update(`${target.workspaceId.trim()}\0${target.installSlug.trim()}`)
     .digest('hex');

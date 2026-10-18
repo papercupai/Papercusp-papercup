@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * release-profile.ts — the papercusp WIRING for the generic composite release-profile
  * evaluator (`@papercusp/release-profile`; rubric-system-and-auto-loop-release-profile-
@@ -341,7 +342,7 @@ export interface WindowsSmokeFreshnessOpts {
 function defaultWindowsSmokeMarkerPath(): string {
   const root =
     process.env.PAPERCUSP_RELEASE_RETENTION_ROOT ??
-    path.join(os.homedir(), '.papercusp', 'release-retention');
+    papercuspPath('release-retention');
   return path.join(root, WINDOWS_SMOKE_SUCCESS_MARKER_FILENAME);
 }
 

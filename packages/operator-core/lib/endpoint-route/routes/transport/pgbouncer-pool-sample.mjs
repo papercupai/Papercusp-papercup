@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Bounded PgBouncer + PostgreSQL activity sampler shared by the MCP host and
  * the external MCP proxy watchdog.
@@ -21,7 +22,7 @@ const ADMIN_USER = process.env.PAPERCUSP_PGBOUNCER_ADMIN_USER || 'harness_admin'
 const ADMIN_PASSWORD = process.env.PAPERCUSP_PGBOUNCER_ADMIN_PASSWORD || 'harness_admin_pwd';
 export const SAMPLE_LOG_FILE =
   process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POOL_SAMPLE_LOG ||
-  join(homedir(), '.papercusp', 'mcp-proxy-watchdog-pgbouncer-samples.log');
+  papercuspPath('mcp-proxy-watchdog-pgbouncer-samples.log');
 const SAMPLE_TIMEOUT_MS = Number(process.env.PAPERCUSP_PGBOUNCER_SAMPLE_TIMEOUT_MS) || 5_000;
 const ACTIVITY_TIMEOUT_MS = 1_500;
 const MAX_PSQL_BUFFER_BYTES = 32 * 1024;

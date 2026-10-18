@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Seed a `project-history-refresh` routine — `system:project-history-refresh` →
  * `project-history-refresh-action.ts`, the refresh owner for a hive's committed
@@ -72,7 +73,7 @@ function flag(name: string, fallback: string): string {
 function hiveRootCandidates(slug: string): string[] {
   const home = process.env.PAPERCUSP_HOME?.trim();
   return [
-    path.join(os.homedir(), '.papercusp', 'hives', slug),
+    papercuspPath('hives', slug),
     ...(home ? [path.join(home, 'hives', slug)] : []),
   ];
 }

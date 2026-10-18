@@ -31,7 +31,7 @@ import type { StrandedGoalWork } from './goal-stranded-work';
 import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
-import { inboxWakeKey } from './agent-tools/coordination/inbox-wake';
+import { classifyAgentWait } from './agent-tools/coordination/wait-classification';
 
 export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v6';
 /**
@@ -1575,7 +1575,7 @@ export function waitingOnObligations(input: WaitingOnProviderInput): AgentObliga
   // can resume it. It is wake plumbing, not a dependency the agent is waiting
   // on; surfacing it as blocked sends the reader to inspect a healthy fixture.
   const rows = input.read.value.filter(
-    (row) => row.kind !== 'event-await' || row.key !== inboxWakeKey(input.ownerId),
+    (row) => row.kind !== 'event-await' || classifyAgentWait(input.ownerId, row.key) !== 'listener',
   );
   if (rows.length === 0) {
     return [

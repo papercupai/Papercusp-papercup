@@ -1,3 +1,4 @@
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 /**
  * sentinel-model-file — just-in-time file projection of the Sentinel's SESSION
  * model override (model-override-sidebar-2026-06-23).
@@ -17,7 +18,7 @@ import { join } from 'node:path';
 
 /** Absolute path the `psu-sentinel` wrapper reads its `--model` spec from. */
 export function sentinelModelFilePath(): string {
-  return join(homedir(), '.papercusp', 'sentinel-model');
+  return papercuspPath('sentinel-model');
 }
 
 /**
@@ -30,7 +31,7 @@ export function materializeSentinelModelFile(spec: string | null | undefined): v
   try {
     const s = (spec ?? '').trim();
     if (s) {
-      mkdirSync(join(homedir(), '.papercusp'), { recursive: true });
+      mkdirSync(papercuspHome(), { recursive: true });
       writeFileSync(path, s, 'utf8');
     } else if (existsSync(path)) {
       rmSync(path);

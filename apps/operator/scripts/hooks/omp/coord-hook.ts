@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Papercusp coordination hook for OMP — one module, eight handlers
  * (per agent-coordination-architecture-v2 §7.3 + §12.1 +
@@ -193,7 +194,7 @@ export function vertexGeminiRequestStartReservation(
 }
 
 function vertexGeminiRequestStartStateDir(): string {
-  return join(homedir(), '.papercusp', 'provider-pacing');
+  return papercuspPath('provider-pacing');
 }
 
 async function pause(ms: number): Promise<void> {
@@ -596,7 +597,7 @@ export async function callMcpTool(
   if (!bearer && !process.env.PAPERCUSP_BUNDLE_URL) {
     try {
       bearer = (
-        await fsp.readFile(join(process.env.HOME ?? homedir(), '.papercusp', 'superuser-token'), 'utf8')
+        await fsp.readFile(papercuspPath('superuser-token'), 'utf8')
       ).trim();
     } catch {
       bearer = '';
@@ -2898,7 +2899,7 @@ export async function launchProseBudgetForResult(
 export async function runLaunchProseBudgetHook(call: ToolCallEvent): Promise<string> {
   // The desktop and standalone installers already install cc hooks here. Like the
   // RTK import below, this must work after coord-hook.ts is copied or bundled.
-  const hook = join(process.env.HOME ?? homedir(), '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
+  const hook = papercuspPath('hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
   const relevantTool = /^(?:edit|write|ast_edit|multi_edit|apply_patch|bash)$/i.test(call.toolName)
     || /(?:capability[_:-](?:edit|write|multi_?edit|patch|bash)|tools[_:]invoke)$/.test(call.toolName);
   if (!relevantTool) return '';
@@ -3326,7 +3327,7 @@ export function ttyCandidates(env: Partial<NodeJS.ProcessEnv> = process.env): st
 /** The directory holding one claim marker per terminal device — the TS twin of
  *  pc_tty.py's `_tty_claims_dir` / psu-launcher.mjs's `TTY_CLAIMS_DIR`. */
 function ttyClaimsDir(env: Partial<NodeJS.ProcessEnv>): string {
-  return (env.PAPERCUSP_TTY_CLAIMS_DIR ?? '').trim() || join(homedir(), '.papercusp', 'tty-claims');
+  return (env.PAPERCUSP_TTY_CLAIMS_DIR ?? '').trim() || papercuspPath('tty-claims');
 }
 
 function ttyClaimFilename(ttyPath: string): string {

@@ -1,3 +1,4 @@
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 /**
  * On-disk store helpers for the Storage page (storage-settings-page-2026-06-15
  * P-003): root resolution, recursive sizing, top-level entry enumeration, and a
@@ -96,7 +97,7 @@ function newDiskScanBudget(): DiskWalkBudget {
 /** The filesystem roots where Papercusp may keep a registered or future store. */
 export function undeclaredDiskRoots(): string[] {
   return [
-    join(homedir(), '.papercusp'),
+    papercuspHome(),
     ...plainStoreRoots('scratch'),
     ...plainStoreRoots('flight-recorder'),
     ...plainStoreRoots('wake-spills'),
@@ -158,12 +159,12 @@ export function plainStoreRoots(store: 'scratch' | 'flight-recorder' | 'wake-spi
     case 'scratch':
       return [scratchRoot()];
     case 'flight-recorder':
-      return [join(homedir(), '.papercusp', 'flight-recorder')];
+      return [papercuspPath('flight-recorder')];
     case 'wake-spills':
       // Entries here are per-OWNER directories, so each enumerated entry's mtime is
       // that owner's last spill — which is what lets a dead owner's whole directory
       // age out as one unit (see the `wake-spills` category).
-      return [join(homedir(), '.papercusp', 'wake-spills')];
+      return [papercuspPath('wake-spills')];
   }
 }
 
@@ -171,7 +172,7 @@ export function plainStoreRoots(store: 'scratch' | 'flight-recorder' | 'wake-spi
 function globRoot(rootKind: 'papercusp-home'): string {
   switch (rootKind) {
     case 'papercusp-home':
-      return join(homedir(), '.papercusp');
+      return papercuspHome();
   }
 }
 

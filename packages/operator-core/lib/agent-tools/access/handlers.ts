@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * The access:* tool logic (P-012, WI-10004025), injectable so the tests drive it with fakes.
  * Each tool file wires these to the real store with {@link defaultAccessHandlerDeps}.
@@ -48,7 +49,7 @@ export async function defaultAccessHandlerDeps(base: AccessToolDeps): Promise<Ac
     revoke: store.revokeAppKey,
     workspaceExists: (id) => Boolean(registry.workspaceById(id)),
     async writeSecretFile(id, secret) {
-      const dir = process.env.PAPERCUSP_ACCESS_KEY_DIR || path.join(os.homedir(), '.papercusp', 'connected-apps', 'keys');
+      const dir = process.env.PAPERCUSP_ACCESS_KEY_DIR || papercuspPath('connected-apps', 'keys');
       await fs.mkdir(dir, { recursive: true, mode: 0o700 });
       const file = path.join(dir, `${id}.key`);
       // wx: never overwrite an existing file; the mode applies at creation.

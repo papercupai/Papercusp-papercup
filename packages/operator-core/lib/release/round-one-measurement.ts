@@ -112,7 +112,7 @@ export function mergeEarlyTypecheckRedIntoSuite<
   return { result: merged, suiteMeasured: true };
 }
 
-export type LikeForLikeExclusionReason = 'no-suite-measurement' | 'saturated';
+export type LikeForLikeExclusionReason = 'no-suite-measurement' | 'saturated' | 'population-unknown';
 
 export interface LikeForLikeTrajectory {
   /** Every recorded round, comparable or not. */
@@ -134,12 +134,26 @@ export interface LikeForLikeTrajectory {
  * `round` number. A round that measured no tests is skipped, and so is a round whose count
  * reached `saturationCap`. Legacy rounds without a `measurement` field are read as suite rounds,
  * which keeps the previous behaviour for queues written before P-016.
+ *
+ * SAME POPULATION (P-008, green-main-ratchet-convergence-2026-10-17#D-015). A round's gate can
+ * remove failures from its count (a flaky quarantine, `quarantine.txt`, an active downgrade)
+ * and records them as `excludedFromCount`. Earlier rounds still counted those tests, so the
+ * union of every round's exclusions is removed from EVERY round's failing list before the
+ * counts are compared. A test quarantined at round 5 therefore cannot make round 5 look like an
+ * improvement over round 1. A round without its failing list cannot be adjusted: once anything
+ * is excluded it is skipped as `population-unknown`. With no exclusions the rule is unchanged.
  */
 export function likeForLikeTrajectory(
-  rounds: readonly Pick<FrozenRepairConvergenceRound, 'round' | 'failingCount' | 'measurement'>[] | undefined,
+  rounds:
+    | readonly Pick<
+        FrozenRepairConvergenceRound,
+        'round' | 'failingCount' | 'measurement' | 'failingTests' | 'excludedFromCount'
+      >[]
+    | undefined,
   options: { saturationCap: number },
 ): LikeForLikeTrajectory {
   const ordered = [...(rounds ?? [])].sort((a, b) => a.round - b.round);
+  const excluded = new Set(ordered.flatMap((entry) => entry.excludedFromCount ?? []));
   const excludedRounds: LikeForLikeTrajectory['excludedRounds'] = [];
   const comparable: { round: number; failingCount: number }[] = [];
   for (const entry of ordered) {
@@ -147,8 +161,13 @@ export function likeForLikeTrajectory(
       excludedRounds.push({ round: entry.round, reason: 'no-suite-measurement' });
     } else if (entry.failingCount >= options.saturationCap) {
       excludedRounds.push({ round: entry.round, reason: 'saturated' });
-    } else {
+    } else if (excluded.size === 0) {
       comparable.push({ round: entry.round, failingCount: entry.failingCount });
+    } else if (!entry.failingTests) {
+      excludedRounds.push({ round: entry.round, reason: 'population-unknown' });
+    } else {
+      const failingCount = entry.failingTests.filter((id) => !excluded.has(id)).length;
+      comparable.push({ round: entry.round, failingCount });
     }
   }
   let lowest: number | null = null;

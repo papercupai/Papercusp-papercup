@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * event-loop-lag-monitor.ts — cheap, always-on event-loop-lag gauge
  * (EI-79 observability). Booted by the Hono host; also the central SLO
@@ -806,7 +807,7 @@ export async function captureCpuProfile(args: {
     const fs = await import('node:fs/promises');
     const inspector = await import('node:inspector/promises');
 
-    const dir = args.dir ?? path.join(os.homedir(), '.papercusp', 'loop-profiles');
+    const dir = args.dir ?? papercuspPath('loop-profiles');
     await fs.mkdir(dir, { recursive: true });
 
     const pruneCpuProfiles = async (retain: number): Promise<void> => {
@@ -916,7 +917,7 @@ export async function captureHeapSnapshot(args: {
     // and must be wired before the command is sent.
     const inspector = await import('node:inspector');
 
-    const dir = args.dir ?? path.join(os.homedir(), '.papercusp', 'heap-snapshots');
+    const dir = args.dir ?? papercuspPath('heap-snapshots');
     await fs.mkdir(dir, { recursive: true });
 
     const session = new inspector.Session();
@@ -1084,7 +1085,7 @@ export async function dumpHeapSamplingProfile(args: {
     const os = await import('node:os');
     const path = await import('node:path');
     const fs = await import('node:fs/promises');
-    const dir = args.dir ?? path.join(os.homedir(), '.papercusp', 'heap-snapshots');
+    const dir = args.dir ?? papercuspPath('heap-snapshots');
     await fs.mkdir(dir, { recursive: true });
     const profile = await new Promise<{ head: SamplingNode }>((resolve, reject) => {
       _samplingSession!.post('HeapProfiler.getSamplingProfile', (err, r) =>

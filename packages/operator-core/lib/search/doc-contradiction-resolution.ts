@@ -59,6 +59,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import type { DocSectionRef } from './doc-section-overlap';
 import { DOC_OVERLAP_SOURCES } from './doc-section-overlap';
 import type { KindedFinding } from './doc-contradiction-scan';
@@ -410,7 +411,7 @@ export function createIssueContradictionFiler(opts?: {
   harness?: string;
   createdBy?: string;
 }): ContradictionWorkItemFiler {
-  const harness = opts?.harness ?? 'papercusp';
+  const harness = opts?.harness?.trim() || operatorHomeHarnessSlug();
   const createdBy = opts?.createdBy ?? 'doc-contradiction-resolution';
   return {
     async findExisting(dedupeKey: string): Promise<{ id: string } | null> {

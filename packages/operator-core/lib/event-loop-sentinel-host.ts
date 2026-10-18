@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * event-loop-sentinel-host.ts — main-thread half of the event-loop sentinel.
  *
@@ -142,7 +143,7 @@ export function resolveSentinelConfig(
       startupGraceMs: SENTINEL_DEFAULTS.startupGraceMs,
     },
     stallProfile: {
-      dir: join(homedir(), '.papercusp', 'loop-profiles', 'stalls'),
+      dir: papercuspPath('loop-profiles', 'stalls'),
       ...STALL_PROFILE_DEFAULTS,
     },
   };

@@ -147,7 +147,8 @@ test('summary-only and summary-and-read keep separate consent and source coverag
   const turns = await openReading(page);
   await page.getByRole('textbox', { name: 'Text to read or summarize' }).fill(source);
   await page.getByRole('checkbox', { name: 'Allow this text to use a cloud summary model' }).check();
-  await page.getByRole('combobox', { name: 'Summary length' }).selectOption('short');
+  await page.getByRole('combobox', { name: 'Summary length' }).click();
+  await page.getByRole('option', { name: 'Short', exact: true }).click();
   await page.getByRole('textbox', { name: 'Summary focus' }).fill('numbers');
   await page.getByRole('textbox', { name: 'Summary language' }).fill('English');
   await page.getByRole('button', { name: 'Summarize', exact: true }).click();

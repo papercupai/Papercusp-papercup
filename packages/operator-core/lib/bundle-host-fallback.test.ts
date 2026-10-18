@@ -228,6 +228,28 @@ describe('bundle-host.sh standalone spawner fallback', () => {
 });
 
 describe('bundle-host.sh last-known-good fallback', () => {
+  it.each(['ASCII', 'rewritten'])('rejects an invalid final %s banner without publishing over LKG', kind => {
+    mkdirSync(join(dir, 'dist-host'), { recursive: true });
+    writeFileSync(outfile, GOOD_BUNDLE);
+    const entry = join(dir, 'invalid-banner-entry.ts');
+    writeFileSync(entry, 'export const validInput = true;\n');
+    const shimDir = join(dir, 'banner-shim');
+    const suffix = kind === 'rewritten' ? ` // ${String.fromCharCode(0xb7)}` : '';
+    const path = compilerShim(shimDir, [
+      'args=()',
+      'for a in "$@"; do',
+      `  if [[ "$a" == --banner:js=* ]]; then a="$a const __pc_dirname=1;${suffix}"; fi`,
+      '  args+=("$a")',
+      'done',
+      'set -- "${args[@]}"',
+    ]);
+    const result = runBundler(entry, { PATH: path });
+    expect(result.code, result.output).not.toBe(0);
+    expect(result.output).toContain('final bundle failed node --check');
+    expect(readFileSync(outfile, 'utf8')).toBe(GOOD_BUNDLE);
+    expect(existsSync(marker)).toBe(true);
+  }, 260_000);
+
   it.each([
     '--import=tsx',
     `--import=tsx --import=${REPO_ROOT}/scripts/lib/committed-source-loader.mjs`,

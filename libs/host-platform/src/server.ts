@@ -43,6 +43,10 @@ export const serverHostPlatform: HostPlatform = {
     notAvailable('homedir()');
   },
 
+  papercuspHome(): string {
+    notAvailable('papercuspHome()');
+  },
+
   getHarnessAdminUrl(): string {
     const fromEnv =
       process.env.HARNESS_ADMIN_DATABASE_URL ??

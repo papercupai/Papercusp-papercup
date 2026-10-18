@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * GDPval reference-deliverable → TEXT resolver (plan benchmark-suite-gdpval-2026-06-17, P-004).
  *
@@ -208,7 +209,7 @@ export function makePythonOfficeExtract(opts: {
 /** The provisioned office-extractor python (env-overridable). The gdpval venv carries openpyxl/python-docx/
  *  python-pptx/pypdf; provision it once with `python3 -m venv <here> && pip install openpyxl python-docx python-pptx pypdf`. */
 export function defaultGdpvalPythonBin(): string {
-  return process.env.PAPERCUSP_GDPVAL_PYTHON ?? join(homedir(), '.papercusp', 'bench-results', 'gdpval', 'venv', 'bin', 'python');
+  return process.env.PAPERCUSP_GDPVAL_PYTHON ?? papercuspPath('bench-results', 'gdpval', 'venv', 'bin', 'python');
 }
 
 /**

@@ -210,6 +210,46 @@ describe('findLiveHostAsync', () => {
 
     await expect(findLiveHostAsync('su-async-owner-a', dir, { verifyIdentity: async () => true })).resolves.toBeNull();
   });
+
+  it('finds a live legacy host in the active workspace directory after the host-wide miss', async () => {
+    const workspaceId = `pty-legacy-${process.pid}`;
+    const workspaceRoot = tmpDir();
+    const previous = {
+      ptyDir: process.env.PAPERCUSP_PSU_PTY_DIR,
+      workspace: process.env.PAPERCUSP_WORKSPACE_ID,
+      workspacesRoot: process.env.PAPERCUSP_WORKSPACES_ROOT,
+    };
+    process.env.PAPERCUSP_PSU_PTY_DIR = '';
+    process.env.PAPERCUSP_WORKSPACE_ID = workspaceId;
+    process.env.PAPERCUSP_WORKSPACES_ROOT = workspaceRoot;
+    try {
+      const legacyDir = join(workspaceRoot, workspaceId, '.papercusp', 'psu-pty');
+      mkdirSync(legacyDir, { recursive: true });
+      const { sock } = startSocket(legacyDir, 'su-legacy-workspace-host');
+      writeMeta(legacyDir, 'su-legacy-workspace-host', {
+        pid: process.pid,
+        ptyPid: process.pid,
+        sock,
+        command: 'claude-su',
+        startedAt: 1,
+      });
+
+      await expect(findLiveHostAsync('su-legacy-workspace-host', PSU_PTY_DIR, {
+        verifyIdentity: async () => true,
+      })).resolves.toMatchObject({ ownerId: 'su-legacy-workspace-host', sock });
+      expect(findLiveHost('su-legacy-workspace-host', PSU_PTY_DIR, ID_OK)).toMatchObject({
+        ownerId: 'su-legacy-workspace-host',
+        sock,
+      });
+    } finally {
+      if (previous.ptyDir === undefined) delete process.env.PAPERCUSP_PSU_PTY_DIR;
+      else process.env.PAPERCUSP_PSU_PTY_DIR = previous.ptyDir;
+      if (previous.workspace === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = previous.workspace;
+      if (previous.workspacesRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+      else process.env.PAPERCUSP_WORKSPACES_ROOT = previous.workspacesRoot;
+    }
+  });
 });
 
 describe('pidIsPsuHost (WI-2339 defect #2 — process-identity gate)', () => {

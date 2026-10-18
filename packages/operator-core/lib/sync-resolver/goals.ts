@@ -1094,6 +1094,32 @@ export async function resolveGoalDetail(args: {
   const { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, completedByDay,
     childRows, parentRow } = rawDetail;
 
+  // Start declared collection reads as soon as the base transaction is
+  // released. They are independent of holder liveness and stewardship, but
+  // the detail resolver's outer 10s deadline covers all of them. Starting the
+  // portfolio only after the holder oracle (the old order) made a slow-but
+  // healthy read cross that deadline and return HTTP 500. Keep one promise per
+  // property so the goal-mode projection and collection projection share the
+  // same read rather than duplicating load.
+  const { TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
+  const earlyDeclaration = TypedPropertySchemaDocumentSchema.safeParse(goalRow.property_schema ?? {});
+  const portfolioReads = new Map<string, Promise<GoalPortfolioBrief | null>>();
+  const readPortfolio = (property: string): Promise<GoalPortfolioBrief | null> => {
+    let read = portfolioReads.get(property);
+    if (!read) {
+      read = traceNamedQueryStage('goal-portfolio', () => import('../goal-launch-settings').then(({ readGoalPortfolioBrief }) =>
+        readGoalPortfolioBrief({ workspaceId, goalId, sql, collectionProperty: property,
+          claimability: 'skip', rubricStewardship: 'skip' })));
+      portfolioReads.set(property, read);
+    }
+    return read;
+  };
+  if (earlyDeclaration.success) {
+    for (const [property, definition] of Object.entries(earlyDeclaration.data)) {
+      if (definition.collection?.source === 'active-workspace-plans') void readPortfolio(property).catch(() => undefined);
+    }
+  }
+
   // Holder liveness performs independent pool reads. Release the detail
   // transaction first so concurrent goal reads cannot each hold a connection
   // while waiting for another one from the same exhausted pool.
@@ -1309,9 +1335,9 @@ export async function resolveGoalDetail(args: {
   } & Record<string, unknown>;
   if (!shaped.goal) return detail;
 
-  const { readTypedPropertyCollection, TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
+  const { readTypedPropertyCollection } = await import('../typed-properties');
   const rawData = shaped.goalData as { propertySchema: unknown; properties: unknown };
-  const declaration = TypedPropertySchemaDocumentSchema.safeParse(rawData.propertySchema);
+  const declaration = earlyDeclaration;
   const legacyWorklist = declaration.success ? declaration.data.worklist : undefined;
   const workOnEverything = shaped.goal.goalPackage?.ref === 'work-on-everything' ||
     (!shaped.goal.goalPackage && legacyWorklist?.datatype === 'plan-ref-list' &&
@@ -1344,17 +1370,6 @@ export async function resolveGoalDetail(args: {
   // The optional agenda may time out without cancelling its portfolio read.
   // Keep that promise for the collection fallback instead of starting a second
   // copy. Each declared property still owns its independent saved policy.
-  const portfolioReads = new Map<string, Promise<GoalPortfolioBrief | null>>();
-  const readPortfolio = (property: string): Promise<GoalPortfolioBrief | null> => {
-    let read = portfolioReads.get(property);
-    if (!read) {
-      read = traceNamedQueryStage('goal-portfolio', () => import('../goal-launch-settings').then(({ readGoalPortfolioBrief }) =>
-        readGoalPortfolioBrief({ workspaceId, goalId, sql, collectionProperty: property,
-          claimability: 'skip', rubricStewardship: 'skip' })));
-      portfolioReads.set(property, read);
-    }
-    return read;
-  };
   const goalModeState = await traceNamedQueryStage('goal-mode-state', async () => {
     const { readAgentGoalModeState } = await import('../agent-obligation-reader');
     return readAgentGoalModeState({

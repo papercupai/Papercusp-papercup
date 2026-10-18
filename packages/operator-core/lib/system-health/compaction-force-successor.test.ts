@@ -101,7 +101,7 @@ describe('hostless compaction successor dispatch', () => {
       throwOnError: true,
     });
     expect(mocks.lookupByMcpName).toHaveBeenCalledWith('capability:launch-agent');
-    expect(mocks.withWorkspace).toHaveBeenCalledWith('source-workspace', expect.any(Function));
+    expect(mocks.withWorkspace).not.toHaveBeenCalled();
     const [tool, toolName, args, context] = mocks.dispatch.mock.calls[0] as [
       unknown, string, Record<string, unknown>, Record<PropertyKey, unknown>,
     ];
@@ -119,6 +119,7 @@ describe('hostless compaction successor dispatch', () => {
       harnessSlug: 'source-harness',
       principal: { slug: 'system:compaction-compliance-watchdog', workspaceId: 'source-workspace' },
     });
+    expect(context.tx).toBeUndefined();
     expect(context[INTERNAL_EXPECTED_SUCCESSOR_BINDING]).toMatchObject({
       ownerId: target.ownerId,
       advSessionId: target.advSessionId,
@@ -173,6 +174,30 @@ describe('hostless compaction successor dispatch', () => {
     await expect(dispatchCompactionForceSuccessor({ target, brief: 'continue' })).resolves.toEqual({
       verified: false,
       detail: 'launch verification did not run',
+    });
+  });
+
+  it('verifies a successful successor when the projected MCP result carries data as JSON text', async () => {
+    mocks.dispatch.mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          launch: {
+            mode: 'successor',
+            resumedOwnerId: target.ownerId,
+            agentStarted: true,
+            freshVerdict: {
+              agentStarted: true,
+              sessions: [{ ownerId: target.ownerId, sessionId: 'successor-session' }],
+            },
+          },
+        }),
+      }],
+    });
+
+    await expect(dispatchCompactionForceSuccessor({ target, brief: 'continue' })).resolves.toEqual({
+      verified: true,
+      detail: 'The successor launch and first turn were positively verified.',
     });
   });
 

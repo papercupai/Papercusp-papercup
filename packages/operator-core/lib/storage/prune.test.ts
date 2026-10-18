@@ -68,6 +68,8 @@ import { getStorageCategory, isTrimmable } from './categories';
 import { WORKSPACE_SCRATCH_MARKER } from '../scratch-gc';
 
 let previousScratchRoot: string | undefined;
+let previousFsMutexLockDir: string | undefined;
+let previousRetentionRoot: string | undefined;
 let scratchSandbox: string | undefined;
 
 const REQ = (over: Record<string, unknown> = {}) => ({
@@ -80,6 +82,8 @@ const REQ = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+  previousFsMutexLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  previousRetentionRoot = process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
   scratchSandbox = undefined;
   h.statsQueue = [];
   h.deleteQueue = [];
@@ -97,6 +101,10 @@ afterEach(() => {
   if (scratchSandbox) rmSync(scratchSandbox, { recursive: true, force: true });
   if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
   else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+  if (previousFsMutexLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousFsMutexLockDir;
+  if (previousRetentionRoot === undefined) delete process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+  else process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = previousRetentionRoot;
 });
 
 function makeScratchPruneFixture() {
@@ -104,6 +112,10 @@ function makeScratchPruneFixture() {
   scratchSandbox = sandbox;
   const root = join(sandbox, 'scratch');
   process.env.PAPERCUSP_SCRATCH_ROOT = root;
+  // Scratch deletion also uses the retention-pin mutex. Keep its real lock and
+  // lease store inside the fixture, independent of host cleanup operations.
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(sandbox, 'fs-mutex-locks');
+  process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = join(sandbox, 'retention-leases');
   const workspaceRoot = join(root, 'ws-test');
   const freshRun = join(workspaceRoot, 'tool:demo', '00000000-0000-4000-8000-000000000001');
   const staleRun = join(workspaceRoot, 'tool:demo', '00000000-0000-4000-8000-000000000002');

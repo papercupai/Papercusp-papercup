@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { dirname, basename, relative, resolve, sep, join, isAbsolute, win32 } from 'node:path';
 import type { CensusDeclaration, CensusRoot, CensusEntry } from '@papercusp/backup';
 import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup';
@@ -420,7 +421,7 @@ export function scratchCensusProducer() {
 
 /** Same relocated compile-analysis cache used by strip-comments-and-strings. */
 export function stripRangeCacheCensusProducer() {
-  const path = process.env.PAPERCUSP_STRIP_CACHE_DIR || join(homedir(), '.papercusp', 'cache', 'strip-ranges');
+  const path = process.env.PAPERCUSP_STRIP_CACHE_DIR || papercuspPath('cache', 'strip-ranges');
   return { roots: [{ id: 'strip-range-cache-parent', path: dirname(path) }], declarations: [{
     kind: 'path' as const, root: 'strip-range-cache-parent', name: basename(path),
     classification: 'cache' as const, producer: 'strip-comments-and-strings', descendants: true, prune: true,

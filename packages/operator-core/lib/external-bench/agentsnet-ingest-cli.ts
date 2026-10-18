@@ -13,9 +13,10 @@ import { resolveBenchWorkspace } from './bench-workspace';
 import { ingestAgentsnetResults } from './agentsnet-ingest';
 import { listSuites, listRunResults } from './reproducibility/store';
 import type { ArmId } from '@papercusp/bench-metrics';
+import { papercuspPath } from '@papercusp/host-platform/home';
 
 async function main() {
-  const resultsDir = process.argv[2] || `${process.env.HOME}/.papercusp/bench-harnesses/agentsnet/results`;
+  const resultsDir = process.argv[2] || papercuspPath('bench-harnesses', 'agentsnet', 'results');
   const runId = process.argv[3] || 'agentsnet-pilot-2026-06-17';
   const arm = (process.argv[4] as ArmId) || 'baseline-b-native';
   const workspaceId = resolveBenchWorkspace(process.argv[5]);

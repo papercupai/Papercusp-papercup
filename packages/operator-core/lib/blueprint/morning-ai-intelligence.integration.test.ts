@@ -28,12 +28,12 @@ beforeAll(async () => { org = await createOrgTestDb(); sql = org.adminSql; });
 afterAll(async () => org?.cleanup());
 
 describe('morning AI native schedule and report lifecycle', () => {
-  it('materializes the actual research input once and pauses through native controls', async () => {
+  it('materializes the uncapped research input once and pauses through native controls', async () => {
     expect(checkAgainstJsonSchema(operation.inputSchema, input)).toEqual({ ok: true });
     const schedule = { kind: 'rrule' as const,
       rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0',
       dtstart: '2026-10-08T09:00:00.000Z', tzid: 'America/New_York',
-      concurrency: 'skip' as const, costCapCents: 200,
+      concurrency: 'skip' as const,
       operation: { harnessSlug: HARNESS, operationId: operation.id, input } };
     await sql`INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, content, content_hash, status, schedule, schedule_active)
@@ -52,9 +52,10 @@ describe('morning AI native schedule and report lifecycle', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ active: true, schedule_active: true,
       target_role: 'system:blueprint-operation', concurrency: 'skip',
-      trigger_config: { costCapCents: 200, tzid: 'America/New_York' },
+      trigger_config: { tzid: 'America/New_York' },
       payload_template: { operationHarnessSlug: HARNESS, operationId: 'daily-ai-brief', input } });
     expect(rows[0].trigger_config).not.toHaveProperty('operation');
+    expect(rows[0].trigger_config).not.toHaveProperty('costCapCents');
     const local = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hourCycle: 'h23', hour: '2-digit', minute: '2-digit' });
     expect(local.format(new Date(rows[0].next_fire_at))).toBe('09:00');
     for (const [from, next] of [

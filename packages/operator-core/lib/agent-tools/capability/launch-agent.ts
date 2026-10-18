@@ -517,6 +517,11 @@ export default defineTool({
   // Derive the parent from the actual sequential proof windows so a slow
   // launch returns its structured receipt before the transport abandons it.
   timeoutSec: AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
+  // The handler performs its own workspace-scoped reads and writes and does
+  // not use ctx.tx. A launch can wait for external spawn and first-turn proof,
+  // so a synthesized workspace transaction would sit idle past PostgreSQL's
+  // 60s idle-in-transaction timeout.
+  skipWorkspaceTx: true,
   // Launches are deliberately non-idempotent. A completed handler can still prove
   // that this attempt's launch summary is durably queryable by its idempotency key.
   abortCompletionReceipt: agentLaunchAbortCompletionReceipt,

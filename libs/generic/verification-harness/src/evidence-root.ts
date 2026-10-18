@@ -31,6 +31,37 @@ function dataEvidenceRoot(host: EvidenceRootHost): string | null {
   } catch { return null; }
 }
 
+/** The canonical base for new evidence when a separate writable data volume is mounted. */
+export function canonicalEvidenceRootBase(host: EvidenceRootHost = localHost): string | null {
+  return dataEvidenceRoot(host);
+}
+
+/**
+ * The pre-offload default for a harness. This is intentionally only a diagnostic path: callers
+ * must not silently write there when the separate data volume is available, because historical
+ * evidence at this path is what exhausted the root filesystem.
+ */
+export function legacyEvidenceRoot(harness: string, env: NodeJS.ProcessEnv = process.env): string {
+  const state = env.XDG_STATE_HOME?.trim() || path.join(env.HOME?.trim() || homedir(), '.local', 'state');
+  return path.join(state, 'verification-harness', harness);
+}
+
+/**
+ * True only for an implicit legacy default while the canonical data volume is available. Explicit
+ * VH_EVIDENCE_ROOT_BASE/XDG_STATE_HOME locations remain caller-owned and are not second-guessed.
+ */
+export function isLegacyEvidenceRoot(
+  harness: string,
+  root: string,
+  env: NodeJS.ProcessEnv = process.env,
+  host: EvidenceRootHost = localHost,
+): boolean {
+  if (env.VH_EVIDENCE_ROOT_BASE?.trim() || env.XDG_STATE_HOME?.trim()) return false;
+  const data = dataEvidenceRoot(host);
+  return data !== null && path.resolve(root) === path.resolve(legacyEvidenceRoot(harness, env)) &&
+    path.resolve(data) !== path.resolve(root);
+}
+
 /**
  * Honor VH_EVIDENCE_ROOT_BASE and XDG_STATE_HOME. Otherwise prefer the verified
  * separate data volume on Linux, then the legacy home state directory. Existing

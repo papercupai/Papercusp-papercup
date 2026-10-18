@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * role-codex-home.ts — materialize a per-session CODEX_HOME for an
  * INTERACTIVE codex role session (psu --role=<role> --agent=codex).
@@ -49,6 +50,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -60,7 +62,7 @@ import {
 } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir as osHomedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
 import {
   codexHomeForSessionKey,
@@ -256,6 +258,21 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
   return sqliteHome;
 }
 
+/** Publish only a complete, valid document. In-place truncate/write can leave
+ * partial bytes after an interrupted write or mix two processes' documents.
+ * A private sibling on the same filesystem keeps rename atomic for readers. */
+function publishCodexConfig(configPath: string, text: string): void {
+  parseToml(text);
+  const staging = mkdtempSync(join(dirname(configPath), '.config-toml-'));
+  try {
+    const stagedConfig = join(staging, 'config.toml');
+    writeFileSync(stagedConfig, text, { mode: 0o600 });
+    renameSync(stagedConfig, configPath);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 /** A resume must retain its recorded state location even when the serving
  * operator has a different TMPDIR or SQLite-root override from the launch. */
 function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null): string {
@@ -266,7 +283,19 @@ function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number
   if (!existsSync(configPath)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
   const text = readFileSync(configPath, 'utf8');
   if (!/^sqlite_home\s*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
-  const sqliteHome = parseToml(text).sqlite_home;
+  let config: ReturnType<typeof parseToml>;
+  try {
+    config = parseToml(text);
+  } catch (error) {
+    // A damaged managed table/tail must not prevent repair of an intact root
+    // binding. Parse the entire root block, never regex-extract a guessed path
+    // or fall back to the current serving environment. A malformed root still
+    // fails closed, including duplicate/invalid sqlite_home assignments.
+    const firstTable = text.search(/^[ \t]*\[/m);
+    if (firstTable < 0) throw error;
+    config = parseToml(text.slice(0, firstTable));
+  }
+  const sqliteHome = config.sqlite_home;
   if (typeof sqliteHome !== 'string' || !isAbsolute(sqliteHome) || sqliteHome.includes('\0')) {
     throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
   }
@@ -451,7 +480,7 @@ export function rekeyCodexHome(sourceSessionKey: string | number, targetSessionK
       `sqlite_home = "${tomlEscape(sourceSqlite)}"`,
       `sqlite_home = "${tomlEscape(targetSqlite)}"`,
     );
-    if (next !== config) writeFileSync(configPath, next, { mode: 0o600 });
+    if (next !== config) publishCodexConfig(configPath, next);
   } catch {
     // The normal launch path writes this file before rekey. If a legacy home
     // lacks it, the resume repair path renders the canonical target path.
@@ -749,7 +778,7 @@ export function writeCodexLockHooks(
     mcpUsesSuperuserToken?: boolean;
   } = {},
 ): boolean {
-  const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
+  const dir = papercuspPath('hooks', 'cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
   const post = join(dir, 'posttooluse-locks-release.sh');
   if (!existsSync(pre) || !existsSync(post)) return false;
@@ -878,7 +907,7 @@ export function writeCodexLockHooks(
   // codex adapter's portForEvent. UserPromptSubmit -> turn-start,
   // PostToolUse -> mid-turn (PER CALL on codex — it has no batch event; D-002
   // §5 explains why the frozen array interface absorbs that).
-  const injectDispatcher = join(homedir(), '.papercusp', 'hooks', 'inject', 'index.mjs');
+  const injectDispatcher = papercuspPath('hooks', 'inject', 'index.mjs');
   const userPromptSubmit: CodexHook[] = [];
   const provenance = join(dir, 'userpromptsubmit-provenance.sh');
   if (opts.injectSid && existsSync(provenance)) {
@@ -1279,7 +1308,7 @@ function repairSuCodexHomeIdentityImpl(
         ['Stop', CODEX_TURN_JOURNAL_HOOK],
         ['UserPromptSubmit', 'userpromptsubmit-provenance.sh'],
       ].every(([event, script]) =>
-        !existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', script)) ||
+        !existsSync(papercuspPath('hooks', 'cc', script)) ||
         parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
             (hook) =>
@@ -1297,7 +1326,7 @@ function repairSuCodexHomeIdentityImpl(
   // otherwise read as current, so a RESUMED su codex session would keep running
   // its shell without RTK. Gated on the script being installed, like the writer.
   const rtkRewriteHookMatches = (() => {
-    if (!hooksExpected || !existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', CODEX_RTK_REWRITE_HOOK))) {
+    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', CODEX_RTK_REWRITE_HOOK))) {
       return true;
     }
     try {
@@ -1470,7 +1499,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     'tool_timeout_sec = 1090',
     '',
   ].join('\n');
-  writeFileSync(configPath, toml, { mode: 0o600 });
+  publishCodexConfig(configPath, toml);
 
   // P-030: a role codex session edits files too — install the same SU-locks
   // hooks so its edits are coordinated (the role home previously had none,
@@ -1799,7 +1828,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
     /* absent or unreadable — that is precisely the repair case */
   }
   if (!configReady) {
-    writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }), { mode: 0o600 });
+    publishCodexConfig(configPath, suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }));
   }
   const identity = repairSuCodexHomeIdentityImpl(
     codexHome,
@@ -1949,7 +1978,7 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
   const configPath = join(codexHome, 'config.toml');
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
-  writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome: targetHome, sqliteHome }), { mode: 0o600 });
+  publishCodexConfig(configPath, suCodexConfigToml({ ...opts, logDir, codexHome: targetHome, sqliteHome }));
 
   // SU sessions pass coordSid so the merged activity hook's coord fold stays
   // ON (new coord:inbox messages folded into the SAME activity:report round
@@ -2083,7 +2112,7 @@ export function makeCodingAssistantCodexHome(codexHome: string, home: string = h
   if (existsSync(configPath)) {
     const current = readFileSync(configPath, 'utf8');
     const next = codingAssistantCodexConfigToml(current);
-    if (next !== current) writeFileSync(configPath, next, { mode: 0o600 });
+    if (next !== current) publishCodexConfig(configPath, next);
   }
   const agentsPath = join(codexHome, 'AGENTS.md');
   rmSync(agentsPath, { force: true });

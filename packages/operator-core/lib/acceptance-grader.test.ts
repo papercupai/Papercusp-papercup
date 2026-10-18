@@ -1094,6 +1094,7 @@ describe('launchAcceptanceGrader', () => {
       idempotencyKey: first.idempotencyKey,
     });
     const brief = String(args.brief);
+    expect(brief).toContain('subject:{ kind:"plan", ref:"ship-the-thing" }');
     const snapshot = JSON.parse(brief.split('FROZEN_ACCEPTANCE_CONTEXT=')[1]);
     expect(snapshot.plan).toMatchObject({ slug: 'ship-the-thing', version: 7, contentHash: 'content-hash-7' });
     expect(snapshot.rubric.rubricId).toBe('acceptance-ship-the-thing');
@@ -3441,7 +3442,7 @@ describe('buildAssignedAcceptanceGraderBrief (cross-hive reachability)', () => {
 
     expect(brief).toContain('plans:get { slug:"ship-the-thing", harness:"papercusp" }');
     expect(brief).toContain(
-      'scorecards:emit { rubricRef:"acceptance-ship-the-thing", targetHive:"papercusp", ratings:',
+      'scorecards:emit { rubricRef:"acceptance-ship-the-thing", targetHive:"papercusp", subject:{ kind:"plan", ref:"ship-the-thing" }, ratings:',
     );
     expect(brief).toContain("subject tree rather than the grader's checkout");
     expect(brief).toContain('gitlink');
@@ -3452,6 +3453,7 @@ describe('buildAssignedAcceptanceGraderBrief (cross-hive reachability)', () => {
     const brief = buildAssignedAcceptanceGraderBrief('operator-plan', null, 'operator-rubric');
 
     expect(brief).toContain('plans:get { slug:"operator-plan" }');
+    expect(brief).toContain('subject:{ kind:"plan", ref:"operator-plan" }');
     expect(brief).not.toContain('targetHive:');
   });
 });

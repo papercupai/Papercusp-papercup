@@ -1,3 +1,5 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 /**
  * `system:launch-cost-ceiling` — the standing watch on agent launch cost
  * (plan `agent-launch-context-cost-2026-09-18`, P-009(c); decision D-016).
@@ -39,10 +41,8 @@
  * `--owner-prefix su-` style superuser sessions by default. It is a regression
  * detector for our own agent launches, not a claim about any other client.
  */
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { median, type DayStats } from '../../launch-cost/launch-cost-metrics';
 import { scanLaunchTranscripts, type ScanReport } from '../../launch-cost/scan-launch-transcripts';
 import { recentWatchdogFires, recordFire } from '../../pot/watchdog';
@@ -301,8 +301,8 @@ export async function runLaunchCostCeiling(
   } = {},
   deps: LaunchCostCeilingDeps = {},
 ): Promise<LaunchCostRunResult> {
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const recentDays = opts.recentDays ?? DEFAULT_RECENT_DAYS;
   const baselineDays = opts.baselineDays ?? DEFAULT_BASELINE_DAYS;
   const base: LaunchCostRunResult = {
@@ -321,7 +321,7 @@ export async function runLaunchCostCeiling(
     const since = new Date(sinceMs).toISOString().slice(0, 10);
 
     const report = await (deps.scan ?? scanLaunchTranscripts)({
-      root: opts.root ?? join(homedir(), '.papercusp', 'session-claude'),
+      root: opts.root ?? papercuspPath('session-claude'),
       ownerPrefix: opts.ownerPrefix ?? 'su-',
       since,
     });

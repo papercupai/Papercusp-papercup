@@ -797,7 +797,13 @@ export async function synchronizeAcceptanceBarRevision(
       // Recompute neutral classes from the effective proof contract, including
       // approved check/layer changes and old incorrectly automated manual rows.
       // Authored risk refinements and mutation obligations remain stronger.
-      behaviorClass: preserveRefinements && !['happy-path', 'non-automated'].includes(clause.behavior_class)
+      // An exempt clause keeps 'non-automated': its lifecycle and exemption are carried
+      // forward below, and spec quality accepts an exemption only on a non-automated
+      // clause, so recomputing the class from the BAR's automated proof contract
+      // invalidated the carried exemption on every amendment (WI-6554700010017078).
+      behaviorClass: clause.lifecycle_status === 'exempt' && clause.behavior_class === 'non-automated'
+        ? 'non-automated'
+        : preserveRefinements && !['happy-path', 'non-automated'].includes(clause.behavior_class)
         ? clause.behavior_class
         : clause.mutation_required ? 'happy-path'
           : acceptanceBarBehaviorClass(criterion.evidencePlane, requiredTestLayers, criterion.check),

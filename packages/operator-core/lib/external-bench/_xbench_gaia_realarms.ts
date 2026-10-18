@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * GAIA REAL-ORCHESTRATION ARM LAUNCHER (plan benchmark-suite-gaia-2026-06-17).
  *
@@ -190,7 +191,7 @@ async function main() {
   await applyCap();
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const outDir = join(homedir(), '.papercusp', 'bench-results', 'gaia', 'runs', `${ARM}-l3-${stamp}`);
+  const outDir = papercuspPath('bench-results', 'gaia', 'runs', `${ARM}-l3-${stamp}`);
   mkdirSync(outDir, { recursive: true });
   const partialPath = join(outDir, 'predictions.partial.jsonl');
   const answersPath = join(outDir, 'answers.partial.jsonl');

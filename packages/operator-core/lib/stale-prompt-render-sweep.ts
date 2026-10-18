@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * stale-prompt-render-sweep.ts — the DELIVERY half of
  * `stale-prompt-render-in-live-sessions-2026-08-02` P-004.
@@ -34,9 +35,9 @@
  * (ownerId, drift fingerprint) so a session hears about one drift exactly once.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promptHarnessRoot } from '@papercusp/harness/paths';
+import { activeWorkspaceId } from './workspace-registry';
 import {
   detectMaterialRenderDrift,
   driftFingerprint,
@@ -412,7 +413,7 @@ function memoKey(path: string, text: string, mtime: string | null): string {
 export async function stalePromptRenderSweep(
   deps: StaleRenderSweepDeps = {},
 ): Promise<StaleRenderSweepResult> {
-  const workspaceId = deps.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = deps.workspaceId ?? activeWorkspaceId();
   const installSlug = deps.installSlug ?? DEFAULT_INSTALL_SLUG;
   const outcomes: StaleRenderOutcome[] = [];
 
@@ -534,5 +535,5 @@ export async function stalePromptRenderSweep(
 /** Where launch renders live — exported for tests/diagnostics that want to sweep
  *  the on-disk corpus rather than live processes. */
 export function launchContextDirPath(): string {
-  return process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR || join(homedir(), '.papercusp', 'launch-context');
+  return process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR || papercuspPath('launch-context');
 }

@@ -18,7 +18,7 @@ import {
 import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
 import { listRuntimeVintage } from '../../runtime-vintage';
 import { measureRuntimeEnvironment } from '../../remote-runtime-identity';
-import { defaultEvidenceRoot } from '@papercusp/verification-harness';
+import { defaultEvidenceRoot, legacyEvidenceRoot } from '@papercusp/verification-harness';
 import { pgTimestampToIso } from '../../pg-timestamp';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '../../acceptance-author-identity';
 import { planItemRef } from '../../issue-blocks-merge';
@@ -3117,6 +3117,12 @@ async function readCompletedRuntimeArtifact(harness: string, runId: string, file
   const roots = [defaultEvidenceRoot(harness)];
   if (harness === 'operator-e2e-isolated') roots.push(
     process.env.OPERATOR_E2E_HARNESS_EVIDENCE_ROOT?.trim() || '/tmp/pcv/operator-e2e-isolated');
+  // The offload default selects storage for NEW runs; original retained proof
+  // stays in the prior home-state root. Read that bounded historical location
+  // only for implicit defaults, preserving explicit caller storage boundaries.
+  if (!process.env.VH_EVIDENCE_ROOT_BASE?.trim() && !process.env.XDG_STATE_HOME?.trim()) {
+    roots.push(legacyEvidenceRoot(harness));
+  }
   for (const root of [...new Set(roots)]) {
     let base: string, path: string;
     try {

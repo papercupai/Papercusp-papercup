@@ -2685,7 +2685,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     let stage = 'seed';
     let pane: PuiPane | undefined;
     onTestFailed(() => console.info('PUI_R03_CONTEXT_FAILURE', JSON.stringify({
-      stage, alpha, beta, ...(pane?.failureEvidence() ?? {}),
+      stage, alpha, beta, agentChatsListDiagnostics, ...(pane?.failureEvidence() ?? {}),
     })));
     // Alpha is the newest writable operator chat, so PUI binds it on launch;
     // beta's linked work item keeps it out of that default. Both are later than
@@ -2769,7 +2769,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
         { session_id: beta.id, content: beta.task },
       ]);
       console.info('PUI_R03_CONTEXT_ACCEPTANCE', JSON.stringify({
-        binary: bin, binarySha256, alpha, beta, frame: pane.screen(),
+        binary: bin, binarySha256, alpha, beta, frame: pane.screen(), agentChatsListDiagnostics,
       }));
     } finally {
       await pane.stop().catch(() => {});

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Operator host binding for `@papercusp/ipc-endpoint-server`.
  *
@@ -76,7 +77,7 @@ export type { EndpointIpcServer };
 export function defaultSocketPath(pid: number = process.pid): string {
   if (process.env.PAPERCUSP_IPC_TCP === '1') return 'tcp://127.0.0.1:0';
   if (process.platform === 'win32') return `\\\\.\\pipe\\papercusp-${pid}`;
-  return path.join(os.homedir(), '.papercusp', 'sockets', `${pid}.sock`);
+  return papercuspPath('sockets', `${pid}.sock`);
 }
 
 /** Is `pid` a live process? Same semantics as the voice-socket reaper's
@@ -104,7 +105,7 @@ function endpointPidAlive(pid: number): boolean {
  * never blocks startup. `isAlive` is injectable for tests. Returns the count reaped.
  */
 export function gcDeadEndpointSockets(
-  dir: string = path.join(os.homedir(), '.papercusp', 'sockets'),
+  dir: string = papercuspPath('sockets'),
   isAlive: (pid: number) => boolean = endpointPidAlive,
 ): number {
   let entries: string[];
@@ -155,7 +156,7 @@ export function startEndpointIpcServer(
     process.platform !== 'win32'
   ) {
     try {
-      const dir = path.join(os.homedir(), '.papercusp', 'sockets');
+      const dir = papercuspPath('sockets');
       const reaped = gcDeadEndpointSockets(dir);
       if (reaped > 0) console.error(`[endpoint-ipc] GC'd ${reaped} orphaned endpoint socket(s) from dead pids`);
     } catch {

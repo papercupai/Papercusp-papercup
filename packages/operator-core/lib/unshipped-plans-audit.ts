@@ -21,6 +21,7 @@ import { saveTextArtifact } from './text-artifacts';
 import { renderPlanAuditReport } from './plan-audit-report';
 import { SETTLED_WORK_ITEM_STATES } from './work-items';
 import { activeWorkspaceId } from './workspace-registry';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import {
   planProvenanceFromBlenderFlag,
   type PlanProvenance,
@@ -801,7 +802,7 @@ export async function runUnshippedPlansAudit(
   opts: RunUnshippedPlansAuditOptions = {},
 ): Promise<RunUnshippedPlansAuditResult> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const artifactHarness = opts.artifactHarness ?? 'papercusp';
+  const artifactHarness = opts.artifactHarness?.trim() || operatorHomeHarnessSlug();
   const snapshotStartedAt = new Date().toISOString();
 
   const [listedPlans, registeredHarnesses, liveProtection, workItemsByPlan, blockedItems, auditsByPlan, rubrics] =

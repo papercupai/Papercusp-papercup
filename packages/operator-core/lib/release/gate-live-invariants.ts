@@ -908,9 +908,13 @@ const WATCHDOG_ACTOR = 'system-watchdog';
 /** The production pass, wired into `startGreenStallWatchdog` beside `checkIdleRepairQueue`. */
 export async function checkGateLiveInvariants(
   sql: Sql,
-  opts: { installSlug?: string; nowMs?: () => number; thresholds?: GateInvariantThresholds } = {},
+  opts: { installSlug: string; nowMs?: () => number; thresholds?: GateInvariantThresholds },
 ): Promise<RecordGateInvariantsResult | null> {
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = typeof opts.installSlug === 'string' ? opts.installSlug.trim() : '';
+  if (!installSlug) {
+    console.warn('[gate-live-invariants] skipped: installSlug is required');
+    return null;
+  }
   const thresholds = opts.thresholds ?? DEFAULT_GATE_INVARIANT_THRESHOLDS;
   const { recordWatchdogPassOutcome } = await import('./watchdog-health');
   let passError: unknown;

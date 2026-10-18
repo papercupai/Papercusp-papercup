@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * GDPval dataset access + task loading (plan `benchmark-suite-gdpval-2026-06-17`, Phase 1).
  *
@@ -49,7 +50,7 @@ interface GdpvalRawRow {
 
 /** Default home for the provisioned GDPval gold corpus (env-overridable). */
 export function gdpvalTaskSetPath(): string {
-  return process.env.PAPERCUSP_GDPVAL_JSONL ?? join(homedir(), '.papercusp', 'bench-results', 'gdpval', 'tasks.jsonl');
+  return process.env.PAPERCUSP_GDPVAL_JSONL ?? papercuspPath('bench-results', 'gdpval', 'tasks.jsonl');
 }
 
 /** Coerce a field that may be a JSON-array string OR a real array → string[]. */

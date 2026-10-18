@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * The inference-gateway process MAIN, as an exported function (P-006,
  * cross-platform-hardening-and-agent-ergonomics-2026-07-05).
@@ -47,7 +48,7 @@ function hardStopMs(): number {
  *  Mirror them to a file (synchronous append, immediately readable) so they survive regardless of
  *  journald. Env-tunable. */
 function logFilePath(): string {
-  return process.env.PAPERCUSP_GATEWAY_LOG || join(homedir(), '.papercusp', 'gateway.log');
+  return process.env.PAPERCUSP_GATEWAY_LOG || papercuspPath('gateway.log');
 }
 
 const DEFAULT_GATEWAY_LOG_MAX_BYTES = 8 * 1024 * 1024;

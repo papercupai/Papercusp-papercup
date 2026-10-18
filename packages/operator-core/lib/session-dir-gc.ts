@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * session-dir-gc.ts — periodic GC for the per-session isolation dirs that the
  * launch paths materialize and then NEVER clean up (the EI-155 follow-on the
@@ -277,7 +278,7 @@ export function defaultSessionDirRoots(): SessionDirRoot[] {
     { root: codexHomesRoot(), keyKind: 'session', label: 'su-codex-homes' },
     { root: codexSqliteHomesRoot(), keyKind: 'session', label: 'codex-sqlite-homes' },
     {
-      root: join(homedir(), '.papercusp', 'role-codex-homes'),
+      root: papercuspPath('role-codex-homes'),
       keyKind: 'session',
       label: 'role-codex-homes (legacy)',
     },

@@ -25,6 +25,7 @@ import { appendAccumResult, loadAccumulatedResults, accumCoverage } from './metr
 import { dirname as pathDirname } from 'node:path';
 import type { HorizonWeighting } from '@papercusp/bench-metrics';
 import { benchDefaultModelId } from './model-registry-snapshot';
+import { papercuspPath } from '@papercusp/host-platform/home';
 
 function arg(name: string, def?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -53,7 +54,7 @@ async function main(): Promise<void> {
   // → emit BOTH the standard fleet summary AND the horizon report from one run (the dual-arm unification).
   const viaFleet = hasFlag('via-fleet');
   // Accumulation dir = alongside --out (default the metr-hcast results dir).
-  const accumBase = out ? pathDirname(out) : `${process.env.HOME}/.papercusp/bench-results/metr-hcast`;
+  const accumBase = out ? pathDirname(out) : papercuspPath('bench-results', 'metr-hcast');
   const customIds = arg('task-ids')?.split(',').map((s) => s.trim()).filter(Boolean);
 
   let tasks: BenchTask[] = await loadBenchTaskSet(taskSet, customIds);

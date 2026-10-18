@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * memory:recover-from-transcripts — retroactive recovery of memory writes
  * lost to an embedder/store outage (memory-write-journal-auto-recovery P-008).
@@ -53,7 +54,7 @@ export interface RecoveryCandidate {
 function transcriptsRoot(): string {
   return (
     process.env.PAPERCUSP_SESSION_TRANSCRIPTS_DIR ??
-    path.join(os.homedir(), '.papercusp', 'session-claude')
+    papercuspPath('session-claude')
   );
 }
 

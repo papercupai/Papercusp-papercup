@@ -768,7 +768,7 @@ const scorecardEmitBaseShape = {
       .strict()
       .optional()
       .describe(
-        "WHAT this scorecard grades (stored as observation.subject) — e.g. { kind:'rubric', ref:'<rubricId>' } on a vetting card.",
+        "WHAT this scorecard grades (stored as observation.subject) — e.g. { kind:'rubric', ref:'<rubricId>' } on a vetting card. When omitted for an acceptance rubric with subjectPlan, defaults to { kind:'plan', ref:subjectPlan }; explicit subjects are preserved.",
       ),
     gradingAuditReservation: z
       .object({
@@ -1807,6 +1807,14 @@ export async function emitScorecard(
   }
   if (rubricRead.kind === 'missing') return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   const rubric = rubricRead.rubric;
+  // WI-6554700010009556: the independent grading and author adoption must use
+  // the same subject tuple. A rubric already pins its plan; do not persist an
+  // unscoped card merely because a judge omitted that redundant input. Normalize
+  // once before validation, duplicate selection, mutex keys and persistence.
+  // Explicit subjects remain valid: one rubric may grade several subjects.
+  if (args.subject === undefined && rubric.kind === 'acceptance' && rubric.subjectPlan) {
+    args = { ...args, subject: { kind: 'plan', ref: rubric.subjectPlan } };
+  }
   if ((args.rubricRevision !== undefined && args.rubricRevision !== rubric.revision) ||
       (args.criteriaHash !== undefined && args.criteriaHash !== rubric.criteriaHash)) {
     return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',

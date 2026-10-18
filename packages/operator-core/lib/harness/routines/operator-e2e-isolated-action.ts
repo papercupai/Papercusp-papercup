@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * `system:operator-e2e-isolated` — the standing nightly run of the operator Playwright suite
  * inside the isolated `verify-tauri-headless` rig (plan operator-e2e-standing-isolated-run-2026-10-06
@@ -82,7 +83,7 @@ export function integrationRoot(): string {
 }
 
 export function operatorE2eLogDir(): string {
-  return process.env.OPERATOR_E2E_LOG_DIR ?? path.join(os.homedir(), '.papercusp', 'logs', OPERATOR_E2E_ISOLATED_ACTION);
+  return process.env.OPERATOR_E2E_LOG_DIR ?? papercuspPath('logs', OPERATOR_E2E_ISOLATED_ACTION);
 }
 
 /** The run group a fire stamps on every ledger row. */

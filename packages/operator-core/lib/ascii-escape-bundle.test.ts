@@ -13,7 +13,7 @@
  * Fixture text is built from escapes so this file itself stays ASCII.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -55,6 +55,57 @@ function nonAsciiBytes(file: string): number {
 }
 
 describe('ascii-escape-bundle.mjs', () => {
+  function checkedPass(file: string) {
+    const checks = join(dir, 'checks.log');
+    const recorder = join(dir, 'record-check.mjs');
+    writeFileSync(recorder, `import { appendFileSync } from 'node:fs';\nif (process.execArgv.includes('--check')) appendFileSync(${JSON.stringify(checks)}, 'check\\n');\n`);
+    const result = spawnSync(process.execPath, [SCRIPT, file, '--check'], {
+      encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(recorder).href}` },
+    });
+    return { ...result, checks: existsSync(checks) ? readFileSync(checks, 'utf8').trim().split('\n').length : 0 };
+  }
+
+  it.each(['rewritten', 'ASCII', 'String.raw'])(
+    'checks final %s bytes exactly once, including an extensionless builder path', kind => {
+      const file = join(dir, 'bundle.tmp');
+      const src = kind === 'ASCII' ? 'export const value = 1;\n'
+        : kind === 'String.raw' ? `export const value = String.raw\`${LATIN1}\`;\n`
+          : `export const value = ${JSON.stringify(LATIN1)};\n`;
+      writeFileSync(file, src);
+      const result = checkedPass(file);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.checks).toBe(1);
+      expect(readFileSync(file, 'utf8')).toBe(kind === 'rewritten'
+        ? 'export const value = "\\u00b7\\u00d7\\u00a7\\u00e9";\n' : src);
+    },
+  );
+
+  it('keeps a valid original when escaping Unicode whitespace would break syntax', () => {
+    const file = join(dir, 'bundle.tmp');
+    const src = `export${String.fromCharCode(0xa0)}const value = 1;\n`;
+    writeFileSync(file, src);
+    const result = checkedPass(file);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('escaped bundle failed');
+    expect(result.checks).toBe(2);
+    expect(readFileSync(file, 'utf8')).toBe(src);
+    expect(existsSync(`${file}.ascii.tmp.mjs`)).toBe(false);
+  });
+
+  it.each(['', `// ${LATIN1}\n`, `const raw = String.raw\`${LATIN1}\`;\n`])(
+    'refuses invalid final bytes even when optimization is skipped or fails (%s)', prefix => {
+      const file = join(dir, 'bundle.tmp');
+      const src = `${prefix}export const broken = ;\n`;
+      writeFileSync(file, src);
+      const result = checkedPass(file);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('final bundle failed node --check');
+      expect(readFileSync(file, 'utf8')).toBe(src);
+      expect(existsSync(`${file}.ascii.tmp.mjs`)).toBe(false);
+    },
+  );
+
   it('escapes Latin-1, BMP and astral chars so the file is pure ASCII, without changing any value', () => {
     const file = join(dir, 'bundle.mjs');
     writeFileSync(

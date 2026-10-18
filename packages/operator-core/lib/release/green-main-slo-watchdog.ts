@@ -317,9 +317,13 @@ export function parseLastGreenAtMs(raw: unknown): number | null {
 /** The production pass, wired into `startGreenStallWatchdog`. Never throws. */
 export async function checkGreenMainSlo(
   sql: Sql,
-  opts: { installSlug?: string; nowMs?: () => number; thresholds?: GreenMainSloThresholds } = {},
+  opts: { installSlug: string; nowMs?: () => number; thresholds?: GreenMainSloThresholds },
 ): Promise<GreenMainSloPassResult | null> {
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = typeof opts.installSlug === 'string' ? opts.installSlug.trim() : '';
+  if (!installSlug) {
+    console.warn('[green-main-slo] skipped: installSlug is required');
+    return null;
+  }
   const { recordWatchdogPassOutcome } = await import('./watchdog-health');
   let passError: unknown;
   try {

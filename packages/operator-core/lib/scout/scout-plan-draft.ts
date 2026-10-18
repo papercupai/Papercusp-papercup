@@ -19,6 +19,13 @@ import { stampPlanGoalProvenance as realStampPlanGoalProvenance } from '../modes
 import { recordPlanRevision, type PlanSessionRef } from '../agent-tools/plans/revisions';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { SCOUT_DRAFT_LOOP_NOTE } from './feedback-loop-prompt';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { isWorkspaceGlobalLabel } from '../workspace-global-labels';
+
+/** A workspace Scout's tick key is not a Hive; plan artifacts use its home Hive. */
+export function scoutPlanHarnessSlug(harnessSlug: string, workspaceId?: string): string {
+  return isWorkspaceGlobalLabel(harnessSlug, workspaceId) ? operatorHomeHarnessSlug() : harnessSlug;
+}
 
 /** Append the `-YYYY-MM-DD` filename suffix (plan convention) when absent. */
 export function ensureDatedSlug(slug: string, today: string): string {
@@ -131,7 +138,7 @@ export async function createScoutPlanDraft(
     {
       slug,
       intent: `scout:plans-new ${slug}`,
-      ...(input.harnessSlug ? { harnessSlug: input.harnessSlug } : {}),
+      ...(input.harnessSlug ? { harnessSlug: scoutPlanHarnessSlug(input.harnessSlug, input.workspaceId) } : {}),
       ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
       // The initial revision is part of the same canonical writer contract as plans:new.
       // Keep the hook best-effort, matching every other plan revision capture path.

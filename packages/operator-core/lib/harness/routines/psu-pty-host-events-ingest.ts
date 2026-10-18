@@ -1,3 +1,4 @@
+import { papercuspPtyPath } from '@papercusp/host-platform/home';
 /**
  * psu-pty host-event ingest + retention (psu-pty-turn-boundary-generalization-2026-09-22,
  * P-007 / D-006).
@@ -200,7 +201,7 @@ export function parseHostEventFile(
 }
 
 export function defaultHostEventDir(): string {
-  return process.env.PAPERCUSP_PSU_PTY_DIR || join(homedir(), '.papercusp', 'psu-pty');
+  return papercuspPtyPath();
 }
 
 export async function ingestPsuPtyHostEvents(

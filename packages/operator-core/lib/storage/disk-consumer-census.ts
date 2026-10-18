@@ -994,6 +994,7 @@ export async function censusOneDevice(
       usageNote,
       du.timedOut ? 'du timed out; sizes are lower bounds' : null,
       du.error ? `du failed: ${du.error}` : null,
+      du.summary.rootBytes === null ? 'du returned no root record; sizes are lower bounds' : null,
       du.deniedCount > 0 ? `${du.deniedCount} unreadable path(s), e.g. ${du.deniedSample.slice(0, 5).join(', ')}` : null,
       // Shared extents (XFS/btrfs reflink clones) are counted once per FILE by du but
       // once on disk, so consumer sizes can sum past the device's used bytes.
@@ -1079,6 +1080,13 @@ export async function pruneDiskCensus(sql: CensusSql, now: Date = new Date()): P
   return Number(rows[0]?.n ?? 0);
 }
 
+export type CensusCoverageIssue =
+  | 'walk-timeout' | 'walk-error' | 'root-record-missing' | 'unreadable-paths'
+  | 'own-files-incomplete' | 'incomplete-run' | 'unattributed-bytes';
+
+export type CensusBaselineStatus =
+  | 'comparable' | 'latest-incomplete' | 'unavailable' | 'incomplete-candidates' | 'visibility-mismatch';
+
 export interface CensusDeviceView {
   device: string;
   /** Saved identities, retained for native alarm evidence (never inferred from time). */
@@ -1093,6 +1101,8 @@ export interface CensusDeviceView {
   /** Latest run older than 24h. */
   stale?: boolean;
   complete?: boolean;
+  /** Recorded scan failures and byte-coverage gaps; never an inferred physical cause. */
+  coverageIssues?: CensusCoverageIssue[];
   note?: string | null;
   sizeBytes?: number;
   usedBytes?: number;
@@ -1103,6 +1113,8 @@ export interface CensusDeviceView {
   coverageGap?: boolean;
   /** The run the 24h growth is measured against (18–30h before the latest); null when none. */
   baselineAt?: string | null;
+  /** Why a qualified 18–30h baseline is available or growth remains unknown. */
+  baselineStatus?: CensusBaselineStatus;
   /** Same visible filesystem, from the comparable baseline run (not a sum of directories). */
   baselineAvailBytes?: number | null;
   baselineSizeBytes?: number | null;
@@ -1129,9 +1141,16 @@ async function consumersOf(sql: CensusSql, runId: string): Promise<CensusConsume
   return rows.map((r) => ({ consumer: r.consumer, kind: r.kind, depth: Number(r.depth), bytes: Number(r.bytes) }));
 }
 
-/** Older writers stamped denied walks complete. Those rows cannot calibrate growth. */
-function censusCoverageReadable(note: string | null): boolean {
-  return !note || !/unreadable path\(s\)|own files .* may be incomplete|du timed out|du failed:/i.test(note);
+/** Decode only failures explicitly recorded by the existing producer. */
+function censusScanIssues(note: string | null): CensusCoverageIssue[] {
+  if (!note) return [];
+  const issues: CensusCoverageIssue[] = [];
+  if (/du timed out/i.test(note)) issues.push('walk-timeout');
+  if (/du failed:/i.test(note)) issues.push('walk-error');
+  if (/du returned no root record/i.test(note)) issues.push('root-record-missing');
+  if (/unreadable path\(s\)/i.test(note)) issues.push('unreadable-paths');
+  if (/own files .* may be incomplete/i.test(note)) issues.push('own-files-incomplete');
+  return issues;
 }
 function censusVisibility(note: string | null): 'root' | 'unprivileged' | 'legacy' {
   if (note?.includes('du walked as root')) return 'root';
@@ -1180,14 +1199,24 @@ export async function readDiskConsumerCensus(
        LIMIT 100`;
     // Changed visibility is not changed consumption. Prefer a comparable clean
     // baseline; otherwise growth stays unknown instead of inventing a spike.
-    const base = run.complete && censusCoverageReadable(run.note)
-      ? candidates.find((candidate) => censusCoverageReadable(candidate.note) && censusVisibility(candidate.note) === censusVisibility(run.note))
+    const coverageIssues = censusScanIssues(run.note);
+    const complete = run.complete && coverageIssues.length === 0;
+    if (!run.complete && coverageIssues.length === 0) coverageIssues.push('incomplete-run');
+    const readableCandidates = candidates.filter((candidate) => censusScanIssues(candidate.note).length === 0);
+    const base = complete
+      ? readableCandidates.find((candidate) => censusVisibility(candidate.note) === censusVisibility(run.note))
       : undefined;
+    const baselineStatus: CensusBaselineStatus = !complete ? 'latest-incomplete'
+      : base ? 'comparable'
+      : candidates.length === 0 ? 'unavailable'
+      : readableCandidates.length === 0 ? 'incomplete-candidates'
+      : 'visibility-mismatch';
     const rows = joinCensusGrowth(await consumersOf(sql, run.run_id), base ? await consumersOf(sql, base.run_id) : null);
     const sorted = sortCensusRows(rows, opts.orderBy);
     const used = Number(run.used_bytes);
     const attributed = Number(run.attributed_bytes);
     const unattributed = Math.max(0, used - attributed);
+    if (unattributed >= CENSUS_COVERAGE_GAP_BYTES) coverageIssues.push('unattributed-bytes');
     devices.push({
       device: run.device,
       host,
@@ -1197,7 +1226,8 @@ export async function readDiskConsumerCensus(
       baselineProducerBuildSha: censusProducerBuild(base?.note ?? null),
       sampledAt: finishedAt.toISOString(),
       stale: now.getTime() - finishedAt.getTime() > CENSUS_STALE_MS,
-      complete: run.complete && censusCoverageReadable(run.note),
+      complete,
+      coverageIssues,
       note: run.note,
       sizeBytes: Number(run.size_bytes),
       usedBytes: used,
@@ -1206,6 +1236,7 @@ export async function readDiskConsumerCensus(
       unattributedBytes: unattributed,
       coverageGap: unattributed >= CENSUS_COVERAGE_GAP_BYTES,
       baselineAt: base ? new Date(base.finished_at).toISOString() : null,
+      baselineStatus,
       baselineAvailBytes: base ? Number(base.avail_bytes) : null,
       baselineSizeBytes: base ? Number(base.size_bytes) : null,
       consumers: sorted.slice(0, limit),

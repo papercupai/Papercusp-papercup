@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * METR HCAST LIVE ops (plan benchmark-suite-metr-hcast-2026-06-17 P-002/P-003/P-004) — host-gated.
  *
@@ -46,7 +47,7 @@ const TASK_NOT_FOUND = 'taskNotFound_FPW3SDMlvf9Kf';
 export function taskhelperPath(): string {
   return (
     process.env.PAPERCUSP_METR_TASKHELPER ??
-    join(homedir(), '.papercusp', 'bench-harnesses', 'metr', 'task-standard', 'drivers', 'taskhelper.py')
+    papercuspPath('bench-harnesses', 'metr', 'task-standard', 'drivers', 'taskhelper.py')
   );
 }
 

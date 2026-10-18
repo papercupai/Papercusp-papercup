@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * The PACKING leg of the code-intelligence routing table (plan
  * `code-intelligence-routing-lsp-gitnexus-2026-08-20`, P-016; rulings D-005 and
@@ -76,8 +77,8 @@ const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) a
 // ───────────────────────── pinned engines ─────────────────────────
 
 /** Vendor roots. Provisioned by P-016; never installed at runtime. */
-export const REPOMIX_VENDOR_DIR = join(homedir(), '.papercusp', 'vendor', 'repomix');
-export const CODE2PROMPT_VENDOR_DIR = join(homedir(), '.papercusp', 'vendor', 'code2prompt');
+export const REPOMIX_VENDOR_DIR = papercuspPath('vendor', 'repomix');
+export const CODE2PROMPT_VENDOR_DIR = papercuspPath('vendor', 'code2prompt');
 
 /**
  * The EXACT pinned versions.
@@ -889,7 +890,7 @@ export interface PackerEffects {
 }
 
 const defaultWriteArtifact = async (body: string, engine: PackerEngine | 'native-source-path', format: PackFormat): Promise<string> => {
-  const dir = join(homedir(), '.papercusp', 'scratch', 'packs');
+  const dir = papercuspPath('scratch', 'packs');
   await mkdir(dir, { recursive: true });
   const sha = createShortHash(body);
   const path = join(dir, `${engine}-${sha}-${Date.now()}.${format === 'xml' ? 'xml' : 'md'}`);

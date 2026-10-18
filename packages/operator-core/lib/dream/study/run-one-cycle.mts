@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { readFile, appendFile, open, realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -59,7 +60,7 @@ const verifyPacket = studyPacketVerifier({ verify: verifyCapabilityPacket, graph
   // Preserve the verifier's private-pack root, byte budget, fatal UTF-8 and
   // growth checks. Its bounded artifact reader is private to the frozen source.
   readArtifact: async path => {
-    const packRoot = await realpath(join(homedir(), '.papercusp', 'scratch', 'packs'));
+    const packRoot = await realpath(papercuspPath('scratch', 'packs'));
     const file = await realpath(resolve(packRoot, path));
     const rel = relative(packRoot, file);
     if (!rel || rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel))

@@ -58,6 +58,7 @@ import {
 import { readManualRunAdmission, readQualificationAdmission } from '../release-checkpoint-config';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { integrationRoot } from '../release-deploy-launch';
+import { integrationBranch, releaseRef } from './judged-sha-containment';
 import {
   DEFAULT_RELEASE_TRIGGER_FIRE_STALE_MS as RELEASE_TRIGGER_FIRE_STALE_MS,
   evaluateReleaseTriggerFireStale as evaluateReleaseTriggerFireStaleShared,
@@ -2828,8 +2829,8 @@ async function gitOut(root: string, args: string[]): Promise<string | null> {
  *  never itself trigger the alarm it's trying to compute. */
 export async function computeMainBehindStaging(
   root: string,
-  mainBranch = 'main',
-  stagingBranch = 'staging',
+  mainBranch = releaseRef(),
+  stagingBranch = integrationBranch(),
 ): Promise<MainBehindStagingSnapshot> {
   const countRaw = await gitOut(root, ['rev-list', '--count', `${mainBranch}..${stagingBranch}`]);
   const commitsBehind = countRaw != null && /^\d+$/.test(countRaw) ? Number(countRaw) : null;
@@ -2903,6 +2904,13 @@ export async function checkMainBehindStaging(
   } = {},
 ): Promise<{ alarmed: boolean; recovered: boolean }> {
   const out = { alarmed: false, recovered: false };
+  const harnessSlug = opts.harnessSlug === undefined
+    ? safeOperatorHomeSlug()
+    : opts.harnessSlug.trim() || null;
+  if (!harnessSlug) {
+    console.warn('[main-behind-staging-watchdog] skipped: operator-home harness slug is unavailable');
+    return out;
+  }
   let passError: unknown;
   try {
     const root =
@@ -2910,7 +2918,6 @@ export async function checkMainBehindStaging(
       process.env.PAPERCUSP_INTEGRATION_ROOT ??
       (await gitOut(process.cwd(), ['rev-parse', '--show-toplevel'])) ??
       process.cwd();
-    const harnessSlug = opts.harnessSlug ?? 'papercusp';
     const gitSnapshot = await computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
     // EI-10202: fold in "has the gate advanced main recently?" so a deep-but-
     // healthy backlog (gate greening every cycle) is not mislabeled STALLED.
@@ -3045,7 +3052,7 @@ export async function checkMainBehindStaging(
     await recordWatchdogPassOutcome(
       sql,
       'main-behind-staging',
-      { routineName: 'green-checkpoint', installSlug: opts.harnessSlug ?? 'papercusp' },
+      { routineName: 'green-checkpoint', installSlug: harnessSlug },
       passError,
     );
   }
@@ -3172,15 +3179,19 @@ export function evaluateReleaseTriggerFreeze(
 export async function checkReleaseTriggerFreeze(
   sql: Sql,
   opts: {
-    installSlug?: string;
+    installSlug: string;
     workspaceId?: string;
     thresholdMs?: number;
-  } = {},
+  },
 ): Promise<{ alarmed: boolean; recovered: boolean }> {
   const out = { alarmed: false, recovered: false };
+  const installSlug = typeof opts.installSlug === 'string' ? opts.installSlug.trim() : '';
+  if (!installSlug) {
+    console.warn('[release-trigger-freeze-watchdog] skipped: installSlug is required');
+    return out;
+  }
   let passError: unknown;
   try {
-    const installSlug = opts.installSlug ?? 'papercusp';
     // `active_changed_at` (migration 933) is stamped by a trigger ONLY when `active` flips, so
     // it keeps accruing across the metadata-only writes that constantly bump `updated_at`.
     // COALESCE is a floor, not a fallback we expect to hit: 933 backfills every existing row and
@@ -3292,7 +3303,7 @@ export async function checkReleaseTriggerFreeze(
     await recordWatchdogPassOutcome(
       sql,
       'release-trigger-freeze',
-      { routineName: 'release-trigger', installSlug: opts.installSlug ?? 'papercusp' },
+      { routineName: 'release-trigger', installSlug },
       passError,
     );
   }
@@ -3363,12 +3374,16 @@ export function evaluateReleaseTriggerFireStale(
  */
 export async function checkReleaseTriggerFireStale(
   sql: Sql,
-  opts: { installSlug?: string; workspaceId?: string; thresholdMs?: number } = {},
+  opts: { installSlug: string; workspaceId?: string; thresholdMs?: number },
 ): Promise<{ alarmed: boolean; recovered: boolean }> {
   const out = { alarmed: false, recovered: false };
+  const installSlug = typeof opts.installSlug === 'string' ? opts.installSlug.trim() : '';
+  if (!installSlug) {
+    console.warn('[release-trigger-fire-stale-watchdog] skipped: installSlug is required');
+    return out;
+  }
   let passError: unknown;
   try {
-    const installSlug = opts.installSlug ?? 'papercusp';
     const rows = await sql<{ active: boolean; last_fired_ms: string | number | null; workspace_id: string }[]>`
       SELECT active, extract(epoch from last_fired_at) * 1000 AS last_fired_ms, workspace_id
         FROM harness_shared.routines
@@ -3458,7 +3473,7 @@ export async function checkReleaseTriggerFireStale(
     await recordWatchdogPassOutcome(
       sql,
       'release-trigger-fire-stale',
-      { routineName: 'release-trigger', installSlug: opts.installSlug ?? 'papercusp' },
+      { routineName: 'release-trigger', installSlug },
       passError,
     );
   }
@@ -3612,10 +3627,14 @@ export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | nul
  */
 export async function checkStrandedRepairQueue(
   sql: Sql,
-  opts: { installSlug?: string; workspaceId?: string; nowMs?: number } = {},
+  opts: { installSlug: string; workspaceId?: string; nowMs?: number },
 ): Promise<{ alarmed: boolean; recovered: boolean }> {
   const out = { alarmed: false, recovered: false };
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = typeof opts.installSlug === 'string' ? opts.installSlug.trim() : '';
+  if (!installSlug) {
+    console.warn('[stranded-repair-queue-watchdog] skipped: installSlug is required');
+    return out;
+  }
   let passError: unknown;
   try {
     const rows = await sql<{ workspace_id: string }[]>`
@@ -3874,6 +3893,80 @@ export async function checkStrandedRepairQueue(
 let watchdogTimer: ManagedHandle | null = null;
 let lostRunTimer: ManagedHandle | null = null;
 
+export interface GreenWatchdogInstallTargets {
+  greenCheckpoint: string[];
+  releaseTrigger: string[];
+}
+
+export interface GreenWatchdogInstallChecks {
+  releaseTriggerFreeze: (installSlug: string) => Promise<unknown>;
+  releaseTriggerFireStale: (installSlug: string) => Promise<unknown>;
+  strandedRepairQueue: (installSlug: string) => Promise<unknown>;
+  idleRepairQueue: (installSlug: string) => Promise<unknown>;
+  gateLiveInvariants: (installSlug: string) => Promise<unknown>;
+  greenMainSlo: (installSlug: string) => Promise<unknown>;
+}
+
+/** Run every single-install sibling watchdog for the routine rows it watches. */
+export async function runInstallScopedWatchdogs(
+  sql: Sql,
+  checks: GreenWatchdogInstallChecks,
+): Promise<{
+  targets: GreenWatchdogInstallTargets;
+  failures: Array<{ pass: keyof GreenWatchdogInstallChecks; installSlug: string; error: unknown }>;
+}> {
+  const rows = await sql<{
+    install_slug: string | null;
+    name: string | null;
+    target_role: string | null;
+  }[]>`
+    SELECT DISTINCT install_slug, name, target_role
+      FROM harness_shared.routines
+     WHERE target_role = 'system:green-checkpoint' OR name = 'release-trigger'`;
+
+  const greenCheckpoint = new Set<string>();
+  const releaseTrigger = new Set<string>();
+  for (const row of rows) {
+    const installSlug = row.install_slug?.trim();
+    if (!installSlug) continue;
+    if (row.target_role === 'system:green-checkpoint') greenCheckpoint.add(installSlug);
+    if (row.name === 'release-trigger') releaseTrigger.add(installSlug);
+  }
+  const targets = {
+    greenCheckpoint: [...greenCheckpoint].sort(),
+    releaseTrigger: [...releaseTrigger].sort(),
+  };
+
+  const tasks: Array<{
+    pass: keyof GreenWatchdogInstallChecks;
+    installSlug: string;
+    run: () => Promise<unknown>;
+  }> = [];
+  const schedule = (pass: keyof GreenWatchdogInstallChecks, installSlug: string): void => {
+    tasks.push({ pass, installSlug, run: () => checks[pass](installSlug) });
+  };
+  for (const installSlug of targets.releaseTrigger) {
+    schedule('releaseTriggerFreeze', installSlug);
+    schedule('releaseTriggerFireStale', installSlug);
+  }
+  for (const installSlug of targets.greenCheckpoint) {
+    schedule('strandedRepairQueue', installSlug);
+    schedule('idleRepairQueue', installSlug);
+    schedule('gateLiveInvariants', installSlug);
+    schedule('greenMainSlo', installSlug);
+  }
+
+  const outcomes = await Promise.allSettled(tasks.map(({ run }) => Promise.resolve().then(run)));
+  const failures: Array<{ pass: keyof GreenWatchdogInstallChecks; installSlug: string; error: unknown }> = [];
+  outcomes.forEach((outcome, index) => {
+    const task = tasks[index];
+    if (outcome.status === 'rejected' && task) {
+      failures.push({ pass: task.pass, installSlug: task.installSlug, error: outcome.reason });
+    }
+  });
+  return { targets, failures };
+}
+
 /**
  * Start the watchdog: an immediate boot check + a recurring process-level sweep.
  * Idempotent (a second call replaces the timer). Kill-switch:
@@ -3911,29 +4004,62 @@ export function startGreenStallWatchdog(
     // detection either time — same independent-of-the-routine-engine rationale
     // as the two checks above (this is a process-level watcher, not a DBOS
     // routine, specifically so it can catch a routine going silently dark).
-    void checkReleaseTriggerFreeze(sql);
-    // EI-14003: release-trigger can go silent (stop firing on its <=15min cadence)
-    // WITHOUT ever being paused (active stays true) — checkReleaseTriggerFreeze
-    // above cannot see that case at all (it only looks at active:false). Same
-    // independent-of-the-routine-engine rationale as the checks above.
-    void checkReleaseTriggerFireStale(sql);
-    // WI-10002439: P-010 promised an 8h-rung age escalation for a held frozen candidate and
-    // nothing fired it — a queue sat awaiting-fixer ~40h silently. Independent for the same
-    // reason as the checks above: a stranded queue produces no verdict for the gate to react to.
-    void checkStrandedRepairQueue(sql);
-    // P-002 (WI-10007476): the ACTION half of a stalled queue — dispatch, then wake the gate
-    // holder, then escalate to the owner. Replaces the fleet-wide age broadcast above.
-    void import('./idle-repair-queue-actuator').then(({ checkIdleRepairQueue }) => checkIdleRepairQueue(sql));
-    // P-018 (WI-10007479): standing live invariants for the gate mechanisms earlier plans shipped.
-    // The pass records its own failure in watchdog_health; the catch only covers a failed import.
-    void import('./gate-live-invariants')
-      .then(({ checkGateLiveInvariants }) => checkGateLiveInvariants(sql))
-      .catch((err: unknown) => console.warn('[gate-live-invariants] import failed:', err));
-    // P-016 (green-main-cycle-time-2026-10-08, D-030): the green-main SLO pages — main red ≥ 12h,
-    // no verdict ≥ 6h — delivered once per episode. The pass records its own failure.
-    void import('./green-main-slo-watchdog')
-      .then(({ checkGreenMainSlo }) => checkGreenMainSlo(sql))
-      .catch((err: unknown) => console.warn('[green-main-slo] import failed:', err));
+    const invokeScopedPass = (
+      pass: Parameters<typeof recordWatchdogPassOutcome>[1],
+      routineName: 'green-checkpoint' | 'release-trigger',
+      installSlug: string,
+      runPass: () => Promise<unknown>,
+    ): Promise<unknown> =>
+      Promise.resolve()
+        .then(runPass)
+        .catch(async (err: unknown) => {
+          console.warn(`[green-stall-watchdog] ${pass} failed for ${installSlug}: ${err instanceof Error ? err.message : String(err)}`);
+          await recordWatchdogPassOutcome(sql, pass, { routineName, installSlug }, err);
+        });
+
+    void runInstallScopedWatchdogs(sql, {
+      releaseTriggerFreeze: (installSlug) =>
+        invokeScopedPass('release-trigger-freeze', 'release-trigger', installSlug,
+          () => checkReleaseTriggerFreeze(sql, { installSlug })),
+      releaseTriggerFireStale: (installSlug) =>
+        invokeScopedPass('release-trigger-fire-stale', 'release-trigger', installSlug,
+          () => checkReleaseTriggerFireStale(sql, { installSlug })),
+      strandedRepairQueue: (installSlug) =>
+        invokeScopedPass('stranded-repair-queue', 'green-checkpoint', installSlug,
+          () => checkStrandedRepairQueue(sql, { installSlug })),
+      idleRepairQueue: (installSlug) =>
+        invokeScopedPass('idle-repair-queue', 'green-checkpoint', installSlug,
+          async () => {
+            const { checkIdleRepairQueue } = await import('./idle-repair-queue-actuator');
+            return checkIdleRepairQueue(sql, { installSlug });
+          }),
+      gateLiveInvariants: (installSlug) =>
+        invokeScopedPass('gate-live-invariants', 'green-checkpoint', installSlug,
+          async () => {
+            const { checkGateLiveInvariants } = await import('./gate-live-invariants');
+            return checkGateLiveInvariants(sql, { installSlug });
+          }),
+      greenMainSlo: (installSlug) =>
+        invokeScopedPass('green-main-slo', 'green-checkpoint', installSlug,
+          async () => {
+            const { checkGreenMainSlo } = await import('./green-main-slo-watchdog');
+            return checkGreenMainSlo(sql, { installSlug });
+          }),
+    }).then(({ failures }) => {
+      for (const failure of failures) {
+        console.warn(`[green-stall-watchdog] ${failure.pass} failed for ${failure.installSlug}: ${String(failure.error)}`);
+      }
+    }).catch(async (err: unknown) => {
+      console.warn(`[green-stall-watchdog] install-scope read failed: ${err instanceof Error ? err.message : String(err)}`);
+      await Promise.all([
+        recordWatchdogPassOutcome(sql, 'release-trigger-freeze', { routineName: 'release-trigger' }, err),
+        recordWatchdogPassOutcome(sql, 'release-trigger-fire-stale', { routineName: 'release-trigger' }, err),
+        recordWatchdogPassOutcome(sql, 'stranded-repair-queue', { routineName: 'green-checkpoint' }, err),
+        recordWatchdogPassOutcome(sql, 'idle-repair-queue', { routineName: 'green-checkpoint' }, err),
+        recordWatchdogPassOutcome(sql, 'gate-live-invariants', { routineName: 'green-checkpoint' }, err),
+        recordWatchdogPassOutcome(sql, 'green-main-slo', { routineName: 'green-checkpoint' }, err),
+      ]);
+    });
   };
 
   run(); // boot check

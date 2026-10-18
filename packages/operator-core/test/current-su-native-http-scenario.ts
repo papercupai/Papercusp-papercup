@@ -23,6 +23,41 @@ import { readSessionConfinement } from '../lib/capability-envelope/session-confi
 import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
 import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
 import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
+import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../lib/inference-gateway/codex-cli-bridge';
+
+/** A local scripted wire response, never inference or a provider-spend receipt. */
+function scriptedTool(body: Record<string, unknown>, kind: 'edit' | 'compact') {
+  type Tool = { type: string; name: string; tools?: Tool[] };
+  const flattened: Array<Tool & { namespace?: string }> = [];
+  const visit = (tools: Tool[], namespace?: string) => {
+    for (const tool of tools) {
+      if (tool.type === 'namespace' && Array.isArray(tool.tools)) visit(tool.tools, tool.name);
+      else flattened.push({ ...tool, namespace });
+    }
+  };
+  visit(Array.isArray(body.tools) ? body.tools as Tool[] : []);
+  const command = "printf 'after\\n' > /app/answer.txt";
+  const direct = flattened.find(tool => tool.type === 'function' && (kind === 'edit'
+    ? /(?:^|__)exec_command$/.test(tool.name)
+    : /(?:^|__)session_request_compaction$/.test(tool.name)));
+  const invoke = flattened.find(tool => tool.type === 'function' && /(?:^|__)tools_invoke$/.test(tool.name));
+  const exec = flattened.find(tool => tool.type === 'custom' && tool.name === 'exec' && tool.namespace === 'functions');
+  const tool = direct ?? (kind === 'compact' ? invoke : undefined) ?? exec;
+  assert.ok(tool, `Native ${kind} tool missing: ${JSON.stringify(flattened.map(({ type, name, namespace }) => ({ type, name, namespace })))}`);
+  const input = direct ? kind === 'edit' ? { cmd: command } : {}
+    : kind === 'compact' ? { name: 'session:request-compaction', args: {} } : { cmd: command };
+  const text = tool === exec ? kind === 'edit'
+    ? `text(await tools.exec_command(${JSON.stringify(input)}));`
+    : `text(await tools.mcp__papercusp_su__tools_invoke(${JSON.stringify(input)}));` : JSON.stringify(input);
+  const call = { type: tool.type === 'custom' ? 'custom_tool_call' : 'function_call',
+    id: 'fc_private_' + kind, call_id: 'call_private_' + kind, name: tool.name,
+    ...(tool.namespace ? { namespace: tool.namespace } : {}),
+    ...(tool.type === 'custom' ? { input: text } : { arguments: text }), status: 'completed' };
+  const response = { ...codexCliResponsesBody({ model: String(body.model), text: '', inputTokens: 100, outputTokens: 8 }), output: [call] };
+  return ['response.output_item.added', 'response.output_item.done', 'response.completed'].map(type =>
+    `event: ${type}\ndata: ${JSON.stringify({ type, ...(type === 'response.completed'
+      ? { response } : { output_index: 0, item: call }) })}\n\n`).join('') + 'data: [DONE]\n\n';
+}
 
 /** Seed only the disposable private pool before its operator boots. The
  * credential is deliberately invalid; inference still terminates at the local
@@ -57,8 +92,8 @@ export async function prepareCurrentSuNativeScenario(workspace: string) {
   process.env.PAPERCUSP_MCP_PROXY = '0';
 }
 
-export async function measureCurrentSuNativeScenario(input: { workspace: string; base: string; evidenceDir: string }) {
-  const { workspace, base, evidenceDir } = input;
+export async function measureCurrentSuNativeScenario(input: { workspace: string; base: string; evidenceDir: string; managedCarry?: boolean }) {
+  const { workspace, base, evidenceDir, managedCarry = false } = input;
   assert.match(workspace, /^test-runtime-/);
   assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
   assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
@@ -70,6 +105,17 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   const { sql } = getOrgPg();
   const repoRoot = join(evidenceDir, 'protocol'), checkout = join(evidenceDir, 'observer-checkout');
   mkdirSync(repoRoot); mkdirSync(checkout);
+  const taskCheckout = join(evidenceDir, 'task-checkout');
+  let taskHead: string | undefined;
+  const taskGit = (...args: string[]) => execFileSync('git', ['-C', taskCheckout, ...args], { encoding: 'utf8', timeout: 10000 });
+  if (managedCarry) {
+    mkdirSync(taskCheckout);
+    taskGit('init', '-q', '--initial-branch=main');
+    execFileSync('git', ['fast-import', '--quiet'], { cwd: taskCheckout,
+      input: 'blob\nmark :1\ndata 7\nbefore\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 answer.txt\n\ndone\n' });
+    taskGit('reset', '--hard', 'HEAD');
+    taskHead = taskGit('rev-parse', 'HEAD');
+  }
   const config = currentProtocolFixture(`PRIVATE-CURRENT-SU-${randomUUID()}`, 180000);
   for (const arm of config.arms) { arm.model = 'gpt-6-luna'; arm.effort = 'max'; }
   config.priceSchedule.rates[0].model = 'gpt-6-luna';
@@ -89,7 +135,11 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     retainIsolatedWorkerProgress(evidenceDir, stage, evidence);
   let observedAuto = false;
   let nativeDiagnosticsAt = 0;
-  // This service has no provider credential, response generator or forwarding path.
+  let predecessor: { ownerId: string; taskId: string; sessionId: string } | undefined;
+  let successorId: string | undefined, carryRequested = false, carryInputSeen = false;
+  let stoppedAfterCarry = false;
+  // This service has no provider credential or forwarding path. The carry
+  // variant supplies fixed protocol output solely to exercise the native host.
   const listener = createServer(async (req, res) => {
     requests.push({ method: req.method, path: req.url, at: new Date().toISOString() });
     progress('model-transport-request', { request: requests.at(-1), modelRequests: bodies.length });
@@ -98,6 +148,26 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       const sessions = await sql`SELECT coord_owner_id FROM harness_shared.adv_sessions WHERE workspace_id=${workspace}`;
       if (sessions.length === 1) observedAuto = (await getModes(workspace, sessions[0].coord_owner_id)).some(mode => mode.mode === 'auto');
+      if (managedCarry) {
+        const rows = await sql`SELECT a.coord_owner_id, a.session_id, t.task_id FROM harness_shared.adv_sessions a
+          JOIN harness_shared.task_ledger t ON t.workspace_id=a.workspace_id AND t.detail->>'coordOwnerId'=a.coord_owner_id
+          WHERE a.workspace_id=${workspace}`;
+        assert.equal(rows.length, 1, JSON.stringify(rows));
+        const row = rows[0];
+        if (!predecessor) predecessor = { ownerId: row.coord_owner_id, taskId: row.task_id, sessionId: row.session_id };
+        const body = bodies.at(-1)!;
+        const received = JSON.stringify(body.input);
+        carryInputSeen ||= received.includes('codex-carry-lineage predecessor:' + predecessor.sessionId);
+        if (bodies.length === 3) {
+          carryRequested = /"requested"\s*:\s*true/.test(received.replace(/\\"/g, '"')) && received.includes('queued');
+          assert.ok(carryRequested, 'Managed boundary did not queue: ' + received.slice(-5000));
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end(bodies.length <= 2 ? scriptedTool(body, bodies.length === 1 ? 'edit' : 'compact')
+          : codexCliResponsesCompletionSse(codexCliResponsesBody({ model: String(body.model),
+            text: 'Private managed carry protocol acknowledgement.', inputTokens: 100, outputTokens: 8 })));
+        return;
+      }
     }
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'Private current-su no-forwarding lifecycle fixture.' } }));
@@ -124,7 +194,8 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     phase('adapter-start');
     adapter = await startFrontierSweLaunchAdapter({ runId: config.runId, context: ctx, mcpOrigin: base,
       hookRecordDir: join(evidenceDir, 'private-hook-records'),
-      seam: { version: 'private-lifecycle', extraRunArgs: ['--workdir', '/app'] },
+      seam: { version: 'private-lifecycle', extraRunArgs: ['--workdir', '/app',
+        ...(managedCarry ? ['-v', `${taskCheckout}:/app`] : [])] },
       startAssignment: async () => { phase('assignment-start'); return {
         options: { workspaceId: workspace, runId: config.runId, armId: 'papercusp', seed: 1,
           agent: 'codex', model: 'gpt-6-luna', effort: 'max', account: 'auto', pollIntervalMs: 100,
@@ -149,7 +220,16 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
             catch (error) { progress('launch-failed', { error: String(error) }); throw error; }
           },
           getTask: async id => {
-            const task = await ports.getTask(id);
+            let task = await ports.getTask(id);
+            if (managedCarry && carryInputSeen && predecessor && task?.sessionId && task.sessionId !== predecessor.sessionId && !stoppedAfterCarry) {
+              assert.equal(task.detail.coordOwnerId, predecessor.ownerId);
+              assert.equal(task.taskId, predecessor.taskId);
+              successorId = task.sessionId;
+              stoppedAfterCarry = true;
+              progress('managed-carry-verified', { ...predecessor, successorId });
+              await ports.killTask(id);
+              task = await ports.getTask(id);
+            }
             if (task && Date.now() - nativeDiagnosticsAt >= 1000) {
               nativeDiagnosticsAt = Date.now();
               const logPath = 'logPath' in task && typeof task.logPath === 'string' ? task.logPath : undefined;
@@ -222,14 +302,26 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     const confinement = await readSessionConfinement(row.coord_owner_id, workspace);
     assert.ok(confinement, 'native session has no host confinement');
     assert.ok(JSON.stringify(confinement).includes(assignmentId), 'assignment confinement missing');
-    assert.deepEqual(confinement.denyOutside, ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']);
+    assert.deepEqual(confinement.denyOutside, ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']);
     assert.equal(confinement.denyAmbientContext, true);
     assert.ok(bridge!.stats().calls > 0 && bridge!.stats().pings > 0, JSON.stringify(bridge!.stats()));
     assert.notEqual(output.status, 'completed', diagnostic);
     assert.ok(adapter.egress.stats().gw.connections > 0 && adapter.egress.stats().mcp.connections > 0);
+    let managedCarryReceipt;
+    if (managedCarry) {
+      assert.ok(carryRequested && carryInputSeen && stoppedAfterCarry && successorId && predecessor, diagnostic);
+      assert.notEqual(successorId, predecessor.sessionId);
+      assert.equal(taskGit('rev-parse', 'HEAD'), taskHead);
+      assert.equal(readFileSync(join(taskCheckout, 'answer.txt'), 'utf8'), 'after\n');
+      assert.ok(taskGit('diff', '--', 'answer.txt').includes('-before\n+after'));
+      managedCarryReceipt = { requested: true, predecessorId: predecessor.sessionId, successorId,
+        distinctNativeSession: true, sameOwner: true, sameTask: true, preservedHead: true,
+        preservedDiff: true, confinementPreserved: true };
+    }
     return { workspace, assignmentId, nativeSessionId: row.session_id, nativeTaskId: row.task_id,
       modelRequests: bodies.length, providerForwarding: false, autoRegistered: true, hooksBridged: true,
-      containerWorkdir: '/app', mcpConfined: true, status: output.status };
+      containerWorkdir: '/app', mcpConfined: true, status: output.status,
+      ...(managedCarryReceipt ? { managedCarry: managedCarryReceipt } : {}) };
   } finally {
     if (handle && adapter) await adapter.seam.teardown(handle);
     if (adapter) assert.deepEqual((await adapter.stop()).errors, []);

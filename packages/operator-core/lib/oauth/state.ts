@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * OAuth state token — HMAC-signed URL parameter, single-use server-side nonce.
  *
@@ -86,7 +87,7 @@ const EMPTY_KEY_GRACE_MS = 50;
 export function oauthStateKeyFilePath(): string {
   const override = process.env[KEY_FILE_ENV_VAR];
   if (override && override.trim()) return override.trim();
-  return join(homedir(), '.papercusp', 'oauth-state-key');
+  return papercuspPath('oauth-state-key');
 }
 
 /**

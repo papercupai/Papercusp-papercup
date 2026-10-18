@@ -68,6 +68,7 @@ import {
   isBoundedScorecardsListArgs,
   isBoundedActivityToolLogArgs,
   isBoundedTestingRunStatusArgs,
+  isBoundedWorkItemsListArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
 import { decodeToolsInvokeArgs } from "@papercusp/operator-core/lib/agent-tools/tools/invoke-args";
@@ -2425,6 +2426,7 @@ const COORD_ROSTER_TOOL_NAME = normalizeMcpName("coord:roster");
 const COORD_FEED_TOOL_NAME = normalizeMcpName("coord:feed");
 const TESTING_RUN_STATUS_TOOL_NAME = normalizeMcpName("testing:run-status");
 const RECIPES_SEARCH_TOOL_NAME = normalizeMcpName("recipes:search");
+const WORK_ITEMS_LIST_TOOL_NAME = normalizeMcpName("work_items:list");
 
 /**
  * A filtered coordination-feed read is a recovery surface: agents use it to
@@ -2533,6 +2535,10 @@ function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: 
   if (name === COORD_FEED_TOOL_NAME) return isBoundedCoordFeedArgs(args);
   if (name === TESTING_RUN_STATUS_TOOL_NAME) return isBoundedTestingRunStatusArgs(args);
   if (name === RECIPES_SEARCH_TOOL_NAME) return isBoundedRecipesSearchArgs(args);
+  // A caller-owned, small-page work-item list is the reconciliation read used after a
+  // timeout. Keep the broad backlog browser on the ordinary lane, but preserve this bounded
+  // owner lookup while the ordinary FIFO is saturated.
+  if (name === WORK_ITEMS_LIST_TOOL_NAME) return isBoundedWorkItemsListArgs(args);
   return RESERVED_CONTROL_PLANE_TOOLS.has(name);
 }
 

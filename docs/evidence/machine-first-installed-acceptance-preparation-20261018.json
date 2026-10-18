@@ -1,0 +1,233 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010016781",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "observedAt": "2026-10-18T00:07:35.859043+00:00",
+  "scope": "Archive identity/content and installed acceptance preparation only; no product test or release acceptance was executed.",
+  "publicObservation": {
+    "at": "2026-10-18T00:07:34.639Z",
+    "url": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/latest.json",
+    "status": 200,
+    "etag": "\"b4dbccccb48184950c76c769fe16af1f\"",
+    "date": "Sun, 18 Oct 2026 00:07:34 GMT",
+    "manifestSha256": "9454f2274951cc200a2d94b3231140a7f2569e8c380d578485530b21e1060a6c",
+    "manifest": {
+      "schemaVersion": 1,
+      "version": "0.1.0",
+      "target": "linux-x86_64",
+      "sourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+      "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+      "archiveUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz",
+      "acceptanceUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz.acceptance.json",
+      "sumsUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz.sha256",
+      "unsigned": true,
+      "artifacts": {
+        "linux-x86_64": {
+          "schemaVersion": 1,
+          "version": "0.1.0",
+          "target": "linux-x86_64",
+          "sourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+          "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+          "archiveUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz",
+          "acceptanceUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz.acceptance.json",
+          "sumsUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz.sha256",
+          "unsigned": true
+        }
+      }
+    },
+    "sameArchiveAsSavedSignup": true,
+    "sameSourceAsSavedSignup": true
+  },
+  "candidate": {
+    "archive": "/tmp/machine-first-warning-fixed-pui-20261017-v3-9a59/pui-0.1.0-linux-x86_64.tar.gz",
+    "archiveSha256": "993bb8f825406e495793b23dc64ba57d926b0fab469e1eeb4fac259649630e8f",
+    "source": {
+      "commit": "9a59f25f25b1f7c8751438637074c603955090a7",
+      "commitEpoch": 1792224928,
+      "repository": "https://github.com/Papercusp/papercusp.git",
+      "trees": {
+        "apps/pui-companion-proto": "c6df314390ed0471fea575b13f4bd2afa6a94ea9",
+        "apps/pui-zellij-plugin": "fb7fc4fdcf1129faa77cb711f7d714d2355e6c4e",
+        "apps/tui": "df203154d05a9d950fcbee86649581b69f4e3845"
+      }
+    },
+    "installManifest": {
+      "binaryPath": "bin/pui",
+      "binarySha256": "8e8ee66bee3dd9e060f97a6ab7bdb3e4b6227c321df9847650229fb5bff3513f",
+      "builtAtEpoch": 1792224928,
+      "companionPath": "pui-companion.wasm",
+      "companionSha256": "ad84b47c59f7a0cb7efcd484000faa4f67750b3e4bd7009477c2e00c6ccbdc44",
+      "schemaVersion": 1,
+      "sourceDirty": false,
+      "sourceSha": "9a59f25f25b1f7c8751438637074c603955090a7",
+      "target": "linux-x86_64",
+      "version": "0.1.0"
+    },
+    "bundledOutputVerification": [
+      {
+        "member": "pui-0.1.0-linux-x86_64/lib/psu/native-client.cjs",
+        "expectedSha256": "84f111cf4046cdc6f7e2e73b61c0aef7ab3960d1c4060f43026a7d6bba5e83ee",
+        "measuredSha256": "84f111cf4046cdc6f7e2e73b61c0aef7ab3960d1c4060f43026a7d6bba5e83ee",
+        "matches": true
+      },
+      {
+        "member": "pui-0.1.0-linux-x86_64/lib/psu/native-extension.mjs",
+        "expectedSha256": "633296b3686d89f50695bcdde19b87218bf291e01a81d6444f9f945bb2446ed9",
+        "measuredSha256": "633296b3686d89f50695bcdde19b87218bf291e01a81d6444f9f945bb2446ed9",
+        "matches": true
+      },
+      {
+        "member": "pui-0.1.0-linux-x86_64/lib/psu/package.json",
+        "expectedSha256": "0dbe8ae40ab9b71b0a5087402448193272a72fbd42629d3e4166f948fabfeb37",
+        "measuredSha256": "0dbe8ae40ab9b71b0a5087402448193272a72fbd42629d3e4166f948fabfeb37",
+        "matches": true
+      },
+      {
+        "member": "pui-0.1.0-linux-x86_64/lib/psu/psu.mjs",
+        "expectedSha256": "b0a73aaf412727b8f04e50bb78db45a7389a59fcfbe99442ba2b2e57d5b04198",
+        "measuredSha256": "b0a73aaf412727b8f04e50bb78db45a7389a59fcfbe99442ba2b2e57d5b04198",
+        "matches": true
+      }
+    ],
+    "sourceComparison": [
+      {
+        "path": "apps/operator/scripts/psu-launcher.mjs",
+        "candidateSourceSha256": "ea493d322000ac358e517373e15f1ab1624605c62dca47bd914098f4178e6cff",
+        "currentSourceSha256": "942242712042958ee84526d3dee1f93aed396bcd79a64648c960389d7273537b",
+        "same": false
+      },
+      {
+        "path": "apps/operator/scripts/psu-connection-front-controller.mjs",
+        "candidateSourceSha256": "3387e923ba6c16c979ede2dfebae949e8247a697dd8f99d6449dc7866a5dab57",
+        "currentSourceSha256": "3387e923ba6c16c979ede2dfebae949e8247a697dd8f99d6449dc7866a5dab57",
+        "same": true,
+        "candidateSourceContains": {
+          "--connect-gui": true,
+          "aws-ssm-ssh": true,
+          "kind: \"ssh\"": true
+        }
+      },
+      {
+        "path": "apps/tui/release/psu",
+        "candidateSourceSha256": "9fcb242dc1b4a0c74c6f3c81278cd3680edb9e1fa6d41dc20e173984696a4f9a",
+        "currentSourceSha256": "9fcb242dc1b4a0c74c6f3c81278cd3680edb9e1fa6d41dc20e173984696a4f9a",
+        "same": true
+      },
+      {
+        "path": "apps/tui/src/main.rs",
+        "candidateSourceSha256": "c528ab64ee2eb2f21635d2c84bfb2a9fc5cb7285a20fafb4e9157cf8495a4389",
+        "currentSourceSha256": "c528ab64ee2eb2f21635d2c84bfb2a9fc5cb7285a20fafb4e9157cf8495a4389",
+        "same": true
+      },
+      {
+        "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+        "candidateSourceSha256": "fbacb40f075acae389c4e0a7a34100dc925e01201f43e0ed7eb185c25b50a990",
+        "currentSourceSha256": "5a263e96f7583b7248a2e5c03231074ca3019757b591b7d72c1318f05167048f",
+        "same": false
+      }
+    ]
+  },
+  "prerequisite": {
+    "workItem": "WI-6554700010016907",
+    "stateAtRead": "done",
+    "completion": {
+      "summary": "Resolved PUI acceptance caller-database authority loss before immutable candidate checkout. The wrapper resolves and authenticates the caller authority before allocating a slot, pins HARNESS_ADMIN_DATABASE_URL, preserves PAPERCUSP_TEST_PG_ADMIN_URL, and refuses early with credential-safe diagnostics. Offline cache lifecycle fixtures use the existing scan seam; production default scans retain the maintained fail-closed guard.",
+      "testsRun": "npm run test:file -- packages/operator-core/lib/pui-e2e/release-acceptance.test.ts (86 passed,0 skipped; ledger21347121); npm run test:file -- packages/operator-core/lib/pui-e2e/release-acceptance-cache.test.ts with source capture (17 passed,0 skipped; ledger21347686; actual command exit0); Actual maintained wrapper database preflight alone: read-only SELECT1, exit0; bash -n apps/tui/scripts/release-acceptance.sh and scoped git diff --check",
+      "testResult": "PASS for wrapper/source/unit verification and actual caller read-only authentication. Earlier cache failures21347637/21347679 are retained as red diagnostic evidence, followed by repaired full green21347686. No installed acceptance was relaunched. Installed behavior and full shipment remain unverified under WI-6554700010016781.",
+      "verifiedHow": "Read the authoritative test ledger and logs /tmp/wi6907-release-acceptance-unit-20261017.log and /tmp/wi6907-cache-repaired-20261017.log. The main86pass run was dirty; its recorded wrapper/main-test hashes remain unchanged. The cache17pass run was dirty and HEAD moved, so no whole-commit execution claim is made. /tmp/wi6907-cache-repaired-source-map-20261017.jsonl contains stable Vite-original evidence: cache source08638db481b0afd2ee09a7f90935650c19f2884ede08b2e4cc21c73325e15b6a and test4e7657dd377323371721cc9ba38c9a68ecff5d7ef5ca492685cdcd5d6f3dff18 match committed/current bytes. Direct git-show comparison verifies four paths at auto-commit474d8585d895dda3e40eda0c846dc21fe640af14: wrapper6dec895a47bc75fd8dad1aa1c6fff6968ea912ec1ffe793cfbdd7c2320923e7e; main testd227beb5eea1cf3479c1f1c95cb63baf1b4f265446cb875f7260133566178b4d; cache source/test as above. /tmp/wi6907-actual-readonly-precheck-20261017.json observes precheckAuthenticated:true,hostlocalhost,port5432,privateTestAuthorityUnchanged:true and the same wrapper hash. Manual locks released; EI-26257099994750107 harvested observation closed with this repair's proof. Existing owned WI6781 received comment1188851 preserving its terminal P030v3 evidence.",
+      "filesChanged": [
+        "apps/tui/scripts/release-acceptance.sh",
+        "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts",
+        "packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts",
+        "packages/operator-core/lib/pui-e2e/release-acceptance-cache.test.ts"
+      ]
+    },
+    "currentHashComparison": [
+      {
+        "path": "apps/tui/scripts/release-acceptance.sh",
+        "recordedSha256": "6dec895a47bc75fd8dad1aa1c6fff6968ea912ec1ffe793cfbdd7c2320923e7e",
+        "currentSha256": "6dec895a47bc75fd8dad1aa1c6fff6968ea912ec1ffe793cfbdd7c2320923e7e",
+        "same": true
+      },
+      {
+        "path": "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts",
+        "recordedSha256": "d227beb5eea1cf3479c1f1c95cb63baf1b4f265446cb875f7260133566178b4d",
+        "currentSha256": "d227beb5eea1cf3479c1f1c95cb63baf1b4f265446cb875f7260133566178b4d",
+        "same": true
+      },
+      {
+        "path": "packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts",
+        "recordedSha256": "08638db481b0afd2ee09a7f90935650c19f2884ede08b2e4cc21c73325e15b6a",
+        "currentSha256": "08638db481b0afd2ee09a7f90935650c19f2884ede08b2e4cc21c73325e15b6a",
+        "same": true
+      },
+      {
+        "path": "packages/operator-core/lib/pui-e2e/release-acceptance-cache.test.ts",
+        "recordedSha256": "4e7657dd377323371721cc9ba38c9a68ecff5d7ef5ca492685cdcd5d6f3dff18",
+        "currentSha256": "4e7657dd377323371721cc9ba38c9a68ecff5d7ef5ca492685cdcd5d6f3dff18",
+        "same": true
+      }
+    ],
+    "savedReadOnlyAuthenticationReceipt": "/tmp/wi6907-actual-readonly-precheck-20261017.json",
+    "testsRerun": false
+  },
+  "retainedAttempt": {
+    "path": "/tmp/machine-first-p030-isolated-20261017-v3.acceptance.json",
+    "sha256": "6a637f0da345d0aa6fbacc2ca14e1424a2b54de235e5ff4f16300e8e8c35f103",
+    "ok": false,
+    "scriptedLegs": [
+      {
+        "engine": "scripted",
+        "status": 1,
+        "evidence": "/tmp/machine-first-p030-isolated-20261017-v3-work/evidence-scripted.json",
+        "rows": 0
+      }
+    ],
+    "interpretation": "The scripted leg stopped before product measurement. Earlier stock-image smoke results do not measure P030."
+  },
+  "priorFailureAudit": [
+    {
+      "class": "Dependency donor incompleteness",
+      "guard": "Existing maintained source and candidate lock-tree auditor before generation copy; retain final and cache-hit audits.",
+      "status": "Guard implemented; freshness must be measured under install reader before the next expensive attempt."
+    },
+    {
+      "class": "Private Podman readiness uses expensive version metadata",
+      "guard": "scripts/with-private-podman.mjs uses sequential bounded /_ping; saved focused and actual health proofs retained.",
+      "status": "Do not rerun passing readiness proof merely to reconstruct it."
+    },
+    {
+      "class": "Caller database authority lost when entering immutable candidate",
+      "guard": "Existing release-acceptance.sh authenticates before checkout and pins HARNESS_ADMIN_DATABASE_URL.",
+      "status": "WI6907 is done; four current source/test hashes match its saved proof."
+    },
+    {
+      "class": "PTY observer might miss launcher exit",
+      "guard": "Observe exact installed executable, PID and startTicks before cleanup as well as maintained PTY onExit.",
+      "status": "Original product defect remains unclassified; no timeout increase."
+    }
+  ],
+  "nextAttempt": {
+    "route": "Existing official apps/tui/scripts/release-acceptance.sh with --test-filter P-030: bare, exact diagnostic archive and source, new work/out/evidence paths, maintained private API wrapper and independent exact-process observer.",
+    "preconditions": [
+      "Acquire maintained install-reader boundary and audit current/candidate donor completeness.",
+      "Retain repaired caller database preflight; preserve private test database authority.",
+      "Use fresh clean HOME and output paths; preserve v1/v2/v3 evidence.",
+      "Record installed binary/archive/source identity and exact observer liveness before cleanup."
+    ],
+    "scopeLimit": "A filtered diagnostic can classify WI6781 only; it cannot certify the full release. Current full-release acceptance needs a new pinned candidate containing the current launcher/test changes."
+  },
+  "remainingUnverified": [
+    "Fresh installed P030 journey and launcher exit",
+    "Current complete archive acceptance including real engines and customer ingress",
+    "Public manifest update to the accepted current archive",
+    "Exact publication and final shipment"
+  ],
+  "transportObservation": {
+    "pythonUrllib": "HTTP403 error code1010",
+    "nodeFetch": "HTTP200 for the same public manifest URL",
+    "interpretation": "Client-specific response; not a Portal or browser download-failure claim."
+  },
+  "acceptanceExecuted": false,
+  "shipmentVerified": false
+}

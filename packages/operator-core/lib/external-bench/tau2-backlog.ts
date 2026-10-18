@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * tau2-backlog.ts — the τ²-bench (tau2-bench) capability-INJECTION backlog driver
  * (plan benchmark-capability-injection-redesign-2026-06-17; P-009).
@@ -406,7 +407,7 @@ export const realOpenSandbox: OpenTau2Sandbox = async ({ arm, runId }) => {
 /* -------------------------------------------------------------------------- */
 
 /** Where the vendored τ²-bench Python harness lives (driven via `pc_run.sh`). */
-const TAU2_HARNESS_DIR = join(homedir(), '.papercusp', 'bench-harnesses', 'tau2-bench');
+const TAU2_HARNESS_DIR = papercuspPath('bench-harnesses', 'tau2-bench');
 /** Default per-conversation wall-clock ceiling before the subprocess is hard-killed (ms). */
 const DEFAULT_TAU2_CONVERSATION_TIMEOUT_MS = 30 * 60_000;
 

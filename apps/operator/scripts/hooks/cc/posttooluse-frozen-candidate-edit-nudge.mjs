@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 // apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs
 //
 // PostToolUse (Edit|Write|MultiEdit) hook with TWO jobs, both only while a gate candidate is
@@ -74,7 +75,7 @@ export function normalizeRepoPath(value) {
  * the writer's default, not only the file format.
  */
 export function markersDir() {
-  const base = process.env.PAPERCUSP_STATE_DIR ?? join(homedir(), '.papercusp', 'state');
+  const base = process.env.PAPERCUSP_STATE_DIR ?? papercuspPath('state');
   return join(base, 'frozen-repair-edit-markers');
 }
 
@@ -420,7 +421,7 @@ export function ownerIdentity(payload, env = process.env, readFile = (p) => read
   if (typeof env.PAPERCUSP_SID === 'string' && env.PAPERCUSP_SID) return env.PAPERCUSP_SID;
   if (typeof payload?.session_id === 'string' && payload.session_id) return payload.session_id;
   try {
-    const id = readFile(join(homedir(), '.papercusp', 'su-agent-id')).trim();
+    const id = readFile(papercuspPath('su-agent-id')).trim();
     if (id) return id;
   } catch {
     /* not installed */
@@ -498,7 +499,7 @@ const STAGING_OPERATOR_URL = 'http://127.0.0.1:3170';
  */
 function scratchRootDir(env = process.env) {
   const override = typeof env.PAPERCUSP_SCRATCH_ROOT === 'string' ? env.PAPERCUSP_SCRATCH_ROOT.trim() : '';
-  return override || join(homedir(), '.papercusp', 'scratch');
+  return override || papercuspPath('scratch');
 }
 
 /** Map a trusted papercusp://scratch URI to a path below the configured root. */
@@ -855,7 +856,7 @@ async function main() {
   const ledgerByPath = new Map();
   const hunks = hunksFrom(payload).slice(0, 20);
   if (hunks.length > 0) {
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
+    const tokenPath = papercuspPath('superuser-token');
     let token = '';
     try {
       token = readFileSync(tokenPath, 'utf8').trim();

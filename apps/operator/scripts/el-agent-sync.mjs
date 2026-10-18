@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * EL Conv AI agent sync.
  *
@@ -28,7 +29,7 @@ const operatorRoot = path.resolve(__dirname, '..');
 
 const DRY_RUN = process.argv.includes('--dry-run') || process.env.DRY_RUN === '1';
 
-const credPath = path.join(homedir(), '.papercusp', 'credentials.json');
+const credPath = papercuspPath('credentials.json');
 // voice-prefs lives under the active workspace dir, not directly under
 // ~/.papercusp. Default workspace is `default`.
 //

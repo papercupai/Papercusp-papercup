@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * The hosted machine's static Noise keypair for sealed phone traffic
  * (WI-10006956, android-public-release-2026-10-01 D-013 #6).
@@ -40,7 +41,7 @@ export function defaultHostedMachineNoiseKeyPath(env: NodeJS.ProcessEnv = proces
   if (systemdState?.startsWith('/')) return join(systemdState, 'machine-noise-key.json');
   const configured = env.PAPERCUSP_HOSTED_MACHINE_NOISE_KEY_PATH?.trim();
   if (configured?.startsWith('/')) return configured;
-  return join(homedir(), '.papercusp', 'workspace-host', 'machine-noise-key.json');
+  return papercuspPath('workspace-host', 'machine-noise-key.json');
 }
 
 function canonicalSeed(seedBase64: unknown): Buffer {

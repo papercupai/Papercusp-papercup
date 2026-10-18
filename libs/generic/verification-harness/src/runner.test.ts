@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
+import { assertEvidenceRootPlacement, formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
 import { symlinkSync } from 'node:fs';
 import { planCommand, retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
@@ -35,7 +35,35 @@ afterEach(() => {
   rmSync(privateRetention, { recursive: true, force: true });
 });
 
+describe('evidence placement guard', () => {
+  it('rejects an implicit legacy home-state root when offload storage is available', () => {
+    const home = tmp();
+    const legacy = path.join(home, '.local/state/verification-harness/legacy');
+    expect(() => assertEvidenceRootPlacement('legacy', legacy, { HOME: home })).toThrow('root filesystem');
+    expect(() => assertEvidenceRootPlacement('legacy', path.join('/tmp', 'vh-data', 'legacy'), { HOME: home })).not.toThrow();
+    rmSync(home, { recursive: true, force: true });
+  });
+});
+
 describe('harness retention admission', () => {
+  it('shell retention preflight defers a busy mutex without waiting for the lock holder', async () => {
+    const root = tmp();
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        const child = spawnSync('bash', ['-c',
+          'source "$1"; vh_phase proof ""; vh_init shell-busy "$2"; test "$VH_DISABLED" = 0 && test -f "$VH_RUN_DIR/plan.json"',
+          'vh-preflight', new URL('../bin/vh.sh', import.meta.url).pathname, root],
+        { encoding: 'utf8', env: process.env, timeout: 8000 });
+        expect(child.error, child.stderr + child.stdout).toBeUndefined();
+        expect(child.status).toBe(0);
+        expect(child.stderr).toContain('VH_RETENTION_DEFERRED stage=before reason=retention-mutex-busy');
+        expect(child.stdout).toContain('VH_RUN harness=shell-busy');
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20000);
+
   it.each([true, false])('shell finalization defers busy GC and retains the original %s verdict and declared receipt', async passes => {
     const root = tmp();
     const old = '20200101T000000Z-1', runId = '20260101T000000Z-1';

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Per-thread perf-SLO budgets (round-4 Lane F / P-030). The DURABLE budget contract
  * that turns Lane E's `perf-signals-v1` capture (E1, ~/.papercusp/perf-baselines/
@@ -1261,7 +1262,7 @@ export function evaluatePerfSignals(
   return delivered({ ...v, status: 'ok', reasons: [], suppressedReasons: suppressed });
 }
 
-export const PERF_BASELINES_DIR = join(homedir(), '.papercusp', 'perf-baselines');
+export const PERF_BASELINES_DIR = papercuspPath('perf-baselines');
 
 /**
  * Read the most-recent perf-signals-v1 JSON capture (by mtime) from the perf-baselines

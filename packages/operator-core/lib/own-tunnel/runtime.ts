@@ -1,3 +1,4 @@
+import { papercuspHome } from '@papercusp/host-platform/home';
 /**
  * The own tunnel's local processes (external-app-access P-009, D-001):
  *
@@ -84,7 +85,7 @@ export async function ensureIngressListener(port: number | null): Promise<boolea
 // ── cloudflared binary ──────────────────────────────────────────────────────────────────────────
 
 export function papercuspDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PAPERCUSP_HOME?.trim() || path.join(homedir(), '.papercusp');
+  return env.PAPERCUSP_HOME?.trim() || papercuspHome();
 }
 
 /**

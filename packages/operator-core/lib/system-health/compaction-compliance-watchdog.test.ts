@@ -100,7 +100,10 @@ const {
   // P-012 force-compact deps. Defaults keep the EXISTING over-limit tests unaffected:
   // flag ON but NO live host ⇒ maybeForceCompact no-ops (out.forceCompacted stays []).
   getFlagMock: vi.fn(async (_key: string, _scope?: string) => true),
-  findLiveHostMock: vi.fn((_ownerId: string) => null as null | { sock: string; caps?: string[] }),
+  findLiveHostMock: vi.fn(
+    (_ownerId: string, _dir?: string, _opts?: { workspaceId?: string }) =>
+      null as null | { sock: string; caps?: string[] },
+  ),
   hostSupportsMock: vi.fn((_host: unknown, _cap: string) => false),
   injectMock: vi.fn(async (_sock: string, _payload: unknown) => true),
   findTranscriptMock: vi.fn(async () => '/tmp/live-session.jsonl' as string | null),
@@ -173,7 +176,11 @@ vi.mock('@papercusp/flags', () => ({
 }));
 vi.mock('../events/await/psu-pty-discovery', () => ({
   findLiveHost: findLiveHostMock,
-  findLiveHostAsync: async (ownerId: string) => findLiveHostMock(ownerId),
+  findLiveHostAsync: async (
+    ownerId: string,
+    dir?: string,
+    opts?: { workspaceId?: string },
+  ) => findLiveHostMock(ownerId, dir, opts),
   hostSupports: hostSupportsMock,
   injectIntoHost: injectMock,
 }));
@@ -1783,6 +1790,22 @@ describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('resolves the force-path PTY host against the target workspace during shared-operator lookup', async () => {
+    estimateMock.mockResolvedValue(30_000);
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/scoped-host.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded: [{
+      owner_id: 'scoped-pty-owner',
+      owner_label: 'su · scoped-pty-owner',
+      workspace_id: 'ws-scoped-pty',
+      compaction_limit: 20_000,
+    }] }));
+
+    expect(out.forceCompacted).toEqual(['scoped-pty-owner']);
+    expect(findLiveHostMock).toHaveBeenCalledWith('scoped-pty-owner', undefined, { workspaceId: 'ws-scoped-pty' });
   });
 
   it('unknown window ⇒ falls back to the overshoot-factor bound (limit × 1.2); a spawn-record [1m] spec restores the full band', async () => {

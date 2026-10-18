@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Named benchmark task-set loader (benchmark-evaluation-ui-2026-06-16 P-004).
  *
@@ -87,7 +88,7 @@ interface VerifiedTaskRow {
 export function pilotTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_PILOT_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'm3-realqueen-2026-06-16', 'tasks-sample.jsonl')
+    papercuspPath('bench-results', 'm3-realqueen-2026-06-16', 'tasks-sample.jsonl')
   );
 }
 
@@ -95,7 +96,7 @@ export function pilotTaskSetPath(): string {
 export function stratifiedTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_STRATIFIED_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'stratified-30', 'tasks.jsonl')
+    papercuspPath('bench-results', 'stratified-30', 'tasks.jsonl')
   );
 }
 
@@ -103,7 +104,7 @@ export function stratifiedTaskSetPath(): string {
 export function stratifiedTiersPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_STRATIFIED_TIERS ??
-    join(homedir(), '.papercusp', 'bench-results', 'stratified-30', 'tiers.json')
+    papercuspPath('bench-results', 'stratified-30', 'tiers.json')
   );
 }
 
@@ -111,7 +112,7 @@ export function stratifiedTiersPath(): string {
 export function verifiedTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_VERIFIED_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'swe-bench-verified', 'tasks.jsonl')
+    papercuspPath('bench-results', 'swe-bench-verified', 'tasks.jsonl')
   );
 }
 
@@ -119,7 +120,7 @@ export function verifiedTaskSetPath(): string {
 export function verifiedPilotTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_VERIFIED_PILOT_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'swe-bench-verified', 'verified-pilot-10.jsonl')
+    papercuspPath('bench-results', 'swe-bench-verified', 'verified-pilot-10.jsonl')
   );
 }
 
@@ -127,7 +128,7 @@ export function verifiedPilotTaskSetPath(): string {
 export function theAgentCompanyTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_TAC_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'the-agent-company', 'tasks.jsonl')
+    papercuspPath('bench-results', 'the-agent-company', 'tasks.jsonl')
   );
 }
 
@@ -135,13 +136,13 @@ export function theAgentCompanyTaskSetPath(): string {
 export function theAgentCompanyPilotTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_TAC_PILOT_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'the-agent-company', 'pilot.jsonl')
+    papercuspPath('bench-results', 'the-agent-company', 'pilot.jsonl')
   );
 }
 
 /** Local repo checkout root the engine clones tasks under (env-overridable). */
 function reposRoot(): string {
-  return process.env.XBENCH_REPOS_ROOT ?? join(homedir(), '.papercusp', 'bench-repos');
+  return process.env.XBENCH_REPOS_ROOT ?? papercuspPath('bench-repos');
 }
 
 /** Parse a Python-ish list literal ("['a', 'b']") → string[]. */
@@ -388,7 +389,7 @@ export function isTheAgentCompanyTaskSet(taskSetId: string): boolean {
 export function metrHcastTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_METR_HCAST_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'metr-hcast', 'tasks.jsonl')
+    papercuspPath('bench-results', 'metr-hcast', 'tasks.jsonl')
   );
 }
 
@@ -396,7 +397,7 @@ export function metrHcastTaskSetPath(): string {
 export function metrHcastPilotTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_METR_HCAST_PILOT_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'metr-hcast', 'pilot.jsonl')
+    papercuspPath('bench-results', 'metr-hcast', 'pilot.jsonl')
   );
 }
 
@@ -514,7 +515,7 @@ export function isMetrHcastTaskSet(taskSetId: string): boolean {
 export function frontierSweTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'frontier-swe', 'tasks.jsonl')
+    papercuspPath('bench-results', 'frontier-swe', 'tasks.jsonl')
   );
 }
 
@@ -525,7 +526,7 @@ export function frontierSweTaskSetPath(): string {
 export function frontierSweV2TaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'frontier-swe-v2', 'tasks.jsonl')
+    papercuspPath('bench-results', 'frontier-swe-v2', 'tasks.jsonl')
   );
 }
 

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * system-health/mcp-proxy-health — read the resilient MCP proxy's failure ledger and
  * summarize the recent windowed failure counts for the Infra health panel
@@ -32,7 +33,7 @@ import { MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS } from './thresholds';
 /** The ledger path — MUST match apps/operator/lib/mcp-proxy/proxy.ts `failureLogPath()`.
  *  Resolved per-call (not cached) so the env override is honoured at runtime + in tests. */
 export function mcpProxyFailureLogPath(): string {
-  return process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG || join(homedir(), '.papercusp', 'mcp-proxy-failures.jsonl');
+  return process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG || papercuspPath('mcp-proxy-failures.jsonl');
 }
 
 /** Shared active/rotated ledger-file bound. Keep the writer and reader on one value so a

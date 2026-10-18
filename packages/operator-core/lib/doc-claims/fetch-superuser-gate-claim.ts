@@ -34,6 +34,7 @@
  */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { papercuspHome as resolvePapercuspHome } from '@papercusp/host-platform/home';
 
 /** A superuser-token path as written in prose, including the scoped home. */
 const TOKEN_PATH_IN_PROSE = /(?:~|\$HOME|\$PAPERCUSP_HOME|\/[\w.-]+)(?:\/[\w.-]+)*\/superuser-token\b/g;
@@ -89,7 +90,7 @@ export function judgeFetchSuperuserGateClaim(
   opts: { readonly tokenPath: string; readonly homeDir?: string; readonly papercuspHome?: string },
 ): FetchGateClaimVerdict {
   const homeDir = opts.homeDir ?? homedir();
-  const papercuspHome = opts.papercuspHome ?? process.env.PAPERCUSP_HOME ?? join(homeDir, '.papercusp');
+  const papercuspHome = opts.papercuspHome ?? resolvePapercuspHome(process.env, homeDir);
   const texts = [surfaces.description, ...(surfaces.when === undefined ? [] : [surfaces.when])];
   const allProse = texts.join('\n');
 

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Scratch URI scheme — Phase 4 T2.3 (tool-output-as-resource).
  *
@@ -165,5 +166,5 @@ export function scratchRootForWorkspace(workspaceId: string): string {
 export function scratchRoot(): string {
   const override = process.env.PAPERCUSP_SCRATCH_ROOT;
   if (override && override.trim().length > 0) return override.trim();
-  return join(homedir(), '.papercusp', 'scratch');
+  return papercuspPath('scratch');
 }

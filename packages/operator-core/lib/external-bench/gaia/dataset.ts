@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * GAIA dataset access + task loading (plan `benchmark-suite-gaia-2026-06-17`, P-001).
  *
@@ -33,7 +34,7 @@ import { coerceLevel, type GaiaLevel } from '../grader/gaia';
 
 /** The drop-file an owner can write a gated-HF token into to unblock provisioning (env-overridable). */
 export function gaiaHfTokenFile(): string {
-  return process.env.PAPERCUSP_GAIA_HF_TOKEN_FILE ?? join(homedir(), '.papercusp', 'gaia-hf-token');
+  return process.env.PAPERCUSP_GAIA_HF_TOKEN_FILE ?? papercuspPath('gaia-hf-token');
 }
 
 /**
@@ -88,14 +89,14 @@ interface GaiaRawRow {
 export function gaiaValidationDir(): string {
   return (
     process.env.PAPERCUSP_GAIA_VALIDATION_DIR ??
-    join(homedir(), '.papercusp', 'bench-results', 'gaia', '2023', 'validation')
+    papercuspPath('bench-results', 'gaia', '2023', 'validation')
   );
 }
 
 /** Default home for the provisioned GAIA test corpus (leaderboard-only; answers withheld). */
 export function gaiaTestDir(): string {
   return (
-    process.env.PAPERCUSP_GAIA_TEST_DIR ?? join(homedir(), '.papercusp', 'bench-results', 'gaia', '2023', 'test')
+    process.env.PAPERCUSP_GAIA_TEST_DIR ?? papercuspPath('bench-results', 'gaia', '2023', 'test')
   );
 }
 

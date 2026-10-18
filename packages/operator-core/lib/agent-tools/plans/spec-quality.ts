@@ -223,11 +223,18 @@ function prerequisiteRuntimeBarMismatches(input: {
 }): PlanSpecQualityResult['details']['prerequisiteRuntimeBarMismatches'] {
   if (!input.planItems?.length) return [];
 
-  const explicitlyNonCode = new Set(
-    input.validExemptions
+  const nonCodePrerequisiteItemIds = new Set([
+    ...input.validExemptions
       .filter((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired)
       .map((clause) => clause.planItemId),
-  );
+    ...input.behavioralClauses
+      .filter((clause) =>
+        clause.behaviorClass === 'non-automated' &&
+        clause.requiredTestLayers.length === 0 &&
+        !clause.mutationRequired,
+      )
+      .map((clause) => clause.planItemId),
+  ]);
   const runtimeProjections = input.behavioralClauses.filter(
     (clause) => clause.sourceBar && requiresRuntimeEvidence(clause),
   );
@@ -239,7 +246,7 @@ function prerequisiteRuntimeBarMismatches(input: {
   );
   const mismatches: PlanSpecQualityResult['details']['prerequisiteRuntimeBarMismatches'] = [];
 
-  for (const prerequisiteItemId of explicitlyNonCode) {
+  for (const prerequisiteItemId of nonCodePrerequisiteItemIds) {
     // An active independent behavior contract makes this a mixed/code item, not a
     // purely non-code prerequisite. Do not use the exemption to classify it away.
     if (input.behavioralClauses.some(
@@ -261,7 +268,7 @@ function prerequisiteRuntimeBarMismatches(input: {
           .filter((candidate) =>
             descendantSet.has(candidate.planItemId) &&
             sourceBarIdentity(candidate) === identity &&
-            !explicitlyNonCode.has(candidate.planItemId) &&
+            !nonCodePrerequisiteItemIds.has(candidate.planItemId) &&
             runtimeImplementations.some((contract) => contract.planItemId === candidate.planItemId),
           )
           .map((candidate) => candidate.planItemId),

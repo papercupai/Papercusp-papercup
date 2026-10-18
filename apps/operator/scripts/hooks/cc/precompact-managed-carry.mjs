@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Managed Codex PreCompact bridge.
  *
@@ -284,7 +285,7 @@ export function hostlessWakeResumeDecision(deliveryId) {
 function readSuperuserToken(env) {
   if (env.PAPERCUSP_MCP_AUTH !== 'superuser-token') return '';
   const path = env.PAPERCUSP_SUPERUSER_TOKEN_PATH ||
-    join(homedir(), '.papercusp', 'superuser-token');
+    papercuspPath('superuser-token');
   try {
     return readFileSync(path, 'utf8').trim();
   } catch {

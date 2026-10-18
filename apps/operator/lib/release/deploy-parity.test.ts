@@ -7,6 +7,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   recordDeployParity,
+  deployParityRefs,
+  realDeployParityDeps,
   deployParityConditionKey,
   DEPLOY_PARITY_FACT_KEY,
   type DeployParityDeps,
@@ -23,11 +25,59 @@ function makeDeps(over: Partial<DeployParityDeps> = {}): DeployParityDeps {
     broadcastSevereEventResolved: vi.fn(async () => true),
     hasOpenParityCondition: vi.fn(async () => false),
     factKeyState: vi.fn(async () => 'not-found'),
-    readRefUnification: vi.fn(async () => ({ localMain: SHA, originMain: SHA, unified: true as const })),
+    readRefUnification: vi.fn(async () => ({
+      localRef: 'main', originRef: 'refs/remotes/origin/main', localSha: SHA, originSha: SHA, unified: true as const,
+    })),
     now: () => new Date('2026-09-01T07:00:00Z'),
     ...over,
   };
 }
+
+describe('deployParityRefs', () => {
+  it('uses the configured release ref and derives its origin tracking ref', () => {
+    expect(deployParityRefs('refs/heads/release-candidate')).toEqual({
+      localRef: 'refs/heads/release-candidate',
+      originRef: 'refs/remotes/origin/release-candidate',
+    });
+    expect(deployParityRefs('refs/remotes/upstream/release')).toEqual({
+      localRef: 'refs/remotes/upstream/release',
+      originRef: 'refs/remotes/upstream/release',
+    });
+  });
+
+  it('real ref verification follows release-config when it names a non-main branch', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = mkdtempSync(join(tmpdir(), 'deploy-parity-release-ref-'));
+    const previousReleaseRef = process.env.PAPERCUSP_RELEASE_REF;
+    process.env.PAPERCUSP_RELEASE_REF = 'refs/heads/release-candidate';
+    try {
+      execFileSync('git', ['init', '--quiet', '-b', 'release-candidate', root]);
+      execFileSync('git', ['-C', root, 'config', 'user.name', 'Papercusp test']);
+      execFileSync('git', ['-C', root, 'config', 'user.email', 'papercusp-test@example.invalid']);
+      writeFileSync(join(root, 'tracked.txt'), 'release ref fixture\n');
+      execFileSync('git', ['-C', root, 'add', 'tracked.txt']);
+      execFileSync('git', ['-C', root, 'commit', '--quiet', '-m', 'fixture']);
+      const sha = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      execFileSync('git', ['-C', root, 'update-ref', 'refs/remotes/origin/release-candidate', sha]);
+
+      const deps = await realDeployParityDeps();
+      await expect(deps.readRefUnification(root)).resolves.toEqual({
+        localRef: 'refs/heads/release-candidate',
+        originRef: 'refs/remotes/origin/release-candidate',
+        localSha: sha,
+        originSha: sha,
+        unified: true,
+      });
+    } finally {
+      if (previousReleaseRef === undefined) delete process.env.PAPERCUSP_RELEASE_REF;
+      else process.env.PAPERCUSP_RELEASE_REF = previousReleaseRef;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 function makeEvent(over: Partial<DeployParityEvent> = {}): DeployParityEvent {
   return {
@@ -144,8 +194,10 @@ describe('recordDeployParity — GENUINE GREEN success', () => {
     const deps = makeDeps({
       hasOpenParityCondition: vi.fn(async () => true),
       readRefUnification: vi.fn(async () => ({
-        localMain: 'a2d69cef50d5e5dbce0931767a8ff2c005a9c40c',
-        originMain: 'c26586dd4bc4916e6707b06b8a2f0b190df0094e',
+        localRef: 'refs/heads/release-candidate',
+        originRef: 'refs/remotes/origin/release-candidate',
+        localSha: 'a2d69cef50d5e5dbce0931767a8ff2c005a9c40c',
+        originSha: 'c26586dd4bc4916e6707b06b8a2f0b190df0094e',
         unified: false as const,
       })),
     });

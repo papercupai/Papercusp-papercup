@@ -154,7 +154,7 @@ async function main() {
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
   const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
-  const isCurrentSuNative = e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native';
+  const isCurrentSuNative = ['current-su-native', 'current-su-native-carry'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative;
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
@@ -200,7 +200,7 @@ async function main() {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
-  if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native')
+  if (isCurrentSuNative)
     await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
   // Preparation changes socket/tmp settings; compare the final host environment
   // again. A refused pin still follows the same finally/dispose path.
@@ -265,9 +265,9 @@ async function main() {
     console.log('BLUEPRINT_ACCOUNT_ROUTE_RECEIPT ' + JSON.stringify(finalReceipt));
     return;
   }
-  if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native') {
+  if (isCurrentSuNative) {
     const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuNativeScenario({
-      workspace, base, evidenceDir,
+      workspace, base, evidenceDir, managedCarry: e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-carry',
     });
     await stopHost();
     await sql.end();

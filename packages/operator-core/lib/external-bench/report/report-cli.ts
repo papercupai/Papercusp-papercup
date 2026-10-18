@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * CLI: emit a portable `report-<runId>.html` for ANY recorded benchmark run (plan
  * benchmark-report-portable-trace-2026-06-17, P-001). The auto-emit hook in
@@ -104,7 +105,7 @@ export async function runReportCli(argv: string[]): Promise<number> {
       console.error(`no rows for run "${runId}" — no attribution`);
       return 2;
     }
-    const dir = outDir ?? join(homedir(), '.papercusp', 'bench-results', 'reports');
+    const dir = outDir ?? papercuspPath('bench-results', 'reports');
     mkdirSync(dir, { recursive: true });
     const mdPath = join(dir, `attribution-${runId}.md`);
     writeFileSync(mdPath, formatRunAttributionMarkdown(run), 'utf8');

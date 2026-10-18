@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * WI-10005187: retention sweep for the per-owner hook state in
  * `~/.papercusp/locks-cache` (override: PAPERCUSP_LOCKS_CACHE_DIR, same as the hooks).
@@ -28,7 +29,7 @@ import { join } from 'node:path';
 export const LOCKS_CACHE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function locksCacheDir(): string {
-  return process.env.PAPERCUSP_LOCKS_CACHE_DIR || join(homedir(), '.papercusp', 'locks-cache');
+  return process.env.PAPERCUSP_LOCKS_CACHE_DIR || papercuspPath('locks-cache');
 }
 
 export interface LocksCacheGcResult {

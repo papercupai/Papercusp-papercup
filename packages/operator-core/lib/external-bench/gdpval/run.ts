@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * GDPval end-to-end runner (plan benchmark-suite-gdpval-2026-06-17, P-005/P-007) — ties the pieces together:
  * load tasks → resolve the expert reference deliverables to text (P-004) → for each task, stage the input files
@@ -141,7 +142,7 @@ export async function runGdpval(
   log(`[gdpval] judging ${preds.length} deliverables (pairwise, dual-order)...`);
   const report = await gradeGdpval(preds, { judge });
 
-  const outDir = opts.outDir ?? join(homedir(), '.papercusp', 'bench-results', 'gdpval', 'runs', `gdpval-${opts.taskSet ?? 'pilot'}-${tasks.length}`);
+  const outDir = opts.outDir ?? papercuspPath('bench-results', 'gdpval', 'runs', `gdpval-${opts.taskSet ?? 'pilot'}-${tasks.length}`);
   await mkdir(outDir, { recursive: true });
   await writeFile(join(outDir, 'predictions.jsonl'), preds.map((p) => JSON.stringify(p)).join('\n'));
   await writeFile(join(outDir, 'report.json'), JSON.stringify(report, null, 2));

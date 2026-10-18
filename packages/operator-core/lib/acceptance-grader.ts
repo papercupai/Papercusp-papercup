@@ -3165,6 +3165,7 @@ export async function launchAcceptanceGrader(
   const brief = [
     `You are the dedicated acceptance judge for plan ${planSlug}. Grade rubric ${rubricRef} as a fresh non-implementer.`,
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
+    `Bind your grading to subject:{ kind:"plan", ref:${JSON.stringify(planSlug)} } in scorecards:emit so the author can adopt this exact plan's independent grading.`,
     ...(carriedAcceptanceReviewBrief(ctx) ? [carriedAcceptanceReviewBrief(ctx)] : []),
     'If FROZEN_ACCEPTANCE_CONTEXT has contextIntegrity.degraded, follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED. Recovered evidence is admissible only when plans:get still matches frozenIdentity.planVersion/planContentHash and the completion audit still matches frozenIdentity.auditSeq; on a read or identity mismatch, mark only the affected criteria unknown and name the exact gap.',
     ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,

@@ -537,7 +537,7 @@ export interface ScopedFallbackWindow {
 export async function readFallbackWindowsByScope(
   mechanism: string,
   windowMs: number,
-  opts: { sql?: Sql; workspaceId?: string; processTag?: string; now?: Date } = {},
+  opts: { sql?: Sql; workspaceId?: string; processTag?: string; now?: Date; sessionOwnerScope?: boolean } = {},
 ): Promise<ScopedFallbackWindow[]> {
   const sql = opts.sql ?? getOrgPg().sql;
   // Half-open windows make two adjacent reads disjoint: [now - windowMs, now).
@@ -548,8 +548,42 @@ export async function readFallbackWindowsByScope(
   const ws = opts.workspaceId ?? null;
   const processTag = opts.processTag ?? null;
   const name = mechanism.trim();
-  const rows = await sql<Array<{ scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string; unknown_samples: number | string }>>`
-    SELECT scope,
+  type WindowRow = { scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string; unknown_samples: number | string };
+  // Session-scoped mechanisms must not let a predecessor's trailing observations
+  // contaminate the current incarnation. Match resolveSessionRef's active-session
+  // predicate and started_at ordering so stale owner-keyed rows are excluded while
+  // fresh decisions from the current session remain measurable.
+  const rows = opts.sessionOwnerScope
+    ? await sql<WindowRow[]>`
+        SELECT f.scope,
+               f.reason,
+               sum(f.samples)::bigint  AS samples,
+               sum(f.eligible)::bigint AS eligible,
+               sum(f.applied)::bigint  AS applied,
+               sum(CASE WHEN f.population_known IS FALSE OR
+                 (f.population_known IS NULL AND f.mechanism = 'gate-pass-reuse' AND f.eligible = 0)
+                 THEN f.samples ELSE 0 END)::bigint AS unknown_samples
+          FROM harness_shared.fallback_observations f
+          JOIN LATERAL (
+            SELECT s.started_at
+              FROM harness_shared.adv_sessions s
+             WHERE s.workspace_id = f.workspace_id
+               AND s.coord_owner_id = f.scope
+               AND (s.session_id IS NOT NULL OR s.agent = 'codex')
+               AND s.ended_at IS NULL
+               AND s.ended_by IS NULL
+             ORDER BY s.started_at DESC, s.id DESC
+             LIMIT 1
+          ) active_session ON true
+         WHERE f.mechanism = ${name}
+           AND f.observed_at >= GREATEST(${since}, active_session.started_at)
+           AND f.observed_at < ${until}
+           AND (${ws}::text IS NULL OR f.workspace_id = ${ws}::text)
+           AND (${processTag}::text IS NULL OR f.process_tag = ${processTag}::text)
+         GROUP BY f.scope, f.reason
+      `
+    : await sql<WindowRow[]>`
+        SELECT scope,
            reason,
            sum(samples)::bigint  AS samples,
            sum(eligible)::bigint AS eligible,
@@ -557,14 +591,14 @@ export async function readFallbackWindowsByScope(
            sum(CASE WHEN population_known IS FALSE OR
              (population_known IS NULL AND mechanism = 'gate-pass-reuse' AND eligible = 0)
              THEN samples ELSE 0 END)::bigint AS unknown_samples
-      FROM harness_shared.fallback_observations
-     WHERE mechanism = ${name}
-       AND observed_at >= ${since}
-       AND observed_at < ${until}
-       AND (${ws}::text IS NULL OR workspace_id = ${ws}::text)
-       AND (${processTag}::text IS NULL OR process_tag = ${processTag}::text)
-     GROUP BY scope, reason
-  `;
+          FROM harness_shared.fallback_observations
+         WHERE mechanism = ${name}
+           AND observed_at >= ${since}
+           AND observed_at < ${until}
+           AND (${ws}::text IS NULL OR workspace_id = ${ws}::text)
+           AND (${processTag}::text IS NULL OR process_tag = ${processTag}::text)
+         GROUP BY scope, reason
+      `;
   const byScope = new Map<string | null, FallbackReasonAggregate[]>();
   for (const r of rows) {
     const key = r.scope ?? null;

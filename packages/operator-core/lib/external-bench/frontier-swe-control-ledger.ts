@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * FrontierSWE v2 control ledger → per-version task admission (plan benchmark-coverage-frontierswe-v2-2026-10-10
  * P-007, WI-10008254). A v2 task enters a SCORED task set only when its controls, measured at the SAME corpus
@@ -65,7 +66,7 @@ const FULL_REWARD = 1;
 export function frontierSweV2ControlsPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL ??
-    join(homedir(), '.papercusp', 'bench-results', 'frontier-swe-v2', 'controls.jsonl')
+    papercuspPath('bench-results', 'frontier-swe-v2', 'controls.jsonl')
   );
 }
 

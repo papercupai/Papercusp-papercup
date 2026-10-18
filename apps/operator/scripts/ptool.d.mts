@@ -1013,9 +1013,9 @@ export function replayCodeRunWithProof(client: any, params: any, replayProof: an
  * tree and fails the build when one does not resolve.
  */
 export const PTOOL_SDK_MODULE_LOADERS: Readonly<{
-    '@modelcontextprotocol/sdk/types.js': () => Promise<any>;
-    '@modelcontextprotocol/sdk/client/index.js': () => Promise<any>;
-    '@modelcontextprotocol/sdk/client/streamableHttp.js': () => Promise<any>;
+    '@modelcontextprotocol/sdk/types.js': () => Promise<typeof import("@modelcontextprotocol/sdk/types.js")>;
+    '@modelcontextprotocol/sdk/client/index.js': () => Promise<typeof import("@modelcontextprotocol/sdk/client/index.js")>;
+    '@modelcontextprotocol/sdk/client/streamableHttp.js': () => Promise<typeof import("@modelcontextprotocol/sdk/client/streamableHttp.js")>;
 }>;
 /** Exit status when the call was delivered but the tool ANSWERED ok:false — a
  *  refused write, a missing id, a partially-failed batch. Distinct from 1 (the

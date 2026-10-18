@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * papercusp-aws-ami-clean-account-canary — boot a shared workspace-host AMI in a CLEAN AWS
  * account (never the publisher), privately with no public IPv4. It proves the SSM agent comes
@@ -70,7 +71,7 @@ import {
 import { emit, parseJsonObject, readStdin } from './gcp-ephemeral.mjs';
 
 const EVIDENCE_ROOT =
-  process.env.PAPERCUSP_AWS_AMI_CANARY_EVIDENCE_DIR?.trim() || join(homedir(), '.papercusp', 'evidence', 'aws-ami-canary');
+  process.env.PAPERCUSP_AWS_AMI_CANARY_EVIDENCE_DIR?.trim() || papercuspPath('evidence', 'aws-ami-canary');
 const REFRESH_MARGIN_MS = 5 * 60_000;
 
 function errorName(error) {

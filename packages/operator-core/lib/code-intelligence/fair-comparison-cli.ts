@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * P-017 Phase E driver (plan `gitnexus-deterministic-integration-2026-10-05`,
  * D-011..D-016). Run from the repo root:
@@ -211,7 +212,7 @@ export async function prepareFrozenControl(tree: string, kase: FairCase, inputs:
 let runMemo: typeof execFile.__promisify__ | null = null;
 const run = ((...args: unknown[]) =>
   Reflect.apply((runMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
-const BENCH = process.env.P017_BENCH ?? join(homedir(), '.papercusp', 'bench', 'fair-comparison-2026-10');
+const BENCH = process.env.P017_BENCH ?? papercuspPath('bench', 'fair-comparison-2026-10');
 const SNAPSHOT = join(BENCH, `snapshot-${FAIR_CORPUS_COMMIT.slice(0, 12)}`);
 const VENDOR_HOME = process.env.P017_VENDOR_HOME ?? homedir();
 const VENDOR_LSP = join(VENDOR_HOME, '.papercusp', 'vendor', 'lsp');

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * coord:mark-terminal — visually mark a peer's owned terminal window so a
  * human can FIND / FOCUS it (EI-19948333346987654).
@@ -59,7 +60,7 @@ function oscTitle(title: string): string {
 }
 
 function ttyClaimsDir(): string {
-  return (process.env.PAPERCUSP_TTY_CLAIMS_DIR ?? '').trim() || join(homedir(), '.papercusp', 'tty-claims');
+  return (process.env.PAPERCUSP_TTY_CLAIMS_DIR ?? '').trim() || papercuspPath('tty-claims');
 }
 
 function ttyClaimFilename(ttyPath: string): string {

@@ -3,6 +3,8 @@ import {
   AUTOBIND_ACTOR_ID,
   clauseKey,
   decideAutobind,
+  prepareAutobindInput,
+  recipeBindingsForTarget,
   requirementTestFiles,
   runKey,
   runSpecEvidenceAutobind,
@@ -31,6 +33,81 @@ const run = (id: number, status: AutobindLedgerRun['status'], finishedAt = `2026
 
 const binding = (id: number, testRunId: number | null, observedAt = '2026-10-15T17:00:00.000Z', evidenceRef = TEST) =>
   ({ id, evidenceRef, testRunId, observedAt }) satisfies AutobindLiveBinding;
+
+describe('automatic binding preserves calibration inputs', () => {
+  const derived = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+    sourcePaths: [SOURCE, 'src/new-direct-import.ts'], testPaths: [TEST] };
+  const prior = { ...binding(1, 9), measurement: { schemaVersion: 1, kind: 'repo-files',
+    sourcePaths: [SOURCE, 'src/indirect-contract.ts'], testPaths: [TEST], fixturePaths: [TEST, 'test/corpus.json'] } };
+
+  it('keeps authored fixture and indirect source paths together with new direct imports', () => {
+    const prepared = prepareAutobindInput(target, run(10, 'pass'), derived, [prior]);
+    expect(prepared).toEqual({ ok: true, input: {
+      workItemId: target.workItemId, specId: target.specId, specRevision: target.specRevision, fromTestRun: 10,
+      sourcePaths: [SOURCE, 'src/indirect-contract.ts', 'src/new-direct-import.ts'].sort(),
+      fixturePaths: [TEST, 'test/corpus.json'].sort(),
+    } });
+    // A recipe carries no previous pass, fingerprint, oracle or calibration assertion.
+    expect(prepared.ok && prepared.input).not.toHaveProperty('details');
+  });
+
+  it('does not let a first automatic write freeze a recipe with no fixture measurement', () => {
+    expect(prepareAutobindInput(target, run(10, 'pass'), derived, []))
+      .toMatchObject({ ok: false, error: 'autobind_fixture_recipe_required' });
+    expect(prepareAutobindInput(target, run(10, 'pass'), derived,
+      [{ ...prior, evidenceRef: 'other.test.ts' }]))
+      .toMatchObject({ ok: false, error: 'autobind_fixture_recipe_required' });
+  });
+
+  it('refuses incompatible fixture roots and old runtime evidence instead of dropping them', () => {
+    expect(prepareAutobindInput(target, run(10, 'pass'), derived, [prior,
+      { ...prior, id: 2, measurement: { ...prior.measurement, fixtureRootHarnessSlug: 'other' } }]))
+      .toMatchObject({ ok: false, error: 'autobind_recipe_incompatible' });
+    expect(prepareAutobindInput(target, run(10, 'pass'), derived,
+      [{ ...prior, measurement: { ...prior.measurement, rootHarnessSlug: 'other' } }]))
+      .toMatchObject({ ok: false, error: 'autobind_recipe_incompatible' });
+  });
+
+  it('accepts an explicitly authored fixture-free recipe without asserting fixture absence', () => {
+    const noFixtures = { ...prior, createdBy: 'su-author', measurement: derived };
+    const prepared = prepareAutobindInput(target, run(10, 'pass'), derived, [noFixtures]);
+    expect(prepared).toMatchObject({ ok: true });
+    expect(prepared.ok && prepared.input).not.toHaveProperty('fixturePaths');
+    expect(prepared.ok && prepared.input).not.toHaveProperty('details');
+    expect(prepareAutobindInput(target, run(10, 'pass'), derived,
+      [{ ...noFixtures, createdBy: AUTOBIND_ACTOR_ID }]))
+      .toMatchObject({ ok: false, error: 'autobind_fixture_recipe_required' });
+  });
+
+  it('finds a prior revision recipe without treating its old receipt as current proof', async () => {
+    const oldTarget = { ...target, specRevision: 1 };
+    const map = new Map([
+      [clauseKey(oldTarget), [prior]],
+      [clauseKey({ ...oldTarget, harnessSlug: 'other' }), [prior]],
+    ]);
+    expect(recipeBindingsForTarget(target, map)).toEqual([prior]);
+    const { deps } = fixture({ runs: [run(10, 'pass')] });
+    deps.loadLiveBindings = async () => map;
+    let seen: readonly AutobindLiveBinding[] = [];
+    deps.measuredPaths = async (_target, _run, recipes) => {
+      seen = recipes;
+      return { ok: true, root: '/repo', paths: [SOURCE, TEST] };
+    };
+    expect((await runSpecEvidenceAutobind('ws', deps)).outcomes).toMatchObject([{ kind: 'bound' }]);
+    expect(seen).toEqual([prior]);
+  });
+
+  it('passes the prepared recipe from preflight to the actual bind', async () => {
+    const prepared = prepareAutobindInput(target, run(10, 'pass'), derived, [prior]);
+    if (!prepared.ok) throw new Error(prepared.message);
+    const { deps } = fixture({ runs: [run(10, 'pass')], live: [prior] });
+    deps.measuredPaths = async () => ({ ok: true, root: '/repo', paths: [SOURCE, TEST], input: prepared.input });
+    const seen: unknown[] = [];
+    deps.bind = async (_target, _run, input) => { seen.push(input); return { ok: true }; };
+    expect((await runSpecEvidenceAutobind('ws', deps)).outcomes).toMatchObject([{ kind: 'bound', runId: 10 }]);
+    expect(seen).toEqual([prepared.input]);
+  });
+});
 
 /** A ledger + store fixture behind the injected seams; records every write. */
 function fixture(opts: {

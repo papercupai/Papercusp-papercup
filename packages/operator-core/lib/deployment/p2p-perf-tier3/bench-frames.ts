@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * bench-frames.ts — provision a small fleet of Tier-3 bench frames, install the
  * bench runtime on each, and tear them ALL down (DESTROY → ends billing), with a
@@ -103,7 +104,7 @@ interface ManifestEntry {
 }
 
 function defaultManifestPath(): string {
-  return join(homedir(), '.papercusp', 'p2p-perf-frames.json');
+  return papercuspPath('p2p-perf-frames.json');
 }
 
 function readManifest(path: string): ManifestEntry[] {
@@ -203,7 +204,7 @@ export async function provisionBenchFleet(opts: ProvisionBenchFleetOpts): Promis
   // 2. Pack the runtime tarball once (sources only; the frame npm-ci's the rest).
   const pack = opts.packTarball ?? packRuntimeTarball;
   const makeExec = opts.makeRemoteExec ?? createSshRemoteExec;
-  const tarballPath = join(homedir(), '.papercusp', `p2p-perf-runtime-${Date.now()}.tgz`);
+  const tarballPath = papercuspPath(`p2p-perf-runtime-${Date.now()}.tgz`);
   mkdirSync(join(tarballPath, '..'), { recursive: true });
   opts.log('info', `[bench-fleet] packing runtime tarball from ${opts.repoRoot}`);
   const { bytes } = await pack(opts.repoRoot, tarballPath);

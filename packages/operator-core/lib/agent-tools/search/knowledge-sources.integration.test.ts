@@ -23,7 +23,10 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
     db = await createOrgTestDb({ adminPoolMax: 3 });
     const armed = new URL('../../../../../libs/papercusp/libs/db/sql/1431-doc-section-order.sql',import.meta.url);
     const draft = new URL(`${armed.href}.DRAFT`);
+    const lexicalIndex = new URL('../../../../../libs/papercusp/libs/db/sql/1531-doc-sections-lexical-index.sql',import.meta.url);
+    const lexicalIndexDraft = new URL(`${lexicalIndex.href}.DRAFT`);
     await applyMigrationForTest(db.adminSql,existsSync(armed) ? armed.pathname : draft.pathname);
+    await applyMigrationForTest(db.adminSql,existsSync(lexicalIndex) ? lexicalIndex.pathname : lexicalIndexDraft.pathname);
     await db.adminSql`INSERT INTO harness_shared.harness_registry (workspace_id,payload)
       VALUES (${workspaceId},${db.adminSql.json({ projects: [{ slug: 'pot-a' }, { slug: 'pot-b' }] })}),
         (${otherWorkspace},${db.adminSql.json({ projects: [{ slug: 'foreign-pot' }] })})`;
@@ -91,6 +94,17 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
       expect(rows[0].row.meta?.section).toBe('procedure-299');
       expect(rows[0].row.meta?.path).toBe('/docs/late-doc#procedure-299');
     }
+  });
+
+  it('keeps the doc lexical predicate backed by its GIN expression index', async () => {
+    const rows = await db.adminSql`
+      SELECT indexdef FROM pg_indexes
+       WHERE schemaname = 'harness_shared'
+         AND tablename = 'doc_sections'
+         AND indexname = 'doc_sections_lexical_search_idx'`;
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0].indexdef)).toContain("to_tsvector('english'::regconfig");
+    expect(String(rows[0].indexdef)).toContain('USING gin');
   });
 
   it('recuts a formerly capped plan index and recovers its known tail section', async () => {

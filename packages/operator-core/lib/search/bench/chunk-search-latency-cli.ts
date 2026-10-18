@@ -40,6 +40,7 @@ import os from 'node:os';
 import { readSuperuserToken, superuserTokenPath } from '../../superuser-token';
 import { performance } from 'node:perf_hooks';
 import { getOrgPg } from '@papercusp/db-org';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { peersKnowLookup } from '../../consult/peers-know';
 import { buildQueryEmbedderResolved } from '../../agent-tools/search/embedder';
 import { resolveProseProfileSelection } from '../prose-vector-dims';
@@ -62,7 +63,7 @@ function arg(name: string): string | undefined {
 }
 
 const WORKSPACE = process.env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace';
-const HARNESS = process.env.PAPERCUSP_HARNESS ?? 'papercusp';
+const HARNESS = process.env.PAPERCUSP_HARNESS?.trim() || operatorHomeHarnessSlug();
 
 function readToken(): string {
   const fromEnv = process.env.PAPERCUSP_SUPERUSER_TOKEN?.trim();

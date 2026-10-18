@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Encryption-at-rest key sourcing for the credentials-class operator-state
  * tables.
@@ -94,7 +95,7 @@ export class DbEncryptionKeyError extends Error {
 export function dbEncryptionKeyFilePath(): string {
   const override = process.env[KEY_FILE_ENV_VAR];
   if (override && override.trim()) return override.trim();
-  return join(homedir(), '.papercusp', 'db-encryption-key');
+  return papercuspPath('db-encryption-key');
 }
 
 /**

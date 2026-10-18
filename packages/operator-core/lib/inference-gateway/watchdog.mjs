@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Inference-gateway WEDGE watchdog — inference-gateway-robustness-audit-2026-06-20 P0.
  *
@@ -47,7 +48,7 @@ const VINTAGE_URL = process.env.PAPERCUSP_RUNTIME_VINTAGE_URL || 'http://127.0.0
  *  restart / suppress / circuit-open decision to this file (synchronous append, visible to readers
  *  immediately). A standalone supervisor that runs precisely WHEN the operator/PG may be down is the
  *  canonical "must be a file, not Postgres" case (storage-policy). Env-tunable. */
-const LOG_FILE = process.env.PAPERCUSP_GATEWAY_WATCHDOG_LOG || join(homedir(), '.papercusp', 'gateway-watchdog.log');
+const LOG_FILE = process.env.PAPERCUSP_GATEWAY_WATCHDOG_LOG || papercuspPath('gateway-watchdog.log');
 // Proactive DEAD-PROXY alert thresholds (EI-2537). Always-on observability (a durable log line; NEVER affects
 // the restart decision), env-tunable like every other watchdog knob. A proxy is "dead" when its volume-fair
 // egressFailRateByAccount crosses DEADPROXY_RATE over at least DEADPROXY_MIN_ATTEMPTS attempts (the floor

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * `system:hetzner-orphan-frame-reaper` — WI-1442 fix (c) / WI-1628.
  *
@@ -47,7 +48,7 @@ function resolveHcloudToken(): string | undefined {
   const fromEnv = process.env.HCLOUD_TOKEN ?? process.env.HETZNER_API_TOKEN;
   if (fromEnv) return fromEnv;
   try {
-    return readFileSync(join(homedir(), '.papercusp', 'hcloud-token'), 'utf8').trim() || undefined;
+    return readFileSync(papercuspPath('hcloud-token'), 'utf8').trim() || undefined;
   } catch {
     return undefined;
   }

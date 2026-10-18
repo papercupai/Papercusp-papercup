@@ -21,6 +21,11 @@ export function integrationBranch(): string {
   return process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging';
 }
 
+/** The green pin branch selected by the release pipeline (`main` by default). */
+export function releaseRef(): string {
+  return process.env.PAPERCUSP_RELEASE_REF ?? 'main';
+}
+
 export interface GitProbe {
   /** Resolve a ref to a sha, or null when it does not resolve. */
   revParse(root: string, ref: string): string | null;

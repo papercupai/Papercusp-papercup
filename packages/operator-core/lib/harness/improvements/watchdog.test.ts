@@ -34,6 +34,7 @@ import {
   circuitOpenSignalsFromRows,
   isResolvedFirePath,
   normalizeRedTestPath,
+  fetchRedTestRows,
   redTestSignalsFromRows,
   hasSameShaVerdictFlip,
   debounceRedTestSignals,
@@ -1232,6 +1233,17 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
 });
 
 describe('red-test path normalization — one identity per broken test', () => {
+  it('keeps multiple scoped paths without treating their array indexes as workspace roots', async () => {
+    const queries: unknown[][] = [];
+    const sql = ((_strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push(values);
+      return [];
+    }) as unknown as Parameters<typeof fetchRedTestRows>[0];
+    const paths = ['apps/operator/lib/a.test.ts', 'packages/operator-core/lib/b.test.ts'];
+    await expect(fetchRedTestRows(sql, {}, paths)).resolves.toEqual([]);
+    expect(queries).toContainEqual([expect.any(String), paths]);
+  });
+
   it('strips the green-checkpoint (and any sibling-tree) prefix to the repo-relative path', () => {
     expect(normalizeRedTestPath('papercupai-workspace/papercup-checkpoint/packages/operator-core/lib/a.test.ts'))
       .toBe('packages/operator-core/lib/a.test.ts');

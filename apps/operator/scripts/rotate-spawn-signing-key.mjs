@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Coarse revocation: rotate the spawn-URL signing key.
  *
@@ -38,7 +39,7 @@ function resolveDsn() {
     if (process.env[name]) return process.env[name];
   }
   try {
-    const url = JSON.parse(readFileSync(join(homedir(), '.papercusp', 'embedded-pg.json'), 'utf8'))?.url;
+    const url = JSON.parse(readFileSync(papercuspPath('embedded-pg.json'), 'utf8'))?.url;
     if (url) return url;
   } catch {
     // discovery file absent (desktop not running) — fall through
@@ -84,7 +85,7 @@ try {
   // Falls back to direct PG rotation only if the operator is down.
   const operatorUrl = process.env.PAPERCUSP_OPERATOR_URL ?? 'http://localhost:3070';
   const tokenPath = process.env.PAPERCUSP_SUPERUSER_TOKEN_FILE
-    ?? `${process.env.HOME}/.papercusp/superuser-token`;
+    ?? papercuspPath('superuser-token');
   let usedHttp = false;
   try {
     const { readFileSync } = await import('node:fs');

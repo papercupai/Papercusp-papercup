@@ -39,6 +39,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { STALE_QUOTE_FIELD } from './agent-tools/coordination/stale-quote-stamp';
 import { SWEEP_LOOKBACK_MS } from './agent-state-divergence-sweep';
 import type { DivergenceReport } from './agent-state-divergence';
@@ -639,7 +640,7 @@ export async function planeMeasurementSweep(
 ): Promise<PlaneSweepOutcome> {
   const now = deps.now ?? Date.now();
   const workspaceId = deps.workspaceId ?? activeWorkspaceId();
-  const harnessSlug = deps.harnessSlug ?? 'papercusp';
+  const harnessSlug = deps.harnessSlug?.trim() || operatorHomeHarnessSlug();
 
   try {
     const lastAt = await (deps.lastMeasuredAtMs

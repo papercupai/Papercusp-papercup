@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * gc-verify-instances — reap abandoned `scripts/verify-tauri-headless.sh` instances.
  *
@@ -161,7 +162,7 @@ export async function defaultVerifyScanRoots(env: VerifyScanRootEnv = {}): Promi
   const workspaceRoot =
     env.workspaceRoot ??
     (process.env.PAPERCUSP_WORKSPACE_ROOT?.trim() || join(homedir(), 'papercupai-workspace'));
-  const hivesRoot = env.hivesRoot ?? join(homedir(), '.papercusp', 'hives');
+  const hivesRoot = env.hivesRoot ?? papercuspPath('hives');
   const candidates = [...(env.baseDirs ?? ['/tmp', tmpdir()])];
   for (const parent of [workspaceRoot, hivesRoot]) {
     let names: string[];

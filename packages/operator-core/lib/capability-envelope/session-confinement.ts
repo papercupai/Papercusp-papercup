@@ -261,6 +261,16 @@ export function evaluateSessionConfinement(args: {
     return { allowed: false, applied: true, matchedGlob: 'outside-exact-work-item',
       reason: `tool "${toolName.trim()}" must use the launch-declared single work-item boundary imposed by ${confinement.imposedBy}: ${confinement.reason}` };
   }
+  // A frozen assignment can request the maintained deterministic boundary for
+  // its own logical session. Caller-authored focus/continuation hints must not
+  // replace its host-owned task or frozen context. This narrows the existing
+  // tool; it neither grants it outside denyOutside nor lifts denyTools.
+  if (confinement.denyWorkItemsOutside !== undefined && toolName.trim() === 'session:request-compaction' &&
+      args.purpose !== 'listing' && (!args.args || typeof args.args !== 'object' ||
+        Array.isArray(args.args) || Object.keys(args.args).length !== 0)) {
+    return { allowed: false, applied: true, matchedGlob: 'outside-exact-carry',
+      reason: `managed self-compaction must use empty arguments inside the assignment imposed by ${confinement.imposedBy}: ${confinement.reason}` };
+  }
   if (confinement.denyProductReadsOutside !== undefined &&
       (!validProductReadBoundary(confinement.denyProductReadsOutside) ||
        args.purpose !== 'listing' && ['docs:get', 'testing:runs', 'testing:run'].includes(toolName.trim()) &&

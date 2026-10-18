@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 // apps/operator/scripts/hooks/cc/posttooluse-proof-stale-nudge.mjs
 //
 // PostToolUse (Edit|Write|MultiEdit) advisory: tell the editor, AT THE EDIT, which live
@@ -360,7 +361,7 @@ export async function run(payload, { env = process.env, nowMs = Date.now(), fetc
   if (!harness) return null; // the tool refuses harness_required without one — don't make the doomed call
   let token = '';
   try {
-    token = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
+    token = readFileSync(papercuspPath('superuser-token'), 'utf8').trim();
   } catch {
     return null;
   }

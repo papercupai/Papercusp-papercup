@@ -2434,7 +2434,7 @@ describe('production current benchmark protocol and private completion bindings'
     expect(native.launch.mock.calls[0][0].brief).toContain('Shared frozen private context.');
     expect(native.launch.mock.calls[0][1][Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({ denyAmbientContext: true,
       denyWorkItemsOutside: { id: handle.featureId, harness: handle.slug, checkout: handle.worktreePath },
-      denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'] });
+      denyOutside: ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'] });
   });
   it.each(['corpus.json', 'memory.json', 'receipt.json'])('refuses changed restored %s at the production launch port', async file => {
     const f = await execution(), context = await f.ports.restoreContext(handle, 't1');

@@ -121,6 +121,21 @@ const pexec = promisify(execFile);
  */
 export const GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS = 5_000;
 
+function configuredRemoteTrackingRef(branch: string): { trackingRef: string; remote: string; remoteHeadRef: string } {
+  const trimmed = branch.trim();
+  if (trimmed.startsWith('refs/remotes/')) {
+    const [, , remote, ...branchParts] = trimmed.split('/');
+    const branchName = branchParts.join('/');
+    return { trackingRef: trimmed, remote: remote || 'origin', remoteHeadRef: `refs/heads/${branchName}` };
+  }
+  const normalized = trimmed.replace(/^refs\/heads\//, '').replace(/^origin\//, '');
+  return {
+    trackingRef: `origin/${normalized}`,
+    remote: 'origin',
+    remoteHeadRef: `refs/heads/${normalized}`,
+  };
+}
+
 /** Injectable git runner (returns trimmed stdout, or null on any failure). */
 export type GitRunner = (repo: string, args: string[]) => Promise<string | null>;
 
@@ -320,10 +335,11 @@ async function newestTouchingInRef(
 async function isRemoteTipContaining(
   git: GitRunner,
   repo: string,
+  remote: string,
   remoteRef: string,
   sha: string,
 ): Promise<boolean | null> {
-  const out = await git(repo, ['ls-remote', 'origin', remoteRef]);
+  const out = await git(repo, ['ls-remote', remote, remoteRef]);
   if (!out) return null;
   const tip = out.split(/\s+/)[0]?.toLowerCase();
   if (!tip) return null;
@@ -1265,6 +1281,9 @@ export interface PipelinePosition {
   /** Present only for a caller-supplied accepted-source fingerprint. */
   acceptedSource?: AcceptedSourceContainment;
   repoRoot: string;
+  /** Configured subject branches used for release-position reads (defaults preserve older consumers). */
+  integrationBranch?: string;
+  releaseRef?: string;
   /** Set when the path resolved inside a submodule. */
   submodule: string | null;
   /**
@@ -3834,6 +3853,7 @@ export function gitSyncContentQuarantineFor(
 export function computeStages(
   p: Pick<
     PipelinePosition,
+    | 'integrationBranch'
     | 'dirtyUncommitted'
     | 'positions'
     | 'gate'
@@ -3873,6 +3893,7 @@ export function computeStages(
    */
   nowMs: number = Date.now(),
 ): StageState[] {
+  const integrationTrackingRef = configuredRemoteTrackingRef(p.integrationBranch ?? 'staging').trackingRef;
   // A path whose runtime does NOT go through the release pipeline (bg-host, gateway,
   // embed-sidecar) is never carried by staging->main->:3070 at all: reporting those
   // stages as "pending" would tell the caller to wait for something that will never
@@ -4031,7 +4052,7 @@ export function computeStages(
       return `${base} Origin advances via the p2p publish/bridge-egress path, which admits a range on CONTENT checks alone (oversized blobs, secrets) — it is NOT gated by the release/green-checkpoint gate, so greening that gate will not move this leg.${ohp ? ' No fault is currently reported on the publish leg' : ' The publish leg is unmeasured on this row (no `own_head_publish` metadata yet)'} — waiting is correct.`;
     }
     if (!p.positions.onStaging) {
-      return `Committed locally but NOT yet on origin/staging. Status "${gs.status ?? 'unknown'}" does NOT mean pushed — the last tick pushed ${
+      return `Committed locally but NOT yet on ${integrationTrackingRef}. Status "${gs.status ?? 'unknown'}" does NOT mean pushed — the last tick pushed ${
         gs.pushedRepos.length ? gs.pushedRepos.join(', ') : 'NOTHING'
       }. Force one: git-sync:run.`;
     }
@@ -5585,6 +5606,8 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
 
 function summarizePositionBody(p: Omit<PipelinePosition, 'summary'>): string {
   const tick = (b: boolean) => (b ? '✓' : '✗');
+  const integrationBranch = p.integrationBranch ?? 'staging';
+  const releaseRef = p.releaseRef ?? 'main';
   const label = p.input.path ?? p.input.sha ?? '(none)';
   if (!p.targetSha) {
     return `${label}: no commit found${p.dirtyUncommitted ? ' (uncommitted edits present, not yet committed)' : ''}.`;
@@ -5617,7 +5640,7 @@ function summarizePositionBody(p: Omit<PipelinePosition, 'summary'>): string {
     // this is the exact shape of the bg-host-runs-stale-routine-code class.
     const sv = p.serving;
     const live = isFreshInvocationRuntime(p.runtime)
-      ? ' ✓ fresh-invocation route: the next run loads the current staging-tree source directly; no host restart is required.'
+      ? ` ✓ fresh-invocation route: the next run loads the current ${integrationBranch}-tree source directly; no host restart is required.`
       : sv.startedSinceCodeChange === false
         ? ` ⚠ RUNNING STALE: ${sv.unit} started ~${sv.behindMin}m before this file last changed on disk, so the host is still executing the OLD version — ${sv.restartLever}.`
         : sv.startedSinceCodeChange === true
@@ -5635,9 +5658,9 @@ function summarizePositionBody(p: Omit<PipelinePosition, 'summary'>): string {
         ? ' ⚠ but the GREEN GATE is a different consumer of this same file and judges a COMMITTED candidate — your uncommitted edit is INVISIBLE to it, so a gate run fired now tests the code WITHOUT it (commit first: git-sync:run).'
         : '';
     const sourceRead = freshInvocation
-      ? 'the next invocation reads THIS TREE directly, including an uncommitted edit.'
+      ? `the next invocation reads THIS ${integrationBranch}-TREE directly, including an uncommitted edit.`
       : 'the running host reads THIS TREE, so even an uncommitted edit is what it loads on restart.';
-    return `${label} @${p.targetShortSha}${subj}: runs in ${p.runtime.host} — NOT carried by the staging→main→:3070 deploy.${live} ${
+    return `${label} @${p.targetShortSha}${subj}: runs in ${p.runtime.host} — NOT carried by the ${integrationBranch}→${releaseRef}→:3070 deploy.${live} ${
       p.runtime.activation
     } (git position: committed ${tick(p.positions.committedLocal)} · staging ${tick(
       p.positions.onStaging,
@@ -5654,7 +5677,7 @@ function summarizePositionBody(p: Omit<PipelinePosition, 'summary'>): string {
       : '';
     return `${label} @${p.targetShortSha}${subj} [submodule ${p.submodule}]: committed ${tick(
       p.positions.committedLocal,
-    )} · staging-candidate ${tick(p.positions.onStaging)}${dirty} — superproject→main→deploy chain not tracked for submodule paths.${pin}`;
+    )} · ${integrationBranch}-candidate ${tick(p.positions.onStaging)}${dirty} — superproject→${releaseRef}→deploy chain not tracked for submodule paths.${pin}`;
   }
   // EI-18719549079738452: a torn git-sync candidate (impl + its matching fixture
   // landing as two separate commits) can red a scheduled run whose failure does
@@ -5663,7 +5686,7 @@ function summarizePositionBody(p: Omit<PipelinePosition, 'summary'>): string {
   // that plays out `gate.consecutiveReds` reads 0 / `gate.stalled` reads false
   // (the LAST *recorded* verdict was clean, or none has landed yet this cycle) —
   // so the three branches above all fall through to '', and the summary reads
-  // as fully healthy while `main` sits behind the latest green pin. That silent
+  // as fully healthy while the release ref sits behind the latest green pin. That silent
   // combination is what turned a bounded, self-healing retriage window into an
   // invisible ~2h stall on 2026-07-26 (the incident this note is named for) —
   // nothing in the one-line summary told a reader "green" and "not advancing"
@@ -5690,7 +5713,7 @@ function summarizePositionBody(p: Omit<PipelinePosition, 'summary'>): string {
                 mainFastForwarded: p.verdictProvenance.mainFastForwarded,
                 stagingBufferAgeMs: p.verdictProvenance.stagingBufferAgeMs,
               })
-            ? ` (gate reports 0 reds, but main has NOT fast-forwarded to the last green pin ${
+            ? ` (gate reports 0 reds, but ${releaseRef} has NOT fast-forwarded to the last green pin ${
                 p.verdictProvenance.lastGreenShortSha ?? '?'
               } for over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h — may be an in-flight retriage/refire or another hold consecutiveReds doesn't capture; not necessarily broken, but don't read this as fully healthy)`
             : '';
@@ -5767,6 +5790,12 @@ export async function gitPipelinePosition(
   // totality bound.  Start both together; every downstream consumer still sees
   // one settled deploy snapshot and one settled pipeline snapshot from this call.
   const [deploy, snap] = await Promise.all([loadDeploy(), loadSnapshot()]);
+  const integrationBranch = deploy.integrationBranch || 'staging';
+  const releaseBranch = deploy.releaseRef || 'main';
+  const integrationRefs = configuredRemoteTrackingRef(integrationBranch);
+  const releaseRefs = configuredRemoteTrackingRef(releaseBranch);
+  const integrationTrackingRef = integrationRefs.trackingRef;
+  const releaseTrackingRef = releaseRefs.trackingRef;
   // EI-24049239243821100: every read below asks about the tree agents EDIT (dirty
   // status, the path's last commit, HEAD containment, marker and mtime reads).
   // `deploy.integrationRoot` answers a different question — the tree THIS process
@@ -5961,7 +5990,7 @@ export async function gitPipelinePosition(
       // version is the gitlink pinned by origin/staging, so nested origin/HEAD
       // is not evidence that this commit is in the candidate. Compare the
       // target nested commit against that pinned nested commit instead.
-      const stagingPin = await readSubmodulePin(git, root, 'origin/staging', submodule);
+      const stagingPin = await readSubmodulePin(git, root, integrationTrackingRef, submodule);
       if (stagingPin === null) {
         positions.onStaging = readLeg('onStaging', null);
         notes.push(
@@ -5984,8 +6013,8 @@ export async function gitPipelinePosition(
       // conditional read-only remote rescues below.
       const [committedLocalRead, onStagingRead, inMainRead, deployedRead] = await Promise.all([
         refContains(git, gitDir, 'HEAD', targetSha),
-        refContains(git, root, 'origin/staging', targetSha),
-        refContains(git, root, 'origin/main', targetSha),
+        refContains(git, root, integrationTrackingRef, targetSha),
+        refContains(git, root, releaseTrackingRef, targetSha),
         deployedSha ? refContains(git, root, deployedSha, targetSha) : Promise.resolve(null),
       ]);
       positions.committedLocal = readLeg('committedLocal', committedLocalRead);
@@ -6000,10 +6029,10 @@ export async function gitPipelinePosition(
       // is the degenerate case; when the target is behind the current tip, a local
       // ancestry read corrects the stale remote-tracking ref for the common case.
       const remoteStagingContainsPromise = !positions.onStaging
-        ? isRemoteTipContaining(git, root, 'refs/heads/staging', targetSha)
+        ? isRemoteTipContaining(git, root, integrationRefs.remote, integrationRefs.remoteHeadRef, targetSha)
         : Promise.resolve(null);
       const remoteMainContainsPromise = !positions.inMain
-        ? isRemoteTipContaining(git, root, 'refs/heads/main', targetSha)
+        ? isRemoteTipContaining(git, root, releaseRefs.remote, releaseRefs.remoteHeadRef, targetSha)
         : Promise.resolve(null);
       const [remoteStagingContains, remoteMainContains] = await Promise.all([
         remoteStagingContainsPromise,
@@ -6017,13 +6046,13 @@ export async function gitPipelinePosition(
         const staleIdx = positionsUnknown.indexOf('onStaging');
         if (staleIdx >= 0) positionsUnknown.splice(staleIdx, 1);
         notes.push(
-          'The local origin/staging ref was stale (git-sync had not yet fetched this push); ' +
+          `The local ${integrationTrackingRef} ref was stale (git-sync had not yet fetched this push); ` +
             'confirmed via `git ls-remote` (no local mutation) and local ancestry that the target ' +
             'commit IS contained in the current remote tip, so onStaging was corrected to true.',
         );
       }
-      // WI-38372: origin/main is subject to the same stale remote-tracking-ref
-      // failure as origin/staging. Apply the same read-only tip-containment rescue
+      // WI-38372: the release ref is subject to the same stale remote-tracking-ref
+      // failure as the integration ref. Apply the same read-only tip-containment rescue
       // so an older commit already in the remote main history is not reported as
       // waiting at the gate merely because the local ref has not been fetched.
       if (!positions.inMain && remoteMainContains === true) {
@@ -6031,7 +6060,7 @@ export async function gitPipelinePosition(
         const staleIdx = positionsUnknown.indexOf('inMain');
         if (staleIdx >= 0) positionsUnknown.splice(staleIdx, 1);
         notes.push(
-          'The local origin/main ref was stale (git-sync had not yet fetched this promotion); ' +
+          `The local ${releaseTrackingRef} ref was stale (git-sync had not yet fetched this promotion); ` +
             'confirmed via `git ls-remote` (no local mutation) and local ancestry that the target ' +
             'commit IS contained in the current remote tip, so inMain was corrected to true.',
         );
@@ -6075,8 +6104,8 @@ export async function gitPipelinePosition(
         // construction and that leg cannot be a newer-commit artifact. The other three
         // all answer about a ref that can legitimately lag behind the caller's change.
         const legs: ReadonlyArray<readonly ['onStaging' | 'inMain' | 'deployed', string | null]> = [
-          ['onStaging', 'origin/staging'],
-          ['inMain', 'origin/main'],
+          ['onStaging', integrationTrackingRef],
+          ['inMain', releaseTrackingRef],
           ['deployed', deployedSha],
         ];
         // EI-19325915429897280: a marker verdict of `present === true` used to
@@ -7258,6 +7287,8 @@ export async function gitPipelinePosition(
   const preStages: Omit<PipelinePosition, 'summary' | 'stages' | 'blockedOn' | 'nextAction'> = {
     input: { path: inp.path ?? null, sha: inp.sha ?? null },
     repoRoot: root,
+    integrationBranch,
+    releaseRef: releaseBranch,
     submodule,
     submodulePin,
     targetSha,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * EL Conv AI end-to-end smoke test.
  *
@@ -55,7 +56,7 @@ const events = [];
 
 // For WebSocket text mode the SDK wants either a `signedUrl` (server-
 // minted) or `agentId` directly. Get a signed URL via the EL API.
-const credPath = `${process.env.HOME}/.papercusp/credentials.json`;
+const credPath = papercuspPath('credentials.json');
 const fs = await import('node:fs');
 async function tryLoopbackKey() {
   for (const port of [process.env.OPERATOR_PORT ?? '3070', '3070', '3055']) {

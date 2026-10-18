@@ -1893,7 +1893,8 @@ describe('current benchmark restart and live binding', () => {
     expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
     expect(forwarded[Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({
       denyTools: [], denyAmbientContext: true,
-      denyOutside: ledger === 'off' ? ['coord:whoami'] : ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
+      denyOutside: ledger === 'off' ? ['coord:whoami', 'session:request-compaction']
+        : ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
       denyWorkItemsOutside: { id: restoredHandle.featureId, harness: restoredHandle.slug, checkout },
       imposedBy: expect.stringContaining('benchmark-host') });
     expect(Object.getOwnPropertySymbols(ctx)).not.toContain(Symbol.for('benchmark-test-private-route'));
@@ -1917,9 +1918,9 @@ describe('current benchmark restart and live binding', () => {
     }
     expect(evaluateSessionConfinement({ toolName: 'work_items:list', args: {}, confinement }).allowed).toBe(false);
     expect(evaluateSessionConfinement({ toolName: 'coord:inbox', args: {}, confinement }).allowed).toBe(false);
-    // Exercise the installed hook against the ceiling actually emitted by the
-    // maintained launch port. Transport is local, with no host respawn or model
-    // request: this is the refusal control, not successful compaction evidence.
+    // The actual launch ceiling admits the installed hook's empty self request
+    // in both ledger arms. This measures dispatch admission only; the local
+    // response does not prove a host respawn or model request.
     const nativeSessionId = randomUUID();
     const dispatch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
       expect(url).toBe('http://benchmark.invalid/mcp');
@@ -1929,11 +1930,9 @@ describe('current benchmark restart and live binding', () => {
       expect(request.params.arguments).toEqual({});
       const decision = evaluateSessionConfinement({ toolName: request.params.name,
         args: request.params.arguments, confinement });
-      expect(decision).toMatchObject({ allowed: false, matchedGlob: 'outside-exact-ceiling' });
-      if (decision.allowed) throw new Error('Refusal control unexpectedly admitted managed compaction');
+      expect(decision).toMatchObject({ allowed: true, applied: true });
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
-        isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false,
-          error: 'session_confinement_denied', note: decision.reason }) }],
+        content: [{ type: 'text', text: JSON.stringify({ ok: true, requested: true, respawn: 'queued' }) }],
       } }), { headers: { 'content-type': 'application/json' } });
     });
     const preCompact = await runManagedPreCompact({ hook_event_name: 'PreCompact', trigger: 'auto',
@@ -1945,8 +1944,15 @@ describe('current benchmark restart and live binding', () => {
     });
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(preCompact.continue).toBe(false);
-    expect(preCompact.systemMessage).toContain('Managed carry was NOT queued (session_confinement_denied)');
-    expect(preCompact.systemMessage).toContain('outside the launch-declared ceiling');
+    expect(preCompact.systemMessage).toContain('Managed carry-respawn is QUEUED, not yet completed.');
+    for (const args of [{ focus: 'WI-neighbor' }, { continueNote: 'Change the frozen context' },
+      { id: restoredHandle.featureId, harness: restoredHandle.slug }])
+      expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args,
+        confinement })).toMatchObject({ allowed: false, matchedGlob: 'outside-exact-carry' });
+    // Withholding the verb remains a real ceiling: the hook cannot lift it.
+    expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {},
+      confinement: { ...confinement, denyOutside: confinement.denyOutside!.filter(name => name !== 'session:request-compaction') } }))
+      .toMatchObject({ allowed: false, matchedGlob: 'outside-exact-ceiling' });
     const calls = native.launch.mock.calls.length;
     // A caller cannot reintroduce an agent-facing instruction prefix outside
     // the frozen host arm, even if the frozen context suffix is unchanged.

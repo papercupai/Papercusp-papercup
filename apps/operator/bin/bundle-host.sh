@@ -618,16 +618,10 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
   cp -f "$METAFILE" "$BUNDLE_HOST_GATE_META_DIR/${OUTFILE##*/}.meta.json" || exit 1
   # WI-38221: widen-avoidance pass. Runs on $TMPFILE, BEFORE the atomic rename
   # below, so the swap stays atomic and a failure here leaves the last-known-good
-  # $OUTFILE untouched. The helper never exits non-zero — a bundle that skipped
-  # the escape is correct, just fatter, and is not worth failing a boot over.
-  bundle_host_run_step host-ascii "${COMMITTED_NODE[@]}" "$HELPER_DIR/ascii-escape-bundle.mjs" "$TMPFILE" || exit 1
-  # WI-10005299: syntax-gate the FINAL bytes before the swap. ascii-escape's own check only
-  # judges its rewrite, and on failure it keeps the input on the assumption that escaping
-  # broke it. When the INPUT was already invalid (a banner/module `__dirname` redeclaration),
-  # that shipped a bundle that died with a SyntaxError on every start. stdin + input-type keeps
-  # the ESM grammar for a temp path that has no .mjs extension. Failing here keeps the
-  # last-known-good $OUTFILE.
-  if ! bundle_host_run_step host-syntax node --input-type=module --check < "$TMPFILE"; then
+  # $OUTFILE untouched. --check validates the FINAL bytes even if escaping was
+  # skipped or failed (WI-10005299), without parsing a successful rewrite twice.
+  # A valid unescaped fallback still passes; an invalid original retains LKG.
+  if ! bundle_host_run_step host-ascii-and-syntax "${COMMITTED_NODE[@]}" "$HELPER_DIR/ascii-escape-bundle.mjs" "$TMPFILE" --check; then
     echo "ERROR: the bundled $OUTFILE fails \`node --check\` (it would throw a SyntaxError at load); keeping the last-known-good bundle."
     exit 1
   fi

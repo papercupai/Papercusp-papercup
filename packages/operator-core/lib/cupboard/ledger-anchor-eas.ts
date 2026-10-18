@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * EAS backend for hourly ledger anchoring (agent-economy-flywheel-2026-08-30
  * P-041, D-021, D-024).
@@ -79,7 +80,7 @@ export const ANCHOR_CHAINS: Readonly<Record<number, { readonly chain: Chain; rea
 
 export const DEFAULT_ANCHOR_RPC_URL = 'https://sepolia.base.org';
 export const DEFAULT_ANCHOR_CHAIN_ID = baseSepolia.id;
-export const DEFAULT_ANCHOR_KEY_FILE = path.join(homedir(), '.papercusp', 'secrets', 'base-sepolia-anchor-key');
+export const DEFAULT_ANCHOR_KEY_FILE = papercuspPath('secrets', 'base-sepolia-anchor-key');
 /** Locate secret material without reading it or constructing an anchor backend. */
 export function anchorKeyFilePath(env: Readonly<Record<string, string | undefined>> = process.env): string {
   return env.PAPERCUSP_LEDGER_ANCHOR_KEY_FILE?.trim() || DEFAULT_ANCHOR_KEY_FILE;

@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import type { InvokeContext } from '@papercusp/orchestrator';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import {
   resolveWorkerParityRoute,
   runWorkerParityCohort,
@@ -73,7 +74,7 @@ function parseArgs(argv: string[]): CliArgs {
     model: valueArg(argv, 'model') ?? 'claude-haiku-4-5',
     cohortId: valueArg(argv, 'cohort') ?? new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z'),
     workspaceId,
-    harnessSlug: valueArg(argv, 'harness') ?? 'papercusp',
+    harnessSlug: valueArg(argv, 'harness') ?? process.env.PAPERCUSP_HARNESS_SLUG ?? operatorHomeHarnessSlug(),
     arm: armRaw ?? null,
   };
 }

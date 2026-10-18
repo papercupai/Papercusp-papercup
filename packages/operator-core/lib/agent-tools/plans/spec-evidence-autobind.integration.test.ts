@@ -22,7 +22,7 @@ beforeAll(async () => {
   await h.db.sql.unsafe(`CREATE TABLE harness_shared.spec_evidence_bindings (
     id bigint GENERATED ALWAYS AS IDENTITY, workspace_id text, harness_slug text,
     plan_slug text, spec_id text, spec_revision integer, work_item_id text,
-    evidence_kind text, evidence_ref text, test_run_id bigint, details jsonb,
+    evidence_kind text, evidence_ref text, test_run_id bigint, details jsonb, created_by text,
     observed_at timestamptz DEFAULT now(), retracted_at timestamptz)`);
 }, 90_000);
 afterAll(async () => { await h.db?.cleanup(); });
@@ -59,6 +59,17 @@ describe('autobind preserves logical clause proof across work-item origins', () 
     expect(rows[0]!.details).toEqual(richDetails);
   });
 
+  it('loads the complete authored recipe for the next run without copying design attestations', async () => {
+    const measurement = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/feature.ts'],
+      testPaths: [file], fixturePaths: [file, 'test/corpus.json'] };
+    await seedProof({ details: { ...richDetails, currentMeasurement: measurement }, created_by: 'su-author' });
+    const live = await defaultAutobindDeps().loadLiveBindings('ws', [target]);
+    expect(live.get('app\u0000plan\u0000SPEC-1\u00001')).toEqual([{
+      id: 1, evidenceRef: file, testRunId: 1, observedAt: expect.any(String), measurement, createdBy: 'su-author',
+    }]);
+    expect(live.get('app\u0000plan\u0000SPEC-1\u00001')![0]).not.toHaveProperty('adequacy');
+  });
+
   it.each([
     { workspace_id: 'foreign' }, { harness_slug: 'other' }, { plan_slug: 'other' },
     { spec_id: 'OTHER' }, { spec_revision: 2 }, { evidence_ref: 'other.test.ts' },
@@ -66,7 +77,7 @@ describe('autobind preserves logical clause proof across work-item origins', () 
   ])('does not let a different proof suppress the required bind: %j', async (patch) => {
     const { deps, bind } = await seedProof(patch);
     await runSpecEvidenceAutobind('ws', deps);
-    expect(bind).toHaveBeenCalledExactlyOnceWith(target, expect.objectContaining({ id: 1 }));
+    expect(bind).toHaveBeenCalledExactlyOnceWith(target, expect.objectContaining({ id: 1 }), undefined);
   });
 
   it('still retracts cross-work-item proof when a later failure contradicts its receipt', async () => {

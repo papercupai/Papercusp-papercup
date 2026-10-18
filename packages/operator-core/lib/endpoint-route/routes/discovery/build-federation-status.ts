@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * buildFederationStatus — the shared composition behind BOTH the
  * GET /api/discovery/federation-status endpoint AND the `network.federationStatus`
@@ -168,7 +169,7 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
   let dhtBootstrapProbeStaleMs: number | null = null;
   try {
     if (process.env.PAPERCUSP_DHT_BOOTSTRAP?.trim()) {
-      const lastOkPath = path.join(os.homedir(), '.papercusp', 'dht-liveness', 'last-ok');
+      const lastOkPath = papercuspPath('dht-liveness', 'last-ok');
       const raw = fs.readFileSync(lastOkPath, 'utf8').trim();
       const lastOkS = Number.parseInt(raw, 10);
       if (Number.isFinite(lastOkS) && lastOkS > 0) {

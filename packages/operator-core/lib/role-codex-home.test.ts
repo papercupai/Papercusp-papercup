@@ -10,6 +10,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -36,6 +37,7 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => homeHolder.home };
 });
 const ownerSidSyncCalls = vi.hoisted(() => [] as string[]);
+const configWriteFault = vi.hoisted(() => ({ armed: false }));
 vi.mock('node:fs', async (importActual) => {
   const actual = await importActual<typeof import('node:fs')>();
   const isOwnerSid = (path: unknown) => String(path).endsWith('.owner-sid');
@@ -51,6 +53,10 @@ vi.mock('node:fs', async (importActual) => {
     },
     writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
       if (isOwnerSid(args[0])) ownerSidSyncCalls.push('writeFileSync');
+      if (configWriteFault.armed && String(args[0]).endsWith('/config.toml')) {
+        actual.writeFileSync(args[0], String(args[1]).slice(0, 24), args[2]);
+        throw new Error('injected incomplete config publication');
+      }
       return actual.writeFileSync(...args);
     },
   };
@@ -63,6 +69,7 @@ const savedSuCodexHomes = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
 
 beforeEach(() => {
   ownerSidSyncCalls.length = 0;
+  configWriteFault.armed = false;
   fakeHome = mkdtempSync(join(tmpdir(), 'role-codex-home-test-'));
   homeHolder.home = fakeHome;
   process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(fakeHome, '.papercusp', 'su-codex-homes');
@@ -71,6 +78,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  configWriteFault.armed = false;
   if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
   if (savedCodexSqliteHomes === undefined) delete process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
   else process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = savedCodexSqliteHomes;
@@ -1272,6 +1280,66 @@ describe('writeSuCodexHome', () => {
     expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
     expect(readFileSync(database, 'utf8')).toBe('native conversation state');
     expect(existsSync(replacementRoot)).toBe(false);
+  });
+
+  it('repairs malformed config tails from the intact root SQLite binding without guessing a state location', async () => {
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'malformed-tail', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-malformed-tail', promptText: 'KEEP NATIVE STATE', codexGatewayAuto: true };
+    const first = writeSuCodexHome(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    const transcript = join(first.codexHome, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(first.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(database, 'native state');
+    writeFileSync(transcript, 'native transcript');
+    writeFileSync(first.configPath, readFileSync(first.configPath, 'utf8') + '\n%3Fclient%3Dstale-tail\n');
+    const changedRoot = join(fakeHome, 'different-serving-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = changedRoot;
+
+    const repaired = ensureSuCodexHomeConfig(input);
+    expect(repaired).toMatchObject({ repaired: true, sqliteHome: first.sqliteHome });
+    const parsed = parseToml(readFileSync(first.configPath, 'utf8'));
+    expect(parsed.sqlite_home).toBe(first.sqliteHome);
+    expect(parsed.model_provider).toBe('papercusp-codex-gateway');
+    expect(readFileSync(database, 'utf8')).toBe('native state');
+    expect(readFileSync(transcript, 'utf8')).toBe('native transcript');
+    expect(existsSync(changedRoot)).toBe(false);
+  });
+
+  it('refuses malformed or conflicting root SQLite bindings instead of repairing to a different location', async () => {
+    const { writeRoleCodexHome } = await loadMod();
+    const input = { sessionKey: 'malformed-binding', mcpUrl: 'http://x/api/mcp?role=judge', promptText: 'P' };
+    const first = writeRoleCodexHome(input);
+    const original = readFileSync(first.configPath, 'utf8');
+    const tail = '\n%3Fclient%3Dstale-tail\n';
+    const conflicting = original + tail;
+    writeFileSync(first.configPath, conflicting);
+    expect(() => writeRoleCodexHome({ ...input, preserveExisting: true,
+      recordedSqliteHome: join(fakeHome, 'other-state') })).toThrow('launch receipt and configured sqlite_home disagree');
+    expect(readFileSync(first.configPath, 'utf8')).toBe(conflicting);
+    const invalid = original.replace(/^sqlite_home\s*=.*$/m, 'sqlite_home = "relative-state"') + tail;
+    writeFileSync(first.configPath, invalid);
+    expect(() => writeRoleCodexHome({ ...input, preserveExisting: true,
+      recordedSqliteHome: first.sqliteHome })).toThrow('recorded sqlite_home must be an absolute path');
+    expect(readFileSync(first.configPath, 'utf8')).toBe(invalid);
+  });
+
+  it('keeps the complete prior config when publication fails after writing partial bytes', async () => {
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'atomic-config', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-atomic-config', promptText: 'P' };
+    const first = writeSuCodexHome(input);
+    const before = readFileSync(first.configPath, 'utf8');
+    configWriteFault.armed = true;
+    try {
+      expect(() => ensureSuCodexHomeConfig({ ...input, mcpUrl: 'http://changed/api/mcp?superuser=1' }))
+        .toThrow('injected incomplete config publication');
+    } finally {
+      configWriteFault.armed = false;
+    }
+    expect(readFileSync(first.configPath, 'utf8')).toBe(before);
+    expect(parseToml(readFileSync(first.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(ensureSuCodexHomeConfig({ ...input, mcpUrl: 'http://changed/api/mcp?superuser=1' }).repaired).toBe(true);
   });
 
   it('rekeys a prepared home to the durable adv-session id without rebuilding or overwriting', async () => {
@@ -2596,7 +2664,7 @@ describe('writeCodexLockHooks — Codex RTK rewrite (WI-6554700010009447)', () =
     }
     const inject = join(fakeHome, '.papercusp', 'hooks', 'inject');
     mkdirSync(inject, { recursive: true });
-    for (const name of ['core.mjs', 'ports.mjs']) copyFileSync(join(REAL_HOOKS, 'inject', name), join(inject, name));
+    cpSync(join(REAL_HOOKS, 'inject'), inject, { recursive: true });
     return dir;
   }
 

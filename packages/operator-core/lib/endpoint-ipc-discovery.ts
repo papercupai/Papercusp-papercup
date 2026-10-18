@@ -23,6 +23,7 @@ import { join, dirname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, writeFile, readFile, readdir, rm, rename, lstat } from 'node:fs/promises';
 import { backgroundWorkersEnabled } from './background-workers';
+import { papercuspHome } from '@papercusp/host-platform/home';
 
 const REL_DIR = '.papercusp';
 const REL_FILE = 'endpoint-ipc.json';
@@ -37,7 +38,7 @@ export const AGENT_MCP_AUTH_META = 'com.papercusp/connection';
  * its operator never wrote, and /api sat on the capped HTTP fallback until the origin health check timed out.
  */
 function discoveryDir(): string {
-  return process.env.PAPERCUSP_HOME || join(homedir(), REL_DIR);
+  return join(papercuspHome(), REL_DIR);
 }
 
 /** Absolute path to the discovery file in this instance's runtime directory. */

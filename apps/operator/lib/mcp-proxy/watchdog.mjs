@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * mcp-proxy (:9071) LIVENESS watchdog — EI-9237.
  *
@@ -157,7 +158,7 @@ const HOT_PATH_RESTART_DRAIN_SEC =
 const HOT_PATH_PTOOL_TIMEOUT_MS = 30_000 + HOT_PATH_RESTART_DRAIN_SEC * 1_000;
 /** Durable, journald-INDEPENDENT decision log — see the bg-host / inference-gateway watchdogs'
  *  identical rationale (EI-2434: journald's stdout-socket capture was itself observed wedged). */
-const LOG_FILE = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_LOG || join(homedir(), '.papercusp', 'mcp-proxy-watchdog.log');
+const LOG_FILE = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_LOG || papercuspPath('mcp-proxy-watchdog.log');
 
 /* ────────────────────────────────────────────────────────────────────────────
  * SESSION-PLANE probe — EI-19299524366372518 (2026-08-01 incident).
@@ -218,7 +219,7 @@ const DEFAULT_DB_PROBE_TOOL = 'facts:list';
 const DEFAULT_DB_PROBE_ARGS = { scope: 'workspace' };
 const DB_PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL || DEFAULT_DB_PROBE_TOOL;
 const DB_PROBE_ARGS_RAW = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_ARGS;
-const SUPERUSER_TOKEN_FILE = join(homedir(), '.papercusp', 'superuser-token');
+const SUPERUSER_TOKEN_FILE = papercuspPath('superuser-token');
 
 /**
  * Escalation to a human via coord:escalate (EI-19415174699106397 / WI-6739 follow-up).

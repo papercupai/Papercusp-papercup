@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /** Runtime authority for one Codex session's automatic file-lock hook. */
 import { existsSync, promises as fsp, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -75,7 +76,7 @@ interface CodexLockMarkers {
 }
 
 function markerPaths(input: CodexLockRuntimeInput): { cacheDir: string; decision: string; success: string; error: string } {
-  const cacheDir = input.cacheDir ?? process.env.PAPERCUSP_LOCKS_CACHE_DIR ?? join(homedir(), '.papercusp/locks-cache');
+  const cacheDir = input.cacheDir ?? process.env.PAPERCUSP_LOCKS_CACHE_DIR ?? papercuspPath('locks-cache');
   return {
     cacheDir,
     decision: join(cacheDir, codexLockOwnerMarkerName(input.ownerId, 'decision')),

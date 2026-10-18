@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * CLI: run the tau2-bench vanilla-vs-+memory comparison report from two standalone `results.json` files
  * (plan benchmark-capability-injection-redesign-2026-06-17, P-009 + P-011).
@@ -36,7 +37,7 @@ const rep = reportTau2Comparison({ vanilla: load(vanPath), memory: load(memPath)
 
 console.log(rep.markdown);
 
-const outPath = arg('out') ?? join(homedir(), '.papercusp', 'bench-results', 'reports', `tau2-attribution-${runId}.md`);
+const outPath = arg('out') ?? papercuspPath('bench-results', 'reports', `tau2-attribution-${runId}.md`);
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, rep.markdown, 'utf8');
 console.error(`\nwrote ${outPath}`);

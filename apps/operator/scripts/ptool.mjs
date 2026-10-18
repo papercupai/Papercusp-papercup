@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * ptool.mjs — the `ptool` command.
  *
@@ -1233,7 +1234,7 @@ const OUTPUT_ENVELOPE_SCHEMA_VERSION = 'papercusp.output-envelope/v1';
 function scratchRootDir(env = process.env) {
   const override = typeof env.PAPERCUSP_SCRATCH_ROOT === 'string' ? env.PAPERCUSP_SCRATCH_ROOT.trim() : '';
   if (override) return override;
-  return join(homedir(), '.papercusp', 'scratch');
+  return papercuspPath('scratch');
 }
 
 /**

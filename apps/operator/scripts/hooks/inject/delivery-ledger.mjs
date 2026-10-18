@@ -43,7 +43,9 @@ import { join } from 'node:path';
  * @param {NodeJS.ProcessEnv} [env]
  */
 export function ledgerDir(env = process.env) {
-  return join(env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'state', 'turn-start-delivery');
+  // The dispatcher is installed as standalone .mjs files without node_modules.
+  const home = env.PAPERCUSP_HOME || join(homedir(), '.papercusp');
+  return join(home, 'state', 'turn-start-delivery');
 }
 
 /**

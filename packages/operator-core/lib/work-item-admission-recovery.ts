@@ -545,14 +545,25 @@ export async function readAuthorizedComponentScreeningIds(
       const request = savedRequest(item);
       if (!request || request.version !== 3 || request.state !== 'held' || request.stage !== 'screen' ||
           !request.reason?.includes('outside-mutation-scope')) continue;
-      // A held request gets one ordinary screening turn. Existing hold/review
-      // watermarks retire the hint so an ambiguous component cannot monopolize
-      // every later model window while its exact recovery remains held.
+      // A held request gets one ordinary adjudication opportunity. A structural
+      // prescreen hold did not judge its protected twin, so it cannot consume
+      // that opportunity. readPromoterWindow defers these priority rows without
+      // a model slot while a twin remains protected.
       const review = item.payload?.admissionReview as { lastRetryAt?: string } | undefined;
-      const hold = item.payload?.admissionHold as { heldAt?: string } | undefined;
+      const hold = item.payload?.admissionHold as {
+        heldAt?: string; actor?: string; reason?: string; screeningDeferred?: boolean;
+      } | undefined;
       const requestedScreenAt = Date.parse(request.updatedAt);
+      const heldAt = Date.parse(hold?.heldAt ?? '');
+      const retryAt = Date.parse(review?.lastRetryAt ?? '');
+      // Existing receipts predate the typed marker. Recognize only the exact
+      // system-generated legacy format; an explicit false always wins.
+      const screeningDeferred = hold?.actor === 'system:work-item-admission-promoter' &&
+        (hold.screeningDeferred === true || hold.screeningDeferred === undefined &&
+          /^deferred: twin \S+ is [a-z-]+; held until it can be judged$/.test(hold.reason ?? ''));
       if (!Number.isFinite(requestedScreenAt) ||
-          [review?.lastRetryAt, hold?.heldAt].some((at) => at && Date.parse(at) >= requestedScreenAt)) continue;
+          heldAt >= requestedScreenAt && !screeningDeferred ||
+          retryAt >= requestedScreenAt && !(screeningDeferred && retryAt === heldAt)) continue;
       await verifyRequest(sql, exact, request);
       await assertRoutineActive(sql, exact, request.routineId);
       assertItemEligible(item, request.target);

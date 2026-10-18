@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * PG-source report builder (plan benchmark-report-portable-trace-2026-06-17, P-001).
  *
@@ -230,7 +231,7 @@ export async function emitReport(
 ): Promise<string | null> {
   const bundle = await buildBundleFromPg(runId, opts);
   if (!bundle) return null;
-  const dir = opts.outDir ?? join(homedir(), '.papercusp', 'bench-results', 'reports');
+  const dir = opts.outDir ?? papercuspPath('bench-results', 'reports');
   mkdirSync(dir, { recursive: true });
   return writeReportHtml(bundle, join(dir, `report-${runId}.html`));
 }

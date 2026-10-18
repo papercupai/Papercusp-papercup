@@ -208,7 +208,7 @@ export async function attachChangeKindDeclarations<R extends ChangeKindResultLik
     eligible: ChangeKindEligibility<R>;
   },
   sql?: Sql,
-): Promise<R[]> {
+): Promise<Array<R & { changeKinds?: DeclareChangeKindsResult }>> {
   if (input.declared.size === 0) return [...input.results];
   return Promise.all(
     input.results.map(async (r) => {

@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * testing:run — run exact test files and return a DISTILLED result.
  *
@@ -817,7 +818,7 @@ function rebaseDistilledRunToAmbient(run: DistilledTestRun, groupRoot: string, a
  */
 export function discoverKnownHiveCheckoutRoots(
   hiveParents: string[] = [
-    join(homedir(), '.papercusp', 'hives'),
+    papercuspPath('hives'),
     ...(process.env.PAPERCUSP_HOME?.trim() ? [join(process.env.PAPERCUSP_HOME.trim(), 'hives')] : []),
   ],
 ): string[] {

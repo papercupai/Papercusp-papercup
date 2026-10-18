@@ -1,3 +1,4 @@
+import { papercuspPtyPath } from '@papercusp/host-platform/home';
 /**
  * psu-pty-discovery — the operator's READ side of the session-hosted managed-pty
  * control socket (turn-lifecycle-control-2026-06-08 Phase 3, P-014).
@@ -19,7 +20,7 @@
  */
 
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
   readFileSync,
@@ -34,11 +35,42 @@ import net from 'node:net';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { mapWithConcurrency } from '../../gym/concurrency';
 import { recordMcpRequestTraceOperation } from '../../mcp-request-trace';
+import { papercuspRootForWorkspace } from '../../papercusp-root';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
 // Keep discovery aligned with the host writer, while allowing integration tests
 // and disposable probes to redirect both sides away from the live corpus.
-export const PSU_PTY_DIR = process.env.PAPERCUSP_PSU_PTY_DIR || join(homedir(), '.papercusp', 'psu-pty');
+export const PSU_PTY_DIR = papercuspPtyPath();
+
+type DiscoveryOptions = {
+  verifyIdentity?: VerifyPidIdentity;
+  /** Workspace whose scoped legacy PTY directory should be searched after the host-wide path. */
+  workspaceId?: string | null;
+};
+
+type AsyncDiscoveryOptions = Omit<DiscoveryOptions, 'verifyIdentity'> & {
+  verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync;
+};
+
+/**
+ * The host-wide directory is canonical for new sessions. During the migration
+ * from workspace-scoped PAPERCUSP_HOME, already-running hosts may still have
+ * their record in that workspace's old directory; search it only when the
+ * caller has not supplied an explicit isolated directory override.
+ */
+function discoveryDirs(dir: string, workspaceId?: string | null): string[] {
+  if (process.env.PAPERCUSP_PSU_PTY_DIR || dir !== PSU_PTY_DIR) return [dir];
+  try {
+    const workspace = workspaceId?.trim() || activeWorkspaceId();
+    if (!workspace) return [dir];
+    const legacy = join(papercuspRootForWorkspace(workspace), 'psu-pty');
+    return resolve(legacy) === resolve(dir) ? [dir] : [dir, legacy];
+  } catch {
+    // A broken workspace registry must not disable the canonical host-wide lookup.
+    return [dir];
+  }
+}
 
 /** Mirror of psu-pty-host.mjs HOST_HANDOFF_FILE_SUFFIX (WI-6554700010008431). */
 export const HOST_HANDOFF_FILE_SUFFIX = '.handoff.json';
@@ -662,24 +694,26 @@ export function pidIsPsuHost(pid: number, readCmdline: ReadPidCmdline = defaultR
 export function findLiveHost(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+  opts: DiscoveryOptions = {},
 ): PsuPtyHost | null {
   startJanitor();
   const verify = opts.verifyIdentity ?? pidIsPsuHost;
-  const metaPath = join(dir, `${sanitizeKey(ownerId)}.json`);
-  if (!existsSync(metaPath)) return null;
-  try {
-    const h = JSON.parse(readFileSync(metaPath, 'utf8')) as PsuPtyHost;
-    // Identity must match (EI-151): the file's recorded owner is authoritative;
-    // a sanitize-collision / stale-reuse leaves a file whose `ownerId` is a
-    // different agent — never hand that back as this owner's host.
-    if (h && h.ownerId && h.ownerId !== ownerId) return null;
-    // WI-2339 defect #2: pid-alive + socket-exists is NOT enough — a recycled pid
-    // held by an unrelated process would masquerade as a live host forever. Also
-    // require the pid to actually BE a psu session host (pidIsPsuHost cmdline check).
-    if (h && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid) && verify(h.pid)) return h;
-  } catch {
-    /* unreadable / partial write — treat as no host */
+  for (const candidateDir of discoveryDirs(dir, opts.workspaceId)) {
+    const metaPath = join(candidateDir, `${sanitizeKey(ownerId)}.json`);
+    if (!existsSync(metaPath)) continue;
+    try {
+      const h = JSON.parse(readFileSync(metaPath, 'utf8')) as PsuPtyHost;
+      // Identity must match (EI-151): the file's recorded owner is authoritative;
+      // a sanitize-collision / stale-reuse leaves a file whose `ownerId` is a
+      // different agent — never hand that back as this owner's host.
+      if (h && h.ownerId && h.ownerId !== ownerId) continue;
+      // WI-2339 defect #2: pid-alive + socket-exists is NOT enough — a recycled pid
+      // held by an unrelated process would masquerade as a live host forever. Also
+      // require the pid to actually BE a psu session host (pidIsPsuHost cmdline check).
+      if (h && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid) && verify(h.pid)) return h;
+    } catch {
+      /* unreadable / partial write — check the next compatible directory */
+    }
   }
   return null;
 }
@@ -796,27 +830,31 @@ async function pidIsPsuHostAsync(pid: number): Promise<boolean> {
 export async function findLiveHostAsync(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync } = {},
+  opts: AsyncDiscoveryOptions = {},
 ): Promise<PsuPtyHost | null> {
   const startedAt = performance.now();
   startJanitor();
   const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
-  const metaPath = join(dir, `${sanitizeKey(ownerId)}.json`);
   try {
-    const h = JSON.parse(await fsp.readFile(metaPath, 'utf8')) as PsuPtyHost;
-    if (h && h.ownerId && h.ownerId !== ownerId) return null;
-    if (
-      h &&
-      h.sock &&
-      h.pid &&
-      (await pathExistsAsync(h.sock)) &&
-      pidAlive(h.pid) &&
-      (await verify(h.pid))
-    ) {
-      return h;
+    for (const candidateDir of discoveryDirs(dir, opts.workspaceId)) {
+      const metaPath = join(candidateDir, `${sanitizeKey(ownerId)}.json`);
+      try {
+        const h = JSON.parse(await fsp.readFile(metaPath, 'utf8')) as PsuPtyHost;
+        if (h && h.ownerId && h.ownerId !== ownerId) continue;
+        if (
+          h &&
+          h.sock &&
+          h.pid &&
+          (await pathExistsAsync(h.sock)) &&
+          pidAlive(h.pid) &&
+          (await verify(h.pid))
+        ) {
+          return h;
+        }
+      } catch {
+        /* missing, unreadable or partial record — check the next compatible directory */
+      }
     }
-  } catch {
-    /* missing, unreadable or partial discovery file — treat as no host */
   } finally {
     recordMcpRequestTraceOperation('findLiveHostAsync', performance.now() - startedAt);
   }

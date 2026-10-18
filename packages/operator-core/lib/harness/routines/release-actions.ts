@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Release-gating system actions — plan release-gate-ready-branch-2026-06-04
  * (Phase 1 green-checkpoint); staging→main auto-serve model since
@@ -43,6 +44,7 @@ import { emitAwaitedEvent } from '../../events/await/engine';
 import { withInstallBoundaryBootWindow } from '../../install-boundary-lease';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
+import { releaseRef as defaultReleaseRef } from '../../release/judged-sha-containment';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposition';
 import type { FreezeCutRecord, RedLegsAtR1 } from '../../release/known-good-freeze';
@@ -745,7 +747,7 @@ export const CHECKPOINT_SCOPE_RUNTIME_MAX_SEC = 4 * 60 * 60;
 
 /** Keep the scheduled wrapper's evidence directory aligned with the CLI's release config. */
 function scheduledCheckpointLogDir(): string {
-  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? path.join(homedir(), '.papercusp', 'checkpoint-logs');
+  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? papercuspPath('checkpoint-logs');
 }
 
 function shellQuote(value: string): string {
@@ -6232,13 +6234,19 @@ export async function checkReleaseFixerCandidateStale(
   root: string,
   candidate: string,
   runner: GitCheckRunner = defaultGitCheckRunner,
+  releaseRef = defaultReleaseRef(),
 ): Promise<ReleaseFixerCandidateStaleCheck> {
   const exists = await runner(root, ['cat-file', '-e', `${candidate}^{commit}`]);
   const candidateExists = exists.ok;
   if (!candidateExists) return { candidateExists, candidatePromoted: false };
-  // `origin/main..<candidate>` lists commits reachable from candidate but not from
-  // origin/main; a count of 0 means origin/main's history already contains candidate.
-  const ahead = await runner(root, ['rev-list', '--count', `origin/main..${candidate}`]);
+  // The configured release ref is the authority this hive's green gate promotes.
+  // A subject gate may use a branch other than main; comparing against the operator
+  // home's origin/main silently treats unrelated history as promotion.
+  const branch = releaseRef.trim().replace(/^refs\/heads\//, '').replace(/^origin\//, '');
+  const originReleaseRef = releaseRef.startsWith('refs/remotes/')
+    ? releaseRef
+    : `origin/${branch}`;
+  const ahead = await runner(root, ['rev-list', '--count', `${originReleaseRef}..${candidate}`]);
   const candidatePromoted = ahead.ok && ahead.stdout === '0';
   return { candidateExists, candidatePromoted };
 }
@@ -7221,9 +7229,25 @@ export async function dispatchReleaseFixer(
   // instead of a wasted fixer spawn. Best-effort: a check failure (e.g. no repo at
   // integrationRoot(), transient git error) treats the candidate as NOT stale (fails open
   // to the pre-existing dispatch behavior) rather than silently swallowing a real red gate.
-  const fixerRoot = integrationRootForDiagnostic();
+  let fixerRoot = integrationRootForDiagnostic();
+  let fixerReleaseRef = defaultReleaseRef();
+  if (fixerRoot) {
+    try {
+      const { resolveCheckpointRouting } = await import('./hive-release-env');
+      const routing = await resolveCheckpointRouting(ctx, fixerRoot);
+      if (routing.skip) {
+        fixerRoot = null;
+      } else {
+        fixerRoot = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? fixerRoot;
+        fixerReleaseRef = routing.extraEnv.PAPERCUSP_RELEASE_REF ?? fixerReleaseRef;
+      }
+    } catch {
+      // Scope/config uncertainty must never claim that a candidate was promoted.
+      fixerRoot = null;
+    }
+  }
   const staleCheck: ReleaseFixerCandidateStaleCheck = fixerRoot
-    ? await (deps.checkCandidate ?? checkReleaseFixerCandidateStale)(fixerRoot, candidate).catch(
+    ? await (deps.checkCandidate ?? ((root, sha) => checkReleaseFixerCandidateStale(root, sha, defaultGitCheckRunner, fixerReleaseRef)))(fixerRoot, candidate).catch(
         () => ({ candidateExists: true, candidatePromoted: false }) satisfies ReleaseFixerCandidateStaleCheck,
       )
     : { candidateExists: true, candidatePromoted: false };

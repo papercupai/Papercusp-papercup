@@ -66,9 +66,15 @@ it('exports support data over private HTTP only with a persisted scoped staff co
   }) as ReturnType<typeof fn>;
   const recoverCustomerDeletion = vi.fn(async () => { throw new Error('export must not invoke DBOS'); });
   const support = new PostgresHostedCustomerDataSupport({ runService, client: { recoverCustomerDeletion } });
+  // Keep provider/database errors private in the HTTP response, but retain the
+  // actual rejection in this disposable fixture so a 503 has useful evidence.
+  const exportData = vi.fn((...args: Parameters<typeof support.exportData>) => support.exportData(...args));
   const staffIds = new Set([staffId]);
   const app = new Hono();
-  for (const route of createCustomerDataSupportRoutes({ support, staffPrincipalIds: () => staffIds })) registerRoute(app, route);
+  for (const route of createCustomerDataSupportRoutes({
+    support: { exportData, recoverDeletion: support.recoverDeletion.bind(support) },
+    staffPrincipalIds: () => staffIds,
+  })) registerRoute(app, route);
   const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 });
   try {
     await once(server, 'listening');
@@ -80,6 +86,8 @@ it('exports support data over private HTTP only with a persisted scoped staff co
       body: JSON.stringify({ organizationId: tenant, grantId }),
     });
     const response = await post();
+    expect(exportData).toHaveBeenCalledTimes(1);
+    await expect(exportData.mock.results[0]!.value).resolves.toEqual(expect.objectContaining({ receiptId: expect.any(String) }));
     expect(response.status, await response.clone().text()).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
     const body = await response.json() as { result: { receiptId: string; stores: { store: string; rows: { id: string }[] }[] } };

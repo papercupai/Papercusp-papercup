@@ -1,3 +1,4 @@
+import { papercuspHome } from '@papercusp/host-platform/home';
 /**
  * Cross-process managed-timer federation — the P-014 follow-on that
  * `schedule-inventory.ts`'s `ExternalProcessTimer` docstring has been naming as
@@ -201,7 +202,7 @@ export async function listSiblingOperators(
     isAlive?: (pid: number) => boolean;
   } = {},
 ): Promise<SiblingOperator[]> {
-  const dir = opts.dir ?? join(homedir(), '.papercusp');
+  const dir = opts.dir ?? papercuspHome();
   const selfPort = opts.selfPort ?? ownHonoPort();
   const alive = opts.isAlive ?? pidAlive;
 

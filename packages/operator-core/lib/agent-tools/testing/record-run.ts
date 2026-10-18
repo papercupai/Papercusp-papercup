@@ -480,6 +480,7 @@ export async function executeOperationalRun(
     name: string;
     command: string[];
     framework: OperationalEvidenceArtifact['framework'];
+    /** Empty for source-only checks; no runtime witness is claimed in that case. */
     runtimeUnits: string[];
     run: () => Promise<Pick<OperationalEvidenceArtifact, 'exitCode' | 'summary' | 'assertions'>>;
   },
@@ -503,7 +504,7 @@ export async function executeOperationalRun(
   const units = [...definition.runtimeUnits];
   // Pin the arguments before execution: a callback cannot replace the install/window it checked.
   const command = [...definition.command];
-  if (!units.length || units.length > 32 || new Set(units).size !== units.length
+  if (units.length > 32 || new Set(units).size !== units.length
     || units.some(unit => !unit || unit.trim() !== unit || unit.length > 120)) {
     return { ok: false, error: 'invalid_runtime_units' as const };
   }
@@ -513,6 +514,7 @@ export async function executeOperationalRun(
     return { ok: false, error: 'invalid_check_path' as const };
   }
   const observe = async (): Promise<RecordedRuntimeEnvironment | undefined> => {
+    if (units.length === 0) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const fingerprint = await Promise.race([

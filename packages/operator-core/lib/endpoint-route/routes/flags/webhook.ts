@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * POST /api/flags/webhook
  *
@@ -25,7 +26,7 @@ function expectedSecret(): string | null {
   if (envSecret) return envSecret;
   try {
     const raw = fs.readFileSync(
-      path.join(os.homedir(), '.papercusp', 'posthog.json'),
+      papercuspPath('posthog.json'),
       'utf8',
     );
     const parsed = JSON.parse(raw) as { webhookSecret?: string };

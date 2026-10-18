@@ -1,10 +1,10 @@
 /** Real current-su launcher, private current-build operator and task container.
- * The only model transport is a local refusal listener with no forwarding code. */
+ * Local refusal/scripted protocol listeners have no provider forwarding code. */
 import { fork } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
-import { expect, it } from 'vitest';
+import { expect, it, type TestContext } from 'vitest';
 import type {} from '../../test/current-su-native-http-scenario';
 import type {} from '../../test/staging-first-http-fixture';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
@@ -19,7 +19,7 @@ const hookInputs = [...CC_HOOK_FILES.map(name => `${hookSources}/cc/${name}`),
   ...['inject', 'inject/adapters'].flatMap(dir => readdirSync(join(root, hookSources, dir))
     .filter(name => name.endsWith('.mjs')).map(name => `${hookSources}/${dir}/${name}`))];
 
-it('launches autonomous current-su through the native container adapter without provider forwarding', async context => {
+async function nativeScenario(scenario: 'current-su-native' | 'current-su-native-carry', context: TestContext) {
   let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
@@ -32,8 +32,12 @@ it('launches autonomous current-su through the native container adapter without 
       'packages/operator-core/lib/external-bench/frontier-swe-seam.ts',
       'packages/operator-core/lib/external-bench/container-exec-target.ts',
       'packages/operator-core/lib/external-bench/codex-hook-bridge.ts',
+      'packages/operator-core/lib/agent-tools/session/request-compaction.ts',
+      'packages/operator-core/lib/capability-envelope/session-confinement.ts',
+      'packages/operator-core/lib/carry-respawn.ts', 'packages/operator-core/lib/carry-doc.ts',
       'packages/operator-core/lib/agent-tools/capability/launch-agent.ts',
       'packages/operator-core/lib/console-spawn.ts', 'apps/operator/scripts/psu-launcher.mjs',
+      'apps/operator/scripts/psu-pty-host.mjs',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'packages/operator-core/lib/desktop-install/papercusp-files.ts',
       'packages/operator-core/lib/role-codex-home.ts', ...hookInputs],
@@ -58,7 +62,7 @@ it('launches autonomous current-su through the native container adapter without 
         '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256],
       { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-          STAGING_FIRST_HTTP_SCENARIO: 'current-su-native', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+          STAGING_FIRST_HTTP_SCENARIO: scenario, STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
           TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') } });
       observe(child);
       child.stdout!.on('data', chunk => {
@@ -78,9 +82,19 @@ it('launches autonomous current-su through the native container adapter without 
         nativeSessionId: expect.stringMatching(/^[a-f0-9-]{36}$/), autoRegistered: true,
         hooksBridged: true, containerWorkdir: '/app', mcpConfined: true });
       expect(receipt.modelRequests).toBeGreaterThan(0);
+      if (scenario === 'current-su-native-carry') {
+        expect(receipt.managedCarry).toMatchObject({ requested: true, distinctNativeSession: true,
+          sameOwner: true, sameTask: true, preservedHead: true, preservedDiff: true, confinementPreserved: true });
+        expect(receipt.managedCarry.successorId).not.toBe(receipt.managedCarry.predecessorId);
+      }
       console.info('CURRENT_SU_NATIVE_VERIFIED ' + JSON.stringify(receipt));
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('CURRENT_SU_NATIVE_PROOF_RUN ' + runId);
-}, options.testTimeoutMs);
+}
+
+it('launches autonomous current-su through the native container adapter without provider forwarding',
+  context => nativeScenario('current-su-native', context), options.testTimeoutMs);
+it('resumes current-su through its maintained host after managed native container compaction',
+  context => nativeScenario('current-su-native-carry', context), options.testTimeoutMs);

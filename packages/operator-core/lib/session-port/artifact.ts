@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { chmod, lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
@@ -33,7 +34,7 @@ export async function writeSessionPortArtifact(input: {
   if (Buffer.byteLength(input.seed, 'utf8') > MAX_SESSION_PORT_ARTIFACT_BYTES) {
     throw new Error(`session-port artifact exceeds ${MAX_SESSION_PORT_ARTIFACT_BYTES} byte cap`);
   }
-  const root = input.root ?? join(homedir(), '.papercusp', 'session-ports');
+  const root = input.root ?? papercuspPath('session-ports');
   await mkdir(root, { recursive: true, mode: 0o700 });
   await chmod(root, 0o700);
   const path = join(root, `${portId}.seed.md`);
@@ -98,7 +99,7 @@ export async function pruneStaleSessionPortArtifacts(input: {
   ttlMs?: number;
   maxEntries?: number;
 } = {}): Promise<{ scanned: number; removed: number; errors: number }> {
-  const root = input.root ?? join(homedir(), '.papercusp', 'session-ports');
+  const root = input.root ?? papercuspPath('session-ports');
   const cutoff = (input.now ?? Date.now()) - (input.ttlMs ?? SESSION_PORT_ARTIFACT_TTL_MS);
   const maxEntries = Math.max(1, Math.min(input.maxEntries ?? 10_000, 100_000));
   let entries;

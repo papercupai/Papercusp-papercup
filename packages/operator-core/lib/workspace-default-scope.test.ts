@@ -14,12 +14,14 @@ const PRODUCTION_FILES = [
   'agent-plane-measurement-sweep.ts',
   'agent-state-divergence-sweep.ts',
   'agent-tools/plans/slug-scope.ts',
+  'harness/routines/launch-cost-ceiling-action.ts',
   'harness/routines/host-code-staleness-from-ledger.ts',
   'harness/routines/sql-read-census-action.ts',
   'harness/routines/stale-routine-executor-watchdog.ts',
   'release-deploy-staleness-watchdog.ts',
   'rubric-staleness-watchdog.ts',
   'search/session-ingest-lag-watchdog.ts',
+  'stale-prompt-render-sweep.ts',
   'sync/hyperbee/cold-join-canary.ts',
 ] as const;
 

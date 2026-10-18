@@ -27,6 +27,11 @@
       "types": "./src/process-environment.ts",
       "import": "./src/process-environment.ts",
       "default": "./src/process-environment.ts"
+    },
+    "./home": {
+      "types": "./src/home.d.mts",
+      "import": "./src/home.mjs",
+      "default": "./src/home.mjs"
     }
   },
   "scripts": {

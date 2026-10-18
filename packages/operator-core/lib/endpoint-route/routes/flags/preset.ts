@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * POST /api/flags/preset { name: 'production' | 'testing' }
  *
@@ -18,7 +19,7 @@ import { resetPosthogConfigForTest } from '../../../posthog-config';
 import '../../../flag-bus';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const CONFIG_PATH = path.join(os.homedir(), '.papercusp', 'posthog.json');
+const CONFIG_PATH = papercuspPath('posthog.json');
 const Body = z.object({ name: z.enum(['production', 'testing']) });
 
 function readConfig(): Record<string, unknown> {

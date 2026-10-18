@@ -30,6 +30,7 @@
  */
 
 import type { Sql } from 'postgres';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { getOrgPg } from '@papercusp/db-org';
 import { projectGuideAtBudget } from '../prompt-assembly';
 import { guideAddressesForWearer, guideAddressMatches, isPackageGuideAddress, type GuideWearer, type GuideWearerLayer } from './guide-address';
@@ -253,7 +254,7 @@ export function guideHarnessForLaunchProfile(
   const p = (profile ?? '').trim().toLowerCase();
   if (p === 'generic') return null;
   if (p === 'power') return (harnessSlug ?? '').trim() || null;
-  return env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
+  return env.PAPERCUSP_HARNESS_SLUG?.trim() || operatorHomeHarnessSlug();
 }
 
 export interface AddressedGuideTarget {

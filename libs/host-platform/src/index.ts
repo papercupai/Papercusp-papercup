@@ -51,6 +51,13 @@ export interface HostPlatform {
   homedir(): string;
 
   /**
+   * The Papercusp host-home directory. Honors PAPERCUSP_HOME when set and
+   * otherwise resolves to <os home>/.papercusp. This is the host-home seam;
+   * workspace-aware roots belong to operator-core's papercuspRoot().
+   */
+  papercuspHome(): string;
+
+  /**
    * The harness-admin Postgres URL the operator should connect to.
    *
    * Resolution order on the desktop impl:

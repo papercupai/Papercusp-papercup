@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Voice stack health check — one-shot server-side verification.
  *
@@ -55,7 +56,7 @@ const workspacesRoot =
   process.env.PAPERCUSP_WORKSPACES_ROOT?.trim() ||
   path.join(homedir(), ".papercusp-workspaces");
 
-const credsPath = path.join(homedir(), ".papercusp", "credentials.json");
+const credsPath = papercuspPath("credentials.json");
 const prefsPath = path.join(
   workspacesRoot,
   process.env.PAPERCUSP_WORKSPACE ?? "default",

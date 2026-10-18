@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * P-006 / R6 (green-gate-zero-wait-convergence-2026-09-08, D-002): the ADMISSION FIX PRE-CHECK.
  *
@@ -852,7 +853,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
   const perFileTimeoutMs = opts.perFileTimeoutMs ?? ADMISSION_PRECHECK_PER_FILE_BUDGET_MS;
   const setupTimeoutMs = opts.setupTimeoutMs ?? ADMISSION_PRECHECK_SETUP_BUDGET_MS;
   const log = opts.log ?? (() => {});
-  const logDir = opts.logDir ?? path.join(os.homedir(), '.papercusp', 'checkpoint-logs');
+  const logDir = opts.logDir ?? papercuspPath('checkpoint-logs');
   return async ({ commit, files, onProgress }) => {
     // WI-10006014: one durable log per pre-check (setup + every file), named in every
     // runner-failed detail, so a failure is attributable after the in-memory output is gone.

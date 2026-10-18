@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Turn provenance — verified owner-vs-agent labeling for every TUI-injected turn
  * (turn-provenance-owner-vs-agent-2026-07-11 P-001).
@@ -48,7 +49,7 @@ import {
 } from './envelope-grammar';
 
 /** Default on-disk ledger dir. Every fs helper takes an explicit `dir` for tests. */
-export const TURN_PROVENANCE_DIR = join(homedir(), '.papercusp', 'turn-provenance');
+export const TURN_PROVENANCE_DIR = papercuspPath('turn-provenance');
 
 /** Resolve the ledger dir: env override (also honored by the bash hook side —
  *  keeps hook tests + hermetic unit runs off the real home dir) else default. */

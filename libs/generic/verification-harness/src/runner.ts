@@ -27,7 +27,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
-export { defaultEvidenceRoot } from './evidence-root.js';
+export { canonicalEvidenceRootBase, defaultEvidenceRoot, isLegacyEvidenceRoot, legacyEvidenceRoot } from './evidence-root.js';
+import { isLegacyEvidenceRoot } from './evidence-root.js';
 import {
   type HarnessContract,
   type HarnessRunResult,
@@ -107,6 +108,20 @@ export interface RunHarnessArgs {
    * by side while a dependent phase still waits for its setup.
    */
   concurrency?: number;
+}
+
+/** Refuse implicit legacy-root writes once the verified data volume is available. */
+export function assertEvidenceRootPlacement(
+  harness: string,
+  evidenceRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (!isLegacyEvidenceRoot(harness, evidenceRoot, env)) return;
+  throw new Error(
+    `verification-harness evidence root is still on the root filesystem: ${evidenceRoot}; ` +
+    `use ${env.VH_EVIDENCE_ROOT_BASE?.trim() || '/mnt/data/offload/verification-harness'}/${harness} ` +
+    `or set an explicit supported evidence root`,
+  );
 }
 
 /** A FIFO slot pool: at most `n` callbacks in flight. */
@@ -1147,6 +1162,7 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   const gated = (id: string) => tier !== null && phaseTiers(contract, byId.get(id)!).length === TIERS.length;
   const codeRoot = args.codeRoot ?? args.guardRailCwd ?? process.cwd();
   const receiptsPath = args.tierReceipts ?? defaultTierReceiptsPath(args.evidenceRoot);
+  assertEvidenceRootPlacement(contract.name, args.evidenceRoot);
   await mkdir(args.evidenceRoot, { recursive: true });
   await pruneForHarness(args.evidenceRoot, 'before');
   const startedAt = now();

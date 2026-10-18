@@ -280,6 +280,22 @@ vh_default_root() {
   echo "${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/verification-harness/$1"
 }
 
+# Refuse an implicit legacy root once the separate data volume is available. Explicit
+# VH_EVIDENCE_ROOT_BASE/XDG_STATE_HOME locations remain caller-owned; this guard only
+# prevents an old default or stale wrapper from silently recreating root exhaustion.
+_vh_legacy_root_refusal() {
+  local name="$1" root="$2"
+  [ -z "${VH_EVIDENCE_ROOT_BASE:-}" ] || return 1
+  [ -z "${XDG_STATE_HOME:-}" ] || return 1
+  local legacy="${HOME:-/tmp}/.local/state/verification-harness/$name"
+  [ "$root" = "$legacy" ] || return 1
+  local canonical
+  canonical="$(vh_default_root "$name")"
+  [ "$canonical" != "$root" ] || return 1
+  printf 'VH_EVIDENCE_ROOT_REFUSED harness=%s legacy=%s canonical=%s\n' "$name" "$root" "$canonical" >&2
+  return 0
+}
+
 # Scope tags for guard-rail selection (before vh_init): the preflight runs every probe from
 # VH_GUARD_RAIL_SOURCE that shares a tag.
 vh_scope() { VH_SCOPE_TAGS+=("$@"); }
@@ -302,12 +318,16 @@ vh_init() {
   done
   VH_ARGS=(${VH_ARGS_TMP[@]+"${VH_ARGS_TMP[@]}"})
   [ "$VH_DISABLED" = 1 ] && return 0
+  if _vh_legacy_root_refusal "$name" "$root"; then
+    _vh_init_failed "legacy-evidence-root:$root"
+    return $?
+  fi
   mkdir -p "$root" 2>/dev/null || { _vh_init_failed "evidence-root-unwritable:$root"; return $?; }
   # Reclaim completed old runs before creating this run and entering the expensive
   # release/build phases. Disk-pressure pruning is independent of VH_KEEP_RUNS and
   # refuses to remove latest, live, unfinished, or .vh-keep-protected evidence.
   local retention_line=""
-  if retention_line="$(_vh_cli retain --evidence-root "$root")"; then
+  if retention_line="$(_vh_cli retain --defer-busy --evidence-root "$root")"; then
     [ -z "$retention_line" ] || _vh_say "$retention_line"
   else
     local retention_rc=$?

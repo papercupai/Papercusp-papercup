@@ -34,10 +34,11 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { parseRequirementBars } from '../../acceptance-bar-seed';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { expandTestRunBinding, type TestRunBindingScope } from './bind-from-test-run';
+import { expandTestRunBinding, type TestRunBindingInput, type TestRunBindingScope } from './bind-from-test-run';
 import { bindSpecEvidenceItems } from './bind-spec-evidence';
 import { defaultGitRunner, type GitRunner } from './evidence-measurement-pin';
-import { retractSpecEvidence } from './spec-evidence-store';
+import { repoFilesEvidenceMeasurementSchema, retractSpecEvidence,
+  type RepoFilesEvidenceMeasurement } from './spec-evidence-store';
 
 export const AUTOBIND_ACTOR_ID = 'system:spec-evidence-autobind';
 export const AUTOBIND_LIVE_PLAN_STATUSES = ['ready', 'active', 'awaiting-acceptance'] as const;
@@ -71,6 +72,61 @@ export interface AutobindLiveBinding {
   evidenceRef: string;
   testRunId: number | null;
   observedAt: string;
+  measurement?: unknown;
+  createdBy?: string | null;
+}
+
+/** Carry an authored recipe, never old fingerprints or calibration attestations, to a NEW run. */
+export function prepareAutobindInput(
+  target: AutobindTarget,
+  run: AutobindLedgerRun,
+  derived: RepoFilesEvidenceMeasurement,
+  live: readonly AutobindLiveBinding[],
+): { ok: true; input: TestRunBindingInput } | { ok: false; error: string; message: string } {
+  const recipes: RepoFilesEvidenceMeasurement[] = [];
+  let authoredRecipe = false;
+  const refuse = (error: string, message: string) => ({ ok: false as const, error, message });
+  for (const binding of bindingsForTarget(target, live)) {
+    if (binding.measurement == null) continue;
+    const parsed = repoFilesEvidenceMeasurementSchema.safeParse(binding.measurement);
+    if (!parsed.success) return refuse('autobind_recipe_unverified', `Binding ${binding.id} has an invalid measurement recipe; author a complete recipe before automatic binding.`);
+    const recipe = parsed.data;
+    if (recipe.runtimeUnits || recipe.completedRuntime || recipe.artifactReceiptPath || recipe.nativeInstrumentKey ||
+        recipe.rootHarnessSlug !== derived.rootHarnessSlug ||
+        recipe.testPaths?.some(file => normalizeTestRef(file) !== normalizeTestRef(target.testFile))) {
+      return refuse('autobind_recipe_incompatible', `Binding ${binding.id} requires execution or root evidence that cannot be inherited by this run.`);
+    }
+    recipes.push(recipe);
+    if (binding.createdBy && binding.createdBy !== AUTOBIND_ACTOR_ID) authoredRecipe = true;
+  }
+  const fixtureRecipes = recipes.filter(recipe => recipe.fixturePaths?.length || recipe.fixtureGlobs?.length);
+  if (fixtureRecipes.length === 0 && !authoredRecipe) {
+    return refuse('autobind_fixture_recipe_required', 'No measured fixture recipe exists for this clause and test file. Bind its complete recipe once; automatic binding must not freeze an incomplete first recipe.');
+  }
+  const fixtureRoots = new Set(fixtureRecipes.map(recipe => recipe.fixtureRootHarnessSlug ?? target.harnessSlug));
+  if (fixtureRoots.size > 1) return refuse('autobind_recipe_incompatible', 'Prior fixture recipes use different harness roots; automatic binding cannot merge them.');
+  const union = (values: Array<readonly string[] | undefined>) => [...new Set(values.flatMap(value => value ?? []))].sort();
+  const sourceGlobs = union([derived.sourceGlobs, ...recipes.map(recipe => recipe.sourceGlobs)]);
+  const fixturePaths = union(fixtureRecipes.map(recipe => recipe.fixturePaths));
+  const fixtureGlobs = union(fixtureRecipes.map(recipe => recipe.fixtureGlobs));
+  const fixtureRootHarnessSlug = fixtureRecipes.find(recipe => recipe.fixtureRootHarnessSlug)?.fixtureRootHarnessSlug;
+  const input: TestRunBindingInput = {
+    workItemId: target.workItemId, specId: target.specId, specRevision: target.specRevision, fromTestRun: run.id,
+    sourcePaths: union([derived.sourcePaths, ...recipes.map(recipe => recipe.sourcePaths)]),
+    ...(sourceGlobs.length ? { sourceGlobs } : {}),
+    ...(fixturePaths.length ? { fixturePaths } : {}),
+    ...(fixtureGlobs.length ? { fixtureGlobs } : {}),
+    ...(fixtureRootHarnessSlug ? { fixtureRootHarnessSlug } : {}),
+  };
+  const measurement = repoFilesEvidenceMeasurementSchema.safeParse({
+    ...derived, sourcePaths: input.sourcePaths,
+    ...(input.sourceGlobs ? { sourceGlobs: input.sourceGlobs } : {}),
+    ...(input.fixturePaths ? { fixturePaths: input.fixturePaths } : {}),
+    ...(input.fixtureGlobs ? { fixtureGlobs: input.fixtureGlobs } : {}),
+    ...(input.fixtureRootHarnessSlug ? { fixtureRootHarnessSlug: input.fixtureRootHarnessSlug } : {}),
+  });
+  return measurement.success ? { ok: true, input }
+    : refuse('autobind_recipe_unverified', 'The combined measured recipe exceeds supported bounds; author a complete bounded recipe before automatic binding.');
 }
 
 export type AutobindDecision =
@@ -132,14 +188,29 @@ export interface AutobindDeps {
   measuredPaths(
     target: AutobindTarget,
     run: AutobindLedgerRun,
-  ): Promise<{ ok: true; root: string; paths: string[] } | { ok: false; error: string; message: string }>;
+    live: readonly AutobindLiveBinding[],
+  ): Promise<{ ok: true; root: string; paths: string[]; input?: TestRunBindingInput } | { ok: false; error: string; message: string }>;
   /** Paths among `paths` with uncommitted changes in `root`. */
   uncommittedPaths(root: string, paths: readonly string[]): Promise<string[]>;
-  bind(target: AutobindTarget, run: AutobindLedgerRun): Promise<{ ok: true } | { ok: false; error: string; message?: string }>;
+  bind(target: AutobindTarget, run: AutobindLedgerRun, input?: TestRunBindingInput): Promise<{ ok: true } | { ok: false; error: string; message?: string }>;
   retract(target: AutobindTarget, bindingId: number, reason: string): Promise<void>;
 }
 
 export const runKey = (harnessSlug: string, file: string) => `${harnessSlug}\u0000${normalizeTestRef(file)}`;
+
+/** A revision changes the clause, not the identity of its authored fixture recipe. */
+export function recipeBindingsForTarget(
+  target: AutobindTarget, bindings: ReadonlyMap<string, readonly AutobindLiveBinding[]>,
+): AutobindLiveBinding[] {
+  const matching: AutobindLiveBinding[] = [];
+  for (const [key, rows] of bindings) {
+    const [harness, plan, spec] = key.split('\u0000');
+    if (harness === target.harnessSlug && plan === target.planSlug && spec === target.specId) {
+      matching.push(...bindingsForTarget(target, rows));
+    }
+  }
+  return matching;
+}
 // Match adequacy's logical evidence identity: the work-item is the binding's
 // origin, not a separate proof. A same-receipt bind on another item can otherwise
 // append weaker metadata over richer manual proof, and repeat after retraction.
@@ -185,7 +256,8 @@ export async function runSpecEvidenceAutobind(
       continue;
     }
     if (decision.kind !== 'bind') continue;
-    const measured = await deps.measuredPaths(decision.target, decision.run);
+    const measured = await deps.measuredPaths(decision.target, decision.run,
+      recipeBindingsForTarget(decision.target, bindings));
     if (!measured.ok) {
       outcomes.push({ kind: 'refused', target: decision.target, runId: decision.run.id, error: measured.error, message: measured.message });
       continue;
@@ -206,7 +278,7 @@ export async function runSpecEvidenceAutobind(
       counts.noop += 1;
       continue;
     }
-    const bound = await deps.bind(decision.target, decision.run);
+    const bound = await deps.bind(decision.target, decision.run, measured.input);
     outcomes.push(
       bound.ok
         ? { kind: 'bound', target: decision.target, runId: decision.run.id }
@@ -347,9 +419,10 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
       const specs = [...new Set(targets.map((t) => t.specId))];
       const rows = await withWorkspace(workspaceId, (tx) => tx<
         { id: string | number; harness_slug: string; plan_slug: string; spec_id: string; spec_revision: number;
-          work_item_id: string; evidence_ref: string; test_run_id: string | number | null; observed_at: Date | string }[]
+          work_item_id: string; evidence_ref: string; test_run_id: string | number | null; observed_at: Date | string;
+          details: { currentMeasurement?: unknown } | null; created_by: string | null }[]
       >`
-        SELECT id, harness_slug, plan_slug, spec_id, spec_revision, work_item_id, evidence_ref, test_run_id, observed_at
+        SELECT id, harness_slug, plan_slug, spec_id, spec_revision, work_item_id, evidence_ref, test_run_id, observed_at, details, created_by
           FROM harness_shared.spec_evidence_bindings
          WHERE workspace_id = ${workspaceId}
            AND plan_slug = ANY(${plans}::text[])
@@ -370,21 +443,32 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
           evidenceRef: row.evidence_ref,
           testRunId: row.test_run_id == null ? null : Number(row.test_run_id),
           observedAt: new Date(row.observed_at).toISOString(),
+          measurement: row.details?.currentMeasurement,
+          createdBy: row.created_by,
         });
         byClause.set(key, list);
       }
       return byClause;
     },
-    async measuredPaths(target, run) {
+    async measuredPaths(target, run, live) {
       const scope: TestRunBindingScope = { workspaceId: target.workspaceId, harnessSlug: target.harnessSlug };
       const expansion = await expandTestRunBinding(
         { workItemId: target.workItemId, specId: target.specId, specRevision: target.specRevision, fromTestRun: run.id },
         scope,
       );
       if (!expansion.ok) return { ok: false, error: expansion.error, message: expansion.message };
-      const measurement = expansion.binding.measurement;
+      const prepared = prepareAutobindInput(target, run, expansion.binding.measurement, live);
+      if (!prepared.ok) return prepared;
+      const complete = await expandTestRunBinding(prepared.input, scope);
+      if (!complete.ok) return { ok: false, error: complete.error, message: complete.message };
+      const measurement = complete.binding.measurement;
       const root = await harnessRoot(target.workspaceId, measurement.rootHarnessSlug ?? target.harnessSlug);
-      return { ok: true, root, paths: [...new Set([...measurement.testPaths, ...measurement.sourcePaths])].sort() };
+      // The binder separately measures external fixture roots; inline fixture paths also take
+      // part in the local uncommitted-path preflight instead of arriving only at the write.
+      const localFixtures = !prepared.input.fixtureRootHarnessSlug || prepared.input.fixtureRootHarnessSlug === target.harnessSlug
+        ? prepared.input.fixturePaths ?? [] : [];
+      return { ok: true, root, input: prepared.input,
+        paths: [...new Set([...measurement.testPaths, ...measurement.sourcePaths, ...localFixtures])].sort() };
     },
     async uncommittedPaths(root, paths) {
       if (paths.length === 0) return [];
@@ -394,13 +478,14 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
         .map((line) => line.slice(3).trim())
         .filter(Boolean);
     },
-    async bind(target, run) {
+    async bind(target, run, input) {
+      if (!input) return { ok: false, error: 'autobind_recipe_unverified', message: 'The prepared measurement recipe is required before automatic binding.' };
       const result = await bindSpecEvidenceItems({
         harnessSlug: target.harnessSlug,
         actorId: AUTOBIND_ACTOR_ID,
         workspaceId: target.workspaceId,
         slug: target.planSlug,
-        items: [{ workItemId: target.workItemId, specId: target.specId, specRevision: target.specRevision, fromTestRun: run.id }],
+        items: [input],
         supersedeAtRevision: true,
       });
       const first = (result as { results?: Array<{ ok?: boolean; error?: string; message?: string }> }).results?.[0];

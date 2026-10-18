@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * EL Conv AI behavior suite.
  *
@@ -73,7 +74,7 @@ async function preflightOrSkip() {
   let xiKey = process.env.XI_API_KEY;
   let agentId = process.env.EL_AGENT_ID;
   if (xiKey && agentId) return;
-  const credPath = `${process.env.HOME}/.papercusp/credentials.json`;
+  const credPath = papercuspPath('credentials.json');
   const prefsPath = `${process.env.HOME}/.papercusp-workspaces/default/.papercusp/system/operator/voice-prefs.json`;
   if (fs.existsSync(credPath) && fs.existsSync(prefsPath)) return;
   // Post-PG-migration fallback: read from a running operator app.
@@ -275,7 +276,7 @@ function resolveCredentials() {
   let xiKey = process.env.XI_API_KEY;
   let agentId = process.env.EL_AGENT_ID;
   if (!xiKey) {
-    const credPath = `${process.env.HOME}/.papercusp/credentials.json`;
+  const credPath = papercuspPath('credentials.json');
     if (fs.existsSync(credPath)) {
       try { xiKey = JSON.parse(fs.readFileSync(credPath, 'utf8'))?.elevenlabs?.apiKey; }
       catch { /* fall through to skip */ }

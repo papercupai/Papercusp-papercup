@@ -993,7 +993,11 @@ if [ -f "$VH_SH" ]; then
   if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
     verifier_retained_args+=(--retain-artifact phases/prepare/verifier-source-receipt.json)
   fi
-  vh_init verify-tauri-headless "${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}" \
+  # Resolve the placement once, before the first phase writer. The shared helper
+  # rejects a stale implicit home-state root when /mnt/data/offload is mounted.
+  VERIFY_TAURI_EVIDENCE_ROOT="${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}"
+  export VERIFY_TAURI_EVIDENCE_ROOT
+  vh_init verify-tauri-headless "$VERIFY_TAURI_EVIDENCE_ROOT" \
     ${verifier_retained_args[@]+"${verifier_retained_args[@]}"}
   verifier_begin_phase prepare
   trap 'vh_capture_phase_stop' EXIT

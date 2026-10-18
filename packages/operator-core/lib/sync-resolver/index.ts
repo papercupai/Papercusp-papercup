@@ -5231,20 +5231,28 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const scope = { workspaceId, potSlug: args.potSlug, since: args.since!, until: args.until!, expectedRuntime: args.expectedRuntime!,
           ...(args.actionJournalUnit ? { actionJournalUnit: args.actionJournalUnit, expectedActionRuntime: args.expectedActionRuntime } : {}),
           ...(args.gymJournalUnit ? { gymJournalUnit: args.gymJournalUnit, expectedGymRuntime: args.expectedGymRuntime } : {}) };
-        // Host journal IO must finish before taking a workspace transaction.
-        const journal = args.actionJournalUnit ? await (await import('../journal-read')).readJournal({
-          units: [args.actionJournalUnit], since: `@${Date.parse(args.since!) / 1000}`, until: `@${Date.parse(args.until!) / 1000}`,
-          grep: (await import('../dream/dream-config')).DREAM_ACTION_DECISION_PREFIX, limit: 20,
-        }) : null;
-        const gymJournal = args.gymJournalUnit ? await (await import('../journal-read')).readJournal({
-          units: [args.gymJournalUnit], since: `@${Date.parse(args.since!) / 1000}`, until: `@${Date.parse(args.until!) / 1000}`,
-          grep: (await import('../gym/autoloop-tick')).GYM_ADMISSION_DECISION_PREFIX, limit: 1000,
-        }) : null;
+        // Canonical journal scans can each exceed the sync resolver's 10s
+        // ceiling. Capture both before taking a workspace transaction, sharing
+        // the existing 6s read deadline. A missed source stays UNKNOWN through
+        // the observation reader's error path; never substitute an empty log.
+        const withinJournalBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
+        const [{ readJournal }, { DREAM_ACTION_DECISION_PREFIX }, { GYM_ADMISSION_DECISION_PREFIX }] = await Promise.all([
+          import('../journal-read'), import('../dream/dream-config'), import('../gym/autoloop-tick'),
+        ]);
+        const captureJournal = (unit: string, grep: string, limit: number, label: string) =>
+          withinJournalBudget(readJournal({ units: [unit], since: `@${Date.parse(args.since!) / 1000}`,
+            until: `@${Date.parse(args.until!) / 1000}`, grep, limit }), label)
+            .then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
+        const [journal, gymJournal] = await Promise.all([
+          args.actionJournalUnit ? captureJournal(args.actionJournalUnit, DREAM_ACTION_DECISION_PREFIX, 20, 'dream-action-journal') : null,
+          args.gymJournalUnit ? captureJournal(args.gymJournalUnit, GYM_ADMISSION_DECISION_PREFIX, 1000, 'gym-admission-journal') : null,
+        ]);
         return routeWithWorkspace(async tx => [await (journal || gymJournal
           ? readDreamControlObservations(tx as unknown as import('postgres').Sql, scope, { journal: async request => {
-            const captured = request.grep === (await import('../gym/autoloop-tick')).GYM_ADMISSION_DECISION_PREFIX ? gymJournal : journal;
+            const captured = request.grep === GYM_ADMISSION_DECISION_PREFIX ? gymJournal : journal;
             if (!captured) throw new Error('Requested journal was not captured before transaction');
-            return captured;
+            if (!captured.ok) throw captured.error;
+            return captured.value;
           } })
           : readDreamControlObservations(tx as unknown as import('postgres').Sql, scope))]);
       }

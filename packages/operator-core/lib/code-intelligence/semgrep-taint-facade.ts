@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /** Local data-flow evidence from an admitted maintained analyzer, separate from call topology. */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -16,7 +17,7 @@ export const SEMGREP_WHEEL_SHA256 = '16db2e2706ab814a975eeec25debfad49abba846b7c
 const LICENSE_SHA256 = '20c17d8b8c48a600800dfd14f95d5cb9ff47066a9641ddeab48dc54aec96e331';
 const CORE_PATH = 'semgrep-1.180.0.data/purelib/semgrep/bin/semgrep-core';
 export const SEMGREP_RUNTIME_MANIFEST = pinnedManifest;
-export const SEMGREP_VENDOR_DIR = join(homedir(), '.papercusp', 'vendor', 'semgrep', SEMGREP_VERSION);
+export const SEMGREP_VENDOR_DIR = papercuspPath('vendor', 'semgrep', SEMGREP_VERSION);
 const LANGUAGES: Record<string, { analyzer: string; extensions: string[] }> = {
   ts: { analyzer: 'typescript', extensions: ['.ts'] }, js: { analyzer: 'javascript', extensions: ['.js'] },
   python: { analyzer: 'python', extensions: ['.py'] }, go: { analyzer: 'go', extensions: ['.go'] },

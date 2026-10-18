@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Cut one workspace-host release as a MANAGED operation: build, sign, evidence and publish on ONE
  * release task, journaled stage by stage (D-394, WI-10002539).
@@ -1318,7 +1319,7 @@ function readDesktopVersionFromGit(repoRoot: string, gitlinks: Readonly<Record<s
 
 async function main(): Promise<void> {
   const repoRoot = moduleRepoRoot(import.meta.url);
-  const signingKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH ?? join(homedir(), '.papercusp/signing/papercusp.key');
+  const signingKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH ?? papercuspPath('signing/papercusp.key');
   const log = (line: string) => process.stdout.write(`[workspace-host-cut] ${line}\n`);
   await runWorkspaceHostReleaseCutCli(process.argv.slice(2), {
     env: process.env,
@@ -1346,7 +1347,7 @@ async function main(): Promise<void> {
             build: (plan) =>
               buildWorkspaceHostBundle({
                 ...plan,
-                releaseIdentityEnvFile: process.env.PAPERCUSP_RELEASE_IDENTITY_ENV ?? join(homedir(), '.papercusp/release-identity.env'),
+                releaseIdentityEnvFile: process.env.PAPERCUSP_RELEASE_IDENTITY_ENV ?? papercuspPath('release-identity.env'),
                 signingKeyPath,
                 signingKeyPassword: process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '',
                 tauriCliVersion: process.env.PAPERCUSP_TAURI_CLI_VERSION ?? DEFAULT_TAURI_CLI_VERSION,

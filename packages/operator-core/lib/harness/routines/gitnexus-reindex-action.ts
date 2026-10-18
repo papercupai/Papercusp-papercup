@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * `system:gitnexus-reindex` — the refresh owner for the gitnexus code graph (WI-6454).
  *
@@ -797,7 +798,7 @@ export function analyzeNodeArgs(
 export function analyzeCliPath(): string {
   return (
     process.env.PAPERCUSP_GITNEXUS_CLI ??
-    path.join(os.homedir(), '.papercusp', 'vendor', 'gitnexus', 'node_modules', 'gitnexus', 'dist', 'cli', 'index.js')
+    papercuspPath('vendor', 'gitnexus', 'node_modules', 'gitnexus', 'dist', 'cli', 'index.js')
   );
 }
 
@@ -2322,7 +2323,7 @@ export function analyzeTickSucceeded(run: AnalyzeRunResult, canary: CanaryVerdic
  * `ended_unobserved` with no reason, and one 2 h run's capture stopped at 605 bytes.
  */
 export function analyzeLogDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PAPERCUSP_GITNEXUS_ANALYZE_LOG_DIR ?? path.join(os.homedir(), '.papercusp', 'logs', 'gitnexus-analyze');
+  return env.PAPERCUSP_GITNEXUS_ANALYZE_LOG_DIR ?? papercuspPath('logs', 'gitnexus-analyze');
 }
 
 /** Named by the spawn stamp, so an adopting host incarnation finds it from the stamp alone. */
@@ -2605,7 +2606,7 @@ export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: nu
 /** Resolve the gitnexus binary for canary probes, mirroring the bridge's own resolution
  *  order. Absent ⇒ the canary reports "not attempted" rather than a false failure. */
 export function canaryBin(): string {
-  return process.env.PAPERCUSP_GITNEXUS_BIN ?? path.join(os.homedir(), '.papercusp', 'vendor', 'gitnexus', 'node_modules', '.bin', 'gitnexus');
+  return process.env.PAPERCUSP_GITNEXUS_BIN ?? papercuspPath('vendor', 'gitnexus', 'node_modules', '.bin', 'gitnexus');
 }
 
 /**

@@ -87,6 +87,20 @@ vh_bracket_trap
 `;
 
 describe('vh.sh bracket mode', () => {
+  it('refuses a stale implicit legacy root when the separate data volume is available', () => {
+    const home = path.join(tmp(), 'home');
+    const legacy = path.join(home, '.local/state/verification-harness/legacy');
+    mkdirSync(path.dirname(legacy), { recursive: true });
+    const r = run(`
+vh_phase prep ""
+vh_init legacy "$HOME/.local/state/verification-harness/legacy"
+`, { HOME: home, VH_FAIL_OPEN: '0' });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('VH_EVIDENCE_ROOT_REFUSED harness=legacy');
+    expect(r.stderr).toContain('legacy-evidence-root:');
+    expect(existsSync(legacy)).toBe(false);
+  });
+
   it('retains declared original phase receipts before pruning a completed shell run', async () => {
     const r = run(`
 vh_phase prepare ""

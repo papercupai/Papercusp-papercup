@@ -42,6 +42,7 @@
  * `wi-6512-replay.ts`) precisely so the two cannot drift apart.
  */
 import { ANSWER_RECORDS, KNOWN_ITEM, REPLAY, carriesAnswer, type ReplayBatch } from './wi-6512-replay';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { deriveBatchQuery, splitLegQueries } from '../../endpoint-route/routes/agent-mcp/mid-turn-context';
 import type { CorpusDropReason } from '../corpus-recall';
 
@@ -1121,7 +1122,7 @@ function parseArgs(argv: readonly string[]): Args {
   return {
     base: (get('--base') ?? 'http://127.0.0.1:3170').replace(/\/$/, ''),
     passes: Number(get('--passes') ?? 3),
-    harness: get('--harness') ?? 'papercusp',
+    harness: get('--harness') ?? process.env.PAPERCUSP_HARNESS_SLUG ?? operatorHomeHarnessSlug(),
     workspace: get('--workspace') ?? 'papercusp-workspace',
     verbose: argv.includes('--verbose'),
     mode: modeRaw,

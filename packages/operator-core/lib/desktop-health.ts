@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * desktop-health — P-019 of fleet-coordination-painpoints (Phase 3b).
  *
@@ -241,7 +242,7 @@ export const DEFAULT_DESKTOP_TARGET_PORT = 3270;
  */
 export async function resolveDesktopApiPort(): Promise<{ apiPort: number; resolved: boolean }> {
   try {
-    const raw = await readFile(join(homedir(), '.papercusp', 'desktop-build-target.json'), 'utf8');
+    const raw = await readFile(papercuspPath('desktop-build-target.json'), 'utf8');
     const j = JSON.parse(raw) as { port?: unknown };
     if (typeof j?.port === 'number' && Number.isFinite(j.port)) {
       return { apiPort: apiPortForTarget(j.port), resolved: true };

@@ -205,6 +205,7 @@
     "@papercusp/publish-auth": "*",
     "@papercusp/ranked-selection": "*",
     "@papercusp/rate-limit": "*",
+    "@papercusp/release-profile": "*",
     "@papercusp/rerank": "*",
     "@papercusp/resource-profile": "*",
     "@papercusp/result-encoding": "*",

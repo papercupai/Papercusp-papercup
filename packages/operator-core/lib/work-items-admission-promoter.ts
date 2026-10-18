@@ -372,7 +372,7 @@ export interface PromoterAdjudication extends PromoterJudgement {
 export type PromoterDisposition =
   | { itemId: string; action: 'promote' }
   | { itemId: string; action: 'merge'; canonicalId: string }
-  | { itemId: string; action: 'hold'; reason: string };
+  | { itemId: string; action: 'hold'; reason: string; screeningDeferred?: true };
 
 export interface PromoterPlan {
   dispositions: PromoterDisposition[];
@@ -2390,7 +2390,8 @@ export async function readPromoterWindow(
   const pairsByKey = new Map<string, PromoterPair>();
   const processed = new Set<string>(selfBlockedIds);
   let cursor = 0;
-  let selected = prescreenPromoterWindow({ window: [], pairs: [], snapshots: snapshotsById, batchSize: input.batchSize, nowMs: input.nowMs });
+  const componentScreeningItemIds = input.noModel ? undefined : input.componentScreeningItemIds;
+  let selected = prescreenPromoterWindow({ window: [], pairs: [], snapshots: snapshotsById, batchSize: input.batchSize, nowMs: input.nowMs, componentScreeningItemIds });
   while (selected.batch.length < input.batchSize && cursor < eligible.length) {
     const chunk = eligible.slice(cursor, cursor + (input.batchSize - selected.batch.length));
     cursor += chunk.length;
@@ -2430,11 +2431,12 @@ export async function readPromoterWindow(
       snapshots: snapshotsById,
       batchSize: input.batchSize,
       nowMs: input.nowMs,
+      componentScreeningItemIds,
     });
   }
   if (selected.prescreen.window === 0 && selfBlockedIds.size > 0) {
     // Every window row is self-blocked: still report them (no pair read needed).
-    selected = prescreenPromoterWindow({ window, pairs: [], snapshots: snapshotsById, batchSize: input.batchSize, nowMs: input.nowMs });
+    selected = prescreenPromoterWindow({ window, pairs: [], snapshots: snapshotsById, batchSize: input.batchSize, nowMs: input.nowMs, componentScreeningItemIds });
   }
   return {
     pendingRows: selected.batch,
@@ -2521,7 +2523,7 @@ export function applyPrescreenHolds(plan: PromoterPlan, forcedHolds: ReadonlyMap
     dispositions: plan.dispositions.map((disposition) => {
       const reason = forcedHolds.get(disposition.itemId);
       return reason && disposition.action === 'promote'
-        ? { itemId: disposition.itemId, action: 'hold', reason }
+        ? { itemId: disposition.itemId, action: 'hold', reason, screeningDeferred: true as const }
         : disposition;
     }),
   };
@@ -3952,6 +3954,8 @@ export function prescreenPromoterWindow(input: {
    * (WI-6554700010008443); omitted, every claimed row is self-blocked as before.
    */
   nowMs?: number;
+  /** Preserve authenticated requests' one turn until their component can be judged. */
+  componentScreeningItemIds?: readonly string[];
 }): { batch: PromoterItem[]; pairs: PromoterPair[]; forcedHolds: Map<string, string>; prescreen: PromoterPrescreen } {
   const samples: PromoterPrescreenSample[] = [];
   const sample = (entry: PromoterPrescreenSample) => {
@@ -4016,7 +4020,7 @@ export function prescreenPromoterWindow(input: {
         sample({ itemId: item.id, class: 'unresolvable-pair', reason: twinBlock.reason, blockedBy: counterpart.id });
       }
     }
-    if (protectedTwin && movable === 0) {
+    if (protectedTwin && (movable === 0 || input.componentScreeningItemIds?.includes(item.id))) {
       deferred += 1;
       sample({ itemId: item.id, class: 'deferred', reason: protectedTwin.reason, blockedBy: protectedTwin.id });
       continue;
@@ -4837,7 +4841,7 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
   await persistAdmissionLinks(sql, input.workspaceId, input.harnessSlug, input.plan.relatedPairs, input.nowMs);
   for (const disposition of input.plan.dispositions) {
     if (disposition.action === 'hold') {
-      // A hold is still a re-review attempt for a fail-open row. Keep the row
+      // A judged hold is still a re-review attempt for a fail-open row. Keep the row
       // claimable/pending, but advance the durable retry watermark so an owner
       // can distinguish "never revisited" from repeated ambiguous reviews.
       //
@@ -4847,7 +4851,7 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
       // row held for the same reason on every tick does not churn updated_ts.
       await sql`
         UPDATE harness_shared.work_items
-           SET payload = (CASE WHEN admission = 'unreviewed' THEN
+           SET payload = (CASE WHEN admission = 'unreviewed' AND NOT ${disposition.screeningDeferred === true} THEN
              COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
                'admissionReview',
                COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
@@ -4866,6 +4870,7 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
                'reason', ${disposition.reason}::text,
                'runId', ${input.runId}::text,
                'actor', ${actor}::text,
+               'screeningDeferred', ${disposition.screeningDeferred === true}::boolean,
                'heldAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0))
              )
            ),
@@ -4874,9 +4879,12 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
            AND harness_slug = ${input.harnessSlug}
            AND feature_id = ${disposition.itemId}
            AND (
-             admission = 'unreviewed'
-             OR (admission = 'pending'
-                 AND (payload #>> '{admissionHold,reason}') IS DISTINCT FROM ${disposition.reason}::text)
+             (admission = 'unreviewed' AND NOT ${disposition.screeningDeferred === true})
+             OR (admission IN ('pending', 'unreviewed') AND (
+               (payload #>> '{admissionHold,reason}') IS DISTINCT FROM ${disposition.reason}::text
+               OR (payload #>> '{admissionHold,screeningDeferred}')
+                    IS DISTINCT FROM ${String(disposition.screeningDeferred === true)}::text
+             ))
            )`;
       continue;
     }

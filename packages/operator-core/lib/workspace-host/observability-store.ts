@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { assertWorkspaceHostDomainState, assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import type {
   WorkspaceHostControllerAuthority,
@@ -2051,8 +2051,16 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
             AND connector.host_id = ANY(${hosts.map(host => host.id)}::text[])
             AND customer.kind = 'hosted' AND customer.state <> 'deleted'
         `;
-        connectors = tx ? await read(tx) : await withWorkspace(workspaceId, read,
-          { bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500 });
+        // A tenant transaction deliberately cannot read the service-only
+        // connector ledger. Roll back that optional read independently: merely
+        // catching its permission error leaves Postgres's outer transaction
+        // aborted and turns an otherwise authorized control request into 500.
+        connectors = tx
+          ? 'savepoint' in tx
+            ? await (tx as unknown as TransactionSql).savepoint(nested => read(nested as unknown as Sql))
+            : await read(tx)
+          : await withWorkspace(workspaceId, read,
+            { bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500 });
       } catch { /* Unavailable authority remains unknown, never a cached live result. */ }
     }
 

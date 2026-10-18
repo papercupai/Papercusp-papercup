@@ -756,10 +756,14 @@ const IDLE_ACTUATOR_IDENTITY = {
  */
 export async function checkIdleRepairQueue(
   sql: Sql,
-  opts: { installSlug?: string; workspaceId?: string; nowMs?: () => number;
-    alarm?: import('../alarm-attention').AlarmAttentionDeps } = {},
+  opts: { installSlug: string; workspaceId?: string; nowMs?: () => number;
+    alarm?: import('../alarm-attention').AlarmAttentionDeps },
 ): Promise<IdleQueuePassResult | null> {
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = typeof opts.installSlug === 'string' ? opts.installSlug.trim() : '';
+  if (!installSlug) {
+    console.warn('[idle-repair-queue-actuator] skipped: installSlug is required');
+    return null;
+  }
   const { recordWatchdogPassOutcome } = await import('./watchdog-health');
   let passError: unknown;
   try {

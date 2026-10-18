@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010017024",
+  "parent": "WI-6554700010015411",
+  "scope": "Confirmed pre-fix R2 counterexample, not acceptance or shipment",
+  "observedAt": "2026-10-17T23:31:53.142Z",
+  "test": {
+    "title": "served hosted signup utility: storage denied alone suppresses reload download",
+    "exitCode": 1,
+    "stats": {
+      "startTime": "2026-10-17T23:30:59.242Z",
+      "duration": 51719.243,
+      "expected": 0,
+      "skipped": 0,
+      "unexpected": 1,
+      "flaky": 0
+    },
+    "report": "/tmp/machine-first-storage-denied-v2-browser-20261017.json",
+    "reportSha256": "4bdd50e8faf7fa4f397b1306790d1e21df92175a52f697a3434f220c7a46833d",
+    "testSourceSha256": "346636f1f82f2177247bde3f366303fab0a8fdb0e54544e8bfcd5cda7dd8c138"
+  },
+  "receipt": {
+    "scope": "Served hosted admitted signup destination with sessionStorage denied only; provider signup and shipment excluded",
+    "documents": [
+      {
+        "phase": "initial",
+        "automaticAnchors": 1,
+        "downloadCount": 1,
+        "welcomeVisible": true
+      },
+      {
+        "phase": "welcome-reload",
+        "automaticAnchors": 1,
+        "downloadCount": 2,
+        "welcomeVisible": true
+      }
+    ],
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "OnJErRMjvcuZQEf56RsNP",
+      "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+      "sourceRoot": "harness:portal",
+      "publishedAt": "2026-10-17T08:59:50.313Z",
+      "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+    },
+    "tenantMatches": true,
+    "browserClosed": true,
+    "accountCleanup": true,
+    "cleanup": {
+      "attempted": 2,
+      "completed": 2,
+      "failed": 0,
+      "byKind": {
+        "browser": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "provider-user": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        }
+      }
+    }
+  },
+  "runtime": {
+    "path": "/tmp/machine-first-storage-denied-v2-runtime-20261017.json",
+    "sha256": "88011b6c39d87128be7f1628ab80d88cd888a92fece4b543ef1fe24d5be07be4",
+    "trackedPids": {
+      "supervisorPid": {
+        "pid": 929174,
+        "dead": true
+      },
+      "hostedPid": {
+        "pid": 929541,
+        "dead": true
+      },
+      "portalPid": {
+        "pid": 981399,
+        "dead": true
+      }
+    },
+    "trackedPorts": {
+      "tls": {
+        "port": 46721,
+        "closed": true
+      },
+      "portal": {
+        "port": 37449,
+        "closed": true
+      },
+      "hosted": {
+        "port": 33221,
+        "closed": true
+      }
+    },
+    "privateHomeRemoved": true
+  },
+  "screenshots": {
+    "/tmp/machine-first-storage-denied-v2-browser-artifacts-20261017/portal-utility-welcome-ser-701ec--suppresses-reload-download/storage-denied-initial.png": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021",
+    "/tmp/machine-first-storage-denied-v2-browser-artifacts-20261017/portal-utility-welcome-ser-701ec--suppresses-reload-download/storage-denied-welcome-reload.png": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021"
+  },
+  "rootCause": "Document-local Set is lost on reload; denied sessionStorage leaves no surviving marker. Initial document1 automatic anchor/1 download; reload1 anchor/2 total downloads.",
+  "detectorFailure": "Previous denied-storage check combined blocking the automatic click or remounting the same document; independent full-document reload absent."
+}

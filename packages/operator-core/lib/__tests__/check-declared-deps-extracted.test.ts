@@ -30,7 +30,7 @@
  *      failing npm run with a dep verdict.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -54,6 +54,21 @@ afterEach(() => {
 function silenceConsole() {
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'log').mockImplementation(() => {});
+}
+
+/** Retain npm's phase evidence before afterEach removes an offline fixture. */
+function fixtureNpm(root: string, args: string[], env = process.env) {
+  const logsDir = join(root, '.npm-fixture-logs');
+  try {
+    return execFileSync('npm', args, { cwd: root, timeout: 30_000, stdio: 'pipe',
+      env: { ...env, npm_config_logs_dir: logsDir } });
+  } catch (error) {
+    const failure = error as Error & { stdout?: Buffer; stderr?: Buffer };
+    const logs = existsSync(logsDir) ? readdirSync(logsDir).sort().slice(-2)
+      .map(name => readFileSync(join(logsDir, name), 'utf8').split('\n').slice(-25).join('\n')).join('\n') : 'no npm log written';
+    throw new Error(`Offline fixture npm ${args.join(' ')} failed: ${failure.message}\n`
+      + `stdout=${String(failure.stdout ?? '').slice(-2000)}\nstderr=${String(failure.stderr ?? '').slice(-2000)}\n${logs}`, { cause: error });
+  }
 }
 
 /** A miniature npm-workspaces tree: workspaces + declared deps + which packages actually landed. */
@@ -520,6 +535,81 @@ describe('edge-satisfaction guard catches a stale HOISTED placement (EI-21927402
 });
 
 describe('runtime-content probes catch partial packages that directory checks cannot (EI-21252116452570853)', () => {
+  it('checks declaration-only probes without importing browser packages or broadening the critical package population', () => {
+    const root = fixture({
+      packages: { 'apps/ui': { dependencies: { 'browser-sdk': '*', 'unused-types': '*' }, devDependencies: { 'ui-types': '*' } } },
+      extracted: { '': ['browser-sdk', 'ui-types', 'unused-types'] },
+    });
+    writeFileSync(join(root, 'node_modules/unused-types/package.json'), JSON.stringify({ types: './unpublished.d.ts' }));
+    for (const [name, field] of [['browser-sdk', 'types'], ['ui-types', 'typings']]) {
+      const dir = join(root, 'node_modules', name);
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', [field]: './index.d.ts' }));
+      writeFileSync(join(dir, 'index.js'), 'throw new Error("browser-only package must not be imported");');
+    }
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    const probeSpecifiers = ['browser-sdk', 'ui-types'].map(specifier => ({ specifier, declarationsOnly: true }));
+    expect(findUnusableRuntimeDeps({ repoRoot: root, probeSpecifiers })).toEqual([
+      { specifier: 'browser-sdk', code: 'ERR_MODULE_NOT_FOUND',
+        missingPath: join(root, 'node_modules/browser-sdk/index.d.ts'), detail: expect.stringContaining('declared type entrypoint is missing') },
+      { specifier: 'ui-types', code: 'ERR_MODULE_NOT_FOUND',
+        missingPath: join(root, 'node_modules/ui-types/index.d.ts'), detail: expect.stringContaining('declared type entrypoint is missing') },
+    ]);
+    for (const name of ['browser-sdk', 'ui-types'])
+      writeFileSync(join(root, 'node_modules', name, 'index.d.ts'), 'export {};');
+    expect(findUnusableRuntimeDeps({ repoRoot: root, probeSpecifiers })).toEqual([]);
+  });
+
+  it('checks the types paired with the resolved export without requiring an unused root export', () => {
+    const root = fixture({ packages: { 'apps/ui': { dependencies: { 'fixture-sdk': '*' } } }, extracted: { '': ['fixture-sdk'] } });
+    const dir = join(root, 'node_modules/fixture-sdk');
+    mkdirSync(join(dir, 'dist/client'), { recursive: true });
+    mkdirSync(join(dir, 'types'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fixture-sdk', type: 'module', exports: {
+      '.': { types: './unused-root.d.ts', import: './unused-root.js' },
+      './client': { types: './types/client.d.ts', import: './dist/client/index.js' },
+      './*': { types: './types/*.d.ts', import: './dist/*' },
+    } }));
+    writeFileSync(join(dir, 'dist/client/index.js'), 'export const Client = {};');
+    const options = { repoRoot: root, probeSpecifiers: ['fixture-sdk/client/index.js'] };
+    expect(findUnusableRuntimeDeps(options)).toEqual([
+      { specifier: 'fixture-sdk/client/index.js', code: 'ERR_MODULE_NOT_FOUND',
+        missingPath: join(dir, 'types/client.d.ts'), detail: expect.stringContaining('declared type entrypoint is missing') },
+    ]);
+    writeFileSync(join(dir, 'types/client.d.ts'), 'export declare const Client: {};');
+    expect(findUnusableRuntimeDeps(options)).toEqual([]);
+  });
+
+  it('accepts extensionless declaration entries that TypeScript resolves', () => {
+    const root = fixture({ packages: { 'apps/ui': { dependencies: { 'browser-sdk': '*' } } }, extracted: { '': ['browser-sdk'] } });
+    const dir = join(root, 'node_modules/browser-sdk');
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'browser-sdk', types: './main' }));
+    writeFileSync(join(dir, 'main.d.ts'), 'export {};');
+    const probeSpecifiers = [{ specifier: 'browser-sdk', declarationsOnly: true }];
+    expect(findUnusableRuntimeDeps({ repoRoot: root, probeSpecifiers })).toEqual([]);
+    rmSync(join(dir, 'main.d.ts'));
+    expect(findUnusableRuntimeDeps({ repoRoot: root, probeSpecifiers })).toEqual([
+      expect.objectContaining({ specifier: 'browser-sdk', code: 'ERR_MODULE_NOT_FOUND' }),
+    ]);
+  });
+
+  it('substitutes the matched runtime export wildcard into its types path', () => {
+    const root = fixture({ packages: { 'apps/ui': { dependencies: { 'fixture-sdk': '*' } } }, extracted: { '': ['fixture-sdk'] } });
+    const dir = join(root, 'node_modules/fixture-sdk');
+    mkdirSync(join(dir, 'dist'));
+    mkdirSync(join(dir, 'types'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fixture-sdk', type: 'module', exports: {
+      './*': { types: './types/*.d.ts', import: './dist/*.js' },
+    } }));
+    writeFileSync(join(dir, 'dist/client.js'), 'export {};');
+    const options = { repoRoot: root, probeSpecifiers: ['fixture-sdk/client'] };
+    expect(findUnusableRuntimeDeps(options)).toEqual([
+      { specifier: 'fixture-sdk/client', code: 'ERR_MODULE_NOT_FOUND',
+        missingPath: join(dir, 'types/client.d.ts'), detail: expect.stringContaining('declared type entrypoint is missing') },
+    ]);
+    writeFileSync(join(dir, 'types/client.d.ts'), 'export {};');
+    expect(findUnusableRuntimeDeps(options)).toEqual([]);
+  });
+
   it('selects probes from the locked graph and flags missing entrypoint/transitive/native content', () => {
     const root = fixture({
       packages: {
@@ -543,7 +633,8 @@ describe('runtime-content probes catch partial packages that directory checks ca
     );
 
     expect(findUnextractedDeps({ repoRoot: root })).toEqual([]); // old directory-only verdict
-    expect(resolveRuntimeContentProbes(root)).toEqual(RUNTIME_CONTENT_PROBES);
+    const runtimeProbes = RUNTIME_CONTENT_PROBES.filter((probe: string | { specifier: string; declarationsOnly: boolean }) => typeof probe === 'string');
+    expect(resolveRuntimeContentProbes(root)).toEqual(runtimeProbes);
 
     const writePackage = (name: string, pkg: object, files: Record<string, string> = {}) => {
       const dir = join(root, 'node_modules', name);
@@ -589,7 +680,7 @@ describe('runtime-content probes catch partial packages that directory checks ca
     });
 
     const failures = findUnusableRuntimeDeps({ repoRoot: root }) as RuntimeProbeFailure[];
-    expect(failures.map((failure) => failure.specifier)).toEqual(RUNTIME_CONTENT_PROBES);
+    expect(failures.map((failure) => failure.specifier)).toEqual(runtimeProbes);
     for (const failure of failures) {
       if (failure.specifier === 'lucide-react') {
         expect(failure.detail).toContain('declared type entrypoint is missing:');
@@ -682,6 +773,106 @@ describe('runtime-content probes catch partial packages that directory checks ca
 });
 
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
+  it('repairs missing published font assets through the default CSS-content probe', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'apps/ui': {} }, extracted: { '': ['@blocknote/core'] } });
+    const target = join(root, 'node_modules/@blocknote/core');
+    const manifest = { name: '@blocknote/core', version: '1.0.0',
+      exports: { './fonts/inter.css': './src/fonts/inter.css' } };
+    const css = '@font-face { src: url("./inter.woff2?v=1#font") format("woff2"); }';
+    const restore = (withFont: boolean) => {
+      mkdirSync(join(target, 'src/fonts'), { recursive: true });
+      writeFileSync(join(target, 'package.json'), JSON.stringify(manifest));
+      writeFileSync(join(target, 'src/fonts/inter.css'), css);
+      if (withFont) writeFileSync(join(target, 'src/fonts/inter.woff2'), 'font payload');
+    };
+    restore(false);
+    const lock = JSON.stringify({ packages: { 'node_modules/@blocknote/core': { version: '1.0.0' } } });
+    writeFileSync(join(root, 'package-lock.json'), lock);
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([
+      expect.objectContaining({ specifier: '@blocknote/core/fonts/inter.css',
+        missingPath: join(target, 'src/fonts/inter.woff2') }),
+    ]);
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, deps: { sleep: async () => {} },
+      runNpm: () => { repairs++; expect(existsSync(target)).toBe(false); restore(true); return 0; },
+    });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
+    expect(readFileSync(join(root, 'package-lock.json'), 'utf8')).toBe(lock);
+  });
+
+  it('repairs missing transitive assistant-ui declarations through the default probes', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: { 'apps/ui': { dependencies: { '@assistant-ui/react': '*' } } },
+      extracted: { '': ['@assistant-ui/react', '@assistant-ui/core'] },
+    });
+    const parent = join(root, 'node_modules/@assistant-ui/react');
+    const target = join(root, 'node_modules/@assistant-ui/core');
+    const manifest = { name: '@assistant-ui/core', version: '1.0.0', types: './index.d.ts' };
+    writeFileSync(join(parent, 'package.json'), JSON.stringify({
+      name: '@assistant-ui/react', version: '1.0.0', types: './index.d.ts',
+      dependencies: { '@assistant-ui/core': '*' },
+    }));
+    writeFileSync(join(parent, 'index.d.ts'), "export * from '@assistant-ui/core';");
+    writeFileSync(join(target, 'package.json'), JSON.stringify(manifest));
+    const lock = JSON.stringify({ packages: {
+      'node_modules/@assistant-ui/react': { version: '1.0.0' },
+      'node_modules/@assistant-ui/core': { version: '1.0.0' },
+    } });
+    writeFileSync(join(root, 'package-lock.json'), lock);
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([
+      expect.objectContaining({ specifier: '@assistant-ui/core', missingPath: join(target, 'index.d.ts') }),
+    ]);
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, deps: { sleep: async () => {} },
+      runNpm: () => {
+        repairs++;
+        expect(existsSync(target)).toBe(false);
+        expect(existsSync(join(parent, 'index.d.ts'))).toBe(true);
+        mkdirSync(target);
+        writeFileSync(join(target, 'package.json'), JSON.stringify(manifest));
+        writeFileSync(join(target, 'index.js'), 'module.exports = {};');
+        writeFileSync(join(target, 'index.d.ts'), 'export {};');
+        return 0;
+      },
+    });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
+    expect(readFileSync(join(root, 'package-lock.json'), 'utf8')).toBe(lock);
+  });
+
+  it('re-extracts missing declared types through the existing locked package-content repair', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'apps/ui': { dependencies: { 'browser-sdk': '*' } } }, extracted: { '': ['browser-sdk'] } });
+    const dir = join(root, 'node_modules/browser-sdk');
+    const manifest = { name: 'browser-sdk', version: '1.0.0', types: './index.d.ts' };
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
+    writeFileSync(join(dir, 'index.js'), 'module.exports = {};');
+    const lock = JSON.stringify({ packages: { 'node_modules/browser-sdk': { version: '1.0.0' } } });
+    writeFileSync(join(root, 'package-lock.json'), lock);
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [{ specifier: 'browser-sdk', declarationsOnly: true }], deps: { sleep: async () => {} },
+      runNpm: () => {
+        repairs++;
+        expect(existsSync(dir)).toBe(false);
+        mkdirSync(dir);
+        writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
+        writeFileSync(join(dir, 'index.js'), 'module.exports = {};');
+        writeFileSync(join(dir, 'index.d.ts'), 'export {};');
+        return 0;
+      },
+    });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(readFileSync(join(root, 'package-lock.json'), 'utf8')).toBe(lock);
+  });
+
   it('repairs a locked transitive mermaid payload through the default runtime probes', async () => {
     silenceConsole();
     const root = fixture({ packages: { 'apps/ui': {} }, extracted: { '': ['mermaid'] } });
@@ -729,7 +920,7 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     const env = { ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: '1',
       npm_config_prefix: undefined, NPM_CONFIG_PREFIX: undefined,
       npm_config_package_lock_only: undefined, NPM_CONFIG_PACKAGE_LOCK_ONLY: undefined };
-    const npm = (args: string[]) => execFileSync('npm', args, { cwd: root, env, timeout: 30_000, stdio: 'pipe' });
+    const npm = (args: string[]) => fixtureNpm(root, args, env);
     npm(['pack', source, '--ignore-scripts', '--pack-destination', root]);
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     pkg.dependencies = { 'fixture-runtime': 'file:fixture-runtime-1.0.0.tgz' };
@@ -846,7 +1037,7 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     writeFileSync(join(vendor, 'cli.js'), '#!/usr/bin/env node\nprocess.exit(0)\n');
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fixture-root', private: true, workspaces: ['libs/tooling'], dependencies: { 'fixture-tool': 'file:vendor/tool' } }));
     writeFileSync(join(root, 'libs/tooling/package.json'), JSON.stringify({ name: 'tooling', version: '1.0.0', devDependencies: { 'fixture-tool': 'file:../../vendor/tool' } }));
-    const install = () => execFileSync('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: root, stdio: 'pipe', timeout: 30_000 });
+    const install = () => fixtureNpm(root, ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund']);
     install();
     const bin = join(root, 'libs/tooling/node_modules/.bin');
     mkdirSync(bin, { recursive: true });
@@ -1229,13 +1420,13 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     writeFileSync(join(root, 'libs/maintained/widget/package.json'), JSON.stringify({
       name: '@fixture/widget', version: '1.0.0',
     }));
-    const install = () => execFileSync('npm', [
+    const install = () => fixtureNpm(root, [
       'install', '--legacy-peer-deps', '--ignore-scripts', '--no-audit', '--no-fund', '--offline',
-    ], { cwd: root, timeout: 30_000, env: {
+    ], {
       ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: '1',
       npm_config_prefix: undefined, NPM_CONFIG_PREFIX: undefined,
       npm_config_package_lock_only: undefined, NPM_CONFIG_PACKAGE_LOCK_ONLY: undefined,
-    } });
+    });
     install();
     const staleKey = 'apps/operator/node_modules/@fixture/widget';
     const target = join(root, staleKey);

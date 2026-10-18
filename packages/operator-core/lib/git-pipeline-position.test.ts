@@ -586,6 +586,34 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
 });
 
 describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () => {
+  it('uses the loaded deployment configuration for release containment refs', async () => {
+    const argsSeen: string[][] = [];
+    const base = fakeGit({
+      pathCommit: 'candidate-sha',
+      contains: {
+        'HEAD': ['candidate-sha'],
+        'origin/workstream': ['candidate-sha'],
+        'origin/release-candidate': ['candidate-sha'],
+      },
+    });
+    const git: GitRunner = async (repo, args) => {
+      argsSeen.push(args);
+      return base(repo, args);
+    };
+
+    await gitPipelinePosition(
+      { path: 'src/file.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy({ releaseRef: 'release-candidate', integrationBranch: 'workstream' }),
+        loadSnapshot: async () => snap(),
+      },
+    );
+
+    expect(argsSeen).toContainEqual(['merge-base', 'candidate-sha', 'origin/workstream']);
+    expect(argsSeen).toContainEqual(['merge-base', 'candidate-sha', 'origin/release-candidate']);
+  });
+
   it('EI-24356772206513832: the default unit probes supply a local exec path', async () => {
     const probe = vi.mocked(probeServiceStart);
     probe.mockClear();

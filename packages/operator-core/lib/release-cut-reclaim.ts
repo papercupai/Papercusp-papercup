@@ -52,7 +52,7 @@ import { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLea
 export { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag };
 export type { RetentionLease, LeaseParse } from '../../../scripts/lib/retention-pins.mjs';
 import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
-import { RETENTION_POLICY } from './storage/retention-policy';
+import { retentionPolicyForWorkspaceRoot } from './storage/retention-policy';
 import { DEFAULT_RECLAIM_RUN_BUDGET_MS, type RetentionCapReceipt } from './storage/disk-reclaim';
 import { openWriterPidsMany, type OpenWriterScan } from './native-bg-task-ledger';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
@@ -1417,7 +1417,7 @@ export async function reclaimCutWorktrees(
   deps: ReclaimExecDeps = {},
 ) {
   const notAfterMs = options.notAfterMs ?? Date.now() + DEFAULT_RECLAIM_RUN_BUDGET_MS;
-  const maxBytes = options.maxBytes ?? RETENTION_POLICY.find((c) => c.id === 'release-cut-worktrees')!.maxBytes!;
+  const maxBytes = options.maxBytes ?? retentionPolicyForWorkspaceRoot().find((c) => c.id === 'release-cut-worktrees')!.maxBytes!;
   const targets = plan.verdicts.filter((v) => v.disposition === 'reclaimable')
     .sort((a, b) => {
       const activity = (v: ReclaimVerdict) => Math.max(Date.parse(v.createdAt ?? '') || 0, Date.parse(v.lastHeadMoveAt ?? '') || 0);

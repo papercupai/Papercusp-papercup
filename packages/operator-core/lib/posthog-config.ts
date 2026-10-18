@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Resolve PostHog connection info for the operator's server-side
  * feature-flag evaluation.
@@ -85,7 +86,7 @@ export function setOnConfigChange(fn: () => void): void {
 export function watchPosthogConfig(): void {
   if (__watcherState.installed) return;
   __watcherState.installed = true;
-  const discoveryPath = path.join(os.homedir(), '.papercusp', 'posthog.json');
+  const discoveryPath = papercuspPath('posthog.json');
   const dir = path.dirname(discoveryPath);
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -123,7 +124,7 @@ function resolve(): Resolved {
     return cached;
   }
 
-  const discoveryPath = path.join(os.homedir(), '.papercusp', 'posthog.json');
+  const discoveryPath = papercuspPath('posthog.json');
   try {
     const raw = fs.readFileSync(discoveryPath, 'utf8');
     const parsed = JSON.parse(raw) as Partial<PostHogConfig> & {

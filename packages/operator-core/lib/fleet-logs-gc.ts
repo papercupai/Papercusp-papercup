@@ -1,3 +1,4 @@
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Fleet-logs retention GC — WI-224710 cause #2 ("`fleet-logs` grows without
  * bound").
@@ -236,7 +237,7 @@ export interface FleetLogsGcResult {
  *  (readdirSync failure inside gcOneDir is treated as "nothing to scan"). */
 function discoverFleetLogsDirs(): string[] {
   const dirs = new Set<string>();
-  dirs.add(join(homedir(), '.papercusp', 'fleet-logs'));
+  dirs.add(papercuspPath('fleet-logs'));
   let entries: Dirent[];
   try {
     entries = readdirSync(workspacesRoot(), { withFileTypes: true });
@@ -592,7 +593,7 @@ export async function runPapercuspWorkdirGc(
 }
 
 async function sweepPapercuspWorkdirs(opts: PapercuspWorkdirGcOptions, isPinned: (path: string) => boolean): Promise<PapercuspWorkdirGcResult> {
-  let root = opts.root ?? join(homedir(), '.papercusp');
+  let root = opts.root ?? papercuspHome();
   const retentionMs = opts.retentionMs ?? PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS;
   const dryRun = opts.dryRun !== false;
   const now = opts.now ?? Date.now();
@@ -1268,7 +1269,7 @@ export interface LaunchContextGcResult {
  *  one-line default rather than imported, so this fs-only module does not pull
  *  the coord/notification stack in behind it. */
 function defaultLaunchContextDir(): string {
-  return process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR || join(homedir(), '.papercusp', 'launch-context');
+  return process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR || papercuspPath('launch-context');
 }
 
 /**

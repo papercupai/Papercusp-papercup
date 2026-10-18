@@ -1550,7 +1550,7 @@ export async function fetchRedTestRows(
   const minFails = opts.redTestMinFails ?? 3;
   const normalizedPaths = paths === undefined
     ? []
-    : [...new Set(paths.map(normalizeRedTestPath).filter((p): p is string => p != null))];
+    : [...new Set(paths.map(path => normalizeRedTestPath(path)).filter((p): p is string => p != null))];
   const storedPathPattern = storedTestRunPathPattern();
   const pathFilter = paths === undefined
     ? sql`TRUE`

@@ -1,3 +1,4 @@
+import { papercuspHome } from '@papercusp/host-platform/home';
 /**
  * Disk census — the du walk that survives an operator restart (WI-6554700010009855;
  * disk-headroom-standing-reclaim-2026-10-12 P-001, R-1).
@@ -510,7 +511,7 @@ export function walkNote(state: DetachedWalkState): string | undefined {
 
 /** Root of every census walk directory: `$PAPERCUSP_HOME/disk-census-walks`. */
 export function censusWalkRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'disk-census-walks');
+  return join(papercuspHome(env), 'disk-census-walks');
 }
 
 /** A filesystem-safe key for one census run (the DBOS workflow id). */

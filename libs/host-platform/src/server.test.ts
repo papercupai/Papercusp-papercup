@@ -36,6 +36,10 @@ describe('serverHostPlatform', () => {
     expect(() => serverHostPlatform.homedir()).toThrow(/not available/);
   });
 
+  it('papercuspHome throws', () => {
+    expect(() => serverHostPlatform.papercuspHome()).toThrow(/not available/);
+  });
+
   it('getHarnessAdminUrl reads env', () => {
     process.env.HARNESS_ADMIN_DATABASE_URL = 'postgresql://server/db';
     expect(serverHostPlatform.getHarnessAdminUrl()).toBe('postgresql://server/db');

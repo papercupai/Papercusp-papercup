@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * psu-launcher.mjs — the `psu` command.
  *
@@ -2481,7 +2482,7 @@ export function tagKickoffProvenance(
       .digest("hex");
     const dir =
       env.PAPERCUSP_TURN_PROVENANCE_DIR ||
-      join(homedir(), ".papercusp", "turn-provenance");
+      papercuspPath("turn-provenance");
     mkdirSync(dir, { recursive: true });
     const safe = String(sid)
       .replace(/[^a-zA-Z0-9._-]/g, "_")
@@ -10101,7 +10102,7 @@ function defaultPsTty(pid) {
 
 /** Default claim-registry directory — one small marker file per terminal device.
  *  Override (tests only) via PAPERCUSP_TTY_CLAIMS_DIR. */
-export const TTY_CLAIMS_DIR = join(homedir(), ".papercusp", "tty-claims");
+export const TTY_CLAIMS_DIR = papercuspPath("tty-claims");
 
 /** Turn a device path into a safe, collision-free filename for the claims dir. */
 function ttyClaimFilename(ttyPath) {
@@ -14166,7 +14167,7 @@ async function launchResume(
     }
     // omp re-loads the coordination extension per invocation; claude/codex don't
     // use -e. Stable path, only added when actually installed.
-    const coordExt = join(homedir(), ".papercusp", "papercusp-coord.ts");
+    const coordExt = papercuspPath("papercusp-coord.ts");
     const coordExtPath =
       session.agent === "omp" && existsSync(coordExt) ? coordExt : undefined;
     const injectHookPath = resolveOmpInjectHookPath(session.agent);
@@ -17183,7 +17184,7 @@ async function roleFlow(args, role, rolesMeta) {
   // omp role sessions load the coordination extension (lock enforcement + coord +
   // the activity-bridge port) via -e, the same stable module the su omp launch +
   // resume use. claude/codex role hooks are user-level / baked into the codex home.
-  const roleCoordExt = join(homedir(), ".papercusp", "papercusp-coord.ts");
+  const roleCoordExt = papercuspPath("papercusp-coord.ts");
   const roleCoordExtPath =
     res.agent === "omp" && existsSync(roleCoordExt) ? roleCoordExt : undefined;
   const requestedRoleModel = requestedRoleModelFromBootstrap(res, args.model);

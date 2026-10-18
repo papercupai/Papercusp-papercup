@@ -1,3 +1,4 @@
+import { papercuspHome } from '@papercusp/host-platform/home';
 /**
  * A graceful host restart must not spend a DBOS workflow's recovery budget (WI-10004954).
  *
@@ -100,7 +101,7 @@ export interface GracefulShutdownMarker {
 
 /** `$PAPERCUSP_HOME/run` (default `~/.papercusp/run`). */
 export function defaultGracefulShutdownMarkerDir(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'run');
+  return join(papercuspHome(env), 'run');
 }
 
 export function gracefulShutdownMarkerPath(dir: string, executorId: string): string {

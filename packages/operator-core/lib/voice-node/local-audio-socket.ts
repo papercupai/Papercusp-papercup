@@ -1,3 +1,4 @@
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Local voice audio socket — the dedicated binary channel between the local
  * client (pui / desktop) and this operator's voice node (D-010).
@@ -296,7 +297,7 @@ function ownerPidAlive(pid: number): boolean {
  * `isAlive` is injectable for tests. Returns the number of files reaped.
  */
 export function gcDeadVoiceSockets(
-  dir: string = join(homedir(), '.papercusp', 'sockets'),
+  dir: string = papercuspPath('sockets'),
   isAlive: (pid: number) => boolean = ownerPidAlive,
 ): number {
   let entries: string[];
@@ -331,7 +332,7 @@ export interface VoiceSocketInfo {
  *  launch-time/test config override (hermetic tests must not reap the REAL
  *  ~/.papercusp/sockets or overwrite the live voice-ipc.json); prod uses ~/.papercusp. */
 function voiceIpcRoot(): string {
-  return process.env.PAPERCUSP_VOICE_IPC_DIR || join(homedir(), '.papercusp');
+  return process.env.PAPERCUSP_VOICE_IPC_DIR || papercuspHome();
 }
 
 export function startLocalVoiceSocket(): VoiceSocketInfo {
