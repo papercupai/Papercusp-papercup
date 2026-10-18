@@ -84,13 +84,19 @@ describe('current-build execution route contract', () => {
       import { composeModePromptSection } from './packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts';
       import { ensureSuCodexHomeConfigAsync } from './packages/operator-core/lib/role-codex-home.ts';
       import { readSuperuserToken } from './packages/operator-core/lib/superuser-token.ts';
+      import { recordAdvSession, recordSuLaunchSpec } from './packages/operator-core/lib/adv-sessions.ts';
+      import { declareSessionConfinement } from './packages/operator-core/lib/capability-envelope/session-confinement-store.ts';
+      import { setMode } from './packages/operator-core/lib/modes/store.ts';
       const workspace = process.env.PAPERCUSP_WORKSPACE_ID;
+      const ownerId = 'su-private-home-repair';
       await prepareCurrentSuNativeScenario(workspace);
+      await setMode({ workspaceId: workspace, ownerId, modeId: 'auto', enabled: true,
+        reason: 'private native home repair regression', setBy: ownerId });
       const record = { v: 1, agent: 'codex', workspaceId: workspace, harnessSlug: workspace,
         profile: 'generic', contextSize: 'trimmed', personaTier: 'full', model: 'gpt-6-luna',
         planSlug: null, launchedBy: null, autoMode: true, drainMode: false, loopArmed: false,
         headless: true, fleet: null, stack: [] };
-      const rebuilt = await rebuildSuLaunchArtifact({ ownerId: 'su-private-home-repair',
+      const rebuilt = await rebuildSuLaunchArtifact({ ownerId,
         operatorBaseUrl: process.env.PAPERCUSP_OPERATOR_URL, record,
         modeSection: composeModePromptSection(record) });
       const home = await ensureSuCodexHomeConfigAsync({ sessionKey: 1,
@@ -98,6 +104,26 @@ describe('current-build execution route contract', () => {
         model: record.model, token: readSuperuserToken(), headless: true,
         codexGatewayAuto: true, recoverMissingHome: true, trustDir: rebuilt.spec.cwd });
       assert.ok(readFileSync(home.configPath, 'utf8').includes('papercusp-codex-gateway'));
+      const advSessionId = await recordAdvSession({ workspaceId: workspace, agent: 'codex', role: 'su',
+        mode: 'console', coordOwnerId: ownerId, cwd: rebuilt.spec.cwd,
+        launchArgv: ['psu', '--auto', '--account=auto', '--headless', '--model=gpt-6-luna:max'] });
+      assert.equal(advSessionId, 1);
+      assert.equal(await recordSuLaunchSpec(advSessionId, ownerId, { ...record,
+        specificationRevision: rebuilt.artifact.specificationRevision,
+        stateRevision: rebuilt.artifact.stateRevision,
+        specificationArtifact: rebuilt.artifact.specificationArtifact }), true);
+      assert.equal((await declareSessionConfinement({ ownerId, workspaceId: workspace,
+        confinement: { denyTools: [], denyOutside: ['coord:whoami', 'session:request-compaction'],
+          denyAmbientContext: true, imposedBy: 'private home repair regression',
+          reason: 'match the native benchmark context boundary' } })).ok, true);
+      const routes = (await import('./packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts')).default;
+      const route = routes.find(entry => entry.path === '/adv/sessions/ensure-codex-home');
+      const response = await route.handler(new Request(process.env.PAPERCUSP_OPERATOR_URL + '/api' + route.path,
+        { method: 'POST', body: JSON.stringify({ owner: ownerId, advSessionId, model: record.model,
+          headless: true, requireGatewayProvider: false }) }));
+      const repair = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(repair));
+      assert.equal(repair.ok, true, JSON.stringify(repair));
       console.log('PRIVATE_NATIVE_HOME_REPAIR ' + JSON.stringify({ repaired: home.repaired,
         promptRepaired: home.promptRepaired, providerForwarding: false }));
     `;
@@ -109,6 +135,22 @@ describe('current-build execution route contract', () => {
     expect(result.status, result.stdout.slice(-3000) + result.stderr.slice(-5000)).toBe(0);
     expect(result.stdout).toContain('PRIVATE_NATIVE_HOME_REPAIR ');
   }, 200_000);
+
+  it('repairs the auto Codex home through the prepared operator HTTP boundary without model inference', () => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'private-home-repair-http-'));
+    try {
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
+        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')], {
+        cwd: root, encoding: 'utf8', timeout: 700_000, maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-home-repair',
+          STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir },
+      });
+      expect(result.status, result.stdout.slice(-4000) + result.stderr.slice(-8000)).toBe(0);
+      expect(result.stdout).toContain('PRIVATE_NATIVE_HOME_REPAIR ');
+      expect(result.stdout).toContain('"hostStopped":true');
+    } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+  }, 720_000);
 
   it('prepares the dummy account, real hooks and MCP bearer in the native fixture private home', () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-setup-'));

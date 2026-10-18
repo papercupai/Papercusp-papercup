@@ -88,6 +88,10 @@ export default defineTool({
     seeAlso: ['loop:arm (start a loop)', 'loop:end (stop it)', 'fleet:assignments (the work the loop is producing)'],
   },
   capability: 'routines:write',
+  // The handler only reads loop, transition, carry-note, reachability, and await
+  // state. Mark the MCP effect explicitly so ptool can safely recover this
+  // liveness read from a legacy proxy catalog that lacks a serving generation.
+  effect: 'read',
   requirePrincipal: false,
   // EI-20229292848756531: this read performs independent DB probes
   // (loop status, wake reachability, and pending awaits) and never consumes

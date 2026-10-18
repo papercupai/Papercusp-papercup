@@ -208,7 +208,7 @@ async function main() {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
-  if (isCurrentSuNative)
+  if (isCurrentSuNative || e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-home-repair')
     await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
   // Preparation changes socket/tmp settings; compare the final host environment
   // again. A refused pin still follows the same finally/dispose path.
@@ -243,6 +243,13 @@ async function main() {
   assert.ok(hostIdentity, 'private host kernel identity required');
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-home-repair') {
+    const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuHomeRepairScenario({ workspace, base });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_NATIVE_HOME_REPAIR ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'session-capability') {
     const receipt = await (await import('./session-capability-http-scenario')).measureSessionCapabilityScenario({
       workspace, api: base + '/api', expectedSha: health.sha,

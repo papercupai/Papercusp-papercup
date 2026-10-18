@@ -66,6 +66,75 @@ export async function prepareCurrentSuNativeScenario(workspace: string) {
   process.env.PAPERCUSP_MCP_PROXY = '0';
 }
 
+/** Exercise carry's actual HTTP repair boundary without starting a native CLI. */
+export async function measureCurrentSuHomeRepairScenario(input: { workspace: string; base: string }) {
+  const { workspace, base } = input;
+  const { rebuildSuLaunchArtifact } = await import('../lib/su-persona-render');
+  const { composeModePromptSection } = await import('../lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared');
+  const { ensureSuCodexHomeConfigAsync } = await import('../lib/role-codex-home');
+  const { recordAdvSession, recordSuLaunchSpec } = await import('../lib/adv-sessions');
+  const { declareSessionConfinement } = await import('../lib/capability-envelope/session-confinement-store');
+  const { setMode } = await import('../lib/modes/store');
+  const ownerId = 'su-private-home-repair';
+  await setMode({ workspaceId: workspace, ownerId, modeId: 'auto', enabled: true,
+    reason: 'private native home repair regression', setBy: ownerId });
+  const record = { v: 1 as const, agent: 'codex' as const, workspaceId: workspace, harnessSlug: workspace,
+    profile: 'generic' as const, contextSize: 'trimmed' as const, personaTier: 'full' as const, model: 'gpt-6-luna',
+    planSlug: null, launchedBy: null, autoMode: true, drainMode: false, loopArmed: false,
+    headless: true, fleet: null, stack: [] };
+  const rebuilt = await rebuildSuLaunchArtifact({ ownerId, operatorBaseUrl: base, record,
+    modeSection: composeModePromptSection(record) });
+  const home = await ensureSuCodexHomeConfigAsync({ sessionKey: 1, sid: ownerId,
+    mcpUrl: rebuilt.spec.mcpUrl, promptText: rebuilt.promptText, model: record.model,
+    token: readSuperuserToken(), headless: true, codexGatewayAuto: true,
+    recoverMissingHome: true, trustDir: rebuilt.spec.cwd });
+  assert.ok(readFileSync(home.configPath, 'utf8').includes('papercusp-codex-gateway'));
+  const advSessionId = await recordAdvSession({ workspaceId: workspace, agent: 'codex', role: 'su',
+    mode: 'console', coordOwnerId: ownerId, cwd: rebuilt.spec.cwd,
+    launchArgv: ['psu', '--auto', '--account=auto', '--headless', '--model=gpt-6-luna:max'] });
+  assert.equal(advSessionId, 1);
+  assert.equal(await recordSuLaunchSpec(advSessionId, ownerId, { ...record,
+    specificationRevision: rebuilt.artifact.specificationRevision,
+    stateRevision: rebuilt.artifact.stateRevision,
+    specificationArtifact: rebuilt.artifact.specificationArtifact }), true);
+  assert.equal((await declareSessionConfinement({ ownerId, workspaceId: workspace,
+    confinement: { denyTools: [], denyOutside: ['coord:whoami', 'session:request-compaction'],
+      denyAmbientContext: true, imposedBy: 'private home repair regression',
+      reason: 'match the native benchmark context boundary' } })).ok, true);
+  const repairHome = () => fetch(base + '/api/adv/sessions/ensure-codex-home', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ owner: ownerId, advSessionId, model: record.model,
+      headless: true, requireGatewayProvider: false }), signal: AbortSignal.timeout(30_000),
+  });
+  const response = await repairHome();
+  const repair = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(repair));
+  assert.equal(repair.ok, true, JSON.stringify(repair));
+  // Match the existing real-seam privacy case: the native container can
+  // atomically replace config.toml as root while its host-owned parent survives.
+  // Keep the bytes unchanged, so access is the only changed variable.
+  const docker = (...args: string[]) => execFileSync('docker', args, { timeout: 30_000, stdio: 'pipe' });
+  assert.notEqual(process.getuid?.(), 0, 'the host-unreadable control requires the ordinary host user');
+  try {
+    docker('run', '--rm', '--pull=never', '--network', 'none',
+      '--mount', `type=bind,src=${home.codexHome},dst=/session`, 'alpine', 'sh', '-c',
+      'cp /session/config.toml /session/config.next && chmod 600 /session/config.next && mv /session/config.next /session/config.toml');
+    assert.equal(statSync(home.configPath).uid, 0);
+    assert.equal(statSync(home.configPath).mode & 0o777, 0o600);
+    assert.throws(() => readFileSync(home.configPath), { code: 'EACCES' });
+    const privateResponse = await repairHome();
+    const privateRepair = await privateResponse.json();
+    assert.equal(privateResponse.status, 200, JSON.stringify(privateRepair));
+    assert.equal(privateRepair.ok, true, JSON.stringify(privateRepair));
+    return { status: response.status, privateConfigStatus: privateResponse.status,
+      repaired: privateRepair.repaired, providerForwarding: false };
+  } finally {
+    docker('run', '--rm', '--pull=never', '--network', 'none',
+      '--mount', `type=bind,src=${home.codexHome},dst=/session`, 'alpine',
+      'chown', `${process.getuid?.()}:${process.getgid?.()}`, '/session/config.toml');
+  }
+}
+
 export async function measureCurrentSuNativeScenario(input: { workspace: string; base: string; evidenceDir: string; managedCarry?: boolean }) {
   const { workspace, base, evidenceDir, managedCarry = false } = input;
   assert.match(workspace, /^test-runtime-/);

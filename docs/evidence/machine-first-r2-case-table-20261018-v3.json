@@ -1,0 +1,770 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "planRevision": 35,
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "rubricRevision": 11,
+  "compiledAt": "2026-10-18T23:27:19.105357+00:00",
+  "scope": "Partial R2 expected/actual table reconciled with retained after-fix denied-storage browser acceptance. Historical observations preserve their source/artifact bounds; full R2 acceptance and shipment remain open.",
+  "sourceReceipts": {
+    "docs/evidence/machine-first-authkit-signup-20261017.json": {
+      "sha256": "cf9c86d975386c51085819011fa3486d2e6f65de86190bcb14d1983cc2bec354"
+    },
+    "docs/evidence/machine-first-p002-hosted-signup-20261017.json": {
+      "sha256": "fdfeb8a96206bc65b735f29c1da14d015c02fdcb6f1d77734d36c685cbf6a115"
+    },
+    "docs/evidence/machine-first-signup-archive-audit-20261017.json": {
+      "sha256": "ab7124664d6daba2cff001e2d98f5613ad15b3b54d24389dd4aaaaecc666279b"
+    },
+    "docs/evidence/machine-first-authkit-returning-20261017.json": {
+      "sha256": "7b4c69fedb1e55c29b61a427630e99ca57435049211764804155d379f388b983"
+    },
+    "docs/evidence/machine-first-storage-denied-before-20261017.json": {
+      "sha256": "74ad4c96f148372fb979da24e631e9c7909bd19fdf07da2b55dbf2cce90abe41"
+    },
+    "docs/evidence/machine-first-storage-denied-after-20261018.json": {
+      "sha256": "98fca3d44240457c4b16ae7357c4f37e86f083b980afa6b5781ca7d1a9d94c35"
+    }
+  },
+  "productSourceComparison": [
+    {
+      "path": "harness:portal/packages/ui/src/utility-welcome.tsx",
+      "recordedSha256": "27d5023e30a4290b6e07ca2573a0660b7fd27c2ea699dde8a63e69cc38cae167",
+      "currentSha256": "53368b916c4069fc619fb1c28ee7f5aef435bf3ee350c0cac61d0ccf8792bd64",
+      "matches": false
+    },
+    {
+      "path": "harness:portal/packages/ui/src/utility-download.ts",
+      "recordedSha256": "3b9d8c598bb52326d1ac8e791aa105035fe2472515a40b4d7cbee57a862b53d5",
+      "currentSha256": "3b9d8c598bb52326d1ac8e791aa105035fe2472515a40b4d7cbee57a862b53d5",
+      "matches": true
+    },
+    {
+      "path": "harness:portal/packages/ui/src/shell.tsx",
+      "recordedSha256": "c4a65a20dbeb3f2632f56f2130befbae0530025a1235542e94a895718941b618",
+      "currentSha256": "c4a65a20dbeb3f2632f56f2130befbae0530025a1235542e94a895718941b618",
+      "matches": true
+    }
+  ],
+  "retainedServedCaseBodyMatchesPinnedPortalB8e3bc0": true,
+  "rows": [
+    {
+      "key": "successful-real-new-account-signup",
+      "status": "passed-in-retained-browser-observation",
+      "expected": {
+        "providerSignup": true,
+        "emailVerification": true,
+        "cookieInjection": false,
+        "compatibleDownloadEvents": 1,
+        "continue": "GUI"
+      },
+      "actual": {
+        "providerSignup": true,
+        "emailVerification": true,
+        "cookieInjection": false,
+        "callback": {
+          "status": 303,
+          "path": "/api/hosted/auth/callback"
+        },
+        "accountSession": {
+          "authenticated": true,
+          "newAccount": true,
+          "workspaceId": null,
+          "userId": "685a8626-d661-489d-ba82-5c1e805ad8ab",
+          "organizationId": "b7a43dad-0de0-4437-8ddf-8358701b5620"
+        },
+        "download": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+          "count": 1
+        },
+        "guiRendered": true,
+        "afterContinueDownloadCount": 1
+      },
+      "origin": "https://app.papercusp.com",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "OnJErRMjvcuZQEf56RsNP",
+        "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T08:59:50.313Z",
+        "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+      },
+      "destination": "/?app=home&firstRun=deferred",
+      "dialogAndContinue": "Your Papercusp utility\n\nFinding the published utility for your computer…\n\nThe next page takes you to the GUI, but you may prefer to drive your agents from psu. It wraps Claude Code, Codex and OMP with your context, memory, documentation, Papercusp tools and prompts so you can steer a coordinated agent factory.\n\nYou can run the local server to keep agents and data on your machine, use managed cloud where Papercusp handles the cloud account and billing for a flat monthly rate, or bring your own cloud account while Papercusp provisions the machines and you retain control of your data.\n\nChoose your platform\nContinue to GUI\n\nWindows uses the Linux package through WSL2. On macOS, choose Apple Silicon or Intel on the download page.",
+      "evidenceRef": "docs/evidence/machine-first-authkit-signup-20261017.json",
+      "screenshots": [
+        {
+          "path": "docs/evidence/machine-first-authkit-signup-20261017-utility.png",
+          "sha256": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021"
+        },
+        {
+          "path": "docs/evidence/machine-first-authkit-signup-20261017-gui.png",
+          "sha256": "ab4d5cbe4079db9d6e0cc3a5dc1ce33587a9f4e5191ed4c2ef3eec86e27e41c7"
+        }
+      ]
+    },
+    {
+      "key": "callback-replay-and-welcome-reload",
+      "status": "passed-in-retained-browser-observation",
+      "expected": {
+        "consumedCallbackStatus": 400,
+        "totalDownloadEvents": 1
+      },
+      "actual": {
+        "status": 400,
+        "downloadCount": 1
+      },
+      "accountSessionState": {
+        "authenticated": true,
+        "newAccount": true,
+        "workspaceId": null,
+        "userId": "685a8626-d661-489d-ba82-5c1e805ad8ab",
+        "organizationId": "b7a43dad-0de0-4437-8ddf-8358701b5620"
+      },
+      "origin": "https://app.papercusp.com",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "OnJErRMjvcuZQEf56RsNP",
+        "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T08:59:50.313Z",
+        "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+      },
+      "destination": "/?app=home&firstRun=deferred",
+      "dialogAndContinue": "Welcome reload remained visible without another download; keyboard Continue reached GUI.",
+      "evidenceRef": "docs/evidence/machine-first-authkit-signup-20261017.json",
+      "screenshots": [
+        {
+          "path": "docs/evidence/machine-first-authkit-signup-20261017-utility.png",
+          "sha256": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021"
+        },
+        {
+          "path": "docs/evidence/machine-first-authkit-signup-20261017-gui.png",
+          "sha256": "ab4d5cbe4079db9d6e0cc3a5dc1ce33587a9f4e5191ed4c2ef3eec86e27e41c7"
+        }
+      ]
+    },
+    {
+      "key": "real-returning-provider-signin",
+      "status": "passed-in-retained-browser-observation",
+      "expected": {
+        "actualProviderForm": true,
+        "browserSessionInjected": false,
+        "sameExistingTenant": true,
+        "downloadEvents": 0,
+        "utilityRequests": 0,
+        "dialogVisible": false,
+        "destination": "/?app=home"
+      },
+      "actual": {
+        "sessionInjected": false,
+        "existingAccount": {
+          "sessionId": "hs_C2ba57ptxWIFoI93vhyD-DaGQFqjLDTnXH288hdTcuU",
+          "organizationId": "dd10b83d-e633-4556-9940-7f67f43879c5"
+        },
+        "actualSession": {
+          "authenticated": true,
+          "organizationId": "dd10b83d-e633-4556-9940-7f67f43879c5",
+          "userId": "1f5781b0-32f7-486b-b373-1a58d497128e",
+          "workspaceId": null
+        },
+        "callback": {
+          "status": 303,
+          "path": "/api/hosted/auth/callback"
+        },
+        "downloadEvents": 0,
+        "utilityRequests": 0,
+        "guiRendered": true,
+        "destination": "/?app=home",
+        "guideChoice": "skipped through existing guide control"
+      },
+      "evidenceRef": "docs/evidence/machine-first-authkit-returning-20261017.json",
+      "origin": "https://app.papercusp.com",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "OnJErRMjvcuZQEf56RsNP",
+        "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T08:59:50.313Z",
+        "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+      },
+      "screenshots": [
+        {
+          "path": "docs/evidence/machine-first-authkit-returning-20261017-gui.png",
+          "sha256": "64323623099c8e7bfebe39576314f00f4e651ea3a3b546c82305f0fb9cc2a39f"
+        }
+      ],
+      "accountSessionState": "Owned TEST account pre-admitted by maintained kit; actual provider form authenticated in a fresh browser without cookie injection; returned to same existing tenant with a fresh server session.",
+      "dialogAndContinue": "Utility dialog absent; callback strips supplied utilityWelcome marker; account guide skipped separately before GUI; reload remains zero downloads."
+    },
+    {
+      "key": "denied-storage",
+      "status": "historical-combined-storage-and-blocked-click-observation",
+      "expected": {
+        "sessionStorage": "denied",
+        "dialogVisible": true,
+        "manualRetryCompletes": true,
+        "continueReachesGUI": true
+      },
+      "actual": {
+        "sessionStorage": "throws by retained maintained browser initScript",
+        "automaticDownloadsBeforeManualRetry": 0,
+        "manualRetry": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "completed": true
+        },
+        "guiRendered": true
+      },
+      "accountSessionState": "Genuine WorkOS TEST user admitted to a private tenant by maintained kit; signed hosted cookie injected for signup-destination fault cases; tenantMatches=true. This row alone does not prove provider signup.",
+      "origin": "https://127.0.0.1:46645",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "E4mBuUpIb-IyxmFfI-RqG",
+        "release": "E4mBuUpIb-IyxmFfI-RqG-20261017032809332-2570532-9f35b171",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T03:28:09.332Z",
+        "sourceRootDigest": "c6481944b6c4ae13e59b1c3521368dfd03358be085401b22af30edaa7a63ff34"
+      },
+      "destination": "https://127.0.0.1:46645/?app=home&firstRun=deferred",
+      "dialogAndContinue": "Accessible utility dialog and requested server-choice/commercial copy asserted; keyboard Continue removed it and rendered GUI.",
+      "evidenceRef": "docs/evidence/machine-first-p002-hosted-signup-20261017.json#/receipt/cases/1",
+      "screenshots": [
+        {
+          "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/blocked-storage-denied-gui.png",
+          "sha256": "1ac9ed8dcfa93fea5b8618f853eb50ff9fc7141b5c63524c42496269920ecd2b"
+        },
+        {
+          "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/blocked-storage-denied.png",
+          "sha256": "363a148b182476ee956f5a26385c4fcfb68b65672c9816d30b1892a27add5c5a"
+        }
+      ],
+      "qualification": "This historical combined fault case does not establish storage-denied-only full-document reload suppression. See the distinct negative row below."
+    },
+    {
+      "key": "denied-storage-only-full-document-reload",
+      "status": "historical-pre-fix-counterexample-superseded-by-recorded-after-fix-pass",
+      "expected": {
+        "sessionStorage": "denied",
+        "automaticClickBlocking": false,
+        "initialAutomaticAnchors": 1,
+        "reloadAutomaticAnchors": 0,
+        "totalAutomaticDownloads": 1,
+        "manualRetryCompletes": true,
+        "keyboardContinueReachesGUI": true
+      },
+      "actual": {
+        "scope": "Served hosted admitted signup destination with sessionStorage denied only; provider signup and shipment excluded",
+        "documents": [
+          {
+            "phase": "initial",
+            "automaticAnchors": 1,
+            "downloadCount": 1,
+            "welcomeVisible": true
+          },
+          {
+            "phase": "welcome-reload",
+            "automaticAnchors": 1,
+            "downloadCount": 2,
+            "welcomeVisible": true
+          }
+        ],
+        "release": {
+          "schemaVersion": 2,
+          "buildId": "OnJErRMjvcuZQEf56RsNP",
+          "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+          "sourceRoot": "harness:portal",
+          "publishedAt": "2026-10-17T08:59:50.313Z",
+          "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+        },
+        "tenantMatches": true,
+        "browserClosed": true,
+        "accountCleanup": true,
+        "cleanup": {
+          "attempted": 2,
+          "completed": 2,
+          "failed": 0,
+          "byKind": {
+            "browser": {
+              "attempted": 1,
+              "completed": 1,
+              "failed": 0
+            },
+            "provider-user": {
+              "attempted": 1,
+              "completed": 1,
+              "failed": 0
+            }
+          }
+        }
+      },
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "OnJErRMjvcuZQEf56RsNP",
+        "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T08:59:50.313Z",
+        "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+      },
+      "evidenceRef": "docs/evidence/machine-first-storage-denied-before-20261017.json",
+      "observedAt": "2026-10-17T23:31:53.142Z",
+      "rootCause": "Document-local Set is lost on reload; denied sessionStorage leaves no surviving marker. Initial document1 automatic anchor/1 download; reload1 anchor/2 total downloads.",
+      "detectorFailure": "Previous denied-storage check combined blocking the automatic click or remounting the same document; independent full-document reload absent.",
+      "ownedFollowUp": "WI-6554700010017024",
+      "afterFixScope": {
+        "status": "passed-on-recorded-immutable-release",
+        "evidenceRef": "docs/evidence/machine-first-storage-denied-after-20261018.json",
+        "caseKey": "denied-storage-only-after-fix-immutable-release",
+        "qualification": "Recorded hosted TEST cookie-admitted destination only; external provider signup and shipment excluded. Full current-source/current-archive acceptance remains open."
+      }
+    },
+    {
+      "key": "denied-storage-only-after-fix-immutable-release",
+      "status": "passed-on-recorded-immutable-release",
+      "expected": {
+        "initialAutomaticAttempts": 1,
+        "automaticAttemptsAfterDocumentReload": 0,
+        "totalDownloadsAfterReload": 1,
+        "manualRetry": "one additional download",
+        "continue": "keyboard Continue reaches GUI",
+        "sessionStorage": "denied without suppressing anchor clicks"
+      },
+      "actual": {
+        "scope": "Served hosted admitted signup destination with sessionStorage denied only; provider signup and shipment excluded",
+        "documents": [
+          {
+            "phase": "initial",
+            "automaticAnchors": 1,
+            "downloadCount": 1,
+            "welcomeVisible": true
+          },
+          {
+            "phase": "welcome-reload",
+            "automaticAnchors": 0,
+            "downloadCount": 1,
+            "welcomeVisible": true
+          }
+        ],
+        "release": {
+          "schemaVersion": 2,
+          "buildId": "H7p1ttvvL5SbiML9Faq5u",
+          "release": "H7p1ttvvL5SbiML9Faq5u-20261018062753794-1381177-9f3d60a9",
+          "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+          "publishedAt": "2026-10-18T06:27:53.794Z",
+          "sourceRootDigest": "eab7efca5a40e1054d3240a88ad12d56890e2de78557f8c4f14457145fd5d5b5"
+        },
+        "tenantMatches": true,
+        "download": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "bytes": 69542264,
+          "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6"
+        },
+        "manualRetryCompleted": true,
+        "guiRendered": true,
+        "browserClosed": true,
+        "accountCleanup": true,
+        "cleanup": {
+          "attempted": 2,
+          "completed": 2,
+          "failed": 0,
+          "byKind": {
+            "browser": {
+              "attempted": 1,
+              "completed": 1,
+              "failed": 0
+            },
+            "provider-user": {
+              "attempted": 1,
+              "completed": 1,
+              "failed": 0
+            }
+          }
+        }
+      },
+      "accountSessionState": {
+        "authenticatedHostedTESTAccount": true,
+        "admission": "kit-created TEST user, browser cookie",
+        "externalProviderSignupObserved": false,
+        "tenantMatches": true
+      },
+      "origin": "https://app.papercusp.com (private isolated loopback mapping)",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "H7p1ttvvL5SbiML9Faq5u",
+        "release": "H7p1ttvvL5SbiML9Faq5u-20261018062753794-1381177-9f3d60a9",
+        "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+        "publishedAt": "2026-10-18T06:27:53.794Z",
+        "sourceRootDigest": "eab7efca5a40e1054d3240a88ad12d56890e2de78557f8c4f14457145fd5d5b5"
+      },
+      "destination": {
+        "automaticUtilityRequestPath": "/api/downloads/utility",
+        "afterKeyboardContinue": "/?app=home&firstRun=deferred",
+        "verification": "Maintained selected test passed its exact path, keyboard Enter, dialog removal and GUI assertions."
+      },
+      "dialogAndContinue": {
+        "initialWelcomeVisible": true,
+        "reloadWelcomeVisible": true,
+        "manualRetryCompleted": true,
+        "keyboardContinueAsserted": true,
+        "guiRendered": true
+      },
+      "evidenceRef": "docs/evidence/machine-first-storage-denied-after-20261018.json",
+      "observedAt": "2026-10-18T07:36:03.281Z",
+      "test": {
+        "file": "harness:portal/e2e/portal-utility-welcome.spec.ts",
+        "sha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d",
+        "fullCaseTitle": "served hosted signup utility: storage denied alone suppresses reload download",
+        "selected": 1,
+        "executed": 1,
+        "skipped": 0,
+        "setupOnly": false,
+        "result": "passed",
+        "rawBrowserReceipt": {
+          "path": "/tmp/machine-first-storage-denied-v4-browser-20261018.json",
+          "sha256": "e8f130c8675733451cff45b3a7972fa7bfc3fa172f3b00d1203e1697049fac22"
+        },
+        "runtimeReceipt": {
+          "path": "/tmp/machine-first-storage-denied-v4-runtime-20261018.json",
+          "sha256": "bce55bbe55aec4e388466de2e83f9d9bd75b2228eaa9c1902049fb6e0d34cdf5"
+        }
+      },
+      "screenshots": [
+        {
+          "path": "/tmp/machine-first-storage-denied-v4-browser-artifacts-20261018/portal-utility-welcome-ser-701ec--suppresses-reload-download/storage-denied-gui.png",
+          "sha256": "ab4d5cbe4079db9d6e0cc3a5dc1ce33587a9f4e5191ed4c2ef3eec86e27e41c7"
+        },
+        {
+          "path": "/tmp/machine-first-storage-denied-v4-browser-artifacts-20261018/portal-utility-welcome-ser-701ec--suppresses-reload-download/storage-denied-initial.png",
+          "sha256": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021"
+        },
+        {
+          "path": "/tmp/machine-first-storage-denied-v4-browser-artifacts-20261018/portal-utility-welcome-ser-701ec--suppresses-reload-download/storage-denied-welcome-reload.png",
+          "sha256": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021"
+        }
+      ],
+      "cleanup": {
+        "processes": [
+          {
+            "pid": 563227,
+            "processGone": true
+          },
+          {
+            "pid": 563504,
+            "processGone": true
+          },
+          {
+            "pid": 619542,
+            "processGone": true
+          }
+        ],
+        "listeners": [
+          {
+            "port": 44367,
+            "closed": true
+          },
+          {
+            "port": 42525,
+            "closed": true
+          },
+          {
+            "port": 42747,
+            "closed": true
+          }
+        ],
+        "privateHomeRemoved": true,
+        "allStopped": true
+      },
+      "qualification": "Historical immutable-release observation; compilation does not revalidate the current Portal source or replace real AuthKit signup/callback evidence. Downloaded archive5f720 remains the old observed archive and does not establish current launcher inclusion."
+    },
+    {
+      "key": "blocked-automatic-download",
+      "status": "passed-in-retained-browser-observation",
+      "expected": {
+        "automaticDownloadEvents": 0,
+        "honestRequestedStatus": true,
+        "manualRetryCompletes": true,
+        "continueReachesGUI": true
+      },
+      "actual": {
+        "automaticDownloadEvents": 0,
+        "manualRetry": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "completed": true
+        },
+        "guiRendered": true
+      },
+      "accountSessionState": "Genuine WorkOS TEST user admitted to a private tenant by maintained kit; signed hosted cookie injected for signup-destination fault cases; tenantMatches=true. This row alone does not prove provider signup.",
+      "origin": "https://127.0.0.1:46645",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "E4mBuUpIb-IyxmFfI-RqG",
+        "release": "E4mBuUpIb-IyxmFfI-RqG-20261017032809332-2570532-9f35b171",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T03:28:09.332Z",
+        "sourceRootDigest": "c6481944b6c4ae13e59b1c3521368dfd03358be085401b22af30edaa7a63ff34"
+      },
+      "destination": "https://127.0.0.1:46645/?app=home&firstRun=deferred",
+      "dialogAndContinue": "Accessible utility dialog and requested server-choice/commercial copy asserted; keyboard Continue removed it and rendered GUI.",
+      "evidenceRef": "docs/evidence/machine-first-p002-hosted-signup-20261017.json#/receipt/cases/1",
+      "screenshots": [
+        {
+          "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/blocked-storage-denied-gui.png",
+          "sha256": "1ac9ed8dcfa93fea5b8618f853eb50ff9fc7141b5c63524c42496269920ecd2b"
+        },
+        {
+          "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/blocked-storage-denied.png",
+          "sha256": "363a148b182476ee956f5a26385c4fcfb68b65672c9816d30b1892a27add5c5a"
+        }
+      ],
+      "qualification": "Automatic-anchor click is deliberately blocked; this is fault-injection evidence. The exact attempted-anchor count was not retained."
+    },
+    {
+      "key": "unavailable-published-manifest",
+      "status": "passed-in-retained-browser-observation",
+      "expected": {
+        "downloadEvents": 0,
+        "fallbackPlatformLink": true,
+        "continueReachesGUI": true
+      },
+      "actual": {
+        "downloadEvents": 0,
+        "publisherFault": "same-origin publisher route 503",
+        "utilityResolverRequests": 1,
+        "guiRendered": true
+      },
+      "accountSessionState": "Genuine WorkOS TEST user admitted to a private tenant by maintained kit; signed hosted cookie injected for signup-destination fault cases; tenantMatches=true. This row alone does not prove provider signup.",
+      "origin": "https://127.0.0.1:46645",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "E4mBuUpIb-IyxmFfI-RqG",
+        "release": "E4mBuUpIb-IyxmFfI-RqG-20261017032809332-2570532-9f35b171",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T03:28:09.332Z",
+        "sourceRootDigest": "c6481944b6c4ae13e59b1c3521368dfd03358be085401b22af30edaa7a63ff34"
+      },
+      "destination": "https://127.0.0.1:46645/?app=home&firstRun=deferred",
+      "dialogAndContinue": "Accessible utility dialog and requested server-choice/commercial copy asserted; keyboard Continue removed it and rendered GUI.",
+      "evidenceRef": "docs/evidence/machine-first-p002-hosted-signup-20261017.json#/receipt/cases/2",
+      "screenshots": [
+        {
+          "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/unavailable-gui.png",
+          "sha256": "6cfc88033ad40898d431a760114c1a13960f957c1784d445af6cde51e9a361a5"
+        },
+        {
+          "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/unavailable.png",
+          "sha256": "1430a13447e6ec1873270ace102b4b71a92b90dcf7fc00bc4436e80a0984b825"
+        }
+      ],
+      "qualification": "A same-origin publisher route503 models an unavailable manifest; it is not an external publisher-outage observation."
+    },
+    {
+      "key": "keyboard-continue",
+      "status": "passed-in-retained-browser-observation",
+      "expected": {
+        "keyboardEnter": true,
+        "destination": "/?app=home&firstRun=deferred",
+        "guiRendered": true
+      },
+      "actual": {
+        "destination": "/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "downloadCount": 1,
+        "guideChoice": "Existing Skip guide button used separately"
+      },
+      "accountSessionState": {
+        "authenticated": true,
+        "newAccount": true,
+        "workspaceId": null,
+        "userId": "685a8626-d661-489d-ba82-5c1e805ad8ab",
+        "organizationId": "b7a43dad-0de0-4437-8ddf-8358701b5620"
+      },
+      "origin": "https://app.papercusp.com",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "OnJErRMjvcuZQEf56RsNP",
+        "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T08:59:50.313Z",
+        "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+      },
+      "dialogAndContinue": "Continue link focused and Enter pressed; utility dialog removed; full Portal/main visible.",
+      "evidenceRef": "docs/evidence/machine-first-authkit-signup-20261017.json",
+      "screenshots": [
+        {
+          "path": "docs/evidence/machine-first-authkit-signup-20261017-utility.png",
+          "sha256": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021"
+        },
+        {
+          "path": "docs/evidence/machine-first-authkit-signup-20261017-gui.png",
+          "sha256": "ab4d5cbe4079db9d6e0cc3a5dc1ce33587a9f4e5191ed4c2ef3eec86e27e41c7"
+        }
+      ]
+    },
+    {
+      "key": "unsupported-native-windows",
+      "status": "passed-in-retained-browser-observation",
+      "expected": {
+        "automaticDownloadEvents": 0,
+        "utilityResolverRequests": 0,
+        "honestWSLPlatformChoice": true,
+        "continueReachesGUI": true
+      },
+      "actual": {
+        "downloadEvents": 0,
+        "utilityResolverRequests": 0,
+        "guiRendered": true
+      },
+      "accountSessionState": "Genuine WorkOS TEST user admitted to a private tenant by maintained kit; signed hosted cookie injected for signup-destination fault cases; tenantMatches=true. This row alone does not prove provider signup.",
+      "origin": "https://127.0.0.1:46645",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "E4mBuUpIb-IyxmFfI-RqG",
+        "release": "E4mBuUpIb-IyxmFfI-RqG-20261017032809332-2570532-9f35b171",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T03:28:09.332Z",
+        "sourceRootDigest": "c6481944b6c4ae13e59b1c3521368dfd03358be085401b22af30edaa7a63ff34"
+      },
+      "destination": "https://127.0.0.1:46645/?app=home&firstRun=deferred",
+      "dialogAndContinue": "Accessible utility dialog and requested server-choice/commercial copy asserted; keyboard Continue removed it and rendered GUI.",
+      "evidenceRef": "docs/evidence/machine-first-p002-hosted-signup-20261017.json#/receipt/cases/3",
+      "screenshots": [
+        {
+          "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/windows-gui.png",
+          "sha256": "6cfc88033ad40898d431a760114c1a13960f957c1784d445af6cde51e9a361a5"
+        },
+        {
+          "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/windows.png",
+          "sha256": "1430a13447e6ec1873270ace102b4b71a92b90dcf7fc00bc4436e80a0984b825"
+        }
+      ],
+      "qualification": "Native Windows UA only; this does not prove every unsupported architecture. Maintained target-selection units cover additional platform UAs."
+    },
+    {
+      "key": "commercial-server-choice-and-D004-data-control-boundary",
+      "status": "manual-reviewed-from-recorded-rendered-copy",
+      "expected": {
+        "terminalBackends": [
+          "Claude Code",
+          "Codex",
+          "OMP"
+        ],
+        "local": "Agents and persistent data on the local server",
+        "managed": "Papercusp handles cloud account and billing for a flat monthly rate",
+        "BYOC": "Customer cloud account, Papercusp provisioning, customer data control",
+        "dataControlBoundary": "Local/BYOC hosting control does not imply external model/provider requests stay on the machine",
+        "downloadBoundary": "A requested download is not assumed completed"
+      },
+      "actual": {
+        "renderedCopy": "Your Papercusp utility\n\nFinding the published utility for your computer…\n\nThe next page takes you to the GUI, but you may prefer to drive your agents from psu. It wraps Claude Code, Codex and OMP with your context, memory, documentation, Papercusp tools and prompts so you can steer a coordinated agent factory.\n\nYou can run the local server to keep agents and data on your machine, use managed cloud where Papercusp handles the cloud account and billing for a flat monthly rate, or bring your own cloud account while Papercusp provisions the machines and you retain control of your data.\n\nChoose your platform\nContinue to GUI\n\nWindows uses the Linux package through WSL2. On macOS, choose Apple Silicon or Intel on the download page.",
+        "requestedCommercialAndServerCopyPresent": true,
+        "manualDataControlReview": "The rendered copy describes hosting and retained data control; it makes no claim that external model/provider traffic never leaves the machine. It does not explicitly explain that caveat. This review does not measure provider network traffic.",
+        "downloadCompletionClaimed": false,
+        "copyScreenshotCapturedCheckingState": true
+      },
+      "accountSessionState": {
+        "authenticated": true,
+        "newAccount": true,
+        "workspaceId": null,
+        "userId": "685a8626-d661-489d-ba82-5c1e805ad8ab",
+        "organizationId": "b7a43dad-0de0-4437-8ddf-8358701b5620"
+      },
+      "origin": "https://app.papercusp.com",
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "OnJErRMjvcuZQEf56RsNP",
+        "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+        "sourceRoot": "harness:portal",
+        "publishedAt": "2026-10-17T08:59:50.313Z",
+        "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+      },
+      "destination": "/?app=home&firstRun=deferred",
+      "evidenceRef": "docs/evidence/machine-first-authkit-signup-20261017.json",
+      "screenshots": [
+        {
+          "path": "docs/evidence/machine-first-authkit-signup-20261017-utility.png",
+          "sha256": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021"
+        }
+      ],
+      "governingDecision": "machine-first-access-and-signup-utility-download-2026-10-15#D-004"
+    },
+    {
+      "key": "compatible-archive-identity-and-current-launcher-inclusion",
+      "status": "failed-current-launcher-inclusion",
+      "expected": {
+        "contains": [
+          "psu",
+          "pui"
+        ],
+        "includesCurrentPlanLauncherChanges": true
+      },
+      "actual": {
+        "manifestVersion": "0.1.0",
+        "target": "linux-x86_64",
+        "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+        "sourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+        "checks": {
+          "archiveMatchesManifest": true,
+          "archiveMatchesSignupReceipt": true,
+          "provenanceMatchesManifest": true,
+          "puiInstallMatchesManifest": true,
+          "puiBinaryMatchesInstallManifest": true,
+          "companionMatchesInstallManifest": true,
+          "psuBundleMatchesProvenance": true,
+          "psuShellMatchesCommittedSource": true,
+          "containsPsuAndPui": true,
+          "includesRequiredCurrentPlanLauncherChanges": false
+        }
+      },
+      "evidenceRef": "docs/evidence/machine-first-signup-archive-audit-20261017.json",
+      "ownedFollowUp": "WI-6554700010016781"
+    }
+  ],
+  "remainingUnverified": [
+    "Current archive launcher inclusion fails in the retained public archive observation",
+    "Full source/environment currentness; one compared product file changed and historical browser rows were not rerun",
+    "Mandatory prerequisite ledger source/test currentness",
+    "Current installed-candidate acceptance, publication and final promotion/deployment/shipment"
+  ],
+  "verdict": "incomplete-with-recorded-after-fix-storage-pass-and-open-current-source-archive-boundaries",
+  "edition": 3,
+  "previousEdition": {
+    "path": "docs/evidence/machine-first-r2-case-table-20261017-v2.json",
+    "sha256": "ec9bb243d2ecabecbc97ac3bf1655d49be85f851a376ad6ab01a131185241d5a"
+  },
+  "historicalRowsQualification": "Retained passing browser rows still describe their recorded immutable releases. Current source comparison is not a rerun or revalidation of those observations; the welcome component changed after those runs. The new after-fix row retains its separately recorded H7p1ttvvL5SbiML9Faq5u release; this table is an evidence reconciliation, not a new browser run or a blanket freshness stamp.",
+  "historicalSourceComparisonMeasuredAt": "2026-10-17T23:47:47.737777+00:00",
+  "reconciliation": {
+    "sourceEditionRows": 11,
+    "resultEditionRows": 12,
+    "originalRowKeysPreserved": [
+      "successful-real-new-account-signup",
+      "callback-replay-and-welcome-reload",
+      "real-returning-provider-signin",
+      "denied-storage",
+      "denied-storage-only-full-document-reload",
+      "blocked-automatic-download",
+      "unavailable-published-manifest",
+      "keyboard-continue",
+      "unsupported-native-windows",
+      "commercial-server-choice-and-D004-data-control-boundary",
+      "compatible-archive-identity-and-current-launcher-inclusion"
+    ],
+    "addedRowKeys": [
+      "denied-storage-only-after-fix-immutable-release"
+    ],
+    "updatedRowKeys": [
+      "denied-storage-only-full-document-reload"
+    ],
+    "otherOriginalRowsUnchanged": true,
+    "privateReceiptDigestChecks": "browser/runtime/console/launcher all match recorded hashes",
+    "rawReceiptAgreement": "selected passing case attachment documents/download agree with normalized after-fix receipt",
+    "currentTestByteComparison": {
+      "matches": true,
+      "sha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d"
+    },
+    "browserRerun": false,
+    "boundP005MatrixModified": false
+  }
+}
