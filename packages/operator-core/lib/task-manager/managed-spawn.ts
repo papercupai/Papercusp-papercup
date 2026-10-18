@@ -57,7 +57,7 @@ import {
 export interface ManagedSpawnOptions {
   /** Metered executions require enrollment before any process can send. */
   requireRegistration?: boolean;
-  /** Optional launch tracer; observes the existing spawn path without secrets. */
+  /** Optional tracer; observes spawn and awaited completion phases without secrets. */
   stage?: (name: string) => void;
   /** Observe the child synchronously before post-fork ledger writes can outlive it. */
   onSpawn?: (child: ChildProcess, taskId: string) => void;
@@ -555,7 +555,7 @@ export async function managedSpawn(
 
   // A short child can finish while markSpawned waits on PG. Both ledger and
   // caller observers must be installed before that await; events are not replayed.
-  const waitForCompletion = wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered);
+  const waitForCompletion = wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered, opts.stage);
   opts.onSpawn?.(child, taskId);
 
   if (ledgered) {
@@ -644,6 +644,7 @@ function wireExit(
   scopeCgroupPath: string | null,
   fs: CgroupFs,
   persistClose: (write: () => Promise<void>) => Promise<boolean>,
+  stage?: ManagedSpawnOptions['stage'],
 ): () => Promise<ManagedSpawnCompletion> {
   let closed = false;
   let resolveCompletion!: (outcome: ManagedSpawnCompletion) => void;
@@ -676,6 +677,7 @@ function wireExit(
     closed = true;
     let recorded = false;
     void (async () => {
+      stage?.('completion-inspect-terminal');
       const abnormal = state !== 'exited' || code !== 0 || Boolean(reason);
       const candidate =
         abnormal && !preserveKillIntent && confined && scopeUnit
@@ -686,10 +688,14 @@ function wireExit(
           ? candidate
           : null;
       const outcome = { state, exitCode: code, exitReason: reason };
+      stage?.('completion-registration');
       const registered = await persistClose(async () => {
-        recorded = await closeTask(taskId, terminal ? { ...outcome, terminalProvenance: terminal } : outcome);
+        stage?.('completion-close');
+        const input = terminal ? { ...outcome, terminalProvenance: terminal } : outcome;
+        recorded = await (stage ? closeTask(taskId, input, undefined, { stage }) : closeTask(taskId, input));
         if (terminal) await resetFailedTaskUnit(terminal);
       });
+      stage?.('completion-finished');
       resolveCompletion(recorded ? { status: 'recorded' } : {
         status: 'unavailable', reason: registered ? 'terminal write did not update the row' : 'ledger registration pending',
       });
@@ -697,6 +703,7 @@ function wireExit(
       // A persistence failure leaves a retained failed unit available for the
       // reconciler's next tick. A close that merely loses the race is fine:
       // closeTask is idempotent on `ended_at`, so the first terminal writer wins.
+      stage?.('completion-failed');
       resolveCompletion(recorded ? { status: 'recorded' } : { status: 'unavailable', reason: errorMessage(error) });
     });
   };
@@ -732,6 +739,7 @@ function wireExit(
     // at info level without raising a false orphan warning.
     if (intentionalTeardown || (!signal && code === 0)) console.info(message);
     else console.warn(message);
+    stage?.('completion-delegated');
     resolveCompletion({ status: 'delegated', reason: 'scope still holds processes; reconciler owns terminal persistence' });
   };
 
@@ -748,6 +756,7 @@ function wireExit(
     intentionalTeardown: boolean,
     settle: () => void,
   ): void => {
+    stage?.('completion-handoff');
     const deadline = Date.now() + SCOPE_HANDOFF_GRACE_MS;
     const recheck = (): void => {
       if (closed) return;
@@ -757,6 +766,7 @@ function wireExit(
       }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
+        stage?.('completion-handoff-complete');
         settle();
         return;
       }
@@ -809,6 +819,7 @@ function wireExit(
   };
 
   child.on('exit', (code, signal) => {
+    stage?.('completion-child-exit');
     const intentionalTeardown = intentionalTeardownChildren.delete(child);
     const requestedSignal = requestedKillSignals.get(child) ?? null;
     requestedKillSignals.delete(child);

@@ -28,6 +28,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process';
+import type { CloseTaskEffects } from './store';
 
 const L = vi.hoisted(() => ({
   closed: [] as { taskId: string; state: string; exitCode: number | null; exitReason: string | null }[],
@@ -58,7 +59,9 @@ vi.mock('./store', () => ({
     L.marked.push(v);
     await L.markDelay?.();
   },
-  closeTask: async (taskId: string, v: { state: string; exitCode?: number | null; exitReason: string | null }) => {
+  closeTask: async (taskId: string, v: { state: string; exitCode?: number | null; exitReason: string | null },
+    _inject: unknown, effects?: CloseTaskEffects) => {
+    effects?.stage?.('fixture-close-pending');
     await L.closeDelay?.();
     L.closed.push({ taskId, state: v.state, exitCode: v.exitCode ?? null, exitReason: v.exitReason });
     L.terminal.push((v as { terminalProvenance?: unknown }).terminalProvenance ?? null);
@@ -209,6 +212,32 @@ describe('confined task exit recording (WI-37509)', () => {
     release();
     await expect(completion).resolves.toEqual({ status: 'recorded' });
     expect(L.closed).toMatchObject([{ taskId: result.taskId, exitCode: 0 }]);
+  });
+
+  it('separates scope handoff from delayed terminal persistence in the existing tracer', async () => {
+    vi.useFakeTimers();
+    const { emitter, child } = makeChild();
+    const stages: string[] = [];
+    const scope: ScopeState = { rel: '', procs: [] };
+    let release!: () => void;
+    L.closeDelay = () => new Promise<void>((resolve) => { release = resolve; });
+    const result = await managedSpawn('true', [], SIDECAR_SPEC, {
+      scopeAvailable: true, spawnFn: (() => child) as unknown as typeof nodeSpawn,
+      fs: makeFs(scope), stage: (name) => { stages.push(name); },
+    });
+    scope.rel = scopeCgroupRelPath(MGR, 'sidecar', result.scopeUnit!);
+    stages.length = 0;
+    emitter.emit('exit', 0, null);
+    let finished = false;
+    const completion = result.waitForCompletion().then((outcome) => { finished = true; return outcome; });
+    expect(stages).toEqual(['completion-child-exit', 'completion-handoff']);
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS);
+    expect(stages).toEqual(['completion-child-exit', 'completion-handoff', 'completion-handoff-complete',
+      'completion-inspect-terminal', 'completion-registration', 'completion-close', 'fixture-close-pending']);
+    expect(finished).toBe(false);
+    release();
+    await expect(completion).resolves.toEqual({ status: 'recorded' });
+    expect(stages.at(-1)).toBe('completion-finished');
   });
 
   it('reports a persistence failure without inventing terminal evidence', async () => {
