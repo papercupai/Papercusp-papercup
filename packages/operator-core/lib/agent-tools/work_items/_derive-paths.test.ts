@@ -35,6 +35,13 @@ describe('deriveRepoPathsFromText (EI-16028)', () => {
     ]);
   });
 
+  it('splits adjacent repo-prefix paths instead of joining them', () => {
+    expect(deriveRepoPathsFromText('see apps/operator`packages/backup for both surfaces')).toEqual([
+      'apps/operator',
+      'packages/backup',
+    ]);
+  });
+
   it('returns empty for text with no repo-path mentions', () => {
     expect(deriveRepoPathsFromText('the gateway is admission-starved, raise the ceiling')).toEqual([]);
   });

@@ -6,6 +6,8 @@ export interface PortalReconcileConfig {
   npm: string;
   port: number;
   publicLinksEnv?: string;
+  /** Promote these accepted bytes using the public-link digest saved at build time. */
+  stagedRelease?: { path: string; publicLinksDigest: string; sourceDigest?: string };
   env: Record<string, string>;
 }
 

@@ -433,6 +433,74 @@ describe('cloud portal source reconciliation', () => {
     expect(deps.writeReceipt).not.toHaveBeenCalled();
   });
 
+  function acceptedFixture() {
+    const fixtureResult = fixture();
+    const { config } = fixtureResult;
+    const path = join(config.runtimeRoot, 'releases', 'accepted');
+    mkdirSync(path);
+    writeFileSync(join(path, '.papercusp-release.json'), JSON.stringify({
+      sourceRoot: config.portalRoot, sourceRootDigest: 'root-1',
+    }));
+    return { ...fixtureResult, path };
+  }
+
+  it('hands off the exact accepted artifact without rebuilding or claiming unknown linked-source provenance', async () => {
+    const { config, path } = acceptedFixture();
+    const snapshot = await publicLinksSnapshot(config.publicLinksEnv, {});
+    const run = vi.fn().mockResolvedValue(undefined);
+    const result = await reconcilePortal({ ...config,
+      stagedRelease: { path, publicLinksDigest: snapshot.digest },
+    }, {
+      fingerprint: async () => ({ digest: 'linked-now', rootDigest: 'root-1' }),
+      run, healthy: async () => true,
+      withHandoffLock: async (handoff: () => Promise<unknown>) => handoff(),
+    });
+    expect(result).toEqual({ status: 'deployed', releasePath: path });
+    expect(realpathSync(join(config.runtimeRoot, 'current'))).toBe(path);
+    expect(run.mock.calls.map(([command, args]) => [command, args])).toEqual([
+      ['bash', [config.deployScript, '--handoff']],
+    ]);
+    expect(JSON.parse(readFileSync(join(config.runtimeRoot, '.papercusp-reconcile.json'), 'utf8')))
+      .toMatchObject({ releasePath: path, sourceDigest: null, publicLinksDigest: snapshot.digest });
+  });
+
+  it.each(['foreign-source', 'changed-source', 'changed-links', 'outside-runtime'])(
+    'refuses an accepted artifact with %s before changing the serving pointer', async (failure) => {
+      const { config, release, path } = acceptedFixture();
+      const snapshot = await publicLinksSnapshot(config.publicLinksEnv, {});
+      if (failure === 'foreign-source' || failure === 'changed-source') {
+        writeFileSync(join(path, '.papercusp-release.json'), JSON.stringify({
+          sourceRoot: failure === 'foreign-source' ? '/other/portal' : config.portalRoot,
+          sourceRootDigest: failure === 'changed-source' ? 'old-root' : 'root-1',
+        }));
+      }
+      const run = vi.fn();
+      await expect(reconcilePortal({ ...config, stagedRelease: {
+        path: failure === 'outside-runtime' ? config.portalRoot : path,
+        publicLinksDigest: failure === 'changed-links' ? '0'.repeat(64) : snapshot.digest,
+      } }, {
+        fingerprint: async () => ({ digest: 'linked-now', rootDigest: 'root-1' }),
+        run, healthy: async () => true,
+      })).rejects.toThrow(/portal_(staged_release|public_links)/);
+      expect(realpathSync(join(config.runtimeRoot, 'current'))).toBe(release.path);
+      expect(run).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rolls back the exact accepted artifact when its health check fails', async () => {
+    const { config, release, path } = acceptedFixture();
+    const snapshot = await publicLinksSnapshot(config.publicLinksEnv, {});
+    const healthy = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await expect(reconcilePortal({ ...config,
+      stagedRelease: { path, publicLinksDigest: snapshot.digest },
+    }, {
+      fingerprint: async () => ({ digest: 'linked-now', rootDigest: 'root-1' }),
+      run: async () => {}, healthy,
+      withHandoffLock: async (handoff: () => Promise<unknown>) => handoff(),
+    })).rejects.toThrow('portal_handoff_health_failed');
+    expect(realpathSync(join(config.runtimeRoot, 'current'))).toBe(release.path);
+  });
+
   it('hands off linked-source drift while retaining the earlier digest for the next tick', async () => {
     const { config, release } = fixture();
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});

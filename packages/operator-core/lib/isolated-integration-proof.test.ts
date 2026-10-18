@@ -6,9 +6,19 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it('keeps isolated worker phase ceilings independent of a widened outer file budget', () => {
+  const baseline = isolatedWorkerOptions(480_000, {});
+  const outerFileMs = 2_400_000;
+  const widened = isolatedWorkerOptions(480_000, { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(outerFileMs) });
+  expect(widened).toEqual(baseline);
+  expect(widened.testTimeoutMs).toBeLessThan(outerFileMs);
+  expect(widened.phaseTimeouts).toMatchObject({ bootstrapMaxMs: 600_000,
+    executeMs: 480_000, executeMaxMs: 480_000, teardownMaxMs: 600_000 });
+});
 
 function unrelatedCheckpointObservation(): PrivateUnrelatedCheckpointObservation {
   const checkpoint = 'Private unrelated checkpoint control';

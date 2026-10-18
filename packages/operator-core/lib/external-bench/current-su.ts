@@ -1646,9 +1646,11 @@ async function retirePrefix(ports: Pick<CurrentSuBenchPorts, 'listTasks' | 'kill
     // with this detail; that is settled cleanup, not a failed teardown. Keep
     // rejecting every other `not_live` result because it may be an unconfined
     // or otherwise unverifiable residue row.
-    const verifiedEmpty = result.error === 'not_live' && result.detail?.includes('holds no live process right now; nothing to reap');
-    if (!result.ok && result.error !== 'already_gone' && result.error !== 'task_not_found' && !verifiedEmpty)
-      throw new Error(`Benchmark cleanup failed for ${task.taskId}: ${result.error}`);
+    if (!result.ok) {
+      const verifiedEmpty = result.error === 'not_live' && result.detail?.includes('holds no live process right now; nothing to reap');
+      if (result.error !== 'already_gone' && result.error !== 'task_not_found' && !verifiedEmpty)
+        throw new Error(`Benchmark cleanup failed for ${task.taskId}: ${result.error}`);
+    }
     retired.push(task.taskId);
   }
   return retired;

@@ -5012,6 +5012,8 @@ async function completeOne(
             return []; // fail-open, as the live-drove-ui retention check above is
           }
         },
+        repoRoot: uiRepoRoots[0] ?? null,
+        harnessSlug: existing.harness ?? null,
       },
     );
   }

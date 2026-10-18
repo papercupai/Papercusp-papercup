@@ -51,9 +51,12 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
 import { changeKindsArg, changeKindReasonArg } from '../../change-kind-catalog';
+import { loadHarnessRegistry } from '../../harness-registry';
+import { renderStackProofGuidance } from '../../change-kind-stack';
 import {
   attachChangeKindDeclarations,
   declaredChangeKindsById,
+  type DeclaredChangeKinds,
   writeSucceededEligibility,
 } from '../../work-item-change-kinds';
 import {
@@ -110,6 +113,37 @@ interface ClaimItem {
   /** P-005: the owner directive this claim is taking the item on in order to
    *  carry out. Bound AFTER the claim lands — see the bind below. */
   directiveRef?: number;
+}
+
+/** Best-effort claim receipt guidance; a diagnostic failure must never undo a landed claim. */
+async function claimStackProofGuidance(
+  workItem: { harness?: string | null; payload?: unknown },
+  declared: { kinds: readonly string[] } | undefined,
+  workspaceId: string | null | undefined,
+): Promise<string | null> {
+  const kind = declared?.kinds.find((candidate) => candidate === 'ui' || candidate === 'background-job');
+  if (kind !== 'ui' && kind !== 'background-job') return null;
+  const harnessSlug = workItem.harness ?? null;
+  let repoRoot: string | null = null;
+  try {
+    const registry = await loadHarnessRegistry(workspaceId ?? undefined);
+    repoRoot = registry.projects.find((project) => project.slug === harnessSlug)?.path ?? null;
+  } catch {
+    // A receipt remains useful without a stack probe; the close gate will re-probe later.
+  }
+  const payload = workItem.payload;
+  const payloadRecord = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : null;
+  const testClass = ['testClass', 'test_class', 'currentBuildTestClass']
+    .map((key) => payloadRecord?.[key])
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  return renderStackProofGuidance({
+    repoRoot,
+    harnessSlug,
+    testClass: testClass ?? null,
+    kind,
+  });
 }
 
 /**
@@ -291,7 +325,13 @@ export function concurrencyClaimWarning(
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
  * phantom "not found".
  */
-async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellReader | null, verifiedCallerAlias: string | null): Promise<BulkItemResult> {
+async function claimOne(
+  itRaw: ClaimItem,
+  identity: AgentIdentity,
+  reader: CellReader | null,
+  verifiedCallerAlias: string | null,
+  declaredById: ReadonlyMap<string, DeclaredChangeKinds>,
+): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
   // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
   // (resolved to the caller) — including for the implicit-identity guards below, so
@@ -646,6 +686,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     }
   }
   if (workItem) {
+    const stackGuidance = await claimStackProofGuidance(
+      workItem,
+      declaredById.get(it.id),
+      identity.workspaceId,
+    );
     let pilotBindingReceipt: PilotParticipantBindingReceipt | undefined;
     if (it.pilotRole) {
       const claimVersion = workItem.takenAt;
@@ -950,6 +995,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
             : {}),
           ...(directiveBindWarning ? { directiveBindWarning } : {}),
+          ...(stackGuidance ? { stackGuidance } : {}),
           checkpoint: hint.checkpoint,
           checkpointAgeMs: hint.checkpointAgeMs,
           checkpointWarning:
@@ -1002,6 +1048,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
           ...(directiveBindWarning ? { directiveBindWarning } : {}),
+          ...(stackGuidance ? { stackGuidance } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
@@ -1400,7 +1447,7 @@ export default defineTool({
           }))
         : list.map((it) => ({ id: it.id, changeKinds: args.changeKinds, changeKindReason: args.changeKindReason })),
     );
-    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias), {
+    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias, declaredById), {
       keyOf: (it) => ({ id: it.id }),
     });
     const env = declaredById.size

@@ -33,6 +33,7 @@ import {
 } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import type { ChangeKindsView } from './work-item-change-kinds';
+import { renderStackProofGuidance } from './change-kind-stack';
 
 /**
  * D-003: claims that began before this instant and carry no declaration close with a warning
@@ -63,6 +64,12 @@ export interface ChangeKindProofDeps {
   verifyUiArtifacts?: (evidence: CompletionVerificationEvidence) => Promise<LiveDroveUiArtifactVerdict>;
   /** Cited ui artifacts that live only in session scratch and so will not survive for review. */
   unretainedUiArtifacts?: (evidence: CompletionVerificationEvidence) => Promise<string[]>;
+  /** Repository root used to choose the bundled stack default proof tool. */
+  repoRoot?: string | null;
+  /** Harness slug used by Papercusp's serving-runtimes route overrides. */
+  harnessSlug?: string | null;
+  /** Optional maintained current-build test class that overrides the manifest default. */
+  testClass?: string | null;
 }
 
 export interface ChangeKindMissingProof {
@@ -264,25 +271,47 @@ export async function missingProofForKind(
   deps: ChangeKindProofDeps = {},
 ): Promise<string[]> {
   const e = evidenceFor(kind, entry, root, singleKind);
+  let missing: string[] = [];
   switch (kind) {
     case 'ui':
-      return checkUi(e, root, singleKind, deps);
+      missing = await checkUi(e, root, singleKind, deps);
+      break;
     case 'service':
-      return checkService(e);
+      missing = checkService(e);
+      break;
     case 'migration':
-      return checkMigration(e);
+      missing = checkMigration(e);
+      break;
     case 'background-job':
-      return checkBackgroundJob(e);
+      missing = checkBackgroundJob(e);
+      break;
     case 'logic':
     case 'test-only':
-      return citesPassingTestRun(e);
+      missing = citesPassingTestRun(e);
+      break;
     case 'config':
-      return checkReadBack(e, 'the effective value read back from the program that consumes it');
+      missing = checkReadBack(e, 'the effective value read back from the program that consumes it');
+      break;
     case 'docs':
-      return checkReadBack(e, 'the changed document read back from where readers get it');
+      missing = checkReadBack(e, 'the changed document read back from where readers get it');
+      break;
     case 'no-code-change':
-      return checkNoCodeChange(root);
+      missing = checkNoCodeChange(root);
+      break;
   }
+  // R-3 makes the default actionable at the exact refusal point. Keep this advisory
+  // alongside the missing proof rather than changing the catalog's stable proof list.
+  if (missing.length > 0 && (kind === 'ui' || kind === 'background-job')) {
+    missing.push(
+      await renderStackProofGuidance({
+        repoRoot: deps.repoRoot,
+        harnessSlug: deps.harnessSlug,
+        testClass: deps.testClass,
+        kind,
+      }),
+    );
+  }
+  return missing;
 }
 
 // ── the gate ─────────────────────────────────────────────────────────────────

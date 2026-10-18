@@ -3802,6 +3802,63 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
     }
   });
 
+  it("WI-41042: keeps protocol attribution on forwarded non-2xx telemetry", async () => {
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const logFile = path.join(
+      os.tmpdir(),
+      `mcp-proxy-non2xx-method-attribution-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+    );
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    try {
+      const upstream = track(
+        http.createServer((_req, res) => {
+          res.writeHead(400, {
+            "content-type": "application/json",
+            connection: "keep-alive",
+          });
+          res.end('{"jsonrpc":"2.0","id":1,"error":{"code":-32000}}');
+        }),
+      );
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 500,
+          retryBackoffMs: 10,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      const body = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}';
+      expect((await request(port(proxy), body, "/api/mcp")).status).toBe(400);
+      const records = fs
+        .readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as {
+          kind?: string;
+          traceId?: string;
+          rpcMethods?: string[];
+        });
+      const non2xx = records.find((record) => record.kind === "upstream_non2xx");
+      expect(non2xx).toBeTruthy();
+      expect(non2xx?.traceId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(non2xx?.rpcMethods).toEqual(["tools/list"]);
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      if (previous === undefined)
+        delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+    }
+  });
+
   it("WI-41042: correlates initialize across the upstream hop and records only bounded stage telemetry", async () => {
     const os = await import("node:os");
     const fs = await import("node:fs");

@@ -76,9 +76,23 @@ const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) a
 
 // ───────────────────────── pinned engines ─────────────────────────
 
+/**
+ * Pinned executable assets are host-shared inputs, not workspace state.
+ *
+ * A request or isolated test may set PAPERCUSP_HOME to a private workspace
+ * data root. Resolving the vendor tree through papercuspPath() in that case
+ * hides the maintained installation under ~/.papercusp/vendor and makes the
+ * packer look unprovisioned. Keep this aligned with the LSP adapter's
+ * host-level vendor resolution; workspace-scoped paths remain appropriate for
+ * scratch artifacts below.
+ */
+export function resolvePackerVendorDir(engine: 'repomix' | 'code2prompt'): string {
+  return join(homedir(), '.papercusp', 'vendor', engine);
+}
+
 /** Vendor roots. Provisioned by P-016; never installed at runtime. */
-export const REPOMIX_VENDOR_DIR = papercuspPath('vendor', 'repomix');
-export const CODE2PROMPT_VENDOR_DIR = papercuspPath('vendor', 'code2prompt');
+export const REPOMIX_VENDOR_DIR = resolvePackerVendorDir('repomix');
+export const CODE2PROMPT_VENDOR_DIR = resolvePackerVendorDir('code2prompt');
 
 /**
  * The EXACT pinned versions.

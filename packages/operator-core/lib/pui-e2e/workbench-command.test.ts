@@ -53,7 +53,7 @@ describe('PUI workbench control commands', () => {
       }));
       try {
         const before = await captureWorkbenchSessionEvidence(root, 'pui-chat-42', { snapshot });
-        expect(before.probeError).toBeUndefined();
+        expect(before.probeError, JSON.stringify(before)).toBeUndefined();
         expect(before.socketOwners).toEqual([{ socket, pids: expect.arrayContaining([process.pid]), error: undefined }]);
         expect(snapshot).toHaveBeenCalledWith(process.pid, { includeWorkbenchEnvironment: true, includeRootThreads: true });
         expect(before.chatPanes).toEqual([expect.objectContaining({ pid: 42, environment: expect.objectContaining({ PUI_CHAT_WORKBENCH: 'pui-chat-42' }) })]);

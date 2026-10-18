@@ -587,13 +587,16 @@ it('fences intentional PG shutdown before cancelling an owned process group', as
     '--isolated-runtime', '--', process.execPath, '-e', 'setInterval(() => {}, 1000);',
   ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   let cancelled = false;
+  const cancelOnRuntimeStart = (message: unknown) => {
+    if (!message || typeof message !== 'object' || (message as { kind?: unknown }).kind !== 'isolated-runtime-start') return;
+    cancelled = true;
+    child.off('message', cancelOnRuntimeStart);
+    child.kill('SIGTERM');
+  };
   try {
-    child.once('message', message => {
-      if (message && typeof message === 'object' && message.kind === 'isolated-runtime-start') {
-        cancelled = true;
-        child.kill('SIGTERM');
-      }
-    });
+    // Bootstrap emits progress messages before runtime-start; keep listening until
+    // the lifecycle message we need instead of consuming the first IPC packet.
+    child.on('message', cancelOnRuntimeStart);
     const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 120_000, killGraceMs: 45_000 });
     expect(cancelled).toBe(true);
     // A detached supervisor owns a separate process group. Its SIGTERM handler
@@ -613,6 +616,7 @@ it('fences intentional PG shutdown before cancelling an owned process group', as
     }).toEqual({ code: 1, signal: null, timedOut: false, exitWaitTimedOut: false,
       stdioDrainTimedOut: false, unexpectedDeath: false, restartAttempt: false, cleanupComplete: true });
   } finally {
+    child.off('message', cancelOnRuntimeStart);
     if (child.exitCode === null && child.signalCode === null) {
       const exited = new Promise(resolve => child.once('exit', resolve));
       try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* owned group already gone */ }

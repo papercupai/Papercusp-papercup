@@ -1852,6 +1852,13 @@ describe('current benchmark restart and live binding', () => {
     expect(f.ports.listTasks).toHaveBeenCalledWith({ workspaceId: 'bench-private', labelPrefix: currentBenchRunLabel('run-1'), includeEnded: true, limit: 1000 });
     expect(f.ports.killTask).toHaveBeenCalledExactlyOnceWith('task-own');
   });
+  it('does not inspect failure metadata after successful task cleanup', async () => {
+    const f = fixture();
+    const result = { ok: true as const, taskId: 'task-own', action: 'kill' };
+    Object.defineProperty(result, 'error', { get() { throw new Error('success has no failure metadata'); } });
+    vi.mocked(f.ports.killTask).mockResolvedValue(result);
+    expect(await recoverCurrentBenchRun(f.ports, options)).toEqual(['task-own']);
+  });
   it('accepts a terminal cleanup refusal only when the confined scope was verified empty', async () => {
     const f = fixture();
     vi.mocked(f.ports.killTask).mockResolvedValue({

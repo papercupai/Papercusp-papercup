@@ -205,9 +205,34 @@ export async function reconcilePortal(config, deps = {}) {
   const before = await getFingerprint(portalRoot);
   const publicLinks = await readPublicLinks();
   const beforePublicLinksDigest = deps.publicLinksDigest ? await getPublicLinksDigest(publicLinksEnv) : publicLinks.digest;
+  // An acceptance build has already frozen and tested these bytes. Reuse the
+  // same promotion/rollback lane rather than compiling a different artifact.
+  // The caller supplies the public-link digest recorded by that build; never
+  // infer build configuration or linked-source provenance from today's tree.
+  let acceptedRelease;
+  if (config.stagedRelease) {
+    const accepted = config.stagedRelease;
+    if (!/^[a-f0-9]{64}$/.test(accepted.publicLinksDigest ?? '')
+      || accepted.publicLinksDigest !== beforePublicLinksDigest) {
+      throw new Error('portal_public_links_accepted_release_mismatch');
+    }
+    const releasesRoot = await realpath(join(runtimeRoot, 'releases'));
+    const path = await realpath(accepted.path);
+    const within = relative(releasesRoot, path);
+    if (!within || within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
+      throw new Error('portal_staged_release_outside_runtime');
+    }
+    const manifest = JSON.parse(await readFile(join(path, '.papercusp-release.json'), 'utf8'));
+    if (resolve(manifest.sourceRoot ?? '') !== portalRoot
+      || manifest.sourceRootDigest !== before.rootDigest) {
+      throw new Error('portal_staged_release_source_mismatch');
+    }
+    acceptedRelease = { path, manifest };
+  }
   const current = await getRelease(runtimeRoot);
   const receipt = await getReceipt(receiptPath);
-  const sameRelease = receipt?.releasePath === current.path;
+  const sameRelease = receipt?.releasePath === current.path
+    && (!acceptedRelease || acceptedRelease.path === current.path);
   const sameSource = receipt?.sourceDigest === before.digest
     && receipt?.sourceRootDigest === before.rootDigest;
   const samePublicLinks = receipt?.publicLinksDigest === beforePublicLinksDigest;
@@ -249,7 +274,7 @@ export async function reconcilePortal(config, deps = {}) {
     pendingSinceAtMs,
   });
   const observedAt = now();
-  if (stabilityWindowMs > 0) {
+  if (!acceptedRelease && stabilityWindowMs > 0) {
     const candidate = await getCandidate(candidatePath);
     const candidateMatches = candidate?.schemaVersion === 1
       && candidate.sourceDigest === before.digest
@@ -275,29 +300,26 @@ export async function reconcilePortal(config, deps = {}) {
   }
 
   await assertPublicLinksLive(publicLinks.links, deps.linkLive ?? linkLive);
-  const priorReleaseNames = await getReleaseNames(runtimeRoot);
-  const buildEnv = { ...publicLinks.env, PORTAL_BUILD_ONLY: '1', PORTAL_PROMOTE: '0' };
-  await runCommand(config.npm, ['run', 'build'], portalRoot, buildEnv);
-  const afterBuild = await getFingerprint(portalRoot);
-  const afterBuildPublicLinksDigest = await getPublicLinksDigest(publicLinksEnv);
-  if (before.rootDigest !== afterBuild.rootDigest) {
-    await saveCandidate(candidatePath, snapshot(afterBuild, afterBuildPublicLinksDigest, now()));
-    return { status: 'deferred', reason: 'root_source_changed_during_build', releasePath: current.path };
+  let stagedRelease = acceptedRelease;
+  if (!stagedRelease) {
+    const priorReleaseNames = await getReleaseNames(runtimeRoot);
+    const buildEnv = { ...publicLinks.env, PORTAL_BUILD_ONLY: '1', PORTAL_PROMOTE: '0' };
+    await runCommand(config.npm, ['run', 'build'], portalRoot, buildEnv);
+    const afterBuild = await getFingerprint(portalRoot);
+    const afterBuildPublicLinksDigest = await getPublicLinksDigest(publicLinksEnv);
+    if (before.rootDigest !== afterBuild.rootDigest) {
+      await saveCandidate(candidatePath, snapshot(afterBuild, afterBuildPublicLinksDigest, now()));
+      return { status: 'deferred', reason: 'root_source_changed_during_build', releasePath: current.path };
+    }
+    if (before.digest !== afterBuild.digest) {
+      console.warn('cloud-portal-reconcile: linked sources changed during build; handing off the completed release and retaining the earlier digest for the next reconciliation');
+    }
+    if (beforePublicLinksDigest !== afterBuildPublicLinksDigest) {
+      await saveCandidate(candidatePath, snapshot(afterBuild, afterBuildPublicLinksDigest, now()));
+      return { status: 'deferred', reason: 'public_links_changed_during_build', releasePath: current.path };
+    }
+    stagedRelease = await findCandidateRelease(runtimeRoot, priorReleaseNames, portalRoot, before.rootDigest);
   }
-  if (before.digest !== afterBuild.digest) {
-    console.warn('cloud-portal-reconcile: linked sources changed during build; handing off the completed release and retaining the earlier digest for the next reconciliation');
-  }
-  if (beforePublicLinksDigest !== afterBuildPublicLinksDigest) {
-    await saveCandidate(candidatePath, snapshot(afterBuild, afterBuildPublicLinksDigest, now()));
-    return { status: 'deferred', reason: 'public_links_changed_during_build', releasePath: current.path };
-  }
-
-  const stagedRelease = await findCandidateRelease(
-    runtimeRoot,
-    priorReleaseNames,
-    portalRoot,
-    before.rootDigest,
-  );
   if (resolve(stagedRelease.manifest.sourceRoot ?? '') !== portalRoot
     || stagedRelease.manifest.sourceRootDigest !== before.rootDigest) {
     throw new Error('portal_staged_release_source_mismatch');
@@ -353,7 +375,7 @@ export async function reconcilePortal(config, deps = {}) {
     await saveReceipt(receiptPath, {
       schemaVersion: 2,
       releasePath: stagedRelease.path,
-      sourceDigest: before.digest,
+      sourceDigest: acceptedRelease ? (config.stagedRelease.sourceDigest ?? null) : before.digest,
       sourceRootDigest: before.rootDigest,
       publicLinksDigest: beforePublicLinksDigest,
     });

@@ -16,7 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { getEncoding } from 'js-tiktoken';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
@@ -38,8 +38,10 @@ import {
   readGitProvenance,
   REPOMIX_FORBIDDEN_FLAGS,
   REPOMIX_PINNED_VERSION,
+  REPOMIX_VENDOR_DIR,
   SECRET_DENY_GLOBS,
   templateHeader,
+  resolvePackerVendorDir,
   type ExecFn,
   type PackerArgs,
   type PackerEffects,
@@ -213,6 +215,21 @@ const attached = (argv: readonly string[], flag: string): string => {
 // ───────────────────────── pins and identity ─────────────────────────
 
 describe('the pin is enforced by EQUALITY, not by parseability', () => {
+  it('keeps pinned packer assets on the host home under a workspace-scoped PAPERCUSP_HOME', () => {
+    const previous = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = join(tmpdir(), 'workspace-scoped-packer-home');
+      const hostVendor = join(homedir(), '.papercusp', 'vendor');
+      expect(resolvePackerVendorDir('repomix')).toBe(join(hostVendor, 'repomix'));
+      expect(resolvePackerVendorDir('code2prompt')).toBe(join(hostVendor, 'code2prompt'));
+      expect(REPOMIX_VENDOR_DIR).toBe(join(hostVendor, 'repomix'));
+      expect(REPOMIX_VENDOR_DIR.startsWith(process.env.PAPERCUSP_HOME)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previous;
+    }
+  });
+
   it('accepts exactly the pinned repomix version', () => {
     const r = assertIsRepomix(`${REPOMIX_PINNED_VERSION}\n`);
     expect(r.ok).toBe(true);

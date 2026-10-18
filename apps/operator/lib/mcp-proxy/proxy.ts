@@ -6151,6 +6151,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   elapsedMs: Date.now() - started,
                   connection: (ures.headers["connection"] as string) ?? null,
                   forwardingResult: "applied",
+                  ...rpcTrace,
                 });
               }
               if (continuationBodyDone) await continuationBodyDone;

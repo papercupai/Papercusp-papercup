@@ -1227,8 +1227,20 @@ mod cli_help_tests {
             started.elapsed() < Duration::from_millis(500),
             "shutdown launch waited for the zellij client"
         );
+        #[cfg(target_os = "linux")]
+        let child_group = {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.id())).unwrap();
+            let (_, fields) = stat.rsplit_once(')').unwrap();
+            fields.split_whitespace().nth(2).unwrap().parse::<u32>().unwrap()
+        };
         child.kill().unwrap();
         let _ = child.wait();
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            child_group,
+            child.id(),
+            "shutdown client must outlive the chat pane's process group"
+        );
     }
 
     #[test]

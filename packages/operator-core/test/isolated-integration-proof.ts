@@ -14,7 +14,7 @@ import { readCommittedFiles } from '../lib/agent-tools/plans/committed-tree-read
 import { qualifyCommittedReaderOriginalPreparation as qualifyOriginalPreparation } from './private-http-workspace-preflight';
 import { it } from 'vitest';
 // @ts-ignore -- reuse the maintained JS router's deadline contract.
-import { testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
+import { defaultTestFileRunTimeoutMs, testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
 // @ts-ignore -- same progress watchdog used by that router.
 import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog.mjs';
 
@@ -147,22 +147,26 @@ type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs
 /** Compose the actual nested router contract; startup consumes none of its
  * collection/execution allowance. Teardown allows the router's cgroup stop,
  * the private API's five-second stop, and a thirty-second PG progress checkpoint.
- * Actual PG write progress can extend cleanup within the configured file ceiling;
+ * Actual PG write progress can extend cleanup within the single-file default ceiling;
  * repeated stages, logs and unchanged IO cannot renew it. No budget is proof of cleanup.
  */
 export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv = process.env, executeMaxMs = executeMs) {
   const listMs = testFileListTimeoutMs(env);
   const teardownMs = TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
+  // The caller may widen its encompassing file watchdog to fit these phases.
+  // Reusing that override here would grow the inner budget twice on every
+  // increase, so no parent budget could ever contain it.
+  const phaseMaxMs = defaultTestFileRunTimeoutMs(1);
   const phaseTimeouts: WorkerDeadlines = {
     // Collection time is a progress checkpoint, not a maximum PG boot time.
-    // Use the configured single-file verification allowance as the absolute
+    // Use the shared single-file default allowance as the absolute
     // preparation ceiling; only distinct observed boot stages can extend it.
     bootstrapMs: listMs,
-    bootstrapMaxMs: Math.max(listMs, testFileRunTimeoutMs(env, 1)),
+    bootstrapMaxMs: Math.max(listMs, phaseMaxMs),
     executeMs,
     executeMaxMs,
     teardownMs,
-    teardownMaxMs: Math.max(teardownMs, testFileRunTimeoutMs(env, 1)),
+    teardownMaxMs: Math.max(teardownMs, phaseMaxMs),
   };
   return { phaseTimeouts, killGraceMs: teardownMs, drainGraceMs: 5_000,
     testTimeoutMs: phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + phaseTimeouts.teardownMaxMs! + teardownMs + 20_000 };
