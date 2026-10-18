@@ -7,6 +7,7 @@ import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readlink
 import { writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import { parse as parseToml } from '@iarna/toml';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import { linuxPpidFromProcStat, readProcessIdentity } from '../lib/process-identity';
@@ -99,19 +100,41 @@ export function retainIsolatedWorkerProgress(evidenceDir: string, stage: string,
 export function retainIsolatedNativeTaskDiagnostics(evidenceDir: string, task: Record<string, unknown>,
   sources: Partial<Record<'stdout' | 'normalized' | 'boot', string>>, codexHome?: string) {
   const files = Object.fromEntries(Object.entries({ ...sources,
-    ...(codexHome ? { 'codex-tui': join(codexHome, 'log', 'codex-tui.log') } : {}),
+    ...(codexHome ? { 'codex-tui': join(codexHome, 'log', 'codex-tui.log'),
+      'codex-config': join(codexHome, 'config.toml') } : {}),
   }).map(([kind, source]) => {
     try {
-      const bytes = readFileSync(source);
-      const retained = join(evidenceDir, `native-task-${kind}.log`);
+      let bytes = readFileSync(source);
+      if (kind === 'codex-config') {
+        let config: ReturnType<typeof parseToml>;
+        try { config = parseToml(bytes.toString('utf8')); }
+        catch { return [kind, { source, captured: false, reason: 'invalid-config' }]; }
+        const servers = config.mcp_servers && typeof config.mcp_servers === 'object' ? config.mcp_servers : {};
+        bytes = Buffer.from(JSON.stringify({ sha256: createHash('sha256').update(bytes).digest('hex'),
+          model: config.model, mcpServers: Object.entries(servers).map(([name, value]) => {
+            const server = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+            let url: URL | undefined;
+            try { if (typeof server.url === 'string') url = new URL(server.url); } catch { /* explicit absent origin */ }
+            return { name, enabled: server.enabled, origin: url?.origin, pathname: url?.pathname,
+              headerNames: Object.keys((server.http_headers ?? {}) as object),
+              envHeaderNames: Object.keys((server.env_http_headers ?? {}) as object) };
+          }) }));
+      }
+      const retained = join(evidenceDir, kind === 'codex-config' ? 'native-task-config.json' : `native-task-${kind}.log`);
       const retainedBytes = existsSync(retained) ? statSync(retained).size : 0;
-      if (bytes.length < retainedBytes)
+      if (kind !== 'codex-config' && bytes.length < retainedBytes)
         return [kind, { source, bytes: bytes.length, retainedBytes, captured: false, reason: 'source-shrank' }];
       writeFileSync(retained, bytes, { mode: 0o600 });
       return [kind, { source, bytes: bytes.length, captured: true }];
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      return [kind, { source, captured: false, reason: 'missing' }];
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return [kind, { source, captured: false, reason: 'missing' }];
+      // Native Codex homes can be owned by the task container's root user.
+      // Preserve that diagnostic boundary as evidence instead of replacing the
+      // launch/acceptance result with a retention exception.
+      if (code === 'EACCES' || code === 'EPERM')
+        return [kind, { source, captured: false, reason: 'permission-denied', error: String(error) }];
+      throw error;
     }
   }));
   writeFileSync(join(evidenceDir, 'native-task-diagnostics.json'), JSON.stringify({
@@ -623,7 +646,7 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
     'phases/execute/roster-stop-native.jsonl',
     'phases/execute/native-task-diagnostics.json', 'phases/execute/native-task-stdout.log',
     'phases/execute/native-task-normalized.log', 'phases/execute/native-task-boot.log',
-    'phases/execute/native-task-codex-tui.log',
+    'phases/execute/native-task-codex-tui.log', 'phases/execute/native-task-config.json',
     'phases/execute/native-result.json', 'phases/execute/operator-api-build-result.json',
     'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
     'phases/execute/portal-health-reads.json', 'phases/execute/portal-health-writes.json',

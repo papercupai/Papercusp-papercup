@@ -19,6 +19,8 @@ import * as obligationReader from '../../../agent-obligation-reader';
 import * as goalSettings from '../../../goal-launch-settings';
 import * as ownerReportHistory from '../../../system-health/goal-owner-report-watchdog';
 import { formatAgentObligationLine } from '../../../agent-obligations';
+import { cancelAwait, registerAwait } from '../../../events/await/store';
+import { inboxWakeKey } from '../inbox-wake';
 import {
   buildTurnStartOrientationBlock,
   ORIENTATION_CURSOR_SURFACE,
@@ -113,6 +115,36 @@ async function readOrientation(overrides: Record<string, unknown> = {}, ownerId 
 }
 
 describe('complete agenda recovery through coord:orient', () => {
+  it('filters the real inbox listener while preserving a real substantive await through Orientation', async () => {
+    vi.spyOn(pipelineHealth, 'fetchOrientPipeline').mockResolvedValue(null);
+    const listener = inboxWakeKey(NON_GOAL_OWNER);
+    const dependency = `work-item:done:WI-orient-wait-${RUN}`;
+    const awaits = await runWithWorkspace(WS, async () => [
+      await registerAwait({ subscriberId: NON_GOAL_OWNER, eventKey: listener, timeoutSec: null,
+        timeoutBehavior: 'expire', policy: 'wake' }),
+      await registerAwait({ subscriberId: NON_GOAL_OWNER, eventKey: dependency, timeoutSec: null,
+        timeoutBehavior: 'wake', policy: 'wake' }),
+    ]);
+    try {
+      const source = await runWithWorkspace(WS, () =>
+        obligationReader.defaultAgentObligationReaderDeps().waitingOn(WS, NON_GOAL_OWNER));
+      expect(source).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'event-await', key: listener }),
+        expect.objectContaining({ kind: 'event-await', key: dependency }),
+      ]));
+      const read = await readOrientation({}, NON_GOAL_OWNER);
+      expect(read.obligations).toBeTruthy();
+      const rows = read.obligations.evaluations.filter(row => row.family === 'waiting-on');
+      expect(rows.map(row => row.title)).toEqual([`Awaiting ${dependency}`]);
+      expect(rows[0]?.status).toBe('blocked');
+      expect(rows[0]?.priority).toBe('normal');
+      expect(formatAgentObligationLine(rows[0]!, 'action')).toContain(`[BLOCKED] Awaiting ${dependency}`);
+    } finally {
+      await runWithWorkspace(WS, () => Promise.all(awaits.map(row =>
+        cancelAwait({ awaitId: row.id, subscriberId: NON_GOAL_OWNER }))));
+    }
+  }, 90_000);
+
   it('delivers the canonical agenda to an attributable non-GOAL session', async () => {
     await recordOwnerDirective({
       workspaceId: WS,

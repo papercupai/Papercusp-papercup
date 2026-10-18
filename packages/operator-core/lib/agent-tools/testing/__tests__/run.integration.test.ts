@@ -71,6 +71,7 @@ import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing
 import { listDirtyFilesRecursive, readRestrictedWindowHoldings, type HoldRunGit } from '../../../personal-vault/git-sync-hold';
 import { restrictedHoldRefusal } from '../restricted-hold-fence';
 import { __resetShutdownStateForTest, markShuttingDown } from '../../../shutdown-state';
+import type { TestRunArtifactPaths, TestRunDeadline } from '../run-artifacts';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -92,6 +93,8 @@ function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) 
 /** The envelope testing:run returns (success and error shapes together). */
 interface RunResult {
   ok: boolean;
+  artifacts?: TestRunArtifactPaths;
+  deadline?: TestRunDeadline;
   runId?: string;
   root?: string;
   rootSource?: string;
@@ -256,6 +259,10 @@ beforeAll(async () => {
   process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
   _resetHarnessAdminUrlCacheForTests();
   await _resetForTests();
+  // The nested owned-db fixture needs only this real org substrate. In a forced
+  // exit its afterAll cannot remove disposable scratch repositories, so do not
+  // create unrelated selector fixtures in that child.
+  if (['normal', 'forced'].includes(process.env.PAPERCUSP_TESTING_RUN_OWNED_FIXTURE ?? '')) return;
   selectorCanonical = await makeScratchTestCheckout('papercusp-testing-run-selector-canonical-');
   selectorRequested = await makeScratchTestCheckout('papercusp-testing-run-selector-requested-');
   await rm(selectorPhantom, { recursive: true, force: true });
@@ -274,6 +281,95 @@ afterAll(async () => {
     }
     _resetHarnessAdminUrlCacheForTests();
   }
+});
+
+// Only the nested router selected by the two cleanup regressions enables this
+// checked-in fixture. It uses the actual migrated org fixture and parent registry.
+const OWNED_FIXTURE_MODE = 'PAPERCUSP_TESTING_RUN_OWNED_FIXTURE';
+const OWNED_FIXTURE_READY = 'PAPERCUSP_TESTING_RUN_OWNED_READY_PATH';
+const OWNED_FIXTURE_NAME = 'testing:run owned database fixture';
+it.skipIf(!['normal', 'forced'].includes(process.env[OWNED_FIXTURE_MODE] ?? ''))(OWNED_FIXTURE_NAME, async () => {
+  const fixture = await createOrgTestDb();
+  const [row] = await fixture.adminSql<{ name: string }[]>`SELECT current_database() AS name`;
+  expect(row?.name).toBe(fixture.dbName);
+  await writeFile(process.env[OWNED_FIXTURE_READY]!, JSON.stringify({ dbName: fixture.dbName,
+    pid: process.pid, runId: process.env.PAPERCUSP_TEST_RUN_GROUP, selectedPath: 'packages/operator-core/lib/agent-tools/testing/__tests__/run.integration.test.ts' }));
+  if (process.env[OWNED_FIXTURE_MODE] === 'forced') {
+    // Parent cancellation must kill this worker and clean both this database and
+    // the suite's beforeAll database; neither finally nor afterAll can do it.
+    await new Promise<void>(() => {});
+  } else {
+    expect(await fixture.cleanupWithResult()).toBe('dropped');
+  }
+}, 180_000);
+
+describe('real owned org fixture cleanup through the maintained runner', () => {
+  it.each(['normal', 'forced'] as const)('confirms database/process/receipt cleanup after %s exit', async mode => {
+    const root = await mkdtemp(join(tmpdir(), 'testing-run-owned-fixture-ready-'));
+    selectorRoots.push(root);
+    const readyPath = join(root, 'ready.json');
+    const savedMode = process.env[OWNED_FIXTURE_MODE];
+    const savedReady = process.env[OWNED_FIXTURE_READY];
+    process.env[OWNED_FIXTURE_MODE] = mode;
+    process.env[OWNED_FIXTURE_READY] = readyPath;
+    const controller = new AbortController();
+    const runId = randomUUID();
+    const selectedPath = 'packages/operator-core/lib/agent-tools/testing/__tests__/run.integration.test.ts';
+    const taskDeadlineAtMs = Date.now() + 180_000;
+    const runPromise = runTestFilesCore({ root: REPO_ROOT, files: [selectedPath], runId,
+      testNamePattern: `^${OWNED_FIXTURE_NAME}$`, timeoutMs: 180_000, taskDeadlineAtMs,
+      cleanupReserveMs: 30_000, allowDetachedRecovery: false, signal: controller.signal });
+    try {
+      await Promise.race([
+        vi.waitFor(() => expect(existsSync(readyPath)).toBe(true), { timeout: 120_000, interval: 100 }),
+        runPromise.then(result => {
+          if (!existsSync(readyPath)) throw new Error(`owned fixture did not reach readiness: ${JSON.stringify(result)}`);
+        }),
+      ]);
+      const ready = JSON.parse(await readFile(readyPath, 'utf8'));
+      expect(ready).toMatchObject({ runId, selectedPath, dbName: expect.stringMatching(/^org_/) });
+      if (mode === 'forced') {
+        expect(await org!.adminSql`SELECT datname FROM pg_database WHERE datname = ${ready.dbName}`)
+          .toHaveLength(1);
+        controller.abort(new Error('owned-fixture forced cancellation control'));
+      }
+      const result = await runPromise;
+      expect(result, JSON.stringify(result)).toMatchObject(mode === 'normal'
+        ? { ok: true, passed: 1, failed: 0 } : { ok: false, error: 'aborted' });
+      expect(result).not.toHaveProperty('detachedRunId');
+      expect(result.cleanup, JSON.stringify(result)).toMatchObject({ complete: true, errors: [] });
+      expect(result.cleanup!.databases).toContainEqual({ name: ready.dbName, outcome: 'dropped' });
+      for (const database of result.cleanup!.databases) {
+        expect(database.outcome).toBe('dropped');
+        expect(await org!.adminSql`SELECT datname FROM pg_database WHERE datname = ${database.name}`).toHaveLength(0);
+      }
+      expect(await pidsTaggedWithRun(runId)).toEqual([]);
+      const manifest = JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'));
+      expect(manifest).toMatchObject({ runId, childState: 'closed', state: 'retained',
+        deadline: { taskDeadlineAtMs, cleanupReserveMs: 30_000 }, cleanup: { complete: true } });
+      const receipts = (await readFile(join(result.artifacts!.ownedDatabases, 'cleanup.jsonl'), 'utf8'))
+        .trim().split('\n').map(line => JSON.parse(line));
+      expect(receipts).toContainEqual(expect.objectContaining({ runId, name: ready.dbName, stage: 'registered' }));
+      expect(receipts).toContainEqual(expect.objectContaining({ runId, name: ready.dbName,
+        stage: 'database-drop-result', outcome: 'dropped' }));
+      expect(receipts).toContainEqual(expect.objectContaining({ runId, stage: 'complete', complete: true }));
+      if (mode === 'normal') expect(receipts).toContainEqual(expect.objectContaining({
+        runId, name: ready.dbName, stage: 'clients-stopped' }));
+      const router = JSON.parse(await readFile(join(result.artifacts!.directory, 'router.json'), 'utf8'));
+      expect(router).toMatchObject({ childState: 'closed', aborted: mode === 'forced' });
+      expect(router.outputLogPaths.length).toBeGreaterThan(0);
+      for (const path of router.outputLogPaths) expect(existsSync(path)).toBe(true);
+      const ledger = JSON.parse(await readFile(join(result.artifacts!.directory, 'ledger.json'), 'utf8'));
+      expect(ledger).toMatchObject({ runGroup: runId, status: 'reference-only; presence and verdict require ledger readback' });
+    } finally {
+      controller.abort(new Error('owned-fixture regression teardown'));
+      await runPromise;
+      if (savedMode === undefined) delete process.env[OWNED_FIXTURE_MODE];
+      else process.env[OWNED_FIXTURE_MODE] = savedMode;
+      if (savedReady === undefined) delete process.env[OWNED_FIXTURE_READY];
+      else process.env[OWNED_FIXTURE_READY] = savedReady;
+    }
+  }, 240_000);
 });
 
 describe('scratch checkout custody census (WI-10007684)', () => {
@@ -1242,6 +1338,45 @@ describe('testing:run (integration)', () => {
     expect(result.ok).toBe(true);
     expect(result.cleanup?.complete).toBe(true);
     expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards public caller bounds through the real handler and router environment', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-public-deadline-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const capture = join(root, 'captured-deadline.json');
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ taskDeadlineAtMs: Number(process.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS), childCutoffAtMs: Number(process.env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS), cleanupReserveMs: Number(process.env.PAPERCUSP_TEST_CLEANUP_RESERVE_MS) }));`,
+      "console.log('ROUTE cwd=packages/x runner=node:test\\n  requested real.test.ts\\n# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const taskDeadlineAtMs = Date.now() + 20_000;
+    const args = runTool.args.parse({ files: ['packages/x/real.test.ts'], timeoutMs: 25_000,
+      taskDeadlineAtMs, cleanupReserveMs: 5_000 });
+    const out = await body(call(args, { projectDir: root }));
+    expect(out, JSON.stringify(out)).toMatchObject({ ok: true, passed: 1,
+      deadline: { taskDeadlineAtMs, childCutoffAtMs: taskDeadlineAtMs - 5_000, cleanupReserveMs: 5_000 } });
+    expect(JSON.parse(await readFile(capture, 'utf8'))).toEqual({
+      taskDeadlineAtMs, childCutoffAtMs: taskDeadlineAtMs - 5_000, cleanupReserveMs: 5_000,
+    });
+    const manifest = JSON.parse(await readFile(out.artifacts!.manifest, 'utf8'));
+    expect(manifest.deadline).toEqual(out.deadline);
+    expect(manifest.childState).toBe('closed');
+  });
+
+  it('never grants fresh detached recovery after a caller-bound foreground timeout', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-bound-recovery-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const runRouterFn = vi.fn(async () => ({ code: null, signal: 'SIGTERM' as const,
+      timedOut: true, aborted: false, output: 'controlled timeout without a completed report' }));
+    const result = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 45_000,
+      taskDeadlineAtMs: Date.now() + 45_000, cleanupReserveMs: 10_000 }, { runRouterFn });
+    expect(result).toMatchObject({ ok: false, error: 'timeout' });
+    expect(result).not.toHaveProperty('detachedRunId');
+    expect(result.cleanup?.complete).toBe(true);
+    expect(runRouterFn).toHaveBeenCalledOnce();
   });
 
   it.skipIf(!SIDESTAGE_HIVE_ROOT)(

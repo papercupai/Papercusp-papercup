@@ -10590,6 +10590,7 @@ function writePendingSessionEndWitness(witness, home = homedir()) {
  * @property {string|null} [killedBySignal]
  * @property {boolean} [launchFailed]
  * @property {string} [endAttemptKey]
+ * @property {string|null} [observedAt]
  * @property {(ms:number)=>Promise<void>} [sleep]
  * @property {()=>number} [now]
  * @property {string} [home]

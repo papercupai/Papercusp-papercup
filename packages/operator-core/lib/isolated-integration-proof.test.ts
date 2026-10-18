@@ -337,6 +337,10 @@ it('retains and enrolls the native Codex TUI log before disposable home removal'
   try {
     writeFileSync(log, 'MCP initialization failed: superuser_non_loopback\n');
     retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, {}, home);
+    writeFileSync(join(home, 'config.toml'), '[invalid');
+    retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, {}, home);
+    expect(JSON.parse(readFileSync(join(evidence, 'native-task-diagnostics.json'), 'utf8')))
+      .toMatchObject({ files: { 'codex-config': { captured: false, reason: 'invalid-config' } } });
     rmSync(home, { recursive: true });
     retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, {}, home);
     expect(readFileSync(join(evidence, 'native-task-codex-tui.log'), 'utf8'))
@@ -344,6 +348,39 @@ it('retains and enrolls the native Codex TUI log before disposable home removal'
     expect(JSON.parse(readFileSync(join(evidence, 'native-task-diagnostics.json'), 'utf8')))
       .toMatchObject({ files: { 'codex-tui': { source: log, captured: false, reason: 'missing' } } });
     expect(isolatedIntegrationDiagnosticArtifacts(root)).toContain('phases/execute/native-task-codex-tui.log');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it('records an unreadable native Codex TUI log without masking the task result', () => {
+  const evidence = mkdtempSync(join(tmpdir(), 'isolated-codex-log-permission-'));
+  try {
+    retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native', state: 'failed' }, {}, '/root');
+    expect(JSON.parse(readFileSync(join(evidence, 'native-task-diagnostics.json'), 'utf8')))
+      .toMatchObject({ files: { 'codex-tui': { captured: false, reason: 'permission-denied' } } });
+  } finally { rmSync(evidence, { recursive: true, force: true }); }
+});
+
+it('retains native MCP configuration evidence without credentials after home removal', () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-native-config-'));
+  const home = join(root, 'native-home'), evidence = join(root, 'phases', 'execute');
+  mkdirSync(home); mkdirSync(evidence, { recursive: true });
+  try {
+    writeFileSync(join(home, 'config.toml'), `model = "fixture-model"
+[mcp_servers.papercusp-su]
+url = "http://papercusp-egress:9071/api/mcp?client=fixture-owner&superuser=1&token=${NEVER_EMIT_MARKER}"
+http_headers = { Authorization = "Bearer ${NEVER_EMIT_MARKER}" }
+env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }
+`);
+    retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, {}, home);
+    rmSync(home, { recursive: true });
+    retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, {}, home);
+    const retained = readFileSync(join(evidence, 'native-task-config.json'), 'utf8');
+    expect(retained).not.toContain(NEVER_EMIT_MARKER);
+    expect(JSON.parse(retained)).toMatchObject({ model: 'fixture-model', mcpServers: [{
+      name: 'papercusp-su', origin: 'http://papercusp-egress:9071', pathname: '/api/mcp',
+      headerNames: ['Authorization'], envHeaderNames: ['x-papercusp-native-session'],
+    }] });
+    expect(isolatedIntegrationDiagnosticArtifacts(root)).toContain('phases/execute/native-task-config.json');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

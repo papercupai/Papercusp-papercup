@@ -25,7 +25,10 @@ export function testRunDeadline(timeoutMs: number, options: {
   if (!Number.isFinite(requestedReserve) || requestedReserve < 0 || requestedReserve >= timeoutMs) {
     throw new Error('test cleanup reserve must be nonnegative and smaller than the task budget');
   }
-  const cleanupReserveMs = Math.min(requestedReserve, available);
+  // An explicit reserve defines a fixed child cutoff. Shrinking it as preparation
+  // elapses would move that cutoff forward and consume the caller's cleanup time.
+  const cleanupReserveMs = options.cleanupReserveMs === undefined
+    ? Math.min(requestedReserve, available) : requestedReserve;
   return { startedAtMs: now, taskDeadlineAtMs, cleanupReserveMs,
     childCutoffAtMs: taskDeadlineAtMs - cleanupReserveMs };
 }

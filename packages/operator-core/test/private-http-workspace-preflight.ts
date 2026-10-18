@@ -858,6 +858,7 @@ function assertPrivatePreparationEvidence() {
 }
 
 type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: number; maxMs?: number; pollMs?: number;
+  env?: NodeJS.ProcessEnv;
   onProgress?: (progress: { step: string; completedSteps: number }) => void };
 type PrivateBundleReceipt = { path: string; sha256: string };
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
@@ -911,11 +912,12 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
   };
   const command = builder?.command ?? 'bash';
   const args = builder?.args ?? [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path];
+  const environment = builder?.env ?? process.env;
   if (builder?.maxMs !== undefined) {
     const maxMs = builder.maxMs;
     return new Promise<PrivateBundleReceipt>((resolveBuild, reject) => {
       let child: ChildProcess;
-      try { child = spawn(command, args, { cwd: root, env: process.env, stdio: ['ignore', log, log], detached: true }); }
+      try { child = spawn(command, args, { cwd: root, env: environment, stdio: ['ignore', log, log], detached: true }); }
       catch (error) { finish(); reject(error); return; }
       const completed = new Set<string>();
       const openSteps = new Set<string>();
@@ -988,7 +990,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
     // Node's synchronous spawn supports detached process groups; the pinned
     // typings expose that option only on SpawnOptions.
     const buildOptions: SpawnSyncOptions & Pick<SpawnOptions, 'detached'> = {
-      cwd: root, env: process.env, stdio: ['ignore', log, log], detached: true,
+      cwd: root, env: environment, stdio: ['ignore', log, log], detached: true,
       timeout: timeoutMs, killSignal: 'SIGKILL',
     };
     const result = spawnSync(command, args, buildOptions);

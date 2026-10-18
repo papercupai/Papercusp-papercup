@@ -4280,13 +4280,15 @@ export async function main(
           receiptIssue = 'receipt file was shortened during the run';
         } else {
           const receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
-          missingPaths = reporter.missingTestRunReceiptPaths(receiptLog, expectedPaths);
+          missingPaths = reporter.missingTestRunReceiptPaths(receiptLog, expectedPaths, repoRoot);
           // Preserve the reporter's failure evidence before a mutation probe
           // removes its receipt sink. Never echo serialized test rows or config.
           receiptDiagnostics = receiptLog.split(/\r?\n/).flatMap(line => {
             let receipt;
             try { receipt = JSON.parse(line); } catch { return []; }
-            if (!receipt || !missingPaths.includes(receipt.filePath)
+            // Roots may differ across groups; retain bounded failure diagnostics
+            // from this run without reimplementing the reporter's path matching.
+            if (!receipt || missingPaths.length === 0
               || !['failed', 'timeout'].includes(receipt.outcome)) return [];
             return [{ filePath: receipt.filePath, outcome: receipt.outcome,
               reason: typeof receipt.reason === 'string' ? receipt.reason.slice(0, 200) : 'unknown',

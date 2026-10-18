@@ -31,11 +31,12 @@ import runTool from './run';
 const refusal = { error: 'mutation_probe_active' as const, hint: 'active mutation probe on src/feature.ts' };
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   Object.values(phases).forEach((mock) => mock.mockReset());
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function invoke() {
+async function invoke(extra: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'testing-run-evidence-refusal-'));
   roots.push(root);
   await mkdir(join(root, '.git'));
@@ -46,10 +47,66 @@ async function invoke() {
     specId: 'SPEC-001', specRevision: 1, testPath: 'feature.test.ts', sourcePaths: ['feature.ts'], testLayer: 'unit' as const,
   }] };
   const ctx = { projectDir: root, workspaceId: 'refusal-workspace', uiClientId: 'su-refusal-test', isSuperuser: true } as const;
-  const args = runTool.args.parse({ files: ['feature.test.ts'], harness: 'refusal-harness', evidence });
+  const args = runTool.args.parse({ files: ['feature.test.ts'], harness: 'refusal-harness', evidence, ...extra });
   const result = await runTool.handler(args, ctx as never) as { data: Record<string, unknown> };
   return { root, result: result.data };
 }
+
+it('validates public absolute deadlines and reserves instead of stripping them', () => {
+  const args = { files: ['feature.test.ts'], timeoutMs: 20_000, taskDeadlineAtMs: 21_000, cleanupReserveMs: 5_000 };
+  expect(runTool.args.parse(args)).toMatchObject(args);
+  for (const invalid of [NaN, Infinity, -1, 1.5]) {
+    expect(runTool.args.safeParse({ ...args, taskDeadlineAtMs: invalid }).success).toBe(false);
+    expect(runTool.args.safeParse({ ...args, cleanupReserveMs: invalid }).success).toBe(false);
+  }
+});
+
+it('refuses an already expired caller deadline before fences or pending evidence writes', async () => {
+  const { result } = await invoke({ taskDeadlineAtMs: 1, cleanupReserveMs: 5_000 });
+  expect(result).toMatchObject({ ok: false, error: 'deadline_exhausted' });
+  expect(result).not.toHaveProperty('artifacts');
+  expect(phases.fence).not.toHaveBeenCalled();
+  expect(phases.prepare).not.toHaveBeenCalled();
+});
+
+it('rejects an invalid relative reserve before pending evidence writes', async () => {
+  const { result } = await invoke({ timeoutMs: 10_000, cleanupReserveMs: 10_000 });
+  expect(result).toMatchObject({ ok: false, error: 'invalid_test_deadline' });
+  expect(phases.prepare).not.toHaveBeenCalled();
+});
+
+it('preserves the foreground transport cap without shrinking an explicit oversized reserve', async () => {
+  const { result } = await invoke({ timeoutMs: 600_000, taskDeadlineAtMs: Date.now() + 600_000,
+    cleanupReserveMs: 60_000 });
+  expect(result).toMatchObject({ ok: false, error: 'deadline_exhausted', deadline: { cleanupReserveMs: 60_000 } });
+  expect(phases.prepare).not.toHaveBeenCalled();
+});
+
+it('charges elapsed handler preflight to the caller child cutoff before evidence preparation', async () => {
+  let now = 1_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  phases.fence.mockImplementation(async () => { now = 15_000; return null; });
+  const { result } = await invoke({ timeoutMs: 20_000, taskDeadlineAtMs: 21_000, cleanupReserveMs: 10_000 });
+  expect(result).toMatchObject({ ok: false, error: 'deadline_exhausted',
+    deadline: { startedAtMs: 1_000, taskDeadlineAtMs: 21_000, childCutoffAtMs: 11_000, cleanupReserveMs: 10_000 } });
+  expect(phases.prepare).not.toHaveBeenCalled();
+  expect(phases.finish).not.toHaveBeenCalled();
+});
+
+it('retires pending evidence if preparation itself exhausts the fixed cutoff without creating a child packet', async () => {
+  let now = 1_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const prepared = [{ input: { evidenceRef: 'test-run-group:expired:0' } }];
+  phases.prepare.mockImplementation(async () => { now = 15_000; return prepared; });
+  phases.retract.mockResolvedValue({ status: 'not-recorded', reason: 'deadline_exhausted', retiredCount: 1 });
+  const { result } = await invoke({ timeoutMs: 20_000, taskDeadlineAtMs: 21_000, cleanupReserveMs: 10_000 });
+  expect(result).toMatchObject({ ok: false, error: 'deadline_exhausted',
+    evidenceBundle: { status: 'not-recorded', retiredCount: 1 } });
+  expect(result).not.toHaveProperty('artifacts');
+  expect(phases.retract).toHaveBeenCalledExactlyOnceWith(prepared, result.runId,
+    expect.objectContaining({ harnessSlug: 'refusal-harness' }), 'deadline_exhausted');
+  expect(phases.finish).not.toHaveBeenCalled();
+});
 
 it('refuses a re-measure whose stale proofs were measured in more than one checkout (EI-25203154942838341)', async () => {
   // One process runs in ONE checkout; a hive-app proof re-run at the session root is ENOENT.

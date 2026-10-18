@@ -171,6 +171,7 @@ const PRE_LAUNCH_REFUSALS: ReadonlySet<string> = new Set([
   'invalid_root', 'ambiguous_workspace_path', 'managed_app_path_unresolved',
   'mutation_probe_active', 'mutation_probe_state_unknown',
   'restricted_write_held', 'restricted_hold_state_unknown',
+  'deadline_exhausted',
 ]);
 
 /**
@@ -1479,6 +1480,7 @@ type TestFilesCorePayload =
         | 'mutation_probe_state_unknown'
         | 'restricted_write_held'
         | 'restricted_hold_state_unknown'
+        | 'deadline_exhausted'
         | 'aborted'
         | 'timeout'
         | 'route_error'
@@ -3285,6 +3287,8 @@ export interface RunTestFilesCoreOptions {
   taskDeadlineAtMs?: number;
   /** Budget held back from test execution for owned resource cleanup. */
   cleanupReserveMs?: number;
+  /** Handler/recursive operation's already anchored budget; never recompute it. */
+  deadline?: TestRunDeadline;
   /** Original caller budget before the foreground transport clamp, for detached recovery. */
   recoveryTimeoutMs?: number;
   maxFailures?: number;
@@ -3309,14 +3313,21 @@ type TestFilesCoreDeps = { runRouterFn?: typeof runRouter; artifactBaseDir?: str
 
 export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
   const runId = opts.runId ?? randomUUID();
-  const deadline = testRunDeadline(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts);
+  const deadline = opts.deadline ?? testRunDeadline(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts);
+  if (Date.now() >= deadline.childCutoffAtMs) return { ok: false, runId, root: resolve(opts.root),
+    error: 'deadline_exhausted', hint: 'absolute child cutoff reached; no test child or artifact packet was created' };
+  // Detached replay is a fresh store operation with a fresh lifecycle. It cannot
+  // share this operation's fixed cleanup reserve or parent-owned DB registry.
+  const callerBound = opts.deadline !== undefined || opts.taskDeadlineAtMs !== undefined || opts.cleanupReserveMs !== undefined;
+  const foregroundCutoffAtMs = Math.min(Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS), deadline.childCutoffAtMs);
   const packet = new TestRunArtifactPacket(runId, resolve(opts.root), deadline, deps.artifactBaseDir);
   let result: TestFilesCoreResult | undefined;
   let cleanup: OwnedTestDbCleanupResult | undefined;
   let error: string | undefined;
   try {
     result = await runTestFilesCoreInternal({ ...opts, runId, taskDeadlineAtMs: deadline.taskDeadlineAtMs,
-      cleanupReserveMs: deadline.cleanupReserveMs }, deps, packet, deadline);
+      cleanupReserveMs: deadline.cleanupReserveMs,
+      ...(callerBound ? { allowDetachedRecovery: false } : {}) }, deps, packet, deadline, foregroundCutoffAtMs);
     if (packet.childState === 'pending') {
       // An unconfirmed/host-detached writer keeps custody; do not drop its database.
       cleanup = { complete: false, databases: [], errors: ['child exit is unconfirmed; owned cleanup retained'] };
@@ -3350,7 +3361,7 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
 }
 
 async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps,
-  packet: TestRunArtifactPacket, deadline: TestRunDeadline): Promise<TestFilesCoreResult> {
+  packet: TestRunArtifactPacket, deadline: TestRunDeadline, foregroundCutoffAtMs: number): Promise<TestFilesCoreResult> {
   const runStartedAt = new Date().toISOString();
   // Normalize once before selecting the checkout.  A workspace-relative sibling
   // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
@@ -3376,7 +3387,8 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           root: group.root,
           ...(opts.privatePg ? { privatePg: existsSync(join(group.root, 'scripts', 'with-test-pg.mjs')) } : {}),
           runId,
-          timeoutMs,
+          timeoutMs: Math.max(1, foregroundCutoffAtMs - Date.now()),
+          deadline,
           allowDetachedRecovery: false,
         }, deps);
         packet.groupCleanups.push({ directory: result.artifacts?.directory ?? null, cleanup: result.cleanup });
@@ -3537,7 +3549,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     // An absolute child cutoff includes preparation/admission time and leaves
     // a separate cleanup reserve before the task's final deadline.
     childEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS = String(
-      Math.max(1, Math.min(120 * 60_000, deadline.childCutoffAtMs - Date.now())),
+      Math.max(1, Math.min(120 * 60_000, foregroundCutoffAtMs - Date.now())),
     );
     packet.write('configuration.json', captureConfigurationSnapshot(childEnv));
     packet.stage('router-start', { deadline });
@@ -3557,7 +3569,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     }
     let directReportPaths: string[] | null = null;
     let outcome: RouterOutcome;
-    if (Date.now() >= deadline.childCutoffAtMs) return { ok: false, runId, root, error: 'timeout', timeoutMs,
+    if (Date.now() >= foregroundCutoffAtMs) return { ok: false, runId, root, error: 'deadline_exhausted', timeoutMs,
       hint: 'preparation consumed the absolute child budget; cleanup reserve remains available' };
     packet.childState = 'pending';
     if (hasRouter) {
@@ -3572,7 +3584,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         // (see attribution/context.ts), which is a decision only the fork can make correctly,
         // because one `files` array routinely spans both layers.
         childEnv,
-        Math.max(1, deadline.childCutoffAtMs - Date.now()),
+        Math.max(1, foregroundCutoffAtMs - Date.now()),
         opts.signal,
         pathResolution.files.length,
         opts.phaseTimings,
@@ -3593,7 +3605,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           });
           break;
         }
-        const remaining = deadline.childCutoffAtMs - Date.now();
+        const remaining = foregroundCutoffAtMs - Date.now();
         if (remaining <= 0) {
           outcomes.push({ code: null, signal: null, timedOut: true, aborted: false,
             output: 'absolute child cutoff reached before direct Vitest group start' });
@@ -4034,6 +4046,12 @@ export default defineTool({
       .describe(
         `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for provenance/evidence preparation, ledger readback, and finalization before the ~55s MCP transport cap. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
       ),
+    taskDeadlineAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe(
+      'Absolute Unix time in milliseconds for this test task, including preparation, admission and owned cleanup. Never extended. Supplying this or cleanupReserveMs disables fresh detached replay; the foreground transport cap still applies.',
+    ),
+    cleanupReserveMs: z.number().int().min(0).max(MAX_TIMEOUT_MS - 1).optional().describe(
+      'Milliseconds reserved before taskDeadlineAtMs for owned resource cleanup; must be smaller than timeoutMs (or its default). This fixes the child cutoff and disables fresh detached replay.',
+    ),
     maxFailures: z
       .number()
       .int()
@@ -4049,9 +4067,10 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const handlerStartedAt = performance.now();
+    const handlerStartedAtMs = Date.now();
     const phaseTimingsMs = createTestingRunPhaseTimings();
     if (args.nativeConsult) {
-      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'maxFailures', 'recheckReason']
+      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'taskDeadlineAtMs', 'cleanupReserveMs', 'maxFailures', 'recheckReason']
         .some(key => (args as Record<string, unknown>)[key] !== undefined)) {
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
       }
@@ -4072,6 +4091,30 @@ export default defineTool({
         return { data: { ok: false, error: 'native_consult_acceptance_failed', message: String(error) } };
       }
     }
+    let deadline: TestRunDeadline | undefined;
+    if (args.taskDeadlineAtMs !== undefined || args.cleanupReserveMs !== undefined) {
+      if (args.recoverEvidence || args.changedPaths || (!args.files && !args.remeasureEvidence)) {
+        return { data: { ok: false, error: 'deadline_requires_executed_files' } };
+      }
+      try {
+        deadline = testRunDeadline(args.timeoutMs ?? DEFAULT_TIMEOUT_MS, {
+          now: handlerStartedAtMs, taskDeadlineAtMs: args.taskDeadlineAtMs, cleanupReserveMs: args.cleanupReserveMs,
+        });
+        // A caller may shorten the transport window but cannot lengthen it. Keep
+        // the explicit reserve intact even when it leaves no foreground child slot.
+        deadline.taskDeadlineAtMs = Math.min(deadline.taskDeadlineAtMs,
+          handlerStartedAtMs + clampTestingRunForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+        deadline.childCutoffAtMs = deadline.taskDeadlineAtMs - deadline.cleanupReserveMs;
+      } catch (error) {
+        return { data: { ok: false, error: 'invalid_test_deadline', message: String(error) } };
+      }
+    }
+    const deadlineRefusal = () => deadline && (Date.now() >= deadline.childCutoffAtMs
+      || Date.now() >= handlerStartedAtMs + clampTestingRunForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS))
+      ? { data: { ok: false, error: 'deadline_exhausted', deadline,
+        hint: 'preparation exhausted the fixed child budget; no test child was started' } } : undefined;
+    const initialDeadlineRefusal = deadlineRefusal();
+    if (initialDeadlineRefusal) return initialDeadlineRefusal;
     if (args.rootHarnessSlug !== undefined && !args.files) {
       return {
         data: {
@@ -4328,6 +4371,8 @@ export default defineTool({
     }
     setTestingRunPhaseDuration(phaseTimingsMs, 'provenanceMs', provenanceStartedAt);
     const preparationStartedAt = performance.now();
+    const provenanceDeadlineRefusal = deadlineRefusal();
+    if (provenanceDeadlineRefusal) return provenanceDeadlineRefusal;
     // P-002 (WI-10004175): the loop gate capability:bash and release:cut apply. Its budget is
     // the REQUESTED one, not the foreground clamp, because the detached run keeps going past
     // the clamp; a run asked for <= SLOW_ATTEMPT_MIN_MS stays free for an audit's quick checks.
@@ -4339,6 +4384,8 @@ export default defineTool({
       timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
     if (loopRefusal) return { data: { ...loopRefusal, runId, root: rootSelection.root } };
+    const admissionDeadlineRefusal = deadlineRefusal();
+    if (admissionDeadlineRefusal) return admissionDeadlineRefusal;
     let prepared: Awaited<ReturnType<typeof prepareTestEvidence>> | undefined;
     if (evidenceRequest) {
       const selected = normalizeTestFilePaths(files, rootSelection.root, undefined, {
@@ -4350,6 +4397,8 @@ export default defineTool({
       if (mutationProbe) return { data: { ok: false, runId, root: rootSelection.root, ...mutationProbe } };
       const restrictedHold = await restrictedHoldRefusal(rootSelection.root, selected.ok ? selected.files : files);
       if (restrictedHold) return { data: { ok: false, runId, root: rootSelection.root, ...restrictedHold } };
+      const preparationDeadlineRefusal = deadlineRefusal();
+      if (preparationDeadlineRefusal) return preparationDeadlineRefusal;
       try {
         if (!selected.ok) throw new Error('evidence_test_selection_unresolved');
         prepared = await prepareTestEvidence(evidenceRequest, runId, selected.files, evidenceScope!);
@@ -4362,7 +4411,8 @@ export default defineTool({
       files,
       runId,
       root: rootSelection.root,
-      timeoutMs,
+      timeoutMs: deadline ? Math.max(1, timeoutMs - (Date.now() - handlerStartedAtMs)) : timeoutMs,
+      ...(deadline ? { deadline, taskDeadlineAtMs: deadline.taskDeadlineAtMs, cleanupReserveMs: deadline.cleanupReserveMs } : {}),
       recoveryTimeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
       signal: ctx.signal,
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
@@ -4397,6 +4447,7 @@ export default defineTool({
     const evidenceRunId = testEvidenceRecoveryRunId(runId, result);
     const surfacedResult = {
       ...result,
+      ...(deadline ? { deadline } : {}),
       ...(testRunIdsReadback?.ids === null ? {} : { testRunIds: testRunIdsReadback?.ids }),
       ...(result.error === undefined && testRunIdsReadback?.idsByFile !== null
         && testRunIdsReadback?.idsByFile !== undefined
@@ -4517,6 +4568,8 @@ export default defineTool({
             // waits for the detached run itself — so steer away from a run-status loop.
             (result.terminationUnconfirmed
               ? `The foreground process is not confirmed stopped; do not start a duplicate run. Tracked task: ${result.taskId ?? 'unknown'}. `
+              : deadline
+              ? 'Caller deadline/reserve preserved; no fresh detached replay was started. Owned cleanup is reported separately. '
               : prepared && result.detachedRunId
               ? 'To bind this evidence, call evidenceBundle.recovery (testing:run { recoverEvidence }) now: it waits up to ' +
                 `${Math.round(RECOVERY_WAIT_DEFAULT_MS / 1000)}s for the detached run and binds in the same call; skip testing:run-status polling. `

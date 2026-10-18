@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, join, relative, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
 
 it('records a real node:test child when the focused router starts without a TS loader', () => {
@@ -2424,7 +2424,7 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
 
   async function runEvidenceCase(writeReceipt: boolean,
     failure?: { outcome: 'failed' | 'timeout'; reason: string; errorCode?: string },
-    admission: 'skip' | 'admit' | 'refuse' = 'skip') {
+    admission: 'skip' | 'admit' | 'refuse' = 'skip', selectedFile = file, recordRoot = REPO_ROOT) {
     const dir = mkdtempSync(join(tmpdir(), 'test-file-receipt-verdict-'));
     const receiptFile = join(dir, 'receipts.jsonl');
     const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
@@ -2439,10 +2439,11 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     const runCapturedTestProcessMock = vi.fn(async (_command: string, _args: string[], options: any) => {
       childAdmissionMarkers.push(options.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT);
       if (writeReceipt || failure) {
-        const filePath = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
+        const filePath = relative(recordRoot, resolve(REPO_ROOT, selectedFile)).split('\\').join('/');
         writeFileSync(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, `${JSON.stringify({
           receiptId: 'router-test-receipt', attempt: 0, filePath, status: 'pass',
-          row: { filePath, startedAt: '2026-10-14T17:00:00.000Z', finishedAt: '2026-10-14T17:00:01.000Z' },
+          row: { filePath, startedAt: '2026-10-14T17:00:00.000Z', finishedAt: '2026-10-14T17:00:01.000Z',
+            executionDetails: { root: recordRoot } },
           ...(failure ? { ...failure, replayable: false } : { outcome: 'inserted', id: 'test-run-901' }),
         })}\n`);
       }
@@ -2451,12 +2452,13 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     });
 
     try {
-      const code = await main([file], {
+      const code = await main([selectedFile], {
         restrictedHoldPreflightImpl: () => admission === 'refuse'
           ? { verdict: 'refuse', error: 'restricted_write_held', hint: 'Fixture restricted write is held.' }
           : { verdict: admission },
-        runVitestListImpl: async () => ({ status: 0, signal: null,
-          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
+        runVitestListImpl: async (_command: string, _args: string[], options: any) => ({ status: 0, signal: null,
+          stdout: `${relative(options.cwd, resolve(REPO_ROOT, selectedFile))}\n`,
+          stderr: '', timedOut: false, error: null }),
         runCapturedTestProcessImpl: runCapturedTestProcessMock,
       });
       return {
@@ -2499,6 +2501,14 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     const result = await runEvidenceCase(true, undefined, 'admit');
     expect(result.code).toBe(0);
     expect(result.childAdmissionMarkers).toEqual(['admitted-by-test-router']);
+  });
+
+  it('accepts a submodule-relative receipt only for the file at its recorded checkout root', async () => {
+    const selectedFile = 'libs/test-config/src/admin-test-runs-reporter.test.ts';
+    const result = await runEvidenceCase(true, undefined, 'skip', selectedFile, join(REPO_ROOT, 'libs/test-config'));
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+    expect(result.errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
   });
 
   it('starts no receipt-consuming Vitest child when admission is refused', async () => {

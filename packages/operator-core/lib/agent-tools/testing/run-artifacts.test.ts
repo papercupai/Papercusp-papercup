@@ -20,6 +20,10 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(() => testRunDeadline(1000, { cleanupReserveMs: 1000 })).toThrow(/reserve/);
     expect(() => testRunDeadline(0)).toThrow(/budget/);
   });
+  it('never borrows an explicit reserve when inherited preparation consumed the child slot', () => {
+    expect(testRunDeadline(45_000, { now: 40_000, taskDeadlineAtMs: 46_000, cleanupReserveMs: 10_000 }))
+      .toMatchObject({ taskDeadlineAtMs: 46_000, childCutoffAtMs: 36_000, cleanupReserveMs: 10_000 });
+  });
   it.each(['closed', 'pending'] as const)('retains reports, channels, source pins and receipts when child state is %s', childState => {
     const root = mkdtempSync(join(tmpdir(), 'run-artifacts-')); roots.push(root);
     writeFileSync(join(root, 'subject.test.ts'), 'export {};');

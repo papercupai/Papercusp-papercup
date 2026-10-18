@@ -191,11 +191,22 @@ describe('test-time evidence continuity', () => {
       },
       coverageEvidenceRef: null,
       testRunId: null,
+      testRunProvenance: null,
       details: { testExecution: { schemaVersion: 1, phase: 'pending', runId, originRunId: runId } },
       observedAt: '2026-09-24T00:00:00.000Z',
       bindingFingerprint: 'binding-fingerprint',
       createdBy: 'su-test',
       createdAt: '2026-09-24T00:00:00.000Z',
+      currentness: {
+        overall: 'unknown',
+        dimensions: {
+          spec: 'current', source: 'current', test: 'current', fixture: 'not-applicable',
+          rubric: 'not-applicable', environment: 'not-applicable',
+          coverageEvidence: 'not-applicable', testRun: 'not-applicable',
+        },
+        staleReasons: [], unknownReasons: ['fixture'], comparisonSupplied: false,
+        provenance: 'not-supplied',
+      },
     }]);
 
     await expect(prepareTestEvidence(batch, runId, [binding.testPath], scope, d))

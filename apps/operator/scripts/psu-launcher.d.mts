@@ -2958,6 +2958,7 @@ export function readPendingSessionEndWitness(advSessionId: any, home?: string): 
  * @property {string|null} [killedBySignal]
  * @property {boolean} [launchFailed]
  * @property {string} [endAttemptKey]
+ * @property {string|null} [observedAt]
  * @property {(ms:number)=>Promise<void>} [sleep]
  * @property {()=>number} [now]
  * @property {string} [home]
@@ -5056,6 +5057,7 @@ export type SessionEndReportOptions = {
     killedBySignal?: string | null | undefined;
     launchFailed?: boolean | undefined;
     endAttemptKey?: string | undefined;
+    observedAt?: string | null | undefined;
     sleep?: ((ms: number) => Promise<void>) | undefined;
     now?: (() => number) | undefined;
     home?: string | undefined;

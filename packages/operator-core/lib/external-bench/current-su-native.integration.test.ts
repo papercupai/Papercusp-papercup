@@ -51,8 +51,15 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       // runtime/database exists. The worker consumes only these pinned bytes.
       // Completed build steps may renew the stall checkpoint up to the shared
       // absolute ceiling. A stalled build still fails before runtime allocation.
+      // The restricted-hold gate is a production fail-closed check. This
+      // private Vitest fixture has no restricted holdings, so route only this
+      // builder child through its documented VITEST-only census seam rather
+      // than letting preparation probe the protected live org-admin database.
+      const censusPath = join(evidenceDir, 'restricted-hold-census.json');
+      await (await import('node:fs/promises')).writeFile(censusPath, '[]\n', { mode: 0o600 });
       prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
-        builder: { timeoutMs: 240_000, maxMs: 420_000 },
+        builder: { timeoutMs: 240_000, maxMs: 420_000,
+          env: { ...process.env, VITEST: 'true', PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: censusPath } },
       });
     },
     execute: async (observe, evidenceDir) => {
