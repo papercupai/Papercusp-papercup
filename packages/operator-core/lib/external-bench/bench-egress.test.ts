@@ -5,10 +5,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer, connect, type Server } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProcExec } from './grader/swe-bench-pro';
+import { isLoopbackRequest } from '../superuser-token';
 import {
   BENCH_EGRESS_ALIAS,
   listeningPortsFromProcNet,
@@ -114,13 +116,13 @@ function request(socketPath: string, body: string, halfClose = false): Promise<s
 describe('resolveEgressEndpoints', () => {
   it('defaults the target host to 127.0.0.1', () => {
     expect(resolveEgressEndpoints([{ name: 'gw', listenPort: 8788, targetPort: 8788 }])).toEqual([
-      { name: 'gw', listenPort: 8788, targetPort: 8788, targetHost: '127.0.0.1', perTask: false },
+      { name: 'gw', listenPort: 8788, targetPort: 8788, targetHost: '127.0.0.1', perTask: false, transport: 'tcp' },
     ]);
   });
 
   it('D-033: a perTask endpoint takes no targetPort and resolves with a null one', () => {
     expect(resolveEgressEndpoints([{ name: 'gw', listenPort: 8788, perTask: true }])).toEqual([
-      { name: 'gw', listenPort: 8788, targetPort: null, targetHost: '127.0.0.1', perTask: true },
+      { name: 'gw', listenPort: 8788, targetPort: null, targetHost: '127.0.0.1', perTask: true, transport: 'tcp' },
     ]);
     expect(() => resolveEgressEndpoints([{ name: 'gw', listenPort: 8788, perTask: true, targetPort: 1 }])).toThrow(/takes no targetPort/);
     expect(() => resolveEgressEndpoints([{ name: 'gw', listenPort: 8788 }])).toThrow(/is not a port/);
@@ -161,6 +163,39 @@ describe('listeningPortsFromProcNet', () => {
 });
 
 describe('startBenchEgress', () => {
+  it('HTTP MCP relay preserves loopback authentication without trusting external forwarding headers', async () => {
+    const seen: Array<{ host: string | undefined; bearer: string | undefined; path: string | undefined }> = [];
+    const host = createHttpServer((req, res) => {
+      seen.push({ host: req.headers.host, bearer: req.headers.authorization, path: req.url });
+      const headers = new Headers(Object.entries(req.headers).flatMap(([key, value]) =>
+        value === undefined ? [] : [[key, Array.isArray(value) ? value.join(', ') : value]]));
+      const local = isLoopbackRequest(headers);
+      res.writeHead(!local ? 403 : req.headers.authorization === 'Bearer private-fixture' ? 200 : 401);
+      res.end(!local ? 'superuser_non_loopback' : req.headers.authorization === 'Bearer private-fixture' ? 'tools/list' : 'invalid_bearer');
+    });
+    await new Promise<void>(done => host.listen(0, '127.0.0.1', done));
+    const port = (host.address() as { port: number }).port;
+    const fake = fakeDocker({ listen: [9071] });
+    try {
+      const egress = await startBenchEgress({ runId: 'http-auth',
+        endpoints: [{ name: 'mcp', listenPort: 9071, targetPort: port, transport: 'http' }],
+        exec: fake.exec, workRoot, readyTimeoutMs: 2000, readyPollMs: 10 });
+      started.push(egress);
+      const socket = join(relayDirOf(fake.calls), 'mcp.sock');
+      const send = (extra: string) => request(socket,
+        'GET /api/mcp?superuser=1&client=private-fixture HTTP/1.1\r\nHost: papercusp-egress:9071\r\nConnection: close\r\n' + extra + '\r\n');
+      expect(await send('Authorization: Bearer private-fixture\r\n')).toContain('200 OK');
+      expect(seen[0]).toEqual({ host: `127.0.0.1:${port}`, bearer: 'Bearer private-fixture',
+        path: '/api/mcp?superuser=1&client=private-fixture' });
+      expect(await send('Authorization: Bearer wrong\r\n')).toContain('401 Unauthorized');
+      expect(await send('Authorization: Bearer private-fixture\r\nX-Forwarded-For: 203.0.113.5\r\n'))
+        .toContain('403 Forbidden');
+    } finally {
+      for (const egress of started.splice(0)) await egress.stop();
+      await new Promise<void>(done => host.close(() => done()));
+    }
+  });
+
   it('creates an internal labelled base network, then the sidecar on it under the alias, then waits for LISTEN', async () => {
     const { egress, calls } = await start();
     const [net, run, ready] = calls.map((c) => c.args);

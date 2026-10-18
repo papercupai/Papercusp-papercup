@@ -305,7 +305,7 @@ describe('roster frozen audit PG persistence', () => {
       viewer: { ownerId: 'reader-a' }, agents: [] });
     await saveRosterAudit(harness, snapshot);
     const frozen = (await loadRosterAudit(harness, snapshot.auditId, scope))!;
-    const records = [];
+    const records: typeof frozen.records = [];
     let cursor: string | undefined;
     do {
       const page = pageRosterAudit(frozen, scope, { cursor, pageSize: 1 });

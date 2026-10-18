@@ -113,7 +113,7 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
   try {
     egress = await ports.startEgress({ ...config.egress, runId: config.runId, endpoints: [
       { name: 'gw', listenPort: 8788, perTask: true },
-      { name: 'mcp', listenPort: 9071, targetPort: mcp.port },
+      { name: 'mcp', listenPort: 9071, targetPort: mcp.port, transport: 'http' },
       { name: 'hooks', listenPort: 9081, targetPort: bridge.port },
     ] });
   } catch (error) {

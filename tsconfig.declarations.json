@@ -333,6 +333,7 @@
     // its runtime dependency too so the complete CLI import surface is typed.
     "apps/operator/scripts/ptool.mjs",
     "apps/operator/scripts/operator-discovery.mjs",
+    "apps/operator/scripts/tool-delivery.generated.mjs",
     "packages/operator-core/lib/model-context-budget.mjs",
     // WI-126377 — the psu model-picker row builder + the effort-intersection rule.
     // Registered for BOTH reasons this list exists: it is imported directly by

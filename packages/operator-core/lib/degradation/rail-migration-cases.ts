@@ -258,10 +258,12 @@ const scoutReadCases: RailMigrationCase[] = [{
     const { expect } = await import('vitest');
     const { samplingWeightsWithFloor } = await import('../scout/outcome-feedback');
     const { CREATIVE_LENSES } = await import('../scout/types');
+    // Lens weights are keyed by lens identity id (identity-system-everything-migration P-011 / R-8).
+    const { LENS_IDENTITY_ID_LIST } = await import('../scout/lenses');
     const observations: ScoutReadObservation[] = [];
     let fail = true;
     const read = execute(original(`${scoutReadPath}scout/routed-ledger.ts`, 'export async function getScoutLensWeights', 'function'), {
-      observeFallback: scoutReadSink('lens-weights', observations), samplingWeightsWithFloor, CREATIVE_LENSES,
+      observeFallback: scoutReadSink('lens-weights', observations), samplingWeightsWithFloor, CREATIVE_LENSES, LENS_IDENTITY_ID_LIST,
       activeWorkspaceId: () => 'fixture', isWorkspaceCoordinationOn: async () => false,
       workspaceBrainReadKeys: () => ['pot'],
       readScoutLensWeights: async () => { if (fail) throw new Error('weights unavailable'); return {}; },
@@ -269,7 +271,7 @@ const scoutReadCases: RailMigrationCase[] = [{
     const failed = await read({ workspaceId: 'fixture', potSlug: 'pot' });
     fail = false;
     expect(await read({ workspaceId: 'fixture', potSlug: 'pot' })).toEqual(failed);
-    expect(Object.keys(failed.lensWeights)).toEqual(CREATIVE_LENSES);
+    expect(Object.keys(failed.lensWeights)).toEqual(LENS_IDENTITY_ID_LIST);
     expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'lens-weights-read-failed'], [1, 'applied']]);
     return { route: 'observation', mechanism: 'scout-state-read', observations };
   },

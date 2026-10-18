@@ -2577,9 +2577,9 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
       { id: prior.id, lexical: 'recent', similarity: 0.72 },
     ]);
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'partial', degraded: true });
-    expect(d.created[0].payload?.dedupCandidates).toEqual([
+    expect(d.created[0].payload).toEqual(expect.objectContaining({ dedupCandidates: [
       { id: prior.id, similarity: 0.72, method: 'lexical-recent' },
-    ]);
+    ] }));
   });
 
   it('a SOFT semantic hit is advisory-only: surfaced in possibleDuplicates, capture still created', async () => {

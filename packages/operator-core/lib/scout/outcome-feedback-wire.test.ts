@@ -33,6 +33,7 @@ import {
   type ScoutOutcomeReaders,
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
+import { LENS_IDENTITY_ID_LIST, lensForIdentityId, type LensIdentityId } from './lenses';
 
 function prov(p: Partial<RoutedIdeaProvenance> & { lens: CreativeLens; routedRef: string }): RoutedIdeaProvenance {
   return { ideaId: p.ideaId ?? `idea-${p.routedRef}`, rail: p.rail ?? 'gym', ...p };
@@ -58,11 +59,29 @@ function fakeStore() {
   return { routed, feed, readers };
 }
 
+/**
+ * lensWeightsFromReport keys its output by lens identity id (P-011 / R-8). The math
+ * pins below read it per lens, so this view maps each identity id back to its lens.
+ */
+const byLensView = (w: Record<LensIdentityId, number>): Record<CreativeLens, number> =>
+  Object.fromEntries(
+    Object.entries(w).map(([id, n]) => {
+      const lens = lensForIdentityId(id);
+      if (!lens) throw new Error(`lensWeightsFromReport emitted a non-lens key: ${id}`);
+      return [lens, n];
+    }),
+  ) as Record<CreativeLens, number>;
+
 const weightsOf = (provenance: RoutedIdeaProvenance[], feed: ChangeFeedEntry[]) =>
-  lensWeightsFromReport(computeLensOutcomes(provenance, feed));
+  byLensView(lensWeightsFromReport(computeLensOutcomes(provenance, feed)));
 
 describe('Scout lens-outcome meta-learning — full wire (P-014)', () => {
   describe('change-feed outcomes → classifyIdeaOutcome → lens-weight shifts (math pinned)', () => {
+    it('the weight hand-off is keyed by exactly the four lens identity ids', () => {
+      const raw = lensWeightsFromReport(computeLensOutcomes([], []));
+      expect(Object.keys(raw).sort()).toEqual([...LENS_IDENTITY_ID_LIST].sort());
+    });
+
     it('baseline: nothing decided → every lens at the uniform 1/4', () => {
       const w = weightsOf([], []);
       for (const l of CREATIVE_LENSES) expect(w[l]).toBeCloseTo(1 / 4, 12);
@@ -173,7 +192,7 @@ describe('Scout lens-outcome meta-learning — full wire (P-014)', () => {
       expect(report.byLens.analogical).toMatchObject({ pending: 1, won: 0, lost: 0, winRate: null });
       expect(report.byLens.reframing).toMatchObject({ pending: 1, won: 0, lost: 0, winRate: null });
       // Pending moved NOTHING: the weight vector is bit-identical to the empty world.
-      expect(lensWeightsFromReport(report)).toEqual(weightsOf([], []));
+      expect(lensWeightsFromReport(report)).toEqual(lensWeightsFromReport(computeLensOutcomes([], [])));
     });
 
     it('an errored arm is weight-neutral: the report weights equal the same world without that idea', () => {
@@ -474,7 +493,7 @@ describe('Scout lens-outcome meta-learning — full wire (P-014)', () => {
 
       // The D-009 hand-off shape the ideator fan-out consumes sums to 1.
       const w = lensWeightsFromReport(report);
-      expect(CREATIVE_LENSES.reduce((a, l) => a + w[l], 0)).toBeCloseTo(1, 12);
+      expect(LENS_IDENTITY_ID_LIST.reduce((a, id) => a + w[id], 0)).toBeCloseTo(1, 12);
     });
   });
 });

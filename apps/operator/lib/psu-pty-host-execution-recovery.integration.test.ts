@@ -224,7 +224,8 @@ describe('failed native turn → durable routine retry → native wake', () => {
       const arm = vi.fn(async () => ({ awaitId: 1, eventKey: 'fixture-inbox', handleNote: 'fixture', minSleepSec: 60 }));
       const recovery = await recoverExpectedLoopExecution({ sql, routineId, ownerId: owner, nowMs: Date.now() }, {
         findHost: async () => f.readHost(), arm,
-        inference: async () => ({ active: 0, observedAt: Date.now() }),
+        inference: async () => ({ active: 0, observedAt: Date.now(), processInstanceId: 'fixture',
+          activeRequests: [], activeRequestsComplete: true }),
       });
       expect(recovery, JSON.stringify({ recovery, host: f.readHost().execution })).toMatchObject({
         handled: true, rearmed: true, state: { status: 'recovering', attempts: 1 } });

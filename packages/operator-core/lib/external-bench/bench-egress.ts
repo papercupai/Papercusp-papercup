@@ -21,6 +21,7 @@
  * unit-testable with a fake; the relay half is real sockets in both suites.
  */
 import { createServer, connect, type Server, type Socket } from 'node:net';
+import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -57,6 +58,9 @@ export interface BenchEgressEndpoint {
   perTask?: boolean;
   /** Must be loopback. Default `127.0.0.1`. */
   targetHost?: string;
+  /** HTTP preserves the fixed upstream's loopback Host for MCP authentication.
+   * Bearers and forwarding/ingress headers pass through unchanged. Default TCP. */
+  transport?: 'tcp' | 'http';
 }
 
 export interface BenchEgressConfig {
@@ -125,6 +129,7 @@ interface ResolvedEndpoint {
   targetPort: number | null;
   targetHost: string;
   perTask: boolean;
+  transport: 'tcp' | 'http';
 }
 
 /** D-033: the live target of one perTask endpoint. */
@@ -153,12 +158,14 @@ export function resolveEgressEndpoints(endpoints: readonly BenchEgressEndpoint[]
     }
     if (!perTask && !isPort(e.targetPort)) throw new Error(`bench-egress: endpoint '${e.name}' targetPort ${e.targetPort} is not a port`);
     const targetHost = e.targetHost ?? '127.0.0.1';
+    const transport = e.transport ?? 'tcp';
+    if (transport !== 'tcp' && transport !== 'http') throw new Error(`bench-egress: invalid transport ${transport}`);
     if (!LOOPBACK_HOSTS.has(targetHost)) {
       throw new Error(`bench-egress: endpoint '${e.name}' target ${targetHost} is not loopback — the relay only fronts fixed local services`);
     }
     names.add(e.name);
     ports.add(e.listenPort);
-    return { name: e.name, listenPort: e.listenPort, targetPort: perTask ? null : e.targetPort!, targetHost, perTask };
+    return { name: e.name, listenPort: e.listenPort, targetPort: perTask ? null : e.targetPort!, targetHost, perTask, transport };
   });
 }
 
@@ -200,6 +207,52 @@ interface Relay {
  */
 async function startRelay(socketPath: string, ep: ResolvedEndpoint, stat: EndpointStats, binding?: EndpointBinding): Promise<Relay> {
   const sockets = new Set<Socket>();
+  if (ep.transport === 'http') {
+    const server = createHttpServer((req, res) => {
+      const port = ep.perTask ? binding?.port ?? null : ep.targetPort;
+      if (port === null) {
+        stat.errors++;
+        res.writeHead(503); res.end();
+        return;
+      }
+      // This is a fixed-target reverse proxy, never a URL supplied by the task.
+      // Preserve external-ingress/forwarding evidence: rewriting Host must not
+      // turn an external request into a trusted local request at the MCP host.
+      const host = ep.targetHost.includes(':') ? `[${ep.targetHost}]` : ep.targetHost;
+      const upstream = httpRequest({ hostname: ep.targetHost, port, method: req.method,
+        path: req.url, headers: { ...req.headers, host: `${host}:${port}`, connection: 'close' }, agent: false }, response => {
+        res.writeHead(response.statusCode ?? 502, response.headers);
+        response.on('error', () => res.destroy());
+        response.pipe(res);
+      });
+      upstream.on('socket', socket => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+      });
+      upstream.on('error', () => {
+        stat.errors++;
+        if (!res.headersSent) { res.writeHead(502); res.end(); }
+        else res.destroy();
+      });
+      req.on('aborted', () => upstream.destroy());
+      req.on('error', () => upstream.destroy());
+      res.on('close', () => upstream.destroy());
+      req.pipe(upstream);
+    });
+    server.on('connection', socket => {
+      stat.connections++;
+      sockets.add(socket);
+      socket.on('error', () => { stat.errors++; });
+      socket.on('close', () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, () => { server.off('error', reject); resolve(); });
+    });
+    server.on('error', () => { stat.errors++; });
+    chmodSync(socketPath, 0o666);
+    return { server, sockets };
+  }
   // allowHalfOpen: a client that half-closes after its request must still get the response back.
   const server = createServer({ allowHalfOpen: true }, (client) => {
     stat.connections++;

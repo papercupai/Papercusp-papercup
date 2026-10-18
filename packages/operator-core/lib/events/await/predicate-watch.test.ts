@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const dispatchMocks = vi.hoisted(() => ({
   lookupByMcpName: vi.fn(),
-  dispatchProjectedTool: vi.fn(async () => ({ ok: true })),
+  dispatchProjectedTool: vi.fn<typeof import('@papercusp/agent-mcp')['dispatchProjectedTool']>(async () => ({ ok: true })),
   withWorkspace: vi.fn(async (_workspaceId: string, callback: (tx: unknown) => Promise<unknown>) => callback({})),
 }));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
@@ -98,7 +98,7 @@ describe('read-only projected dispatch effect gate', () => {
 
     expect(dispatchMocks.withWorkspace).not.toHaveBeenCalled();
     expect(dispatchMocks.dispatchProjectedTool).toHaveBeenCalledTimes(1);
-    const context = dispatchMocks.dispatchProjectedTool.mock.calls[0]?.[3] as Record<string, unknown>;
+    const context = dispatchMocks.dispatchProjectedTool.mock.calls[0]?.[3];
     expect(Object.prototype.hasOwnProperty.call(context, 'tx')).toBe(false);
   });
 

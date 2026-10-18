@@ -357,7 +357,7 @@ function terminalExitCode(terminal: TaskTerminalProvenance, fallback: number | n
   return fallback;
 }
 
-function classifyTerminalClose(
+export function classifyTerminalClose(
   input: CloseTaskInput,
   row: TaskRow | null,
 ): Required<Pick<CloseTaskInput, 'state'>> &

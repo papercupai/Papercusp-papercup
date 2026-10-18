@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import type { PsuPtyHost } from '../../events/await/psu-pty-discovery';
+import type { GatewayOwnerExecution } from '../../inference-gateway/observability';
 import { recoverExpectedLoopExecution } from './loop-execution-recovery';
 
 let pg: DedicatedNativePg, org: OrgTestDb, sql: Sql;
@@ -35,7 +36,9 @@ async function routine(id: string, active = true, parked = true) {
     execution: { ownerId: id, hostPid: 1, childPid: 2, childGeneration: 1, receivedAtMs: nowMs - 60_000,
       phase: 'failed', turnStartedAt: nowMs - 60_000, lastProgressAt: nowMs - 40_000, pendingTools: 0, observedAt: nowMs } };
   return { host, input: { sql, routineId: id, ownerId: id, nowMs },
-    deps: { now: () => nowMs, findHost: async () => host, inference: async () => ({ active: 0, observedAt: nowMs }), arm: vi.fn(async () =>
+    deps: { now: () => nowMs, findHost: async () => host, inference: async (): Promise<GatewayOwnerExecution> => ({
+      active: 0, observedAt: nowMs, processInstanceId: 'fixture', activeRequests: [], activeRequestsComplete: true,
+    }), arm: vi.fn(async () =>
       ({ awaitId: 1, eventKey: 'fixture', handleNote: 'fixture', minSleepSec: 60 })) } };
 }
 
@@ -113,7 +116,7 @@ describe('durable recovery against isolated Postgres', () => {
     expect(f.deps.arm).toHaveBeenCalledTimes(1);
     f.host.execution!.observedAt = nowMs + 30_000;
     const next = await recoverExpectedLoopExecution({ ...f.input, nowMs: nowMs + 30_000 }, {
-      ...f.deps, inference: async () => ({ active: 0, observedAt: nowMs + 30_000 }) });
+      ...f.deps, inference: async () => ({ ...await f.deps.inference(), observedAt: nowMs + 30_000 }) });
     expect(next).toMatchObject({ rearmed: true, state: { attempts: 2, nextProbeAt: nowMs + 90_000 } });
   });
 
@@ -123,7 +126,7 @@ describe('durable recovery against isolated Postgres', () => {
     if (control === 'owner') f.host.execution!.ownerInputPending = true;
     if (control === 'unknown') f.host.execution = undefined;
     const result = await recoverExpectedLoopExecution(f.input, { ...f.deps,
-      inference: async () => ({ active: control === 'inference' ? 1 : 0, observedAt: nowMs }) });
+      inference: async () => ({ ...await f.deps.inference(), active: control === 'inference' ? 1 : 0 }) });
     expect(result.rearmed).not.toBe(true);
     expect(f.deps.arm).not.toHaveBeenCalled();
     const row = await state(f.input.routineId);

@@ -173,7 +173,6 @@ describe('test-time evidence continuity', () => {
     mockResolvedOnceTyped(d.bind, { status: 'spec_revision_not_found', specId: 'R-2', specRevision: 99 });
     mockResolvedTyped(d.list, [{
       id: 101,
-      withdrawal: null,
       evidenceKind: 'test',
       specId: 'R-1',
       specRevision: 2,
@@ -202,7 +201,7 @@ describe('test-time evidence continuity', () => {
       await writeFile(join(root, 'src/feature.ts'), 'export const answer = 42;\n');
       await writeFile(join(root, 'test/feature.test.ts'), "import { it } from 'vitest'; it('noop', () => {});\n");
       const d = deps();
-      d.measure = measureRepoFilesEvidenceAtRoot;
+      d.measure.mockImplementation(measureRepoFilesEvidenceAtRoot);
       const batch = {
         ...request,
         bindings: [

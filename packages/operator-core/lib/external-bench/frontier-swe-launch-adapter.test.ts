@@ -247,7 +247,7 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
     const f = fixture(), adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
     const result = await adapter.runAgent(f.input);
     expect(f.ports.startEgress).toHaveBeenCalledWith(expect.objectContaining({ endpoints: [
-      { name: 'gw', listenPort: 8788, perTask: true }, { name: 'mcp', listenPort: 9071, targetPort: 9071 },
+      { name: 'gw', listenPort: 8788, perTask: true }, { name: 'mcp', listenPort: 9071, targetPort: 9071, transport: 'http' },
       { name: 'hooks', listenPort: 9081, targetPort: 32001 },
     ] }));
     expect(f.egress.bindTaskEndpoint).toHaveBeenCalledWith('task-net', 'gw', 32002);

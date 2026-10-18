@@ -8,17 +8,22 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { allocateExtraIdeators, buildIdeatorRoster, parseIdeasPayload, runIdeators } from './ideators';
 import { CREATIVE_LENSES } from './types';
 import type { CreativeLens, CorpusDigest, ScoutLlmCall } from './types';
+import { lensIdentityId, type LensIdentityId } from './lenses';
+
+/** Weights are keyed by lens identity id (P-011 / R-8); the allocator's output stays keyed by lens. */
+const idW = (w: Partial<Record<CreativeLens, number>>): Partial<Record<LensIdentityId, number>> =>
+  Object.fromEntries(Object.entries(w).map(([l, n]) => [lensIdentityId(l as CreativeLens), n]));
 
 describe('allocateExtraIdeators (largest-remainder)', () => {
   const lenses = CREATIVE_LENSES;
 
   it('no extras when total ≤ 0 or every weight is zero', () => {
-    expect(Object.values(allocateExtraIdeators(lenses, { analogical: 5 }, 0)).every((n) => n === 0)).toBe(true);
+    expect(Object.values(allocateExtraIdeators(lenses, idW({ analogical: 5 }), 0)).every((n) => n === 0)).toBe(true);
     expect(Object.values(allocateExtraIdeators(lenses, {}, 4)).every((n) => n === 0)).toBe(true); // no signal
   });
 
   it('distributes exactly `total` extras, proportional to weights', () => {
-    const out = allocateExtraIdeators(lenses, { analogical: 3, reframing: 1 }, 4);
+    const out = allocateExtraIdeators(lenses, idW({ analogical: 3, reframing: 1 }), 4);
     expect(Object.values(out).reduce((a, b) => a + b, 0)).toBe(4);
     expect(out.analogical).toBe(3);
     expect(out.reframing).toBe(1);
@@ -26,14 +31,14 @@ describe('allocateExtraIdeators (largest-remainder)', () => {
 
   it('assigns the leftover by largest fractional remainder (equal weights → exactly one gets +1)', () => {
     const three = lenses.slice(0, 3);
-    const w = Object.fromEntries(three.map((l) => [l, 1])) as Partial<Record<CreativeLens, number>>;
+    const w = idW(Object.fromEntries(three.map((l) => [l, 1])) as Partial<Record<CreativeLens, number>>);
     const out = allocateExtraIdeators(three, w, 4); // 1,1,1 floors + 1 leftover
     expect(Object.values(out).reduce((a, b) => a + b, 0)).toBe(4);
     expect(Object.values(out).filter((n) => n === 2)).toHaveLength(1);
   });
 
   it('a zero-weight lens gets no extras', () => {
-    const out = allocateExtraIdeators(lenses, { analogical: 1 }, 3);
+    const out = allocateExtraIdeators(lenses, idW({ analogical: 1 }), 3);
     expect(out.analogical).toBe(3);
     for (const l of lenses) if (l !== 'analogical') expect(out[l]).toBe(0);
   });
@@ -65,7 +70,7 @@ describe('buildIdeatorRoster (forced-diversity floor)', () => {
   });
 
   it('lensWeights + extraIdeatorBudget ADD extras to winning lenses, preserving the floor', () => {
-    const r = buildIdeatorRoster({ lensWeights: { analogical: 1 }, extraIdeatorBudget: 2 });
+    const r = buildIdeatorRoster({ lensWeights: idW({ analogical: 1 }), extraIdeatorBudget: 2 });
     const byLens = (l: CreativeLens) => r.filter((s) => s.lens === l).length;
     expect(byLens('analogical')).toBe(3); // base 1 + 2 extras
     for (const l of CREATIVE_LENSES) if (l !== 'analogical') expect(byLens(l)).toBe(1);

@@ -621,7 +621,8 @@ describe('P040 retained Codex unkeyed wake persistence (real PG)', () => {
           claimResume: claim,
           resolveWakeModeFn: async () => 'auto', getSessionLifecycle: async () => null,
           presence: async () => null, alive: () => false, findPty: () => null,
-          findPsuHost: async () => null, codexThreadWriterHolder: () => null,
+          findPsuHost: async () => null,
+          codexThreadWriterHolder: () => ({ held: false, pid: null, lockPath: null, sessionId: null, reason: 'fixture-no-writer' }),
           ensureCodexHomeForWake: async () => ({ ok: true, repaired: false }),
           prepareDirectCodexWakeAuth: () => ({ checked: true, ready: true, reason: 'fixture-auth' }),
           ensureInboxWakeArmedForActiveSession: async () => false,
@@ -722,7 +723,7 @@ describe('P040 retained Codex unkeyed wake persistence (real PG)', () => {
         };
         // Deliberately corrupt only this owned fixture, after the genuine
         // writer has run, to distinguish absent provenance from liveness.
-        await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${admin.json(launch)} WHERE id = ${f.id}`;
+        await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${JSON.stringify(launch)}::jsonb WHERE id = ${f.id}`;
         const before = await f.read();
         expect(await claimAdvSessionResume(f.id, null, undefined, f.owner)).toBe(true);
         const stored = await f.read();

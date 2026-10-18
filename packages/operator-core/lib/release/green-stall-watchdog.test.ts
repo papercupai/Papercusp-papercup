@@ -140,12 +140,12 @@ describe('install-scoped watchdog dispatch', () => {
     ];
     const sql = (async () => rows) as unknown as Sql;
     const checks = {
-      releaseTriggerFreeze: vi.fn(async () => undefined),
-      releaseTriggerFireStale: vi.fn(async () => undefined),
-      strandedRepairQueue: vi.fn(async () => undefined),
-      idleRepairQueue: vi.fn(async () => undefined),
-      gateLiveInvariants: vi.fn(async () => undefined),
-      greenMainSlo: vi.fn(async () => undefined),
+      releaseTriggerFreeze: vi.fn(async (_installSlug: string) => undefined),
+      releaseTriggerFireStale: vi.fn(async (_installSlug: string) => undefined),
+      strandedRepairQueue: vi.fn(async (_installSlug: string) => undefined),
+      idleRepairQueue: vi.fn(async (_installSlug: string) => undefined),
+      gateLiveInvariants: vi.fn(async (_installSlug: string) => undefined),
+      greenMainSlo: vi.fn(async (_installSlug: string) => undefined),
     };
 
     const result = await runInstallScopedWatchdogs(sql, checks);
@@ -156,10 +156,10 @@ describe('install-scoped watchdog dispatch', () => {
     });
     expect(result.failures).toEqual([]);
     for (const check of [checks.strandedRepairQueue, checks.idleRepairQueue, checks.gateLiveInvariants, checks.greenMainSlo]) {
-      expect((check.mock.calls as Array<[string]>).map(([slug]) => slug)).toEqual(['oddsmith', 'papercusp']);
+      expect(check.mock.calls.map(([slug]) => slug)).toEqual(['oddsmith', 'papercusp']);
     }
     for (const check of [checks.releaseTriggerFreeze, checks.releaseTriggerFireStale]) {
-      expect((check.mock.calls as Array<[string]>).map(([slug]) => slug)).toEqual(['papercusp', 'sidestage']);
+      expect(check.mock.calls.map(([slug]) => slug)).toEqual(['papercusp', 'sidestage']);
     }
   });
 });

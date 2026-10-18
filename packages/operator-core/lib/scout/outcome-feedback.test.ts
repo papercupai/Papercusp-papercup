@@ -24,6 +24,7 @@ import {
   type RoutedIdeaProvenance,
   type ScoutOutcomeReaders,
 } from './outcome-feedback';
+import { lensForIdentityId } from './lenses';
 
 describe('workItemOutcomeTag (WI-10007390)', () => {
   const tag = (status: string, over: Partial<Parameters<typeof workItemOutcomeTag>[0]> = {}) =>
@@ -403,7 +404,7 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
         [],
       );
       const rows = lensWeightRowsFromReport(report);
-      const ana = rows.find((x) => x.lens === 'analogical');
+      const ana = rows.find((x) => x.identityId === 'scout.lens-analogical');
       expect(ana).toMatchObject({ wins: 0.75, decided: 1 });
     });
   });
@@ -412,8 +413,8 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
     it('projects each lens weight into the runIdeators lensWeights shape (summing ~1)', () => {
       const report = computeLensOutcomes([], []);
       const w = lensWeightsFromReport(report);
-      expect(Object.keys(w).sort()).toEqual([...CREATIVE_LENSES].sort());
-      const total = CREATIVE_LENSES.reduce((a, l) => a + w[l], 0);
+      expect(Object.keys(w).sort()).toEqual(CREATIVE_LENSES.map((l) => `scout.lens-${l}`).sort());
+      const total = CREATIVE_LENSES.reduce((a, l) => a + w[`scout.lens-${l}` as keyof typeof w], 0);
       expect(total).toBeCloseTo(1, 9);
     });
   });
@@ -498,8 +499,8 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       const report = computeLensOutcomes(provenance, completions);
       const rows = lensWeightRowsFromReport(report);
 
-      expect(rows.map((r) => r.lens).sort()).toEqual([...CREATIVE_LENSES].sort());
-      const byLens = Object.fromEntries(rows.map((r) => [r.lens, r]));
+      expect(rows.map((r) => r.identityId).sort()).toEqual(CREATIVE_LENSES.map((l) => `scout.lens-${l}`).sort());
+      const byLens = Object.fromEntries(rows.map((r) => [r.identityId.replace(/^scout\.lens-/, ''), r]));
       // analogical: 1 won + 1 lost → wins 1, decided 2 (pending excluded).
       expect(byLens.analogical).toMatchObject({ wins: 1, decided: 2 });
       // reframing: 1 won + 1 pending → wins 1, decided 1.
@@ -508,7 +509,11 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       expect(byLens['first-principles']).toMatchObject({ wins: 0, decided: 0 });
       expect(byLens['constraint-removal']).toMatchObject({ wins: 0, decided: 0 });
       // The persisted weight IS the report's normalized sampling share.
-      for (const r of rows) expect(r.weight).toBe(report.byLens[r.lens].weight);
+      for (const r of rows) {
+        const lens = lensForIdentityId(r.identityId);
+        expect(lens).not.toBeNull();
+        expect(r.weight).toBe(report.byLens[lens as CreativeLens].weight);
+      }
       expect(rows.reduce((a, r) => a + r.weight, 0)).toBeCloseTo(1, 10);
     });
   });

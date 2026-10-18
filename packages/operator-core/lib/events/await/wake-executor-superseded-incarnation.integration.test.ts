@@ -43,7 +43,7 @@ function delivery(original: number) {
   return makeDelivery({ workspaceId: WORKSPACE, subscriberId: OWNER,
     eventKey: 'fixture:retained-wake', payload: { message: 'Continue the held work.' },
     wakeHandle: { kind: 'adv-session', advSessionId: original, agent: 'claude',
-      sessionId: ORIGINAL_NATIVE, cwd: process.cwd(), pid: null },
+      sessionId: ORIGINAL_NATIVE, ompThreadId: null, cwd: process.cwd(), pid: null },
   });
 }
 
@@ -68,7 +68,7 @@ function dependencies(claimResume: NonNullable<ExecuteWakeDeps['claimResume']>) 
     getLoopStatusFn: async () => null,
     accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
     ensureInboxWakeArmedForActiveSession: async () => true,
-    observeFallback: () => {},
+    observeFallback: () => false,
   };
   return { deps, spawned };
 }
