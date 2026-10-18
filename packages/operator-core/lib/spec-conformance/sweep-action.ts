@@ -11,6 +11,8 @@
  *                             plan's declared `## Conformance` footprint (the "on commit" leg);
  *  - `work-item-transitioned` a plan-linked work-item changed state after the watermark
  *                             (max `work_items.state_changed_at` over `source_plan_slug`);
+ *  - `previously-drifting`  the prior conformance result still reported a drifting
+ *                             requirement, so it gets another bounded verification pass;
  *  - `interval-elapsed`       the per-plan interval passed since the last run.
  *
  * A run is the existing {@link runPlanConformance} (checks + drift alarms) with the existing
@@ -39,12 +41,24 @@ export const SPEC_CONFORMANCE_MAX_RUNS_PER_TICK = 4;
 /** Plan statuses the sweep covers — the same live population the census reports on. */
 export const SPEC_CONFORMANCE_SWEEP_STATUSES: readonly string[] = ['active', 'ready'];
 
-export type SweepTrigger = 'never-run' | 'footprint-changed' | 'work-item-transitioned' | 'interval-elapsed';
+export type SweepTrigger =
+  | 'never-run'
+  | 'footprint-changed'
+  | 'work-item-transitioned'
+  | 'previously-drifting'
+  | 'interval-elapsed';
+
+export interface SweepOutcomeWatermark {
+  /** Requirement bar keys that were still drifting at the end of the prior run. */
+  drifting?: readonly string[];
+}
 
 export interface SweepWatermark {
   lastRunAt: string;
   footprintHeadSha: string | null;
   lastTransitionAt: string | null;
+  /** Bounded prior-run summary used to retry an unresolved drift finding. */
+  lastOutcome?: SweepOutcomeWatermark | null;
 }
 
 export interface SweepCandidate {
@@ -78,6 +92,7 @@ export function sweepTriggersFor(candidate: SweepCandidate, nowMs: number, planI
   const current = ms(candidate.lastTransitionAt);
   const seen = ms(wm.lastTransitionAt);
   if (current !== null && (seen === null || current > seen)) triggers.push('work-item-transitioned');
+  if ((wm.lastOutcome?.drifting?.length ?? 0) > 0) triggers.push('previously-drifting');
   const last = ms(wm.lastRunAt);
   if (last === null || nowMs - last >= planIntervalSec * 1000) triggers.push('interval-elapsed');
   return triggers;
@@ -300,16 +315,34 @@ export function productionSweepDeps(input: { workspaceId: string }): SpecConform
       return plans.map(({ planSlug, harnessSlug, content }) => ({ planSlug, harnessSlug, content }));
     },
     async readWatermarks() {
-      const rows = await sql()<Array<{ harness_slug: string; plan_slug: string; last_run_at: Date; footprint_head_sha: string | null; last_transition_at: Date | null }>>`
-        SELECT harness_slug, plan_slug, last_run_at, footprint_head_sha, last_transition_at
+      const rows = await sql()<Array<{
+        harness_slug: string;
+        plan_slug: string;
+        last_run_at: Date;
+        footprint_head_sha: string | null;
+        last_transition_at: Date | null;
+        last_outcome: unknown;
+      }>>`
+        SELECT harness_slug, plan_slug, last_run_at, footprint_head_sha, last_transition_at, last_outcome
           FROM harness_shared.spec_conformance_state
          WHERE workspace_id = ${workspaceId}`;
-      return new Map(
-        rows.map((row) => [
+      return new Map(rows.map((row) => {
+        const lastOutcome = row.last_outcome && typeof row.last_outcome === 'object'
+          ? row.last_outcome as { drifting?: unknown }
+          : null;
+        const drifting = Array.isArray(lastOutcome?.drifting)
+          ? lastOutcome.drifting.filter((barKey): barKey is string => typeof barKey === 'string')
+          : [];
+        return [
           sweepPlanKey(row.harness_slug, row.plan_slug),
-          { lastRunAt: toIso(row.last_run_at) ?? new Date(0).toISOString(), footprintHeadSha: row.footprint_head_sha, lastTransitionAt: toIso(row.last_transition_at) },
-        ]),
-      );
+          {
+            lastRunAt: toIso(row.last_run_at) ?? new Date(0).toISOString(),
+            footprintHeadSha: row.footprint_head_sha,
+            lastTransitionAt: toIso(row.last_transition_at),
+            lastOutcome: { drifting },
+          },
+        ] as const;
+      }));
     },
     async lastTransitions(plans) {
       if (plans.length === 0) return new Map();

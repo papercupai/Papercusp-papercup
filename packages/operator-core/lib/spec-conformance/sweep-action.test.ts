@@ -53,6 +53,26 @@ describe('trigger selection (R-23)', () => {
     expect(sweepTriggersFor({ ...base, lastTransitionAt: iso(NOW - 2 * HOUR) }, NOW, interval)).toEqual([]);
   });
 
+  it('rechecks a plan whose prior conformance result still reported drift', () => {
+    const candidate = {
+      key: 'h/p',
+      watermark: wm({ lastOutcome: { drifting: ['R-8'] } }),
+      footprintChanged: false,
+      lastTransitionAt: iso(NOW - 2 * HOUR),
+    };
+    expect(sweepTriggersFor(candidate, NOW, interval)).toEqual(['previously-drifting']);
+  });
+
+  it('does not treat a clean prior result as a drift trigger', () => {
+    const candidate = {
+      key: 'h/p',
+      watermark: wm({ lastOutcome: { drifting: [] } }),
+      footprintChanged: false,
+      lastTransitionAt: iso(NOW - 2 * HOUR),
+    };
+    expect(sweepTriggersFor(candidate, NOW, interval)).toEqual([]);
+  });
+
   it('interval-elapsed once the per-plan interval passes, and idle before it', () => {
     const stale = { key: 'h/p', watermark: wm({ lastRunAt: iso(NOW - 7 * HOUR) }), footprintChanged: false, lastTransitionAt: null };
     expect(sweepTriggersFor(stale, NOW, interval)).toEqual(['interval-elapsed']);
