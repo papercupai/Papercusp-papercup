@@ -426,7 +426,7 @@ export default defineTool({
       'For `systemd-run`, put `-- executable argv` after options; `&&` starts another command. ' +
       'Fixed strings: use `rg -F` or `grep -F`; quote backticks before shell use. ' +
       'Apostrophes break single-quoted regexes; use `-e` or quoted input. ' +
-      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. Bound git history scans with \`-n\`; unbounded refused. do not shell-background child without \`wait\`.`,
+      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. Bound git history scans with \`-n\`; unbounded refused. do not shell-background child without \`wait\``,
     notWhen:
       'Use capability:read/write/edit for one-file ops and capability:git for git. Shell execution strips DB credential env vars, so use dev:pg_query for read-only operator DB queries.',
     chaining:
@@ -465,7 +465,9 @@ export default defineTool({
       .string()
       .min(1)
       .optional()
-      .describe('The bash command to run (passed to `bash -c`). Required, unless `cmd` is given.'),
+      .describe(
+        'The bash command to run (passed to `bash -c`). Required, unless `cmd` is given. For inline Python `-c`, do not encode source line breaks as literal `\\n` inside a shell-quoted program: the shell preserves the backslash and Python raises a line-continuation SyntaxError. Use a quoted heredoc (`python3 - <<\'PY\' ... PY`) or a semicolon-delimited one-liner.',
+      ),
     cmd: z
       .string()
       .min(1)

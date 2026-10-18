@@ -338,7 +338,7 @@ export default defineTool({
           'Generated data needs the same JS layer: do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal. ' +
           'Nested tools.capability.bash searches: apostrophe regexes break single-quoted arguments; use rg -F, -e per pattern, or quoted stdin/file. ' +
           'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument). ' +
-          "For inline Python `-c`, put the shell command in a JavaScript template literal and the Python program in single quotes, e.g. ``const command = String.raw`journalctl -u app.service | python3 -c 'import sys; print(\"ts\", sys.stdin.readline().strip())'`;``. This keeps Python's quotes from closing a JavaScript double-quoted command and prevents `compile_error` before bash is dispatched.",
+          "For inline Python `-c`, put the shell command in a JavaScript template literal and the Python program in single quotes, e.g. ``const command = String.raw`journalctl -u app.service | python3 -c 'import sys; print(\"ts\", sys.stdin.readline().strip())'`;``. This keeps Python's quotes from closing a JavaScript double-quoted command and prevents `compile_error` before bash is dispatched. Do not encode Python source line breaks as literal `\\n` inside the shell-quoted program: the shell preserves the backslash and Python raises a line-continuation SyntaxError. Use a quoted heredoc (`python3 - <<'PY' ... PY`) or a semicolon-delimited one-liner.",
       ),
     title: z
       .string()

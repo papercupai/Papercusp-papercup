@@ -1,7 +1,7 @@
 /** Runs only inside with-test-pg's credential-free private operator profile. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -23,6 +23,7 @@ import { readSessionConfinement } from '../lib/capability-envelope/session-confi
 import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
 import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
 import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
+import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler } from './current-su-native-http-protocol';
 
 /** Seed only the disposable private pool before its operator boots. The
@@ -36,6 +37,12 @@ export async function prepareCurrentSuNativeScenario(workspace: string) {
   // sources there before the native launcher writes its per-session hooks.
   const privateHome = process.env.HOME!;
   assert.equal(process.env.PAPERCUSP_HOME, join(privateHome, '.papercusp'));
+  // The desktop installer normally provisions this bearer. Bootstrap reads it
+  // before rendering the native MCP config, so the empty disposable home must
+  // receive its own token before either the private operator or launcher boots.
+  mkdirSync(process.env.PAPERCUSP_HOME, { recursive: true, mode: 0o700 });
+  writeFileSync(superuserTokenPath(), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
+  assert.ok(isValidSuperuserBearer(readSuperuserToken()), 'private native MCP bearer preparation failed');
   const hookSources = resolve(import.meta.dirname, '../../../apps/operator/scripts/hooks');
   const ccHooks = await installClaudeHooks(privateHome, join(hookSources, 'cc'));
   const injectionHooks = await installInjectionHooks(privateHome, join(hookSources, 'inject'));

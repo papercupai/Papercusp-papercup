@@ -297,6 +297,17 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('prevents `compile_error` before bash is dispatched');
   });
 
+  it('warns against literal backslash-n Python source in shell-quoted -c programs', () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('literal `\\n` inside the shell-quoted program');
+    expect(scriptDescription).toContain('line-continuation SyntaxError');
+    expect(scriptDescription).toContain('quoted heredoc');
+    expect(scriptDescription).toContain('semicolon-delimited one-liner');
+  });
+
   it('documents that scripts are plain JavaScript rather than TypeScript', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =

@@ -1,0 +1,311 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P032 V2 R02 R06 R07 mutation controls on pinned 5ebd candidate",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/su-session-host.ts",
+    "--fake-destructive",
+    "--relocation",
+    "overlay",
+    "--mutate",
+    "s/if \\(!reserved\\.created\\) \\{/if (false && !reserved.created) {/; s/if \\(pending\\) \\{/if (false && pending) {/",
+    "--test",
+    "SU_SESSION_HOST_SUBJECT={} node scripts/test-files.mjs packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t \"AUTO-BAR-R-02-P-009: lost-ack \""
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-18T13:55:22.479Z",
+  "finishedAt": "2026-10-18T14:26:58.684Z",
+  "summary": "Three completed copy-out overlay probes on committed harness 0883fe4bef passed their production and unmutated-copy baselines, then caught assertion failures in the intended mutants. The pinned installed 5ebd binary retained the same SHA-256 throughout. This records completed control behavior only; the reported test_runs:1..9 identities are private-database rows and are not canonical BAR bindings. Full release acceptance, current BAR adequacy, P030 matrix, independent proof and Avi approval remain separate.",
+  "assertions": [
+    {
+      "id": "r02-baselines-pass",
+      "passed": true,
+      "evidence": "Production and unmutated-copy phases passed at 2026-10-18T13:55:22.479Z, 2026-10-18T13:59:21.014Z; see log SHA-256 0b9f84315e5e0ca2f908c9f5a4d4f6f040f22549ee3994db15b3b89df5c83cf1."
+    },
+    {
+      "id": "r02-mutant-caught",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught baseline_exit=0 guard_exit=1 assertion_evidence=test-file-assertion-failure. The mutant phase failed at 2026-10-18T14:02:36.721Z."
+    },
+    {
+      "id": "r02-source-and-binary-preserved",
+      "passed": true,
+      "evidence": "tree integrity: VERIFIED. Control wrapper rehashed the installed binary after this probe: 7174ea2b6f7f58bcd04694e6c82ef1cae1896581bee3447fb37c6016e0c5174f."
+    },
+    {
+      "id": "r06-baselines-pass",
+      "passed": true,
+      "evidence": "Production and unmutated-copy phases passed at 2026-10-18T14:06:11.023Z, 2026-10-18T14:09:26.945Z; see log SHA-256 2b56787be2fc29e74c548aca0dc317a3bf7c385f0b28156a026810b69815c68d."
+    },
+    {
+      "id": "r06-mutant-caught",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught baseline_exit=0 guard_exit=1 assertion_evidence=test-file-assertion-failure. The mutant phase failed at 2026-10-18T14:12:46.364Z."
+    },
+    {
+      "id": "r06-source-and-binary-preserved",
+      "passed": true,
+      "evidence": "tree integrity: VERIFIED. Control wrapper rehashed the installed binary after this probe: 7174ea2b6f7f58bcd04694e6c82ef1cae1896581bee3447fb37c6016e0c5174f."
+    },
+    {
+      "id": "r07-baselines-pass",
+      "passed": true,
+      "evidence": "Production and unmutated-copy phases passed at 2026-10-18T14:16:56.040Z, 2026-10-18T14:19:44.473Z; see log SHA-256 4c2987d860512d5462c7466e98ca93678e9225bf222f0174312ba43d39913613."
+    },
+    {
+      "id": "r07-mutant-caught",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught baseline_exit=0 guard_exit=1 assertion_evidence=test-file-assertion-failure. The mutant phase failed at 2026-10-18T14:22:52.920Z."
+    },
+    {
+      "id": "r07-source-and-binary-preserved",
+      "passed": true,
+      "evidence": "tree integrity: VERIFIED. Control wrapper rehashed the installed binary after this probe: 7174ea2b6f7f58bcd04694e6c82ef1cae1896581bee3447fb37c6016e0c5174f."
+    }
+  ],
+  "mutationProbes": [
+    {
+      "cwd": ".",
+      "runnerCommit": "0883fe4bef8eb5503f3c828f5abfb016fabdfe0d",
+      "result": {
+        "target": "copy-out",
+        "baselineExit": 0,
+        "verdict": "caught",
+        "expected": "caught",
+        "baselineLedger": "test_runs:1",
+        "relocation": "overlay",
+        "guardExit": 1,
+        "assertionEvidence": "test-file-assertion-failure",
+        "copyBaselineLedger": "test_runs:2",
+        "mutantParse": "unchecked",
+        "mutantLedger": "test_runs:3"
+      },
+      "environment": {
+        "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "<repo-root>",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto"
+      },
+      "runnerSha256": "47f910c218b7517eb3d730f66452eb1dcd0db32c84f8858e6ee7c671b0d03a6c",
+      "schemaVersion": 1,
+      "runnerPath": "scripts/mutation-probe.sh",
+      "argv": [
+        "--file",
+        "packages/operator-core/lib/su-session-host.ts",
+        "--fake-destructive",
+        "--relocation",
+        "overlay",
+        "--mutate",
+        "s/if \\(!reserved\\.created\\) \\{/if (false && !reserved.created) {/; s/if \\(pending\\) \\{/if (false && pending) {/",
+        "--test",
+        "SU_SESSION_HOST_SUBJECT={} node scripts/test-files.mjs packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t \"AUTO-BAR-R-02-P-009: lost-ack \""
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "argv": [
+        "--file",
+        "packages/operator-core/lib/su-session-claude-engine.ts",
+        "--mutate",
+        "s/^(\\s*)adapter\\.host\\.emit\\(\\{ type: 'error', scope: 'transport', code: 'claude_stream_failed'.*$/$1void cause;/; s/^(\\s*)adapter\\.reconcileRuntimeExit\\(\\{ expected: false, reason: cause\\.message \\}\\);/$1void cause;/; s/if \\(closed && !adapter\\.host\\.snapshot\\(\\)\\.terminal\\) adapter\\.reconcileRuntimeExit\\(\\{ expected: true \\}\\);/void closed;/",
+        "--test",
+        "test \"$PAPERCUSP_TEST_RUN_WORKSPACE\" = papercusp-workspace && test \"$PAPERCUSP_TEST_RUN_HARNESS\" = papercusp && test \"$PAPERCUSP_WORKSPACE\" != \"$PAPERCUSP_TEST_RUN_WORKSPACE\" && test -n \"$PAPERCUSP_MUTATION_DESCRIPTOR\" && test -n \"$PUI_BIN\" && test -r {} && node scripts/test-files.mjs packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t \"AUTO-BAR-R-06-P-009:.*(engine-death|stream-loss)\"",
+        "--expect",
+        "caught",
+        "--relocation",
+        "overlay",
+        "--fake-destructive"
+      ],
+      "result": {
+        "mutantParse": "unchecked",
+        "expected": "caught",
+        "relocation": "overlay",
+        "guardExit": 1,
+        "copyBaselineLedger": "test_runs:5",
+        "baselineExit": 0,
+        "verdict": "caught",
+        "assertionEvidence": "test-file-assertion-failure",
+        "mutantLedger": "test_runs:6",
+        "baselineLedger": "test_runs:4",
+        "target": "copy-out"
+      },
+      "runnerSha256": "47f910c218b7517eb3d730f66452eb1dcd0db32c84f8858e6ee7c671b0d03a6c",
+      "runnerPath": "scripts/mutation-probe.sh",
+      "cwd": ".",
+      "runnerCommit": "0883fe4bef8eb5503f3c828f5abfb016fabdfe0d",
+      "environment": {
+        "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "<repo-root>"
+      }
+    },
+    {
+      "runnerCommit": "0883fe4bef8eb5503f3c828f5abfb016fabdfe0d",
+      "environment": {
+        "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+        "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "<repo-root>",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health"
+      },
+      "schemaVersion": 1,
+      "argv": [
+        "--file",
+        "packages/operator-core/lib/endpoint-route/routes/tui/index.ts",
+        "--mutate",
+        "s/state: await getViewState\\(owner\\)/state: { ...(await getViewState(owner)), tab: 'Overview' }/",
+        "--test",
+        "test \"$PAPERCUSP_TEST_RUN_WORKSPACE\" = papercusp-workspace && test \"$PAPERCUSP_TEST_RUN_HARNESS\" = papercusp && test \"$PAPERCUSP_WORKSPACE\" != \"$PAPERCUSP_TEST_RUN_WORKSPACE\" && test -n \"$PAPERCUSP_MUTATION_DESCRIPTOR\" && test -n \"$PUI_BIN\" && test -r {} && node scripts/test-files.mjs packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t \"AUTO-BAR-R-07-P-008:|AUTO-BAR-R-07-P-002:\"",
+        "--expect",
+        "caught",
+        "--relocation",
+        "overlay",
+        "--fake-destructive"
+      ],
+      "result": {
+        "expected": "caught",
+        "baselineLedger": "test_runs:7",
+        "mutantParse": "unchecked",
+        "relocation": "overlay",
+        "assertionEvidence": "test-file-assertion-failure",
+        "guardExit": 1,
+        "baselineExit": 0,
+        "mutantLedger": "test_runs:9",
+        "verdict": "caught",
+        "copyBaselineLedger": "test_runs:8",
+        "target": "copy-out"
+      },
+      "cwd": ".",
+      "runnerPath": "scripts/mutation-probe.sh",
+      "runnerSha256": "47f910c218b7517eb3d730f66452eb1dcd0db32c84f8858e6ee7c671b0d03a6c"
+    }
+  ],
+  "privacyRedactions": {
+    "originalSha256": "c722ef3389dfe5b2eac3aa4df953bcf9452bbe6481d2fb18ff2a9ee28c3a9df1",
+    "note": "Local username paths in the three reader-repository environment fields are shown as <repo-root>. The referenced original machine logs retain the exact environment. Results and candidate identities are unchanged."
+  },
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "workItem": "WI-6554700010014883",
+  "taskId": "0mvdw0cttmv0ui91a6c",
+  "snapshotCommit": "0883fe4bef8eb5503f3c828f5abfb016fabdfe0d",
+  "recordedRoot": "/tmp/p032-9086d-0883-20261018-committed-preflight",
+  "candidate": {
+    "archive": "/tmp/p032-9086d-0883-20261018-pinned-candidate/pui-0.1.0-linux-x86_64.tar.gz",
+    "sha256": "db1d9464dde5cb816c7b80456561ba536211e1b1a50623e566da24152335975f",
+    "name": "pui-0.1.0-linux-x86_64",
+    "version": "0.1.0",
+    "target": "linux-x86_64",
+    "sourceSha": "5ebd53c40e1ddae9dcf8cc9920f1c984cee7c794",
+    "glibcFloor": "2.30",
+    "binary": "/tmp/pui-p032-9086d-5ebd-20261018-accept-work/home/.local/share/pui/releases/0.1.0-5ebd53c40e1d/bin/pui",
+    "binarySha256": "7174ea2b6f7f58bcd04694e6c82ef1cae1896581bee3447fb37c6016e0c5174f",
+    "previousSourceSha": "5b4096a07aa8674ee00afcafce7deb3aa8fa1567"
+  },
+  "resultFile": "/tmp/p032-0883-named-controls-v2-20261018.result.json",
+  "resultSha256": "c39a1c886552b33a40112943ffdb57b9cfb3873eb14aed90c058f297ff106e5e",
+  "controls": [
+    {
+      "name": "r02",
+      "log": "/tmp/p032-0883-named-controls-v2-20261018.r02.log",
+      "logSha256": "0b9f84315e5e0ca2f908c9f5a4d4f6f040f22549ee3994db15b3b89df5c83cf1",
+      "phaseResults": [
+        {
+          "status": "passed",
+          "startedAt": "2026-10-18T13:55:22.479Z"
+        },
+        {
+          "status": "passed",
+          "startedAt": "2026-10-18T13:59:21.014Z"
+        },
+        {
+          "status": "failed",
+          "startedAt": "2026-10-18T14:02:36.721Z"
+        }
+      ],
+      "localLedger": {
+        "target": "copy-out",
+        "baselineExit": 0,
+        "verdict": "caught",
+        "expected": "caught",
+        "baselineLedger": "test_runs:1",
+        "relocation": "overlay",
+        "guardExit": 1,
+        "assertionEvidence": "test-file-assertion-failure",
+        "copyBaselineLedger": "test_runs:2",
+        "mutantParse": "unchecked",
+        "mutantLedger": "test_runs:3"
+      }
+    },
+    {
+      "name": "r06",
+      "log": "/tmp/p032-0883-named-controls-v2-20261018.r06.log",
+      "logSha256": "2b56787be2fc29e74c548aca0dc317a3bf7c385f0b28156a026810b69815c68d",
+      "phaseResults": [
+        {
+          "status": "passed",
+          "startedAt": "2026-10-18T14:06:11.023Z"
+        },
+        {
+          "status": "passed",
+          "startedAt": "2026-10-18T14:09:26.945Z"
+        },
+        {
+          "status": "failed",
+          "startedAt": "2026-10-18T14:12:46.364Z"
+        }
+      ],
+      "localLedger": {
+        "mutantParse": "unchecked",
+        "expected": "caught",
+        "relocation": "overlay",
+        "guardExit": 1,
+        "copyBaselineLedger": "test_runs:5",
+        "baselineExit": 0,
+        "verdict": "caught",
+        "assertionEvidence": "test-file-assertion-failure",
+        "mutantLedger": "test_runs:6",
+        "baselineLedger": "test_runs:4",
+        "target": "copy-out"
+      }
+    },
+    {
+      "name": "r07",
+      "log": "/tmp/p032-0883-named-controls-v2-20261018.r07.log",
+      "logSha256": "4c2987d860512d5462c7466e98ca93678e9225bf222f0174312ba43d39913613",
+      "phaseResults": [
+        {
+          "status": "passed",
+          "startedAt": "2026-10-18T14:16:56.040Z"
+        },
+        {
+          "status": "passed",
+          "startedAt": "2026-10-18T14:19:44.473Z"
+        },
+        {
+          "status": "failed",
+          "startedAt": "2026-10-18T14:22:52.920Z"
+        }
+      ],
+      "localLedger": {
+        "expected": "caught",
+        "baselineLedger": "test_runs:7",
+        "mutantParse": "unchecked",
+        "relocation": "overlay",
+        "assertionEvidence": "test-file-assertion-failure",
+        "guardExit": 1,
+        "baselineExit": 0,
+        "mutantLedger": "test_runs:9",
+        "verdict": "caught",
+        "copyBaselineLedger": "test_runs:8",
+        "target": "copy-out"
+      }
+    }
+  ],
+  "residualUnknowns": [
+    "Private test-run rows have not been recovered into the canonical test ledger. No private numeric row ID is treated as a canonical row.",
+    "This artifact does not establish current BAR adequacy or full release acceptance."
+  ]
+}

@@ -76,10 +76,11 @@ export default defineTool({
   description:
     'Immediately reconcile pending grading-integrity audits by dispatching independent auditors through the bounded, idempotency-keyed pending-audit dispatcher. ' +
     `Pass targetIds for a pending scorecard named by a refusal; omitting them dispatches ${SCORECARD_REPAIR_NO_TARGET_SELECTION}. ` +
+    'For a generation-bound scorecard, invoke this tool through the operator-api runtime that serves its graded build; on local Papercusp staging, use the current-build :3170 route selected by dev:pipeline_position. The same-or-descendant generation guard remains fail-closed before reservation. ' +
     'Pass gradingLaunch to use the same pinned model profile as the acceptance-grading sweep. ' +
     'This is the callable repair path behind scorecards:emit and the acceptance-grading sweep.',
   guidance: {
-    when: 'scorecards:emit or a completion gate says a scorecard must be re-opened through the pending-audit dispatcher, or a known pending grading-integrity backlog needs an immediate bounded retry instead of waiting for the periodic sweep.',
+    when: 'scorecards:emit or a completion gate says a scorecard must be re-opened through the pending-audit dispatcher, or a known pending grading-integrity backlog needs an immediate bounded retry instead of waiting for the periodic sweep. For a generation-bound target, use dev:pipeline_position to select the operator-api runtime serving the graded build, then call this tool there; older or unproven runtimes are refused before reservation.',
     notWhen: 'Do not use this to settle an audit yourself. It only dispatches an independent auditor; the auditor must re-read the target and emit exactly one grading-integrity card. Do not use it for ordinary same-rubric scorecard emission.',
     chaining:
       "scorecards:repair { targetIds:['EI-scorecard'] } → scorecards:get { issueId:'EI-scorecard' } → wait for the independent auditor → scorecards:list { subjectRef:'EI-scorecard' } to verify the gradingAudit settled.",

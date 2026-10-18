@@ -174,4 +174,10 @@ describe('scorecards:repair', () => {
     expect(SCORECARD_REPAIR_TIMEOUT_SEC).toBeGreaterThan(55);
     expect(repairTool.skipWorkspaceTx).toBe(true);
   });
+
+  it('directs generation-bound repairs to the operator API serving the graded build', () => {
+    expect(repairTool.description).toContain('operator-api runtime that serves its graded build');
+    expect(repairTool.description).toContain('current-build :3170 route selected by dev:pipeline_position');
+    expect(repairTool.guidance?.when).toContain('older or unproven runtimes are refused before reservation');
+  });
 });
