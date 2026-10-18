@@ -58,6 +58,21 @@ describe('withBoundedTimeout (WI-3818)', () => {
     warnSpy.mockRestore();
   });
 
+  it('can keep an expected optional fallback quiet while retaining its degradation result', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resultPromise = withBoundedTimeout(new Promise<string>(() => {}), {
+      fallback: 'fallback-value',
+      timeoutMs: 5000,
+      label: 'optional-read',
+      warn: false,
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+    const result = await resultPromise;
+    expect(result).toMatchObject({ value: 'fallback-value', degraded: true, reason: 'timeout' });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
   it('degrades to the fallback with reason "error" when the work rejects', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const error = new Error('boom');

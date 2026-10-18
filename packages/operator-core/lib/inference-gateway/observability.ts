@@ -12,6 +12,7 @@ import type { GatewayStats } from './gateway';
 import { gatewayPort } from './spawn-env';
 import type { RawGatewayStats } from './gateway-wedge';
 import type { LocalBackend, LocalBackendCandidate, LocalBackendEngineCapacity } from './local-backend-pool';
+import { MAX_ACTIVE_OWNER_REQUESTS, type GatewayActiveRequestSnapshot } from './request-stage-telemetry';
 
 export interface GatewayHeadroom {
   /** Provider whose admission/account fields were projected from /stats. */
@@ -158,24 +159,105 @@ export async function fetchGatewayHeadroom(
 
 /** Live operation evidence from the existing owner report. Missing fields on
  * an older gateway, an outage, or an owner mismatch are unknown, never zero. */
+export interface GatewayOwnerExecution {
+  active: number | null;
+  observedAt: number | null;
+  /** Process generation for the process-local active span snapshots. */
+  processInstanceId: string | null;
+  /** Null means the live gateway did not provide a complete, valid bounded population. */
+  activeRequests: GatewayActiveRequestSnapshot[] | null;
+  /** Null means completeness was absent or malformed, so stage evidence is unknown. */
+  activeRequestsComplete: boolean | null;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+const isSafeNonNegativeInteger = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+const isSafeTimestamp = (value: unknown): value is number =>
+  isSafeNonNegativeInteger(value);
+
+function parseGatewayActiveRequestSnapshot(value: unknown): GatewayActiveRequestSnapshot | null {
+  if (!isRecord(value)) return null;
+  const provider = value.provider;
+  if (provider !== 'claude' && provider !== 'codex' && provider !== 'local') return null;
+  const nullableTimestamp = (candidate: unknown): candidate is number | null =>
+    candidate === null || isSafeTimestamp(candidate);
+  if (!isSafeNonNegativeInteger(value.requestId) || !isSafeTimestamp(value.startedAt) ||
+      !nullableTimestamp(value.providerQueuedAt) || !nullableTimestamp(value.providerAdmittedAt) ||
+      !isSafeNonNegativeInteger(value.attempts) || !isSafeNonNegativeInteger(value.upstreamCalls) ||
+      !isSafeNonNegativeInteger(value.upstreamCallsDropped)) return null;
+  return {
+    requestId: value.requestId,
+    startedAt: value.startedAt,
+    provider,
+    providerQueuedAt: value.providerQueuedAt,
+    providerAdmittedAt: value.providerAdmittedAt,
+    attempts: value.attempts,
+    upstreamCalls: value.upstreamCalls,
+    upstreamCallsDropped: value.upstreamCallsDropped,
+  };
+}
+
+function parseGatewayProcessInstanceId(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9._:@/+\-]{1,160}$/.test(value) ? value : null;
+}
+
+function parseOwnerActiveRequests(
+  stageTelemetry: unknown,
+  active: number,
+): Pick<GatewayOwnerExecution, 'activeRequests' | 'activeRequestsComplete'> {
+  if (!isRecord(stageTelemetry) || typeof stageTelemetry.activeRequestsComplete !== 'boolean' ||
+      !Array.isArray(stageTelemetry.activeRequests) ||
+      stageTelemetry.activeRequests.length > MAX_ACTIVE_OWNER_REQUESTS) {
+    return { activeRequests: null, activeRequestsComplete: null };
+  }
+  const activeRequests: GatewayActiveRequestSnapshot[] = [];
+  for (const row of stageTelemetry.activeRequests) {
+    const parsed = parseGatewayActiveRequestSnapshot(row);
+    if (!parsed) return { activeRequests: null, activeRequestsComplete: null };
+    activeRequests.push(parsed);
+  }
+  // A complete bounded population must reconcile exactly with the active count. An
+  // incomplete population may be shorter because the gateway explicitly reported overflow.
+  if (stageTelemetry.activeRequestsComplete && activeRequests.length !== active) {
+    return { activeRequests: null, activeRequestsComplete: null };
+  }
+  return { activeRequests, activeRequestsComplete: stageTelemetry.activeRequestsComplete };
+}
+
 export async function fetchGatewayOwnerExecution(ownerId: string, opts: {
   port?: number; fetchImpl?: typeof fetch; timeoutMs?: number;
-} = {}): Promise<{ active: number | null; observedAt: number | null }> {
+} = {}): Promise<GatewayOwnerExecution> {
+  const unknown = (): GatewayOwnerExecution => ({
+    active: null,
+    observedAt: null,
+    processInstanceId: null,
+    activeRequests: null,
+    activeRequestsComplete: null,
+  });
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 1000);
   try {
     const res = await (opts.fetchImpl ?? fetch)(
       `http://127.0.0.1:${opts.port ?? gatewayPort()}/admin/owner-report?owner=${encodeURIComponent(ownerId)}`,
       { signal: ctrl.signal });
-    if (!res.ok) return { active: null, observedAt: null };
-    const body = await res.json() as { owner?: string; now?: number; stageTelemetry?: { active?: number } };
-    const active = body.stageTelemetry?.active;
-    if (body.owner !== ownerId || !Number.isInteger(active) || Number(active) < 0 || !Number.isFinite(body.now)) {
-      return { active: null, observedAt: null };
-    }
-    return { active: Number(active), observedAt: Number(body.now) };
+    if (!res.ok) return unknown();
+    const body = await res.json() as unknown;
+    if (!isRecord(body) || body.owner !== ownerId || !isSafeTimestamp(body.now) ||
+        !isRecord(body.stageTelemetry) || !isSafeNonNegativeInteger(body.stageTelemetry.active)) return unknown();
+    const active = body.stageTelemetry.active;
+    const parsed = parseOwnerActiveRequests(body.stageTelemetry, active);
+    return {
+      active,
+      observedAt: body.now,
+      processInstanceId: isRecord(body.process) ? parseGatewayProcessInstanceId(body.process.instanceId) : null,
+      ...parsed,
+    };
   } catch {
-    return { active: null, observedAt: null };
+    return unknown();
   } finally {
     clearTimeout(timer);
   }

@@ -480,6 +480,10 @@ export async function resolveOperationalSourceRoot(
 ): Promise<string | null> {
   try {
     const modulePath = realpathSync(fileURLToPath(moduleUrl));
+    // A URL resolving to a directory is not a loaded instrument. Requiring a
+    // regular file also makes missing/foreign module paths fail closed before
+    // asking Git to identify a containing checkout.
+    if (!statSync(modulePath).isFile()) return null;
     const result = await git(['rev-parse', '--show-toplevel'], dirname(modulePath));
     const candidate = result.stdout.trim();
     if (result.code !== 0 || !isAbsolute(candidate)) return null;

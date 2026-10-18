@@ -60,6 +60,20 @@ export type PullLedgerLateSettlement =
   | { kind: 'claimed'; workItemId: string; settledAt: string }
   | { kind: 'no-claim' | 'rejected-unknown'; settledAt: string };
 
+/**
+ * Resolve the owner filter for a ledger read. When both selectors are supplied,
+ * `bee` narrows the fleet membership set instead of widening it. The previous
+ * union silently returned every fleet member for a bee-specific query.
+ */
+export function resolvePullLedgerBeeFilter(
+  fleetMembers: ReadonlySet<string> | null,
+  bee?: string,
+): string[] | null {
+  if (fleetMembers === null) return bee ? [bee] : null;
+  if (!bee) return [...fleetMembers];
+  return fleetMembers.has(bee) ? [bee] : [];
+}
+
 /** Raw shape of one selected `tool_invocations` row — the columns the query below projects. */
 export interface PullLedgerInvocationRow {
   invoked_at: string;
@@ -229,9 +243,7 @@ export default defineTool({
     let bees: string[] | null = null;
     if (args.fleet) {
       const members = await fleetEverMembers(args.fleet, { workspaceId });
-      if (args.bee) members.add(args.bee);
-      bees = [...members];
-      if (bees.length === 0) {
+      if (members.size === 0) {
         return {
           data: {
             ok: true,
@@ -244,6 +256,7 @@ export default defineTool({
           },
         };
       }
+      bees = resolvePullLedgerBeeFilter(members, args.bee);
     } else if (args.bee) {
       bees = [args.bee];
     }

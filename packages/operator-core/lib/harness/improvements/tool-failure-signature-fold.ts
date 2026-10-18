@@ -68,7 +68,7 @@ interface Probation {
   reporters?: string[];
   firstSeenAt?: string;
   lastSeenAt?: string;
-  report?: { toolName?: string; errorCode?: string; fieldPath?: string };
+  report?: { toolName?: string; errorCode?: string; fieldPath?: string; message?: string };
   [key: string]: unknown;
 }
 
@@ -83,7 +83,7 @@ export function legacySignatureOf(payload: Record<string, unknown>): string | nu
   const report = probation?.report;
   if (!probation?.class || !report?.toolName) return null;
   return toolFailureSignatureKey(
-    { toolName: report.toolName, errorCode: report.errorCode, fieldPath: report.fieldPath },
+    { toolName: report.toolName, errorCode: report.errorCode, fieldPath: report.fieldPath, message: report.message },
     probation.class as ToolErrorClass,
   );
 }

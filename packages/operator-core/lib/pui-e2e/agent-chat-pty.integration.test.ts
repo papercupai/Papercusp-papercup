@@ -16,7 +16,7 @@ import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execFile, fork, spawnSync } from 'node:child_process';
-import { runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
+import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
 import { assertPuiBinaryUnchanged, snapshotCurrentPuiBinary } from './pui-binary';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
@@ -4700,21 +4700,34 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   };
   const startChatWorkbench = (cols: number, rows: number) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p030-launch-')));
+    // Zellij derives its log from TMPDIR, independently of ZELLIJ_SOCKET_DIR.
+    // Isolate both so a shutdown diagnostic can never read another session's log.
+    const privateTmp = path.join(launchDir, 'tmp');
+    mkdirSync(privateTmp);
+    const logPath = path.join(privateTmp, `zellij-${process.getuid!()}`, 'zellij-log', 'zellij.log');
+    const psTrace = process.env.PUI_TIMING_DIR && process.platform === 'linux' ? installWorkbenchPsTrace(launchDir) : undefined;
     // The workbench layout starts every pane (the chat included) as `pui …`
     // from PATH. Put the binary under test first, or the panes run whatever
     // `pui` is installed (~/.cargo/bin) and the test judges a stale build.
     const pane = new PuiPane(bin, operatorPort, home, {
       args: [], cwd: launchDir, cols, rows,
-      env: { PATH: `${path.dirname(bin)}:${process.env.PATH ?? '/usr/bin:/bin'}`, ZELLIJ_SOCKET_DIR: workbenchSocketRoot },
+      env: { PATH: [path.dirname(bin), ...(psTrace ? [psTrace.binDirectory] : []), process.env.PATH ?? '/usr/bin:/bin'].join(path.delimiter), ZELLIJ_SOCKET_DIR: workbenchSocketRoot, TMPDIR: privateTmp },
     });
     const session = `pui-chat-${pane.pty.pid}`;
     const exited = pane.whenExited().then(({ exitCode }) => exitCode);
     let preCleanupEvidence: Record<string, unknown> | undefined;
+    let identity: Awaited<ReturnType<typeof captureWorkbenchSessionEvidence>>['identity'] | undefined;
+    const captureEvidence = async (): Promise<Record<string, unknown> & { workbench: Awaited<ReturnType<typeof captureWorkbenchSessionEvidence>> }> => {
+      const launch = await pane.capturePreCleanupEvidence();
+      const workbench = await captureWorkbenchSessionEvidence(workbenchSocketRoot, session, { previous: identity, logPath, psTracePath: psTrace?.tracePath });
+      identity = workbench.identity;
+      return { ...launch, workbench };
+    };
     const cleanup = async () => {
       // onTestFailed is invoked after the test's finally block. Preserve the
       // actual failing frame and descendants before stop()/kill-session erase
       // the only evidence that distinguishes a product hang from teardown.
-      preCleanupEvidence ??= await pane.capturePreCleanupEvidence();
+      preCleanupEvidence ??= await captureEvidence();
       console.info('PUI_P030_PRE_CLEANUP', JSON.stringify({ session, ...preCleanupEvidence }));
       if (process.env.PUI_TIMING_DIR) {
         mkdirSync(process.env.PUI_TIMING_DIR, { recursive: true });
@@ -4722,11 +4735,22 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
           JSON.stringify({ session, ...preCleanupEvidence }));
       }
       await pane.stop();
-      await paneZellij(['kill-session', session]);
-      await paneZellij(['delete-session', session]);
+      // Preserve the cleanup RPC outcomes separately from the pre-cleanup
+      // snapshot. A launcher timeout proves only that its client did not exit;
+      // this receipt distinguishes a blocked kill-session from a successful
+      // cleanup that merely happened after the assertion deadline.
+      const shutdown = { session, commands: [] as Array<Record<string, unknown>> };
+      for (const args of [['kill-session', session], ['delete-session', session]] as const) {
+        const started = Date.now();
+        const result = await paneZellij([...args]);
+        shutdown.commands.push({ args, startedAt: new Date(started).toISOString(), elapsedMs: Date.now() - started, ...result });
+      }
+      if (process.env.PUI_TIMING_DIR) {
+        writeFileSync(path.join(process.env.PUI_TIMING_DIR, `workbench-${pane.pty.pid}-shutdown.json`), JSON.stringify(shutdown));
+      }
       rmSync(launchDir, { recursive: true, force: true });
     };
-    return { launchDir, pane, session, exited, cleanup,
+    return { launchDir, pane, session, exited, cleanup, captureEvidence,
       get preCleanupEvidence() { return preCleanupEvidence; } };
   };
 
@@ -4782,13 +4806,25 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       if (process.env.PUI_TIMING_DIR) {
         // Validate the diagnostic while the launch is known to be alive. A
         // broken process observer must refuse before another unmeasured quit.
-        const beforeQuit = await wb.pane.capturePreCleanupEvidence();
+        const beforeQuit = await wb.captureEvidence();
         mkdirSync(process.env.PUI_TIMING_DIR, { recursive: true });
         writeFileSync(path.join(process.env.PUI_TIMING_DIR, `workbench-${wb.pane.pty.pid}-before-quit.json`),
           JSON.stringify({ session: wb.session, ...beforeQuit }));
-        expect(beforeQuit.processProbeError, JSON.stringify(beforeQuit.processProbeFailure)).toBeUndefined();
-        expect((beforeQuit.descendants as string[]).some((row) => Number(row.trim().split(/\s+/, 1)[0]) === wb.pane.pty.pid),
+        expect(beforeQuit['processProbeError'], JSON.stringify(beforeQuit['processProbeFailure'])).toBeUndefined();
+        expect((beforeQuit['descendants'] as string[]).some((row) => Number(row.trim().split(/\s+/, 1)[0]) === wb.pane.pty.pid),
           'live process observer must see the launcher').toBe(true);
+        expect(beforeQuit.workbench.probeError, JSON.stringify(beforeQuit.workbench)).toBeUndefined();
+        expect(beforeQuit.workbench.identity.serverPids.length, 'own socket must identify a server before quit').toBeGreaterThan(0);
+        expect(beforeQuit.workbench.chatPanes, 'own server tree must identify the chat before quit').toHaveLength(1);
+        expect(beforeQuit.workbench.completionReceipt).toMatchObject({ observed: true, exists: false });
+        expect(beforeQuit.workbench.sessionLog, 'private Zellij log must exist before quit').toMatchObject({ observed: true, exists: true });
+        if (process.platform === 'linux') {
+          expect(beforeQuit.workbench.psTrace, 'native command trace must be readable before quit').toMatchObject({ observed: true, exists: true });
+        }
+        for (const server of beforeQuit.workbench.processes.filter((entry) => beforeQuit.workbench.identity.serverPids.includes(entry.pid))) {
+          expect(server.threadProbeError).toBeUndefined();
+          expect(server.rootThreads.length, 'own server thread observer must pass its live control').toBeGreaterThan(0);
+        }
       }
       // Ending the chat ends `pui`: the launcher exits and the session is gone.
       wb.pane.write('/exit');

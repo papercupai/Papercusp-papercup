@@ -75,6 +75,10 @@ import type { sendMessage } from './agent-tools/coordination/messages';
 import type { wakeRecipients } from './agent-tools/coordination/inbox-wake';
 import type { lineagePartyKeys } from './acceptance-author-identity';
 import type { LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
+import {
+  fetchGatewayOwnerExecution,
+  type GatewayOwnerExecution,
+} from './inference-gateway/observability';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -158,6 +162,13 @@ export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
  * before the auditor emits its audit card.
  */
 export const GRADING_AUDIT_RESERVATION_TTL_MS = 15 * 60 * 1000;
+/** A provider queue observation must be old enough to distinguish a transient enqueue from the
+ * pre-first-response admission wedge this repair is meant to recover. */
+export const GRADING_AUDIT_PROVIDER_WAIT_MIN_MS = 3 * 60 * 1000;
+/** Two complete owner-report reads must retain the same live request/process generation. */
+export const GRADING_AUDIT_PROVIDER_EVIDENCE_SAMPLES = 2;
+/** The second read is intentionally immediate by default; callers may inject a bounded delay. */
+export const GRADING_AUDIT_PROVIDER_EVIDENCE_DELAY_MS = 0;
 /** Allow a successful emit to return to its headless caller before retiring it. */
 const GRADING_AUDIT_TERMINAL_TASK_REAP_GRACE_MS = 60 * 1000;
 const GRADING_AUDIT_TASK_LABEL_PREFIX = 'grading-audit:';
@@ -708,6 +719,11 @@ export interface DispatchPendingGradingAuditsDeps {
   readCurrentGeneration?: typeof readRunningGeneration;
   /** Shared tri-state ancestry check used by both dispatch and scorecards:emit. */
   generationAncestry?: GenerationAncestryProbe;
+  /** Strict owner-report read used to prove a retained task is still queued before provider work. */
+  fetchGatewayOwnerExecution?: typeof fetchGatewayOwnerExecution;
+  /** Test/host seam for the bounded repeated provider-evidence read. */
+  providerEvidenceSamples?: number;
+  providerEvidenceDelayMs?: number;
   /** Clock seam for the recorded backoff instant. */
   now?: () => number;
 }
@@ -718,6 +734,134 @@ async function resolveGradingAuditorOwnerLiveness(
   const { resolveSessionStates } = await import('./agent-tools/coordination/liveness-oracle');
   const verdicts = await resolveSessionStates([{ ownerId }], { hydratePerId: true });
   return verdicts.get(ownerId) ?? null;
+}
+
+type RetainedNativeTranscriptProof = {
+  nativeTranscriptPath: string;
+  nativeSessionId: string;
+  nativeBackend?: 'claude' | 'codex';
+};
+
+/**
+ * Native transcript evidence for the recovery seam is deliberately stricter than a PTY tail:
+ * the exact session must have a kickoff/user record and no assistant response or tool activity.
+ * A malformed or mixed-session tail is unknown, never a reason to retire a live task.
+ */
+function nativeTranscriptShowsKickoffWithoutResponse(
+  rawTranscript: string,
+  proof: RetainedNativeTranscriptProof,
+): boolean {
+  if (!rawTranscript.trim() || !proof.nativeSessionId.trim()) return false;
+  let seenSession = false;
+  let kickoff = false;
+  let response = false;
+  let toolActivity = false;
+  for (const line of rawTranscript.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    let row: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+      row = parsed as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+    const message = row.message && typeof row.message === 'object' && !Array.isArray(row.message)
+      ? row.message as Record<string, unknown>
+      : null;
+    const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? row.payload as Record<string, unknown>
+      : null;
+    const rowSessionId = typeof row.sessionId === 'string'
+      ? row.sessionId
+      : typeof payload?.id === 'string' && row.type === 'session_meta'
+        ? payload.id
+        : null;
+    if (rowSessionId && rowSessionId !== proof.nativeSessionId) return false;
+    if (rowSessionId !== proof.nativeSessionId) continue;
+    seenSession = true;
+    const type = typeof row.type === 'string' ? row.type : '';
+    const role = typeof message?.role === 'string' ? message.role : '';
+    const eventType = typeof payload?.type === 'string' ? payload.type : '';
+    if (type === 'user' || role === 'user' || /^(?:user_message|turn_started|task_started)$/i.test(eventType)) kickoff = true;
+    if (type === 'assistant' || role === 'assistant' || /^(?:task_complete|assistant|response|turn_complete)$/i.test(eventType)) response = true;
+    if (/tool|function|mcp/i.test(type) || /tool|function|mcp/i.test(eventType)) toolActivity = true;
+  }
+  return seenSession && kickoff && !response && !toolActivity;
+}
+
+function isProviderQueuedWithoutUpstream(
+  report: GatewayOwnerExecution,
+  nowMs: number,
+  taskStartedAtMs: number,
+): NonNullable<GatewayOwnerExecution['activeRequests']>[number] | null {
+  if (
+    report.active === null || report.active <= 0 || report.observedAt === null ||
+    report.processInstanceId === null || report.activeRequestsComplete !== true ||
+    report.activeRequests === null || !Number.isSafeInteger(nowMs)
+  ) return null;
+  const candidates = report.activeRequests.filter((request) =>
+    (request.provider === 'claude' || request.provider === 'codex') &&
+    request.providerQueuedAt !== null && request.providerAdmittedAt === null &&
+    request.attempts === 0 && request.upstreamCalls === 0 && request.upstreamCallsDropped === 0 &&
+    request.startedAt >= taskStartedAtMs - 5_000 &&
+    report.observedAt! >= request.providerQueuedAt &&
+    report.observedAt! - request.providerQueuedAt >= GRADING_AUDIT_PROVIDER_WAIT_MIN_MS,
+  );
+  return candidates.length === 1 ? candidates[0]! : null;
+}
+
+/**
+ * Require repeated, complete provider-stage evidence before classifying a live task's
+ * no-first-turn wait as terminal. The request id/start timestamp and gateway process
+ * generation must remain equal across samples; reservation/task/native identity are checked
+ * at the call site and passed as explicit arguments so a later lease cannot reuse this proof.
+ */
+async function proveRetainedProviderAdmissionStall(
+  task: Pick<TaskRow, 'taskId' | 'startedAt' | 'processIdentity'>,
+  ownerId: string,
+  reservationKey: string,
+  reservationReservedAt: string,
+  nativeProof: RetainedNativeTranscriptProof | undefined,
+  readLogTail: (path: string) => string | Promise<string>,
+  readOwnerExecution: (ownerId: string) => Promise<GatewayOwnerExecution>,
+  sleep: (ms: number) => Promise<void>,
+  samples: number,
+  delayMs: number,
+): Promise<boolean> {
+  if (!nativeProof || !task.taskId.trim() || !ownerId || !reservationKey ||
+      !reservationReservedAt || reservationReservedAt === 'reservation-unknown' ||
+      typeof task.processIdentity !== 'string' || !task.processIdentity.trim()) return false;
+  const taskStartedAtMs = Date.parse(task.startedAt);
+  if (!Number.isFinite(taskStartedAtMs)) return false;
+  try {
+    if (!nativeTranscriptShowsKickoffWithoutResponse(
+      await readLogTail(nativeProof.nativeTranscriptPath),
+      nativeProof,
+    )) return false;
+  } catch {
+    return false;
+  }
+  const count = Math.max(GRADING_AUDIT_PROVIDER_EVIDENCE_SAMPLES, Math.floor(samples));
+  const waitMs = Math.max(0, Math.floor(delayMs));
+  let first: { requestId: number; startedAt: number; processInstanceId: string } | null = null;
+  for (let sample = 0; sample < count; sample++) {
+    let report: GatewayOwnerExecution;
+    try {
+      report = await readOwnerExecution(ownerId);
+    } catch {
+      return false;
+    }
+    const nowMs = report.observedAt ?? NaN;
+    const queued = isProviderQueuedWithoutUpstream(report, nowMs, taskStartedAtMs);
+    if (!queued || report.processInstanceId === null) return false;
+    const generation = { requestId: queued.requestId, startedAt: queued.startedAt, processInstanceId: report.processInstanceId };
+    if (first && (first.requestId !== generation.requestId || first.startedAt !== generation.startedAt ||
+        first.processInstanceId !== generation.processInstanceId)) return false;
+    first ??= generation;
+    if (sample + 1 < count && waitMs > 0) await sleep(waitMs);
+  }
+  return first !== null;
 }
 
 export type GradingAuditReservationStatus =
@@ -2058,6 +2202,9 @@ export async function dispatchPendingGradingAudits(
 
   const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
   const readLogMtimeMs = deps.readLogMtimeMs ?? readAcceptanceGraderLogMtimeMs;
+  const readOwnerExecution = deps.fetchGatewayOwnerExecution ?? fetchGatewayOwnerExecution;
+  const providerEvidenceSamples = deps.providerEvidenceSamples ?? GRADING_AUDIT_PROVIDER_EVIDENCE_SAMPLES;
+  const providerEvidenceDelayMs = deps.providerEvidenceDelayMs ?? GRADING_AUDIT_PROVIDER_EVIDENCE_DELAY_MS;
   const detectTerminalFailure = (
     logPath: string | null,
     maxRechecks = deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
@@ -2556,6 +2703,28 @@ export async function dispatchPendingGradingAudits(
               // Missing/unreadable evidence is unknown, never permission to kill.
             }
           }
+        }
+        // A live task whose log only shows the startup UI is not terminal proof. The
+        // pre-provider recovery path is allowed only when the exact native session has
+        // kickoff/no-response evidence and the same complete provider-queued span survives
+        // repeated owner-report reads in the same gateway process generation.
+        if (terminalFailure?.code === 'startup_first_turn_stalled') {
+          const taskOwnerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
+          const providerStall = taskOwnerId
+            ? await proveRetainedProviderAdmissionStall(
+                task,
+                taskOwnerId,
+                priorReservation?.key ?? idempotencyKey,
+                priorReservation?.reservedAt ?? reservationReservedAt,
+                nativeProof,
+                readLogTail,
+                readOwnerExecution,
+                deps.sleep ?? (async (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
+                providerEvidenceSamples,
+                providerEvidenceDelayMs,
+              )
+            : false;
+          if (!providerStall) terminalFailure = null;
         }
         if (!terminalFailure) {
           const taskOwnerId = typeof task.detail?.coordOwnerId === 'string'

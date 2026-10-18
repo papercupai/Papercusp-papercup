@@ -210,7 +210,7 @@ describe('session-dir relocation (D-026 step 3)', () => {
       expect(l.run(home).status).toBe(0);
       const argv = readFileSync(argvLog, 'utf8').trimEnd().split('\n');
       expect(argv.slice(argv.indexOf(CONTAINER_CODEX_BIN_PATH) + 1)).toEqual([
-        '-c', `projects.${JSON.stringify(workdir)}.trust_level="trusted"`, '--version',
+        '-c', `projects={${JSON.stringify(workdir)}={trust_level="trusted"}}`, '--version',
       ]);
       expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(config);
       expect(statSync(join(home, 'config.toml')).mode & 0o777).toBe(0o600);

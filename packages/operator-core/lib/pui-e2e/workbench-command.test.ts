@@ -2,13 +2,116 @@ import { createServer } from 'node:http';
 import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { createServer as createSocketServer } from 'node:net';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, test } from 'vitest';
-import { runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
+import { describe, expect, test, vi } from 'vitest';
+import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
+import type { captureProcessSnapshot } from './process-snapshot';
 
 describe('PUI workbench control commands', () => {
+  test.skipIf(process.platform !== 'linux')('traces native ps timing while preserving its streams, status and quoted paths', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "pui ps's trace-"));
+    try {
+      const trace = installWorkbenchPsTrace(root);
+      const env = { ...process.env, PATH: `${trace.binDirectory}:${process.env.PATH}` };
+      const args = ['-p', String(process.pid), '-o', 'pid='];
+      const native = await runWorkbenchCommand('/usr/bin/ps', args);
+      const wrapped = await runWorkbenchCommand('ps', args, { env });
+      expect(wrapped).toMatchObject({ status: native.status, stdout: native.stdout, stderr: native.stderr });
+      const invalid = await runWorkbenchCommand('ps', ['--pui-invalid-probe-option'], { env });
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr.length).toBeGreaterThan(0);
+      const records = readFileSync(trace.tracePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(records.map((record) => [record.phase, record.status])).toEqual([
+        ['start', null], ['end', 0], ['start', null], ['end', 1],
+      ]);
+      expect(records.every((record) => Number.isFinite(Date.parse(record.at)) && record.pid > 0 && record.parentPid === process.pid)).toBe(true);
+      expect(records[1].pid).toBe(records[0].pid);
+      expect(Date.parse(records[1].at)).toBeGreaterThanOrEqual(Date.parse(records[0].at));
+      expect(records.every((record) => Object.keys(record).sort().join(',') === 'at,parentPid,phase,pid,status')).toBe(true);
+      const evidence = await captureWorkbenchSessionEvidence(root, 'none', { psTracePath: trace.tracePath });
+      expect(evidence.psTrace).toMatchObject({ observed: true, exists: true, truncated: false });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test.skipIf(process.platform !== 'linux' || spawnSync('ss', ['--version']).status !== 0)(
+    'finds the detached server through its exact socket and retains the chat receipt after exit', async () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'pui-evidence-'));
+      const contract = path.join(root, 'contract_version_test');
+      mkdirSync(contract);
+      const socket = path.join(contract, 'pui-chat-42');
+      const receipt = path.join(root, 'receipt');
+      const server = createSocketServer();
+      await new Promise<void>((resolve) => server.listen(socket, resolve));
+      const snapshot = vi.fn(async (): Promise<Awaited<ReturnType<typeof captureProcessSnapshot>>> => ({ descendants: ['42 1 S do_wait pui'],
+        processCommands: { 42: ['/private/pui', '--solo', '--workbench-pane'] },
+        workbenchEnvironment: { 42: { PUI_CHAT_WORKBENCH: 'pui-chat-42', PUI_CHAT_WORKBENCH_TRANSCRIPT: receipt } },
+        vanishedPids: [], processProbeElapsedMs: 0, processTreeMethod: 'walk',
+        rootThreads: [], vanishedThreads: [], threadProbeError: undefined, threadProbeFailures: [],
+        processProbeError: undefined, processProbeFailure: undefined,
+      }));
+      try {
+        const before = await captureWorkbenchSessionEvidence(root, 'pui-chat-42', { snapshot });
+        expect(before.probeError).toBeUndefined();
+        expect(before.socketOwners).toEqual([{ socket, pids: expect.arrayContaining([process.pid]), error: undefined }]);
+        expect(snapshot).toHaveBeenCalledWith(process.pid, { includeWorkbenchEnvironment: true, includeRootThreads: true });
+        expect(before.chatPanes).toEqual([expect.objectContaining({ pid: 42, environment: expect.objectContaining({ PUI_CHAT_WORKBENCH: 'pui-chat-42' }) })]);
+        expect(before.completionReceipt).toMatchObject({ path: receipt, observed: true, exists: false });
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        writeFileSync(receipt, ''); // A zero-byte receipt is still completion.
+        snapshot.mockImplementation(async () => ({ descendants: [], processCommands: {}, workbenchEnvironment: {},
+          vanishedPids: [42], processProbeElapsedMs: 0, processTreeMethod: 'walk',
+          rootThreads: [], vanishedThreads: [], threadProbeError: undefined, threadProbeFailures: [],
+          processProbeError: undefined, processProbeFailure: undefined }));
+        const after = await captureWorkbenchSessionEvidence(root, 'pui-chat-42', { previous: before.identity, snapshot });
+        expect(after.sockets).toEqual([]);
+        expect(after.chatPanes).toEqual([]);
+        expect(after.identity.chatPid).toBe(42);
+        expect(after.completionReceipt).toMatchObject({ path: receipt, observed: true, exists: true, isFile: true, bytes: 0 });
+      } finally {
+        if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+  test('captures only the supplied private log with a bounded tail and explicit missing-file state', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-private-log-'));
+    const logPath = path.join(root, 'zellij.log');
+    try {
+      const missing = await captureWorkbenchSessionEvidence(root, 'pui-chat-none', { logPath });
+      expect(missing.sessionLog).toMatchObject({ path: logPath, observed: true, exists: false });
+      writeFileSync(logPath, `${'a'.repeat(70_000)}\nshutdown-tail`);
+      const captured = await captureWorkbenchSessionEvidence(root, 'pui-chat-none', { logPath });
+      expect(captured.probeError).toBeUndefined();
+      expect(captured.sessionLog).toMatchObject({ observed: true, exists: true, truncated: true, bytes: 70_014 });
+      expect((captured.sessionLog.text as string).length).toBe(65_536);
+      expect(captured.sessionLog.text).toMatch(/shutdown-tail$/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('refuses to treat a socket-owner command failure as an empty healthy observation', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-evidence-failure-'));
+    const contract = path.join(root, 'contract_version_test');
+    mkdirSync(contract);
+    const server = createSocketServer();
+    await new Promise<void>((resolve) => server.listen(path.join(contract, 'pui-chat-42'), resolve));
+    try {
+      const snapshot = vi.fn();
+      const result = await captureWorkbenchSessionEvidence(root, 'pui-chat-42', { snapshot,
+        runCommand: async () => ({ status: null, stdout: '', stderr: '', signal: 'SIGTERM' }),
+      });
+      expect(result.probeError).toBe('workbench diagnostic incomplete');
+      expect(result.sockets).toHaveLength(1);
+      expect(result.socketOwners[0].error).toMatchObject({ signal: 'SIGTERM' });
+      expect(result.completionReceipt).toMatchObject({ observed: false });
+      expect(snapshot).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test.skipIf(spawnSync('zellij', ['--version']).status !== 0)(
     'native inventory refuses a nonresponsive server while socket observation still sees it', async () => {
       const root = mkdtempSync('/tmp/pui-z-probe-');

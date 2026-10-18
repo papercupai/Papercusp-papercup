@@ -2195,7 +2195,9 @@ describe('dispatchPendingGradingAudits', () => {
       taskId: 'task-picker-stalled',
       state: 'running',
       startedAt: new Date(nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1).toISOString(),
-      detail: { label: 'grading-audit:EI-picker-stalled' },
+      processIdentity: 'proc-picker-stalled',
+      sessionId: 'native-picker-stalled',
+      detail: { label: 'grading-audit:EI-picker-stalled', coordOwnerId: 'su-picker-stalled' },
       logPath: '/tmp/picker-stalled.log',
     } as unknown as TaskRow;
     d.listScorecards.mockResolvedValue([card('EI-picker-stalled')]);
@@ -2208,10 +2210,23 @@ describe('dispatchPendingGradingAudits', () => {
       {
         ...d,
         killTask,
-        readLogTail,
+        readLogTail: async (path: string) => path.endsWith('.jsonl')
+          ? JSON.stringify({ type: 'user', sessionId: 'native-picker-stalled', isSidechain: false, message: { role: 'user' } })
+          : readLogTail(),
         now: () => nowMs,
         readLogMtimeMs: () => nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1,
         terminalLogMaxRechecks: 0,
+        listNativeSessionsByTranscriptHandles: async () => [{
+          agent: 'claude', coordOwnerId: 'su-picker-stalled', sessionId: 'native-picker-stalled',
+        }],
+        findSessionTranscript: async () => '/tmp/picker-stalled.jsonl',
+        fetchGatewayOwnerExecution: async () => ({
+          active: 1, observedAt: nowMs, processInstanceId: 'gateway-picker-stalled',
+          activeRequests: [{ requestId: 1, startedAt: nowMs - 250_000, provider: 'claude' as const,
+            providerQueuedAt: nowMs - 240_000, providerAdmittedAt: null, attempts: 0,
+            upstreamCalls: 0, upstreamCallsDropped: 0 }],
+          activeRequestsComplete: true,
+        }),
       },
     );
 
@@ -2271,6 +2286,8 @@ describe('dispatchPendingGradingAudits', () => {
       taskId: 'task-title-redraw',
       state: 'running',
       startedAt: new Date(nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1).toISOString(),
+      processIdentity: 'proc-title-redraw',
+      sessionId: 'native-title-redraw',
       detail: { label: 'grading-audit:EI-title-redraw', coordOwnerId: 'su-stalled-grader' },
       logPath: '/tmp/title-redraw.log',
     } as unknown as TaskRow]);
@@ -2283,11 +2300,24 @@ describe('dispatchPendingGradingAudits', () => {
       {
         ...d,
         killTask,
-        readLogTail: async () => '\u001b]0;grader startup title update\u0007Claude TUI tool picker still visible',
+        readLogTail: async (path: string) => path.endsWith('.jsonl')
+          ? JSON.stringify({ type: 'user', sessionId: 'native-title-redraw', isSidechain: false, message: { role: 'user' } })
+          : '\u001b]0;grader startup title update\u0007Claude TUI tool picker still visible',
         readLogMtimeMs: () => nowMs - 30_000,
         resolveOwnerLiveness,
         now: () => nowMs,
         terminalLogMaxRechecks: 0,
+        listNativeSessionsByTranscriptHandles: async () => [{
+          agent: 'claude', coordOwnerId: 'su-stalled-grader', sessionId: 'native-title-redraw',
+        }],
+        findSessionTranscript: async () => '/tmp/title-redraw.jsonl',
+        fetchGatewayOwnerExecution: async () => ({
+          active: 1, observedAt: nowMs, processInstanceId: 'gateway-title-redraw',
+          activeRequests: [{ requestId: 2, startedAt: nowMs - 250_000, provider: 'claude' as const,
+            providerQueuedAt: nowMs - 240_000, providerAdmittedAt: null, attempts: 0,
+            upstreamCalls: 0, upstreamCallsDropped: 0 }],
+          activeRequestsComplete: true,
+        }),
       },
     );
 

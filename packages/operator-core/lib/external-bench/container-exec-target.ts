@@ -270,10 +270,13 @@ export function renderDockerExecWrapper(target: DockerExecTarget, opts: RenderWr
     // Bootstrap seeds the observer checkout's project trust. The maintained
     // Codex mount runs in a different directory inside the task container, so
     // carry that same launch grant to its exact cwd, on fresh start and resume.
+    // Pass the path as a TOML map key in the override VALUE: Codex splits the
+    // override KEY on dots without interpreting quoted path components. The
+    // apparent projects."/app".trust_level key does not trust a Git checkout.
     // A CLI override leaves the private config bytes/mode untouched; generic
     // shell probes keep their own argv.
     codexWorkdirArgs: target.binPath === CONTAINER_CODEX_BIN_PATH && target.sessionRelocation?.sessionEnv === 'CODEX_HOME'
-      ? ['-c', `projects.${JSON.stringify(target.workdir)}.trust_level="trusted"`]
+      ? ['-c', `projects={${JSON.stringify(target.workdir)}={trust_level="trusted"}}`]
       : [],
     forward: [...(opts.forwardEnvPatterns ?? DEFAULT_FORWARD_ENV_PATTERNS)],
     never: [...(opts.neverForwardEnvPatterns ?? NEVER_FORWARD_ENV_PATTERNS)],

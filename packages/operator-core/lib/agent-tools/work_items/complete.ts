@@ -330,7 +330,8 @@ import {
   renderPlaneClosePreflightWarning,
 } from '../../agent-plane-close-preflight';
 import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
-import { isNonCodeWorkItemKind, PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
+import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
+import { isNonCodeWorkItemKind } from '../../plan-verification-profile';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 import { COMPLETE_RECEIPT, toWorkItemReceipt } from './receipt';
 import {

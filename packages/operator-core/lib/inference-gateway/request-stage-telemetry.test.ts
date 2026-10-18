@@ -85,6 +85,42 @@ describe('owner execution leases', () => {
     other.finish('cancelled', null);
     expect(telemetry.snapshotForOwner('su-b').active).toBe(0);
   });
+
+  it('retains copied live provider-stage snapshots and marks bounded overflow incomplete', () => {
+    let now = 100;
+    const telemetry = new GatewayRequestTelemetry({ now: () => now });
+    const waiting = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'anthropic-messages' });
+    waiting.routeSelected();
+    now = 250;
+    waiting.admissionQueued('provider');
+    const owner = telemetry.snapshotForOwner('su-a');
+    expect(owner).toMatchObject({ active: 1, activeRequestsComplete: true });
+    expect(owner.activeRequests).toEqual([expect.objectContaining({
+      requestId: waiting.requestId,
+      startedAt: 100,
+      provider: 'claude',
+      providerQueuedAt: 250,
+      providerAdmittedAt: null,
+      attempts: 0,
+      upstreamCalls: 0,
+      upstreamCallsDropped: 0,
+    })]);
+
+    const retained = owner.activeRequests[0]!;
+    retained.providerQueuedAt = 999;
+    expect(telemetry.snapshotForOwner('su-a').activeRequests[0]?.providerQueuedAt).toBe(250);
+
+    for (let i = 0; i < 32; i++) telemetry.begin({ ownerId: 'su-overflow', provider: 'claude', protocol: 'anthropic-messages' });
+    const overflow = telemetry.snapshotForOwner('su-overflow');
+    expect(overflow.active).toBe(32);
+    expect(overflow.activeRequests).toHaveLength(32);
+    expect(overflow.activeRequestsComplete).toBe(true);
+    telemetry.begin({ ownerId: 'su-overflow', provider: 'claude', protocol: 'anthropic-messages' });
+    const truncated = telemetry.snapshotForOwner('su-overflow');
+    expect(truncated.active).toBe(33);
+    expect(truncated.activeRequests).toHaveLength(32);
+    expect(truncated.activeRequestsComplete).toBe(false);
+  });
 });
 import {
   GatewayRequestTelemetry,

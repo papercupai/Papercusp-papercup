@@ -309,6 +309,11 @@ export async function queryPushSnapshot(query: {
           } } : {}) })),
       },
     };
-  }, { fallback: null, timeoutMs: 250, label: 'code-intel-snapshot-query' });
+  }, { fallback: null, timeoutMs: 250, label: 'code-intel-snapshot-query',
+    // A snapshot miss or slow registry read is an expected best-effort fallback
+    // to the compiler path. The fallback ledger remains the machine-readable
+    // signal; console warnings make valid unsupported/temporary fixture roots
+    // fail under vitest-fail-on-console.
+    warn: false });
   return result.value;
 }

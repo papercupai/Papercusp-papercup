@@ -1554,9 +1554,24 @@ async function createOneWorkItemCore(
       workspaceId,
       candidates: similarOpen,
     }).catch(() => 0);
+    // Migration 1534 (bug-inflow-one-problem-one-row-2026-10-18#D-001, owner directive #1990):
+    // a STRONG (semantic-hard) match found at filing time becomes the typed duplicate-of
+    // verdict the admission gate reads, not only advisory candidates. Non-fatal like the
+    // edges above; skipped for force and critical severity (see stampCreateTimeDuplicate).
+    const createMatch = await stampCreateTimeDuplicate({
+      workItemId: workItem.id,
+      workspaceId,
+      similarOpen,
+      hardSemanticIds,
+      force: args.force,
+      severity: args.severity,
+      harness: harnessForItem,
+      by: ctx.ownerId,
+    }).catch(() => null);
     return {
       ok: true,
       workItem,
+      ...(createMatch ? { duplicateOf: createMatch } : {}),
       ...(goalStamp ? { goalId: goalStamp } : {}),
       ...(goalStampError ? { goalStampError } : {}),
       ...(dedupEdges > 0 ? { dedupEdges } : {}),
@@ -1571,4 +1586,50 @@ async function createOneWorkItemCore(
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Create-time duplicate verdict (migration 1534, bug-inflow-one-problem-one-row-2026-10-18#D-001).
+ * Stamps the best semantic-hard candidate as duplicate_of with its similarity as confidence,
+ * THEN writes the matching 'duplicates' link (linkWorkItem's own stamp is first-writer-wins, so
+ * the source stays 'create-match'), so unlinking that edge withdraws the verdict. Skipped when
+ * the filer passed force (asserted distinct work) or the severity is critical (novelty must
+ * never hide behind a false match).
+ */
+async function stampCreateTimeDuplicate(input: {
+  workItemId: string;
+  workspaceId: string | null | undefined;
+  similarOpen: readonly { id: string; similarity?: number | null; harness?: string | null }[] | undefined;
+  hardSemanticIds: ReadonlySet<string> | undefined;
+  force?: boolean;
+  severity?: string;
+  harness: string | undefined;
+  by: string | undefined;
+}): Promise<{ id: string; confidence: number | null } | null> {
+  if (input.force || input.severity === 'critical' || !input.workspaceId) return null;
+  const hard = (input.similarOpen ?? []).filter(
+    (c) => input.hardSemanticIds?.has(c.id) === true && c.id !== input.workItemId,
+  );
+  if (hard.length === 0) return null;
+  const best = hard.reduce((a, b) => ((b.similarity ?? 0) > (a.similarity ?? 0) ? b : a));
+  const confidence =
+    typeof best.similarity === 'number' && Number.isFinite(best.similarity)
+      ? Math.min(1, Math.max(0, best.similarity))
+      : null;
+  const evidence = JSON.stringify({ matchedOn: 'semantic-hard', similarity: confidence, candidates: hard.map((c) => c.id) });
+  const { sql } = getOrgPg();
+  const stamped = await sql`
+    UPDATE harness_shared.work_items
+       SET duplicate_of = ${best.id},
+           duplicate_source = 'create-match',
+           duplicate_confidence = ${confidence},
+           duplicate_evidence = ${evidence}::text::jsonb
+     WHERE workspace_id = ${input.workspaceId}
+       AND feature_id = ${input.workItemId}
+       AND duplicate_of IS NULL
+    RETURNING feature_id`;
+  if (stamped.length === 0) return null;
+  const dst = await resolveWorkItemRef(best.id, best.harness ?? input.harness);
+  if (dst) await linkWorkItem(input.workItemId, dst, 'duplicates', { harness: input.harness, by: input.by });
+  return { id: best.id, confidence };
 }

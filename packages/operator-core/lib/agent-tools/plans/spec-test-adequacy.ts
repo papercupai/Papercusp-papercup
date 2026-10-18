@@ -1,5 +1,6 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
+import { EXECUTABLE_PROOF_CRITERIA, executableProofExemption } from '../../plan-verification-profile';
 import {
   hasMatchingDeclaredCaseTitle,
   hasSameCaseTitleIdentity,
@@ -87,23 +88,10 @@ export const ADEQUACY_CRITERIA = [
 export type AdequacyCriterion = (typeof ADEQUACY_CRITERIA)[number];
 export type AdequacyRating = 'pass' | 'fail' | 'unknown' | 'waived' | 'not-applicable';
 
-/**
- * The adequacy criteria that can only ever be satisfied by EXECUTABLE proof: a
- * ledger-backed test run, a mutation/counterexample row, or a repo-files
- * measurement. When `requiredProofFloor` exempts a clause (returns 'none'),
- * these are the criteria that exemption must ALSO reach — grading non-code work
- * against them demands an artifact that cannot exist for it, at any effort.
- *
- * Kept immediately beside ADEQUACY_CRITERIA so the two lists are read and
- * edited together: a new criterion that needs a ledger row or a repo file
- * belongs in both, and one that can be satisfied by an honest attestation
- * belongs only in the first.
- */
-export const EXECUTABLE_PROOF_CRITERIA = [
-  'falsifiability',
-  'execution-integrity',
-  'freshness',
-] as const satisfies readonly AdequacyCriterion[];
+// The subset of ADEQUACY_CRITERIA that only EXECUTABLE proof can satisfy is
+// EXECUTABLE_PROOF_CRITERIA, owned by the verification resolver
+// (../../plan-verification-profile.ts). A new criterion above that needs a ledger
+// row or a repo file belongs in that list too.
 
 export interface AdequacyRatingEntry {
   rating: AdequacyRating;
@@ -2042,23 +2030,18 @@ function l4WaiverOf(exemption: Record<string, unknown> | null, now: Date): L4Wai
   };
 }
 
-/**
- * `task` is the canonical non-code work-item kind (research was folded into it), so
- * executable test-proof floors do not apply to a task even when a plan clause was
- * projected with a behavior class that would otherwise require L3/L4. Keep this
- * classification at the floor boundary so every caller gets the same exemption.
- */
-export function isNonCodeWorkItemKind(kind: string | null | undefined): boolean {
-  return typeof kind === 'string' && kind.trim().toLowerCase() === 'task';
-}
-
 export function requiredProofFloor(
   clause: SpecClauseRevision,
   classRef: PlanClassRubricRef,
   workItemKind?: string | null,
 ): 'none' | 'l3' | 'l4' {
-  if (isNonCodeWorkItemKind(workItemKind)) return 'none';
-  if (clause.behaviorClass === 'non-automated' && clause.requiredTestLayers.length === 0) return 'none';
+  // The task-kind and non-automated-clause exemptions are decided by the verification
+  // resolver (plan-verification-profile.ts), in the same order as before.
+  if (executableProofExemption({
+    workItemKind,
+    behaviorClass: clause.behaviorClass,
+    requiredTestLayers: clause.requiredTestLayers,
+  })) return 'none';
   if (classRef === 'plan-class-migration' || classRef === 'plan-class-bugfix') return 'l4';
   if (clause.mutationRequired || HIGH_RISK_BEHAVIOR_CLASSES.has(clause.behaviorClass)) return 'l4';
   if (classRef === 'plan-class-investigation' && clause.requiredTestLayers.length === 0) return 'none';

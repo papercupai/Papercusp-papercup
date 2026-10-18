@@ -93,6 +93,12 @@ async function removeContainer(id: string, primaryError?: unknown): Promise<void
 
 beforeAll(async () => {
   root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'cexec-int-'));
+  const daemon = await command('docker', ['info', '--format', '{{json .ID}} {{json .DockerRootDir}}']);
+  expect(daemon.status, JSON.stringify(daemon)).toBe(0);
+  expect(daemon.stdout.trim()).not.toBe('');
+  console.info('CONTAINER_EXEC_DAEMON_PROOF', JSON.stringify({
+    explicitHost: !!process.env.DOCKER_HOST, identity: daemon.stdout.trim(),
+  }));
   const result = await command('docker', ['image', 'inspect', 'alpine']);
   expect(result.status, result.stderr).toBe(0);
 });
@@ -166,7 +172,7 @@ describe('container exec target against a live container', () => {
           resolve({ output, frame, exitCode });
         });
       });
-      console.info('NATIVE_CONTAINER_TRUST_PROOF', JSON.stringify(result));
+      console.info('NATIVE_CONTAINER_TRUST_PROOF', JSON.stringify({ checkoutKind, ...result }));
       expect(result.frame, result.output).toBe(true);
       expect(result.output.replace(/\s+/g, '')).not.toContain('Trustthisfolder?');
     } catch (error) { primaryError = error; throw error; }

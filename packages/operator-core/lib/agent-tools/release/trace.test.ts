@@ -13,7 +13,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../git-pipeline-stats', () => ({ gitPipelineSnapshot: mocks.gitPipelineSnapshot }));
-vi.mock('../../git-pipeline-position', () => ({ gitPipelinePosition: mocks.gitPipelinePosition }));
+vi.mock('../../git-pipeline-position', () => ({
+  gitPipelinePosition: mocks.gitPipelinePosition,
+  GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS: 35_000,
+}));
 vi.mock('../../release-deploy-launch', () => ({
   computeDeployStatus: mocks.computeDeployStatus,
   integrationRoot: () => '/test/integration-root',
@@ -32,6 +35,7 @@ vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
 
 import tool, {
   RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+  RELEASE_TRACE_COMPOSITE_TIMEOUT_MS,
   RELEASE_TRACE_POSITION_TIMEOUT_MS,
   RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS,
 } from './trace';
@@ -55,6 +59,12 @@ describe('release:trace tool contract', () => {
 
   it('does not hold an ambient workspace transaction during reconciliation (EI-20246294559310854)', () => {
     expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
+  it('keeps the composite below the transport cap while inheriting the position reader budget (EI-25891200738179881)', () => {
+    expect(RELEASE_TRACE_POSITION_TIMEOUT_MS).toBe(35_000);
+    expect(RELEASE_TRACE_POSITION_TIMEOUT_MS).toBeGreaterThan(20_000);
+    expect(RELEASE_TRACE_COMPOSITE_TIMEOUT_MS).toBeLessThan(55_000);
   });
 
   it('requires path or sha in the published schema even when work_item is supplied (EI-20232784385629302)', () => {
@@ -535,6 +545,30 @@ describe('release:trace tool contract', () => {
     expect(mocks.buildReleaseTrace).toHaveBeenCalled();
   });
 
+  it('does not turn a 25s position read into unknown release truth when the composite has spare time (EI-25891200738179881)', async () => {
+    vi.useFakeTimers();
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({ targetSha: 'abcd1234' }), 25_000)),
+    );
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
+
+    const pending = tool.handler({ sha: 'abcd1234' } as never, {} as never);
+    await vi.advanceTimersByTimeAsync(25_000);
+    const result = await pending;
+
+    expect(result).toMatchObject({ data: { ok: true } });
+    expect(mocks.buildReleaseTrace).toHaveBeenCalled();
+  });
+
   it('returns unknown instead of an all-clear when await-history reconciliation stalls', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
@@ -582,8 +616,10 @@ describe('release:trace tool contract', () => {
     mocks.gitPipelineSnapshot.mockImplementationOnce(
       () => new Promise((resolve) => setTimeout(() => resolve(snapshot), RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS - 1)),
     );
+    const positionDurationMs =
+      RELEASE_TRACE_COMPOSITE_TIMEOUT_MS - RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS - RELEASE_TRACE_AWAIT_TIMEOUT_MS - 1;
     mocks.gitPipelinePosition.mockImplementationOnce(
-      () => new Promise((resolve) => setTimeout(() => resolve({ targetSha: 'abcd1234' }), RELEASE_TRACE_POSITION_TIMEOUT_MS - 1)),
+      () => new Promise((resolve) => setTimeout(() => resolve({ targetSha: 'abcd1234' }), positionDurationMs)),
     );
     mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
     mocks.inspectEventKey.mockImplementation(
@@ -608,10 +644,7 @@ describe('release:trace tool contract', () => {
     expect(mocks.getFlag).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(
-      RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS - 1 +
-        RELEASE_TRACE_POSITION_TIMEOUT_MS - 1 +
-        RELEASE_TRACE_AWAIT_TIMEOUT_MS - 1 -
-        RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+      RELEASE_TRACE_COMPOSITE_TIMEOUT_MS - RELEASE_TRACE_AWAIT_TIMEOUT_MS + 100,
     );
     expect(settled).toBe(true);
     const result = (await pending) as { data: { ok: boolean } };

@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "workItems": [
+    "WI-6554700010017241",
+    "WI-6554700010017024"
+  ],
+  "measuredAt": "2026-10-18T07:36:03.281Z",
+  "scope": "Served hosted admitted signup destination with sessionStorage denied only; provider signup and shipment excluded",
+  "acceptance": {
+    "scope": "Served hosted admitted signup destination with sessionStorage denied only; provider signup and shipment excluded",
+    "documents": [
+      {
+        "phase": "initial",
+        "automaticAnchors": 1,
+        "downloadCount": 1,
+        "welcomeVisible": true
+      },
+      {
+        "phase": "welcome-reload",
+        "automaticAnchors": 0,
+        "downloadCount": 1,
+        "welcomeVisible": true
+      }
+    ],
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "H7p1ttvvL5SbiML9Faq5u",
+      "release": "H7p1ttvvL5SbiML9Faq5u-20261018062753794-1381177-9f3d60a9",
+      "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "publishedAt": "2026-10-18T06:27:53.794Z",
+      "sourceRootDigest": "eab7efca5a40e1054d3240a88ad12d56890e2de78557f8c4f14457145fd5d5b5"
+    },
+    "tenantMatches": true,
+    "download": {
+      "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+      "bytes": 69542264,
+      "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6"
+    },
+    "manualRetryCompleted": true,
+    "guiRendered": true,
+    "browserClosed": true,
+    "accountCleanup": true,
+    "cleanup": {
+      "attempted": 2,
+      "completed": 2,
+      "failed": 0,
+      "byKind": {
+        "browser": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "provider-user": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        }
+      }
+    }
+  },
+  "selection": {
+    "title": "served hosted signup utility: storage denied alone suppresses reload download",
+    "selected": 1,
+    "executed": 1,
+    "skipped": 0
+  },
+  "stats": {
+    "startTime": "2026-10-18T07:33:21.049Z",
+    "duration": 62969.572,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "launcherExitCode": 0,
+  "publicReceiptSerialization": "scripts/lib/identity-leak-patterns.mjs serializeIdentitySafeJson",
+  "privateEvidence": {
+    "browser": {
+      "path": "/tmp/machine-first-storage-denied-v4-browser-20261018.json",
+      "sha256": "e8f130c8675733451cff45b3a7972fa7bfc3fa172f3b00d1203e1697049fac22"
+    },
+    "runtime": {
+      "path": "/tmp/machine-first-storage-denied-v4-runtime-20261018.json",
+      "sha256": "bce55bbe55aec4e388466de2e83f9d9bd75b2228eaa9c1902049fb6e0d34cdf5"
+    },
+    "console": {
+      "path": "/tmp/machine-first-storage-denied-v4-launcher-console-20261018.log",
+      "sha256": "779c7bed0a28c484856ae4e7e6072bc85d59a5f7fcc47b6e1efb91596e001969"
+    },
+    "launcher": {
+      "path": "/tmp/storage-denied-v4-launcher-fixed.mjs",
+      "sha256": "cc69a273c5eb8b0aed04a78daac0e08b9a1f8fdbc114401974c21c13a98ec2c5"
+    },
+    "currentTest": {
+      "path": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/e2e/portal-utility-welcome.spec.ts",
+      "sha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d"
+    },
+    "manifestSha256": "ee86f5ea19f2b113df35acd683ff7719eda854a0105dee675eb9723f524de87f"
+  },
+  "runtimeCleanup": {
+    "processes": [
+      {
+        "pid": 563227,
+        "processGone": true
+      },
+      {
+        "pid": 563504,
+        "processGone": true
+      },
+      {
+        "pid": 619542,
+        "processGone": true
+      }
+    ],
+    "listeners": [
+      {
+        "port": 44367,
+        "closed": true
+      },
+      {
+        "port": 42525,
+        "closed": true
+      },
+      {
+        "port": 42747,
+        "closed": true
+      }
+    ],
+    "privateHomeRemoved": true,
+    "allStopped": true
+  },
+  "shipment": {
+    "promoted": false,
+    "providerSignupRerun": false,
+    "priorProofsRerun": false,
+    "downloadedArchiveContainsCurrentPlanChanges": "not established; archive SHA retained"
+  }
+}

@@ -174,26 +174,27 @@ describe('work_items:complete — change-kind gate through real persistence (cha
     expect(await storedStatus(item.id)).toBe('done');
   }, 60_000);
 
-  it('a first declaration at close stays proposed until a reason is recorded, including on retry (R-4, D-001)', async () => {
+  it('a first declaration at close is refused until a reason is recorded, including on retry (D-001)', async () => {
+    // D-001: a declaration that first arrives at close REQUIRES changeKindReason, so a reasonless one
+    // is refused. (R-4's "lands as proposed" is the ui-mismatch path, owned by P-004 — not this gate.)
     const item = await claimedIssue('close-time-reason', AFTER_CUTOVER);
     const noCode = { summary: 'confirmed the report was a duplicate; nothing changed', testsRun: 'none — no code changed', testResult: 'n/a' };
 
     const first = await close(item, { changeKinds: ['no-code-change'] }, noCode);
-    expect(first.ok, JSON.stringify(first)).toBe(true);
-    expect(first.completionAuthority).toBe('proposed');
-    expect(first.countsTowardBurnDown).toBe(false);
-    expect((await getWorkItem(item.id))?.completionAuthority).toBe('proposed');
+    expect(first.ok, JSON.stringify(first)).toBe(false);
+    expect(first.stateError).toMatch(new RegExp(`^REJECTED — ${item.id} declares change kind\\(s\\) no-code-change`));
+    expect(first.error).toContain('`changeKindReason`');
+    expect(await storedStatus(item.id)).not.toBe('done');
 
-    // The proposed close still recorded its declaration at step 'complete' …
+    // The refused close still recorded its declaration at step 'complete' …
     const views = await readChangeKinds(WS, [item.id]);
     expect(views.get(item.id)?.history.map((d) => d.step)).toContain('complete');
 
     // … which must not satisfy D-001 on a reasonless retry.
     const retry = await close(item, { changeKinds: ['no-code-change'] }, noCode);
-    expect(retry.ok, JSON.stringify(retry)).toBe(true);
-    expect(retry.completionAuthority).toBe('proposed');
-    expect(retry.countsTowardBurnDown).toBe(false);
-    expect((await getWorkItem(item.id))?.completionAuthority).toBe('proposed');
+    expect(retry.ok, JSON.stringify(retry)).toBe(false);
+    expect(retry.error).toContain('`changeKindReason`');
+    expect(await storedStatus(item.id)).not.toBe('done');
 
     const reasoned = await close(item, {
       changeKinds: ['no-code-change'],

@@ -1781,10 +1781,48 @@ describe('background job deadlines (WI-6677)', () => {
   it('classifies only test runners at a shell-segment boundary for the hard test budget', () => {
     expect(isBackgroundTestCommand('npx vitest run')).toBe(true);
     expect(isBackgroundTestCommand('npm run test:affected -- --changed-paths a.ts,b.ts')).toBe(true);
+    expect(isBackgroundTestCommand('npm run test:e2e:isolated -- e2e/content-reading.spec.ts')).toBe(true);
     expect(isBackgroundTestCommand('cd packages/operator-core && npm run test:file -- x.test.ts')).toBe(true);
     expect(isBackgroundTestCommand('FOO=1 pnpm exec playwright test')).toBe(true);
     expect(isBackgroundTestCommand('rg -n vitest packages/operator-core')).toBe(false);
     expect(isBackgroundTestCommand('printf "npx vitest run"')).toBe(false);
+  });
+
+  it('budgets the multiline isolated-e2e npm launch before its verifier starts', () => {
+    // EI-26296794396363557: this npm script has TWO colon suffixes. The
+    // previous one-suffix classifier left the actual launch unbounded even
+    // though a direct npx playwright --list probe received the test budget.
+    const command = [
+      'set -uo pipefail',
+      'RUN_ROOT="$(mktemp -d /tmp/isolated-e2e-budget.XXXXXX)"',
+      'GROUP="content-reading-R32-R34-$(date -u +%Y%m%dT%H%M%SZ)-$$"',
+      'export VERIFY_TAURI_SOURCE_REF="test-source"',
+      'export VERIFY_TAURI_ISOLATED_DB=1',
+      'export VERIFY_TAURI_ISOLATED_SEED=ready',
+      'export PAPERCUSP_TEST_RUN_GROUP="$GROUP"',
+      'export PAPERCUSP_TEST_RUN_RECEIPT_FILE="$RUN_ROOT/test-run-receipt.json"',
+      'export OPERATOR_E2E_HARNESS_EVIDENCE_ROOT="$RUN_ROOT/bracket"',
+      'cd apps/operator',
+      "npm run test:e2e:isolated -- e2e/content-reading.spec.ts '--grep=summary-only and summary-and-read|cancel summary' --workers=1",
+      'rc=$?',
+      'exit "$rc"',
+    ].join('\n');
+    expect(isBackgroundTestCommand(command)).toBe(true);
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({ command, cwd: STATE, stateDir: STATE }, 45_000);
+      expect(begin).toHaveBeenLastCalledWith({
+        class: 'bash-job',
+        runtimeMaxSec: 45,
+        memoryMaxBytes: 16 * 1024 ** 3,
+        tasksMax: BASH_TEST_TASKS_MAX,
+      });
+      killJob(job);
+    } finally {
+      begin.mockRestore();
+      complete.mockRestore();
+    }
   });
 
   it('clamps to the BACKGROUND ceiling, not the foreground one', () => {

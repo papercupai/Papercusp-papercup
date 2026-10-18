@@ -736,7 +736,7 @@ export function toolFailureClassIdentity(
  * dimensions stay explicit, exactly as in `classKey`.
  */
 export function toolFailureSignatureKey(
-  input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'fieldPath'>,
+  input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'fieldPath'> & { message?: string | null },
   failureFamily: ToolErrorClass,
 ): string {
   const subsystem = toolFailureSubsystemForCode(input.errorCode);
@@ -751,7 +751,17 @@ export function toolFailureSignatureKey(
   const tool = correlationSegment(input.toolName, 'unknown-tool');
   const errorCode = correlationSegment(input.errorCode, 'error-code-unknown');
   const fieldPath = correlationSegment(input.fieldPath, 'field-unknown');
-  return `tool-failure-signature:${tool}:${failureFamily}:${errorCode}:${fieldPath}`;
+  // Authorization denials share one wire error code even when the kernel's
+  // cause is materially different. Keep those causes distinct in the filing
+  // identity: otherwise an outside-ceiling refusal can coalesce onto an older
+  // stale-artifact row and the promoted item reports the wrong cause.
+  const identityCause = input.message?.match(
+    /Identity capability \(unresolved\): ([a-z0-9-]+)/i,
+  )?.[1]?.toLowerCase();
+  const causeSuffix = errorCode === 'authorization_denied' && identityCause
+    ? `:identity-${correlationSegment(identityCause, 'unknown')}`
+    : '';
+  return `tool-failure-signature:${tool}:${failureFamily}:${errorCode}:${fieldPath}${causeSuffix}`;
 }
 
 const TOOL_FAILURE_SIGNATURE_PREFIX = 'tool-failure-signature:';

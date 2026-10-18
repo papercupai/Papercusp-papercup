@@ -32,7 +32,7 @@ import { DEFAULT_PACKER_EFFECTS, packerFacade } from './packer-facade';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import { readWorkItemResume } from '../agent-tools/work_items/resume';
-import { runLspDaemonServer } from './lsp-daemon-server';
+import { dispatchLspDaemonRequest, runLspDaemonServer } from './lsp-daemon-server';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import type { CodeIntelAnswer } from './contracts';
 import { admitArm } from './fair-comparison-admission';
@@ -505,7 +505,16 @@ beforeAll(async () => {
   process.env[LSP_DAEMON_SOCKET_ENV] = join(root, 'baseline.sock');
   server = runLspDaemonServer(async request => {
     rpcOperations.push(request.op);
-    expect(request.args.rootPath).toBe(root);
+    // This file imports the P026 acceptance suite into the same Vitest worker.
+    // Its fixture hook may run before this baseline hook, while the process
+    // environment then points at this socket for both suites. Keep the
+    // baseline stub scoped to its own tree and delegate foreign roots to the
+    // real daemon dispatcher instead of asserting against another suite's
+    // request.
+    if (request.args.rootPath !== root) {
+      return dispatchLspDaemonRequest(request, `native-ecosystem-delegated-${rpcOperations.length}`,
+        new AbortController().signal);
+    }
     // Provider fixture models the daemon seam. This proves handler/facade/RPC
     // selection, while the compiler tests below independently exercise TS.
     return { backend: 'lsp-adapter', intent: 'references', query: request.op,

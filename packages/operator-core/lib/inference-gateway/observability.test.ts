@@ -61,10 +61,78 @@ test('owner execution keeps absent and mismatched telemetry unknown', async () =
     const result = await fetchGatewayOwnerExecution('su-a', {
       fetchImpl: (async () => new Response(JSON.stringify(body))) as typeof fetch });
     assert.equal(result.active, null);
+    assert.equal(result.activeRequests, null);
+    assert.equal(result.activeRequestsComplete, null);
   }
   assert.deepEqual(await fetchGatewayOwnerExecution('su-a', {
     fetchImpl: (async () => new Response(JSON.stringify({ owner: 'su-a', now: 100, stageTelemetry: { active: 2 } }))) as typeof fetch,
-  }), { active: 2, observedAt: 100 });
+  }), {
+    active: 2,
+    observedAt: 100,
+    processInstanceId: null,
+    activeRequests: null,
+    activeRequestsComplete: null,
+  });
+});
+
+test('owner execution strictly retains a complete bounded provider-stage population and process generation', async () => {
+  const snapshot = {
+    requestId: 41,
+    startedAt: 1_000,
+    provider: 'claude',
+    providerQueuedAt: 1_100,
+    providerAdmittedAt: null,
+    attempts: 0,
+    upstreamCalls: 0,
+    upstreamCallsDropped: 0,
+  };
+  const result = await fetchGatewayOwnerExecution('su-a', {
+    fetchImpl: (async () => new Response(JSON.stringify({
+      owner: 'su-a', now: 2_000, process: { instanceId: 'gateway-generation-a' },
+      stageTelemetry: { active: 1, activeRequests: [snapshot], activeRequestsComplete: true },
+    }))) as typeof fetch,
+  });
+  assert.deepEqual(result, {
+    active: 1,
+    observedAt: 2_000,
+    processInstanceId: 'gateway-generation-a',
+    activeRequests: [snapshot],
+    activeRequestsComplete: true,
+  });
+});
+
+test('owner execution refuses overflow and malformed active snapshots as unknown stage evidence', async () => {
+  const overflow = await fetchGatewayOwnerExecution('su-a', {
+    fetchImpl: (async () => new Response(JSON.stringify({
+      owner: 'su-a', now: 2_000, process: { instanceId: 'gateway-generation-a' },
+      stageTelemetry: {
+        active: 33,
+        activeRequests: Array.from({ length: 32 }, (_, requestId) => ({
+          requestId, startedAt: 1_000, provider: 'claude', providerQueuedAt: 1_100,
+          providerAdmittedAt: null, attempts: 0, upstreamCalls: 0, upstreamCallsDropped: 0,
+        })),
+        activeRequestsComplete: false,
+      },
+    }))) as typeof fetch,
+  });
+  assert.equal(overflow.active, 33);
+  assert.equal(overflow.activeRequests, overflow.activeRequests);
+  assert.equal(overflow.activeRequestsComplete, false);
+
+  const malformed = await fetchGatewayOwnerExecution('su-a', {
+    fetchImpl: (async () => new Response(JSON.stringify({
+      owner: 'su-a', now: 2_000, process: { instanceId: 'gateway-generation-a' },
+      stageTelemetry: {
+        active: 1,
+        activeRequests: [{ requestId: 1, startedAt: 1_000, provider: 'claude', providerQueuedAt: 'bad',
+          providerAdmittedAt: null, attempts: 0, upstreamCalls: 0, upstreamCallsDropped: 0 }],
+        activeRequestsComplete: true,
+      },
+    }))) as typeof fetch,
+  });
+  assert.equal(malformed.active, 1);
+  assert.equal(malformed.activeRequests, null);
+  assert.equal(malformed.activeRequestsComplete, null);
 });
 
 test('projectHeadroom — maps the unified window + queue into the read-model', () => {

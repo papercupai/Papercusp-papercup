@@ -910,6 +910,9 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }) {
 /**
  * P-004: exclusive decision buckets for the durable gate-pass-reuse observation.
  * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
+ * Expired proofs are recorded as a zero-eligible diagnostic row: the max-age safety rule
+ * deliberately prevents them from taking the primary reuse path, so they are not reuse
+ * opportunities and must not depress its eligible-pass rate.
  * @param {string} task
  * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
  * @returns {Array<{ eligible: number, applied: number, populationKnown: boolean, reason: string, scope: string }>}
@@ -934,9 +937,14 @@ export function gateReuseObservations(task, decision) {
   if (!eligible) return [{ eligible: 0, applied: 0, populationKnown: knownCount(summary.candidates), reason: knownCount(summary.candidates) ? 'no-candidates' : 'unavailable', scope: task }];
   const rows = [];
   let remaining = eligible;
+  const expired = Math.min(remaining, positiveCount(summary.expired));
+  if (expired) {
+    rows.push({ eligible: 0, applied: 0, populationKnown: true, reason: 'expired', scope: task });
+    remaining -= expired;
+  }
   const reused = Math.min(remaining, positiveCount(summary.reused));
   if (reused) { rows.push({ eligible: reused, applied: reused, populationKnown: true, reason: 'applied', scope: task }); remaining -= reused; }
-  for (const reason of ['noProof', 'otherContext', 'otherRunner', 'legacyFormatDrift', 'expired', 'notCaptured', 'opaque', 'unknownDrift', 'globalInput', 'inputChanged', 'audited']) {
+  for (const reason of ['noProof', 'otherContext', 'otherRunner', 'legacyFormatDrift', 'notCaptured', 'opaque', 'unknownDrift', 'globalInput', 'inputChanged', 'audited']) {
     const count = Math.min(remaining, positiveCount(summary[reason]));
     if (count) { rows.push({ eligible: count, applied: 0, populationKnown: true, reason, scope: task }); remaining -= count; }
   }

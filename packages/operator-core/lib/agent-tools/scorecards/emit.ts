@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
+import { isNonCodeAuditVerdict } from '../../plan-verification-profile';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import {
   parseJsonWithTrailer,
@@ -3898,7 +3899,7 @@ export async function emitScorecard(
               getEffectiveItemAudits(requirementsPlan),
               getPlanItemStatuses(requirementsPlan, { harnessSlug: rubric.subjectHarnessSlug }),
             ]);
-            const proof = itemAudits.some(({ entry }) => entry.verdict === 'not-code')
+            const proof = itemAudits.some(({ entry }) => isNonCodeAuditVerdict(entry.verdict))
               ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', {
                   current: args.current,
                   harnessSlug: rubric.subjectHarnessSlug,

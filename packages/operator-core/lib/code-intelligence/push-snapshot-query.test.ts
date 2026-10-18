@@ -137,7 +137,7 @@ describe('source-corroborated snapshot queries', () => {
     try {
       expect(await query()).toBeNull();
       expect(performance.now() - start).toBeLessThan(1000);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('code-intel-snapshot-query exceeded 250ms'));
+      expect(warn).not.toHaveBeenCalled();
     } finally { warn.mockRestore(); }
   });
 

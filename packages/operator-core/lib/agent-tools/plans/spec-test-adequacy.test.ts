@@ -13,12 +13,12 @@ import {
   crossGenerationAuditProbeArgs,
   evaluateSpecTestAdequacy,
   resolveFixtureAbsenceVerifications,
-  isNonCodeWorkItemKind,
   latestLogicalEvidence,
   mutationMeasuredFailedCase,
   requiredProofFloor,
   supersedeEligibilityGaps,
 } from './spec-test-adequacy';
+import { isNonCodeWorkItemKind } from '../../plan-verification-profile';
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import getSpecEvidenceTool from './get-spec-evidence';
 import { scorecardEmitArgs } from '../scorecards/emit';

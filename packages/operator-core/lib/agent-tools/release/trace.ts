@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { gitPipelinePosition } from '../../git-pipeline-position';
+import { gitPipelinePosition, GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS } from '../../git-pipeline-position';
 import { gitPipelineSnapshot } from '../../git-pipeline-stats';
 import { computeDeployStatus, integrationRoot } from '../../release-deploy-launch';
 import { buildReleaseTrace, type ReleaseTraceAwait, type ReleaseTraceWake } from '../../release-trace';
@@ -19,16 +19,17 @@ import { statePlaneForDoor } from '../state-plane-door';
 /**
  * Keep the composite diagnostic below the MCP transport deadline even when one
  * of its independent release/PG reads is queued behind a saturated pool.
- * Snapshot, position, and await-history are sequential and total at most 50s.
- * The independent manual-run authority and progress-certificate reads start
- * alongside the snapshot and each have a 10s cap, so they cannot extend that
- * budget. The position leg is 20s because a measured live read can take about
- * 19.5s while the gate is repairing; a 15s cap turns a slow-but-valid position
- * into an unknown release verdict.
+ * Snapshot, position, and await-history are sequential and share a 50s wall
+ * clock. The position leg may use the full git-pipeline read budget when the
+ * snapshot finishes early, while the history leg always keeps its reserved
+ * 10s. The independent manual-run authority and progress-certificate reads
+ * start alongside the snapshot and each have the same 10s cap, so they cannot
+ * extend that composite budget.
  */
 export const RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS = 20_000;
-export const RELEASE_TRACE_POSITION_TIMEOUT_MS = 20_000;
+export const RELEASE_TRACE_POSITION_TIMEOUT_MS = GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS;
 export const RELEASE_TRACE_AWAIT_TIMEOUT_MS = 10_000;
+export const RELEASE_TRACE_COMPOSITE_TIMEOUT_MS = 50_000;
 
 type TraceTimeoutStage = 'pipeline_snapshot' | 'pipeline_position' | 'await_history';
 
@@ -121,6 +122,10 @@ function pipelineName(root: string): string {
   return (path.basename(path.resolve(root)).replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
 }
 
+function stageTimeout(deadlineMs: number, maxMs: number, reserveMs = 0): number {
+  return Math.max(1, Math.min(maxMs, deadlineMs - Date.now() - reserveMs));
+}
+
 const tracePath = z
   .string()
   .min(1)
@@ -199,6 +204,7 @@ export default defineTool({
     const subjectStamp = releaseTraceSubjectStamp(ctx);
     if (!args.path && !args.sha) return { data: { ok: false, ...subjectStamp, error: 'Provide path or sha.' } };
     const identity = resolveAgentIdentity(ctx);
+    const compositeDeadlineMs = Date.now() + RELEASE_TRACE_COMPOSITE_TIMEOUT_MS;
     // These independent reads used to run after the sequential snapshot,
     // position, and history stages. Start them now so their own 10s deadlines
     // cannot push a slow composite past the MCP transport deadline.
@@ -225,7 +231,7 @@ export default defineTool({
       () => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false, includeActiveRun: true }),
       {
         fallback: null,
-        timeoutMs: RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS,
+        timeoutMs: stageTimeout(compositeDeadlineMs, RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS),
         label: 'release:trace:pipeline-snapshot',
       },
     );
@@ -253,7 +259,11 @@ export default defineTool({
         ),
       {
         fallback: null,
-        timeoutMs: RELEASE_TRACE_POSITION_TIMEOUT_MS,
+        // Leave the history leg its 10s budget while allowing a fast snapshot
+        // to give the position read the full git-pipeline budget. The former
+        // fixed 20s cap converted valid 25–35s position reads into unknown
+        // release truth even when dev:pipeline_position completed them.
+        timeoutMs: stageTimeout(compositeDeadlineMs, RELEASE_TRACE_POSITION_TIMEOUT_MS, RELEASE_TRACE_AWAIT_TIMEOUT_MS),
         label: 'release:trace:pipeline-position',
       },
     );
@@ -306,7 +316,7 @@ export default defineTool({
       keys.map(async (event) => {
         const read = await withBoundedTimeout(() => inspectEventKey(event), {
           fallback: null,
-          timeoutMs: RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+          timeoutMs: stageTimeout(compositeDeadlineMs, RELEASE_TRACE_AWAIT_TIMEOUT_MS),
           label: `release:trace:await-history:${event}`,
         });
         if (read.degraded && read.reason === 'error') throwReadError(read, `release:trace:await-history:${event}`);

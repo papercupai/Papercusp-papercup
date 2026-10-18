@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { runLocalGit } from '../../scratch-git-clone';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
@@ -18,6 +19,7 @@ import {
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
   executeOperationalRun,
+  resolveOperationalSourceRoot,
   executePlanTerminalCensus,
   executeGitScratchPlacement,
   inspectPlanTerminalCensus,
@@ -237,6 +239,33 @@ describe('native operational execution witnesses', () => {
       expect(f.deps.persist).not.toHaveBeenCalled();
     },
   );
+
+  it('resolves the loaded file from a Git worktree whose .git is a file', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'native-operational-worktree-'));
+    const worktree = mkdtempSync(join(tmpdir(), 'native-operational-linked-'));
+    try {
+      git(repo, ['init', '-q']);
+      git(repo, ['config', 'user.name', 'Test']);
+      git(repo, ['config', 'user.email', 'test@example.invalid']);
+      mkdirSync(join(repo, 'instrument'));
+      writeFileSync(join(repo, 'instrument', 'loaded.mjs'), 'export const loaded = true;\n');
+      git(repo, ['add', 'instrument/loaded.mjs']);
+      git(repo, ['commit', '-qm', 'loaded instrument']);
+      rmSync(worktree, { recursive: true, force: true });
+      git(repo, ['worktree', 'add', '-q', worktree, 'HEAD']);
+      expect((await resolveOperationalSourceRoot(pathToFileURL(join(worktree, 'instrument', 'loaded.mjs')).href)))
+        .toBe(worktree);
+      expect((await resolveOperationalSourceRoot(pathToFileURL(join(worktree, 'instrument')).href))).toBeNull();
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for a missing loaded instrument path', async () => {
+    await expect(resolveOperationalSourceRoot(pathToFileURL(join(tmpdir(), 'missing-native-instrument.mjs')).href))
+      .resolves.toBeNull();
+  });
 
   it('retains the original native command scope despite callback properties or argument mutation', async () => {
     const f = fixture();

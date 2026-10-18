@@ -145,7 +145,7 @@ const DIRECT_TEST_RUNNER_RE = new RegExp(
   'i',
 );
 const PACKAGE_TEST_SCRIPT_RE = new RegExp(
-  `${TEST_SEGMENT_PREFIX}(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?test(?::[A-Za-z0-9_.-]+)?(?:\\s|$)`,
+  `${TEST_SEGMENT_PREFIX}(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?test(?::[A-Za-z0-9_.-]+)*(?:\\s|$)`,
   'i',
 );
 

@@ -851,11 +851,37 @@ export interface GatewayOwnerStageTelemetry {
   /** Includes admission/pre-provider work; a request need not reach upstream to be active. */
   active: number;
   oldestActiveAt: number | null;
+  /** Bounded snapshots of the requests currently owned by this owner. */
+  activeRequests: GatewayActiveRequestSnapshot[];
+  /** False when the owner has more active requests than the bounded snapshot can retain. */
+  activeRequestsComplete: boolean;
   finalized: number;
   outcomes: Record<GatewayRequestOutcome, number>;
   stages: Record<GatewayRequestStageName, GatewayPercentileSummary>;
   recent: GatewayRequestTimeline[];
 }
+
+/**
+ * Minimal live evidence for a request that has not reached `finish()` yet.
+ *
+ * This is intentionally smaller than GatewayRequestTimeline: the owner report
+ * must be safe to expose while a request is still mutating, and recovery only
+ * needs to distinguish provider admission from provider work. A bounded list
+ * plus `activeRequestsComplete` lets readers fail closed when the owner has
+ * more live requests than the report can retain.
+ */
+export interface GatewayActiveRequestSnapshot {
+  requestId: number;
+  startedAt: number;
+  provider: GatewayTelemetryProvider;
+  providerQueuedAt: number | null;
+  providerAdmittedAt: number | null;
+  attempts: number;
+  upstreamCalls: number;
+  upstreamCallsDropped: number;
+}
+
+export const MAX_ACTIVE_OWNER_REQUESTS = 32;
 
 const OUTCOMES: readonly GatewayRequestOutcome[] = [
   'ok',
@@ -1215,6 +1241,25 @@ export class GatewayRequestSpan {
     this.failovers++;
   }
 
+  /** Snapshot the bounded live evidence needed by the owner-report reader. */
+  activeSnapshot(): GatewayActiveRequestSnapshot {
+    const providerSegment = this.admission.provider;
+    return {
+      requestId: this.requestId,
+      startedAt: this.startedAt,
+      provider: this.provider,
+      providerQueuedAt: providerSegment?.queued
+        ? this.startedAt + providerSegment.queued.offsetMs
+        : null,
+      providerAdmittedAt: providerSegment?.admitted
+        ? this.startedAt + providerSegment.admitted.offsetMs
+        : null,
+      attempts: this.attempts,
+      upstreamCalls: this.upstreamWrites.calls.length,
+      upstreamCallsDropped: this.upstreamWrites.droppedCalls,
+    };
+  }
+
   finish(outcome: GatewayRequestOutcome, finalStatus: number | null): GatewayRequestTimeline | null {
     if (this.finished) return null;
     const finalizedAt = this.now();
@@ -1288,7 +1333,7 @@ export class GatewayRequestTelemetry {
   private cacheUsageObserved = 0;
   private cacheWriteObserved = 0;
   private readonly active = new Set<number>();
-  private readonly activeOwners = new Map<number, { ownerId: string | null; startedAt: number }>();
+  private readonly activeOwners = new Map<number, GatewayRequestSpan>();
   private readonly outcomes = emptyOutcomes();
   private readonly missingStageByName = emptyMissingStages();
   private readonly stageSamples: Record<GatewayRequestStageName, BoundedSamples>;
@@ -1346,8 +1391,7 @@ export class GatewayRequestTelemetry {
     const startedAt = this.clock();
     this.started++;
     this.active.add(requestId);
-    this.activeOwners.set(requestId, { ownerId: boundedOwnerId(seed.ownerId), startedAt });
-    return new GatewayRequestSpan(
+    const span = new GatewayRequestSpan(
       this,
       requestId,
       boundedOwnerId(seed.ownerId),
@@ -1356,6 +1400,8 @@ export class GatewayRequestTelemetry {
       seed.transport ?? 'unknown',
       startedAt,
     );
+    this.activeOwners.set(requestId, span);
+    return span;
   }
 
   complete(timeline: GatewayRequestTimeline): void {
@@ -1443,7 +1489,13 @@ export class GatewayRequestTelemetry {
 
   snapshotForOwner(ownerId: string): GatewayOwnerStageTelemetry {
     const safeOwner = boundedOwnerId(ownerId) ?? '';
-    const active = [...this.activeOwners.values()].filter(request => request.ownerId === safeOwner);
+    const active = [...this.activeOwners.values()]
+      .filter(request => request.ownerId === safeOwner)
+      .sort((a, b) => a.startedAt - b.startedAt || a.requestId - b.requestId);
+    const activeRequestsComplete = active.length <= MAX_ACTIVE_OWNER_REQUESTS;
+    const activeRequests = active
+      .slice(0, MAX_ACTIVE_OWNER_REQUESTS)
+      .map((request) => request.activeSnapshot());
     const timelines = this.recent.filter((timeline) => timeline.ownerId === safeOwner);
     const outcomes = emptyOutcomes();
     const byStage = Object.fromEntries(
@@ -1463,6 +1515,8 @@ export class GatewayRequestTelemetry {
       ownerId: safeOwner,
       active: active.length,
       oldestActiveAt: active.length ? Math.min(...active.map(request => request.startedAt)) : null,
+      activeRequests,
+      activeRequestsComplete,
       finalized: timelines.length,
       outcomes,
       stages,

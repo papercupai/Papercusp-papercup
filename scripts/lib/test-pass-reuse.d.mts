@@ -347,6 +347,9 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }: {
 /**
  * P-004: exclusive decision buckets for the durable gate-pass-reuse observation.
  * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
+ * Expired proofs are recorded as a zero-eligible diagnostic row: the max-age safety rule
+ * deliberately prevents them from taking the primary reuse path, so they are not reuse
+ * opportunities and must not depress its eligible-pass rate.
  * @param {string} task
  * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
  * @returns {Array<{ eligible: number, applied: number, populationKnown: boolean, reason: string, scope: string }>}

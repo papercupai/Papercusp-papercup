@@ -46,6 +46,8 @@ export interface BoundedTimeoutOptions<T> {
   fallback: T;
   timeoutMs: number;
   label?: string;
+  /** Emit a console warning when the operation degrades to the fallback. */
+  warn?: boolean;
   /** Abort the bounded operation when the caller's operation is cancelled. */
   signal?: AbortSignal;
 }
@@ -96,7 +98,7 @@ export async function withBoundedTimeout<T>(
       observeFallback('bounded-operation', { eligible: 1, applied: 0, reason: 'timeout', scope: opts.label ?? 'unlabeled' }, {
         workspaceId: activeWorkspaceId(),
       });
-      console.warn(
+      if (opts.warn !== false) console.warn(
         `[bounded-timeout]${opts.label ? ` ${opts.label}` : ''} exceeded ${opts.timeoutMs}ms — degrading to fallback`,
       );
       return { value: opts.fallback, degraded: true, reason: 'timeout', elapsedMs: Date.now() - startedAt };
@@ -113,7 +115,7 @@ export async function withBoundedTimeout<T>(
       workspaceId: activeWorkspaceId(),
     });
     const errorMessage = err instanceof Error ? err.message : String(err);
-    console.warn(
+    if (opts.warn !== false) console.warn(
       `[bounded-timeout]${opts.label ? ` ${opts.label}` : ''} failed: ${errorMessage} — degrading to fallback`,
     );
     return {

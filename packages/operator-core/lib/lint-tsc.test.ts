@@ -26,7 +26,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import ts from 'typescript';
 import { DEFAULT_UNIT_TEST_TIMEOUT_MS } from '@papercusp/test-config/vitest-config';
 import { filesDependingOnChangedModules, diagnosticFilesDependingOnChangedTypes, checkedSetFor } from '../../../scripts/lib/tsc-service.mjs';
@@ -895,6 +895,17 @@ describe('gitHeadShaForLintTsc — never fabricates a sha it could not read', ()
 
 describe('session-scoped lint:tsc run marker writer (EI-19421388108187854)', () => {
   const runStartIso = '2026-09-05T23:00:00.000Z';
+  let inheritedReceipt: string | undefined;
+
+  beforeEach(() => {
+    inheritedReceipt = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+    delete process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+  });
+
+  afterEach(() => {
+    if (inheritedReceipt === undefined) delete process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+    else process.env.VERIFY_TAURI_SOURCE_RECEIPT = inheritedReceipt;
+  });
 
   it('writes independent marker files for concurrent sessions without a legacy fallback', () => {
     const root = mkdtempSync(join(tmpdir(), 'lint-tsc-session-marker-'));

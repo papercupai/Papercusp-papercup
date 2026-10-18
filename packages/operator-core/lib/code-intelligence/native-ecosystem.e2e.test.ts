@@ -268,8 +268,10 @@ describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph pla
 
 describe.runIf(Boolean(baseUrl))('native P021 real CLI source/path expansion', () => {
   it('expands budget-omitted captured records through capability:read after the source changes', () => {
-    const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/code-intelligence/packer-facade.ts',
-      testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
+    const route = nativeCliCall(baseUrl!, 'dev:pipeline_position', {
+      path: 'packages/operator-core/lib/code-intelligence/packer-facade.ts',
+      testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] },
+    }, spawnSync, { allowProjectedPartial: true });
     expect(route.currentBuildTestRoute.readiness).toBe('ready');
     expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
       row.runtime === 'staging-operator' && row.containsChange === true)).toBe(true);

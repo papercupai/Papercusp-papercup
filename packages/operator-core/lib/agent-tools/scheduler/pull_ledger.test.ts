@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { pullLedgerRowFromInvocation, type PullLedgerInvocationRow } from './pull_ledger';
+import {
+  pullLedgerRowFromInvocation,
+  resolvePullLedgerBeeFilter,
+  type PullLedgerInvocationRow,
+} from './pull_ledger';
 
 const base: PullLedgerInvocationRow = {
   invoked_at: '2026-09-02T18:41:15.233Z',
@@ -88,5 +92,22 @@ describe('pullLedgerRowFromInvocation (EI-7014)', () => {
       ...base,
       late_settlement: { kind: 'claimed', workItemId: '', settledAt: '2026-10-07T16:00:00.000Z' },
     }).lateSettlement).toBeNull();
+  });
+});
+
+describe('resolvePullLedgerBeeFilter (EI-25404625827682991)', () => {
+  const members = new Set(['su-a', 'su-b']);
+
+  it('narrows a fleet query to the requested bee when both selectors are supplied', () => {
+    expect(resolvePullLedgerBeeFilter(members, 'su-b')).toEqual(['su-b']);
+  });
+
+  it('returns no rows for a bee outside the selected fleet', () => {
+    expect(resolvePullLedgerBeeFilter(members, 'su-outside')).toEqual([]);
+  });
+
+  it('keeps the fleet-wide and bee-only forms unchanged', () => {
+    expect(resolvePullLedgerBeeFilter(members)).toEqual(['su-a', 'su-b']);
+    expect(resolvePullLedgerBeeFilter(null, 'su-b')).toEqual(['su-b']);
   });
 });

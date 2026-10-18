@@ -311,6 +311,22 @@ describe('gateReuseObservations', () => {
     ]);
   });
 
+  it('records intentional expiry without counting it as a reuse opportunity', () => {
+    expect(gateReuseObservations('@ws::test', { summary: { candidates: 1099, expired: 1099 } })).toEqual([
+      { eligible: 0, applied: 0, populationKnown: true, reason: 'expired', scope: '@ws::test' },
+    ]);
+  });
+
+  it('excludes expired proofs from the eligible rate while preserving the remaining buckets', () => {
+    expect(gateReuseObservations('@ws::test', {
+      summary: { candidates: 20, reused: 10, expired: 5, noProof: 5 },
+    })).toEqual([
+      { eligible: 0, applied: 0, populationKnown: true, reason: 'expired', scope: '@ws::test' },
+      { eligible: 10, applied: 10, populationKnown: true, reason: 'applied', scope: '@ws::test' },
+      { eligible: 5, applied: 0, populationKnown: true, reason: 'noProof', scope: '@ws::test' },
+    ]);
+  });
+
   it('distinguishes measured zero off-path files from missing or invalid cardinality', () => {
     expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout', eligible: 0 })[0])
       .toMatchObject({ eligible: 0, populationKnown: true });

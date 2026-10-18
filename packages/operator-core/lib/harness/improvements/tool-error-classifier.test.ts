@@ -153,6 +153,28 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       .toBe('tool-failure-signature:ptool:structural:error-code-unknown:field-unknown');
   });
 
+  it('keeps distinct kernel identity causes on separate filing signatures', () => {
+    const outside = {
+      toolName: 'coord:send',
+      errorCode: 'authorization_denied',
+      message: 'Kernel preflight denied tool "coord:send": Identity capability (unresolved): outside-ceiling (coord:send)',
+    };
+    const stale = {
+      ...outside,
+      message: 'Kernel preflight denied tool "coord:send": Identity capability (unresolved): stale-artifact (coord:send)',
+    };
+    const outsideKey = toolFailureSignatureKey(outside, 'caller');
+    const staleKey = toolFailureSignatureKey(stale, 'caller');
+    expect(outsideKey).not.toBe(staleKey);
+    expect(outsideKey).toContain(':identity-outside-ceiling');
+    expect(staleKey).toContain(':identity-stale-artifact');
+    expect(parseToolFailureSignatureKey(outsideKey)).toMatchObject({
+      toolName: 'coord:send',
+      failureFamily: 'caller',
+      errorCode: 'authorization_denied',
+    });
+  });
+
   it('keys result-door spill failures by subsystem and code, independent of the named tool', () => {
     const first = toolFailureSignatureKey({
       toolName: 'facts:list', errorCode: 'output_spill_failed', fieldPath: 'result',

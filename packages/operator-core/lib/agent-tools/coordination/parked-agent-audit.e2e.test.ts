@@ -12,13 +12,172 @@
  * Reuses the canonical artifact store and live-suite PG gate. It creates no watchdog,
  * alternative census, or changes to the archived start population.
  */
+import { execFile } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
-import { auditKnown, auditWakeEvidence, createRosterAudit, pageRosterAudit } from './tools/roster-audit';
+import { auditKnown, auditUnknown, auditWakeEvidence, createRosterAudit, pageRosterAudit, type AuditRecord } from './tools/roster-audit';
+
+const SEARCH_QUERY = 'parked agent audit';
+const AUDIT_DOC = 'agent-insights/parked-agent-audit-roster-view';
+const AUDIT_LIVE_PROFILE = 'packages/operator-core/test/parked-agent-audit.live-profile.json';
+interface SearchObservation {
+  tools: { query: string; hits: Array<{ tool: string; description: string }> };
+  docs: { hits: Array<{ slug: string; url: string }>; legs: { degraded: boolean } };
+}
+
+function searchViolations(observation: SearchObservation | null): string[] {
+  if (!observation || !Array.isArray(observation.tools?.hits) || !Array.isArray(observation.docs?.hits)) {
+    return ['live-search-unavailable'];
+  }
+  const errors: string[] = [];
+  if (observation.tools.query !== SEARCH_QUERY) errors.push('wrong-query');
+  if (!observation.tools.hits.slice(0, 3).some(hit => hit.tool === 'coord:roster'
+    && /view\s*[:=]\s*["']?audit\b/.test(hit.description))) errors.push('tools:find:missing-top-three');
+  if (!observation.docs.hits.slice(0, 3).some(hit => hit.slug === AUDIT_DOC
+    && hit.url === `/internal/docs/${AUDIT_DOC}`)) errors.push('docs:search:missing-top-three');
+  if (observation.docs.legs?.degraded !== false) errors.push('docs:search:unavailable-ranking');
+  return errors;
+}
+
+function searchFixture(): SearchObservation {
+  // Fixed identities from the required view/doc, independent of search output.
+  return { tools: { query: SEARCH_QUERY, hits: [{ tool: 'coord:roster', description: 'Use view=audit.' }] },
+    docs: { hits: [{ slug: AUDIT_DOC, url: `/internal/docs/${AUDIT_DOC}` }], legs: { degraded: false } } };
+}
+
+describe('R-8 live discovery detector controls', () => {
+  it('accepts the intended view and document identities in the top three', () => {
+    expect(searchViolations(searchFixture())).toEqual([]);
+  });
+  it.each(['tools', 'docs'] as const)('rejects omission or rank four on %s independently', surface => {
+    const omitted = searchFixture();
+    omitted[surface].hits = [];
+    expect(searchViolations(omitted)).toContain(surface === 'tools'
+      ? 'tools:find:missing-top-three' : 'docs:search:missing-top-three');
+    const rankFour = searchFixture();
+    if (surface === 'tools') rankFour.tools.hits.unshift(...Array.from({ length: 3 }, () => ({ tool: 'other', description: '' })));
+    else rankFour.docs.hits.unshift(...Array.from({ length: 3 }, () => ({ slug: 'other', url: '/other' })));
+    expect(searchViolations(rankFour)).toContain(surface === 'tools'
+      ? 'tools:find:missing-top-three' : 'docs:search:missing-top-three');
+  });
+  it('rejects lookalike identities, a wrong query and unavailable measurements', () => {
+    const lookalike = searchFixture();
+    lookalike.tools.hits[0]!.tool = 'audit:list';
+    lookalike.docs.hits[0]!.slug = 'other';
+    expect(searchViolations(lookalike)).toEqual(['tools:find:missing-top-three', 'docs:search:missing-top-three']);
+    const wrongQuery = searchFixture();
+    wrongQuery.tools.query = 'another query';
+    expect(searchViolations(wrongQuery)).toContain('wrong-query');
+    expect(searchViolations(null)).toEqual(['live-search-unavailable']);
+    const degraded = searchFixture();
+    degraded.docs.legs.degraded = true;
+    expect(searchViolations(degraded)).toEqual(['docs:search:unavailable-ranking']);
+  });
+});
+
+const SEARCH_LIVE_REQUESTED = process.env.PAPERCUSP_PARKED_SEARCH_LIVE === '1';
+const SEARCH_TEST_LAYER = inject('papercuspTestLayer');
+// A measured e2e run must execute the searches. Missing opt-in/configuration
+// fails that run; a unit-only controls run cannot supply healthy live evidence.
+describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-8 parked agent audit discovery', () => {
+  it('finds the intended view and how-to in each live search top three', async () => {
+    expect(SEARCH_LIVE_REQUESTED, 'R-8 requires an actual live measurement').toBe(true);
+    expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe(AUDIT_LIVE_PROFILE);
+    expect(process.env.PAPERCUSP_SID, 'retain the authenticated session principal').toBeTruthy();
+    expect(process.env.PAPERCUSP_WORKSPACE, 'retain the workspace scope').toBeTruthy();
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+    const toolEnv = { ...process.env };
+    delete toolEnv.PAPERCUSP_SCRATCH_ROOT;
+    const call = async (tool: string, args: object) => {
+      const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
+        tool, '--port', '3170', '--client', process.env.PAPERCUSP_SID!,
+        '--workspace', process.env.PAPERCUSP_WORKSPACE!, JSON.stringify(args)],
+      { env: toolEnv, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });
+      return JSON.parse(result.stdout);
+    };
+    const tools = await call('tools:find', { query: SEARCH_QUERY,
+      projection: { pick: ['query', 'hits[].tool', 'hits[].description'] } });
+    const docs = await call('docs:search', { query: SEARCH_QUERY, harness: 'engineering', limit: 3,
+      projection: { pick: ['hits[].slug', 'hits[].url', 'legs.degraded'] } });
+    const errors = searchViolations({ tools, docs });
+    process.stdout.write(`PARKED_AUDIT_R8 ${JSON.stringify({ query: SEARCH_QUERY, route: 'http://127.0.0.1:3170',
+      toolRank: tools.hits?.findIndex((hit: { tool: string }) => hit.tool === 'coord:roster') + 1,
+      docRank: docs.hits?.findIndex((hit: { slug: string }) => hit.slug === AUDIT_DOC) + 1, errors })}\n`);
+    expect(errors).toEqual([]);
+  }, 180_000);
+});
 
 describe('dynamic roster audit regression oracles', () => {
+  it('retains the independently captured full record stream and owner provenance across every page', () => {
+    const time = '2026-10-18T00:00:00Z';
+    const scope = { workspaceId: 'dynamic-test', scope: 'workspace' as const, potId: null, owner: null };
+    // Capture the source oracle before constructing or paging the snapshot. The
+    // expected stream must not come from snapshot.records or the page builder.
+    const source: AuditRecord[] = [
+      { id: 'agent:a', ownerId: 'a', kind: 'agent', fields: {
+        wait: auditKnown({ kind: 'listener', event: 'coord:inbox-wake:a' }, 'presence.awaitingEventKey', time),
+        registeredAuto: auditKnown(false, 'agent_modes registry', time),
+        wakeMode: auditKnown('auto', 'presence wake configuration (not registered authority)', time),
+      } },
+      { id: 'work:a:one', ownerId: 'a', kind: 'work', fields: {
+        next: auditUnknown('carry_notes.latestUpdate.next', time, 'Checkpoint subject is stale.'),
+        blockers: auditUnknown('work_items', time, 'No live clearance measured.'),
+        executable: auditUnknown('work_items + checkpoint', time, 'Preserve owner and dependency gates.'),
+      } },
+      { id: 'work:a:two', ownerId: 'a', kind: 'work', fields: {
+        blocker: auditKnown({ ref: 'owner-hold', kind: 'owner' }, 'work_items.payload.externalBlockers', time),
+        clearance: auditUnknown('live blocker producer', time, 'Recorded hold remains in force.'),
+      } },
+      { id: 'agent:b', ownerId: 'b', kind: 'agent', fields: { state: auditKnown('parked', 'presence', time) } },
+    ];
+    const expected = structuredClone(source);
+    const provenance = { status: 'verified-owner' as const, directiveId: 1,
+      sourceRef: 'session_turn:codex:captured:0', turnOrigin: 'owner-typed', quote: 'Audit the parked agents.' };
+    const captured = createRosterAudit({ asOf: time, scope, population: ['a', 'b'], expectedPopulation: 2,
+      records: source, provenance,
+      previous: { status: 'known', auditId: null, asOf: null, total: null, corrections: [] },
+    });
+    // The store freezes JSON bytes; replay those bytes rather than sharing the
+    // builder's mutable input references with the later source observation.
+    const snapshot = JSON.parse(JSON.stringify(captured)) as typeof captured;
+    source[0].fields.registeredAuto.value = true;
+    source[1].fields.next = auditKnown('changed after capture', 'later checkpoint', time);
+    const observed: AuditRecord[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = pageRosterAudit(snapshot, scope, { pageSize: 1, cursor });
+      expect(page.auditId).toBe(snapshot.auditId);
+      expect(page.asOf).toBe(time);
+      expect(page.provenance).toEqual(provenance);
+      expect(page.projection.offset).toBe(observed.length);
+      observed.push(...page.records);
+      cursor = page.nextCursor ?? undefined;
+      expect(page.coverage.truncatedByLimit).toBe(Boolean(cursor));
+      if (!cursor) expect(page.coverage).toMatchObject({ total: 2, covered: 2, recordsRead: 4,
+        totalRecords: 4, complete: true, missing: 0, duplicates: 0 });
+    } while (cursor);
+    expect(observed).toEqual(expected);
+    expect(new Set(observed.map(row => row.id)).size).toBe(expected.length);
+  });
+  it('refuses missing and duplicate owner evidence instead of certifying declared coverage', () => {
+    const time = '2026-10-18T00:00:00Z';
+    const scope = { workspaceId: 'dynamic-test', scope: 'workspace' as const, potId: null, owner: null };
+    const a: AuditRecord = { id: 'agent:a', ownerId: 'a', kind: 'agent', fields: { state: auditKnown('parked', 'presence', time) } };
+    const input = { asOf: time, scope, population: ['a', 'b'], expectedPopulation: 2, records: [a],
+      provenance: { status: 'unknown' as const, directiveId: null, sourceRef: null, turnOrigin: null, quote: null, reason: 'fixture' },
+      previous: { status: 'known' as const, auditId: null, asOf: null, total: null, corrections: [] },
+    };
+    expect(() => createRosterAudit(input)).toThrowError(expect.objectContaining({ code: 'agent_coverage_invalid' }));
+    expect(() => createRosterAudit({ ...input, records: [a, { ...a, id: 'agent:a:duplicate' }] }))
+      .toThrowError(expect.objectContaining({ code: 'agent_coverage_invalid' }));
+    expect(() => createRosterAudit({ ...input, population: ['a'], expectedPopulation: undefined as unknown as number }))
+      .toThrowError(expect.objectContaining({ code: 'writer_count_invalid' }));
+  });
   it('assembles exact multi-page owner coverage without changing the frozen historical census', () => {
     const time = '2026-10-18T00:00:00Z';
     const scope = { workspaceId: 'dynamic-test', scope: 'workspace' as const, potId: null, owner: null };
