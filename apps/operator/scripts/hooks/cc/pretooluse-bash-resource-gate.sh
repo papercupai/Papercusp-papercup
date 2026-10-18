@@ -4357,10 +4357,14 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree():
         # the working tree — exactly the same "clobbers a peer's uncommitted
         # state" hazard as reset --hard/checkout .— so they're no safer than a
         # bare `git stash` and must be denied unconditionally, same as a
-        # scoped `push` (no more ` -- ' exemption). `list`/`show` stay exempt
-        # (read-only, no working-tree mutation); `drop`/`branch`/`clear` are
-        # unchanged from before (not implicated in this incident).
-        if re.match(_GIT + r'stash\b(?!\s+(?:list|show|drop|branch|clear))', _s):
+        # scoped `push` (no more ` -- ' exemption). Only `list`/`show` stay
+        # exempt (read-only). WI-6554700010017558: `drop`/`clear` irrecoverably
+        # delete entries on that same shared stack (possibly a peer's work), and
+        # `branch` applies the top entry AND checks out a new branch in the
+        # shared tree, so all three are denied like a bare `git stash`. The
+        # always-worn kernel rail (kernel-safety-rails.ts) and the OMP hook
+        # (omp/coord-hook.ts GIT_STASH_RE) carry the same lookahead.
+        if re.match(_GIT + r'stash\b(?!\s+(?:list|show)\b)', _s):
             deny(_git_deny.format(op='git stash'))
 
 # ── Shell-write file-target guard (EI-18664655909328670) ───────────────────

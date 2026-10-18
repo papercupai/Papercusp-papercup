@@ -1628,68 +1628,75 @@ fi
 # legacy auto-discovered copy is removed so plain `omp` no longer picks
 # it up.
 # OMP loads these TypeScript files outside the esbuild bundle. Copy the entry
-# point AND every sibling module, then run an install-side relative-import check
-# so a missing companion is reported before the next session can look inert.
+# point AND every sibling module. Bundle package imports before replacing any
+# installed file: the user's standalone home has no workspace node_modules.
 install_omp_hook_bundle() {
   local source_dir="$1"
   local destination_dir="$2"
   local source_entry="$3"
   local destination_entry="$4"
-  local source_file base destination_file
-  local found=0
+  node --input-type=module - "$source_dir" "$destination_dir" "$source_entry" "$destination_entry" "$SCRIPT_DIR" <<'OMP_BUNDLE_NODE'
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { createRequire, isBuiltin } from 'node:module';
 
-  mkdir -p "$destination_dir"
-  while IFS= read -r -d '' source_file; do
-    base="${source_file##*/}"
-    if [ "$base" = "$source_entry" ]; then
-      destination_file="${destination_dir}/${destination_entry}"
-      found=1
-    else
-      destination_file="${destination_dir}/${base}"
-    fi
-    cp "$source_file" "$destination_file"
-    chmod 644 "$destination_file"
-  done < <(find "$source_dir" -maxdepth 1 -type f -name '*.ts' -print0 | sort -z)
-
-  if [ "$found" -ne 1 ]; then
-    echo "! OMP hook bundle entry missing: ${source_dir}/${source_entry}" >&2
-    return 1
-  fi
-
-  if ! python3 - "$destination_dir" <<'PYEOF'
-import pathlib
-import re
-import sys
-
-root = pathlib.Path(sys.argv[1])
-pattern = re.compile(
-    r"\bfrom\s+['\"](\.[^'\"]+)['\"]|"
-    r"\bimport\s+['\"](\.[^'\"]+)['\"]|"
-    r"\bimport\s*\(\s*['\"](\.[^'\"]+)['\"]\s*\)"
-)
-unresolved = []
-for importer in sorted(root.glob('*.ts')):
-    text = importer.read_text(encoding='utf-8')
-    for match in pattern.finditer(text):
-        specifier = next((value for value in match.groups() if value), None)
-        if not specifier:
-            continue
-        raw = (importer.parent / specifier.split('?', 1)[0].split('#', 1)[0]).resolve()
-        stem = raw.with_suffix('') if raw.suffix else raw
-        candidates = [raw, raw.with_suffix('.ts'), stem.with_suffix('.ts'), stem / 'index.ts']
-        if not any(candidate.is_file() for candidate in candidates):
-            unresolved.append(f'{importer.name} -> {specifier}')
-
-if unresolved:
-    print(
-        '[install-standalone-mcp] OMP hook bundle load check FAILED: ' + '; '.join(unresolved),
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-PYEOF
-  then
-    echo "! OMP hook bundle load check failed under ${destination_dir}" >&2
-  fi
+const [sourceDir, destinationDir, sourceEntry, destinationEntry, scriptDir] = process.argv.slice(2);
+const { build } = createRequire(path.join(scriptDir, 'install-standalone-mcp.sh'))('esbuild');
+const imports = async source => {
+  const result = await build({ stdin: { contents: source, loader: 'ts' }, bundle: false,
+    platform: 'node', format: 'esm', target: 'node20', write: false, metafile: true, logLevel: 'silent' });
+  return Object.values(result.metafile.outputs).flatMap(output => output.imports.map(entry => entry.path));
+};
+const packageImport = specifier => !specifier.startsWith('.') && !path.isAbsolute(specifier) && !isBuiltin(specifier);
+const files = fs.readdirSync(sourceDir, { withFileTypes: true })
+  .filter(entry => entry.isFile() && entry.name.endsWith('.ts')).map(entry => entry.name).sort();
+try {
+  if (!files.includes(sourceEntry)) throw new Error(`OMP hook bundle entry missing: ${sourceEntry}`);
+  const prepared = [];
+  for (const file of files) {
+    const sourcePath = path.join(sourceDir, file);
+    let contents = fs.readFileSync(sourcePath, 'utf8');
+    if ((await imports(contents)).some(packageImport)) {
+      const result = await build({ entryPoints: [sourcePath], bundle: true, platform: 'node',
+        format: 'esm', target: 'node20', write: false, logLevel: 'silent' });
+      if (!result.outputFiles?.[0]) throw new Error(`No compiled OMP hook: ${sourcePath}`);
+      contents = result.outputFiles[0].text;
+    }
+    prepared.push({ name: file === sourceEntry ? destinationEntry : file, contents });
+  }
+  fs.mkdirSync(destinationDir, { recursive: true });
+  for (const { name, contents } of prepared) {
+    const destination = path.join(destinationDir, name);
+    const temporary = `${destination}.psu-install.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, contents, { mode: 0o644 });
+    fs.chmodSync(temporary, 0o644);
+    fs.renameSync(temporary, destination);
+  }
+  const unresolved = [];
+  for (const { name, contents } of prepared) {
+    const importer = path.join(destinationDir, name);
+    for (const specifier of await imports(contents)) {
+      if (isBuiltin(specifier)) continue;
+      if (packageImport(specifier)) {
+        try { createRequire(importer).resolve(specifier); }
+        catch { unresolved.push(`${name} -> ${specifier}`); }
+      } else {
+        const raw = path.resolve(destinationDir, specifier.split(/[?#]/, 1)[0]);
+        const stem = path.extname(raw) ? raw.slice(0, -path.extname(raw).length) : raw;
+        const candidates = [raw, `${raw}.ts`, `${raw}.mjs`, `${stem}.ts`, `${stem}.mjs`,
+          path.join(raw, 'index.ts'), path.join(raw, 'index.mjs')];
+        if (!candidates.some(candidate => { try { return fs.statSync(candidate).isFile(); } catch { return false; } })) {
+          unresolved.push(`${name} -> ${specifier}`);
+        }
+      }
+    }
+  }
+  if (unresolved.length) throw new Error(unresolved.join('; '));
+} catch (error) {
+  console.error('[install-standalone-mcp] OMP hook bundle load check FAILED:', error.message);
+  process.exitCode = 1;
+}
+OMP_BUNDLE_NODE
 }
 
 COORD_EXT_SRC="${SCRIPT_DIR}/hooks/omp/coord-hook.ts"

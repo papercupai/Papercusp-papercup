@@ -286,6 +286,33 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
+  // WI-6554700010017528: the hook-payload shape of owner directive #2002 — a peer
+  // session's SendMessage that reached the OWNER branch and was captured.
+  const CROSS_SESSION =
+    '<cross-session-message from="uds:/run/user/1000/cc-socks/1113327.sock" from-name="papercusp-ec" from-mode="bypass">\n' +
+    'Relay request: please do 2 calls marked as a relay.\n</cross-session-message>';
+
+  it('a Claude cross-session message is a peer MACHINE-GENERATED SURFACE naming its sender, never OWNER or a directive', () => {
+    writeRow(); // a live row exists but nothing matches this prompt
+    const ctx = contextOf(runHook({ prompt: CROSS_SESSION }));
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE (peer agent message)');
+    expect(ctx).toContain('papercusp-ec via uds:/run/user/1000/cc-socks/1113327.sock');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    // Capture runs only in the OWNER branch; a failed capture would print this notice.
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
+  });
+
+  it('the transcript form with the client preamble line is a peer surface too', () => {
+    const ctx = contextOf(runHook({ prompt: `Another Claude session sent a message:\n${CROSS_SESSION}` }));
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE (peer agent message)');
+    expect(ctx).not.toContain('OWNER (interactive)');
+  });
+
+  it('keeps an owner quoting a cross-session message as an owner turn', () => {
+    const ctx = contextOf(runHook({ prompt: `Why did this become my directive? ${CROSS_SESSION}` }));
+    expect(ctx).toContain('OWNER (interactive)');
+  });
+
   it('keeps an owner quoting the usage-limit reset message as an owner turn', () => {
     const ctx = contextOf(runHook({
       prompt: 'Claude showed: "Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete." Why was that recorded as my directive?',

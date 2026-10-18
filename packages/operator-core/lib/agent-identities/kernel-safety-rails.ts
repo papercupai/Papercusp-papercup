@@ -87,7 +87,9 @@ export const KERNEL_SAFETY_RAILS: readonly KernelSafetyRail[] = [
   shellRail('kernel:git-checkout-all', `git checkout/restore of the whole tree is refused: ${SHARED_TREE}`,
     `(?:checkout|restore)\\b${SAME_SEGMENT}\\s(?:\\.|:/)(?=\\s|$|[;&|\\n)])`),
   shellRail('kernel:git-stash', `git stash is refused: the stash is one stack shared by every agent in the checkout, so ${SHARED_TREE}`,
-    'stash\\b(?!\\s+(?:list|show|drop|branch|clear))'),
+    // Only list/show are read-only. drop/clear delete entries on the shared
+    // stack and branch switches the shared tree's branch (WI-6554700010017558).
+    'stash\\b(?!\\s+(?:list|show)\\b)'),
 ];
 
 export type KernelVerdict =

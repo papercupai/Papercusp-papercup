@@ -64,6 +64,7 @@ const MACHINE_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['skill-loader preamble', 'Base directory for this skill: /tmp/claude-1000/bundled-skills/2.1.228'],
   ['claude usage reset', 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.'],
   ['torn nonce event wake', '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work'],
+  ['claude cross-session message', 'Another Claude session sent a message:\n<cross-session-message from="uds:/run/user/1000/cc-socks/957123.sock" from-name="papercusp-86" from-mode="bypass">\nConfirmed.\n</cross-session-message>'],
 ];
 
 /**

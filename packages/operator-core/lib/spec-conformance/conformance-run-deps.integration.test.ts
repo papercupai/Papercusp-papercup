@@ -6,7 +6,11 @@ import * as ledger from '../check-results-ledger';
 describe('conformance test-ledger evidence population', () => {
   let db: FreshPgDb;
   const file = 'lib/guard.test.ts';
-  const input = { files: [file], workspaceId: 'conformance-workspace' };
+  const input = {
+    files: [file],
+    workspaceId: 'conformance-workspace',
+    now: () => new Date(Date.UTC(2026, 9, 15, 0, 10)),
+  };
 
   beforeAll(async () => {
     db = await createFreshPgDb('conformance-test-sources');
@@ -51,6 +55,17 @@ describe('conformance test-ledger evidence population', () => {
     await record('ci', 'pass', 1, null);
     await record('local', 'fail', 2, 'another-workspace');
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'pass', value: 1 });
+  });
+
+  it('reports stale evidence as unknown instead of a current regression', async () => {
+    await record('local', 'fail', 1);
+    const result = await judgeTestsFromLedger({
+      ...input,
+      now: () => new Date(Date.UTC(2026, 9, 23, 0, 0)),
+    }, db.sql);
+    expect(result).toMatchObject({ verdict: 'error', value: null, unit: 'files' });
+    expect(result.detail).toContain('stale');
+    expect(result.detail).toContain('test_runs #');
   });
 
   it('forwards canonical workspace and harness into executable platform checks', async () => {

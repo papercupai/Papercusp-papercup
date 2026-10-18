@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   loopbackFetch: vi.fn(async (..._args: unknown[]): Promise<{ ok: boolean; status: number; text?: () => Promise<string> }> => ({ ok: true, status: 200 })),
   recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
+  recordSpawnAccountRoute: vi.fn(async (..._args: unknown[]) => {}),
+  spawnAccountRouteFromLaunch: vi.fn((_body: unknown, _spawnId: string) => null),
   recordSpawnPid: vi.fn(async (_sql: unknown, _spawnId: string, _pid: number) => {}),
   heartbeatSpawns: vi.fn(async (_sql: unknown, _spawnIds: string[]) => {}),
   selectSpawnAccount: vi.fn(async () => undefined as string | undefined),
@@ -67,7 +69,12 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn }));
 vi.mock('./bootstrap', () => ({ dbosStarted: () => h.state.dbosStarted }));
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
-vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
+vi.mock('../fleet/spawn-tree', () => ({
+  recordSpawn: h.recordSpawn,
+  finishSpawn: h.finishSpawn,
+  recordSpawnAccountRoute: h.recordSpawnAccountRoute,
+  spawnAccountRouteFromLaunch: h.spawnAccountRouteFromLaunch,
+}));
 vi.mock('../fleet/spawn-reclaim', () => ({
   recordSpawnPid: h.recordSpawnPid,
   heartbeatSpawns: h.heartbeatSpawns,

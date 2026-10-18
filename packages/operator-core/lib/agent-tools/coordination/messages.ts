@@ -23,7 +23,7 @@ import {
 } from '@papercusp/coordination/core';
 import { parseBody } from '@papercusp/coordination/event-log';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
-import { getLineEnvelopeById } from './line-event-by-id';
+import { getLineEnvelopeById, getLineEnvelopesByIds } from './line-event-by-id';
 import { expandAudienceDetailed, hasAudienceSelector, type UnreachableAudience } from './audience';
 import { hostAudienceResolvers, audienceMode, deriveAudienceKey } from './audience-host';
 import { deliverFleetDigests } from './fleet-delivery';
@@ -1445,6 +1445,11 @@ export async function readInvolvingOwner(
  */
 export async function getMessageById(msgId: string, sqlOverride?: postgres.Sql): Promise<CoordEnvelope | null> {
   return getLineEnvelopeById('messages', msgId, sqlOverride);
+}
+
+/** Exact indexed lookup for a selected set of message ids. */
+export async function getMessagesByIds(msgIds: readonly string[]): Promise<Map<string, CoordEnvelope>> {
+  return getLineEnvelopesByIds('messages', msgIds);
 }
 
 /**

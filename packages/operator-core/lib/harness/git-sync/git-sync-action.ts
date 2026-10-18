@@ -8222,7 +8222,7 @@ async function recordAndEscalateTick(a: {
       if (notice === 'alarm' || notice === 'realarm') {
         const summary =
           (notice === 'realarm' ? `⚠ STILL QUARANTINED (re-alarm) — ` : '') +
-          `git-sync: ${contentErrors.length} broken file(s) STILL failing their content check after ${contentTicks} ticks — ` +
+          `git-sync: [${slug}] ${contentErrors.length} broken file(s) STILL failing their content check after ${contentTicks} ticks — ` +
           `the content-fixer couldn't repair them; a human is needed. Quarantined (staging stays clean): ` +
           contentErrors.map((c) => `${c.scope}/${c.file}`).join(', ');
         console.warn(`[git-sync] ${slug}: ${summary}`);
@@ -8244,7 +8244,7 @@ async function recordAndEscalateTick(a: {
         const to = await contentNoticeRecipients(slug, workspaceId, stillCurrent, notice);
         if (to.length > 0) {
           const summary =
-            `git-sync QUARANTINED file(s) you edited: they failed a content check, so they (and any file ` +
+            `git-sync QUARANTINED [${slug}] file(s) you edited: they failed a content check, so they (and any file ` +
             `importing them) are withheld from the auto-commit until they pass. Fix forward now; a ` +
             `content-fixer was also dispatched. ` +
             stillCurrent

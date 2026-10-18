@@ -5031,28 +5031,33 @@ async function amendAcceptanceBarRubric(
       }
       // Rendering follows every represented field, while proof invalidation follows BAR meaning.
       // A method-only edit needs both plan locks whenever an explicit requirement block changes.
-      const requirementChangedBars = [...new Set([
+      const directlyChangedRequirements = new Set([
         ...changedBars,
-        ...sourceMappings.mappings.filter((mapping) => {
-          const criterion = (guard.data.criteria as Array<Record<string, unknown>>)
-            .find((candidate) => candidate.barKey === mapping.barKey);
-          return criterion?.evidencePlane && criterion.evidencePlane !== mapping.evidencePlane;
-        }).map((mapping) => mapping.barKey),
         ...amendedRequirementBarKeys(
           stored.criteria as unknown as Array<Record<string, unknown>>,
           guard.data.criteria as Array<Record<string, unknown>>,
         ),
-        // Older amendment writers left explicit Requirements stale. Reapplying
-        // the canonical criteria must repair that copy before the no-op return;
-        // no BAR meaning changes and legacy prose remains untouched.
-        ...diffAmendedCriteriaAgainstRequirements({
+      ]);
+      // An explicit unchanged full-set resubmission can reconcile an older writer's
+      // stale source. A targeted meaning/METHOD patch must not silently normalize
+      // unrelated historical requirements (including deliberately preserved text).
+      const reconcileHistoricalRequirements = input.criteria !== undefined && directlyChangedRequirements.size === 0;
+      const requirementChangedBars = [...new Set([
+        ...directlyChangedRequirements,
+        ...sourceMappings.mappings.filter((mapping) => {
+          const criterion = (guard.data.criteria as Array<Record<string, unknown>>)
+            .find((candidate) => candidate.barKey === mapping.barKey);
+          return criterion?.evidencePlane && criterion.evidencePlane !== mapping.evidencePlane &&
+            (reconcileHistoricalRequirements || directlyChangedRequirements.has(mapping.barKey));
+        }).map((mapping) => mapping.barKey),
+        ...(reconcileHistoricalRequirements ? diffAmendedCriteriaAgainstRequirements({
           requirementBars: requirements.bars,
           nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
           changedBars,
         }).entries.filter((entry) =>
           entry.kind === 'text-differs' &&
           requirements.bars.some((bar) => bar.barKey === entry.barKey && bar.criterion),
-        ).map((entry) => entry.barKey),
+        ).map((entry) => entry.barKey) : []),
       ])];
       const requirementsRerender = rerenderAmendedRequirementBlocks(subjectRow.content, {
         nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,

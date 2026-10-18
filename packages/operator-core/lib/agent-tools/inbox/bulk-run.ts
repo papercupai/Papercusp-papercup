@@ -41,7 +41,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { ADMIN_COORD_UI_OWNER, resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { readAckedMsgIds, readInboxWindow } from '../coordination/messages';
+import { getMessagesByIds, readAckedMsgIds } from '../coordination/messages';
 import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 import { softText, clampText, LIMITS } from '../limits';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
@@ -290,24 +290,9 @@ async function liveActionsById(
       .filter((target) => target.msgId.length > 0);
     if (missingMessages.length > 0) {
       const wanted = new Map(missingMessages.map((target) => [target.msgId, target.itemId] as const));
-      const exact = await runWithWorkspaceIfConcrete(workspaceId, () =>
-        // The attention feed's coord-message source is addressed to the human
-        // audience. ADMIN_COORD_UI_OWNER is the author identity for the ack
-        // fold below, not a recipient in the message envelope. Using it here
-        // drops human-directed messages from the exact-window hydration once
-        // they age out of plans:attention, even though coord:read still sees
-        // them.
-        readInboxWindow(
-          'human',
-          { kinds: ['message'] },
-          (entries) => {
-            const seen = new Set(entries.map((entry) => entry.msg_id).filter((id): id is string => typeof id === 'string'));
-            return [...wanted.keys()].every((msgId) => seen.has(msgId));
-          },
-        ),
-      );
+      const exact = await runWithWorkspaceIfConcrete(workspaceId, () => getMessagesByIds([...wanted.keys()]));
       const acked = await runWithWorkspaceIfConcrete(workspaceId, () => readAckedMsgIds(ADMIN_COORD_UI_OWNER));
-      for (const raw of exact.entries) {
+      for (const raw of exact.values()) {
         if (typeof raw.msg_id !== 'string') continue;
         const itemId = wanted.get(raw.msg_id);
         if (!itemId || acked.has(raw.msg_id)) continue;
@@ -325,16 +310,12 @@ async function liveActionsById(
         });
         byId.set(itemId, normalizeLiveActions(attention));
       }
-      // A fully exhausted exact read is authoritative evidence that a target
-      // is no longer live (closed, filtered, or already acknowledged). Keep a
+      // A missing exact row is authoritative evidence that the target is no
+      // longer live (closed, filtered, or already acknowledged). Keep a
       // present empty entry so callers can distinguish that from an unknown
       // target and refuse a stale action deterministically.
-      if (exact.exhausted) {
-        for (const target of missingMessages) {
-          if (!byId.has(target.itemId)) byId.set(target.itemId, []);
-        }
-      } else {
-        throw new LiveActionDiscoveryError();
+      for (const target of missingMessages) {
+        if (!byId.has(target.itemId)) byId.set(target.itemId, []);
       }
     }
     return byId;

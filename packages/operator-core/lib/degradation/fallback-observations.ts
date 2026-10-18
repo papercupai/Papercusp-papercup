@@ -441,16 +441,24 @@ export function summarizeFallbackWindow(
   windowMs: number,
   aggregates: readonly FallbackReasonAggregate[],
 ): FallbackWindow {
+  const normalizedMechanism = mechanism.trim();
   const byReason = new Map<string, Required<FallbackReasonAggregate>>();
   for (const a of aggregates) {
+    // Older gate-pass-reuse writers counted expired proofs in `eligible`. They
+    // are diagnostic only: an expired proof is never a reuse opportunity, so
+    // preserve its sample/reason while excluding stale persisted counts from
+    // the yield denominator.
+    const expiredDiagnostic = normalizedMechanism === 'gate-pass-reuse' && a.reason === 'expired';
+    const eligible = expiredDiagnostic ? 0 : a.eligible;
+    const applied = expiredDiagnostic ? 0 : a.applied;
     const prev = byReason.get(a.reason);
     if (prev) {
       prev.samples += a.samples;
-      prev.eligible += a.eligible;
-      prev.applied += a.applied;
+      prev.eligible += eligible;
+      prev.applied += applied;
       prev.unknownSamples += a.unknownSamples ?? 0;
     } else {
-      byReason.set(a.reason, { reason: a.reason, samples: a.samples, eligible: a.eligible, applied: a.applied, unknownSamples: a.unknownSamples ?? 0 });
+      byReason.set(a.reason, { reason: a.reason, samples: a.samples, eligible, applied, unknownSamples: a.unknownSamples ?? 0 });
     }
   }
   const reasons: FallbackReasonSummary[] = [...byReason.values()]
@@ -472,7 +480,7 @@ export function summarizeFallbackWindow(
   const knownAppliedRate = eligible > 0 ? applied / eligible : null;
   const populationComplete = eligible > 0 && unknownSamples === 0;
   return {
-    mechanism,
+    mechanism: normalizedMechanism,
     windowMs,
     samples,
     eligible,

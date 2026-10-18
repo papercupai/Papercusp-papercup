@@ -540,7 +540,7 @@ describe('P040 retained Codex unkeyed wake persistence (real PG)', () => {
     const id = await seedAdv({ coordOwnerId: owner, sessionId: DEAD_ID, ended: true });
     await admin`
       UPDATE harness_shared.adv_sessions
-         SET agent = 'codex', exit_code = 1, ended_by = 'self', ended_signal = 'SIGTERM',
+         SET agent = 'codex', exit_code = 1, ended_by = 'signal', ended_signal = 'SIGTERM',
              shutdown_accepted_at = now()
        WHERE id = ${id}
     `;

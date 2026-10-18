@@ -92,8 +92,35 @@
  * the live classifier; its Python hook mirror has behavioural parity tests. */
 export const DAMAGED_EVENT_WAKE_RE = /^\s*[a-f0-9]{1,16}⟧\r?\n[ \t]*\[await-event\][ \t]+[^\r\n]+?[ \t]+fired[ \t]+—/;
 
+/** WI-6554700010017528: Claude Code delivers another session's SendMessage as
+ * a user turn. The UserPromptSubmit hook receives it starting at the
+ * `<cross-session-message from="…" from-name="…">` tag; the recorded
+ * transcript turn carries the client's `Another Claude session sent a
+ * message:` line before that tag. Either way it is a PEER agent's text, which
+ * no Papercusp injector can enrol, and with no rule for it the classifiers fell
+ * through to OWNER: six peer messages became owner directives on 2026-10-18
+ * (#1998, #2000–#2004). Head-anchored and requires the `from="…"` attribute, so
+ * an owner quoting the tag mid-sentence keeps their turn. Shared with the live
+ * classifier; the Python hook mirror has behavioural parity tests. */
+export const CROSS_SESSION_MESSAGE_RE =
+  /^\s*(?:Another Claude session sent a message:\s*)?<cross-session-message\s+from="[^"\r\n]*"/i;
+
+/** The sender named by a cross-session message's opening tag, or null when the
+ * turn is not one. `fromName` is the sending session's display name (for
+ * example `papercusp-ec`); `from` is its transport address. */
+export function parseCrossSessionSender(text: string): { from: string; fromName: string | null } | null {
+  const head = (text ?? '').slice(0, CLASSIFY_HEAD_CHARS);
+  if (!CROSS_SESSION_MESSAGE_RE.test(head)) return null;
+  const tag = head.match(/<cross-session-message\b[^>]*>?/i)?.[0] ?? '';
+  return {
+    from: tag.match(/\sfrom="([^"\r\n]*)"/i)?.[1] ?? '',
+    fromName: tag.match(/\sfrom-name="([^"\r\n]*)"/i)?.[1] ?? null,
+  };
+}
+
 export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   DAMAGED_EVENT_WAKE_RE,
+  CROSS_SESSION_MESSAGE_RE,
   // Claude's background-task completion banner (self-labels "NOT USER INPUT").
   /\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]/i,
   // Claude's app-level usage-limit reset continuation (no Papercusp injector
@@ -260,7 +287,10 @@ export const CLASSIFY_HEAD_CHARS = 240;
 // rewritten from agent-injected to `unenrolled-origin` (~18k Claude rows). The
 // backfill now restores the closing tag from the turn's tail; the bump makes the
 // wrongly downgraded rows findable so the sweep re-derives them.
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 8;
+// 8 → 9 (WI-6554700010017528): Claude Code cross-session messages (a peer
+// session's SendMessage) were persisted as `unenrolled-origin` and captured as
+// owner directives. Make the existing rows findable for reclassification.
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 9;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {

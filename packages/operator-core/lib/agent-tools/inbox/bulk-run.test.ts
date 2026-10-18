@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
   settleRunPhase: vi.fn(),
   callPlansRead: vi.fn(),
   callPlansReadWorkspace: null as string | null,
+  getMessagesByIds: vi.fn(),
   readInboxWindow: vi.fn(),
   readAckedMsgIds: vi.fn(),
   inProcessCall: vi.fn(),
@@ -58,6 +59,7 @@ vi.mock('../../attention/automation-policy', async (importOriginal) => ({
 }));
 vi.mock('../plans/read-dispatch', () => ({ callPlansRead: h.callPlansRead }));
 vi.mock('../coordination/messages', () => ({
+  getMessagesByIds: h.getMessagesByIds,
   readInboxWindow: h.readInboxWindow,
   readAckedMsgIds: h.readAckedMsgIds,
 }));
@@ -126,6 +128,7 @@ beforeEach(() => {
     groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
   });
   h.callPlansReadWorkspace = null;
+  h.getMessagesByIds.mockResolvedValue(new Map());
   h.readInboxWindow.mockResolvedValue({ entries: [], exhausted: true, rowsScanned: 0, pages: 0 });
   h.readAckedMsgIds.mockResolvedValue(new Set<string>());
   h.inProcessCall.mockReturnValue(h.innerCall);
@@ -389,8 +392,8 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
     };
     h.getRunItems.mockResolvedValue([stale]);
     h.callPlansRead.mockResolvedValue({ groups: [] });
-    h.readInboxWindow.mockResolvedValue({
-      entries: [{
+    h.getMessagesByIds.mockResolvedValue(new Map([
+      ['older-message', {
         msg_id: 'older-message',
         ts: '2026-10-16T12:00:00.000Z',
         kind: 'message',
@@ -399,20 +402,13 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
         summary: 'An older selected message',
         body: 'The message is still live.',
       }],
-      exhausted: true,
-      rowsScanned: 1,
-      pages: 1,
-    });
+    ]));
 
     const result = body(
       await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never),
     );
 
-    expect(h.readInboxWindow).toHaveBeenCalledWith(
-      'human',
-      { kinds: ['message'] },
-      expect.any(Function),
-    );
+    expect(h.getMessagesByIds).toHaveBeenCalledWith(['older-message']);
     expect(result).toMatchObject({
       ok: true,
       items: [expect.objectContaining({
@@ -1026,8 +1022,8 @@ describe('inbox:bulk-run-act authority boundary', () => {
     };
     h.getRunItems.mockResolvedValue([activeItem]);
     h.callPlansRead.mockResolvedValue({ groups: [] });
-    h.readInboxWindow.mockResolvedValue({
-      entries: [{
+    h.getMessagesByIds.mockResolvedValue(new Map([
+      ['older-message', {
         msg_id: 'older-message',
         ts: '2026-10-16T12:00:00.000Z',
         kind: 'message',
@@ -1036,10 +1032,7 @@ describe('inbox:bulk-run-act authority boundary', () => {
         summary: 'An older selected message',
         body: 'The message is still live.',
       }],
-      exhausted: true,
-      rowsScanned: 1,
-      pages: 1,
-    });
+    ]));
     h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => ({
       actionResult: await input.execute(),
       item: { ...activeItem, outcome: 'auto_resolved', actionId: input.actionId, rationale: input.rationale },

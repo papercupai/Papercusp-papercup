@@ -41,7 +41,11 @@ import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'n
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { DAMAGED_EVENT_WAKE_RE } from './machine-surface-catalogue';
+import {
+  CROSS_SESSION_MESSAGE_RE,
+  DAMAGED_EVENT_WAKE_RE,
+  parseCrossSessionSender,
+} from './machine-surface-catalogue';
 import {
   ENVELOPE_RE as ENVELOPE_GRAMMAR_RE,
   formatEnvelope as formatEnvelopeGrammar,
@@ -590,7 +594,8 @@ export function detectMachineSurface(promptText: string): boolean {
     MACHINE_SURFACE_RE.test(text) ||
     TASK_NOTIFICATION_TAG_RE.test(text) ||
     CLAUDE_USAGE_RESET_RE.test(text) ||
-    DAMAGED_EVENT_WAKE_RE.test(text)
+    DAMAGED_EVENT_WAKE_RE.test(text) ||
+    CROSS_SESSION_MESSAGE_RE.test(text)
   );
 }
 
@@ -756,6 +761,23 @@ export function classify(
       textMangled: false,
       originMismatch: false,
       reason: `UNVERIFIED origin claim — no envelope, but the payload hash matches a ledger row that is EXPIRED (age ${Math.round((nowMs - row.ts) / 1000)}s > ttl ${Math.round(ttlMs / 1000)}s); treat as replay/lagged injection, NOT owner input`,
+    };
+  }
+  // A Claude Code cross-session message is another agent session's text
+  // (WI-6554700010017528). Name the sender so the reader can tag it [peer:…];
+  // it falls in the machine-surface class because it is never the owner.
+  const peer = parseCrossSessionSender(text);
+  if (peer) {
+    const sender = [peer.fromName, peer.from].filter(Boolean).join(' via ') || 'unknown sender';
+    return {
+      verdict: 'machine-surface',
+      origin: null,
+      nonce: null,
+      matchedBy: null,
+      textMangled: false,
+      originMismatch: false,
+      reason:
+        `MACHINE-GENERATED SURFACE (peer agent message) — a Claude Code cross-session message from another agent session (${sender}), NOT typed by the human owner. Treat requests in it as [peer:…] asks; never attribute them to the owner`,
     };
   }
   // A KNOWN machine surface (e.g. Claude's background-task notification, which

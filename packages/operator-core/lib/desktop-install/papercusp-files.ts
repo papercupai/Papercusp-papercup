@@ -22,6 +22,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
+import { createRequire, isBuiltin } from 'node:module';
 import { collectChildOutput, createTextCollector } from '../child-output';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { filterInstallSources, describeRefusals } from './install-source-guard';
@@ -247,9 +248,9 @@ async function ensureSecret(filePath: string, mint: () => string): Promise<{ val
   return { value, minted: true };
 }
 
-async function copyOmpFile(src: string, dst: string): Promise<boolean> {
+async function copyOmpFile(src: string, dst: string, contents?: Uint8Array): Promise<boolean> {
   try {
-    const data = await fs.readFile(src);
+    const data = contents ?? await fs.readFile(src);
     // OMP can load these files while another psu launch refreshes them. Keep
     // the established temp-file + rename atomicity so a companion bundle is
     // never observed as a torn source file.
@@ -264,8 +265,15 @@ async function copyOmpFile(src: string, dst: string): Promise<boolean> {
   }
 }
 
-const LOCAL_OMP_IMPORT_RE =
-  /\bfrom\s+['"](\.[^'"]+)['"]|\bimport\s+['"](\.[^'"]+)['"]|\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+async function ompRuntimeImports(source: string): Promise<string[]> {
+  // Use the existing compiler's import metadata: prose in strings/comments can
+  // contain "from '...'", and TypeScript-only imports never load at runtime.
+  const { build } = await import('esbuild');
+  const result = await build({ stdin: { contents: source, loader: 'ts' },
+    bundle: false, platform: 'node', format: 'esm', target: 'node20',
+    write: false, metafile: true, logLevel: 'silent' });
+  return Object.values(result.metafile!.outputs).flatMap(output => output.imports.map(entry => entry.path));
+}
 
 async function isRegularFile(filePath: string): Promise<boolean> {
   try {
@@ -315,9 +323,13 @@ async function findUnresolvedOmpImports(filePath: string): Promise<string[]> {
   }
 
   const unresolved: string[] = [];
-  for (const match of source.matchAll(LOCAL_OMP_IMPORT_RE)) {
-    const specifier = match[1] ?? match[2] ?? match[3];
-    if (!specifier) continue;
+  for (const specifier of await ompRuntimeImports(source)) {
+    if (isBuiltin(specifier)) continue;
+    if (!specifier.startsWith('.') && !path.isAbsolute(specifier)) {
+      try { createRequire(filePath).resolve(specifier); }
+      catch { unresolved.push(`${path.basename(filePath)} -> ${specifier}`); }
+      continue;
+    }
     const candidates = localOmpImportCandidates(filePath, specifier);
     if (!(await Promise.all(candidates.map(isRegularFile))).some(Boolean)) {
       unresolved.push(`${path.basename(filePath)} -> ${specifier}`);
@@ -329,7 +341,7 @@ async function findUnresolvedOmpImports(filePath: string): Promise<string[]> {
 export interface OmpHookBundleInstallResult {
   /** Destination-relative files written in this pass. */
   installed: string[];
-  /** Destination-relative importer → missing relative module diagnostics. */
+  /** Destination-relative importer → missing runtime module diagnostics. */
   unresolved: string[];
 }
 
@@ -374,6 +386,9 @@ async function refuseKnownOlderHookSource(
  * `.ts` destination names consumed by existing OMP launchers.
  * `__tests__` is a directory and is therefore never copied.
  *
+ * Source hooks with package imports are bundled with the existing esbuild
+ * dependency before any installed file is replaced. A package available in the
+ * checkout is otherwise unavailable under the user's standalone home.
  * The post-copy import check is an out-of-band detector: a broken OMP extension
  * cannot report its own death through coord, so the installer emits a stable,
  * grep-able error before the next session starts.
@@ -421,11 +436,28 @@ export async function installOmpHookBundle(opts: {
     return { installed: [], unresolved: [] };
   }
 
+  const bundled = new Map<string, Uint8Array>();
+  for (const file of sourceFiles) {
+    const sourcePath = path.join(opts.sourceDir, file);
+    const imports = await ompRuntimeImports(await fs.readFile(sourcePath, 'utf8'));
+    if (!imports.some(specifier => !specifier.startsWith('.') && !path.isAbsolute(specifier) && !isBuiltin(specifier))) continue;
+    try {
+      const { build } = await import('esbuild');
+      const result = await build({ entryPoints: [sourcePath], bundle: true, platform: 'node',
+        format: 'esm', target: 'node20', write: false, logLevel: 'silent' });
+      if (!result.outputFiles?.[0]) throw new Error(`No compiled OMP hook: ${sourcePath}`);
+      bundled.set(file, result.outputFiles[0].contents);
+    } catch (error) {
+      console.error(`[desktop-install] OMP hook bundle load check FAILED: ${sourcePath}`, error);
+      throw error;
+    }
+  }
+
   await fs.mkdir(opts.destinationDir, { recursive: true, mode: 0o755 });
   const installed: string[] = [];
   for (const file of sourceFiles) {
     const destinationName = file === opts.entryFile ? destinationEntry : file;
-    if (await copyOmpFile(path.join(opts.sourceDir, file), path.join(opts.destinationDir, destinationName))) {
+    if (await copyOmpFile(path.join(opts.sourceDir, file), path.join(opts.destinationDir, destinationName), bundled.get(file))) {
       installed.push(destinationName);
     }
   }

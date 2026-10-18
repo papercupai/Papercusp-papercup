@@ -788,6 +788,12 @@ describe('destructiveGitCommandOp (command-position destructive git match)', () 
     ['stash pop', 'git stash pop', 'git stash'],
     ['stash apply', 'git stash apply', 'git stash'],
     ['stash push with an explicit `--` path (no longer exempt)', 'git stash push -- path/to/file.ts', 'git stash'],
+    // WI-6554700010017558: drop/clear delete shared-stack entries; branch
+    // switches the shared tree's branch.
+    ['stash drop', 'git stash drop', 'git stash'],
+    ['stash branch', 'git stash branch wip-x', 'git stash'],
+    ['stash clear', 'git stash clear', 'git stash'],
+    ['stash listing-prefixed subcommand is not mistaken for list', 'git stash listx', 'git stash'],
   ])('flags %s', (_label, command, expectedOp) => {
     expect(destructiveGitCommandOp(command)).toBe(expectedOp);
   });
@@ -797,9 +803,7 @@ describe('destructiveGitCommandOp (command-position destructive git match)', () 
     ['restore of an explicit single file', 'git restore path/to/file.ts'],
     ['stash list', 'git stash list'],
     ['stash show', 'git stash show'],
-    ['stash drop', 'git stash drop'],
-    ['stash branch', 'git stash branch wip-x'],
-    ['stash clear', 'git stash clear'],
+    ['stash show of a named entry', 'git stash show -p stash@{1}'],
     ['clean dry-run (no f flag)', 'git clean -n'],
     ['reset (no --hard)', 'git reset HEAD~1'],
     ['reset --soft', 'git reset --soft HEAD~1'],

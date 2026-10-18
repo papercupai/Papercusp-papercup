@@ -231,7 +231,8 @@ describe('installPapercuspFiles', () => {
       const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
       // The test runner may itself be a psu session with an explicit launcher.
       // That override outranks both roots and would execute the real agent CLI.
-      const baseEnv = { ...process.env, PAPERCUSP_PSU_LAUNCHER: '', PAPERCUSP_RELEASE_ROOT: releaseRoot };
+      const baseEnv = { ...process.env, PAPERCUSP_PSU_LAUNCHER: '',
+        PAPERCUSP_CANONICAL_TREE: '', PAPERCUSP_RELEASE_ROOT: releaseRoot };
 
       const integration = await execFileAsync(result.psuPath, [], {
         env: { ...baseEnv, PAPERCUSP_INTEGRATION_ROOT: integrationRoot },

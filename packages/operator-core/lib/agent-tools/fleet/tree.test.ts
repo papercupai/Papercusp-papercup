@@ -18,7 +18,14 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ workspaceId: 'ws-1' })) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
-vi.mock('../../fleet/spawn-tree', () => ({ getSubtree: vi.fn() }));
+vi.mock('../../fleet/spawn-tree', async (original) => ({
+  ...(await original<typeof import('../../fleet/spawn-tree')>()),
+  getSubtree: vi.fn(),
+  // Keep every export available to transitive imports in the shared Vitest
+  // worker while isolating the one read this handler test controls.
+  recordSpawnAccountRoute: vi.fn(async () => {}),
+  spawnAccountRouteFromLaunch: vi.fn(() => null),
+}));
 vi.mock('../../fleet/nursery', () => ({ assertCanComplete: vi.fn() }));
 vi.mock('../../fleet/spawn-reclaim', () => ({ isPossiblyWedged: vi.fn(() => false) }));
 

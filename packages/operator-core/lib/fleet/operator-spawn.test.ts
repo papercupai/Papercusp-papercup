@@ -81,7 +81,15 @@ vi.mock('../dbos/orchestrator-runner', () => ({
   invokeTimeoutMs: vi.fn(() => 2_700_000),
 }));
 vi.mock('./supervision', () => ({ superviseCrash: vi.fn() }));
-vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
+vi.mock('./spawn-tree', () => ({
+  recordSpawn: vi.fn(),
+  finishSpawn: vi.fn(),
+  // Keep the mock contract aligned with spawn-tree's account-route exports.
+  // Transitive launch paths can load this mock even when these tests exercise
+  // only the legacy record/finish calls.
+  recordSpawnAccountRoute: vi.fn(async () => {}),
+  spawnAccountRouteFromLaunch: vi.fn(() => null),
+}));
 vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));
 // Per-hive override resolver (P-012/P-013) is a PG-backed spawn dep like its siblings —
 // mock it to a no-op so the unit tests don't touch PG. vi.mock intercepts the dynamic

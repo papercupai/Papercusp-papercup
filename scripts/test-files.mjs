@@ -4130,13 +4130,22 @@ export async function main(
       return TEST_FILE_EXIT_NOT_MEASURED;
     }
     if (summary.testsExecuted === null || summary.testsUnmeasuredGroups > 0) {
-      // Fail OPEN — never fabricate a red from an unreadable count (a JSON reporter writes no
-      // summary row). Say so out loud so the hole cannot silently reopen.
+      // An unreadable count is UNKNOWN, not zero and not proof that the filter matched.
+      // Preserve measured failures and existing timeout/finalization diagnostics, but never
+      // turn an otherwise successful runner exit into a passing verdict without case counts.
       console.error(
         `TEST_FILE_NAME_FILTER_UNVERIFIED pattern=${JSON.stringify(nameFilter.pattern)}; could not read vitest's ` +
-          "`Tests` summary row, so whether the name filter executed any tests is UNVERIFIED — the status below " +
-          `does not rule out a zero-match run${strayNote}`,
+          "report or `Tests` summary row, so whether the name filter executed any tests is UNKNOWN; " +
+          `a successful runner exit does not rule out a zero-match run${strayNote}`,
       );
+      if (!summary.anyFailed && !summary.anyTimedOut) {
+        console.error(
+          `TEST_FILE_NOT_MEASURED requested=${summary.requested} executed=${summary.executed} ` +
+            `matched=${summary.matched} status=not-measured reason=name-filter-execution-unverified ` +
+            'testsExecuted=unknown; refusing to report a verdict without readable named-test execution counts.',
+        );
+        return summary.anyFinalizationError ? TEST_FILE_EXIT_FINALIZATION_ERROR : TEST_FILE_EXIT_NOT_MEASURED;
+      }
     }
   }
 

@@ -28,6 +28,7 @@ const FIXTURE_HOOK_TIMEOUT_MS = 420_000;
 // Headless runners may provide no usable terminal. Both SSH entrypoints
 // exercise an interactive tmux session, so give them the same terminal contract.
 const FIXTURE_TERM = 'xterm-256color';
+const REMOTE_INTERACTIVE_TERM = 'tmux-256color';
 // Killing the Docker CLI does not cancel the daemon's create/start/stop/rm.
 // The external owner survives the runner's cgroup kill and joins each daemon
 // outcome before removing the exact labelled container and its private keys.
@@ -194,7 +195,7 @@ test('native psu entrypoint selects the saved machine and preserves remote host 
   expect(result.output).toContain('"forwarded": "1"');
   expect(result.output).toContain('"cwd": "/root"');
   expect(result.output).toContain(`"hostname": ${JSON.stringify(remoteHostname)}`);
-  expect(result.output).toContain(`"term": ${JSON.stringify(FIXTURE_TERM)}`);
+  expect(result.output).toContain(`"term": ${JSON.stringify(REMOTE_INTERACTIVE_TERM)}`);
   expect(result.output).toContain('"stdin": "native input $value\\n"');
 }, 40_000);
 
@@ -215,7 +216,7 @@ test('runs remote psu, serves the private GUI and refuses a revoked or offline c
   expect(terminalOutput).toContain('"argv": ["--resume=session 1", "--label=quoted value"]');
   expect(terminalOutput).toContain('"forwarded": "1"');
   expect(terminalOutput).toContain('"cwd": "/root"');
-  expect(terminalOutput).toContain(`"term": ${JSON.stringify(FIXTURE_TERM)}`);
+  expect(terminalOutput).toContain(`"term": ${JSON.stringify(REMOTE_INTERACTIVE_TERM)}`);
 
   let browserUrl = '';
   const browser = { ...deps, openBrowser: (url: string) => { browserUrl = url; },

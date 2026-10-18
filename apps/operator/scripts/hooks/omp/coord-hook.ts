@@ -1555,8 +1555,12 @@ const GIT_CHECKOUT_DOT_RE = new RegExp(`^${GIT_CMD_PREFIX}(?:checkout|restore)\\
 // is on top of that shared stack to the working tree — the same "clobbers a
 // peer's uncommitted state" hazard as reset --hard/checkout . — so deny them
 // unconditionally, same as a scoped `push` (no more ` -- ` exemption below).
-// `list`/`show` stay exempt (read-only); `drop`/`branch`/`clear` unchanged.
-const GIT_STASH_RE = new RegExp(`^${GIT_CMD_PREFIX}stash\\b(?!\\s+(?:list|show|drop|branch|clear))`);
+// Only `list`/`show` stay exempt (read-only). WI-6554700010017558: `drop`/
+// `clear` irrecoverably delete entries on that shared stack (possibly a peer's
+// work) and `branch` checks out a new branch in the shared tree, so all three
+// are denied like a bare `git stash`. Mirrors cc/pretooluse-bash-resource-gate.sh
+// and the always-worn kernel rail (agent-identities/kernel-safety-rails.ts).
+const GIT_STASH_RE = new RegExp(`^${GIT_CMD_PREFIX}stash\\b(?!\\s+(?:list|show)\\b)`);
 
 /** Returns the offending op name (e.g. `'git reset --hard'`) if `command`
  *  contains a destructive tree-wide git op at command position in any

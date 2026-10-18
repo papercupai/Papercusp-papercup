@@ -5565,6 +5565,9 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     expect(identity).toMatchObject({ ownerId: 'system:git-sync' });
     expect(msg).toMatchObject({ to: ['*'], category: 'git-sync' });
     expect((msg as { summary: string }).summary).toContain('human is needed');
+    // The alert is workspace-wide; include the emitting install slug so a
+    // quarantine from another harness cannot be misattributed to the reader's tree.
+    expect((msg as { summary: string }).summary).toContain('git-sync: [papercup]');
     expect(upsertConditionWorkItemMock).toHaveBeenCalledTimes(1);
     expect(upsertConditionWorkItemMock).toHaveBeenCalledWith(
       expect.stringMatching(/^git-sync-content:papercup:[a-f0-9]{24}$/),

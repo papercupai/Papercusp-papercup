@@ -94,8 +94,13 @@ async function retryAuditRead<T>(read: () => Promise<T>, wait: (ms: number) => P
     try { return await read(); }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const refused = message.includes('operator rejected the request before dispatch (loop_pressure_critical)')
+      const admissionRefused = message.includes('operator rejected the request before dispatch (loop_pressure_critical)')
         && message.includes('"reason":"loop_pressure_critical"');
+      // This exact MCP authentication refusal is emitted before dispatch. Retrying
+      // re-runs authentication; it never bypasses it or replays an unknown write.
+      const verifierRefused = message.includes('authenticated audit read exit 1: MCP_ERROR:')
+        && message.includes('request_rejected: superuser_native_session_verifier_unavailable');
+      const refused = admissionRefused || verifierRefused;
       const interruptedRead = frozenReadOnly && message.includes('authenticated audit read exit 4:')
         && /UND_ERR_SOCKET|ECONNRESET|ECONNREFUSED/.test(message);
       if (attempt === 5 || (!refused && !interruptedRead)) throw error;
@@ -116,7 +121,9 @@ describe('R-1 public pager transport controls', () => {
     expect(waits).toEqual([1000, 2000]);
   });
   it('fails immediately on a semantic error or an unknown dispatch outcome', async () => {
-    for (const message of ['record-stream-changed', 'authenticated audit read exceeded 90s', 'connection lost']) {
+    for (const message of ['record-stream-changed', 'authenticated audit read exceeded 90s', 'connection lost',
+      'superuser_native_session_verifier_unavailable', 'request_rejected: superuser_native_session_missing',
+      'authenticated audit read exit 1: MCP_ERROR: request_rejected: superuser_native_session_mismatch']) {
       let attempts = 0;
       await expect(retryAuditRead(async () => { attempts++; throw new Error(message); }, async () => {
         throw new Error('must not retry');
@@ -129,6 +136,19 @@ describe('R-1 public pager transport controls', () => {
     await expect(retryAuditRead(async () => {
       attempts++; throw new Error('operator rejected the request before dispatch (loop_pressure_critical) {"reason":"loop_pressure_critical"}');
     }, async () => {})).rejects.toThrow('loop_pressure_critical');
+    expect(attempts).toBe(6);
+  });
+  it('re-authenticates an exact verifier refusal before dispatch and bounds persistent failure', async () => {
+    const refusal = 'authenticated audit read exit 1: MCP_ERROR: {"content":[{"type":"text","text":"request_rejected: superuser_native_session_verifier_unavailable"}],"isError":true}';
+    let attempts = 0;
+    expect(await retryAuditRead(async () => {
+      if (++attempts === 1) throw new Error(refusal);
+      return { offset: 2034 };
+    }, async () => {})).toEqual({ offset: 2034 });
+    expect(attempts).toBe(2);
+    attempts = 0;
+    await expect(retryAuditRead(async () => { attempts++; throw new Error(refusal); }, async () => {}))
+      .rejects.toThrow('superuser_native_session_verifier_unavailable');
     expect(attempts).toBe(6);
   });
   it('replays an interrupted frozen read only when the caller explicitly declares no writes', async () => {

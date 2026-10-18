@@ -131,6 +131,12 @@ describe('always-worn kernel safety rails (R-11)', () => {
       bash('git stash'),
       bash('git stash pop'),
       { tool: 'exec_command', input: { cmd: 'git stash push -- src/a.ts' }, client: 'codex' },
+      // WI-6554700010017558: drop/clear delete shared-stack entries; branch
+      // switches the shared tree's branch. Only list/show are exempt.
+      bash('git stash drop'),
+      bash('git stash clear'),
+      bash('git stash branch wip-x'),
+      bash('git stash listx'),
     ],
   };
 

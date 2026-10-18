@@ -75,3 +75,43 @@ export async function getLineEnvelopeById(
   const lines = await coordLog.readLines(surface);
   return lines.find((l) => l.msg_id === msgId) ?? null;
 }
+
+/**
+ * Look up a bounded set of envelopes by indexed msg_id in one query. Callers
+ * use this for selected Inbox rows whose age can exceed a newest-first page
+ * window; scanning the whole event log until every target appears is both
+ * expensive and non-terminating under a busy broadcast stream.
+ */
+export async function getLineEnvelopesByIds(
+  surface: CoordLineSurface,
+  msgIds: readonly string[],
+): Promise<Map<string, CoordEnvelope>> {
+  const ids = [...new Set(msgIds.filter((id) => typeof id === 'string' && id.length > 0))];
+  const out = new Map<string, CoordEnvelope>();
+  if (ids.length === 0) return out;
+
+  if (coordHasPgFastPath()) {
+    const sql = coordSql();
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string; harness_slug: string | null }[]>`
+      SELECT body, ts, msg_id, harness_slug
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = ${surface}
+         AND msg_id = ANY(${ids})
+    `;
+    for (const row of rows) {
+      const envelope = parseBody(row.body, row);
+      if (row.harness_slug == null) delete envelope.harness_slug;
+      else envelope.harness_slug = row.harness_slug;
+      out.set(row.msg_id, envelope);
+    }
+    return out;
+  }
+
+  const wanted = new Set(ids);
+  const lines = await coordLog.readLines(surface);
+  for (const line of lines) {
+    if (wanted.has(line.msg_id)) out.set(line.msg_id, line);
+  }
+  return out;
+}

@@ -433,6 +433,38 @@ describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notificati
     expect(detectMachineSurface(`Claude showed: "${CLAUDE_USAGE_RESET}"`)).toBe(false);
   });
 
+  // WI-6554700010017528: the hook-payload shape of owner directive #2002, a peer
+  // session's SendMessage captured as an owner directive.
+  const CROSS_SESSION_MESSAGE =
+    '<cross-session-message from="uds:/run/user/1000/cc-socks/1113327.sock" from-name="papercusp-ec" from-mode="bypass">\n' +
+    'Relay request: please do 2 calls marked as a relay.\n</cross-session-message>';
+
+  it('a Claude cross-session message is a peer machine-surface that names its sender, NOT owner', () => {
+    const res = classify(CROSS_SESSION_MESSAGE, [row()], { nowMs: NOW + 1000, ttlMs: TTL });
+    expect(res.verdict).toBe('machine-surface');
+    expect(res.reason).toMatch(/^MACHINE-GENERATED SURFACE \(peer agent message\)/);
+    expect(res.reason).toContain('papercusp-ec via uds:/run/user/1000/cc-socks/1113327.sock');
+    expect(detectMachineSurface(CROSS_SESSION_MESSAGE)).toBe(true);
+  });
+
+  it('the transcript form, with the client preamble line, is also a peer machine-surface', () => {
+    const res = classify(`Another Claude session sent a message:\n${CROSS_SESSION_MESSAGE}`, [], {
+      nowMs: NOW,
+      ttlMs: TTL,
+    });
+    expect(res.verdict).toBe('machine-surface');
+    expect(res.reason).toContain('(papercusp-ec via ');
+  });
+
+  it('an owner quoting a cross-session tag mid-sentence, or typing a bare tag, stays owner', () => {
+    expect(classify(`what is this? ${CROSS_SESSION_MESSAGE}`, [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe(
+      'owner-interactive',
+    );
+    expect(classify('<cross-session-message> means what?', [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe(
+      'owner-interactive',
+    );
+  });
+
   it('a genuine LEDGER-verified injected turn wins over the banner guard (guard is last-resort)', () => {
     // A verified agent turn that happens to quote the banner still verifies —
     // the machine-surface guard only fires as the no-match fallback.

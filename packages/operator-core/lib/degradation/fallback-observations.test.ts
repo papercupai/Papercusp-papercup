@@ -208,6 +208,19 @@ describe('summarizeFallbackWindow', () => {
     ])).toMatchObject({ eligible: 0, appliedRate: null, populationComplete: false, unknownSamples: 0 });
   });
 
+  it('excludes stale eligible counts on historical expired gate proofs', () => {
+    const legacyExpired = { reason: 'expired', samples: 1, eligible: 62, applied: 0, unknownSamples: 0 };
+    const w = summarizeFallbackWindow('gate-pass-reuse', 3_600_000, [legacyExpired]);
+    expect(w).toMatchObject({
+      samples: 1, eligible: 0, applied: 0, knownAppliedRate: null, appliedRate: null,
+      populationComplete: false, dominantReason: null, dominantShare: null,
+    });
+    expect(w.reasons).toEqual([{
+      reason: 'expired', samples: 1, eligible: 0, applied: 0, unknownSamples: 0, fellBack: 0,
+    }]);
+    expect(summarizeFallbackWindow('other-mechanism', 3_600_000, [legacyExpired]).eligible).toBe(62);
+  });
+
   it('computes the applied rate and names the reason that dominates the fallen-back units', () => {
     const w = summarizeFallbackWindow('gate.pass-reuse', 3_600_000, [
       { reason: 'applied', samples: 3, eligible: 300, applied: 300 },

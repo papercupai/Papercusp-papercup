@@ -504,13 +504,49 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER');
   });
 
-  // Fail OPEN on an unreadable summary. A JSON reporter writes no summary row to stdout, and
-  // turning that into a red would break a legitimate invocation — the opposite, equally expensive
-  // mistake. Say so out loud instead of silently re-opening the false-green hole.
-  it('does not fabricate a red when the test count is unreadable, but says it is unverified', async () => {
-    stubVitest('{"testResults":[]}\n');
-    expect(await runMain([FILE, '--', '-t', 'anything', '--reporter=json'])).toBe(0);
+  it.each(['', '{"testResults":[]}\n', 'Tests summary unavailable\n'])(
+    'refuses an unreadable named-test count without fabricating zero or a verdict: %j',
+    async (stdout) => {
+      stubVitest(stdout);
+      expect(await runMain([FILE, '--', '-t', 'anything', '--reporter=json'])).toBe(2);
+      const err = linesFrom(errSpy);
+      expect(err).toContain('TEST_FILE_NAME_FILTER_UNVERIFIED');
+      expect(err).toContain('TEST_FILE_NOT_MEASURED');
+      expect(err).not.toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
+      expect(err).not.toContain('testsExecuted=0');
+      expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
+    },
+  );
+
+  it('preserves a measured failure when the named-test count is unreadable', async () => {
+    stubVitest(' FAIL  selected identity > beforeAll\nError: setup failed\n', 1);
+    expect(await runMain([FILE, '--', '-t', 'rejects'])).toBe(1);
     expect(linesFrom(errSpy)).toContain('TEST_FILE_NAME_FILTER_UNVERIFIED');
+    expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NOT_MEASURED');
+    expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
+    expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=failed/);
+  });
+
+  it('preserves the watchdog reason when the named-test count is unreadable', async () => {
+    stubVitest('');
+    runCapturedTestProcessMock.mockResolvedValue({
+      status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null, timedOut: true,
+    });
+    expect(await runMain([FILE, '--', '-t', 'rejects'])).toBe(2);
+    expect(linesFrom(errSpy)).toContain('a watchdog reaped at least one run');
+    expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
+  });
+
+  it('preserves a finalization error without emitting an unreadable passing verdict', async () => {
+    stubVitest('');
+    runCapturedTestProcessMock.mockResolvedValue({
+      status: 0, signal: null, stdout: '', stderr: '', error: null, timedOut: false,
+      governedFinalizationError: new Error('finalization failed'),
+    });
+    expect(await runMain([FILE, '--', '-t', 'rejects'])).toBe(3);
+    expect(linesFrom(errSpy)).toContain('TEST_FILE_FINALIZATION_ERROR');
+    expect(linesFrom(errSpy)).toContain('TEST_FILE_NOT_MEASURED');
+    expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
   });
 
   /**
@@ -571,7 +607,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
       expect(linesFrom(errSpy)).toContain('testsExecuted=0');
     });
 
-    // Fail OPEN, still. A named report that never appeared (a crashed run, a bad path) must
+    // A named report that never appeared (a crashed run, a bad path) must
     // fall back to the stdout parse rather than fabricate a zero.
     it('falls back to stdout when the named report does not exist', async () => {
       stubVitest(REAL_ROWS.partial);

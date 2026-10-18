@@ -26,6 +26,7 @@ import {
   hasMachineSurfaceMarker,
   hasSyntheticMarker,
   isUnenrolledMachineSurface,
+  parseCrossSessionSender,
 } from './machine-surface-catalogue';
 
 const regexKey = (re: RegExp): string => `${re.source}/${re.flags}`;
@@ -72,6 +73,26 @@ describe('machine-surface catalogue — predicates', () => {
     expect(isUnenrolledMachineSurface(reset)).toBe(true);
     expect(isUnenrolledMachineSurface(`Claude showed: "${reset}"`)).toBe(false);
     expect(isUnenrolledMachineSurface(`${reset} Please explain what it means.`)).toBe(false);
+  });
+
+  it('HIDES a Claude cross-session message in both recorded shapes and parses its sender (WI-6554700010017528)', () => {
+    const tag =
+      '<cross-session-message from="uds:/run/user/1000/cc-socks/957123.sock" from-name="papercusp-86" from-mode="bypass">\nConfirmed in my own log.\n</cross-session-message>';
+    const transcript = `Another Claude session sent a message:\n${tag}`;
+    expect(isUnenrolledMachineSurface(tag)).toBe(true);
+    expect(isUnenrolledMachineSurface(transcript)).toBe(true);
+    expect(parseCrossSessionSender(transcript)).toEqual({
+      from: 'uds:/run/user/1000/cc-socks/957123.sock',
+      fromName: 'papercusp-86',
+    });
+    expect(parseCrossSessionSender('<cross-session-message from="uds:/x.sock">hi')).toEqual({
+      from: 'uds:/x.sock',
+      fromName: null,
+    });
+    // An owner quoting it, or typing the tag without its from attribute, keeps the turn.
+    expect(isUnenrolledMachineSurface(`look at this: ${tag}`)).toBe(false);
+    expect(isUnenrolledMachineSurface('<cross-session-message> — what sends these?')).toBe(false);
+    expect(parseCrossSessionSender(`look at this: ${tag}`)).toBeNull();
   });
 
   it('HIDES a synthetic slash-command wrapper', () => {

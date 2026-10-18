@@ -52,6 +52,16 @@ export const SPEC_CONFORMANCE_ACTOR = 'system:spec-conformance';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
+/** Test-run rows older than one CI cadence are historical context, not current proof. */
+export const SPEC_CONFORMANCE_TEST_EVIDENCE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const SPEC_CONFORMANCE_TEST_EVIDENCE_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+function finishedAtMs(value: Date | string | null): number {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string' && value.trim()) return Date.parse(value);
+  return Number.NaN;
+}
+
 /** Fold several executed results of ONE check into one verdict: error > fail > pass. */
 export function foldVerdicts(verdicts: ReadonlyArray<ConformanceCheckVerdict>): ConformanceCheckVerdict {
   if (verdicts.length === 0 || verdicts.includes('error')) return 'error';
@@ -74,7 +84,14 @@ function foldResults(kind: EvaluatedConformanceCheck['kind'], results: ReadonlyA
 
 /** Judge a tests check from the latest repository-health run of each named file. */
 export async function judgeTestsFromLedger(
-  input: { files: readonly string[]; workspaceId: string },
+  input: {
+    files: readonly string[];
+    workspaceId: string;
+    /** Injectable clock for deterministic evidence-window tests. */
+    now?: () => Date;
+    /** Override only for focused tests; production uses the seven-day policy above. */
+    maxAgeMs?: number;
+  },
   sql: Sql = getOrgPg().sql,
 ): Promise<EvaluatedConformanceCheck> {
   const rows = (await sql`
@@ -91,6 +108,15 @@ export async function judgeTestsFromLedger(
   `) as Array<{ id: number | string; file_path: string; status: string; finished_at: Date | string | null }>;
   const byFile = new Map(rows.map((row) => [row.file_path, row] as const));
   const missing = input.files.filter((file) => !byFile.has(file));
+  const now = input.now?.() ?? new Date();
+  const nowMs = now.getTime();
+  const maxAgeMs = input.maxAgeMs ?? SPEC_CONFORMANCE_TEST_EVIDENCE_MAX_AGE_MS;
+  const stale = rows.filter((row) => {
+    const finishedMs = finishedAtMs(row.finished_at);
+    return !Number.isFinite(finishedMs)
+      || finishedMs < nowMs - maxAgeMs
+      || finishedMs > nowMs + SPEC_CONFORMANCE_TEST_EVIDENCE_MAX_FUTURE_SKEW_MS;
+  });
   const failing = rows.filter((row) => row.status !== 'pass').map((row) => `${row.file_path} (${row.status}, test_runs #${row.id})`);
   const latest = rows
     .map((row) => (row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at ?? '')))
@@ -98,8 +124,19 @@ export async function judgeTestsFromLedger(
     .at(-1);
   const measuredAt = latest || new Date().toISOString();
   const passing = rows.length - failing.length;
-  if (missing.length > 0) {
-    return { kind: 'tests', verdict: 'error', value: null, unit: 'files', measuredAt, detail: `no test-run ledger row for: ${missing.join(', ')}` };
+  if (missing.length > 0 || stale.length > 0) {
+    const unavailable = [
+      ...missing.map((file) => `${file} (no test-run ledger row)`),
+      ...stale.map((row) => `${row.file_path} (stale test-run evidence, test_runs #${row.id})`),
+    ];
+    return {
+      kind: 'tests',
+      verdict: 'error',
+      value: null,
+      unit: 'files',
+      measuredAt,
+      detail: `test-run evidence unavailable or stale: ${unavailable.join('; ')}`,
+    };
   }
   if (failing.length > 0) {
     return { kind: 'tests', verdict: 'fail', value: passing, unit: 'files', measuredAt, detail: `failing: ${failing.join('; ')}` };

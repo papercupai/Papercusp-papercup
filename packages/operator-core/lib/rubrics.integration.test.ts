@@ -3580,6 +3580,38 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.rubric.revision);
   });
 
+  it.each(['meaning', 'method'] as const)('WI-6554700010017552: preserves unrelated historical source during a targeted %s amendment', async (kind) => {
+    const seeded = await explicitAmendmentSubject(`preserve-historical-${kind}-subject`);
+    const historical = seeded.content.replace('The second outcome holds.', 'The historical second outcome includes retained snapshots.');
+    expect(historical).not.toBe(seeded.content);
+    const protectedBlock = (content: string) => {
+      const start = content.indexOf('**R-2 — Second outcome.**');
+      expect(start).toBeGreaterThan(-1);
+      const end = content.indexOf('\n## ', start);
+      return content.slice(start, end < 0 ? undefined : end);
+    };
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${historical}, content_hash=${hashPlanContent(historical)}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const amendment = {
+      rubricId: seeded.rubricSlug, actorId: 'targeted-amendment-author', reason: 'Change only the first requirement; retain the second historical source.',
+      expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision,
+      criterion: { key: seeded.rubric.criteria[0]!.key, field: kind === 'meaning' ? 'model' as const : 'method' as const,
+        mode: 'replace' as const, text: kind === 'meaning' ? 'The first amended outcome holds.' : 'Run the first updated fixture and retain its result.' },
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ requirementsDrift: {
+      rerenderedOnApply: ['R-1'],
+      entries: expect.arrayContaining([{ barKey: 'R-2', changedByAmendment: false, kind: 'text-differs', fields: ['model'] }]),
+    } });
+    await rubrics.amendRubric({ ...amendment, ...(kind === 'meaning' ? { approvalRef: await postApproval(amendment) } : {}) });
+    const [row] = await db.adminSql`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(protectedBlock(row!.content)).toBe(protectedBlock(historical));
+    expect(row!.content).toContain(amendment.criterion.text);
+    const after = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(after.criteria[1]).toEqual(seeded.rubric.criteria[1]);
+  });
+
   it('repairs stale explicit Requirements on an unchanged amendment without changing BAR meaning', async () => {
     const seeded = await explicitAmendmentSubject('stale-requirement-repair-subject');
     const { parseRequirementBars } = await import('./acceptance-bar-seed');

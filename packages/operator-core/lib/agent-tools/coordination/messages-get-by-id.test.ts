@@ -22,7 +22,7 @@ vi.mock('./log', () => ({
   coordHasPgFastPath: () => fastPathState.on,
 }));
 
-import { getMessageById } from './messages';
+import { getMessageById, getMessagesByIds } from './messages';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -97,6 +97,18 @@ describe('getMessageById (WI-3832)', () => {
     fastPathState.on = true;
     sqlMock.mockImplementationOnce(async () => []);
     expect(await getMessageById('nope')).toBeNull();
+    expect(readLinesMock).not.toHaveBeenCalled();
+  });
+
+  it('PG fast path: batch lookup finds selected ids without scanning a newest-first window', async () => {
+    fastPathState.on = true;
+    sqlMock.mockImplementationOnce(async () => [
+      { body: { msg_id: 'one', from: 'a', to: ['human'], kind: 'message' }, ts: 't', msg_id: 'one', harness_slug: null },
+      { body: { msg_id: 'two', from: 'a', to: ['human'], kind: 'message' }, ts: 't', msg_id: 'two', harness_slug: null },
+    ]);
+    const found = await getMessagesByIds(['one', 'two', 'one']);
+    expect([...found.keys()]).toEqual(['one', 'two']);
+    expect(sqlMock).toHaveBeenCalledTimes(1);
     expect(readLinesMock).not.toHaveBeenCalled();
   });
 
