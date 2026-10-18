@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
 import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, codexSelectionFromArgv, CORPUS_FILE, corpusFileFromArgv, loadCorpus, recordedWorkDir, recordingLimitFromArgv, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+import { capacityCacheRoot } from './host-admission';
 
 describe('batch recording request allowance', () => {
   const selection = { model: 'gpt-6-luna', effort: 'low' as const };
@@ -34,6 +35,76 @@ describe('default recording placement', () => {
     expect(recordedWorkDir('placement-control')).toBe(path.join(root, 'work', 'placement-control'));
     expect(recordedWorkDir('placement-control', '/explicit/cache'))
       .toBe('/explicit/cache/work/placement-control');
+  });
+
+  it.skipIf(platform() !== 'linux')('uses the real recorder CLI default data checkout before starting the local CLI fixture', () => {
+    const cache = capacityCacheRoot(__dirname);
+    expect(cache).toBe('/mnt/data/agent-capacity');
+    expect(statSync('/mnt/data').dev).not.toBe(statSync('/').dev);
+    const preparedRoot = path.join(cache, 'prepared');
+    mkdirSync(preparedRoot, { recursive: true });
+    const prepared = realpathSync(mkdtempSync(path.join(preparedRoot, 'recorder-cli-')));
+    const repo = path.basename(prepared);
+    const taskId = repo;
+    const fixture = mkdtempSync(path.join(tmpdir(), 'recorder-cli-fixture-'));
+    const bin = path.join(fixture, 'bin');
+    const out = path.join(fixture, 'recordings');
+    mkdirSync(bin);
+    writeFileSync(path.join(prepared, 'README'), 'prepared recorder source');
+    const sha = 'a'.repeat(40);
+    // Only Git metadata and the model CLI are fixtures. The recorder entrypoint,
+    // storage admission, native cp, process cwd and filesystem writes are real.
+    writeFileSync(path.join(bin, 'git'), '#!/usr/bin/env node\n' +
+      `if (process.argv.includes('rev-parse')) console.log('${sha}');\n`);
+    writeFileSync(path.join(bin, 'claude'), `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv.includes('--version')) { console.log('local-placement-fixture'); process.exit(0); }
+const placement = { cwd: process.cwd(), device: fs.statSync('.').dev, before: fs.readFileSync('README', 'utf8') };
+fs.writeFileSync('README', 'private recorder write');
+placement.after = fs.readFileSync('README', 'utf8');
+console.log(JSON.stringify(placement));
+`);
+    chmodSync(path.join(bin, 'git'), 0o755);
+    chmodSync(path.join(bin, 'claude'), 0o755);
+    const tasks = path.join(fixture, 'tasks.json');
+    writeFileSync(tasks, JSON.stringify({ version: 1, suffix: '',
+      timeoutSec: { light: 5, typical: 5, heavy: 5 },
+      repos: { [repo]: { sha, kind: 'test' } },
+      tasks: [{ id: taskId, repo, profile: 'light', prompt: 'Measure local placement.' }],
+    }));
+    try {
+      const result = spawnSync(process.execPath, ['--import', 'tsx', path.join(__dirname, 'record-session.ts'),
+        '--tasks-file', tasks, '--cli', 'claude', '--tasks', taskId,
+        '--isolation', 'none', '--out', out, '--keep-work', '--upstream', 'http://127.0.0.1:1'], {
+        env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, NODE_OPTIONS: '', PC_HEAVY_BYPASS: '1' },
+        encoding: 'utf8', timeout: 30_000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const sessions = readdirSync(out);
+      expect(sessions).toHaveLength(1);
+      const session = path.join(out, sessions[0]!);
+      const meta = JSON.parse(readFileSync(path.join(session, 'meta.json'), 'utf8'));
+      expect(meta).toMatchObject({ exitCode: 0, timedOut: false, exchanges: 0 });
+      expect(meta.workDir).toBe(path.join(cache, 'work', meta.sessionId));
+      expect(statSync(meta.workDir).dev).toBe(statSync('/mnt/data').dev);
+      expect(statSync(meta.workDir).dev).not.toBe(statSync('/').dev);
+      expect(JSON.parse(readFileSync(path.join(session, 'cli.jsonl'), 'utf8'))).toEqual({
+        cwd: meta.workDir, device: statSync('/mnt/data').dev,
+        before: 'prepared recorder source', after: 'private recorder write',
+      });
+      expect(readFileSync(path.join(prepared, 'README'), 'utf8')).toBe('prepared recorder source');
+      expect(existsSync(path.join(cache, 'cli-home', meta.sessionId))).toBe(false);
+    } finally {
+      // Clean only this fresh task's paths, including a child failure before meta.
+      for (const parent of ['work', 'cli-home']) {
+        const dir = path.join(cache, parent);
+        if (existsSync(dir)) for (const name of readdirSync(dir)) {
+          if (name.startsWith(`claude-${taskId}-`)) rmSync(path.join(dir, name), { recursive: true, force: true });
+        }
+      }
+      rmSync(prepared, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
 

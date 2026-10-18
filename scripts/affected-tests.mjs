@@ -2151,7 +2151,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       (/\.tsx?$/.test(f) &&
         (f.startsWith("packages/") || f.startsWith("apps/operator/lib/") || f.startsWith("apps/operator/bin/") ||
           f.startsWith("libs/papercusp/packages/"))) ||
-      f === "scripts/gen-identity-surface-census.ts",
+      f === "scripts/gen-identity-surface-census.mts",
   },
   {
     // Phone media sources are outside npm workspaces. Include all three layers even

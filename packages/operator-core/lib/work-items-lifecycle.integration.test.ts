@@ -34,7 +34,13 @@ import { createTextCollector } from './child-output';
 import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import {
+  applyDisclosureLedgerForTest,
+  applyEventSubstrateMigrationsForTest,
+  applyMigrationForTest,
+  createFreshPgDb,
+  type FreshPgDb,
+} from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   applyClaimPathReadDeps,
@@ -194,6 +200,14 @@ beforeAll(async () => {
   // so a missing event table cannot masquerade as a lifecycle regression. The shared
   // event-substrate list is audited from creation, so it cannot fall behind (WI-10004700).
   await applyEventSubstrateMigrationsForTest(db.sql, { label: 'work-items-lifecycle.integration.test.ts' });
+  // This fixture both registers real awaits and releases items, so the await pump
+  // resolves wake mode and seals its inbox message. Replay those maintained schemas
+  // (as work-items-release-request.integration.test.ts does) so a missing store cannot
+  // turn delivery into a fail-soft fallback while the latch still looks successful.
+  await applyMigrationForTest(db.sql, new URL(
+    '../../../libs/papercusp/libs/db/sql/archive/038-operator-settings.sql', import.meta.url,
+  ).pathname);
+  await applyDisclosureLedgerForTest(db.sql);
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(readMigration('1219-blueprint-operation-invocations.sql')).simple();
   await db.sql.unsafe(readMigration('1223-blueprint-operation-event-replay.sql')).simple();

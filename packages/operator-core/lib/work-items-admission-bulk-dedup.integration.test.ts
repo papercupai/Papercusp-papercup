@@ -84,6 +84,11 @@ const DDL = `
     terminal_reason text,
     terminal_owner text,
     closed_ts bigint,
+    -- migration 1534 (bug-inflow-one-problem-one-row-2026-10-18#D-001): the
+    -- promoter persists a typed duplicate verdict that the admission gate reads.
+    duplicate_of text,
+    duplicate_source text,
+    duplicate_evidence jsonb,
     PRIMARY KEY (workspace_id, harness_slug, feature_id)
   );
   CREATE TABLE harness_shared.coord_links (

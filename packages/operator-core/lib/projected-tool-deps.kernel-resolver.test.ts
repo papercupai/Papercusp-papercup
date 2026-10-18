@@ -1281,7 +1281,12 @@ describe('P040 retained-wake authority through ordinary dispatch', () => {
         ...(scenario === 'owner' ? { uiClientId: 'owner-b' } : {}),
         ...(scenario === 'workspace' ? { workspaceId: 'ws-b' } : {}),
       });
-      db.rows.push(scenario === 'missing-verified-row' ? [] : [row]);
+      // Ordinary dispatch evaluates the kernel port twice: once in preflight
+      // and again immediately before the handler. Keep both authority reads
+      // backed by the same fixture row so the second read cannot masquerade as
+      // an unavailable session, while the missing-row case still fails closed
+      // on its first read.
+      db.rows.push(...(scenario === 'missing-verified-row' ? [[], []] : [[row], [row]]));
       const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'P040 ordinary sentinel' }] }));
       const result = await dispatchProjectedTool({ ...ordinary, fn: handler }, 'fixture:ordinary', {}, callCtx, {
         kernelEnforcement: controlAnchorKernelResolver,
@@ -1293,12 +1298,19 @@ describe('P040 retained-wake authority through ordinary dispatch', () => {
         expect(JSON.stringify(result)).toContain('P040 ordinary sentinel');
       } else {
         expect(handler).not.toHaveBeenCalled();
-        expect(result.error?.message).toContain(
-          ['owner', 'workspace', 'verified-incarnation', 'missing-verified-row'].includes(scenario)
-            ? 'policy-unavailable' : 'stale-artifact',
-        );
+        const authorityUnavailable = ['owner', 'workspace', 'verified-incarnation', 'missing-verified-row'].includes(scenario);
+        expect(result.error?.meta).toMatchObject({
+          kernelCode: authorityUnavailable ? 'policy-unavailable' : 'capability_unsatisfied',
+        });
+        if (!authorityUnavailable) {
+          expect(result.error?.meta).toMatchObject({
+            kernelDecision: { obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } },
+          });
+        }
       }
-      const [template, ...values] = db.queryCalls()[0];
+      const anchorCalls = db.queryCalls().filter(([template]) => !db.isBodyRead(template));
+      expect(anchorCalls).toHaveLength(positive ? 2 : 1);
+      const [template, ...values] = anchorCalls[0];
       const statement = template.join(' ');
       expect(statement).toContain('WHERE s.coord_owner_id =');
       expect(statement).toContain('AND s.workspace_id =');

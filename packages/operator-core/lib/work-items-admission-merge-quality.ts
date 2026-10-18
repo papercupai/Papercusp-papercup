@@ -22,7 +22,7 @@ import {
 } from './work-items-admission-promoter';
 
 export const ADMISSION_MERGE_QUALITY_SCHEMA_VERSION = 'work-item-admission-merge-quality-report-v1';
-export const ADMISSION_MERGE_QUALITY_DATASET_VERSION = 'work-item-admission-merge-quality-gold-v1';
+export const ADMISSION_MERGE_QUALITY_DATASET_VERSION = 'work-item-admission-merge-quality-gold-v2';
 export const ADMISSION_MERGE_QUALITY_LABEL_SOURCE =
   'source-authored-independent-labels; model-independent; owner-ratified-boundary:D-007@2026-09-01';
 
@@ -210,8 +210,9 @@ export const ADMISSION_MERGE_QUALITY_GOLD_CORPUS: readonly AdmissionMergeQuality
       createdAtMs: 1_705_000_002_000,
     },
     expectedVerdict: 'r-finding-merge',
-    expectedCanonicalSide: 'a',
-    labelRationale: 'Same nested-step invisibility and workflow-scope remedy; established terminal row is canonical.',
+    expectedCanonicalSide: 'b',
+    labelRationale:
+      'Same nested-step invisibility and workflow-scope remedy; the live endpoint remains canonical because the terminal near-neighbour has a different title identity.',
   }),
   goldCase({
     caseId: 'M06',

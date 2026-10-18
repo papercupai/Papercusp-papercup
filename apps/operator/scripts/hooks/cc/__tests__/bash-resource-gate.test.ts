@@ -1140,6 +1140,12 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
     ['stash pop', 'git stash pop'],
     ['stash apply', 'git stash apply'],
     ['stash push with an explicit `--` path (no longer exempt — see EI-18215743778965613)', 'git stash push -- path/to/file.ts'],
+    // WI-6554700010017558: drop/clear delete entries on the shared stack and
+    // branch switches the shared tree's branch, so none of them is exempt.
+    ['stash drop', 'git stash drop'],
+    ['stash branch', 'git stash branch wip-x'],
+    ['stash clear', 'git stash clear'],
+    ['stash listing-prefixed subcommand is not mistaken for list', 'git stash listx'],
   ])('denies %s', async (_label, command) => {
     expectGitDeny(await runGateAsyncFull(bashCmd(command), AGENT));
   });
@@ -1149,9 +1155,7 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
     ['restore of an explicit single file', 'git restore path/to/file.ts'],
     ['stash list', 'git stash list'],
     ['stash show', 'git stash show'],
-    ['stash drop', 'git stash drop'],
-    ['stash branch', 'git stash branch wip-x'],
-    ['stash clear', 'git stash clear'],
+    ['stash show of a named entry', 'git stash show -p stash@{1}'],
     ['clean dry-run (no f flag)', 'git clean -n'],
     ['reset (no --hard)', 'git reset HEAD~1'],
     ['reset --soft', 'git reset --soft HEAD~1'],
@@ -6311,13 +6315,22 @@ describe('substitution verdict handling', () => {
   });
 
   it('honors `git -C`: a mutation in another checkout is not attributed to this tree', () => {
+    // A FRESH empty dir, never the shared `/tmp`: the gate resolves `-C <dir>/<operand>`
+    // through realpath, so a peer's `/tmp/packages -> <canonical>/packages` symlink
+    // (observed 2026-10-18) made the literal `/tmp` fixture resolve INTO this tree and
+    // the gate correctly reported a tracked mutation (WI-6554700010017558).
+    const otherCheckout = mkdtempSync(join(tmpdir(), 'gate-other-checkout-'));
     const command =
-      'git -C /tmp rm packages/operator-core/lib/agent-tools/locks/check_command.ts';
+      `git -C ${otherCheckout} rm packages/operator-core/lib/agent-tools/locks/check_command.ts`;
     setReply({ decision: 'allow', matched: [], goalModeEditDenyReason: null });
-    expectAllow(runGate(bashCmd(command, { cwd: REPO_ROOT }), {
-      PAPERCUSP_OPERATOR_URL: url,
-      PAPERCUSP_CANONICAL_TREE: REPO_ROOT,
-    }));
+    try {
+      expectAllow(runGate(bashCmd(command, { cwd: REPO_ROOT }), {
+        PAPERCUSP_OPERATOR_URL: url,
+        PAPERCUSP_CANONICAL_TREE: REPO_ROOT,
+      }));
+    } finally {
+      rmSync(otherCheckout, { recursive: true, force: true });
+    }
     const requests = readFileSync(requestFile, 'utf8')
       .trim()
       .split('\n')

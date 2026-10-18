@@ -1,5 +1,5 @@
 /** Real-PG mode implication rows feeding the canonical built-in identity stack. */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,15 @@ import { attestGoalBootstrapModes } from './endpoint-route/routes/agent-mcp/boot
 import { compileLaunchSpecificationArtifact } from './role-launch-spec';
 import { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt } from './su-persona-render';
 import type { OrgTestDb } from '../test/_org-test-db';
+
+// Mode writes emit the Orders invalidation as a best-effort peripheral effect.
+// Keep this fixture on its throwaway database: the sync-sse producer otherwise
+// resolves the protected live operator database and fails the integration
+// suite's console-error guard, even though the mode assertions use `db.adminSql`.
+const ordersNotify = vi.hoisted(() => ({
+  notifyAgentOrdersChanged: vi.fn(async (_ownerId: string | null | undefined) => {}),
+}));
+vi.mock('./agent-orders-notify', () => ordersNotify);
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
