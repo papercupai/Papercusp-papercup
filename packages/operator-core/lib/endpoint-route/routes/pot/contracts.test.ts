@@ -68,6 +68,15 @@ describe('Contract execution HTTP boundary',()=>{
     expect((await routes[3]!.handler(req,ctx)).status).toBe(403);expect(io.complete).toHaveBeenCalledWith('bad',{event:'DOCUMENT_COMPLETED'});
     io.get.mockRejectedValue(new ContractSigningError('contract_missing','Missing'));
   });
+  it('preserves a fixed completion refusal category through the HTTP boundary', async () => {
+    io.complete.mockRejectedValue(new DocumensoError('invalid_completion', 'Both authenticated signers must complete and countersign the envelope.',
+      { check: 'envelope_schema', providerStatus: 'PENDING', invalidFields: ['status', 'completedAt'] }));
+    const response = await routes[3]!.handler(request({ event: 'DOCUMENT_COMPLETED' }), ctx);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ ok: false, error: 'invalid_completion',
+      message: 'Both authenticated signers must complete and countersign the envelope.',
+      completion: { check: 'envelope_schema', providerStatus: 'PENDING', invalidFields: ['status', 'completedAt'] } });
+  });
   it('allows the verified candidate checklist before membership without exposing HR templates',async()=>{
     io.onboarding.mockResolvedValue({isCandidate:true,isAdmin:false,checklist:[]});
     const response=await routes[4]!.handler(new Request('http://local'),ctx);

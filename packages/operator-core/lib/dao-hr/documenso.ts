@@ -3,8 +3,22 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
+const completionField = z.enum(['id', 'externalId', 'status', 'completedAt', 'recipients', 'recipients.email',
+  'recipients.name', 'recipients.role', 'recipients.signingStatus', 'recipients.signedAt',
+  'recipients.authOptions', 'recipients.authOptions.accessAuth', 'envelopeItems', 'envelopeItems.id']);
+/** Fixed categories only: provider values, validation messages and URLs are private. */
+export const documensoCompletionDiagnostic = z.object({
+  check: z.enum(['event_reference', 'envelope_schema', 'signer_identity', 'sealed_pdf', 'certificate_pdf']),
+  providerStatus: z.enum(['DRAFT', 'PENDING', 'COMPLETED']).optional(),
+  invalidFields: z.array(completionField).max(14).optional(),
+});
 export class DocumensoError extends Error {
-  constructor(readonly code: 'not_configured' | 'provider_refused' | 'invalid_completion' | 'invalid_webhook', message: string) { super(message); this.name = 'DocumensoError'; }
+  readonly completion?: z.infer<typeof documensoCompletionDiagnostic>;
+  constructor(readonly code: 'not_configured' | 'provider_refused' | 'invalid_completion' | 'invalid_webhook', message: string,
+    completion?: z.infer<typeof documensoCompletionDiagnostic>) {
+    super(message); this.name = 'DocumensoError';
+    if (completion) this.completion = documensoCompletionDiagnostic.parse(completion);
+  }
 }
 export interface SigningPerson { personId: string; name: string; email: string }
 const recipient = z.object({ email: z.string().email(), name: z.string(), role: z.literal('SIGNER'), signingStatus: z.literal('SIGNED'), signedAt: z.string().datetime(),
@@ -12,8 +26,8 @@ const recipient = z.object({ email: z.string().email(), name: z.string(), role: 
 const completedEnvelope = z.object({ id: z.string().min(1), externalId: z.string(), status: z.literal('COMPLETED'), completedAt: z.string().datetime(),
   recipients: z.array(recipient).length(2), envelopeItems: z.array(z.object({ id: z.string().min(1) })).length(1) });
 const webhook = z.object({ event: z.literal('DOCUMENT_COMPLETED'), createdAt: z.string().datetime(), payload: z.object({ envelopeId: z.string().min(1), externalId: z.string(), status: z.literal('COMPLETED') }) });
-function pdfBytes(bytes: Uint8Array) {
-  if (bytes.length < 8 || bytes.length > 25_000_000 || Buffer.from(bytes.subarray(0,5)).toString() !== '%PDF-') throw new DocumensoError('invalid_completion', 'Documenso did not return a valid PDF artifact.');
+function pdfBytes(bytes: Uint8Array, check?: 'sealed_pdf' | 'certificate_pdf') {
+  if (bytes.length < 8 || bytes.length > 25_000_000 || Buffer.from(bytes.subarray(0,5)).toString() !== '%PDF-') throw new DocumensoError('invalid_completion', 'Documenso did not return a valid PDF artifact.', check ? { check } : undefined);
   return bytes;
 }
 export class DocumensoAdapter {
@@ -76,17 +90,24 @@ export class DocumensoAdapter {
     return parsed.data;
   }
   async completed(event: ReturnType<DocumensoAdapter['verifyWebhook']>, input: { contractId: string; envelopeId: string; signers: [SigningPerson, SigningPerson] }) {
-    if (event.payload.envelopeId !== input.envelopeId || event.payload.externalId !== input.contractId) throw new DocumensoError('invalid_completion', 'Completion belongs to another contract.');
-    const parsed = completedEnvelope.safeParse(await (await this.request('/envelope/' + encodeURIComponent(input.envelopeId))).json());
-    if (!parsed.success) throw new DocumensoError('invalid_completion', 'Both authenticated signers must complete and countersign the envelope.');
+    if (event.payload.envelopeId !== input.envelopeId || event.payload.externalId !== input.contractId) throw new DocumensoError('invalid_completion', 'Completion belongs to another contract.', { check: 'event_reference' });
+    const raw = await (await this.request('/envelope/' + encodeURIComponent(input.envelopeId))).json();
+    const parsed = completedEnvelope.safeParse(raw);
+    if (!parsed.success) {
+      const status = documensoCompletionDiagnostic.shape.providerStatus.safeParse(raw?.status);
+      const invalidFields = [...new Set(parsed.error.issues.map(issue => issue.path.filter(part => typeof part === 'string').join('.')))]
+        .filter((field): field is z.infer<typeof completionField> => completionField.safeParse(field).success);
+      throw new DocumensoError('invalid_completion', 'Both authenticated signers must complete and countersign the envelope.',
+        { check: 'envelope_schema', ...(status.success && status.data ? { providerStatus: status.data } : {}), invalidFields });
+    }
     const record = parsed.data;
     if (record.id !== input.envelopeId || record.externalId !== input.contractId || new Set(record.recipients.map(r => r.email.toLowerCase())).size !== 2 ||
-      input.signers.some(s => !record.recipients.some(r => r.email.toLowerCase() === s.email.toLowerCase() && r.name === s.name))) throw new DocumensoError('invalid_completion', 'Documenso signer identities differ from the contract.');
+      input.signers.some(s => !record.recipients.some(r => r.email.toLowerCase() === s.email.toLowerCase() && r.name === s.name))) throw new DocumensoError('invalid_completion', 'Documenso signer identities differ from the contract.', { check: 'signer_identity' });
     const [document, certificate] = await Promise.all([
       this.request('/envelope/item/' + encodeURIComponent(record.envelopeItems[0]!.id) + '/download?version=signed'),
       this.request('/envelope/' + encodeURIComponent(input.envelopeId) + '/certificate/download'),
     ]);
-    return { document: pdfBytes(new Uint8Array(await document.arrayBuffer())), certificate: pdfBytes(new Uint8Array(await certificate.arrayBuffer())),
+    return { document: pdfBytes(new Uint8Array(await document.arrayBuffer()), 'sealed_pdf'), certificate: pdfBytes(new Uint8Array(await certificate.arrayBuffer()), 'certificate_pdf'),
       completedAt: record.completedAt, signers: record.recipients.map(r => ({ email: r.email, name: r.name, signedAt: r.signedAt })), event };
   }
 }

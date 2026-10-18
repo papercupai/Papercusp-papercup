@@ -118,6 +118,7 @@ describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
             ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV, PATH: `${root}:${process.env.PATH ?? ''}`,
             CARGO_TARGET_DIR: join(root, 'target'), CARGO_CLI_ARGV_FILE: argvFile,
             // Keep this fake-Cargo invocation away from the live test ledger.
+            PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
             HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
           },
         });
@@ -135,6 +136,71 @@ describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 25_000);
+});
+
+describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
+  it.each([
+    ['explicit ledger', ' postgresql://ledger.example/evidence ', 'postgresql://ledger.example/evidence'],
+    ['runtime fallback', undefined, 'postgresql://runtime.example/private'],
+    ['blank ledger fallback', '  ', 'postgresql://runtime.example/private'],
+  ])('records the real CLI inserts in the %s', (_label, ledgerUrl, expectedUrl) => {
+    const root = mkdtempSync(join(tmpdir(), 'cargo-ledger-destination-'));
+    const inserts = join(root, 'inserts.jsonl');
+    const loader = join(root, 'loader.mjs');
+    const postgres = join(root, 'postgres.mjs');
+    const receipts = join(root, 'receipts.jsonl');
+    try {
+      writeFileSync(join(root, 'Cargo.toml'), '[package]\nname="ledger-fixture"\nversion="0.0.0"\n');
+      writeFileSync(join(root, 'cargo'), '#!/usr/bin/env node\nconsole.log("test fixture ... ok");\n', { mode: 0o755 });
+      writeFileSync(postgres, `
+        import { appendFileSync } from 'node:fs';
+        export default function postgres(url) {
+          const sql = async () => {
+            appendFileSync(process.env.CARGO_LEDGER_INSERTS, JSON.stringify({ url }) + '\\n');
+            return [{ id: '70001' }];
+          };
+          sql.json = value => value;
+          sql.end = async () => {};
+          return sql;
+        }
+      `);
+      writeFileSync(loader, `
+        import { registerHooks } from 'node:module';
+        import { pathToFileURL } from 'node:url';
+        registerHooks({ resolve(specifier, context, nextResolve) {
+          if (specifier === 'postgres') return {
+            url: pathToFileURL(${JSON.stringify(postgres)}).href, shortCircuit: true,
+          };
+          return nextResolve(specifier, context);
+        }});
+      `);
+      const result = spawnSync(process.execPath, [
+        '--import', loader, resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs'),
+        '--manifest-path', join(root, 'Cargo.toml'),
+      ], {
+        encoding: 'utf8', timeout: 15_000,
+        env: {
+          ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV,
+          PATH: `${root}:${process.env.PATH ?? ''}`, CARGO_TARGET_DIR: join(root, 'target'),
+          CARGO_LEDGER_INSERTS: inserts, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receipts,
+          PAPERCUSP_TEST_RUNS_DB_URL: ledgerUrl,
+          HARNESS_ADMIN_DATABASE_URL: 'postgresql://runtime.example/private',
+          PAPERCUSP_PG_PORT: '25432',
+        },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('inserted 2/2 rows');
+      const recorded = readFileSync(inserts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(recorded).toEqual([{ url: expectedUrl }, { url: expectedUrl }]);
+      expect(readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line)))
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ status: 'pass', outcome: 'inserted', id: '70001' }),
+        ]));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 const SIGTERM_CARGO_OUTPUT = `
@@ -173,6 +239,7 @@ describe('Cargo measured passing cases and layers (P-002)', () => {
       ], {
         encoding: 'utf8', timeout: 90_000,
         env: { ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV, CARGO_TARGET_DIR: join(root, 'target'), CARGO_BUILD_JOBS: '1',
+          PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
           HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
           PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile },
       });
@@ -646,6 +713,7 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
           PATH: `${root}:${process.env.PATH ?? ''}`,
           CARGO_TARGET_DIR: join(root, 'target'),
           CARGO_CLI_MARKER_FILE: markerFile,
+          PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
           HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
           PAPERCUSP_DISK_ALARM_FREE_GB: '1000000000',
         },

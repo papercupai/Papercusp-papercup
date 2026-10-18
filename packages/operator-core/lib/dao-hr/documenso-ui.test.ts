@@ -1,8 +1,36 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Browser } from 'playwright-core';
-import { register } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
+import { assertCompletionResponse, register } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 
 describe('Documenso UI failure diagnostics', () => {
+  it('reads and retains the allowlisted completion refusal before a failed status assertion', async () => {
+    const retain = vi.fn();
+    const response = Response.json({ ok: false, error: 'invalid_completion', message: 'private response text',
+      completion: { check: 'envelope_schema', providerStatus: 'PENDING', invalidFields: ['status', 'completedAt'], signer: 'private@example.test' },
+      signingUrl: 'https://provider.invalid/private-token', apiKey: 'private-api-key' }, { status: 409 });
+    const error = await assertCompletionResponse(response, retain).then(() => null, value => value as Error);
+    expect(error).toBeInstanceOf(Error);
+    expect(response.bodyUsed).toBe(true);
+    expect(retain).toHaveBeenCalledExactlyOnceWith({ status: 409, ok: false, error: 'invalid_completion',
+      completion: { check: 'envelope_schema', providerStatus: 'PENDING', invalidFields: ['status', 'completedAt'] } });
+    for (const privateValue of ['private response text', 'private@example.test', 'private-token', 'private-api-key']) {
+      expect(error!.message).not.toContain(privateValue);
+      expect(JSON.stringify(retain.mock.calls)).not.toContain(privateValue);
+    }
+  });
+  it.each(['non-json', 'unclassified'] as const)('retains a safe %s failure without copying body values', async scenario => {
+    const retain = vi.fn();
+    const response = scenario === 'non-json' ? new Response('private-provider-body', { status: 502 }) :
+      Response.json({ error: 'private-provider-error', completion: { check: 'private-provider-check', providerStatus: 'private-status' } }, { status: 409 });
+    await expect(assertCompletionResponse(response, retain)).rejects.toThrow('Authenticated provider completion response');
+    expect(retain).toHaveBeenCalledExactlyOnceWith(scenario === 'non-json' ? { status: 502, ok: false } :
+      { status: 409, ok: false, error: 'unclassified' });
+  });
+  it('retains a successful completion response without the private contract reference', async () => {
+    const retain = vi.fn();
+    await assertCompletionResponse(Response.json({ ok: true, contractId: 'private-contract' }), retain);
+    expect(retain).toHaveBeenCalledExactlyOnceWith({ status: 200, ok: true });
+  });
   it.each([
     ['net::ERR_CONNECTION_REFUSED', 'Error', 'ERR_CONNECTION_REFUSED'],
     ['net::ERR_CONNECTION_RESET', 'Error', 'ERR_CONNECTION_RESET'],

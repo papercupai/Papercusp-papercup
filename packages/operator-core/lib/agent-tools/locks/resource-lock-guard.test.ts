@@ -24,13 +24,14 @@ vi.mock('./identity', () => ({ readIdentity: vi.fn() }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 
 import { inWorkspaceTxn } from './in-workspace-txn';
-import { tryAcquireResource } from './su-lock-store';
+import { tryAcquireResource, tryReleaseResource } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { guardResource } from './resource-lock-guard';
 
 const foreignCoordinationDomain = join(tmpdir(), 'papercusp-release');
 const txnM = vi.mocked(inWorkspaceTxn);
 const sharedAcquireM = vi.mocked(tryAcquireResource);
+const releaseM = vi.mocked(tryReleaseResource);
 const exclusiveAcquireM = vi.mocked(acquireResourceExclusiveWithWait);
 
 const exclusionDetail = {
@@ -55,6 +56,7 @@ beforeEach(() => {
     fn({} as Sql),
   );
   sharedAcquireM.mockReset();
+  releaseM.mockReset();
   exclusiveAcquireM.mockReset();
 });
 
@@ -117,5 +119,35 @@ describe('guardResource host-global exclusion handling', () => {
         async () => 'must not run',
       ),
     ).rejects.toBe(error);
+  });
+
+  it('preserves an incumbent shared lease when the acquire reports a reuse', async () => {
+    sharedAcquireM.mockResolvedValueOnce({
+      ok: true,
+      lock_id: 'incumbent-lock',
+      mode: 'shared',
+      status: 'held',
+      expires_ts: new Date('2026-10-18T19:00:00.000Z'),
+      shared_holders: [],
+      fence_seq: 0,
+      reused: true,
+    });
+    const run = vi.fn(async () => 'completed');
+
+    const result = await guardResource(
+      {
+        coordinationDomain: 'papercusp-host-global',
+        ownerId: 'su-caller',
+        ownerLabel: 'caller',
+        coordIdentity: { ownerId: 'su-caller' } as never,
+        resource: 'dev-server',
+        mode: 'shared',
+      },
+      run,
+    );
+
+    expect(result).toEqual({ acquired: true, result: 'completed', lock_id: 'incumbent-lock' });
+    expect(run).toHaveBeenCalledOnce();
+    expect(releaseM).not.toHaveBeenCalled();
   });
 });

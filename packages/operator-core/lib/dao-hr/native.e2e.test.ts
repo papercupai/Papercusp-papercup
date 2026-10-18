@@ -8,7 +8,7 @@ import { decodeFunctionResult, encodeFunctionData, stringToHex, type Address, ty
 import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
-import { sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
+import { assertCompletionResponse, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 import { workbenchTextField, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
@@ -173,7 +173,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         headers: { 'Content-Type': 'application/json', 'X-Documenso-Secret': process.env.DOCUMENSO_WEBHOOK_SECRET! },
         body: JSON.stringify({ event: 'DOCUMENT_COMPLETED', createdAt: new Date().toISOString(),
           payload: { envelopeId: contract.envelope_id, externalId: contract.contract_id, status: 'COMPLETED' } }) });
-      expect(completed.status).toBe(200); expect((await completed.json()).ok).toBe(true);
+      await assertCompletionResponse(completed, diagnostic => writeFileSync(config.resultPath + '.completion-response.json', JSON.stringify(diagnostic, null, 2)));
       reload(); textHas('Executed document hash:');
       for (const kind of ['sealed', 'certificate']) {
         const artifact = await fetch(health.origin + '/api/pot/' + slug + '/contracts/' + offerId + '/document?kind=' + kind);

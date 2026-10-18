@@ -382,7 +382,10 @@ async function tryGetPg() {
   try {
     const mod = await import('postgres');
     const pg = mod.default ?? mod;
-    return pg(resolveScriptPgUrl().url, { max: 2, connect_timeout: 2, onnotice: () => {} });
+    // Match the Vitest reporter's explicit ledger pin: an isolated runtime's
+    // database is disposable, while these receipts must survive its teardown.
+    const url = process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim() || resolveScriptPgUrl().url;
+    return pg(url, { max: 2, connect_timeout: 2, onnotice: () => {} });
   } catch {
     return null;
   }

@@ -133,6 +133,7 @@ export async function guardResource<T>(
 
   let lockId: string;
   let fenceSeq = 0;
+  let preserveSharedLease = false;
   if (mode === 'shared') {
     let r: Awaited<ReturnType<typeof tryAcquireResource>>;
     try {
@@ -155,6 +156,7 @@ export async function guardResource<T>(
     if (!r.ok) return { acquired: false, reason: r.reason, holders: r.holders };
     lockId = r.lock_id;
     fenceSeq = r.fence_seq;
+    preserveSharedLease = r.reused === true;
   } else {
     // The lower-level acquisition API preserves a draining reservation so
     // its caller can keep waiting. This guard returns without running a body,
@@ -225,16 +227,18 @@ export async function guardResource<T>(
     const result = await run(fence);
     return { acquired: true, result, lock_id: lockId };
   } finally {
-    const released = await inWorkspaceTxn(cd, ownerId, (tx) =>
-      tryReleaseResource(tx, { coordinationDomain: cd, owner: ownerId, lockId }),
-    ).catch(() => null);
-    if (mode === 'exclusive') {
-      // A4: notify just the waiters on this resource, not ['*'].
-      await broadcastResourceBackUp({
-        source: coordIdentity,
-        resource,
-        waiters: released?.waiters[resource] ?? [],
-      }).catch(() => {});
+    if (!preserveSharedLease) {
+      const released = await inWorkspaceTxn(cd, ownerId, (tx) =>
+        tryReleaseResource(tx, { coordinationDomain: cd, owner: ownerId, lockId }),
+      ).catch(() => null);
+      if (mode === 'exclusive') {
+        // A4: notify just the waiters on this resource, not ['*'].
+        await broadcastResourceBackUp({
+          source: coordIdentity,
+          resource,
+          waiters: released?.waiters[resource] ?? [],
+        }).catch(() => {});
+      }
     }
   }
 }

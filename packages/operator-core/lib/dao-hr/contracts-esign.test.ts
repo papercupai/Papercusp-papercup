@@ -60,6 +60,39 @@ describe('SPEC-P-006 — Documenso Envelope API contract',()=>{
     expect(result.document).toEqual(pdf.pdf);expect(result.certificate).toEqual(pdf.pdf);
     expect(fetcher.mock.calls.map(c=>String(c[0]))).toContain('https://signing.example.test/api/v2/envelope/item/item/download?version=signed');
   });
+  it.each(['pending', 'schema', 'unsigned', 'unauthenticated', 'identity'] as const)('identifies %s completion refusal without provider values or artifact reads', async scenario => {
+    const record = envelope();
+    if (scenario === 'pending') Object.assign(record, { status: 'PENDING', completedAt: null });
+    if (scenario === 'schema') record.completedAt = 'private-provider-value';
+    if (scenario === 'unsigned') record.recipients[1]!.signingStatus = 'NOT_SIGNED';
+    if (scenario === 'unauthenticated') record.recipients[1]!.authOptions.accessAuth = [];
+    if (scenario === 'identity') record.recipients[1]!.email = 'private-other@example.test';
+    const fetcher = vi.fn(async () => Response.json(record)), adapter = configured(fetcher);
+    const completion = scenario === 'identity' ? { check: 'signer_identity' } : {
+      check: 'envelope_schema', providerStatus: scenario === 'pending' ? 'PENDING' : 'COMPLETED',
+      invalidFields: scenario === 'pending' ? ['status', 'completedAt'] : scenario === 'schema' ? ['completedAt'] :
+        scenario === 'unsigned' ? ['recipients.signingStatus'] : ['recipients.authOptions.accessAuth'],
+    };
+    await expect(adapter.completed(adapter.verifyWebhook(secret, event), { contractId: 'contract', envelopeId: 'envelope', signers }))
+      .rejects.toMatchObject({ code: 'invalid_completion', completion });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('identifies an event reference mismatch before provider IO', async () => {
+    const fetcher = vi.fn(), adapter = configured(fetcher);
+    await expect(adapter.completed(adapter.verifyWebhook(secret, { ...event, payload: { ...event.payload, externalId: 'private-other-contract' } }),
+      { contractId: 'contract', envelopeId: 'envelope', signers })).rejects.toMatchObject({ code: 'invalid_completion', completion: { check: 'event_reference' } });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it.each(['sealed_pdf', 'certificate_pdf'] as const)('identifies invalid %s bytes after signer verification', async check => {
+    const fetcher = vi.fn(async (url: string | URL | Request) => {
+      if (!String(url).includes('download')) return Response.json(envelope());
+      const certificate = String(url).includes('/certificate/');
+      return new Response(certificate === (check === 'certificate_pdf') ? 'private-invalid-artifact' : '%PDF-fixture');
+    });
+    const adapter = configured(fetcher);
+    await expect(adapter.completed(adapter.verifyWebhook(secret, event), { contractId: 'contract', envelopeId: 'envelope', signers }))
+      .rejects.toMatchObject({ code: 'invalid_completion', completion: { check } });
+  });
 });
 describe('SPEC-P-006-A — frozen offer merge values',()=>{
   it('takes engagement, pay and exact equity days from the approved offer',()=>{

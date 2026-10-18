@@ -96,6 +96,73 @@ describe('guardResource (requiresLock enforcement)', async () => {
       }
     });
 
+  it.skipIf(!live)('nested same-owner shared guard preserves the caller lease and independent owners', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const resource = 'staging-server';
+    const owner = 'outer-' + uniqueWs();
+    const independentOwner = 'independent-' + uniqueWs();
+    let outerLockId: string | null = null;
+    let independentLockId: string | null = null;
+
+    try {
+      const outer = await inWorkspaceTxn(ws, owner, tx => tryAcquireResource(tx, {
+        coordinationDomain: ws,
+        resource,
+        mode: 'shared',
+        owner,
+        ownerLabel: owner,
+        reason: 'outer caller lease',
+        ttlSec: 60,
+      }));
+      if (!outer.ok) throw new Error('could not acquire outer shared lease: ' + outer.reason);
+      outerLockId = outer.lock_id;
+
+      const independent = await inWorkspaceTxn(ws, independentOwner, tx => tryAcquireResource(tx, {
+        coordinationDomain: ws,
+        resource,
+        mode: 'shared',
+        owner: independentOwner,
+        ownerLabel: independentOwner,
+        reason: 'independent shared lease',
+        ttlSec: 60,
+      }));
+      if (!independent.ok) throw new Error('could not acquire independent shared lease: ' + independent.reason);
+      independentLockId = independent.lock_id;
+
+      const out = await guardResource({
+        coordinationDomain: ws,
+        ownerId: owner,
+        ownerLabel: owner,
+        coordIdentity: mkId(owner),
+        resource,
+        mode: 'shared',
+      }, async fence => {
+        expect(fence.lockId).toBe(outerLockId);
+        const during = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource });
+        expect(during.holders.some(holder => holder.owner === owner && holder.lock_id === outerLockId)).toBe(true);
+        return 'nested complete';
+      });
+
+      expect(out.acquired).toBe(true);
+      if (out.acquired) expect(out.lock_id).toBe(outerLockId);
+      const after = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource });
+      expect(after.holders.some(holder => holder.owner === owner && holder.lock_id === outerLockId)).toBe(true);
+      expect(after.holders.some(holder => holder.owner === independentOwner && holder.lock_id === independentLockId)).toBe(true);
+    } finally {
+      if (independentLockId) await inWorkspaceTxn(ws, independentOwner, tx => tryReleaseResource(tx, {
+        coordinationDomain: ws,
+        owner: independentOwner,
+        lockId: independentLockId!,
+      }));
+      if (outerLockId) await inWorkspaceTxn(ws, owner, tx => tryReleaseResource(tx, {
+        coordinationDomain: ws,
+        owner,
+        lockId: outerLockId!,
+      }));
+    }
+  });
+
   it.skipIf(!live)('acquires exclusive, runs the body while held, releases after', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();

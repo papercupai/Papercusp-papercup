@@ -20,7 +20,7 @@ const actions=z.discriminatedUnion('action',[
 function failure(error:unknown){
   if(error instanceof ZodError)return Response.json({ok:false,error:'invalid_input',message:'Contract fields are missing or invalid.'},{status:400});
   if(error instanceof ContractTemplateError||error instanceof ContractSigningError||error instanceof HiringError||error instanceof DocumensoError||error instanceof OnboardingError||error instanceof WorkProfileError||error instanceof EngagementError)
-    return Response.json({ok:false,error:error.code,message:error.message},{status:['not_admin','invalid_webhook','identity_required','identity_mismatch'].includes(error.code)?403:error.code==='invalid_input'?400:409});
+    return Response.json({ok:false,error:error.code,message:error.message,...(error instanceof DocumensoError && error.completion ? {completion:error.completion} : {})},{status:['not_admin','invalid_webhook','identity_required','identity_mismatch'].includes(error.code)?403:error.code==='invalid_input'?400:409});
   throw error;
 }
 const get=defineTool({method:'GET',path:'/pot/:id/contracts',auth:'loopback',async handler(req,ctx){

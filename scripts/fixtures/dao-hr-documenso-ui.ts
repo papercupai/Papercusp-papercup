@@ -2,10 +2,22 @@
 import { randomBytes } from 'node:crypto';
 import type { Browser, Page } from 'playwright-core';
 import { expect } from 'vitest';
-import type { SigningPerson } from '../../packages/operator-core/lib/dao-hr/documenso';
+import { documensoCompletionDiagnostic, type SigningPerson } from '../../packages/operator-core/lib/dao-hr/documenso';
 
 const baseUrl = process.env.DOCUMENSO_URL ?? '';
 const mailUrl = process.env.DOCUMENSO_TEST_MAIL_URL ?? '';
+
+/** Consume and retain the refusal before asserting; never retain arbitrary response text. */
+export async function assertCompletionResponse(response: Pick<Response, 'status' | 'json'>, retain: (diagnostic: object) => void) {
+  const body = await response.json().catch(() => null);
+  const completion = documensoCompletionDiagnostic.safeParse(body?.completion);
+  const codes = ['not_configured', 'provider_refused', 'invalid_completion', 'invalid_webhook', 'invalid_transition', 'contract_missing', 'invalid_input'];
+  const diagnostic = { status: response.status, ok: body?.ok === true,
+    ...(body?.error !== undefined ? { error: codes.includes(body.error) ? body.error as string : 'unclassified' } : {}),
+    ...(completion.success ? { completion: completion.data } : {}) };
+  retain(diagnostic);
+  expect(diagnostic, 'Authenticated provider completion response').toMatchObject({ status: 200, ok: true });
+}
 
 function safeUiErrorCode(error: unknown): string {
   if (!(error instanceof Error)) return 'unclassified';
