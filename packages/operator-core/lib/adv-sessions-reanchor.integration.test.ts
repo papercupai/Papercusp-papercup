@@ -27,7 +27,9 @@ import {
   adoptStartingTerminalLaunch,
   classifyOwnerNativeSession,
   claimAdvSessionResume,
+  getAdvSessionInWorkspace,
   finalizeAdvSessionResume,
+  latestAdvSessionByCoordOwner,
   markAdvSessionEnded,
   readSuLaunchSpecByOwner,
   reanchorAdvSessionNativeId,
@@ -618,6 +620,11 @@ describe('P040 retained Codex unkeyed wake persistence (real PG)', () => {
         const deps: ExecuteWakeDeps = {
           // Session lookup, owner election, claim, receipt persistence and the
           // dispatch authority reader stay real against the owned test DB.
+          // Keep both owner-election reads on this isolated fixture. The
+          // production defaults use the active workspace and would otherwise
+          // re-read a different DB/workspace before Channel 2.
+          getSession: (sessionId) => getAdvSessionInWorkspace(sessionId, WS),
+          getLatestSessionForOwner: latestAdvSessionByCoordOwner,
           claimResume: claim,
           resolveWakeModeFn: async () => 'auto', getSessionLifecycle: async () => null,
           presence: async () => null, alive: () => false, findPty: () => null,
@@ -774,12 +781,21 @@ describe('P040 retained Codex unkeyed wake persistence (real PG)', () => {
       try {
         // This is a different statement boundary from claimAdvSessionResume:
         // the real launch_spec writer catches the transaction's failure.
-        expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(false);
-        expect(await f.read()).toEqual(before);
-        expect(await f.ledger()).toEqual(beforeLedger);
-        expect(resolveIdentityArtifact(before.launch_spec, f.applied)).toMatchObject({
-          kind: 'governed', artifact: f.original.specificationArtifact,
-        });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(false);
+          expect(warn).toHaveBeenCalledWith(
+            '[adv-sessions] recordSuLaunchSpec failed:',
+            'P040 receipt write rejection',
+          );
+          expect(await f.read()).toEqual(before);
+          expect(await f.ledger()).toEqual(beforeLedger);
+          expect(resolveIdentityArtifact(before.launch_spec, f.applied)).toMatchObject({
+            kind: 'governed', artifact: f.original.specificationArtifact,
+          });
+        } finally {
+          warn.mockRestore();
+        }
       } finally {
         await admin.unsafe('DROP TRIGGER reject_p040_receipt ON harness_shared.adv_sessions; DROP FUNCTION harness_shared.reject_p040_receipt()');
       }
