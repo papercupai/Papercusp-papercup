@@ -10,6 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { isNonAutomatedBehaviorClass, NON_AUTOMATED_BEHAVIOR_CLASS } from './plan-verification-profile';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
@@ -64,6 +65,34 @@ export async function acceptanceBarSourceFingerprint(body: string): Promise<stri
   return createHash('sha256').update(JSON.stringify(material)).digest('hex');
 }
 
+/** A legacy prose block has no verification fields to edit. It may acquire them
+ * by materializing its reviewed canonical criterion, never by authoring a new
+ * promise. First isolate that conversion; the locked rubric validates it below.
+ */
+async function legacyRequirementMaterializations(previousBody: string, nextBody: string) {
+  const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+  const previous = parseRequirementBars(previousBody);
+  const next = parseRequirementBars(nextBody);
+  if (!previous.ok || !next.ok || previous.bars.length !== next.bars.length) return null;
+  const keys = new Set(previous.bars.map((bar) => bar.barKey));
+  const previousMap = parseBarMappings(previousBody, keys);
+  const nextMap = parseBarMappings(nextBody, keys);
+  if (!previousMap.ok || !nextMap.ok) return null;
+  const mapIdentity = (map: typeof previousMap) => map.mappings.map((mapping) => ({
+    barKey: mapping.barKey, planItemIds: [...mapping.planItemIds].sort(), evidencePlane: mapping.evidencePlane,
+  })).sort((a, b) => a.barKey.localeCompare(b.barKey));
+  if (canonicalJson(mapIdentity(previousMap)) !== canonicalJson(mapIdentity(nextMap))) return null;
+  const materialized = [];
+  for (let index = 0; index < previous.bars.length; index += 1) {
+    const before = previous.bars[index]!;
+    const after = next.bars[index]!;
+    if (canonicalJson(before) === canonicalJson(after)) continue;
+    if (before.barKey !== after.barKey || before.title !== after.title || before.criterion || !after.criterion) return null;
+    materialized.push(after.criterion);
+  }
+  return materialized.length > 0 ? materialized : null;
+}
+
 /** Keep a derived subject-version pin current after a BAR-neutral write.
  *
  * Called while the subject lock is held. The rubric try-lock avoids reversing an
@@ -82,15 +111,19 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     dryRun?: boolean;
   },
 ): Promise<boolean> {
-  // Re-audit can catch up across several neutral plan writes. Source equality
-  // and the locked rubric/hash checks below still govern every pin advance.
+  // Re-audit can catch up across several neutral plan writes. A legacy-to-block
+  // conversion additionally needs exact equality with the locked canonical BAR.
   if (!Number.isSafeInteger(args.previousVersion) || args.previousVersion < 1 ||
       !Number.isSafeInteger(args.nextVersion) || args.nextVersion <= args.previousVersion) return false;
   const [previousSource, nextSource] = await Promise.all([
     acceptanceBarSourceFingerprint(args.previousBody),
     acceptanceBarSourceFingerprint(args.nextBody),
   ]);
-  if (!previousSource || !nextSource || previousSource !== nextSource) return false;
+  if (!previousSource || !nextSource) return false;
+  const materialized = previousSource === nextSource
+    ? []
+    : await legacyRequirementMaterializations(args.previousBody, args.nextBody);
+  if (materialized === null) return false;
   const [subject] = await sql<Array<{
     status: string | null;
     acceptance_bar_rubric_slug: string; acceptance_bar_rubric_revision: number;
@@ -121,6 +154,20 @@ export async function synchronizeAcceptanceBarSubjectRevision(
   }
   const existingBarCriteria = parsedRubric.data.criteria.filter((criterion) => criterion.barKey);
   if (existingBarCriteria.length === 0) return false;
+  if (materialized.length > 0) {
+    const { verificationNeutralCriterion } = await import('./acceptance-live-requirements');
+    const { normalizeAcceptanceBarCriterion } = await import('./rubrics');
+    const meaning = (criterion: (typeof existingBarCriteria)[number]) => {
+      // Provenance belongs to the canonical writer, not the authored block.
+      // Preserve every other field except the existing verification-HOW allowlist.
+      const { barProvenance: _provenance, ...neutral } = verificationNeutralCriterion(normalizeAcceptanceBarCriterion(criterion));
+      return canonicalJson(neutral);
+    };
+    for (const criterion of materialized) {
+      const canonical = existingBarCriteria.find((candidate) => candidate.barKey === criterion.barKey);
+      if (!canonical || meaning(criterion) !== meaning(canonical)) return false;
+    }
+  }
   const { buildAcceptanceBarSeed } = await import('./acceptance-bar-seed');
   const rebuilt = buildAcceptanceBarSeed({
     planSlug: args.planSlug,
@@ -135,8 +182,8 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     rubricSlug: subject.acceptance_bar_rubric_slug,
     rubricRevision: Number(rubric.version),
     existingTemplateData: { ...parsedRubric.data, criteria: existingBarCriteria },
-    // The source fingerprints above are already proven identical, so this write
-    // changes no BAR meaning and only the subject-revision pin advances. Preserve
+    // Source equality or exact canonical legacy materialization above proves this
+    // write changes no BAR meaning; only the subject-revision pin advances. Preserve
     // the canonical BARs verbatim; re-deriving them from the plan body would revert
     // amended criterion text to the original seed. The barSetHash equality check
     // immediately below still gates the update (WI-10000058).

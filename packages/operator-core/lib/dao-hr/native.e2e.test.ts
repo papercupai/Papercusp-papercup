@@ -20,6 +20,7 @@ import { grantDaoHrAdmin, installSampleTemplates } from './contract-templates';
 import { saveWorkProfile, linkMemberIdentity } from './work-profile';
 import { updateEquityPolicy } from './equity-policy';
 import { getContractExecution } from './contracts-esign';
+import { DocumensoAdapter, DocumensoError } from './documenso';
 import type { DaoCapTable, DaoWorkspaceView } from '../dao-workspace-types';
 import type { EquityArtifacts } from '../equity/compile';
 
@@ -183,11 +184,30 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       const companyContext = await browser.newContext({ storageState: config.companySession });
       await sign(await candidateContext.newPage(), contract.signing_links!.find(link => link.email === fixture.actors.candidate.email)!.signingUrl);
       await sign(await companyContext.newPage(), contract.signing_links!.find(link => link.email === fixture.actors.approver.email)!.signingUrl);
+      // The provider's signing UI finishes before envelope finalization. Reuse
+      // the real sandbox test's strict readiness check before delivering its event.
+      const provider = DocumensoAdapter.configured();
+      const completionEvent = { event: 'DOCUMENT_COMPLETED' as const, createdAt: new Date().toISOString(),
+        payload: { envelopeId: contract.envelope_id!, externalId: contract.contract_id, status: 'COMPLETED' as const } };
+      // Reconcile can observe the provider's COMPLETED status before its signed
+      // document and certificate downloads are ready. Require the same strict
+      // proof used by the webhook handler before delivering the event.
+      await expect.poll(async () => {
+        const status = await provider.reconcile({ contractId: contract.contract_id, envelopeId: contract.envelope_id!,
+          signers: contract.signers, pdf: contract.source_pdf });
+        if (status !== 'COMPLETED') return false;
+        try {
+          await provider.completed(completionEvent, { contractId: contract.contract_id, envelopeId: contract.envelope_id!, signers: contract.signers });
+          return true;
+        } catch (error) {
+          if (error instanceof DocumensoError && error.code === 'invalid_completion') return false;
+          throw error;
+        }
+      }, { timeout: 30_000 }).toBe(true);
       // Delivery transport only; completion verifies the provider accounts, signatures and sealed artifacts itself.
       const completed = await fetch(health.origin + '/api/dao-hr/documenso/webhook', { method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Documenso-Secret': process.env.DOCUMENSO_WEBHOOK_SECRET! },
-        body: JSON.stringify({ event: 'DOCUMENT_COMPLETED', createdAt: new Date().toISOString(),
-          payload: { envelopeId: contract.envelope_id, externalId: contract.contract_id, status: 'COMPLETED' } }) });
+        body: JSON.stringify(completionEvent) });
       await assertCompletionResponse(completed, diagnostic => writeFileSync(config.resultPath + '.completion-response.json', JSON.stringify(diagnostic, null, 2)));
       reload(); textHas('Executed document hash:');
       for (const kind of ['sealed', 'certificate']) {

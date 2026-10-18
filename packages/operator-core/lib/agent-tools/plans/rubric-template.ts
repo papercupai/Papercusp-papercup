@@ -631,7 +631,10 @@ const requirementSectionAcceptanceSchema = requirementAcceptanceSchema.extend({
 
 export const requirementSectionsSchema = z
   .object({
-    intent: requirementIntentSchema,
+    // Historical reviewed BARs can lack Intent. Parsing their exact canonical
+    // materialization must preserve that absence; fresh source admission below
+    // still requires Intent rather than inventing it during migration.
+    intent: requirementIntentSchema.optional(),
     acceptance: requirementSectionAcceptanceSchema,
     verification: requirementVerificationSchema,
   })

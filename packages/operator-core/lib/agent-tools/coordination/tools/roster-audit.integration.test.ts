@@ -10,11 +10,15 @@ import { recordOwnerDirective } from '../../../owner-directives';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { publishReport } from '../../../report-library';
 import { pickupDispositionViolations } from '../parked-agent-audit-oracles';
+import { getWorkItemsByIds } from '../../../work-items';
+import { setWorkItemCheckpoint } from '../../../work-item-checkpoint';
+import { registerHarnessProject } from '../../plans/__tests__/_pg-tool-fixture';
 
 const fixture = vi.hoisted(() => ({ workspaceId: 'audit-test-ws', sql: null as unknown }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
   ...await importOriginal<typeof import('@papercusp/db-org')>(),
   getOrgPg: () => ({ sql: fixture.sql }),
+  withWorkspace: async (_workspace: string, fn: (sql: unknown) => Promise<unknown>) => fn(fixture.sql),
 }));
 vi.mock('../../../workspace-registry', async importOriginal => ({
   ...await importOriginal<typeof import('../../../workspace-registry')>(), activeWorkspaceId: () => fixture.workspaceId,
@@ -318,13 +322,94 @@ describe('roster frozen audit PG persistence', () => {
       viewer: { ownerId: 'reader-a' }, agents: [{ ownerId: owner, sessionState: 'parked' }] });
     const queued = snapshot.records.find(row => row.id === 'wake:' + owner + ':stages-queued')!;
     const delivered = snapshot.records.find(row => row.id === 'wake:' + owner + ':stages-delivered')!;
-    expect(queued.fields.queued).toMatchObject({ status: 'known', value: true });
+    expect(queued.fields.queued).toMatchObject({ status: 'unknown' });
     expect(queued.fields.delivered.status).toBe('unknown');
     expect(delivered.fields.delivered).toMatchObject({ status: 'known', value: true });
     for (const row of [queued, delivered]) {
       expect(row.fields.turnStarted.status).toBe('unknown');
       expect(row.fields.replied.status).toBe('unknown');
     }
+  });
+
+  it('assesses current assigned steps and distinguishes satisfied producers without clearing holds', async () => {
+    const owner = 'audit-agent-executable';
+    const asOf = new Date().toISOString();
+    await db.adminSql`INSERT INTO harness_shared.agent_modes (workspace_id, owner_id, axis_key, mode, set_by)
+      VALUES (${scope.workspaceId}, ${owner}, 'autonomy', 'auto', ${owner})`;
+    for (const [id, state, takenBy] of [
+      ['F-ready', 'wip', owner], ['F-held-done', 'wip', owner], ['F-held-live', 'wip', owner],
+      ['F-held-human', 'wip', owner], ['WI-9100001', 'done', null], ['WI-9100002', 'open', null],
+    ]) {
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, summary, status, taken_by)
+        VALUES (${scope.workspaceId}, ${harness}, ${id}, 'feature', ${id}, '', ${state}, ${takenBy})`;
+    }
+    for (const [id, ref, capability] of [
+      ['F-held-done', 'WI-9100001', 'live-dependency'], ['F-held-live', 'WI-9100002', 'live-dependency'],
+      ['F-held-human', 'WI-9100001', 'product-decision'],
+    ]) {
+      await db.adminSql`UPDATE harness_shared.work_items SET payload = ${db.adminSql.json({ externalBlockers: [{
+        kind: capability === 'product-decision' ? 'human' : 'runtime', capability, capabilitySource: 'explicit',
+        ref, summary: 'Recorded hold', status: 'active', createdAt: asOf, updatedAt: asOf, createdBy: 'fixture',
+      }] })} WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND feature_id=${id}`;
+    }
+    const [ready] = await getWorkItemsByIds(['F-ready'], harness);
+    await setWorkItemCheckpoint({ harness, workItemId: ready!.id, workspaceId: scope.workspaceId },
+      '## Did\nPrepared the fixture.\n\n## Next action\nRun the focused unit suite.', { workItem: ready! });
+    const before = await db.adminSql`SELECT feature_id, status, payload FROM harness_shared.work_items
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND taken_by=${owner} ORDER BY feature_id`;
+    const snapshot = await buildRosterAudit({ harness, scope, asOf, expectedPopulation: 1,
+      viewer: { ownerId: 'reader-a' }, agents: [{ ownerId: owner, sessionState: 'parked', awaitingEvent: false }] });
+    const work = (id: string) => snapshot.records.find(row => row.id === `work:${owner}:${harness}:${id}`)!;
+    expect(work('F-ready').fields.next.status).toBe('known');
+    expect(work('F-ready').fields.executable).toMatchObject({ status: 'known', value: true });
+    expect(snapshot.records.find(row => row.id === `agent:${owner}`)!.fields.independentWork)
+      .toMatchObject({ status: 'known', value: true });
+    for (const id of ['F-held-done', 'F-held-live', 'F-held-human']) {
+      expect(work(id).fields.executable).toMatchObject({ status: 'known', value: false });
+    }
+    const clearance = (id: string) => snapshot.records.find(row => row.id === `work:${owner}:${harness}:${id}:blocker:0`)!.fields.clearance;
+    expect(clearance('F-held-done')).toMatchObject({ status: 'known', value: true });
+    expect(clearance('F-held-live')).toMatchObject({ status: 'known', value: false });
+    expect(clearance('F-held-human')).toMatchObject({ status: 'unknown' });
+    expect(await db.adminSql`SELECT feature_id, status, payload FROM harness_shared.work_items
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND taken_by=${owner} ORDER BY feature_id`).toEqual(before);
+    verifyFieldProvenance(snapshot);
+  });
+
+  it('measures the planned lane and canonical owner decisions, retaining unknowns on incomplete plans', async () => {
+    const owner = 'audit-agent-plan'; const slug = 'roster-audit-planned-fixture';
+    const asOf = new Date().toISOString();
+    await registerHarnessProject(db.adminSql, scope.workspaceId, harness);
+    await db.adminSql`INSERT INTO harness_shared.agent_modes (workspace_id, owner_id, axis_key, mode, set_by)
+      VALUES (${scope.workspaceId}, ${owner}, 'autonomy', 'auto', ${owner})`;
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, summary, status, taken_by, payload)
+      VALUES (${scope.workspaceId}, ${harness}, 'F-plan-audit', 'feature', 'Planned step', '', 'wip', ${owner},
+        ${db.adminSql.json({ plan_item: { plan_slug: slug, item_id: 'P-001' } })})`;
+    const [item] = await getWorkItemsByIds(['F-plan-audit'], harness);
+    await setWorkItemCheckpoint({ harness, workItemId: item!.id, workspaceId: scope.workspaceId },
+      '## Did\nPrepared the plan fixture.\n\n## Next action\nRun the independent focused suite.', { workItem: item! });
+    const content = '## Phase 1\n\n- **P-001** `todo` Run the independent suite.\n\n## Decisions\n';
+    await db.adminSql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, status, content, content_hash, version)
+      VALUES (${scope.workspaceId}, ${harness}, ${slug}, 'active', ${content}, md5(${content}), 1)`;
+    const read = async () => {
+      const snapshot = await buildRosterAudit({ harness, scope, asOf, expectedPopulation: 1,
+        viewer: { ownerId: 'reader-a' }, agents: [{ ownerId: owner, sessionState: 'parked', awaitingEvent: false }] });
+      return snapshot.records.find(row => row.id === `work:${owner}:${harness}:F-plan-audit`)!.fields.executable;
+    };
+    expect(await read()).toMatchObject({ status: 'known', value: true });
+    const gated = content + '\n### D-001 — Owner-gated\nDate: 2026-10-18\nRelated: P-001\nWait for an owner-attended session.\n';
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${gated}
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+    expect(await read()).toMatchObject({ status: 'known', value: false });
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${content}, op_status='paused'
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+    expect(await read()).toMatchObject({ status: 'unknown' });
+    await db.adminSql`UPDATE harness_shared.harness_plans SET op_status='started', content='## Phase 1'
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+    expect(await read()).toMatchObject({ status: 'unknown' });
   });
 
   it('retains harness-qualified feature claims with unknown missing checkpoints', async () => {

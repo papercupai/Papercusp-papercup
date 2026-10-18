@@ -45,12 +45,14 @@ describe('audit wake association', () => {
     const a = result.get('a')!;
     const b = result.get('b')!;
     expect(a.map(row => row.id)).toEqual(['wake:a:m']);
+    expect(a[0].fields.queued.value).toBe(true);
     expect(a[0].fields.turnStarted.value).toBe(true);
     expect(a[0].fields.replied.value).toBe(true);
     expect(b.map(row => row.id)).toEqual(['wake:b:m', 'wake:b:unlisted']);
+    expect(b[0].fields.queued.status).toBe('unknown');
     expect(b[0].fields.delivered.status).toBe('unknown');
     expect(b[0].fields.replied.status).toBe('unknown');
-    expect(b[1].fields.queued.status).toBe('unknown');
+    expect(b[1].fields.queued.value).toBe(true);
     expect(b[1].fields.delivered.value).toBe(true);
   });
 

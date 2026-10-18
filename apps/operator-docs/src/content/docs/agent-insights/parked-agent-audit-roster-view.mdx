@@ -14,7 +14,8 @@ documents:
   - "packages/operator-core/lib/agent-tools/coordination/tools/roster.ts"
   - "packages/operator-core/lib/agent-tools/coordination/tools/roster-audit.ts"
   - "packages/operator-core/lib/agent-tools/coordination/tools/roster-audit-store.ts"
-  - "packages/operator-core/lib/agent-tools/coordination/wait-classification.ts"
+  - "packages/operator-core/lib/scheduler/plan-item-lane-guard.ts"
+  - "packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts"
 plans:
   - "parked-agent-audit-gaps-2026-10-17"
 ---
@@ -38,3 +39,17 @@ Wake history covers the explicit last-seven-day window. Missing evidence stays u
 Tests: roster-audit.test.ts (population/paging/cursor/wake controls), roster-audit-store.test.ts (owner provenance), roster-audit.integration.test.ts (real-PG persistence/isolation), agent-obligation-providers.test.ts (listener vs real waits), and parked-agent-audit.e2e.test.ts (dynamic audit oracles alongside unchanged historical fixtures).
 
 This view does not replace the frozen October 9 audit or its P-013 measurement. Send the completed new bundle to that lane instead of restarting its historical census.
+
+For a repeatable current-runtime check without rewalking the archived whole population, choose one currently parked owner and run the maintained bounded live case:
+
+```bash
+PAPERCUSP_PARKED_CURRENT_LIVE=1 \
+PAPERCUSP_PARKED_AUDIT_OWNER=su-<currently-parked-owner-id> \
+PAPERCUSP_SKIP_PG_DISCOVERY=1 \
+PAPERCUSP_APP_OPERATION_LIVE_PROFILE=packages/operator-core/test/parked-agent-audit.live-profile.json \
+npm run test:file -- packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts -t 'LIVE: bounded current public audit'
+```
+
+Retain the authenticated `PAPERCUSP_SID` and `PAPERCUSP_WORKSPACE`. First use `dev:pipeline_position` with the changed source path and `testClass:"operator-api"` to verify that :3170 contains the committed implementation. The maintained profile binds PostgreSQL :5432 and the :3170 operator. The case creates a fresh owner-filtered public snapshot, requires exactly that one parked owner, reads the persisted writer bytes as an independent SQL test oracle, and reloads each page through separate authenticated public tool calls. It checks exact content, identity, cursor progress and final owner/record coverage, with a 128-page budget. The product caller still needs no SQL. The test never wakes an agent or changes a claim, mode, hold or authority. Preserve the `PARKED_AUDIT_CURRENT` ledger/log witness; this case adds current creation/reload evidence and does not replace the unchanged historical full-census acceptance run.
+
+An executable work assessment requires a current subject-matching next step, registered AUTO, measured work dependencies, and no recorded external, owner or state hold. Planned work additionally requires a complete current plan-lane read, resolved plan dependencies and scoped owner decisions from canonical plan Markdown. Unreadable, missing or partial plan evidence stays unknown; the scheduler guard's ordinary fail-open null result is not clearance. A paused or completed plan is not positive execution evidence. A supported dependency producer can be measured as satisfied while its recorded hold remains active. Queue evidence requires the exact recipient/message delivery row; sender intent alone is not enqueueing, and enqueueing is not recipient pickup.

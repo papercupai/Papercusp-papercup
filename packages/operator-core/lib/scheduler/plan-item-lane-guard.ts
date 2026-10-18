@@ -479,27 +479,40 @@ export async function planItemNeedsHumanContradiction(
 export async function planItemLaneBlockReason(
   workItem: Pick<WorkItem, 'payload' | 'harness'> &
     Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
+  options: { requireCompleteEvidence?: boolean } = {},
 ): Promise<PlanItemLaneBlock | null> {
   const stamp = await resolvePlanItemStamp(workItem);
+  // Audits distinguish measured clearance from the scheduler's fail-open result.
+  if (!stamp && options.requireCompleteEvidence) throw new Error('Plan linkage could not be established.');
   if (!stamp) return null;
   try {
-    const [{ getPlanRow, planItemsForRow }, { resolveEffectiveStatusForItems }] = await Promise.all([
+    const [{ getPlanRow, planItemsForRow }, { resolveEffectiveStatusForItems, parsePlan }] = await Promise.all([
       import('../agent-tools/plans/source'),
       import('@papercusp/plan-parser'),
     ]);
     const row = await getPlanRow(stamp.plan_slug, { harnessSlug: workItem.harness ?? undefined });
+    if (options.requireCompleteEvidence && (!row || !['active', 'ready'].includes(row.status ?? '')
+      || row.archived || row.opStatus === 'paused' || row.opStatus === 'done')) {
+      throw new Error('A current ready or active plan was not established.');
+    }
     if (!row) return null;
     const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
     const linked = stamp.item_ids
       .map((itemId) => items.find((i) => i.id === itemId))
       .filter((i): i is (typeof items)[number] => Boolean(i));
+    if (options.requireCompleteEvidence && linked.length !== stamp.item_ids.length) {
+      throw new Error('Not every linked plan item could be read.');
+    }
     if (linked.length === 0) return null;
     const nowText = [row.nowState, row.nowNext].filter(Boolean).join('\n');
     const allItemIds = items.map((i) => i.id);
+    // Full source reads carry canonical Markdown; their optional decision index
+    // can be absent/empty. Never infer absence of owner decisions from that index.
+    const decisions = typeof row.content === 'string' ? parsePlan(row.content).decisions : row.decisions ?? [];
     const ownerGateMarkerFor = (li: (typeof linked)[number]): string | null => {
       const ownMarker = findAnchoredOwnerGateMarker(li.text);
       const nowMarker = findNowOwnerGateMarker(nowText, li.id, allItemIds);
-      const decisionMarker = (row.decisions ?? [])
+      const decisionMarker = decisions
         .filter((d) => d.itemRefs.includes(li.id))
         .map((d) => findOwnerGateMarker(d.title) ?? findOwnerGateMarker(d.body))
         .find((m): m is string => Boolean(m));
@@ -591,8 +604,12 @@ export async function planItemLaneBlockReason(
         };
       }
     }
+    if (options.requireCompleteEvidence && linked.some(li => !['todo', 'wip'].includes(li.effectiveStatus))) {
+      throw new Error('Not every linked plan item has an executable lane status.');
+    }
     return null;
-  } catch {
+  } catch (error) {
+    if (options.requireCompleteEvidence) throw error;
     // Fail OPEN — a plans-read hiccup must never wedge the shared claim path.
     return null;
   }

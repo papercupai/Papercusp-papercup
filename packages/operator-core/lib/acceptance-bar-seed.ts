@@ -554,6 +554,11 @@ export function acceptanceBarSourceContractProblems(
   let templateShown = false;
   for (const bar of bars) {
     const criterion = canonicalCriteria?.get(bar.barKey) ?? bar.criterion;
+    if (bar.criterion && !criterion?.intent) {
+      problems.push({ code: 'bar_requirement_parse_failed', barKey: bar.barKey,
+        detail: `${bar.barKey}: a fresh requirement block must declare its original Intent; missing Intent is preserved only for an existing canonical BAR` });
+      continue;
+    }
     const evidencePlane = criterion?.evidencePlane ?? planeByBar.get(bar.barKey) ?? 'tree';
     const layers = criterion?.requiredTestLayers;
     // A structured tests check owes automated proof even on a live/deployed plane,

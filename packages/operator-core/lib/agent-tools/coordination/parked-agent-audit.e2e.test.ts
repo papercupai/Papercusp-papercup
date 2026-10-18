@@ -13,6 +13,7 @@
  * alternative census, or changes to the archived start population.
  */
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -727,7 +728,55 @@ describe('conditional wake outcome oracle controls', () => {
 });
 
 const LIVE_REQUESTED = process.env.PAPERCUSP_PARKED_AUDIT_LIVE === '1';
-allowRealPgForLiveSuite(LIVE_REQUESTED);
+const CURRENT_LIVE_REQUESTED = process.env.PAPERCUSP_PARKED_CURRENT_LIVE === '1';
+allowRealPgForLiveSuite(LIVE_REQUESTED || CURRENT_LIVE_REQUESTED);
+describe.skipIf(!CURRENT_LIVE_REQUESTED)('LIVE: bounded current public audit', () => {
+  it('creates a fresh owner-scoped audit and separately reloads every frozen page against persisted writer bytes', async () => {
+    const owner = process.env.PAPERCUSP_PARKED_AUDIT_OWNER;
+    expect(owner, 'choose one currently parked owner; this route never creates a full census').toBeTruthy();
+    const startedAt = Date.now();
+    const created = await authenticatedAuditCode<{ auditId: string; asOf: string; total: number }>(
+      "const p=await tools.coord.roster({view:'audit',scope:'workspace',owner:inputs.owner,pageSize:1});"
+      + "return {auditId:p.auditId,asOf:p.asOf,total:p.coverage.total};", { owner });
+    expect(created.total).toBe(1);
+    expect(Date.parse(created.asOf)).toBeGreaterThanOrEqual(startedAt);
+    const adminUrl = getHarnessAdminUrl();
+    const address = new URL(adminUrl);
+    expect(['localhost', '127.0.0.1', '::1', '[::1]']).toContain(address.hostname);
+    expect(address.port || '5432').toBe('5432');
+    const sql = postgres(adminUrl, { max: 1, connect_timeout: 5, idle_timeout: 5 });
+    let oracle: RosterAuditSnapshot;
+    const artifactPath = 'audits/roster/' + createHash('sha256').update(process.env.PAPERCUSP_WORKSPACE!)
+      .digest('hex').slice(0, 16) + '/' + created.auditId + '.json';
+    try {
+      const rows = await sql<Array<{ content: string }>>`SELECT content FROM harness_shared.harness_text_artifacts
+        WHERE workspace_id=${process.env.PAPERCUSP_WORKSPACE!} AND harness_slug='*' AND rel_path=${artifactPath}`;
+      expect(rows).toHaveLength(1);
+      oracle = JSON.parse(rows[0].content) as RosterAuditSnapshot;
+    } finally { await sql.end({ timeout: 5 }); }
+    expect(oracle.auditId).toBe(created.auditId);
+    expect(oracle.population).toEqual([owner]);
+    expect(oracle.records.length, 'bounded owner scope exceeded the maintained 128-page budget').toBeLessThanOrEqual(1280);
+    expect(new Set(oracle.records.map(row => row.id)).size).toBe(oracle.records.length);
+    let cursor: string | null = null; let offset = 0; let covered = 0; let pages = 0;
+    do {
+      const page = await authenticatedAuditCode<{ digest: string; offset: number; covered: number; cursor: string | null; complete: boolean }>(
+        "const p=await tools.coord.roster({view:'audit',scope:'workspace',owner:inputs.owner,auditId:inputs.auditId,cursor:inputs.cursor??undefined,pageSize:10});"
+        + "const end=inputs.offset+p.records.length;const covered=inputs.covered+p.records.filter(r=>r.kind==='agent').length;const complete=end===inputs.records;"
+        + "if(p.auditId!==inputs.auditId||p.asOf!==inputs.asOf||p.projection.offset!==inputs.offset)throw Error('snapshot-or-offset-changed');"
+        + "if(!p.records.length||p.coverage.total!==1||p.coverage.covered!==covered||p.coverage.recordsRead!==end||p.coverage.totalRecords!==inputs.records||p.coverage.missing!==0||p.coverage.duplicates!==0||p.coverage.complete!==complete||p.coverage.truncatedByLimit!==!complete)throw Error('coverage-changed');"
+        + "if(complete?p.nextCursor!==null:!p.nextCursor||p.nextCursor===inputs.cursor)throw Error('cursor-did-not-progress');"
+        + `return {digest:(${recordDigest.toString()})(p.records),offset:end,covered,cursor:p.nextCursor,complete};`,
+        { owner, auditId: created.auditId, asOf: created.asOf, cursor, offset, covered, records: oracle.records.length }, true);
+      expect(page.digest).toBe(recordDigest(oracle.records.slice(offset, page.offset)));
+      offset = page.offset; covered = page.covered; cursor = page.cursor; pages++;
+      expect(pages).toBeLessThanOrEqual(128);
+    } while (cursor !== null);
+    expect(offset).toBe(oracle.records.length); expect(covered).toBe(1);
+    process.stdout.write(`PARKED_AUDIT_CURRENT ${JSON.stringify({ owner, ...created, records: offset, pages,
+      persistedReload: true, artifactPath, complete: true, errors: [] })}\n`);
+  }, 600_000);
+});
 describe.skipIf(!LIVE_REQUESTED)('LIVE: R-1 complete parked-agent census partition', () => {
   let sql: postgres.Sql;
   beforeAll(async () => {

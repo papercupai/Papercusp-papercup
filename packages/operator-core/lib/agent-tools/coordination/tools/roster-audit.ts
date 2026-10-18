@@ -32,6 +32,28 @@ export interface AuditRecord {
   fields: Record<string, AuditField>;
 }
 
+/** Advisory assessment of the assigned step, never permission to clear a hold. */
+export function auditExecutableStep(input: {
+  current: boolean; next?: string; auto: boolean | null; held: boolean;
+  dependencies: 'clear' | 'blocked' | 'unknown'; planLinked: boolean; observedAt: string;
+  planLane?: 'clear' | 'blocked' | 'unknown';
+}): AuditField<boolean> {
+  const source = 'work_items + carry_notes.latestUpdate.next + agent_modes + work_item_deps + plan item lane/decisions';
+  if (input.held || input.dependencies === 'blocked' || input.planLane === 'blocked') return {
+    ...auditKnown(false, source, input.observedAt),
+    reason: input.held ? 'A recorded owner, external or state hold remains in force.'
+      : input.planLane === 'blocked' ? 'The current plan lane, dependency or owner decision blocks this step.'
+      : 'A current dependency remains unresolved.',
+  };
+  const reason = !input.current || !input.next?.trim() ? 'No current, subject-matching next step is available.'
+    : input.dependencies === 'unknown' ? 'Current dependency evidence was unavailable.'
+    : input.auto !== true ? 'Registered AUTO authority was not established.'
+    : input.planLinked && input.planLane !== 'clear' ? 'Current plan lane and owner-decision evidence was unavailable; dependency clearance alone is insufficient.'
+    : null;
+  return reason ? auditUnknown(source, input.observedAt, reason)
+    : { ...auditKnown(true, source, input.observedAt), reason: 'The assigned current step has registered AUTO authority and no measured work dependency or recorded hold. This is evidence, not a new grant of authority.' };
+}
+
 export interface AuditProvenance {
   status: 'verified-owner' | 'unverified' | 'unknown';
   directiveId: number | null;
@@ -180,12 +202,14 @@ export function auditWakeEvidence(input: {
   deliveries: Array<{ ownerId: string; msgId: string; status: string; turnProof: string | null; turnStartedAt: string | null }>;
   replies: Array<{ from: string; relatedMsgId: string }>;
 }) {
-  const source = `coord-message:${input.msgId}`;
   const deliveries = input.deliveries.filter(row => row.ownerId === input.ownerId && row.msgId === input.msgId);
   const knownTrue = (value: boolean, name: string) => value ? auditKnown(true, name, input.observedAt)
     : auditUnknown(name, input.observedAt, 'No matching positive evidence was recorded.');
   return {
-    queued: knownTrue(input.messageExists, source),
+    // Persisting sender intent precedes the wake fan and does not establish
+    // that this recipient entered the durable queue. Even a later dead/dropped
+    // delivery proves enqueueing, while an unrelated recipient never does.
+    queued: knownTrue(deliveries.length > 0, 'event_wake_deliveries:' + input.msgId),
     delivered: knownTrue(deliveries.some(row => row.status === 'delivered'), 'event_wake_deliveries:' + input.msgId),
     turnStarted: knownTrue(deliveries.some(row => ['observed', 'host-attested'].includes(row.turnProof ?? '') &&
       row.turnStartedAt !== null && Number.isFinite(Date.parse(row.turnStartedAt))), 'event_wake_deliveries.turn_proof:' + input.msgId),

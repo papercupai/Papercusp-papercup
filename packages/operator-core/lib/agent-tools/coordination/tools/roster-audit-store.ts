@@ -2,17 +2,19 @@ import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { getWorkItemsByIds, TERMINAL_WORK_ITEM_STATES, type WorkItem } from '../../../work-items';
+import { getWorkItemsByIds, readUnresolvedDepBlockers, isClaimHoldParked, TERMINAL_WORK_ITEM_STATES, type WorkItem } from '../../../work-items';
 import { getWorkItemCheckpointWithMeta } from '../../../work-item-checkpoint';
 import { compareWorkItemSubjectFingerprint, parseCarryNote } from '../../../carry-note';
 import { getModesForOwners } from '../../../modes/store';
+import { planItemLaneBlockReason } from '../../../scheduler/plan-item-lane-guard';
 import { activeExternalBlockers } from '../../../external-blockers';
+import { workItemIdsNamedByBlockerRef, isTerminalWorkItemState } from '../../../work-item-ref-blocker-auto-clear';
 import { getOwnerDirective } from '../../../owner-directives';
 import { classifyRecordedTurn } from '../../../turn-provenance/turn-ref';
 import { listReports, type ReportViewer } from '../../../report-library';
 import { coordScopeReady, coordWorkspaceId } from '../log';
 import { classifyAgentWait } from '../wait-classification';
-import { createRosterAudit, auditKnown, auditUnknown, auditScopeKey, buildAuditWakeRecords, pageRosterAudit, RosterAuditError,
+import { createRosterAudit, auditKnown, auditUnknown, auditExecutableStep, auditScopeKey, buildAuditWakeRecords, pageRosterAudit, RosterAuditError,
   type AuditScope, type AuditRecord, type AuditField, type AuditProvenance, type AuditHistory, type RosterAuditSnapshot } from './roster-audit';
 export { buildAuditWakeRecords } from './roster-audit';
 
@@ -198,6 +200,21 @@ export async function buildRosterAudit(input: AuditBuildInput): Promise<RosterAu
   }
   const boundedPrevious = { ...previous, corrections: [], correctionCount: previous.corrections.length, correctionRecords: true };
   const checkpoints = new Map<string, Awaited<ReturnType<typeof getWorkItemCheckpointWithMeta>>>();
+  const dependencies = new Map<string, Awaited<ReturnType<typeof readUnresolvedDepBlockers>> | null>();
+  const planLanes = new Map<string, 'clear' | 'blocked' | 'unknown'>();
+  // A satisfied producer is evidence, not permission to clear its recorded hold.
+  const named = [...new Set(work.flatMap(item => activeExternalBlockers(item.payload)
+    .filter(blocker => blocker.capability === 'live-dependency')
+    .flatMap(blocker => workItemIdsNamedByBlockerRef(blocker.ref))))];
+  const producerStates = new Map<string, string | null>();
+  for (let offset = 0; offset < named.length; offset += 100) {
+    const ids = named.slice(offset, offset + 100);
+    const rows = await getWorkItemsByIds(ids).catch(() => []);
+    for (const id of ids) {
+      const matches = rows.filter(row => row.id === id);
+      producerStates.set(id, matches.length === 1 ? matches[0]!.state : null);
+    }
+  }
   // One bounded fan-in, rather than a serial round-trip per claimed item. A
   // cancelled/late read stays UNKNOWN and never impersonates a missing checkpoint.
   const signal = AbortSignal.timeout(10_000);
@@ -210,17 +227,28 @@ export async function buildRosterAudit(input: AuditBuildInput): Promise<RosterAu
       const key = `${item.harness ?? '*'}:${item.id}`;
       if (signal.aborted) {
         checkpoints.set(key, { checkpoint: null, updatedAtMs: null, readFailed: true });
+        dependencies.set(key, null);
         continue;
       }
-      checkpoints.set(key, await getWorkItemCheckpointWithMeta({ harness: item.harness, workItemId: item.id,
-        workspaceId: input.scope.workspaceId }, { signal, timeoutMs: 3_000 }));
+      const [checkpoint, blockers, planLane] = await Promise.all([
+        getWorkItemCheckpointWithMeta({ harness: item.harness, workItemId: item.id,
+          workspaceId: input.scope.workspaceId }, { signal, timeoutMs: 3_000 }),
+        readUnresolvedDepBlockers(item.id, item.harness ?? undefined).catch(() => null),
+        item.sourcePlanSlug || obj(item.payload).plan_item
+          ? planItemLaneBlockReason(item, { requireCompleteEvidence: true })
+            .then(block => block ? 'blocked' as const : 'clear' as const).catch(() => 'unknown' as const)
+          : Promise.resolve('clear' as const),
+      ]);
+      checkpoints.set(key, checkpoint);
+      dependencies.set(key, blockers);
+      planLanes.set(key, planLane);
     }
   }));
   for (const ownerId of population) {
     const agent = input.agents.find(row => row.ownerId === ownerId)!;
     const own = work.filter(row => row.assignee === ownerId);
     const modeRows = modesRead.value.get(ownerId) ?? [];
-    records.push({ id: `agent:${ownerId}`, kind: 'agent', ownerId, fields: {
+    const agentRecord: AuditRecord = { id: `agent:${ownerId}`, kind: 'agent', ownerId, fields: {
       session: auditKnown(agent.sessionState, 'presence liveness oracle', input.asOf),
       ownedWorkCount: auditKnown(own.length, 'work_items.taken_by', input.asOf),
       wait: agent.awaitingEventKey || agent.awaitingEvent === false
@@ -232,7 +260,9 @@ export async function buildRosterAudit(input: AuditBuildInput): Promise<RosterAu
       independentWork: auditUnknown('work_items and structured checkpoints', input.asOf, 'Read each work record; no owner or dependency hold is waived by this audit.'),
       wakeWindow: wakesRead.ok ? auditKnown('last 7 days, exact linked requests only', 'coord messages and event deliveries', input.asOf)
         : auditUnknown('coord messages and event deliveries', input.asOf, 'Wake evidence read failed; history is not known empty.'),
-    }});
+    }};
+    records.push(agentRecord);
+    const executableSteps: AuditField<boolean>[] = [];
     for (const item of own) {
       const saved = checkpoints.get(`${item.harness ?? '*'}:${item.id}`)!;
       const matching = compareWorkItemSubjectFingerprint(item, saved.subjectFingerprint).status === 'current';
@@ -242,23 +272,47 @@ export async function buildRosterAudit(input: AuditBuildInput): Promise<RosterAu
       const current = !saved.readFailed && matching && Boolean(latest);
       const recordedAt = saved.updatedAtMs ? new Date(saved.updatedAtMs).toISOString() : null;
       const blockers = activeExternalBlockers(item.payload);
+      const liveDependencies = dependencies.get(`${item.harness ?? '*'}:${item.id}`);
+      const payload = obj(item.payload);
+      const executable = auditExecutableStep({ current, next: fields.next,
+        auto: modesRead.ok ? modeRows.some((row: { mode: string }) => ['auto', 'cold-auto'].includes(row.mode)) : null,
+        held: blockers.length > 0 || isClaimHoldParked(item.payload) || payload.needsHuman === true ||
+          payload.needsOwnerAction === true || ['blocked', 'needs-human', 'paused'].includes(item.state),
+        dependencies: liveDependencies == null ? 'unknown' : liveDependencies.length ? 'blocked' : 'clear',
+        planLinked: Boolean(item.sourcePlanSlug || payload.plan_item),
+        planLane: planLanes.get(`${item.harness ?? '*'}:${item.id}`) ?? 'unknown', observedAt: input.asOf });
+      executableSteps.push(executable);
       records.push({ id: `work:${ownerId}:${item.harness ?? '*'}:${item.id}`, kind: 'work', ownerId, fields: {
         identity: auditKnown({ id: item.id, harness: item.harness, title: excerpt(item.title, 140), state: item.state }, 'work_items', input.asOf),
         next: checkpointField(fields.next, 'next', input.asOf, current, recordedAt),
         left: checkpointField(fields.left, 'left', input.asOf, current, recordedAt),
         blockers: blockers.length ? auditKnown({ activeRecordedHolds: blockers.length, detailRecords: true }, 'work_items.payload.externalBlockers (recorded holds, not live clearance)', input.asOf)
           : item.state === 'blocked' ? auditUnknown('work_items', input.asOf, 'State is blocked but no typed blocker reason was recorded.')
-          : auditUnknown('work_items', input.asOf, 'No typed hold recorded; unmeasured dependencies are not assumed clear.'),
-        executable: auditUnknown('work_items + checkpoint', input.asOf, 'Evidence supports review, not automatic authority to resume; preserve owner, lane and dependency gates.'),
+          : liveDependencies == null ? auditUnknown('work_item_deps', input.asOf, 'Current dependency read failed.')
+          : auditKnown({ activeRecordedHolds: 0, unresolvedDependencies: liveDependencies.length,
+            dependencies: liveDependencies, truncatedByLimit: liveDependencies.length === 25 }, 'work_items + work_item_deps canonical unresolved-blocker reader', input.asOf),
+        executable,
       }});
       for (const [index, blocker] of blockers.entries()) {
+        const ids = blocker.capability === 'live-dependency' ? workItemIdsNamedByBlockerRef(blocker.ref) : [];
+        const measured = ids.length > 0 && ids.every(id => producerStates.get(id) != null);
+        const clearance = measured ? {
+          ...auditKnown(ids.every(id => isTerminalWorkItemState(producerStates.get(id))), 'work_items current producer states', input.asOf),
+          reason: 'Producer satisfaction only; the recorded hold remains active until its owning resolver clears it.',
+          evidenceRef: ids.map(id => `${id}:${producerStates.get(id)}`).join(', '),
+        } : auditUnknown('live blocker producer', input.asOf, 'No unambiguous supported producer state was available; the recorded hold remains in force.');
         records.push({ id: `work:${ownerId}:${item.harness ?? '*'}:${item.id}:blocker:${index}`, kind: 'work', ownerId, fields: {
           blocker: { ...auditKnown({ workItem: item.id, kind: blocker.kind, ref: excerpt(blocker.ref, 240),
             summary: excerpt(blocker.summary, 240), capability: blocker.capability }, 'work_items.payload.externalBlockers (recorded hold)', input.asOf), recordedAt: blocker.updatedAt },
-          clearance: auditUnknown('live blocker producer', input.asOf, 'The recorded hold remains in force; no live clearance was measured.'),
+          clearance,
         }});
       }
     }
+    agentRecord.fields.independentWork = executableSteps.some(step => step.status === 'known' && step.value === true)
+      ? auditKnown(true, 'owned work executable assessments', input.asOf)
+      : executableSteps.every(step => step.status === 'known' && step.value === false)
+        ? auditKnown(false, 'owned work executable assessments', input.asOf)
+        : auditUnknown('owned work executable assessments', input.asOf, 'No independently executable step was established; inspect each work record for the missing evidence or hold.');
     records.push(...(wakesRead.value.get(ownerId) ?? []));
   }
   return createRosterAudit({ asOf: input.asOf, scope: input.scope, population, expectedPopulation: input.expectedPopulation, records, provenance, previous: boundedPrevious });

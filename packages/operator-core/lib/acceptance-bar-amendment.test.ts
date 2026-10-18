@@ -21,6 +21,7 @@ import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidenc
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import {
   acceptanceCanonicalUnchangedIgnoringLegacyChecks,
+  computeAcceptanceBarSetHash,
   normalizeAcceptanceBarCriterion,
 } from './rubrics';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
@@ -223,6 +224,116 @@ describe('acceptance BAR amendment transaction contract', () => {
 });
 
 describe('BAR-neutral subject-plan revision synchronization', () => {
+  function legacyMaterializationFixture() {
+    const before = subjectPlan();
+    const seeded = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: before, actorId: 'seed-author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 2, planStatus: 'active',
+      rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
+    });
+    if (!seeded.ok) throw new Error(seeded.message);
+    // The reviewed rubric has superseded the original prose, as on PUI's legacy plan.
+    const criterion = normalizeAcceptanceBarCriterion({
+      ...seeded.criteria[0]!, model: 'The reviewed canonical outcome holds.',
+      driftMarkers: 'The reviewed outcome is absent.', requiredTestLayers: ['integration'],
+      method: 'Run the named installed-product journey.',
+      check: { kind: 'tests', files: ['packages/product.test.ts'] },
+    });
+    const data = { ...seeded.templateData, criteria: [criterion], barSetHash: computeAcceptanceBarSetHash([criterion]) };
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT status, acceptance_bar_rubric_slug')) return [{
+        status: 'active', acceptance_bar_rubric_slug: 'acceptance-subject-plan',
+        acceptance_bar_rubric_revision: 4, acceptance_bar_set_hash: data.barSetHash,
+      }];
+      if (statement.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
+      if (statement.includes('SELECT version, template_data')) return [{ version: 4, template_data: data }];
+      if (statement.includes('UPDATE harness_shared.harness_plans')) return [{ plan_slug: 'acceptance-subject-plan' }];
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const sections = {
+      acceptance: {
+        condition: criterion.model, falsifier: criterion.driftMarkers,
+        requiredScope: criterion.requiredScope, evidencePlane: criterion.evidencePlane,
+        requiredTestLayers: criterion.requiredTestLayers, passRatings: criterion.passRatings,
+        mandatory: criterion.mandatory, role: criterion.role,
+      },
+      verification: {
+        method: criterion.method!,
+        check: { kind: 'tests', files: ['packages/product.test.ts'], cases: [
+          { file: 'packages/product.test.ts', testName: 'exact installed-product journey' },
+        ] },
+      },
+    };
+    const render = (value = sections, map?: string) => subjectPlan({
+      requirements: `**R-1 — Canonical outcome.**\n\n\`\`\`requirement\n${JSON.stringify(value)}\n\`\`\``,
+      ...(map ? { map } : {}),
+    });
+    const synchronize = (after: string, previousBody = before) => synchronizeAcceptanceBarSubjectRevision(sql as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'subject-plan',
+      previousBody, nextBody: after, previousVersion: 2, nextVersion: 3,
+    });
+    return { before, data, sections, sql, render, synchronize };
+  }
+
+  it('materializes the exact reviewed legacy BAR with named verification selectors without revising its rubric', async () => {
+    const f = legacyMaterializationFixture();
+    const after = f.render();
+    // A non-null fingerprint proves this is a valid historical block, not a
+    // parser refusal masquerading as a discriminating source-identity change.
+    expect(await acceptanceBarSourceFingerprint(after)).toMatch(/^[a-f0-9]{64}$/);
+    expect(await acceptanceBarSourceFingerprint(after)).not.toBe(await acceptanceBarSourceFingerprint(f.before));
+    await expect(f.synchronize(after)).resolves.toBe(true);
+    const updates = f.sql.mock.calls.map(([strings]) => strings.join(' ')).filter((s) => s.includes('UPDATE '));
+    expect(updates).toHaveLength(2);
+    expect(updates[0]).toContain('{barContract,subjectPlanRevision}');
+    expect(updates[0]).not.toContain('criteria');
+    expect(updates[0]).not.toContain('SET version');
+  });
+
+  it('still requires original Intent when admitting a fresh structured BAR', () => {
+    const f = legacyMaterializationFixture();
+    const built = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: f.render(), actorId: 'new-author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 1, planStatus: 'draft', rubricSlug: 'acceptance-subject-plan',
+      rubricRevision: 1, requireContractCompleteness: true,
+    });
+    expect(built).toMatchObject({ ok: false, error: 'bar_requirement_parse_failed' });
+  });
+
+  it('refuses to invent original Intent while materializing a historical BAR', async () => {
+    const f = legacyMaterializationFixture();
+    const sections = { ...f.sections, intent: { request: 'An unrecorded original request.' } };
+    await expect(f.synchronize(f.render(sections))).resolves.toBe(false);
+    expect(f.sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE '))).toBe(false);
+  });
+
+  it.each([
+    ['condition', 'A weaker promise.'], ['falsifier', 'Only a narrower failure.'],
+    ['requiredScope', ['live']], ['evidencePlane', 'live'], ['requiredTestLayers', ['unit']],
+    ['passRatings', ['degraded']], ['mandatory', false], ['role', 'disclosure'],
+  ])('refuses legacy materialization that changes the canonical %s', async (field, value) => {
+    const f = legacyMaterializationFixture();
+    const changed = { ...f.sections, acceptance: { ...f.sections.acceptance, [field]: value } };
+    await expect(f.synchronize(f.render(changed as typeof f.sections))).resolves.toBe(false);
+    expect(f.sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE '))).toBe(false);
+  });
+
+  it('refuses a legacy materialization combined with a discharge-map change', async () => {
+    const f = legacyMaterializationFixture();
+    await expect(f.synchronize(f.render(f.sections, '| R-1 | P-002 | tree |'))).resolves.toBe(false);
+    expect(f.sql).not.toHaveBeenCalled();
+  });
+
+  it('refuses to use legacy materialization to replace an existing structured promise', async () => {
+    const f = legacyMaterializationFixture();
+    const previous = f.render({ ...f.sections, acceptance: { ...f.sections.acceptance, condition: 'A different authored promise.' } });
+    await expect(f.synchronize(f.render(), previous)).resolves.toBe(false);
+    expect(f.sql).not.toHaveBeenCalled();
+  });
+
   it('treats Now/Decision prose as neutral but fingerprints BAR source and map changes', async () => {
     const before = subjectPlan();
     const nowEdit = subjectPlan({ now: 'the Now block changed' });

@@ -82,6 +82,25 @@ describe('planItemLaneBlockReason', () => {
     fakeSql.mockClear();
   });
 
+  it('requires complete plan evidence for audits while retaining scheduler fail-open behavior', async () => {
+    const item = { payload: {}, harness: 'papercusp', sourcePlanSlug: 'audit-plan', sourcePlanItemIds: ['P-001', 'P-002'] };
+    const strict = { requireCompleteEvidence: true };
+    for (const row of [null, { status: 'paused', items: [planItem()] },
+      { status: 'active', items: [planItem()] }]) {
+      getPlanRowMock.mockResolvedValue(row);
+      await expect(planItemLaneBlockReason(item, strict)).rejects.toThrow();
+      await expect(planItemLaneBlockReason(item)).resolves.toBeNull();
+    }
+    getPlanRowMock.mockRejectedValue(new Error('plan unavailable'));
+    await expect(planItemLaneBlockReason(item, strict)).rejects.toThrow('plan unavailable');
+    await expect(planItemLaneBlockReason(item)).resolves.toBeNull();
+    getPlanRowMock.mockResolvedValue({ status: 'active', items: [planItem(), planItem({ id: 'P-002' })], decisions: [] });
+    await expect(planItemLaneBlockReason(item, strict)).resolves.toBeNull();
+    getPlanRowMock.mockResolvedValue({ status: 'active', items: [planItem(), planItem({ id: 'P-002' })],
+      decisions: [{ itemRefs: ['P-002'], title: 'Owner-gated', body: 'Wait for owner approval.' }] });
+    await expect(planItemLaneBlockReason(item, strict)).resolves.toMatchObject({ itemId: 'P-002', reason: expect.stringContaining('owner-gated') });
+  });
+
   it('returns null when the work-item carries no plan_item payload', async () => {
     const got = await planItemLaneBlockReason({ payload: {}, harness: 'papercusp', id: UNUSED_ID, family: UNUSED_FAMILY });
     expect(got).toBeNull();

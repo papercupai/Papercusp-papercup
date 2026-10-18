@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { auditKnown, auditUnknown, auditWakeEvidence, createRosterAudit, pageRosterAudit, type AuditRecord, type AuditScope } from './roster-audit';
+import { auditKnown, auditUnknown, auditWakeEvidence, auditExecutableStep, createRosterAudit, pageRosterAudit, type AuditRecord, type AuditScope } from './roster-audit';
 import { originalUnconfirmedPairs, pickupDispositionViolations } from '../parked-agent-audit-oracles';
 
 const asOf = '2026-10-18T00:00:00.000Z';
@@ -115,6 +115,25 @@ describe('complete frozen roster audit paging', () => {
   });
 });
 
+describe('evidence-based independently executable steps', () => {
+  const step = { current: true, next: 'Run the focused unit suite', auto: true, held: false,
+    dependencies: 'clear' as const, planLinked: false, observedAt: asOf };
+  it('establishes a current assigned step only with measured authority and dependencies', () => {
+    expect(auditExecutableStep(step)).toMatchObject({ status: 'known', value: true });
+    expect(auditExecutableStep({ ...step, planLinked: true, planLane: 'clear' }))
+      .toMatchObject({ status: 'known', value: true });
+    for (const variant of [{ current: false }, { next: '' }, { auto: false }, { auto: null },
+      { dependencies: 'unknown' as const }, { planLinked: true }]) {
+      expect(auditExecutableStep({ ...step, ...variant })).toMatchObject({ status: 'unknown' });
+    }
+  });
+  it('never waives a hold or unresolved dependency even with a current AUTO checkpoint', () => {
+    for (const variant of [{ held: true }, { dependencies: 'blocked' as const }, { planLane: 'blocked' as const }]) {
+      expect(auditExecutableStep({ ...step, ...variant })).toMatchObject({ status: 'known', value: false });
+    }
+  });
+});
+
 describe('message-linked wake outcome evidence', () => {
   const input = { ownerId: 'a', msgId: 'm-1', observedAt: asOf, messageExists: true, deliveries: [], replies: [] };
   it('never upgrades queued or delivered into a started turn or authored reply', () => {
@@ -144,14 +163,19 @@ describe('message-linked wake outcome evidence', () => {
       expect(absent[field]).toMatchObject({ status: 'unknown' });
       expect(absent[field].value).toBeUndefined();
     }
-    const queued = auditWakeEvidence(input);
+    const requested = auditWakeEvidence(input);
+    expect(requested.queued.status).toBe('unknown');
+    const queued = auditWakeEvidence({ ...input,
+      deliveries: [{ ownerId: 'a', msgId: 'm-1', status: 'pending', turnProof: null, turnStartedAt: null }],
+    });
     expect(queued.queued).toMatchObject({ status: 'known', value: true });
+    expect(queued.queued.source).toBe('event_wake_deliveries:m-1');
     expect(queued.delivered.status).toBe('unknown');
     const unrelated = auditWakeEvidence({ ...input,
       deliveries: [{ ownerId: 'a', msgId: 'other', status: 'delivered', turnProof: 'observed', turnStartedAt: asOf }],
       replies: [{ from: 'other', relatedMsgId: 'm-1' }],
     });
-    for (const field of ['delivered', 'turnStarted', 'replied'] as const) expect(unrelated[field].status).toBe('unknown');
+    for (const field of ['queued', 'delivered', 'turnStarted', 'replied'] as const) expect(unrelated[field].status).toBe('unknown');
     for (const [turnProof, turnStartedAt] of [['observed', null], ['observed', 'invalid'], ['awaiting', asOf]]) {
       expect(auditWakeEvidence({ ...input, deliveries: [{ ownerId: 'a', msgId: 'm-1',
         status: 'delivered', turnProof, turnStartedAt }] }).turnStarted.status).toBe('unknown');
