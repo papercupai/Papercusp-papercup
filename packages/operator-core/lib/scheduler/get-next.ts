@@ -1292,6 +1292,11 @@ export function issueClaimCandidateSubquery(
           wi.taken_at,
           wi.author_pubkey,
           wi.admission,
+          -- Migration 1534 (bug-inflow-one-problem-one-row-2026-10-18#D-001):
+          -- admittedWhereSqlWi reads duplicate_of in the outer floor. The
+          -- filter-pushdown CTE is that outer query's source, so carry the
+          -- base-table verdict through the narrow snapshot projection.
+          wi.duplicate_of,
           wi.terminal_owner,
           wi.terminal_completion_ref,
           wi.authority,
