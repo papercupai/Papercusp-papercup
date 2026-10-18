@@ -4329,9 +4329,10 @@ export async function setWorkItemState(
   // gate that still has live waiters. The announcement is deliberately durable
   // across owner death, so generic lifecycle-binding cleanup cannot retire it
   // for us. Check both declarations that explicitly reference this item and
-  // gates declared by the closer; the latter is the common case for a worker
-  // that announces a handoff before finishing its work. Complete or retire the
-  // gate first, then retry the close. `force` is the explicit set_state escape
+  // unbound handoff gates declared by the closer. A declaration explicitly
+  // bound to another lifecycle must survive closing unrelated work.
+  // Complete or retire an item-linked gate first, then retry the close.
+  // `force` is the explicit set_state escape
   // hatch; trusted system paths use skipCompletionGate.
   if (!opts.force && !opts.skipCompletionGate && isCompletingTransition) {
     const { findPendingAnnouncementsForTerminalClose } = await import('./events/await/store');

@@ -137,6 +137,9 @@ async function embedWithBudget(
 export function decisiveToolForSymptom(query: string): string | null {
   const q = query.trim().toLowerCase();
   if (/[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*/i.test(q)) return null;
+  // The roster audit composes census, claims, waits and wake outcomes. Generic
+  // "audit" name hits otherwise outrank this maintained first-read surface.
+  if (/\bparked[\s-]+agents?\b/.test(q) && /\baudit\b/.test(q)) return 'coord:roster';
   if (/connection refused|service (?:is )?(?:down|unreachable)|process (?:is )?running but no window|app (?:will not|won't) open/.test(q)) {
     return 'dev:service_health';
   }

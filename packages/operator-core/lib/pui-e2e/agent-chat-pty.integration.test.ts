@@ -16,6 +16,7 @@ import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execFile, fork, spawnSync } from 'node:child_process';
+import { runWorkbenchCommand } from './workbench-command';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -4668,12 +4669,15 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   const zellijAvailable = spawnSync('zellij', ['--version']).status === 0;
   // PuiPane's env carries no XDG_RUNTIME_DIR, so the zellij server it starts
   // listens under /tmp/zellij-<uid>; query that same socket directory.
-  const paneZellij = (args: string[]) => spawnSync('zellij', args, {
-    encoding: 'utf8',
+  const paneZellij = (args: string[]) => runWorkbenchCommand('zellij', args, {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, TERM: 'xterm-256color' },
-    timeout: 15_000,
+    timeoutMs: 15_000,
   });
-  const listSessions = () => paneZellij(['list-sessions', '--no-formatting']).stdout ?? '';
+  const listSessions = async () => {
+    const result = await paneZellij(['list-sessions', '--no-formatting']);
+    expect(result.status, JSON.stringify(result)).toBe(0);
+    return result.stdout;
+  };
   const startChatWorkbench = (cols: number, rows: number) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p030-launch-')));
     // The workbench layout starts every pane (the chat included) as `pui …`
@@ -4698,8 +4702,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
           JSON.stringify({ session, ...preCleanupEvidence }));
       }
       await pane.stop();
-      paneZellij(['kill-session', session]);
-      paneZellij(['delete-session', session]);
+      await paneZellij(['kill-session', session]);
+      await paneZellij(['delete-session', session]);
       rmSync(launchDir, { recursive: true, force: true });
     };
     return { launchDir, pane, session, exited, cleanup,
@@ -4708,8 +4712,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
 
   test.skipIf(!zellijAvailable)('P-030: bare `pui` opens the chat as the focused main pane with the workbench panes beside it', async ({ onTestFailed }) => {
     const wb = startChatWorkbench(200, 50);
-    onTestFailed(() => console.info('PUI_P030_FAILURE', JSON.stringify({
-      session: wb.session, sessions: listSessions(), preCleanupEvidence: wb.preCleanupEvidence,
+    onTestFailed(async () => console.info('PUI_P030_FAILURE', JSON.stringify({
+      session: wb.session, sessions: await paneZellij(['list-sessions', '--no-formatting']), preCleanupEvidence: wb.preCleanupEvidence,
       ...wb.pane.failureEvidence(),
     })));
     try {
@@ -4718,7 +4722,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // taking the workbench snapshot (WI-10007999).
       await wb.pane.waitFor([`Claude · ${wb.launchDir}`, `Zellij (${wb.session})`], { timeoutMs: 90_000 });
       expect(wb.pane.screen()).toMatch(/Zellij \(pui-chat-\d+\)/);
-      expect(listSessions()).toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
+      expect(await listSessions()).toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
       // The running session carries the chat pane and every workbench pane,
       // and the chat pane has focus. Read with `list-panes --json`, retried:
       // zellij 0.44.3's `dump-layout` exits 0 with EMPTY stdout on most calls
@@ -4726,8 +4730,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // the instrument; `list-panes --json` answered 20 of 20.
       type ZellijPane = { is_plugin: boolean; is_focused: boolean; title: string; terminal_command: string | null };
       const command = (pane: ZellijPane) => pane.terminal_command ?? '';
-      await vi.waitFor(() => {
-        const listed = paneZellij(['--session', wb.session, 'action', 'list-panes', '--json', '--all']);
+      await vi.waitFor(async () => {
+        const listed = await paneZellij(['--session', wb.session, 'action', 'list-panes', '--json', '--all']);
         expect(listed.status, listed.stderr).toBe(0);
         const panes = (JSON.parse(listed.stdout) as ZellijPane[]).filter((pane) => !pane.is_plugin);
         const chat = panes.find((pane) => /(^|\/)pui --solo --workbench-pane$/.test(command(pane)));
@@ -4771,7 +4775,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         wb.exited,
         new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 30_000)),
       ])).toBe(0);
-      expect(listSessions()).not.toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
+      expect(await listSessions()).not.toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
       console.info('PUI_P030_CHAT_WORKBENCH_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, frame }));
     } finally { await wb.cleanup(); }
   }, 180_000);
@@ -4782,8 +4786,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   // open visible at every width and the chat's footer names Alt+z.
   test.skipIf(!zellijAvailable)('P-030 / D-033: at 92 columns the side panes open visible, the footer names Alt+z, and Alt+z hides and shows them', async ({ onTestFailed }) => {
     const wb = startChatWorkbench(92, 26);
-    onTestFailed(() => console.info('PUI_P030_NARROW_FAILURE', JSON.stringify({
-      session: wb.session, sessions: listSessions(), ...wb.pane.failureEvidence(),
+    onTestFailed(async () => console.info('PUI_P030_NARROW_FAILURE', JSON.stringify({
+      session: wb.session, sessions: await paneZellij(['list-sessions', '--no-formatting']), ...wb.pane.failureEvidence(),
     })));
     // A zellij pane frame title: the pane name between the border glyphs.
     const paneTitle = (name: string) => new RegExp(`[┌─] ${name} [─┐]`);
@@ -4821,12 +4825,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       }, { timeout: 30_000, interval: 250 });
       const hud = wb.pane.screen();
       // Moving focus down the stack expands each board in turn.
-      const moveFocus = (direction: 'right' | 'down') => {
-        const moved = paneZellij(['--session', wb.session, 'action', 'move-focus', direction]);
+      const moveFocus = async (direction: 'right' | 'down') => {
+        const moved = await paneZellij(['--session', wb.session, 'action', 'move-focus', direction]);
         expect(moved.status, moved.stderr).toBe(0);
       };
-      moveFocus('right');
-      moveFocus('down');
+      await moveFocus('right');
+      await moveFocus('down');
       await vi.waitFor(() => {
         const frame = wb.pane.screen();
         expect(paneTitle('wake').test(frame), frame).toBe(true);
@@ -4834,7 +4838,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(frame, frame).not.toContain('too small');
       }, { timeout: 15_000, interval: 250 });
       const wake = wb.pane.screen();
-      moveFocus('down');
+      await moveFocus('down');
       await vi.waitFor(() => {
         const frame = wb.pane.screen();
         expect(paneTitle('network').test(frame), frame).toBe(true);

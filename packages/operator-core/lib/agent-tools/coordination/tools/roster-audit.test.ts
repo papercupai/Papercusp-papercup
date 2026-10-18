@@ -29,7 +29,7 @@ describe('complete frozen roster audit paging', () => {
       expect(page.coverage).toMatchObject({ total: 2, missing: 0, duplicates: 0, complete: n === 2 });
       if (n === 2) expect(page.coverage).toMatchObject({ covered: 2, recordsRead: 3, totalRecords: 3, truncatedByLimit: false });
     }
-    expect(rows.map(row => row.id)).toEqual(snapshot.records.map(row => row.id));
+    expect(rows).toEqual(snapshot.records);
     expect(rows.filter(row => row.kind === 'agent').map(row => row.ownerId)).toEqual(['a', 'b']);
   });
   it('pages a single agent with many work items instead of dropping its evidence', () => {
@@ -51,6 +51,20 @@ describe('complete frozen roster audit paging', () => {
     expect(() => createRosterAudit({ ...snapshot, population: ['a', 'a'] })).toThrow(/duplicated/);
     expect(() => fixture([record('a'), record('a')])).toThrow(/exactly one/);
     expect(() => fixture([record('a'), record('b'), record('foreign', 'work')])).toThrow(/foreign/);
+  });
+  it.each([undefined, null, '2', true, NaN, Infinity, -Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'refuses invalid writer count %s at the internal typed boundary', expectedPopulation => {
+      expect(() => createRosterAudit({ ...fixture(), expectedPopulation: expectedPopulation as number }))
+        .toThrow(/measured non-negative safe integer/);
+    },
+  );
+  it.each([1, 3])('refuses either direction of population mismatch (%s)', expectedPopulation => {
+    expect(() => createRosterAudit({ ...fixture(), expectedPopulation })).toThrow(/population/);
+  });
+  it('permits distinct work records for one owner and refuses a duplicated record identity', () => {
+    const records = [record('a'), record('a', 'work', ':one'), record('a', 'work', ':two'), record('b')];
+    expect(fixture(records).records).toEqual(records);
+    expect(() => fixture([...records, records[1]])).toThrow(/duplicate identity/);
   });
   it('refuses cross-workspace, cross-lens, malformed and foreign-snapshot cursors', () => {
     const snapshot = fixture();

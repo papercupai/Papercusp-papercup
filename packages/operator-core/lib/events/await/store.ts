@@ -3552,10 +3552,12 @@ export async function findAnnouncementsForKey(
  * A gate declaration is intentionally durable after its owner disappears, so
  * normal lifecycle-binding retirement must not cancel it. A terminal close is
  * different: if the declaration names the item (in its lifecycle binding,
- * logical key, or note), or the closing owner declared it, closing the item is
- * only safe after every live waiter has been given a real fire or an explicit
- * retirement. Keep this read in the await store so the close path can inspect
- * declaration and waiter rows from one authoritative surface.
+ * logical key, or note), closing the item requires a real fire or explicit
+ * retirement. Owner-only matching protects unbound handoffs. A declaration
+ * explicitly bound to another lifecycle must survive unrelated work closing.
+ * Discovery scope controls visibility and does not establish that binding.
+ * Keep this read in the await store so the close path inspects declaration
+ * and waiter rows together.
  */
 export interface PendingAnnouncementForTerminalClose {
   announcement: AwaitRow;
@@ -3593,7 +3595,8 @@ export async function findPendingAnnouncementsForTerminalClose(input: {
          AND a.cancelled_at IS NULL
          AND a.superseded_at IS NULL
          AND (
-           (${ownerId !== null}::boolean AND a.subscriber_id = ${ownerId ?? ''})
+           (${ownerId !== null}::boolean AND a.subscriber_id = ${ownerId ?? ''}
+             AND (a.bound_to IS NULL OR a.bound_to = 'null'::jsonb))
            OR (${workItemId !== null}::boolean AND (
              (a.bound_to->>'kind' = 'work-item' AND a.bound_to->>'ref' = ${workItemId ?? ''})
              OR a.logical_gate_key = ${workItemId ?? ''}

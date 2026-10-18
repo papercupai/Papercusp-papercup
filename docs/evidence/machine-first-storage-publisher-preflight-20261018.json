@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010017241",
+  "parent": "WI-6554700010017024",
+  "planWorkItem": "WI-6554700010015411",
+  "observedAt": "2026-10-18T03:34:32.410567+00:00",
+  "scope": "Failed configured-artifact prerequisite; no reload-suppression verdict or shipment claim",
+  "test": {
+    "title": "served hosted signup utility: storage denied alone suppresses reload download",
+    "exitCode": 1,
+    "stats": {
+      "startTime": "2026-10-18T03:27:46.619Z",
+      "duration": 46736.498,
+      "expected": 0,
+      "skipped": 0,
+      "unexpected": 1,
+      "flaky": 0
+    },
+    "report": "/tmp/machine-first-storage-denied-v3-browser-20261018.json",
+    "reportSha256": "01becb2badd0c1d7e5575f8da5352fee4926390264396eea012fda325869d6ee",
+    "testSourceSha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d"
+  },
+  "receipt": {
+    "scope": "Served hosted admitted signup destination with sessionStorage denied only; provider signup and shipment excluded",
+    "documents": [],
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "1LPOfgFMsSpwcguWTsv9e",
+      "release": "1LPOfgFMsSpwcguWTsv9e-20261018031007952-3586394-3710b33b",
+      "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "publishedAt": "2026-10-18T03:10:07.952Z",
+      "sourceRootDigest": "12b1e1b143dca43dbdfe9073e4cb5a5fa6651d26eed8b59ec958072449db4554"
+    },
+    "tenantMatches": true,
+    "browserClosed": true,
+    "accountCleanup": true,
+    "cleanup": {
+      "attempted": 2,
+      "completed": 2,
+      "failed": 0,
+      "byKind": {
+        "browser": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "provider-user": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        }
+      }
+    }
+  },
+  "runtime": {
+    "path": "/tmp/machine-first-storage-denied-v3-runtime-20261018.json",
+    "sha256": "95b1c5123d256f5ee00f2a1c71879314ccda48831bc83162abf31eb12ea317f7",
+    "trackedPids": {
+      "supervisorPid": {
+        "pid": 284365,
+        "dead": true
+      },
+      "hostedPid": {
+        "pid": 284750,
+        "dead": true
+      },
+      "portalPid": {
+        "pid": 331072,
+        "dead": true
+      }
+    },
+    "trackedPorts": {
+      "tls": {
+        "port": 45805,
+        "closed": true
+      },
+      "hosted": {
+        "port": 34845,
+        "closed": true
+      },
+      "portal": {
+        "port": 39779,
+        "closed": true
+      },
+      "pg": {
+        "port": 40041,
+        "closed": true
+      }
+    },
+    "privateHomeRemoved": true
+  },
+  "failure": {
+    "stage": "initial welcome publisher availability",
+    "actual": "An automatic download is unavailable for this computer. Choose your platform on the download page or continue to the GUI.",
+    "measuredReload": false
+  },
+  "artifactComparison": {
+    "priorRelease": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+    "priorRoute": "publisher HTTPS URL compiled into route",
+    "currentRelease": "1LPOfgFMsSpwcguWTsv9e-20261018031007952-3586394-3710b33b",
+    "currentRoute": "process.env.NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL retained, no value supplied by acceptance invocation"
+  },
+  "rootCause": "Direct acceptance build bypassed the maintained reconciler public-links snapshot; successful compilation alone does not verify configuration-dependent utility availability.",
+  "detectorFailure": "Build source digest does not bind the external public-links configuration; acceptance lacked a required-publisher preflight.",
+  "launcher": {
+    "path": "/tmp/machine-first-storage-denied-v3-launcher-20261018.log",
+    "sha256": "9d696f1030d130e2ca89dc478e03fcf1f4cfdb177ad94587f6f54e2d56a2fe9f",
+    "derivedSourceSha256": "a47dadfdb6cad327b0a722c39b653c7b6ded93146058df8bb46db4e815b3820a"
+  }
+}

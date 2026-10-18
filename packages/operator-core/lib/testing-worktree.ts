@@ -59,6 +59,16 @@ export function captureTestSourceSnapshot(root: string): WorktreeGitSnapshot {
   }
 }
 
+/** Awaitable reporter boundaries use the governed async Git runner. Archive
+ * custody still requires its independent receipt; never fall back to ambient Git.
+ */
+export async function captureTestSourceSnapshotAsync(root: string): Promise<WorktreeGitSnapshot> {
+  if (existsSync(join(root, '.verifier-source.json')) || process.env.VERIFY_TAURI_SOURCE_RECEIPT) {
+    return captureTestSourceSnapshot(root);
+  }
+  return captureWorktreeSnapshotAsync(root);
+}
+
 export function computeWorktreeDirty(before: WorktreeGitSnapshot, after: WorktreeGitSnapshot): boolean {
   if (!before.commit || !after.commit) return true;
   if (before.commit !== after.commit) return true;
@@ -132,31 +142,48 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
   return snapshot(commit, exemption ? exemptProbeSubject(porcelain, exemption) : porcelain);
 }
 
-/** Native async producers can await the shared sidecar Git runner rather than
+/** Async producers can await the shared sidecar subprocess runner rather than
  * block their host on the synchronous reporter's two-second deadline. Keep
  * unknown reads fail-closed, preserve mutation-probe root/exemption behavior,
- * and bracket status to detect source movement. The lazy import keeps
- * synchronous reporter imports small.
+ * and bracket status to detect source movement. The shared runner bounds and
+ * drains the child on both sidecar and local paths. The lazy import keeps
+ * synchronous reporter imports small; no cached status can attest a later run.
  */
 export async function captureWorktreeSnapshotAsync(root: string): Promise<WorktreeGitSnapshot> {
   const origin = process.env.PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT?.trim();
   const snapshotRoot = isMutationProbeRun() && origin && isAbsolute(origin) ? origin : root;
   try {
-    const { runGit } = await import('./harness/docs/git-runner');
-    const head = await runGit(['--no-optional-locks', 'rev-parse', 'HEAD'], snapshotRoot);
-    const status = await runGit(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], snapshotRoot);
-    const after = await runGit(['--no-optional-locks', 'rev-parse', 'HEAD'], snapshotRoot);
-    let porcelain = status.code === 0 ? status.stdout.trim() : null;
+    const { execFileViaSidecar } = await import('./fleet/git-via-sidecar');
+    const failures: string[] = [];
+    const read = async (args: string[]): Promise<string | null> => {
+      const started = Date.now();
+      try {
+        const result = await execFileViaSidecar('git', ['--no-optional-locks', ...args], {
+          cwd: snapshotRoot, timeoutMs: 30_000, subsystem: 'test-source-provenance',
+          env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+        });
+        return result.stdout.trim();
+      } catch (error) {
+        failures.push(`git ${args.join(' ')} failed after ${Date.now() - started}ms `
+          + `(budget=30000ms): ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    };
+    const head = await read(['rev-parse', 'HEAD']);
+    let porcelain = await read(['status', '--porcelain', '--untracked-files=all']);
+    const after = await read(['rev-parse', 'HEAD']);
+    if (head && after && head !== after) failures.push('Git HEAD changed during provenance capture');
     if (porcelain && isMutationProbeRun()) {
       const exemption = await resolveProbeSubjectExemption(snapshotRoot);
       if (exemption) porcelain = exemptProbeSubject(porcelain, exemption);
     }
     return {
-      commit: head.code === 0 && after.code === 0 && head.stdout.trim() === after.stdout.trim()
-        ? head.stdout.trim() || null : null,
+      commit: head && head === after ? head : null,
       porcelain,
+      ...(failures.length ? { provenanceError: failures.join('; ').slice(0, 500) } : {}),
     };
-  } catch {
-    return { commit: null, porcelain: null };
+  } catch (error) {
+    return { commit: null, porcelain: null,
+      provenanceError: `async source capture: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500) };
   }
 }

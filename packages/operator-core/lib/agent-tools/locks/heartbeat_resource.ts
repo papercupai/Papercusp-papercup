@@ -45,7 +45,9 @@ async function heartbeatAcrossDomains(
     // connection/transaction after the contention dip; non-contention errors
     // still propagate to the keyed bulk result unchanged.
     const r = await acquireWithContentionRetry(() =>
-      inWorkspaceTxn(domain, ownerId, (tx) => tryHeartbeatResource(tx, domain, ownerId, lockId, ttlSec)),
+      inWorkspaceTxn(domain, ownerId, (tx) => tryHeartbeatResource(tx, domain, ownerId, lockId, ttlSec), {
+        leaseRenewal: true,
+      }),
     );
     if (r.extended) return r;
     last = r;

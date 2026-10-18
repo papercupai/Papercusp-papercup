@@ -28,6 +28,8 @@ const corpus: ToolDiscoveryEntry[] = [
   entry('dev:pipeline_position', 'is a code change live, deployed, or blocked in the pipeline'),
   entry('state:read', 'read a registered state cell by name'),
   entry('change_ledger:calendar', 'browse the change ledger by date'),
+  entry('coord:roster', 'complete parked agent audit with frozen evidence pages'),
+  entry('audit:list', 'audit log of agent and user actions'),
 ];
 
 // Deterministic embedding space: one orthogonal axis per concept.
@@ -75,6 +77,17 @@ describe('cosineSimilarity', () => {
 });
 
 describe('findTools', () => {
+  it.each(['parked agent audit', 'audit parked agents', 'parked-agent audit'])(
+    'routes %s to the complete roster surface ahead of generic audit tools', async query => {
+      const hits = await findTools(corpus, query, { limit: 3 });
+      expect(hits[0].tool).toBe('coord:roster');
+    },
+  );
+  it('preserves an explicitly named tool in a parked-agent audit query', async () => {
+    const query = 'audit:list for parked agent audit';
+    expect(decisiveToolForSymptom(query)).toBeNull();
+    expect((await findTools(corpus, query, { limit: 3 }))[0].tool).toBe('audit:list');
+  });
   it('lexical-only when no embedder (graceful) — exact name leads', async () => {
     const hits = await findTools(corpus, 'orient');
     expect(hits[0].tool).toBe('coord:orient');

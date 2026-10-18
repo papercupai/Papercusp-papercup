@@ -18,6 +18,7 @@ import {
   recordOperationalRun,
   executeOperationalRun,
   executePlanTerminalCensus,
+  executeGitScratchPlacement,
   inspectPlanTerminalCensus,
   verifyOperationalCheckDefinitionAtCommit,
   recoverArchivedMutationFailures,
@@ -49,6 +50,83 @@ const EVIDENCE: CommittedOperationalEvidence = {
   sha256: 'a'.repeat(64),
   commit: 'b'.repeat(40),
 };
+
+describe('native Git scratch placement execution', () => {
+  function fixture() {
+    const ref = 'a'.repeat(40);
+    const clonePath = '/mnt/data/tmp/papercusp-git-scratch-owned';
+    const paths = new Set<string>();
+    const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [321] }));
+    const clone = vi.fn(async (options: Parameters<typeof import('../../scratch-git-clone').createScratchClone>[0]) => {
+      if (options.destination) throw new Error('scratchClone refuses repository materialisation on the root filesystem');
+      paths.add(clonePath);
+      return { path: clonePath, source: '/repo', requestedRef: ref, sha: ref, submodules: 0, borrowedRepositories: 1 };
+    });
+    const git = vi.fn(async (args: string[]) => ({
+      code: args[0] === 'symbolic-ref' ? 1 : 0,
+      output: args[0] === 'rev-parse' ? ref : '',
+    }));
+    const deps = { clone, git,
+      device: vi.fn(async (path: string) => path.startsWith('/mnt/data') ? 2 : 1),
+      realpath: vi.fn(async (path: string) => path),
+      exists: vi.fn(async (path: string) => paths.has(path)),
+      remove: vi.fn(async (path: string) => { paths.delete(path); }),
+      execution: { snapshot: vi.fn(() => ({ commit: 'b'.repeat(40), porcelain: '' })),
+        readRuntime: vi.fn(async () => 'c'.repeat(64)), verifyDefinition: vi.fn(async () => true), persist },
+    };
+    const ctx = { workspaceId: 'workspace-test', harnessSlug: 'papercusp', projectDir: '/repo' };
+    return { ref, deps, ctx, paths, clonePath, persist };
+  }
+
+  it('records actual default/refusal assertions with bracketing witnesses and removes only owned probes', async () => {
+    const f = fixture();
+    expect(await executeGitScratchPlacement(f.ref, f.ctx, f.deps)).toMatchObject({
+      ok: true, status: 'pass', runtimeEnvironmentMeasured: true, testRunIds: [321],
+    });
+    expect(f.deps.clone).toHaveBeenCalledWith(expect.objectContaining({ source: '/repo', ref: f.ref }));
+    expect(f.paths.size).toBe(0);
+    expect(f.deps.remove).toHaveBeenCalledWith(f.clonePath);
+    expect(f.persist.mock.calls[0][0].rows[0].execution).toMatchObject({
+      operational: { command: ['testing:record-run', 'gitScratchPlacement', f.ref] }, failed: 0,
+    });
+    expect(f.deps.execution.readRuntime).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a nonempty tree before copying and persists a failed check, never a historical pass', async () => {
+    const f = fixture();
+    f.deps.git.mockResolvedValueOnce({ code: 0, output: 'product-source' });
+    expect(await executeGitScratchPlacement(f.ref, f.ctx, f.deps)).toMatchObject({ status: 'fail' });
+    expect(f.deps.clone).not.toHaveBeenCalled();
+    expect(f.persist.mock.calls[0][0].rows[0].outputTail).toContain('exact empty committed tree');
+  });
+
+  it('fails when a root-side request is accepted and removes its uniquely owned probe', async () => {
+    const f = fixture();
+    f.deps.clone.mockImplementation(async options => {
+      const path = options.destination ?? f.clonePath;
+      f.paths.add(path);
+      return { path, source: '/repo', requestedRef: f.ref, sha: f.ref, submodules: 0, borrowedRepositories: 1 };
+    });
+    expect(await executeGitScratchPlacement(f.ref, f.ctx, f.deps)).toMatchObject({ status: 'fail' });
+    expect(f.persist.mock.calls[0][0].rows[0].outputTail).toContain('git-root-refused-before-write');
+    expect(f.paths.size).toBe(0);
+  });
+
+  it('detects actual root-device placement despite a data-looking pathname', async () => {
+    const f = fixture();
+    f.deps.device.mockImplementation(async path => path === f.clonePath ? 1 : path.startsWith('/mnt/data') ? 2 : 1);
+    expect(await executeGitScratchPlacement(f.ref, f.ctx, f.deps)).toMatchObject({ status: 'fail' });
+    expect(f.persist.mock.calls[0][0].rows[0].outputTail).toContain('git-default-data-filesystem');
+    expect(f.paths.size).toBe(0);
+  });
+
+  it('preserves a cleanup failure as a failed native measurement', async () => {
+    const f = fixture();
+    f.deps.remove.mockRejectedValue(new Error('owned probe cleanup failed'));
+    expect(await executeGitScratchPlacement(f.ref, f.ctx, f.deps)).toMatchObject({ status: 'fail' });
+    expect(f.persist.mock.calls[0][0].rows[0].outputTail).toContain('owned probe cleanup failed');
+  });
+});
 
 describe('native operational execution witnesses', () => {
   function fixture() {

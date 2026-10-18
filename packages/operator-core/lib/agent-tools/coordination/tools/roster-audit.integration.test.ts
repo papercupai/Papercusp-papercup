@@ -4,6 +4,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { createRosterAudit, auditKnown, pageRosterAudit, type AuditScope } from './roster-audit';
 import { buildRosterAudit, loadRosterAudit, saveRosterAudit } from './roster-audit-store';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { publishReport } from '../../../report-library';
 
 const fixture = vi.hoisted(() => ({ workspaceId: 'audit-test-ws', sql: null as unknown }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
@@ -53,6 +54,50 @@ describe('roster frozen audit PG persistence', () => {
     await expect(loadRosterAudit(harness, snapshot.auditId, scope)).rejects.toThrow(/content|population/);
   });
 
+  it('keeps every frozen record unchanged when source evidence changes between pages', async () => {
+    const original = createRosterAudit({ ...build(), asOf: '2026-10-20T00:00:00.000Z', records: [
+      ...build().records,
+      { id: 'work:a:one', ownerId: 'a', kind: 'work', fields: { next: auditKnown('original next step', 'fixture checkpoint', '2026-10-20T00:00:00.000Z') } },
+      { id: 'work:a:two', ownerId: 'a', kind: 'work', fields: { next: auditKnown('second next step', 'fixture checkpoint', '2026-10-20T00:00:00.000Z') } },
+    ] });
+    const expected = JSON.parse(JSON.stringify(original.records));
+    await saveRosterAudit(harness, original);
+    const first = pageRosterAudit(original, scope, { pageSize: 1 });
+    original.records[2].fields.next.value = 'changed live source';
+    const newer = createRosterAudit({ ...original, asOf: '2026-10-20T01:00:00.000Z' });
+    await saveRosterAudit(harness, newer);
+    const restored = (await loadRosterAudit(harness, first.auditId, scope))!;
+    const actual = [...first.records];
+    let cursor = first.nextCursor;
+    while (cursor) {
+      const page = pageRosterAudit(restored, scope, { cursor, pageSize: 1 });
+      expect([page.auditId, page.asOf]).toEqual([first.auditId, first.asOf]);
+      actual.push(...page.records);
+      cursor = page.nextCursor;
+    }
+    expect(actual).toEqual(expected);
+    expect(() => pageRosterAudit(newer, scope, { cursor: first.nextCursor! })).toThrow(/different audit/);
+  });
+
+  it('preserves all stored artifacts and an existing valid snapshot on every invalid save', async () => {
+    const original = createRosterAudit({ ...build(), asOf: '2026-10-21T00:00:00.000Z' });
+    await saveRosterAudit(harness, original);
+    const artifacts = () => db.adminSql<{ rel_path: string; content: string }[]>`SELECT rel_path, content
+      FROM harness_shared.harness_text_artifacts WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} ORDER BY rel_path`;
+    const before = await artifacts();
+    const invalid = [
+      ...[undefined, null, '2', true, NaN, Infinity, -Infinity, -1, 1.5, 1, 3].map(expectedPopulation => ({ ...original, expectedPopulation })),
+      { ...original, population: ['a', 'a'] },
+      { ...original, records: [...original.records, original.records[0]] },
+      { ...original, auditId: 'f'.repeat(64) },
+    ];
+    for (const snapshot of invalid) {
+      await expect(saveRosterAudit(harness, snapshot as typeof original)).rejects.toThrow();
+      expect(await artifacts()).toEqual(before);
+      expect(await loadRosterAudit(harness, original.auditId, scope)).toEqual(original);
+    }
+  });
+
   it('assembles measured modes, no-work owners and exact message pickup from PG', async () => {
     const asOf = '2026-10-18T01:00:00.000Z';
     await db.adminSql`INSERT INTO harness_shared.agent_modes (workspace_id, owner_id, axis_key, mode, set_by)
@@ -94,5 +139,39 @@ describe('roster frozen audit PG persistence', () => {
     expect(work).toHaveLength(2);
     expect(work.map(row => (row.fields.identity.value as { harness: string }).harness).sort()).toEqual([harness, harness + '-second'].sort());
     expect(work.map(row => row.fields.next.status)).toEqual(['unknown', 'unknown']);
+  });
+
+  it('retains each visible report edition count and correction link through frozen paging', async () => {
+    const origin = { authorOwnerId: 'reader-a', harnessSlug: harness };
+    const prior = await publishReport(db.adminSql, { workspaceId: scope.workspaceId, kind: 'audit', visibility: 'owner',
+      title: 'Parked agent audit original', bodyMd: 'The census contained **2 parked agents**.\n\n1 recipient replied; 1 pickup remained unconfirmed.' }, origin);
+    const corrected = await publishReport(db.adminSql, { workspaceId: scope.workspaceId, kind: 'audit', visibility: 'owner',
+      title: 'Parked agent audit corrected', supersedes: prior.reportId,
+      bodyMd: 'Correction: **3 parked agents**, not 2.\n\n2 recipients replied; 1 pickup remained unconfirmed.' }, origin);
+    const hidden = await publishReport(db.adminSql, { workspaceId: scope.workspaceId, kind: 'audit', visibility: 'owner',
+      title: 'Parked agent audit hidden', bodyMd: '999 private parked agents.' }, { authorOwnerId: 'other-reader' });
+    const snapshot = await buildRosterAudit({ harness, scope, asOf: new Date().toISOString(), expectedPopulation: 0,
+      viewer: { ownerId: 'reader-a' }, agents: [] });
+    await saveRosterAudit(harness, snapshot);
+    const frozen = (await loadRosterAudit(harness, snapshot.auditId, scope))!;
+    const records = [];
+    let cursor: string | undefined;
+    do {
+      const page = pageRosterAudit(frozen, scope, { cursor, pageSize: 1 });
+      records.push(...page.records);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    const original = records.find(row => row.id === 'history:report:' + prior.reportId)!;
+    expect(original.fields.correction.value).toMatchObject({ supersededBy: ['report:' + corrected.reportId] });
+    expect(original.fields.edition.value).toBe('superseded');
+    const latest = records.find(row => row.id === 'history:report:' + corrected.reportId)!;
+    expect(latest.fields.correction.value).toMatchObject({ supersedes: prior.reportId });
+    expect(latest.fields.edition.value).toBe('latest-visible');
+    const countQuotes = (reportId: string) => records.filter(row => row.id.startsWith('history:report:' + reportId + ':counts:'))
+      .map(row => (row.fields.reportedCountContext.value as { quote: string }).quote);
+    expect(countQuotes(prior.reportId)).toEqual(prior.bodyMd.split('\n\n'));
+    expect(countQuotes(corrected.reportId)).toEqual(corrected.bodyMd.split('\n\n'));
+    expect(records.some(row => row.id.includes(hidden.reportId))).toBe(false);
+    expect(frozen.expectedPopulation).toBe(0);
   });
 });

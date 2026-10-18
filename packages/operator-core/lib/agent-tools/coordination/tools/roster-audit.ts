@@ -45,7 +45,8 @@ export interface AuditHistory {
   auditId: string | null;
   asOf: string | null;
   total: number | null;
-  corrections: Array<{ ref: string; supersedes: string | null; summary: string }>;
+  corrections: Array<{ ref: string; supersedes: string | null; summary: string;
+    publishedAt?: string; supersededBy?: string[]; countQuotes?: string[] }>;
   status: 'known' | 'unknown';
   reason?: string;
   correctionCount?: number;
@@ -86,6 +87,9 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 /** Fail closed before persisting an incomplete census or a stream with duplicate identities. */
 export function createRosterAudit(input: Omit<RosterAuditSnapshot, 'schemaVersion' | 'auditId' | 'populationHash'>): RosterAuditSnapshot {
   if (!Number.isFinite(Date.parse(input.asOf))) throw new RosterAuditError('invalid_as_of', 'Audit observation time is invalid.');
+  if (typeof input.expectedPopulation !== 'number' || !Number.isSafeInteger(input.expectedPopulation) || input.expectedPopulation < 0) {
+    throw new RosterAuditError('writer_count_invalid', 'Audit writer population must be a measured non-negative safe integer.');
+  }
   if (!input.scope.workspaceId || input.expectedPopulation !== input.population.length) {
     throw new RosterAuditError('population_incomplete', 'Returned parked owners do not match the roster writer population.');
   }

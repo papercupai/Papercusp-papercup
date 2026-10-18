@@ -14,7 +14,9 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { access, realpath, rm, stat } from 'node:fs/promises';
+import { createScratchClone, runLocalGit } from '../../scratch-git-clone';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -122,6 +124,7 @@ type RecordContext = {
   workspaceId?: string | null;
   harnessSlug?: string | null;
   projectDir?: string;
+  signal?: AbortSignal;
 };
 
 export interface RecordOperationalRunDeps {
@@ -807,10 +810,96 @@ export async function executePlanTerminalCensus(
   }, ctx, deps?.execution);
 }
 
+/** Measure the production materializer, then persist execution-time source/runtime witnesses. */
+export async function executeGitScratchPlacement(
+  ref: string,
+  ctx: RecordContext,
+  deps?: {
+    clone: typeof createScratchClone;
+    git: typeof runLocalGit;
+    device: (path: string) => Promise<number>;
+    realpath: (path: string) => Promise<string>;
+    exists: (path: string) => Promise<boolean>;
+    remove: (path: string) => Promise<void>;
+    execution: Parameters<typeof executeOperationalRun>[2];
+  },
+) {
+  const root = resolveAgentWorkspaceRoot(ctx);
+  const signal = ctx.signal ?? new AbortController().signal;
+  const clone = deps?.clone ?? createScratchClone;
+  const git = deps?.git ?? runLocalGit;
+  const device = deps?.device ?? (async (path: string) => (await stat(path)).dev);
+  const canonical = deps?.realpath ?? realpath;
+  const exists = deps?.exists ?? (async (path: string) => access(path).then(() => true, () => false));
+  const remove = deps?.remove ?? (async (path: string) => rm(path, { recursive: true, force: true }));
+  const unit = process.env.PAPERCUSP_VINTAGE_UNIT?.trim() ||
+    (process.env.PAPERCUSP_DESKTOP === '1' ? 'desktop-sidecar'
+      : `hono-host:${process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? '3070'}`);
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/agent-tools/testing/record-run.ts',
+    name: 'Native Git scratch default placement and root refusal', framework: 'operational',
+    command: ['testing:record-run', 'gitScratchPlacement', ref], runtimeUnits: [unit],
+    run: async () => {
+      const assertions: OperationalEvidenceArtifact['assertions'] = [];
+      const check = (id: string, passed: boolean, evidence: string) => assertions.push({ id, passed, evidence });
+      const read = async (args: string[], cwd = root) => {
+        const result = await git(args, cwd, signal);
+        if (result.code !== 0) throw new Error(`Git placement preflight/read failed: ${result.output.slice(-1500)}`);
+        return result.output.trim();
+      };
+      // An exact empty committed tree keeps this acceptance bounded and avoids
+      // copying the product tree or relying on mutable HEAD/submodule state.
+      const tree = await read(['ls-tree', '--name-only', ref]);
+      if (tree || await read(['rev-parse', '--verify', `${ref}^{commit}`]) !== ref) {
+        throw new Error('Git placement check requires an exact empty committed tree.');
+      }
+      const dataTemp = await canonical('/mnt/data/tmp');
+      const scratch = await canonical(join(root, '.papercusp', 'scratch'));
+      const [rootDevice, dataDevice, tempDevice, scratchDevice] = await Promise.all(
+        ['/', '/mnt/data', dataTemp, scratch].map(device));
+      if (rootDevice === dataDevice || tempDevice !== dataDevice || scratchDevice !== rootDevice) {
+        throw new Error('Git placement check requires separate data storage and an actual root-side scratch parent.');
+      }
+      const destination = join(scratch, `placement-check-${randomUUID()}`);
+      if (await exists(destination)) throw new Error('Git placement refusal destination already exists.');
+      let ownedClone: string | undefined;
+      try {
+        const result = await clone({ source: root, ref, signal });
+        const actual = await canonical(result.path);
+        const rel = relative(dataTemp, actual);
+        const contained = rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+        // Never delete a surprising path returned by a regressed materializer.
+        if (contained && rel.startsWith('papercusp-git-scratch-') && !rel.includes(sep)) ownedClone = actual;
+        check('git-default-data-filesystem', contained && await device(actual) === dataDevice,
+          `default=${actual}; rootDevice=${rootDevice}; dataDevice=${dataDevice}`);
+        check('git-exact-ref', await read(['rev-parse', 'HEAD'], actual) === ref, `requested=${ref}`);
+        check('git-remotes-removed', await read(['remote'], actual) === '', 'The actual checkout must have no remotes.');
+        const detached = await git(['symbolic-ref', '-q', 'HEAD'], actual, signal);
+        check('git-detached-head', detached.code === 1 && detached.output.trim() === '', 'Actual symbolic-ref must report detached HEAD.');
+        let refusal = '';
+        try { await clone({ source: root, ref, destination, signal }); }
+        catch (error) { refusal = error instanceof Error ? error.message : String(error); }
+        check('git-root-refused-before-write', refusal.includes('root filesystem') && !await exists(destination),
+          `root-side destination=${destination}; refusal=${refusal || 'no refusal'}`);
+      } finally {
+        for (const path of [ownedClone, destination].filter((path): path is string => Boolean(path))) {
+          await remove(path);
+          check('git-owned-checkout-removed:' + (path === destination ? 'root-probe' : 'default'),
+            !await exists(path), `Owned probe path removed: ${path}`);
+        }
+        check('git-default-cleanup-owned', Boolean(ownedClone), 'Default checkout must have a safely owned data-temp path.');
+      }
+      const failed = assertions.some(assertion => !assertion.passed);
+      return { exitCode: failed ? 1 : 0, assertions,
+        summary: failed ? 'Native Git placement check failed; inspect the recorded assertions.'
+          : 'Native Git default checkout used the data filesystem, refused root placement, and cleaned up.' };
+    },
+  }, ctx, deps?.execution);
+}
+
 export default defineTool({
   name: 'testing:record-run',
   description:
-    'Live plan terminal check: pass planTerminalCensus:{slug} instead of evidenceFile/expectedSha256; it reads the canonical population, rejects unexplained drops/changes, and records operational evidence. ' +
+    'Native checks: planTerminalCensus:{slug} measures canonical terminal state; gitScratchPlacement:{ref} uses an exact empty committed tree to measure production scratch-clone placement/root refusal and cleanup. Both record execution-time source/runtime witnesses. ' +
     'Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. ' +
     'Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. ' +
     'Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. ' +
@@ -839,12 +928,19 @@ export default defineTool({
     harness: harnessArg,
     planTerminalCensus: z.object({ slug: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).max(200) })
       .describe('Execute a current canonical plan-item census and record its measured assertions. Non-terminal items, missing inline drop reasons, empty/duplicate populations and mid-check changes fail.'),
+  }), z.object({
+    harness: harnessArg,
+    gitScratchPlacement: z.object({ ref: z.string().regex(/^[a-f0-9]{40}$/) })
+      .describe('Execute the shared production scratch materializer with an exact empty committed tree; measure actual filesystem placement, root refusal and cleanup.'),
   })]),
   async handler(args, ctx) {
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     if (!harnessSlug) return harnessRequiredResult('testing:record-run', ctx);
     if ('planTerminalCensus' in args) {
       return { data: await executePlanTerminalCensus(args.planTerminalCensus.slug, { ...ctx, harnessSlug }) };
+    }
+    if ('gitScratchPlacement' in args) {
+      return { data: await executeGitScratchPlacement(args.gitScratchPlacement.ref, { ...ctx, harnessSlug }) };
     }
     return { data: await recordOperationalRun({ ...args, harness: harnessSlug }, ctx) };
   },

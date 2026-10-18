@@ -28,6 +28,7 @@ import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-r
 import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
 import {
   captureTestSourceSnapshot,
+  captureTestSourceSnapshotAsync,
   resolveReporterSourceRoot,
   computeWorktreeDirty,
   type WorktreeGitSnapshot,
@@ -432,7 +433,10 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         : null;
       let worktreeAfter: WorktreeGitSnapshot = { commit: null, porcelain: null };
       try {
-        worktreeAfter = captureTestSourceSnapshot(this.runRoot);
+        // onBegin must finish synchronously before any test executes. onEnd is
+        // awaited by Playwright, so final custody can use the bounded async
+        // runner instead of mistaking a two-second sync budget for dirty source.
+        worktreeAfter = await captureTestSourceSnapshotAsync(this.runRoot);
       } catch {
         // D-007: missing proof of stability is dirty, never a false clean.
       }

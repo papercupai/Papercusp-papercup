@@ -19,7 +19,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { describeConformance } from '@papercusp/file-claim/conformance';
 import { SuLocksCoordinator } from '../coordinator';
-import { ensureBootstrap, _resetForTests } from '../su-lock-store';
+import { ensureBootstrap, getTxPool, _resetForTests } from '../su-lock-store';
+import { inWorkspaceTxn } from '../in-workspace-txn';
 
 const SUITE_PREFIX = `vitest-coord-${Date.now()}-${Math.random()
   .toString(36)
@@ -58,6 +59,83 @@ describeConformance('SuLocksCoordinator', async () => {
 // These cases lock the corrected behaviour in.
 // ────────────────────────────────────────────────────────────────────
 describe('SuLocksCoordinator.heartbeat (file-locking #11 regression)', () => {
+  it('renews a minimal tool claim while an unrelated path transaction remains open', async () => {
+    const domain = nextWs();
+    const coordinator = new SuLocksCoordinator({ coordinationDomain: domain });
+    const acquired = await coordinator.acquire('owner', ['ours.ts']);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    let unblock!: () => void;
+    let ready!: () => void;
+    const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+    const entered = new Promise<void>((resolve) => { ready = resolve; });
+    const peer = inWorkspaceTxn(domain, 'peer', async () => {
+      ready();
+      await blocked;
+    }, { paths: ['unrelated.ts'] });
+    await Promise.race([entered, peer]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        coordinator.heartbeat({ ...acquired.claim, paths: [] }, 120_000),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('renewal blocked on unrelated path')), 1500);
+        }),
+      ]);
+      expect(result.ok).toBe(true);
+    } finally {
+      clearTimeout(timer);
+      unblock();
+      await peer;
+      await coordinator.release(acquired.claim);
+    }
+  });
+
+  it('renews while an unrelated expired row is locked, without sweeping that row', async () => {
+    const domain = nextWs();
+    const coordinator = new SuLocksCoordinator({ coordinationDomain: domain });
+    const own = await coordinator.acquire('owner', ['ours.ts']);
+    const expired = await coordinator.acquire('peer', ['expired.ts']);
+    expect(own.ok && expired.ok).toBe(true);
+    if (!own.ok || !expired.ok) return;
+    const sql = getTxPool();
+    await sql`UPDATE agent_file_locks SET expires_ts = clock_timestamp() - interval '1 second'
+      WHERE coordination_domain = ${domain} AND lock_id = ${expired.claim.claimId}::uuid`;
+    let unblock!: () => void;
+    let ready!: () => void;
+    const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+    const entered = new Promise<void>((resolve) => { ready = resolve; });
+    const peer = sql.begin(async (tx) => {
+      await tx`SELECT path FROM agent_file_locks WHERE coordination_domain = ${domain}
+        AND lock_id = ${expired.claim.claimId}::uuid FOR UPDATE`;
+      ready();
+      await blocked;
+    });
+    await Promise.race([entered, peer]);
+    try {
+      expect((await coordinator.heartbeat({ ...own.claim, paths: [] }, 120_000)).ok).toBe(true);
+    } finally {
+      unblock();
+      await peer;
+      await coordinator.reap('owner');
+      await coordinator.reap('peer');
+    }
+  });
+
+  it('never resurrects an expired lease or extends a different owner', async () => {
+    const domain = nextWs();
+    const coordinator = new SuLocksCoordinator({ coordinationDomain: domain });
+    const acquired = await coordinator.acquire('owner', ['expired.ts']);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    expect((await coordinator.heartbeat({ ...acquired.claim, owner: 'other', paths: [] })).ok).toBe(false);
+    const sql = getTxPool();
+    await sql`UPDATE agent_file_locks SET expires_ts = clock_timestamp() - interval '1 second'
+      WHERE coordination_domain = ${domain} AND lock_id = ${acquired.claim.claimId}::uuid`;
+    expect((await coordinator.heartbeat({ ...acquired.claim, paths: [] })).ok).toBe(false);
+    await coordinator.reap('owner');
+  });
+
   it('extends a held claim and returns ok with a later expiry', async () => {
     const coordinator = new SuLocksCoordinator({ coordinationDomain: nextWs() });
     const acq = await coordinator.acquire('hb-owner', ['hb/file.ts'], {

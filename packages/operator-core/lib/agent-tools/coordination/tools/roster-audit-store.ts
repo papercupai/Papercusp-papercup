@@ -29,6 +29,10 @@ function assertScope(scope: AuditScope) {
 /** Evidence-only INSERT on the existing artifact table: immutable and tenant-scoped, no disk mirror. */
 export async function saveRosterAudit(harness: string, snapshot: RosterAuditSnapshot): Promise<void> {
   assertScope(snapshot.scope);
+  const validated = createRosterAudit(snapshot);
+  if (snapshot.schemaVersion !== validated.schemaVersion || snapshot.auditId !== validated.auditId || snapshot.populationHash !== validated.populationHash) {
+    throw new RosterAuditError('audit_identity_invalid', 'Audit identity must match its validated frozen evidence before persistence.');
+  }
   const { sql } = getOrgPg();
   const content = JSON.stringify(snapshot);
   await sql`INSERT INTO harness_shared.harness_text_artifacts (workspace_id, harness_slug, rel_path, content, updated_at)
@@ -97,10 +101,26 @@ async function previousAudit(input: AuditBuildInput): Promise<AuditHistory> {
     const last = page[page.length - 1]!;
     cursor = { publishedAt: last.publishedAt, reportId: last.reportId };
   }
+  const supersededBy = new Map<string, string[]>();
+  for (const report of reports) {
+    if (report.supersedesReportId) {
+      const refs = supersededBy.get(report.supersedesReportId) ?? [];
+      refs.push('report:' + report.reportId);
+      supersededBy.set(report.supersedesReportId, refs);
+    }
+  }
   return { status: 'known', auditId: prior?.auditId ?? null, asOf: prior?.asOf ?? null,
     total: prior?.expectedPopulation ?? null,
     corrections: reports.map(report => ({ ref: `report:${report.reportId}`, supersedes: report.supersedesReportId,
-      summary: excerpt(report.summary, 100) })),
+      summary: excerpt(report.summary, 100), publishedAt: report.publishedAt,
+      supersededBy: supersededBy.get(report.reportId) ?? [],
+      // Retain the edition's numerical statements verbatim, with their context.
+      // Prose is not a typed measurement: never parse a number into today's
+      // population or infer a zero from an edition with no count statement.
+      // Split long paragraphs into consecutive records without dropping text.
+      countQuotes: report.bodyMd.split(/\n\s*\n/).filter(paragraph => /\d/.test(paragraph))
+        .flatMap(paragraph => paragraph.match(/[\s\S]{1,1000}/g) ?? []),
+    })),
   };
 }
 
@@ -161,9 +181,20 @@ export async function buildRosterAudit(input: AuditBuildInput): Promise<RosterAu
   ]);
   const records: AuditRecord[] = [];
   for (const correction of previous.corrections) {
+    const { countQuotes, ...edition } = correction;
     records.push({ id: `history:${correction.ref}`, ownerId: '@audit', kind: 'history', fields: {
-      correction: auditKnown(correction, 'report_library visibility-gated lineage', input.asOf),
+      correction: auditKnown(edition, 'report_library visibility-gated lineage', input.asOf),
+      edition: auditKnown(correction.supersededBy?.length ? 'superseded' : 'latest-visible', 'report_library visible supersession links', input.asOf),
+      reportedCounts: countQuotes?.length
+        ? auditKnown({ quoteRecords: countQuotes.length }, 'report_library.body_md numerical statements (not remeasured)', input.asOf)
+        : auditUnknown('report_library.body_md', input.asOf, 'No numeric statement was recorded in this visible edition; counts are not assumed zero.'),
     }});
+    for (const [index, quote] of (countQuotes ?? []).entries()) {
+      records.push({ id: `history:${correction.ref}:counts:${index}`, ownerId: '@audit', kind: 'history', fields: {
+        reportedCountContext: { ...auditKnown({ edition: correction.ref, part: index, quote }, 'report_library.body_md exact quote (not remeasured)', input.asOf),
+          recordedAt: correction.publishedAt, evidenceRef: correction.ref },
+      }});
+    }
   }
   const boundedPrevious = { ...previous, corrections: [], correctionCount: previous.corrections.length, correctionRecords: true };
   const checkpoints = new Map<string, Awaited<ReturnType<typeof getWorkItemCheckpointWithMeta>>>();

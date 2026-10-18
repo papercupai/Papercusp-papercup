@@ -8,11 +8,12 @@ import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 
 const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
-const source = vi.hoisted(() => ({ root: '/portal' }));
+const source = vi.hoisted(() => ({ root: '/portal', after: vi.fn() }));
 vi.mock('postgres', () => ({ default: () => sql }));
 vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   resolveReporterSourceRoot: () => source.root,
   captureTestSourceSnapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }),
+  captureTestSourceSnapshotAsync: () => source.after() ?? Promise.resolve({ commit: 'a'.repeat(40), porcelain: '' }),
   computeWorktreeDirty: () => false,
 }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
@@ -33,9 +34,30 @@ type RuntimeReader = NonNullable<ReturnType<typeof prepareNativeRuntimeReader>>;
  *  call-site exception testing/typed-mock.ts sanctions, not a stale fixture. */
 const violatesSyncReaderContract = (impl: () => Promise<unknown>) => impl as unknown as RuntimeReader;
 
-afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; });
+afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; source.after.mockReset(); });
 
 describe('portable Playwright ledger reporter', () => {
+  it('waits for final source custody before inserting a passing result', async () => {
+    vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
+    sql.mockReset().mockResolvedValue([{ id: '12346' }]);
+    let resolveCapture!: (snapshot: { commit: string; porcelain: string }) => void;
+    source.after.mockReturnValue(new Promise(resolve => { resolveCapture = resolve; }));
+    const reporter = new Reporter();
+    reporter.onBegin();
+    reporter.onTestEnd({ title: 'selection persists', titlePath: () => ['selection persists'],
+      location: { file: '/portal/e2e/selection.spec.ts' } } as never,
+    { status: 'passed', startTime: new Date(), duration: 10 } as never);
+    const finish = reporter.onEnd();
+    await Promise.resolve();
+    expect(source.after).toHaveBeenCalledOnce();
+    expect(sql).not.toHaveBeenCalled();
+    resolveCapture({ commit: 'a'.repeat(40), porcelain: '' });
+    await finish;
+    await reporter.onExit();
+    expect(sql).toHaveBeenCalledOnce();
+    expect(sql.mock.calls[0]!.at(-1)).toMatchObject({ passed: 1, failed: 0, worktreeDirty: false });
+  });
+
   it.each(['baseline', 'copy-baseline', 'mutant'])(
     'persists the original mutation descriptor and test bytes for the %s leg', async leg => {
       const dir = mkdtempSync(join(tmpdir(), 'playwright-mutation-'));

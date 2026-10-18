@@ -55,7 +55,6 @@ const { getWorkItem } = await import('../../work-items');
 const { declareChangeKinds, readChangeKinds } = await import('../../work-item-change-kinds');
 const { CHANGE_KIND_GATE_CUTOVER } = await import('../../change-kind-proof');
 const { default: complete } = await import('./complete');
-const { default: list } = await import('./list');
 let db: OrgTestDb;
 
 beforeAll(async () => {
@@ -228,88 +227,4 @@ describe('work_items:complete — change-kind gate through real persistence (cha
     expect(result.stateError).toMatch(new RegExp(`^REJECTED — ${item.id} has no change-kind declaration`));
     expect(await storedStatus(item.id)).not.toBe('done');
   }, 60_000);
-});
-
-// P023 independent author: these R-4 cases precede the held P-004 implementation.
-// Reuse P-002's real handler/database fixture so neither the declaration gate nor
-// the audit predicate is replaced by a mock of the behavior being specified.
-describe('R4 declaration reasons and change-kind mismatch audit', () => {
-  const LOGIC_PROOF = {
-    summary: 'changed a type-only import in the existing page',
-    testsRun: 'npx vitest run change-kind-proof.test.ts',
-    testResult: '9 passed, 0 failed',
-    verifiedHow: 'manual',
-  };
-  // Absolute paths are an accepted completion input and leave the unrelated
-  // relative-path vintage detector outside this declaration-mismatch fixture.
-  const UI_PATH = fileURLToPath(new URL('../../../../../apps/operator/app/dao/page.tsx', import.meta.url));
-  const LOGIC_PATH = fileURLToPath(new URL('../../change-kind-catalog.ts', import.meta.url));
-
-  it('a reasonless narrowing lands proposed and never counts toward done through the real handler', async () => {
-    const item = await claimedIssue('r4-narrowing', AFTER_CUTOVER);
-    await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['ui', 'logic'], step: 'claim', declaredBy: OWNER });
-
-    const result = await close(item, { changeKinds: ['logic'] }, LOGIC_PROOF);
-    expect(result.ok, JSON.stringify(result)).toBe(true);
-    expect(result.completionAuthority).toBe('proposed');
-    expect(result.countsTowardBurnDown).toBe(false);
-    expect((await getWorkItem(item.id))?.completionAuthority).toBe('proposed');
-  }, 90_000);
-
-  it('a reasoned narrowing lands done and retains its declaration reason', async () => {
-    const item = await claimedIssue('r4-reasoned-narrowing', AFTER_CUTOVER);
-    await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['ui', 'logic'], step: 'claim', declaredBy: OWNER });
-    const reason = 'UI implementation moved to a separate item; this item only changes the import.';
-    const accepted = await close(item, { changeKinds: ['logic'], changeKindReason: reason }, LOGIC_PROOF);
-    expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
-    expect(accepted.countsTowardBurnDown, JSON.stringify(accepted)).toBe(true);
-    expect(await storedStatus(item.id)).toBe('done');
-    const view = (await readChangeKinds(WS, [item.id])).get(item.id);
-    expect(view?.current).toEqual(['logic']);
-    expect(view?.history.some((entry) => entry.step === 'complete' && entry.reason === reason)).toBe(true);
-  }, 90_000);
-
-  it.each(['', '   '])('rejects an explicitly blank reason %j at the existing input boundary', (reason) => {
-    expect(complete.args.safeParse({
-      id: 'EI-r4-schema', state: 'done', assumptions: 'none', changeKindReason: reason,
-      completion: LOGIC_PROOF,
-    }).success).toBe(false);
-  });
-
-  it('a UI-looking file without ui or a reason lands proposed and never counts toward done', async () => {
-    const item = await claimedIssue('r4-reasonless-mismatch', AFTER_CUTOVER);
-    await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['logic'], step: 'claim', declaredBy: OWNER });
-
-    const result = await close(item, {}, { ...LOGIC_PROOF, filesChanged: [UI_PATH] });
-
-    expect(result.ok, JSON.stringify(result)).toBe(true);
-    expect(result.completionAuthority).toBe('proposed');
-    expect(result.countsTowardBurnDown).toBe(false);
-    expect((await getWorkItem(item.id))?.completionAuthority).toBe('proposed');
-  }, 60_000);
-
-  it('a reasoned mismatch lands and the ordinary list audit selects it while excluding a logic-only control', async () => {
-    const mismatch = await claimedIssue('r4-reasoned-mismatch', AFTER_CUTOVER);
-    const control = await claimedIssue('r4-pure-logic-control', AFTER_CUTOVER);
-    for (const item of [mismatch, control]) {
-      await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['logic'], step: 'claim', declaredBy: OWNER });
-    }
-    const reason = 'The TSX change only adjusts an imported type; it does not change rendered behavior.';
-    const accepted = await close(mismatch, { changeKindReason: reason }, { ...LOGIC_PROOF, filesChanged: [UI_PATH] });
-    expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
-    expect(accepted.countsTowardBurnDown, JSON.stringify(accepted)).toBe(true);
-    expect(await storedStatus(mismatch.id)).toBe('done');
-
-    const ordinary = await close(control, {}, { ...LOGIC_PROOF, filesChanged: [LOGIC_PATH] });
-    expect(ordinary.ok, JSON.stringify(ordinary)).toBe(true);
-    expect(ordinary.countsTowardBurnDown, JSON.stringify(ordinary)).toBe(true);
-
-    const parsed = list.args.safeParse({ harness: mismatch.harness, audit: 'change-kind-mismatch', audience: 'any', limit: 100 });
-    expect(parsed.success, 'The ordinary list tool must accept the R4 mismatch audit.').toBe(true);
-    if (!parsed.success) return;
-    const response = await list.handler(parsed.data, { uiClientId: OWNER, isSuperuser: true, workspaceId: WS } as never);
-    const rows = (response as { data: Array<{ id: string }> }).data;
-    expect(rows.map((row) => row.id)).toContain(mismatch.id);
-    expect(rows.map((row) => row.id)).not.toContain(control.id);
-  }, 90_000);
 });

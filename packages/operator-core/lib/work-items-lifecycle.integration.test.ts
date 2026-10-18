@@ -1382,6 +1382,79 @@ describe('P-020 completion event intent', () => {
 });
 
 describe('EI-6554700010011175 — terminal closes protect announced gates', () => {
+  it.each(['fleet', 'plan', 'harness'] as const)(
+    'EI-26292412650331135: preserves a separate lifecycle under %s discovery while closing unrelated work and still protects its item binding',
+    async (scopeKind) => {
+      const item = await wi.createWorkItem({
+        kind: 'bug', title: 'independent work beside paused operation', harness: 'papercup',
+        workspaceId: 'default', createdBy: 'fixture-author',
+      });
+      const eventKey = `${scopeKind}:separate-operation:resume`;
+      const announcement = await registerAnnouncement({
+        subscriberId: 'close-owner', eventKey, scopeKind, scopeRef: 'separate-operation',
+        boundTo: { kind: 'fleet-leadership', ref: 'separate-operation' },
+      });
+      await registerAwait({ subscriberId: 'operation-waiter', eventKey });
+      await expect(wi.setWorkItemState(item.id, 'resolved', {
+        harness: 'papercup', by: 'close-owner', completionRef: 'scoped operation gate regression',
+      })).resolves.toMatchObject({ state: 'done' });
+      const [preserved] = await db.sql`
+        SELECT fired_at, cancelled_at FROM harness_shared.event_awaits WHERE id = ${announcement.id}
+      `;
+      expect(preserved).toMatchObject({ fired_at: null, cancelled_at: null });
+      const [waiter] = await db.sql`
+        SELECT fired_at, cancelled_at FROM harness_shared.event_awaits
+        WHERE event_key = ${eventKey} AND subscriber_id = 'operation-waiter'
+      `;
+      expect(waiter).toMatchObject({ fired_at: null, cancelled_at: null });
+
+      const boundItem = await wi.createWorkItem({
+        kind: 'bug', title: 'explicit operation handoff', harness: 'papercup',
+        workspaceId: 'default', createdBy: 'fixture-author',
+      });
+      const boundKey = `${scopeKind}:bound-operation:ready`;
+      await registerAnnouncement({
+        subscriberId: 'close-owner', eventKey: boundKey, scopeKind, scopeRef: 'bound-operation',
+        boundTo: { kind: 'work-item', ref: boundItem.id },
+      });
+      await registerAwait({ subscriberId: 'bound-waiter', eventKey: boundKey });
+      await expect(wi.setWorkItemState(boundItem.id, 'resolved', {
+        harness: 'papercup', by: 'close-owner', completionRef: 'scoped operation gate regression',
+      })).rejects.toThrow(boundKey);
+      expect((await wi.getWorkItem(boundItem.id, 'papercup'))?.state).toBe('open');
+    },
+  );
+
+  it('EI-26292412650331135: discovery scope does not exempt an unbound handoff from the close guard', async () => {
+    const item = await wi.createWorkItem({
+      kind: 'bug', title: 'unbound handoff has no separate lifecycle', harness: 'papercup',
+      workspaceId: 'default', createdBy: 'fixture-author',
+    });
+    const eventKey = 'fleet:visible-handoff:ready';
+    await registerAnnouncement({
+      subscriberId: 'close-owner', eventKey, scopeKind: 'fleet', scopeRef: 'visible-handoff',
+    });
+    await registerAwait({ subscriberId: 'handoff-waiter', eventKey });
+    await expect(wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'close-owner', completionRef: 'discovery is not lifecycle regression',
+    })).rejects.toThrow(eventKey);
+  });
+
+  it('EI-26292412650331135: a global gate bound to another item does not block an unrelated close', async () => {
+    const item = await wi.createWorkItem({
+      kind: 'bug', title: 'independent work beside another item handoff', harness: 'papercup',
+      workspaceId: 'default', createdBy: 'fixture-author',
+    });
+    await registerAnnouncement({
+      subscriberId: 'close-owner', eventKey: 'gate:other-item', scopeKind: 'global',
+      boundTo: { kind: 'work-item', ref: 'WI-other-item' },
+    });
+    await registerAwait({ subscriberId: 'other-waiter', eventKey: 'gate:other-item' });
+    await expect(wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'close-owner', completionRef: 'explicit other-item binding regression',
+    })).resolves.toMatchObject({ state: 'done' });
+  });
+
   it('refuses a close while the closer or item-linked announcement still has live waiters', async () => {
     const item = await wi.createWorkItem({
       kind: 'bug',

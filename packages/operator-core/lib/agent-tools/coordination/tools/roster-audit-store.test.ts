@@ -1,8 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { auditRequestProvenance, buildAuditWakeRecords } from './roster-audit-store';
+import { auditRequestProvenance, buildAuditWakeRecords, saveRosterAudit } from './roster-audit-store';
+import { auditKnown, createRosterAudit } from './roster-audit';
 
-const fake = vi.hoisted(() => ({ directive: vi.fn() }));
+const fake = vi.hoisted(() => ({ directive: vi.fn(), sql: vi.fn() }));
 vi.mock('../../../owner-directives', () => ({ getOwnerDirective: fake.directive }));
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: fake.sql }),
+}));
+vi.mock('../../../workspace-registry', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../workspace-registry')>(), activeWorkspaceId: () => 'ws-a',
+}));
 
 describe('audit owner request provenance', () => {
   beforeEach(() => { fake.directive.mockReset(); });
@@ -60,5 +67,22 @@ describe('audit wake association', () => {
     const result = buildAuditWakeRecords(owners, messages, deliveries, asOf);
     expect([...result.values()].flat()).toHaveLength(1000);
     expect(ownerReads).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe('audit persistence validation', () => {
+  it('rejects a forged snapshot before issuing any SQL', async () => {
+    const asOf = '2026-10-18T00:00:00Z';
+    const snapshot = createRosterAudit({ asOf,
+      scope: { workspaceId: 'ws-a', scope: 'workspace', potId: null, owner: null },
+      population: ['a'], expectedPopulation: 1,
+      records: [{ id: 'agent:a', ownerId: 'a', kind: 'agent', fields: { state: auditKnown('parked', 'oracle', asOf) } }],
+      provenance: { status: 'unknown', directiveId: null, sourceRef: null, turnOrigin: null, quote: null },
+      previous: { status: 'known', auditId: null, asOf: null, total: null, corrections: [] },
+    });
+    fake.sql.mockClear();
+    await expect(saveRosterAudit('test-harness', { ...snapshot, auditId: 'f'.repeat(64) }))
+      .rejects.toMatchObject({ code: 'audit_identity_invalid' });
+    expect(fake.sql).not.toHaveBeenCalled();
   });
 });
