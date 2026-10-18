@@ -20,6 +20,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 import {
   assessCargoDiskAdmission,
@@ -139,11 +140,22 @@ describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
 });
 
 describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
+  const invocation = {
+    schemaVersion: 1, probeInvocationId: 'cargo-reporter-fixture', mode: 'copy-out',
+    subjectPath: 'src/main.rs', mutateExpression: 's/original/mutated/', againstCommit: null,
+    subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+    mutantDiff: '-original\n+mutated\n', mutantDiffTruncated: false,
+    testCommandSha256: 'c'.repeat(64), testCommand: 'cargo test --manifest-path Cargo.toml',
+  };
   it.each([
-    ['explicit ledger', ' postgresql://ledger.example/evidence ', 'postgresql://ledger.example/evidence'],
-    ['runtime fallback', undefined, 'postgresql://runtime.example/private'],
-    ['blank ledger fallback', '  ', 'postgresql://runtime.example/private'],
-  ])('records the real CLI inserts in the %s', (_label, ledgerUrl, expectedUrl) => {
+    ['explicit ledger', ' postgresql://ledger.example/evidence ', 'postgresql://ledger.example/evidence', 'baseline', 'valid'],
+    ['runtime fallback', undefined, 'postgresql://runtime.example/private', 'copy-baseline', 'valid'],
+    ['blank ledger fallback', '  ', 'postgresql://runtime.example/private', 'mutant', 'valid'],
+    ['ordinary run', undefined, 'postgresql://runtime.example/private', undefined, 'valid'],
+    ['malformed descriptor', undefined, 'postgresql://runtime.example/private', 'mutant', 'malformed'],
+    ['unknown descriptor field', undefined, 'postgresql://runtime.example/private', 'mutant', 'unknown-field'],
+    ['absent descriptor', undefined, 'postgresql://runtime.example/private', 'mutant', 'absent'],
+  ])('records the real CLI inserts in the %s', (_label, ledgerUrl, expectedUrl, phase, descriptorKind) => {
     const root = mkdtempSync(join(tmpdir(), 'cargo-ledger-destination-'));
     const inserts = join(root, 'inserts.jsonl');
     const loader = join(root, 'loader.mjs');
@@ -151,12 +163,25 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
     const receipts = join(root, 'receipts.jsonl');
     try {
       writeFileSync(join(root, 'Cargo.toml'), '[package]\nname="ledger-fixture"\nversion="0.0.0"\n');
-      writeFileSync(join(root, 'cargo'), '#!/usr/bin/env node\nconsole.log("test fixture ... ok");\n', { mode: 0o755 });
+      mkdirSync(join(root, 'src'));
+      const source = join(root, 'src/main.rs');
+      writeFileSync(source, '#[test] fn fixture() {}\n');
+      writeFileSync(join(root, 'cargo'), [
+        '#!/usr/bin/env node',
+        `const source = ${JSON.stringify(source)}, binary = ${JSON.stringify(join(root, 'target/debug/deps/fixture-123'))};`,
+        "if (process.argv[2] === 'metadata') console.log(JSON.stringify({ packages: [{ targets: [{ name: 'fixture', src_path: source }] }] }));",
+        'else {',
+        "console.log(JSON.stringify({ reason: 'compiler-artifact', target: { src_path: source }, executable: binary }));",
+        "console.log('     Running unittests src/main.rs (' + binary + ')');",
+        "console.log('running 1 test\\ntest fixture ... ok\\ntest result: ok. 1 passed; 0 failed; 0 ignored');",
+        '}',
+      ].join('\n'), { mode: 0o755 });
       writeFileSync(postgres, `
         import { appendFileSync } from 'node:fs';
         export default function postgres(url) {
-          const sql = async () => {
-            appendFileSync(process.env.CARGO_LEDGER_INSERTS, JSON.stringify({ url }) + '\\n');
+          const sql = async (_strings, ...values) => {
+            const execution = values.find(value => value?.schemaVersion === 1 && 'mutationPhase' in value);
+            appendFileSync(process.env.CARGO_LEDGER_INSERTS, JSON.stringify({ url, execution }) + '\\n');
             return [{ id: '70001' }];
           };
           sql.json = value => value;
@@ -186,13 +211,29 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
           PAPERCUSP_TEST_RUNS_DB_URL: ledgerUrl,
           HARNESS_ADMIN_DATABASE_URL: 'postgresql://runtime.example/private',
           PAPERCUSP_PG_PORT: '25432',
+          PAPERCUSP_MUTATION_PROBE: phase ? '1' : '0',
+          PAPERCUSP_MUTATION_PHASE: phase,
+          PAPERCUSP_MUTATION_DESCRIPTOR: descriptorKind === 'absent' ? undefined
+            : descriptorKind === 'malformed' ? '{broken'
+              : JSON.stringify(descriptorKind === 'unknown-field' ? { ...invocation, unknown: true } : invocation),
         },
       });
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain('inserted 2/2 rows');
       const recorded = readFileSync(inserts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-      expect(recorded).toEqual([{ url: expectedUrl }, { url: expectedUrl }]);
+      expect(recorded.map(row => row.url)).toEqual([expectedUrl, expectedUrl]);
+      // EI-26345752138365143: inspect the INSERT payload, not a hand-built
+      // execution-details object. The shared descriptor parser rejects invalid
+      // exports; the aggregate cannot invent a source-file hash.
+      if (phase && descriptorKind === 'valid') {
+        expect(recorded.map(row => row.execution.mutation)).toEqual([
+          { ...invocation, leg: phase, testFileSha256: createHash('sha256').update(readFileSync(source)).digest('hex') },
+          { ...invocation, leg: phase, testFileSha256: null },
+        ]);
+      } else {
+        expect(recorded.every(row => row.execution.mutation === undefined)).toBe(true);
+      }
       expect(readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line)))
         .toEqual(expect.arrayContaining([
           expect.objectContaining({ status: 'pass', outcome: 'inserted', id: '70001' }),

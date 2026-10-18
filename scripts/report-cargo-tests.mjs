@@ -82,7 +82,9 @@ async function loadTestRunReporter() {
     // name .ts source files. Reuse tsx's resolver explicitly instead of relying
     // on the CLI caller to preload it or silently recording clean runs as dirty.
     const { tsImport } = await import('tsx/esm/api');
-    return await tsImport('../libs/test-config/src/admin-test-runs-reporter.ts', import.meta.url);
+    const reporter = await tsImport('../libs/test-config/src/admin-test-runs-reporter.ts', import.meta.url);
+    const mutation = await tsImport('../libs/test-config/src/mutation-descriptor.ts', import.meta.url);
+    return { ...reporter, ...mutation };
   } catch (err) {
     console.error(`[report-cargo-tests] WARNING: shared test-run reporter helpers unavailable (${err instanceof Error ? err.message : String(err)}); rows are recorded dirty and mutation-probe receipts cannot be written.`);
     return null;
@@ -406,11 +408,20 @@ async function insertRows(sql, rows, worktree, testRunReporter) {
   }
   let inserted = 0;
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
+  const mutationInvocation = testRunReporter?.readMutationInvocationDescriptor?.();
   // WI-10006828: attribute rows like the vitest reporter does, or they can never be bound as proof.
   const { harnessSlug, workspaceId } = resolveCargoTestRunScope();
   for (const row of rows) {
     // WI-10006849: a complete per-row record, or the strict contract parser discards it.
     const executionDetails = buildCargoExecutionDetails({ ...row.execution, root: REPO_ROOT, filePath: row.filePath, harnessSlug, workspaceId, worktree });
+    // Reuse the Vitest descriptor contract, including the measured Cargo target
+    // source hash. A binary aggregate has no single test file to fingerprint.
+    const mutation = testRunReporter?.mutationDescriptorForRow?.(
+      mutationInvocation,
+      executionDetails.mutationPhase,
+      row.testFilePath ? testRunReporter.sha256OfTestFile(resolve(REPO_ROOT, row.testFilePath)) : null,
+    );
+    if (mutation) executionDetails.mutation = mutation;
     try {
       const returned = await Promise.race([
         sql`
@@ -510,6 +521,7 @@ async function main() {
 
   const rows = measuredResults.map((r) => ({
     filePath: `${r.testFilePath ?? crateDir}::${r.name}`,
+    testFilePath: r.testFilePath,
     status: r.outcome === 'ok' ? 'pass' : r.outcome === 'ignored' ? 'skip' : 'fail',
     durationMs: null,
     startedAt,

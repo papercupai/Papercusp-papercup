@@ -81,6 +81,7 @@ import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase, validLocalPort } f
 // ptool starts in that child.
 export const OPERATOR_URL_PROVENANCE_ENV = 'PAPERCUSP_OPERATOR_URL_PROVENANCE';
 export const LAUNCHER_OPERATOR_URL_PROVENANCE = 'psu-launcher';
+const DEFAULT_MCP_STAGING_PROXY_PORT = '9171';
 
 /**
  * @typedef {{
@@ -215,8 +216,12 @@ function resolveLauncherManagedStagingProxyCandidate(operatorUrl, env) {
     validLocalPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT)
   ) return null;
 
-  const stagingPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT);
-  if (!stagingPort) return null;
+  // Match psu-launcher's default when the child environment does not carry
+  // the optional override. Without this, a managed shell that inherits the
+  // legacy :9071 proxy has no path to the current :9171 catalog and every
+  // read-only call is refused by the serving-generation guard.
+  const stagingPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) ??
+    DEFAULT_MCP_STAGING_PROXY_PORT;
   const resilientProxyPort = validLocalPort(env.PAPERCUSP_MCP_PROXY_PORT) ?? '9071';
   try {
     const url = new URL(operatorUrl);

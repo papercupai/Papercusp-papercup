@@ -3052,6 +3052,29 @@ describe('applyResultDoor', () => {
       });
       expect((nestedRecoveryPage._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
 
+      // The real nested tools:invoke response also carries its own
+      // guidance.seeAlso text item after the target page. That advisory must
+      // not turn an otherwise safe recovery page back into aggregate output.
+      const nestedRecoveryPageWithAdvisory = applyResultDoor({
+        ...pageContent({ uri: 'papercusp://scratch/ws-1/plans:get/page' }),
+        content: [
+          ...pageContent({ uri: 'papercusp://scratch/ws-1/plans:get/page' }).content,
+          { type: 'text' as const, text: 'See also: tools:find (discover tools)' },
+        ],
+      }, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      expect(JSON.parse((nestedRecoveryPageWithAdvisory.content[0] as { text: string }).text)).toMatchObject({
+        ok: true,
+        encoding: 'base64',
+        byte_length: 1_024,
+      });
+      expect((nestedRecoveryPageWithAdvisory._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+
       const ordinaryPage = applyResultDoor(pageContent(), {
         toolName: 'capability:read',
         workspaceId: 'ws-1',

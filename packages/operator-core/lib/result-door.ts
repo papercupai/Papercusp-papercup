@@ -3045,21 +3045,47 @@ function isScratchReferenceBytePageResult(
   const targetToolName = opts.toolName === 'tools:invoke'
     ? opts.nestedTargetToolName
     : opts.toolName;
-  if (targetToolName !== 'capability:read' || result.content.length !== 1) return false;
-  const item = result.content[0];
-  if (!isTextItem(item)) return false;
+  if (targetToolName !== 'capability:read') return false;
 
-  try {
-    const page = recordAt(JSON.parse(item.text));
-    return page?.ok === true &&
-      page.encoding === 'base64' &&
-      Number.isSafeInteger(page.byte_offset) &&
-      Number.isSafeInteger(page.byte_length) &&
-      Number.isSafeInteger(page.total_bytes) &&
-      recordAt(page.reference) !== null;
-  } catch {
-    return false;
+  // tools:invoke appends its own guidance.seeAlso item after the target's
+  // machine-readable page. That advisory is harmless to the caller, but the
+  // old length===1 guard made the outer result door treat the page as an
+  // ordinary result and charge it to the aggregate cohort. After enough rapid
+  // cursor hops the cohort then spilled the page itself, replacing `data` with
+  // another envelope (`missing_page_data`). Identify the one byte-page JSON
+  // item and permit only the framework's known advisory suffixes alongside it.
+  let pageIndex = -1;
+  for (let index = 0; index < result.content.length; index += 1) {
+    const item = result.content[index];
+    if (!isTextItem(item)) continue;
+    const slice = findJsonPrefixSlice(item.text);
+    if (!slice) continue;
+    try {
+      const page = recordAt(JSON.parse(item.text.slice(slice.start, slice.end)));
+      if (
+        page?.ok !== true ||
+        page.encoding !== 'base64' ||
+        !Number.isSafeInteger(page.byte_offset) ||
+        !Number.isSafeInteger(page.byte_length) ||
+        !Number.isSafeInteger(page.total_bytes) ||
+        recordAt(page.reference) === null
+      ) continue;
+      if (pageIndex !== -1) return false;
+      pageIndex = index;
+    } catch {
+      // Keep looking for the single structured page among advisory text.
+    }
   }
+  if (pageIndex === -1) return false;
+
+  for (let index = 0; index < result.content.length; index += 1) {
+    if (index === pageIndex) continue;
+    const item = result.content[index];
+    if (!isTextItem(item) || !/^(?:See also:|\[batch-hint\]|\[nudge\])/i.test(item.text.trim())) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function isScratchReferenceReadResult(

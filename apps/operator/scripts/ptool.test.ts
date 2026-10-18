@@ -545,6 +545,16 @@ describe('ptool operator routing', () => {
     expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: false } }, true)).toBe(false);
   });
 
+  it('uses psu-launcher’s default staging proxy when the child omits its port override', () => {
+    expect(resolvePtoolOperatorCandidates({
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    })).toEqual([
+      'http://127.0.0.1:9071',
+      'http://127.0.0.1:9171',
+    ]);
+  });
+
   it('uses the nested tools:invoke target when deciding whether managed recovery may move a read', () => {
     const catalog = [
       { name: 'tools:invoke', annotations: { readOnlyHint: false } },
