@@ -163,7 +163,8 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
     { name: 'work_items_checkpoint', args: { ...own, checkpoint: checkpointMarker } },
     { name: 'work_items_get', args: { ...own, threadLimit: 0 } },
     { name: 'work_items_checkpoint', args: { ...own, id: neighbor, checkpoint: 'MUST_NOT_WRITE' } },
-    { name: 'work_items_complete', args: { ...own, state: 'done', assumptions: 'none', completion: {
+    { name: 'work_items_complete', args: { ...own, state: 'done', assumptions: 'none',
+      changeKinds: ['no-code-change'], changeKindReason: 'sandbox fixture close; no code is changed', completion: {
       summary: completionMarker, testsRun: 'manual read of restored frozen fixture', testResult: 'pass',
       verifiedHow: 'manual', filesChanged: [] } } },
   ];

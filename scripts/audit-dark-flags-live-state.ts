@@ -45,7 +45,8 @@
  * Exit code: 1 iff at least one CRITICAL finding; 0 otherwise (including when
  * only INFORMATIONAL owner-authority/cutover findings exist).
  */
-import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
+import { createDedicatedOrgPg } from '@papercusp/db-org';
 import { DARK_FLAGS, type DarkCase } from '@papercusp/flags';
 import { GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID } from '@papercusp/operator-core/lib/flag-override-store';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -100,14 +101,43 @@ export function collectDarkFlagFindings(rows: OverrideRow[], env: NodeJS.Process
   return { critical, info, effectiveOverrideWorkspaces: effectiveRows.map(row => row.workspace_id), shadowedWorkspaceOverrides };
 }
 
+export type DarkFlagAuditResult = ReturnType<typeof collectDarkFlagFindings> & {
+  scannedWorkspaces: string[];
+  darkFlagCount: number;
+};
+
+/**
+ * Run the one-shot audit with a caller-owned database client.
+ *
+ * `getOrgPg()` is a process-wide singleton used by the operator host and cannot
+ * be closed by a short-lived CLI. Keep this lifecycle in one exported helper so
+ * the CLI and its regression test exercise the same close-on-success and
+ * close-on-error path.
+ */
+export async function runDarkFlagAudit(
+  createClient: () => { sql: Sql } = () => createDedicatedOrgPg('audit-dark-flags-live-state', { max: 1 }),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<DarkFlagAuditResult> {
+  const { sql } = createClient();
+  try {
+    const rows = (await sql`
+      SELECT workspace_id, payload FROM harness_shared.operator_flag_overrides
+    `) as unknown as OverrideRow[];
+    const findings = collectDarkFlagFindings(rows, env);
+    return {
+      ...findings,
+      scannedWorkspaces: rows.map((r) => r.workspace_id),
+      darkFlagCount: DARK_FLAGS.size,
+    };
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
+
 async function main(): Promise<void> {
   const json = process.argv.includes('--json');
-  const { sql } = getOrgPg();
-  const rows = (await sql`
-    SELECT workspace_id, payload FROM harness_shared.operator_flag_overrides
-  `) as unknown as OverrideRow[];
-  const { critical, info, effectiveOverrideWorkspaces, shadowedWorkspaceOverrides } = collectDarkFlagFindings(rows);
-  const darkEntries = [...DARK_FLAGS.entries()];
+  const { critical, info, effectiveOverrideWorkspaces, shadowedWorkspaceOverrides, scannedWorkspaces, darkFlagCount } =
+    await runDarkFlagAudit();
 
   if (json) {
     console.log(
@@ -116,10 +146,10 @@ async function main(): Promise<void> {
           ok: critical.length === 0,
           critical,
           info,
-          scannedWorkspaces: rows.map((r) => r.workspace_id),
+          scannedWorkspaces,
           effectiveOverrideWorkspaces,
           shadowedWorkspaceOverrides,
-          darkFlagCount: darkEntries.length,
+          darkFlagCount,
           caveats: ["PostHog-side overrides are not probed (network, opt-in) — this is PG override + env only."],
         },
         null,
@@ -128,7 +158,7 @@ async function main(): Promise<void> {
     );
   } else {
     console.log(
-      `Scanned ${darkEntries.length} DARK_FLAGS entries across ${rows.length} workspace override row(s) ` +
+      `Scanned ${darkFlagCount} DARK_FLAGS entries across ${scannedWorkspaces.length} workspace override row(s) ` +
         `(${effectiveOverrideWorkspaces.length} effective, ${shadowedWorkspaceOverrides.length} shadowed by the global row) + this process's env.\n`,
     );
     if (critical.length > 0) {

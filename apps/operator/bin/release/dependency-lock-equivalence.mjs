@@ -34,11 +34,92 @@
 // Stdout: `DROP_LINK<TAB><repo-relative path>` per live-only workspace link (exit 0), or
 //         `NOT_EQUIVALENT<TAB><reason>` lines (exit 3). Exit 2 = misuse / unreadable input.
 
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 
 export const MAX_REASONS = 8;
 const COMPARED_FIELDS = ['version', 'resolved', 'integrity', 'link'];
+
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const runGit = (root, args) => execFileSync('git', ['-C', root, ...args], {
+  maxBuffer: 64 * 1024 * 1024,
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+
+/** Run-local immutable reads shared by the whole ancestor search, never a durable cache.
+ * Keep the input set identical to dependency_generation_emit_input_manifest_ref.
+ * Failed or incomplete reads are never cached, including unavailable gitlink commits.
+ */
+export function createGitInputManifestReader(git = runGit) {
+  const manifests = new Map();
+  const digests = new Map();
+  const read = (root, ref) => {
+    const key = JSON.stringify([root, ref]);
+    if (manifests.has(key)) return manifests.get(key);
+    git(root, ['cat-file', '-e', `${ref}^{commit}`]);
+    const records = String(git(root, ['ls-tree', '-r', '-z', ref])).split('\0').filter(Boolean);
+    const entries = new Map(records.map((record) => {
+      const tab = record.indexOf('\t');
+      const [mode, type, object] = record.slice(0, tab).split(' ');
+      return [record.slice(tab + 1), { mode, type, object }];
+    }));
+    const rows = [];
+    for (const [rel, { type, object }] of entries) {
+      if (type !== 'blob' || /(^|\/)(\.papercusp|\.papercusp-smoke-snapshots|node_modules)\//.test(rel)) continue;
+      if (!/(^|\/)(package-lock\.json|npm-shrinkwrap\.json)$/.test(rel)
+        && !/(^|\/)patches\/[^/]+\.patch$/.test(rel)) continue;
+      if (!digests.has(object)) digests.set(object, sha256(git(root, ['cat-file', 'blob', object])));
+      rows.push(`${rel}\t${digests.get(object)}\n`);
+    }
+    if (entries.has('.gitmodules')) {
+      let paths;
+      try {
+        paths = String(git(root, ['config', '-z', '--blob', `${ref}:.gitmodules`, '--get-regexp', '\\.path$']));
+      } catch (error) {
+        // git config exits 1 for a valid file with no matching submodules.
+        if (error.status !== 1) throw error;
+        paths = '';
+      }
+      for (const entry of paths.split('\0').filter(Boolean)) {
+        const path = entry.slice(entry.indexOf('\n') + 1);
+        const link = entries.get(path);
+        if (!path || posix.isAbsolute(path) || path.split('/').includes('..')
+          || link?.mode !== '160000' || link.type !== 'commit') {
+          throw new Error(`exact dependency-input ref ${ref} has no gitlink for submodule ${path}`);
+        }
+        if (!statSync(join(root, path)).isDirectory()) throw new Error(`unavailable submodule ${path}`);
+        for (const row of read(join(root, path), link.object)) rows.push(`${path}/${row}`);
+      }
+    }
+    rows.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    manifests.set(key, rows);
+    return rows;
+  };
+  return (root, ref) => read(root, ref).join('');
+}
+
+function indexedInputRefs([root, generationRoot, outputDir]) {
+  if (!root || !generationRoot || !outputDir) throw new Error('--indexed-input-refs needs root, generation root and output directory');
+  const readManifest = createGitInputManifestReader();
+  const seen = new Set();
+  // Each line is git log's %P. Use only the first parent, matching revision^.
+  for (const parents of readFileSync(0, 'utf8').split('\n')) {
+    const ref = parents.split(' ')[0];
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(ref)) continue;
+    let manifest;
+    try { manifest = readManifest(root, ref); } catch { continue; }
+    const input = sha256(`schema\t1\n${manifest}`);
+    if (seen.has(input)) continue;
+    seen.add(input);
+    try { if (!statSync(join(generationRoot, '.inputs', input)).isFile()) continue; } catch { continue; }
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(join(outputDir, `${ref}.inputs`), manifest);
+    process.stdout.write(`${ref}\t${input}\n`);
+  }
+  return 0;
+}
 
 /** Parse `rel<TAB>digest` manifest text into a Map. */
 export function parseInputManifest(text) {
@@ -164,6 +245,12 @@ function parseArgs(argv) {
 }
 
 function main(argv) {
+  if (argv[0] === '--indexed-input-refs') {
+    try { return indexedInputRefs(argv.slice(1)); } catch (error) {
+      process.stderr.write(`dependency-lock-equivalence: ${error.message}\n`);
+      return 2;
+    }
+  }
   let opts;
   let refManifest;
   let liveManifest;

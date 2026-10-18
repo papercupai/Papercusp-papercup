@@ -160,7 +160,12 @@ function isRunScopedInFlight(text: string, index: number, length: number): boole
  * separate pending run, and `not yet read` is itself an affirmative signal. */
 function isNegatedRunStatus(text: string, index: number): boolean {
   const before = text.slice(Math.max(0, index - 80), index);
-  return /\b(?:not|never|no longer|(?:is|are|was|were|has|have|had|did|does|do|can|could|would|should)n['’]t)\s+(?:(?:currently|actively|actually|still)\s+){0,2}["'`“‘]?\s*$/i.test(before);
+  const directNegation = /\b(?:not|never|no longer|(?:is|are|was|were|has|have|had|did|does|do|can|could|would|should)n['’]t)\s+(?:(?:currently|actively|actually|still)\s+){0,2}["'`“‘]?\s*$/i;
+  // Status phrases often put the negator before the run subject ("No jobs still
+  // running"). The old check only handled a negator immediately before the
+  // matched phrase, so it treated that completed-status sentence as unread.
+  const noRunSubject = /\b(?:no|zero)\s+(?:run|runs|test|tests|suite|suites|job|jobs|command|commands|process|processes|build|builds|check|checks|lint|typecheck|typechecks)(?:\s+\w+){0,2}\s+(?:(?:is|are|was|were|has|have|had)\s+)?["'`“‘]?\s*$/i;
+  return directNegation.test(before) || noRunSubject.test(before);
 }
 
 /**

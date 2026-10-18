@@ -125,6 +125,7 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/no human-visible dialog surface/i);
     expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/coord:ask-owner/);
     expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/coord:escalate/);
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/Inbox-backed request that waits for the answer/i);
     },
   );
 
@@ -320,6 +321,7 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     expect(out.decision).toBe('block');
     expect(out.reason).toMatch(/coord:ask-owner/);
     expect(out.reason).toMatch(/no human-visible dialog surface/i);
+    expect(out.reason).toMatch(/Inbox-backed request that waits for the answer/i);
     expect(out.reason).not.toMatch(/native AskUserQuestion tool \(preferred/i);
   });
 

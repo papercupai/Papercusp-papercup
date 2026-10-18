@@ -155,6 +155,10 @@ describe('sendMessage extra passthrough', () => {
         /\[db-call-deadline\] "coord:emit\.sendMessage" did not resolve within/,
       );
       expect(rejection).toBeInstanceOf(Error);
+      expect(rejection).toMatchObject({
+        name: 'DbCallDeadlineError',
+        pool: 'org-admin',
+      });
     } finally {
       vi.useRealTimers();
     }

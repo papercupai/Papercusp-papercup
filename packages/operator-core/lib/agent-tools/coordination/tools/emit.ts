@@ -110,7 +110,7 @@ export default defineTool({
           ...(args.declared_plan_items ? { declared_plan_items: args.declared_plan_items } : {}),
         },
       }),
-      { ms: COORD_EMIT_DB_DEADLINE_MS, label: 'coord:emit.sendMessage' },
+      { ms: COORD_EMIT_DB_DEADLINE_MS, label: 'coord:emit.sendMessage', pool: 'org-admin' },
     );
     return {
       content: [

@@ -927,7 +927,7 @@ export default defineTool({
               ],
             };
           }
-          const [{ claimWorkItem }, forceTransition] = await Promise.all([
+          const [{ claimWorkItem, getWorkItem, explainIssueClaimFloors }, forceTransition] = await Promise.all([
             import('../../work-items'),
             recoveryModule ? Promise.resolve(recoveryModule) : import('../work_items/release-force-guard'),
           ]);
@@ -936,11 +936,60 @@ export default defineTool({
             expectedAssignee: ownership.takenBy,
           });
           if (!transferred) {
+            let currentWorkItem: Awaited<ReturnType<typeof getWorkItem>> | null = null;
+            let currentWorkItemRead = false;
+            try {
+              currentWorkItem = await getWorkItem(ownership.workItem, installSlug);
+              currentWorkItemRead = true;
+            } catch {
+              // A failed diagnostic read must not be turned into an asserted race.
+            }
+            const currentHolder = currentWorkItem?.assignee?.trim() || null;
+            let claimFloor: { refusedBy: string; failedFloors: string[] } | null = null;
+            if (
+              currentWorkItemRead &&
+              currentWorkItem?.family === 'issue' &&
+              currentHolder === ownership.takenBy
+            ) {
+              try {
+                const [floor] = await explainIssueClaimFloors(installSlug, [ownership.workItem], {
+                  assignee: callerOwnerId,
+                  includeAllFloors: true,
+                });
+                const failedFloors = floor?.failedFloors ?? (floor?.refusedBy ? [floor.refusedBy] : []);
+                const nonHolderFloor = failedFloors.find((name) => name !== 'already-taken');
+                if (nonHolderFloor) claimFloor = { refusedBy: nonHolderFloor, failedFloors };
+              } catch {
+                // The holder comparison remains useful even if floor diagnostics are unavailable.
+              }
+            }
+            const refusalReason = !currentWorkItemRead
+              ? 'condition_takeover_state_unreadable'
+              : !currentWorkItem
+                ? 'condition_takeover_item_unavailable'
+                : currentHolder !== ownership.takenBy
+                  ? 'condition_takeover_race'
+                  : claimFloor
+                    ? 'force_blocked_by_claim_floor'
+                    : 'condition_takeover_refused';
+            const refusalNote = claimFloor
+              ? 'NOT launched: the expected holder remains unchanged, but the claim was refused by floor ' +
+                claimFloor.refusedBy +
+                '.'
+              : refusalReason === 'condition_takeover_race'
+                ? 'NOT launched: ownership changed between the guard and claim. Re-read gate ownership before acting.'
+                : refusalReason === 'condition_takeover_item_unavailable'
+                  ? 'NOT launched: the work item no longer resolves after the failed transfer.'
+                  : refusalReason === 'condition_takeover_state_unreadable'
+                    ? 'NOT launched: the post-claim owner read failed, so the refusal was not classifiable.'
+                    : 'NOT launched: the expected holder remains unchanged, but no claim-floor diagnosis was available.';
             recordMetadata({
-              standDown: 'condition_takeover_race',
+              standDown: refusalReason,
               standDownWorkItem: ownership.workItem,
               standDownTakenBy: ownership.takenBy,
               standDownTransferBasis: automaticBasis,
+              standDownCurrentHolder: currentHolder,
+              ...(claimFloor ? { standDownClaimFloor: claimFloor.refusedBy } : {}),
               ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
             });
             return {
@@ -950,10 +999,20 @@ export default defineTool({
                   text: serializeResponse({
                     ok: false,
                     launched: false,
-                    reason: 'condition_takeover_race',
+                    reason: refusalReason,
                     work_item: ownership.workItem,
                     expected_holder: ownership.takenBy,
-                    note: 'NOT launched: the abandoned-owner CAS lost because ownership changed during recovery. Re-read gate ownership before acting.',
+                    current_holder: currentHolder,
+                    transfer_basis: automaticBasis,
+                    ...(claimFloor
+                      ? {
+                          claim_floor: {
+                            refused_by: claimFloor.refusedBy,
+                            failed_floors: claimFloor.failedFloors,
+                          },
+                        }
+                      : {}),
+                    note: refusalNote,
                   }),
                 },
               ],

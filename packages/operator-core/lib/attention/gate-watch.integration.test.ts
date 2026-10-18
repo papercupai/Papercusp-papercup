@@ -13,7 +13,21 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const WS = 'ws-gate-watch-test';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown,
+  inboxReply: {
+    listPresence: vi.fn(async () => [] as Array<{ ownerId: string }>),
+    sendMessage: vi.fn(async () => ({ msg_id: 'owner-reply-1' })),
+    wakeRecipients: vi.fn(async () => ({
+      targets: [] as string[],
+      keys: [] as string[],
+      woken: 0,
+      staged: 0,
+      stagedTargets: [] as string[],
+      fanoutCapped: [] as string[],
+    })),
+  },
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -22,9 +36,14 @@ vi.mock('../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
   return { ...actual, activeWorkspaceId: () => WS };
 });
+vi.mock('../agent-tools/coordination/presence', () => ({ listPresence: h.inboxReply.listPresence }));
+vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage: h.inboxReply.sendMessage }));
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: h.inboxReply.wakeRecipients }));
 
 const { tickGateWatch } = await import('./gate-watch');
 const { listPendingGates, openOrTouchGate } = await import('./gate-store');
+const { blockedSessionToAttention } = await import('./adapters');
+const { deliverInboxOwnerReply, INBOX_OWNER_REPLY_MARKER } = await import('../agent-tools/coordination/inbox-reply');
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -50,9 +69,75 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.session_pending_gates WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.session_gate_watcher_files WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.adv_sessions WHERE workspace_id = ${WS} AND session_id LIKE 'gate-watch-owner-%'`;
+  h.inboxReply.listPresence.mockReset().mockResolvedValue([]);
+  h.inboxReply.sendMessage.mockReset().mockResolvedValue({ msg_id: 'owner-reply-1' });
+  h.inboxReply.wakeRecipients.mockReset().mockResolvedValue({
+    targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [], fanoutCapped: [],
+  });
 });
 
 describe('tickGateWatch (real PG + real transcript files)', () => {
+  it('R-1/R-2: projects a native question into the owner inbox, delivers the owner answer, wakes the asker, then closes on the correlated result', async () => {
+    const sessionId = 'gate-watch-owner-codex';
+    const ownerId = 'su-gate-watch-owner';
+    await sql`
+      INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, session_id, agent)
+      VALUES (${WS}, 'console', ${ownerId}, ${sessionId}, 'codex')
+    `;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-owner-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'rollout-name-is-not-the-identity.jsonl');
+    await fs.writeFile(file, [
+      { type: 'session_meta', payload: { id: sessionId } },
+      { type: 'response_item', payload: {
+        type: 'function_call', name: 'request_user_input', call_id: 'owner-ask',
+        arguments: JSON.stringify({ questions: [{ question: 'Continue with the migration?', options: [{ label: 'Yes' }] }] }),
+      } },
+    ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+
+    expect((await tickGateWatch({ root: dir })).opened).toBe(1);
+    const [gate] = await listPendingGates({ workspaceId: WS, sessionId });
+    expect(gate).toMatchObject({ client: 'codex', ref_id: 'owner-ask', owner_id: ownerId, question: 'Continue with the migration?' });
+    if (!gate) throw new Error('native gate was not persisted');
+
+    const card = blockedSessionToAttention({
+      sessionId, client: gate.client, refId: gate.ref_id, gateKind: gate.kind,
+      question: gate.question, ownerAgentId: gate.owner_id, harnessSlug: 'papercusp',
+      waitingHours: 0, actionability: 'actionable', livenessState: 'live',
+    });
+    expect(card).toMatchObject({
+      id: 'blocked-session:codex:gate-watch-owner-codex:owner-ask',
+      kind: 'blocked-session', tier: 'decision', needsHuman: true,
+      ownerAgentId: ownerId, status: 'blocked (codex)',
+      ref: { kind: 'blocked-session', sessionId, client: 'codex', refId: 'owner-ask' },
+    });
+
+    h.inboxReply.listPresence.mockResolvedValue([{ ownerId: sessionId }]);
+    h.inboxReply.wakeRecipients.mockResolvedValue({
+      targets: [sessionId], keys: [`coord:inbox-wake:${sessionId}`], woken: 1,
+      staged: 0, stagedTargets: [], fanoutCapped: [],
+    });
+    const reply = await deliverInboxOwnerReply({
+      askerId: sessionId, text: 'Yes, continue.', summary: 'Owner answered your question',
+      workspaceId: WS, planSlug: 'owner-question-delivery-and-review-route-scope-2026-10-15',
+    });
+    expect(reply).toMatchObject({ live: true, delivered: true, woken: 1, msgId: 'owner-reply-1' });
+    expect(h.inboxReply.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: expect.any(String) }),
+      expect.objectContaining({ to: [sessionId], body: 'Yes, continue.', expectsReply: false }),
+    );
+    expect(h.inboxReply.wakeRecipients).toHaveBeenCalledWith([sessionId], expect.objectContaining({
+      payload: { [INBOX_OWNER_REPLY_MARKER]: true }, source: expect.any(String), workspaceId: WS,
+    }));
+
+    await fs.appendFile(file, JSON.stringify({
+      type: 'response_item', payload: { type: 'function_call_output', call_id: 'owner-ask', output: 'Yes' },
+    }) + '\n');
+    expect((await tickGateWatch({ root: dir })).closed).toBe(1);
+    expect(await listPendingGates({ workspaceId: WS, sessionId })).toHaveLength(0);
+  });
+
   it.each(['codex', 'omp'] as const)('persists and closes %s questions under the native header identity across watermark ticks', async (client) => {
     const sessionId = `${client}-native-session`;
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-native-'));

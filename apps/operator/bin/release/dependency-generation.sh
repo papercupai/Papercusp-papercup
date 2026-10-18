@@ -3590,7 +3590,7 @@ DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT=''
 # directory names or publish a selector merely because a generation exists.
 dependency_generation_find_equivalent_prewarm() {
   local integration_root="$1" ref="$2" scratch="$3" generation_root="$4" helper="$5"
-  local revision source_ref source_input source_manifest extracted_manifest verdict rc basis cache seen_inputs selector
+  local revision source_ref source_input source_manifest extracted_manifest verdict rc basis cache indexed selector
   # No historical input can help without a published selector. Do not hydrate
   # history just to rediscover an empty store.
   selector=''
@@ -3604,19 +3604,14 @@ dependency_generation_find_equivalent_prewarm() {
   done < <(git -C "$integration_root" config --blob "$ref:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{ print $2 }' || true)
   basis="$scratch/.papercusp/prewarm-inputs"
   cache="$scratch/.papercusp/prewarm-manifests"
-  seen_inputs=$'\n'
-  while IFS= read -r revision; do
-    source_ref="$(git -C "$integration_root" rev-parse --verify "$revision^" 2>/dev/null)" || continue
-    source_manifest="$(dependency_generation_input_manifest_ref "$integration_root" "$source_ref" '' '' "$cache" 2>/dev/null | LC_ALL=C sort)" || continue
-    source_input="$(
-      { printf 'schema\t1\n'; [ -z "$source_manifest" ] || printf '%s\n' "$source_manifest"; } \
-        | dependency_generation_sha256
-    )" || return 1
-    case "$seen_inputs" in *$'\n'"$source_input"$'\n'*) continue ;; esac
-    seen_inputs+="$source_input"$'\n'
-    if [ ! -f "$generation_root/.inputs/$source_input" ]; then
-      continue
-    fi
+  # One helper process shares immutable subtree manifests and blob hashes across
+  # all parents. Per-ref Bash/Git/hash processes exhausted the 30s caller budget
+  # before duplicate-input detection even reached the selector check.
+  indexed="$(git -C "$integration_root" log --first-parent --format=%P --max-count=32 "$ref" -- "${history_paths[@]}" \
+    | "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" --indexed-input-refs "$integration_root" "$generation_root" "$cache")" || return 1
+  while IFS=$'\t' read -r source_ref source_input; do
+    [ -n "$source_ref" ] || continue
+    source_manifest="$(cat "$cache/$source_ref.inputs")" || return 1
     mkdir -p "$basis" || return 1
     extracted_manifest="$(dependency_generation_input_manifest_ref "$integration_root" "$source_ref" '' "$basis" 2>/dev/null | LC_ALL=C sort)" || { rm -rf -- "$basis"; continue; }
     [ "$extracted_manifest" = "$source_manifest" ] || {
@@ -3639,7 +3634,7 @@ dependency_generation_find_equivalent_prewarm() {
     DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
     dependency_generation_log "exact-ref build: install-equivalent prewarmed generation $DEPENDENCY_GENERATION_ID from ancestor $source_ref"
     return 0
-  done < <(git -C "$integration_root" log --first-parent --format=%H --max-count=32 "$ref" -- "${history_paths[@]}")
+  done <<< "$indexed"
   return 74
 }
 

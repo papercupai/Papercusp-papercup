@@ -925,8 +925,9 @@ static EXIT_TRANSCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new()
 #[cfg(test)]
 mod cli_help_tests {
     use super::{
-        bare_launch, chat_workbench_exit_text, cli_version_line, own_chat_workbench_from,
-        print_cli_help, print_cli_version, BareLaunch, BareLaunchInputs, CliInvocation, CLI_HELP,
+        bare_launch, chat_workbench_exit_text, chat_workbench_shutdown_args,
+        cli_version_line, own_chat_workbench_from, print_cli_help, print_cli_version,
+        spawn_chat_workbench_shutdown_with, BareLaunch, BareLaunchInputs, CliInvocation, CLI_HELP,
     };
 
     fn args(values: &[&str]) -> Vec<String> {
@@ -1190,6 +1191,44 @@ mod cli_help_tests {
             "you: hi\nclaude: hello\nSession kept.\npui: operator unreachable\n"
         );
         assert_eq!(chat_workbench_exit_text(None, Some("  "), None), "");
+    }
+
+    #[test]
+    fn chat_workbench_shutdown_uses_the_scoped_kill_session_argv() {
+        assert_eq!(
+            chat_workbench_shutdown_args("pui-chat-7"),
+            ["kill-session", "pui-chat-7"]
+        );
+    }
+
+    /// P-030 regression guard: stopping the pane must launch zellij and return
+    /// without waiting for its kill-session client. The fake client sleeps so
+    /// a blocking `.output()` implementation would exceed this bound.
+    #[cfg(unix)]
+    #[test]
+    fn chat_workbench_shutdown_launch_is_nonblocking() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("zellij");
+        std::fs::write(&script, "#!/bin/sh\nsleep 1\n").unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+
+        let started = Instant::now();
+        let mut child = spawn_chat_workbench_shutdown_with(
+            script.to_str().unwrap(),
+            "pui-chat-test",
+        )
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "shutdown launch waited for the zellij client"
+        );
+        child.kill().unwrap();
+        let _ = child.wait();
     }
 
     #[test]
@@ -1756,6 +1795,22 @@ fn chat_workbench_exit_text(
     text
 }
 
+fn chat_workbench_shutdown_args(session: &str) -> [&str; 2] {
+    ["kill-session", session]
+}
+
+fn spawn_chat_workbench_shutdown_with(
+    program: &str,
+    session: &str,
+) -> std::io::Result<std::process::Child> {
+    std::process::Command::new(program)
+        .args(chat_workbench_shutdown_args(session))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+}
+
 /// The chat pane of a chat workbench is exiting: leave the exit text for the
 /// launcher, then stop the session (this process included — call it last).
 fn finish_chat_workbench_pane(
@@ -1766,13 +1821,13 @@ fn finish_chat_workbench_pane(
 ) {
     let text = chat_workbench_exit_text(transcript, note, error);
     if let Ok(path) = std::env::var(layout::CHAT_WORKBENCH_TRANSCRIPT_ENV) {
-        if !path.is_empty() && !text.is_empty() {
+        // Even an empty transcript is the pane's completion receipt. The
+        // launcher uses it to avoid sending the same shutdown RPC twice.
+        if !path.is_empty() {
             let _ = std::fs::write(path, text);
         }
     }
-    let _ = std::process::Command::new("zellij")
-        .args(["kill-session", session])
-        .output();
+    let _ = spawn_chat_workbench_shutdown_with("zellij", session);
 }
 
 /// Bare `pui` (P-030): start this launch's own `pui-chat-<pid>` zellij session
@@ -1801,7 +1856,7 @@ async fn run_chat_workbench() -> Result<Option<i32>> {
     let path = layout::materialize_chat_workbench()?;
     let argv = layout::launch_argv(&path.to_string_lossy(), &session);
     let status = zellij_session_command(&argv).status()?;
-    reap::kill_and_delete(&session);
+    reap::finish_chat_workbench(&session, &transcript);
     if let Ok(text) = std::fs::read_to_string(&transcript) {
         use std::io::Write as _;
         let _ = write!(std::io::stdout(), "{text}");

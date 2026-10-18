@@ -188,3 +188,57 @@ export function auditWakeEvidence(input: {
     replied: knownTrue(input.replies.some(row => row.from === input.ownerId && row.relatedMsgId === input.msgId), 'coord_event_log.related_msg_id:' + input.msgId),
   };
 }
+
+export function buildAuditWakeRecords(
+  owners: string[], messages: Array<{ msg_id: string; body: Record<string, unknown> }>,
+  linked: Array<{ ownerId: string; msgId: string; status: string; turnProof: string | null; turnStartedAt: string | null }>,
+  asOf: string,
+): Map<string, AuditRecord[]> {
+  const wanted = new Set(owners);
+  const requests = new Map(owners.map(owner => [owner, new Map<string, { msg_id: string; body: Record<string, unknown> }>()]));
+  const deliveries = new Map<string, Map<string, typeof linked>>();
+  const replies = new Map<string, Map<string, Array<{ from: string; relatedMsgId: string }>>>();
+  for (const delivery of linked) {
+    const ownerId = delivery.ownerId;
+    const msgId = delivery.msgId;
+    if (!wanted.has(ownerId)) continue;
+    const byMessage = deliveries.get(ownerId) ?? new Map<string, typeof linked>();
+    const matches = byMessage.get(msgId) ?? [];
+    matches.push(delivery);
+    byMessage.set(msgId, matches);
+    deliveries.set(ownerId, byMessage);
+  }
+  for (const message of messages) {
+    const body = message.body;
+    if (typeof body.from === 'string' && typeof body.related_msg_id === 'string' && wanted.has(body.from)) {
+      const byMessage = replies.get(body.from) ?? new Map<string, Array<{ from: string; relatedMsgId: string }>>();
+      byMessage.set(body.related_msg_id, [{ from: body.from, relatedMsgId: body.related_msg_id }]);
+      replies.set(body.from, byMessage);
+    }
+    if (!Array.isArray(body.to)) continue;
+    for (const recipient of body.to) {
+      if (typeof recipient !== 'string' || !wanted.has(recipient)) continue;
+      if (body.wake === true || body.wake === 'required' || deliveries.get(recipient)?.has(message.msg_id)) {
+        requests.get(recipient)!.set(message.msg_id, message);
+      }
+    }
+  }
+  const result = new Map<string, AuditRecord[]>();
+  for (const ownerId of owners) {
+    const requested = requests.get(ownerId)!;
+    for (const msgId of deliveries.get(ownerId)?.keys() ?? []) {
+      if (!requested.has(msgId)) requested.set(msgId, { msg_id: msgId, body: {} });
+    }
+    result.set(ownerId, [...requested.values()].map(message => ({
+      id: 'wake:' + ownerId + ':' + message.msg_id, ownerId, kind: 'wake', fields: {
+        request: auditKnown(message.msg_id, 'coord_event_log / exact delivery payload', asOf),
+        ...auditWakeEvidence({
+          ownerId, msgId: message.msg_id, observedAt: asOf, messageExists: Object.keys(message.body).length > 0,
+          deliveries: deliveries.get(ownerId)?.get(message.msg_id) ?? [],
+          replies: replies.get(ownerId)?.get(message.msg_id) ?? [],
+        }),
+      },
+    })));
+  }
+  return result;
+}

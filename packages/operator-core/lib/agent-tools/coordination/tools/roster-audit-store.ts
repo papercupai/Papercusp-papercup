@@ -12,8 +12,9 @@ import { classifyRecordedTurn } from '../../../turn-provenance/turn-ref';
 import { listReports, type ReportViewer } from '../../../report-library';
 import { coordScopeReady, coordWorkspaceId } from '../log';
 import { classifyAgentWait } from '../wait-classification';
-import { createRosterAudit, auditKnown, auditUnknown, auditWakeEvidence, auditScopeKey, pageRosterAudit, RosterAuditError,
+import { createRosterAudit, auditKnown, auditUnknown, auditScopeKey, buildAuditWakeRecords, pageRosterAudit, RosterAuditError,
   type AuditScope, type AuditRecord, type AuditField, type AuditProvenance, type AuditHistory, type RosterAuditSnapshot } from './roster-audit';
+export { buildAuditWakeRecords } from './roster-audit';
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const prefix = (scope: AuditScope) => `audits/roster/${hash(scope.workspaceId).slice(0, 16)}/`;
@@ -125,23 +126,7 @@ async function readWakeRecords(workspaceId: string, owners: string[], asOf: stri
        AND created_at >= ${since}::timestamptz AND created_at <= ${asOf}::timestamptz`;
   const linked: Delivery[] = deliveries.flatMap(row => typeof row.payload?.msg_id === 'string'
     ? [{ ownerId: row.subscriber_id, msgId: row.payload.msg_id, status: row.status, turnProof: row.turn_proof, turnStartedAt: row.turn_started_at }] : []);
-  const replies = messages.flatMap(row => typeof row.body.from === 'string' && typeof row.body.related_msg_id === 'string'
-    ? [{ from: row.body.from, relatedMsgId: row.body.related_msg_id }] : []);
-  for (const ownerId of owners) {
-    const requested = new Map(messages.filter(row => Array.isArray(row.body.to) && row.body.to.includes(ownerId) &&
-      (row.body.wake === true || row.body.wake === 'required' || linked.some(d => d.ownerId === ownerId && d.msgId === row.msg_id)))
-      .map(row => [row.msg_id, row]));
-    for (const d of linked.filter(row => row.ownerId === ownerId)) {
-      if (!requested.has(d.msgId)) requested.set(d.msgId, { msg_id: d.msgId, body: {} });
-    }
-    result.set(ownerId, [...requested.values()].map(message => ({
-      id: `wake:${ownerId}:${message.msg_id}`, ownerId, kind: 'wake', fields: {
-        request: auditKnown(message.msg_id, 'coord_event_log / exact delivery payload', asOf),
-        ...auditWakeEvidence({ ownerId, msgId: message.msg_id, observedAt: asOf, messageExists: Object.keys(message.body).length > 0, deliveries: linked, replies }),
-      },
-    })));
-  }
-  return result;
+  return buildAuditWakeRecords(owners, messages, linked, asOf);
 }
 
 function checkpointField(text: string | undefined, field: string, asOf: string, current: boolean, recordedAt: string | null): AuditField {

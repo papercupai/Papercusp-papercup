@@ -38,7 +38,12 @@ export const AGENT_MCP_AUTH_META = 'com.papercusp/connection';
  * its operator never wrote, and /api sat on the capped HTTP fallback until the origin health check timed out.
  */
 function discoveryDir(): string {
-  return join(papercuspHome(), REL_DIR);
+  // `papercuspHome()` already resolves the complete host state directory,
+  // including the optional PAPERCUSP_HOME override. Appending REL_DIR here
+  // created `$PAPERCUSP_HOME/.papercusp`, while the native desktop reads
+  // `$PAPERCUSP_HOME/endpoint-ipc.<port>.json`; isolated native verification
+  // therefore never discovered the operator socket.
+  return papercuspHome();
 }
 
 /** Absolute path to the discovery file in this instance's runtime directory. */

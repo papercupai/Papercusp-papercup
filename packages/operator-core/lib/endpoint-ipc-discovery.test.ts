@@ -35,9 +35,9 @@ afterEach(() => {
 });
 
 describe('PAPERCUSP_HOME isolation (writer agrees with the native reader)', () => {
-  it('writes both discovery files under an explicit PAPERCUSP_HOME and none under ~/.papercusp', async () => {
+  it.each(['exact', 'padded'])('writes both discovery files at the normalized %s PAPERCUSP_HOME root', async (style) => {
     const isolated = await mkdtemp(join(tmpdir(), 'ipc-disc-iso-'));
-    process.env.PAPERCUSP_HOME = isolated;
+    process.env.PAPERCUSP_HOME = style === 'padded' ? `  ${isolated}  ` : isolated;
     process.env.PAPERCUSP_HONO_PORT = '33700';
     try {
       expect(endpointIpcDiscoveryPath()).toBe(join(isolated, 'endpoint-ipc.json'));

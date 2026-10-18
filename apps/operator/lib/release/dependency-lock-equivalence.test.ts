@@ -5,7 +5,8 @@
  * every non-link difference must be refused (a false "equivalent" publishes a generation
  * under a key its contents do not match).
  */
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -17,6 +18,7 @@ const HELPER = join(__dirname, '../../bin/release/dependency-lock-equivalence.mj
 type Entry = Record<string, unknown>;
 interface CompareResult { drops: string[]; reasons: string[] }
 interface EquivalenceModule {
+  createGitInputManifestReader(git?: (root: string, args: string[]) => Buffer): (root: string, ref: string) => string;
   compareLockfile(lockRel: string, refLock: unknown, liveLock: unknown): CompareResult;
   compareDependencyInputs(input: {
     refManifest: Map<string, string>;
@@ -39,6 +41,86 @@ const lock = (packages: Record<string, Entry>) => ({ name: 'r', lockfileVersion:
 const PKG: Record<string, Entry> = {
   'node_modules/pkg': { version: '1.0.0', resolved: 'https://r.invalid/pkg-1.0.0.tgz', integrity: 'sha512-a' },
 };
+
+describe('immutable Git input manifest batching', () => {
+  it('hashes shared blobs once, reuses unchanged submodules and reads changed gitlinks exactly', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-manifest-'));
+    try {
+      const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args]);
+      const init = (cwd: string) => {
+        mkdirSync(cwd, { recursive: true });
+        git(cwd, 'init', '-q');
+        git(cwd, 'config', 'user.name', 'Manifest test');
+        git(cwd, 'config', 'user.email', 'manifest@test.invalid');
+      };
+      const commitIndex = (cwd: string) => {
+        git(cwd, 'commit', '-qm', 'inputs');
+        return String(git(cwd, 'rev-parse', 'HEAD')).trim();
+      };
+      const commit = (cwd: string) => {
+        git(cwd, 'add', '.');
+        return commitIndex(cwd);
+      };
+      init(root);
+      const vendor = join(root, 'vendor');
+      init(vendor);
+      const lockBytes = '{"lockfileVersion":3,"packages":{}}\n';
+      writeFileSync(join(root, 'package-lock.json'), lockBytes);
+      for (const path of ['nested/npm-shrinkwrap.json', 'patches/tool.patch', 'nested/patches/tool.patch',
+        'patches/nested/ignored.patch', '.papercusp/package-lock.json',
+        '.papercusp-smoke-snapshots/package-lock.json', 'node_modules/pkg/package-lock.json']) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), lockBytes);
+        git(root, 'add', '-f', path);
+      }
+      writeFileSync(join(vendor, 'package-lock.json'), lockBytes);
+      const vendorRef = commit(vendor);
+      writeFileSync(join(root, '.gitmodules'), '[submodule "vendor"]\npath = vendor\nurl = ./vendor\n');
+      git(root, 'update-index', '--add', '--cacheinfo', `160000,${vendorRef},vendor`);
+      const first = commit(root);
+      writeFileSync(join(root, 'README'), 'source only');
+      const second = commit(root);
+      writeFileSync(join(vendor, 'package-lock.json'), 'changed lock\n');
+      const changedVendor = commit(vendor);
+      git(root, 'update-index', '--cacheinfo', `160000,${changedVendor},vendor`);
+      const third = commit(root);
+      const calls: string[] = [];
+      const read = mod.createGitInputManifestReader((cwd, args) => {
+        calls.push(`${cwd}:${args.join(' ')}`);
+        return git(cwd, ...args);
+      });
+      const before = read(root, first);
+      expect(read(root, second)).toBe(before);
+      const digest = createHash('sha256').update(lockBytes).digest('hex');
+      expect(before).toBe(['nested/npm-shrinkwrap.json', 'nested/patches/tool.patch', 'package-lock.json',
+        'patches/tool.patch', 'vendor/package-lock.json'].map(path => `${path}\t${digest}\n`).join(''));
+      const canonical = spawnSync('bash', ['-c', [
+        'set -euo pipefail', 'source "$SCRIPT"',
+        'dependency_generation_input_manifest_ref "$ROOT" "$REF" | LC_ALL=C sort',
+      ].join('\n')], {
+        encoding: 'utf8', env: { ...process.env, ROOT: root, REF: first,
+          SCRIPT: join(__dirname, '../../bin/release/dependency-generation.sh') },
+      });
+      expect(canonical.status, canonical.stderr).toBe(0);
+      expect(before).toBe(canonical.stdout);
+      expect(read(root, third)).toContain(`vendor/package-lock.json\t${createHash('sha256').update('changed lock\n').digest('hex')}`);
+      expect(calls.filter(call => call.includes(':cat-file blob '))).toHaveLength(2);
+      expect(calls.filter(call => call === `${vendor}:ls-tree -r -z ${vendorRef}`)).toHaveLength(1);
+      // Cached data cannot turn a different, unavailable gitlink into a partial manifest.
+      const missing = 'a'.repeat(40);
+      git(root, 'update-index', '--cacheinfo', `160000,${missing},vendor`);
+      const unavailable = commitIndex(root);
+      expect(() => read(root, unavailable)).toThrow();
+      expect(() => read(root, unavailable)).toThrow();
+      expect(calls.filter(call => call === `${vendor}:cat-file -e ${missing}^{commit}`)).toHaveLength(2);
+      git(root, 'rm', '-q', '--cached', 'vendor');
+      const missingLink = commitIndex(root);
+      expect(() => read(root, missingLink)).toThrow(/no gitlink/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('compareLockfile', () => {
   it('is equivalent when only dev/optional/peer flags and workspace declarations differ', () => {

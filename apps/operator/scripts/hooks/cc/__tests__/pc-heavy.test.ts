@@ -3906,6 +3906,36 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       expect(second.stdout).toContain('dirty-version-two');
     });
 
+    it('a second edit to an already-untracked submodule file busts the cache', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'superproject.txt'), 'seed');
+      commitAll(repo);
+
+      const submoduleRepo = join(dir, 'untracked-submodule-source');
+      mkdirSync(submoduleRepo, { recursive: true });
+      execSync('git init -q', { cwd: submoduleRepo });
+      execSync('git config user.email t@example.com && git config user.name test', { cwd: submoduleRepo });
+      writeFileSync(join(submoduleRepo, 'src.txt'), 'committed');
+      commitAll(submoduleRepo);
+      execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', submoduleRepo, 'nested-source'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      commitAll(repo);
+
+      const generated = join(repo, 'nested-source', 'generated.d.mts');
+      writeFileSync(generated, 'v1');
+      const args = ['bash', '-c', 'cat nested-source/generated.d.mts'];
+      const first = runSync(args, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(first.stdout).toBe('v1');
+      expect(first.stderr).not.toContain('coalesced:');
+
+      writeFileSync(generated, 'v2');
+      const second = runSync(args, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(second.stdout).toBe('v2');
+      expect(second.stderr).not.toContain('coalesced:');
+    });
+
     // EI-19424611266793426. The token used `--untracked-files=no`, so CREATING a file
     // did not move it. That gap is inverted against the error class agents re-run this
     // command to fix: a missing-module / missing-declaration error (TS7016, TS2307) is
@@ -3926,6 +3956,66 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
 
       const second = runSync(['bash', '-c', 'echo typecheck-verdict'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
       expect(second.stderr).not.toContain('coalesced:'); // must re-run, not replay the pre-fix verdict
+    });
+
+    it('an edit to an already-untracked file busts the cache by content, even when its path and length stay the same', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'src.ts'), 'baseline');
+      commitAll(repo);
+      const source = join(repo, 'generated.d.mts');
+      writeFileSync(source, 'v1'); // untracked before the first invocation
+
+      const first = runSync(['bash', '-c', 'cat generated.d.mts'], {
+        PC_HEAVY_SLOTS: '2',
+        PC_HEAVY_COALESCE_SEC: '30',
+      }, repo);
+      expect(first.stdout).toBe('v1');
+      expect(first.stderr).not.toContain('coalesced:');
+
+      // Keep both path and byte length unchanged. Git status remains `??` and
+      // cannot distinguish this edit; the content fingerprint must.
+      writeFileSync(source, 'v2');
+      const second = runSync(['bash', '-c', 'cat generated.d.mts'], {
+        PC_HEAVY_SLOTS: '2',
+        PC_HEAVY_COALESCE_SEC: '30',
+      }, repo);
+      expect(second.stderr, `PC_HEAVY=${PC_HEAVY}`).not.toContain('coalesced:');
+      expect(second.stdout, `PC_HEAVY=${PC_HEAVY}; stderr=${second.stderr}`).toBe('v2');
+    });
+
+    it('fails closed when the bounded untracked-content fingerprint cannot complete', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'src.ts'), 'baseline');
+      commitAll(repo);
+      writeFileSync(join(repo, 'generated.d.mts'), 'two');
+      const env = {
+        PC_HEAVY_SLOTS: '2',
+        PC_HEAVY_COALESCE_SEC: '30',
+        PC_HEAVY_UNTRACKED_MAX_BYTES: '1',
+      };
+
+      const first = runSync(['bash', '-c', 'echo bounded-fingerprint'], env, repo);
+      expect(first.stdout.trim()).toBe('bounded-fingerprint');
+      expect(first.stderr).not.toContain('coalesced:');
+      const second = runSync(['bash', '-c', 'echo bounded-fingerprint'], env, repo);
+      expect(second.stdout.trim()).toBe('bounded-fingerprint');
+      expect(second.stderr).not.toContain('coalesced:');
+      expect(second.stderr).toContain('untracked source fingerprint incomplete');
+    });
+
+    it('does not read or write cached results when Git cannot produce a tracked-source fingerprint', () => {
+      const repo = gitRepo(); // deliberately has no HEAD commit
+      writeFileSync(join(repo, 'generated.d.mts'), 'v1');
+      const args = ['bash', '-c', 'cat generated.d.mts'];
+      const first = runSync(args, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(first.stdout).toBe('v1');
+      expect(first.stderr).not.toContain('coalesced:');
+      expect(first.stderr).toContain('git source fingerprint incomplete');
+
+      writeFileSync(join(repo, 'generated.d.mts'), 'v2');
+      const second = runSync(args, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(second.stdout).toBe('v2');
+      expect(second.stderr).not.toContain('coalesced:');
     });
 
     it('a file created inside a WHOLLY-UNTRACKED directory also busts the cache (-unormal collapses such a dir to one entry and stays blind)', () => {

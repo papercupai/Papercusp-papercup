@@ -1113,8 +1113,11 @@ export const capabilityReadDefinition = {
         decoded = undefined;
       }
       const row = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : null;
-      let content = row?.content;
-      if (!Array.isArray(content)) {
+      const envelopeContent = row?.content;
+      let content: unknown[];
+      if (Array.isArray(envelopeContent)) {
+        content = envelopeContent;
+      } else {
         // Text result-door spills retain the selected text body plus a manifest
         // describing the original MCP content items, rather than serializing a
         // second `{content:[...]}` envelope. Reconstruct that contract here so
@@ -1162,7 +1165,7 @@ export const capabilityReadDefinition = {
           selected_indexes: unique,
           total_content_items: content.length,
           content: unique.map((index) => content[index]),
-          ...(row.isError !== undefined ? { isError: row.isError } : {}),
+          ...(row?.isError !== undefined ? { isError: row.isError } : {}),
         }) }],
       }, reference);
     }

@@ -724,6 +724,30 @@ describe('capability:read', () => {
     expect(selectedAdvisory.content).toEqual([{ type: 'text', text: advisory }]);
   });
 
+  it.each(['plain text', 'null', '42', '"a JSON string"'])(
+    'selects text spill content when the body is not an object: %s',
+    async (body) => {
+      const f = join(DIR, 'primitive-text-reference.spill');
+      writeScratchReference({
+        filePath: f,
+        payload: body,
+        workspaceId: 'ws-1',
+        mediaType: 'text/plain',
+        content: [{ index: 0, type: 'text', byteCount: Buffer.byteLength(body) }],
+      });
+      const ownerCtx = { ...baseCtx, workspaceId: 'ws-1', isSuperuser: true };
+      const selected = parse((await readTool.handler!(
+        { file_path: f, content_indexes: [0] }, ownerCtx as never,
+      )) as { content: Array<{ text: string }> });
+      expect(selected).toMatchObject({
+        ok: true,
+        total_content_items: 1,
+        content: [{ type: 'text', text: body }],
+      });
+      expect(selected).not.toHaveProperty('isError');
+    },
+  );
+
   it('reads a signed judge session spill despite its synthesized role principal', async () => {
     const f = join(DIR, 'judge-owner-reference.spill');
     writeScratchReference({

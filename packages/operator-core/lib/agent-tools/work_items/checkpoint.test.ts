@@ -5556,6 +5556,22 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
     expect(await one({ id: 'WI-UNREAD-CLEAN', checkpoint: body })).not.toHaveProperty('unreadRunLint');
   });
 
+  it('does not flag a negated completed-run status as unread', async () => {
+    const body = [
+      'The selected job exited with code 1 and its log was read.',
+      'No jobs still running.',
+      'Read /tmp/selected-job.log before writing this checkpoint.',
+    ].join('\n');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-NEGATED-STATUS', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-NEGATED-STATUS', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+  });
+
   it('ignores an unrelated in-flight compound even when the checkpoint also names a log', async () => {
     const body = [
       'Next: restore the in-flight store rebinding after refreshing the type definitions.',
@@ -5831,7 +5847,7 @@ describe('work_items:checkpoint — unchanged attestation surface (P-007/R-06)',
     attestWorkItemCheckpointUnchanged.mockResolvedValue({
       ok: false,
       refusedReason: 'attestation_state_changed',
-      currentHash: null,
+      currentHash: HASH,
       attestedCount: 0,
       bodyAgeMs: null,
       remainingAttestations: 0,
@@ -5842,6 +5858,7 @@ describe('work_items:checkpoint — unchanged attestation surface (P-007/R-06)',
 
     expect(result.ok).toBe(false);
     expect(result.errorCode).toBe('attestation_state_changed');
+    expect(result.storedContentHash).toBe(HASH);
     // This branch exists so an agent does not bounce at a compaction boundary without
     // knowing the next move; a bare code would reproduce exactly that failure.
     expect(result.error).toContain('Write a real checkpoint');

@@ -19,7 +19,16 @@ import { JsonRpcBridge, type JsonRpcNotification, type JsonRpcRequestHandler } f
 import { buildBwrapArgs, buildProviderBwrapArgs } from './bwrap-args';
 
 const DEFAULT_BWRAP = '/usr/bin/bwrap';
-const execFileAsync = promisify(execFile);
+type ExecFileAsync = (
+  file: string,
+  args: string[],
+  options: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedExecFileAsync: ExecFileAsync | null = null;
+function execFileAsync(file: string, args: string[], options: Record<string, unknown>) {
+  if (!cachedExecFileAsync) cachedExecFileAsync = promisify(execFile) as unknown as ExecFileAsync;
+  return cachedExecFileAsync(file, args, options);
+}
 
 /** A provider daemon was refused because its sandbox cannot be established. */
 export class DaemonSandboxUnavailableError extends Error {

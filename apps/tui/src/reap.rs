@@ -186,6 +186,22 @@ pub fn kill_and_delete(name: &str) {
     zellij(&["delete-session", name]);
 }
 
+/// After the workbench client exits, the pane's transcript file proves that
+/// it already sent kill-session. Both kill and delete RPCs can block reading
+/// the dying server's socket (P-032). Leave metadata for the next launch's reap.
+/// A detached client has no pane receipt, so its live session still needs a kill.
+pub fn finish_chat_workbench(name: &str, transcript: &std::path::Path) {
+    finish_chat_workbench_with("zellij", name, transcript);
+}
+
+fn finish_chat_workbench_with(program: &str, name: &str, transcript: &std::path::Path) {
+    if transcript.is_file() {
+        return;
+    }
+    let _ = Command::new(program).args(["kill-session", name]).output();
+    let _ = Command::new(program).args(["delete-session", name]).output();
+}
+
 /// Sweep stale app-managed sessions, then free `own` ONLY if it lingers as an
 /// EXITED husk — a LIVE session with our stable name is the attach-if-exists
 /// target (P-001), never reaped here. (Pre-refit, pid-keyed names made any
@@ -229,6 +245,36 @@ pub fn reap_stale(own: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn workbench_cleanup_calls(pane_finished: bool) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("zellij");
+        std::fs::write(&script,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/calls\"\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let transcript = dir.path().join("transcript");
+        if pane_finished {
+            std::fs::write(&transcript, "").unwrap();
+        }
+        finish_chat_workbench_with(script.to_str().unwrap(), "pui-chat-test", &transcript);
+        let calls = dir.path().join("calls");
+        if calls.exists() { std::fs::read_to_string(calls).unwrap() } else { String::new() }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_workbench_does_not_repeat_the_panes_shutdown_rpc() {
+        assert_eq!(workbench_cleanup_calls(true), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detached_workbench_still_stops_its_live_session_before_deleting() {
+        assert_eq!(workbench_cleanup_calls(false),
+            "kill-session pui-chat-test\ndelete-session pui-chat-test\n");
+    }
 
     #[test]
     fn owner_pid_parses_app_managed_names() {

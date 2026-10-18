@@ -68,6 +68,21 @@ import { openManagedKernel, controlManagedKernel, runManagedKernelScript } from 
 
 export type CodeRunCaptureMode = 'auto' | 'never';
 
+/**
+ * Best-effort trace/recipe work must not consume the foreground response window.
+ * A historical code:run spent 44.9s in recipe capture after its nested read had
+ * already completed in 11ms, then the MCP transport timed out before the result
+ * was delivered. Keep one short absolute budget shared by all postprocessing legs.
+ */
+export const CODE_RUN_POSTPROCESSING_BUDGET_MS = 5_000;
+
+export function codeRunPostprocessingDeadlineAtMs(
+  responseDeadlineAtMs: number,
+  nowMs = Date.now(),
+): number {
+  return Math.min(responseDeadlineAtMs, nowMs + CODE_RUN_POSTPROCESSING_BUDGET_MS);
+}
+
 /** Scope is derived from authenticated transport context, never from tool arguments. */
 export function codeRunKernelScope(ctx: UnifiedToolContext): string {
   if (!ctx.workspaceId?.trim()) throw new Error('kernel_workspace_required');
@@ -590,9 +605,10 @@ export default defineTool({
     // payload. callRecords are internal dispatch evidence; the normalized trace
     // keeps the safe subset and the raw records never cross the result door.
     let executionTrace: NormalizedExecutionTrace | null = null;
+    const postprocessingDeadlineAtMs = codeRunPostprocessingDeadlineAtMs(responseDeadlineAtMs);
     const runPostprocessing = <T>(label: string, work: () => Promise<T>, fallback: T) =>
       withCodeRunResponseBudget(work, {
-        deadlineAtMs: responseDeadlineAtMs,
+        deadlineAtMs: postprocessingDeadlineAtMs,
         fallback,
         label: `code:run ${label}`,
       });

@@ -134,6 +134,8 @@ import codeRunTool, {
   isRecipeCaptureAuthorityEligible,
   codeRunReturnedContextBytes,
   codeRunFailureClass,
+  CODE_RUN_POSTPROCESSING_BUDGET_MS,
+  codeRunPostprocessingDeadlineAtMs,
   withCodeRunCaptureMode,
   withCodeRunResponseBudget,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
@@ -1679,6 +1681,41 @@ describe('code:run → timeoutSec foreground contract (EI-21636457492876715)', (
 });
 
 describe('code:run → response-safe postprocessing budget', () => {
+  it('caps optional postprocessing at five seconds and still respects the outer response deadline', () => {
+    const nowMs = 1_000;
+    expect(codeRunPostprocessingDeadlineAtMs(nowMs + 45_000, nowMs)).toBe(
+      nowMs + CODE_RUN_POSTPROCESSING_BUDGET_MS,
+    );
+    expect(codeRunPostprocessingDeadlineAtMs(nowMs + 3_000, nowMs)).toBe(nowMs + 3_000);
+  });
+
+  it('degrades a never-settling optional leg at the shared five-second deadline', async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const startedAtMs = Date.now();
+      const pending = withCodeRunResponseBudget(
+        () => new Promise<null>(() => {}),
+        {
+          deadlineAtMs: codeRunPostprocessingDeadlineAtMs(startedAtMs + 45_000, startedAtMs),
+          fallback: null,
+          label: 'recipe capture',
+        },
+      );
+      let settled = false;
+      void pending.then(() => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(CODE_RUN_POSTPROCESSING_BUDGET_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({ value: null, degraded: true, reason: 'timeout' });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('recipe capture'));
+    } finally {
+      warning.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('returns at the shared absolute deadline when trace/record work never settles', async () => {
     vi.useFakeTimers();
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});

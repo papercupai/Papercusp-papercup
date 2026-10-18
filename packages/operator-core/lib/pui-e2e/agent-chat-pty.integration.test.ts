@@ -42,6 +42,7 @@ import { nativeProviderRequestSignal, nativeProviderTraceOrigin, nativeRpcReceip
 import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
+import { captureProcessSnapshot } from './process-snapshot';
 import { throwIfProviderRefused } from '../su-session-attached-live-rate-limit';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { isClaudeConfigDirLaunchReady, sessionProcessHolder, sessionTranscriptFile } from '../../../../apps/operator/scripts/psu-launcher.mjs';
@@ -1114,39 +1115,10 @@ class PuiPane {
   async capturePreCleanupEvidence(): Promise<Record<string, unknown>> {
     const frame = { screen: this.failureScreen(), rawTail: this.raw.slice(-12_000),
       pid: this.pty.pid, exitReceipt: this.exitReceipt, at: new Date().toISOString() };
-    const descendants: string[] = [];
-    let processProbeError: string | undefined;
-    try {
-      // Query only this launch. A host-wide args census can exceed execFile's
-      // output buffer and discard the very process state this snapshot needs.
-      const seen = new Set([this.pty.pid]);
-      let parents = [this.pty.pid];
-      let first = true;
-      const deadline = performance.now() + 2_000;
-      while (parents.length) {
-        const remaining = Math.ceil(deadline - performance.now());
-        if (remaining <= 0) throw new Error('workbench process snapshot exceeded its 2000ms deadline');
-        let stdout: string;
-        try {
-          ({ stdout } = await execFileAsync('ps', ['-o', 'pid=,ppid=,stat=,etime=,wchan:24=,args=',
-            ...(first ? ['-p', String(this.pty.pid)] : []), '--ppid', parents.join(',')], {
-            encoding: 'utf8', timeout: remaining,
-          }));
-        } catch (error) {
-          if ((error as { code?: number }).code === 1) break; // no surviving selection
-          throw error;
-        }
-        first = false;
-        const rows = stdout.split('\n').filter((line) => line.trim());
-        descendants.push(...rows);
-        parents = rows.map((line) => Number(line.trim().split(/\s+/, 1)[0])).filter((pid) => !seen.has(pid));
-        for (const pid of parents) seen.add(pid);
-      }
-    } catch (error) {
-      processProbeError = error instanceof Error ? error.message : String(error);
-    }
+    const processes = await captureProcessSnapshot(this.pty.pid);
     return {
-      ...frame, descendants, processProbeError, exitReceiptAfterProbe: this.exitReceipt,
+      ...frame, ...processes,
+      exitReceiptAfterProbe: this.exitReceipt,
       observerMaxLateMs: this.observerMaxLateMs,
     };
   }
@@ -4781,6 +4753,17 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       for (let i = 0; i < 'p030 focus probe'.length; i += 1) wb.pane.write('\u007f');
       await wb.pane.waitForGone('p030 focus probe', { timeoutMs: 10_000 });
       const frame = wb.pane.screen();
+      if (process.env.PUI_TIMING_DIR) {
+        // Validate the diagnostic while the launch is known to be alive. A
+        // broken process observer must refuse before another unmeasured quit.
+        const beforeQuit = await wb.pane.capturePreCleanupEvidence();
+        mkdirSync(process.env.PUI_TIMING_DIR, { recursive: true });
+        writeFileSync(path.join(process.env.PUI_TIMING_DIR, `workbench-${wb.pane.pty.pid}-before-quit.json`),
+          JSON.stringify({ session: wb.session, ...beforeQuit }));
+        expect(beforeQuit.processProbeError, JSON.stringify(beforeQuit.processProbeFailure)).toBeUndefined();
+        expect((beforeQuit.descendants as string[]).some((row) => Number(row.trim().split(/\s+/, 1)[0]) === wb.pane.pty.pid),
+          'live process observer must see the launcher').toBe(true);
+      }
       // Ending the chat ends `pui`: the launcher exits and the session is gone.
       wb.pane.write('/exit');
       wb.pane.enter();

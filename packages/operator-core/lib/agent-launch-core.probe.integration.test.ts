@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { hostname } from 'node:os';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
@@ -40,7 +41,7 @@ beforeAll(async () => {
       id integer PRIMARY KEY, session_id text, coord_owner_id text,
       workspace_id text, first_seen_at timestamptz, launch_spec jsonb, launch_argv jsonb,
       plan_slug text, agent text, role text, feature text, mode text, terminal_bin text,
-      pid integer, window_id text, omp_thread_id text, label text, cwd text,
+      pid integer, window_id text, omp_thread_id text, label text, display text, cwd text,
       started_at timestamptz, ended_at timestamptz, exit_code integer, ended_by text
     );
     CREATE TABLE harness_shared.session_turns (
@@ -50,7 +51,7 @@ beforeAll(async () => {
       workspace_id text, coord_owner_id text, status text, call_origin text,
       tool_name text, invoked_at timestamptz, metadata_json jsonb
     );
-    CREATE TABLE harness_shared.coord_presence (workspace_id text, owner_id text);
+    CREATE TABLE harness_shared.coord_presence (workspace_id text, owner_id text, host text, pid integer);
     CREATE TABLE harness_shared.work_items (
       workspace_id text, feature_id text, taken_by text, terminal_owner text,
       worked_by_history jsonb
@@ -120,7 +121,7 @@ describe('resume target registration election (real PG)', () => {
       INSERT INTO harness_shared.adv_sessions
         (id, coord_owner_id, session_id, workspace_id, agent, started_at, launch_argv)
       VALUES (105, ${owner}, 'scoped-source-session', 'source-workspace', 'claude', now(),
-              ${JSON.stringify(['psu', '--harness=source-harness'])}::jsonb)
+              ${JSON.stringify(['psu', '--harness=source-harness'])}::text::jsonb)
     `;
 
     await expect(resolveResumeTarget({ agentId: owner })).resolves.toMatchObject({
@@ -131,13 +132,33 @@ describe('resume target registration election (real PG)', () => {
     });
   });
 
+  it('falls back to the live same-host presence pid for a headless source', async () => {
+    const owner = `su-resume-presence-pid-${randomBytes(5).toString('hex')}`;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, coord_owner_id, session_id, workspace_id, agent, pid, started_at, launch_argv)
+      VALUES (107, ${owner}, 'presence-pid-source', 'source-workspace', 'codex', NULL, now(),
+              ${JSON.stringify(['psu', '--agent=codex', '--headless'])}::text::jsonb)
+    `;
+    await sql`
+      INSERT INTO harness_shared.coord_presence (workspace_id, owner_id, host, pid)
+      VALUES ('source-workspace', ${owner}, ${hostname()}, ${process.pid})
+    `;
+
+    await expect(resolveResumeTarget({ agentId: owner })).resolves.toMatchObject({
+      ok: true,
+      pid: process.pid,
+      headless: true,
+    });
+  });
+
   it('does not infer a missing harness from ambient context', async () => {
     const owner = 'su-resume-unscoped-source';
     await sql`
       INSERT INTO harness_shared.adv_sessions
         (id, coord_owner_id, session_id, workspace_id, agent, started_at, launch_argv)
       VALUES (106, ${owner}, 'unscoped-source-session', 'source-workspace', 'claude', now(),
-              ${JSON.stringify(['psu', '--no-picker'])}::jsonb)
+              ${JSON.stringify(['psu', '--no-picker'])}::text::jsonb)
     `;
 
     await expect(resolveResumeTarget({ agentId: owner })).resolves.toMatchObject({
@@ -159,7 +180,7 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
       INSERT INTO harness_shared.adv_sessions
         (id, session_id, coord_owner_id, workspace_id, first_seen_at, launch_spec, launch_argv)
       VALUES (3, 'native-silence', ${ownerId}, ${workspaceId}, to_timestamp(${firstSeen / 1000}),
-              '{}'::jsonb, ${JSON.stringify(['psu', `--launched-by=${launcherOwnerId}`])}::jsonb)
+              '{}'::jsonb, ${JSON.stringify(['psu', `--launched-by=${launcherOwnerId}`])}::text::jsonb)
     `;
     await sql`
       INSERT INTO harness_shared.tool_invocations

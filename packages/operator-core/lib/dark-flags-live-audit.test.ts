@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import type { Sql } from 'postgres';
+import { describe, expect, it, vi } from 'vitest';
 import { FLAGS } from '@papercusp/flags';
 import { GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID } from './flag-override-store';
-import { collectDarkFlagFindings } from '../../../scripts/audit-dark-flags-live-state';
+import { collectDarkFlagFindings, runDarkFlagAudit } from '../../../scripts/audit-dark-flags-live-state';
 
 const key = FLAGS.CAPABILITY_EXEC_SANDBOX;
 const legacy = { workspace_id: 'generic-test', payload: { [key]: true } };
@@ -47,5 +48,16 @@ describe('maintained dark flag live-state audit resolution', () => {
     expect(collectDarkFlagFindings([global({ [key]: false }), legacy], { [envKey]: '1' }).critical).toEqual([
       expect.objectContaining({ key, workspace: '(env, this process)', via: 'env' }),
     ]);
+  });
+
+  it('closes the dedicated client after the one-shot audit completes', async () => {
+    const end = vi.fn().mockResolvedValue(undefined);
+    const sql = vi.fn(async () => []) as unknown as Sql;
+    sql.end = end;
+
+    await runDarkFlagAudit(() => ({ sql }), {});
+
+    expect(end).toHaveBeenCalledOnce();
+    expect(end).toHaveBeenCalledWith({ timeout: 5 });
   });
 });

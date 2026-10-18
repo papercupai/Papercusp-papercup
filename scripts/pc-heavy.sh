@@ -287,6 +287,11 @@
 #                         how long an ALREADY-FINISHED result may be replayed.
 #                         This is NOT how long a follower waits for a running
 #                         leader; see below.
+#   PC_HEAVY_UNTRACKED_MAX_FILES / _BYTES
+#                         bounds the content fingerprint for untracked Git
+#                         files (defaults 10000 / 268435456). If either bound
+#                         or a file read is exceeded, coalescing fails closed
+#                         and the command runs fresh.
 #   PC_HEAVY_FRESH_AFTER  epoch-seconds watermark. Replay a cached run only if
 #                         it STARTED at/after this instant, and drop the
 #                         tree-state token from the coalescing key. For a caller
@@ -3195,9 +3200,11 @@ if [ "$_coalesce_enabled" = 1 ]; then
   #       INCLUDING a script outside the git tree (e.g. /tmp/genfix.mts,
   #       the exact reported repro — git status can't see that edit at all).
   #   (b) if cwd is inside a git worktree, hash `git status --porcelain=v2
-  #       --branch` together with the tracked worktree diff. Status covers HEAD,
-  #       paths, and untracked-file creation; the diff content is load-bearing for
-  #       a SECOND edit to an already-dirty file, whose status row does not change.
+  #       --branch` together with the tracked worktree diff and the CONTENT of
+  #       every untracked file. Status covers HEAD, paths, and untracked-file
+  #       creation; the diff content is load-bearing for a SECOND edit to an
+  #       already-dirty file, whose status row does not change, while the
+  #       untracked digest covers the same edit to an already-untracked file.
   #
   # (b) uses `--untracked-files=all`, NOT the cheaper-looking `=no` it carried
   # until EI-19424611266793426. `=no` made the token blind to file CREATION, and
@@ -3220,12 +3227,10 @@ if [ "$_coalesce_enabled" = 1 ]; then
   # vs 441ms for `=normal` vs 309ms for `=no` (a single sample says the opposite;
   # it is noise). So `=all` is both the sound choice and the fast one: +89ms on a
   # wrapper whose whole purpose is guarding 150s+ compiles.
-  # Fail-open: an unreadable Git tree or filesystem scan just yields an empty
-  # token, degrading to the previous cwd+argv-only behavior rather than
-  # erroring — coalescing was already best-effort, this doesn't change that
-  # contract. A valid non-Git export gets a bounded content identity below:
-  # `git status` is empty there, but the export's source files are still the
-  # result's inputs.
+  # The untracked content scan is bounded by both file count and total bytes.
+  # If status, diff, or any untracked read cannot produce a COMPLETE fingerprint,
+  # coalescing is disabled for this invocation. Replaying with a partial token
+  # would be a stale-verdict bug; a fresh command is the safe fallback.
   #
   # Skipped entirely when the caller supplied a freshness barrier: the token
   # would then be both redundant (the barrier answers the same question, per
@@ -3327,8 +3332,94 @@ if [ "$_coalesce_enabled" = 1 ]; then
     printf '%s' "$_tree_hash"
   }
 
+  _pc_heavy_git_untracked_token() {
+    local _repo="${1:-.}" _max_files="${2:-${PC_HEAVY_UNTRACKED_MAX_FILES:-10000}}"
+    local _max_bytes="${3:-${PC_HEAVY_UNTRACKED_MAX_BYTES:-268435456}}"
+    local _paths_file="" _digest_file="" _path="" _file=""
+    local _digest="" _tree_hash="" _size="" _count=0 _bytes=0 _remaining=0
+    case "$_max_files" in ''|*[!0-9]*) return 1 ;; esac
+    case "$_max_bytes" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#_max_files}" -le 6 ] && [ "$_max_files" -le 100000 ] || return 1
+    [ "${#_max_bytes}" -le 10 ] && [ "$_max_bytes" -le 1073741824 ] || return 1
+    command -v git >/dev/null 2>&1 || return 1
+    command -v sha1sum >/dev/null 2>&1 || return 1
+    command -v wc >/dev/null 2>&1 || return 1
+
+    _paths_file="$(mktemp "$_coalesce_dir/.untracked-token.XXXXXX" 2>/dev/null)" || return 1
+    _digest_file="$(mktemp "$_coalesce_dir/.untracked-token.XXXXXX" 2>/dev/null)" || {
+      rm -f "$_paths_file" 2>/dev/null || true
+      return 1
+    }
+    if ! git -C "$_repo" ls-files --others --exclude-standard -z > "$_paths_file" 2>/dev/null; then
+      rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+      return 1
+    fi
+
+    while IFS= read -r -d '' _path; do
+      _count=$(( _count + 1 ))
+      [ "$_count" -le "$_max_files" ] || {
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      }
+      _file="$_repo/$_path"
+      # Git reports untracked symlinks as paths, but hashing through one could
+      # read outside the worktree. The safe identity is unknown, so fail closed.
+      [ ! -L "$_file" ] && [ -f "$_file" ] || {
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      }
+      if ! _size="$(wc -c < "$_file" 2>/dev/null)"; then
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      fi
+      case "$_size" in ''|*[!0-9]*)
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+        ;;
+      esac
+      _remaining=$(( _max_bytes - _bytes ))
+      [ "$_size" -le "$_remaining" ] || {
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      }
+      _bytes=$(( _bytes + _size ))
+      if ! _digest="$(sha1sum < "$_file" 2>/dev/null)"; then
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      fi
+      _digest="${_digest%% *}"
+      [ -n "$_digest" ] || {
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      }
+      if ! printf '%s\0%s\0' "$_path" "$_digest" >> "$_digest_file"; then
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      fi
+    done < "$_paths_file"
+
+    rm -f "$_paths_file" 2>/dev/null || true
+    # Keep clean worktrees on the pre-existing key population. An empty output
+    # means there were no untracked files; a non-empty digest means their bytes
+    # are now part of the source identity.
+    if [ "$_count" -eq 0 ]; then
+      rm -f "$_digest_file" 2>/dev/null || true
+      printf '0:0:'
+      return 0
+    fi
+    if ! _tree_hash="$(sha1sum < "$_digest_file" 2>/dev/null)"; then
+      rm -f "$_digest_file" 2>/dev/null || true
+      return 1
+    fi
+    _tree_hash="${_tree_hash%% *}"
+    rm -f "$_digest_file" 2>/dev/null || true
+    [ -n "$_tree_hash" ] || return 1
+    printf '%s:%s:%s' "$_count" "$_bytes" "$_tree_hash"
+  }
+
   _pwd_for_key="$PWD"
   _tree_token=""
+  _coalesce_fingerprint_complete=1
   if [ -z "$_fresh_after" ]; then
     for _a in "$@"; do
       if [ -f "$_a" ]; then
@@ -3342,14 +3433,35 @@ if [ "$_coalesce_enabled" = 1 ]; then
       _git_is_worktree=1
       if _git_status="$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null)" &&
          _git_diff="$(git diff --no-ext-diff --binary HEAD -- 2>/dev/null)"; then
-        _git_state="$(printf '%s\0%s' "$_git_status" "$_git_diff" | sha1sum | cut -d' ' -f1)"
-        [ -n "$_git_state" ] && _tree_token="$_tree_token|git:$_git_state"
+        _untracked_max_files="${PC_HEAVY_UNTRACKED_MAX_FILES:-10000}"
+        _untracked_max_bytes="${PC_HEAVY_UNTRACKED_MAX_BYTES:-268435456}"
+        if _git_untracked_result="$(_pc_heavy_git_untracked_token "$PWD" "$_untracked_max_files" "$_untracked_max_bytes" 2>/dev/null)"; then
+          _git_untracked_files="${_git_untracked_result%%:*}"
+          _git_untracked_rest="${_git_untracked_result#*:}"
+          _git_untracked_bytes="${_git_untracked_rest%%:*}"
+          _git_untracked_state="${_git_untracked_rest#*:}"
+          if [ -n "$_git_untracked_state" ]; then
+            _git_state="$(printf '%s\0%s\0%s' "$_git_status" "$_git_diff" "$_git_untracked_state" | sha1sum | cut -d' ' -f1)"
+          else
+            # Preserve the pre-content-fingerprint key population for clean
+            # worktrees; only untracked source bytes add a new key component.
+            _git_state="$(printf '%s\0%s' "$_git_status" "$_git_diff" | sha1sum | cut -d' ' -f1)"
+          fi
+          [ -n "$_git_state" ] && _tree_token="$_tree_token|git:$_git_state"
+        else
+          echo "[pc-heavy] coalescing disabled — untracked source fingerprint incomplete" >&2
+          _coalesce_enabled=0
+          _coalesce_fingerprint_complete=0
+        fi
+      else
+        echo "[pc-heavy] coalescing disabled — git source fingerprint incomplete" >&2
+        _coalesce_enabled=0
+        _coalesce_fingerprint_complete=0
       fi
       # A superproject records only the gitlink's dirty marker; its status and
-      # diff do not contain edits to tracked files inside an initialized
-      # submodule. Hash each recursive submodule's own status and tracked diff
-      # so a second edit while it is already dirty cannot replay the prior
-      # source verdict.
+      # diff do not contain edits to files inside an initialized submodule.
+      # Hash each recursive submodule's status, tracked diff, and untracked
+      # file contents, sharing the root's count and byte budgets.
       if _submodule_state="$(
         git submodule foreach --quiet --recursive '
           _pc_sub_status="$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null)" || exit 1
@@ -3360,6 +3472,59 @@ if [ "$_coalesce_enabled" = 1 ]; then
       )"; then
         _submodule_state="${_submodule_state%% *}"
         [ -n "$_submodule_state" ] && _tree_token="$_tree_token|submodules:$_submodule_state"
+      else
+        echo "[pc-heavy] coalescing disabled — submodule source fingerprint incomplete" >&2
+        _coalesce_enabled=0
+        _coalesce_fingerprint_complete=0
+      fi
+      if [ "$_coalesce_enabled" = 1 ]; then
+        _submodule_paths_file="$(mktemp "$_coalesce_dir/.submodule-paths.XXXXXX" 2>/dev/null)" || _submodule_paths_file=""
+        _submodule_untracked_file="$(mktemp "$_coalesce_dir/.submodule-untracked.XXXXXX" 2>/dev/null)" || _submodule_untracked_file=""
+        if [ -z "$_submodule_paths_file" ] || [ -z "$_submodule_untracked_file" ] ||
+           ! git submodule foreach --quiet --recursive 'printf "%s\\0" "$displaypath"' > "$_submodule_paths_file" 2>/dev/null; then
+          echo "[pc-heavy] coalescing disabled — submodule untracked fingerprint incomplete" >&2
+          _coalesce_enabled=0
+          _coalesce_fingerprint_complete=0
+        else
+          _submodule_fingerprint_failed=0
+          while IFS= read -r -d '' _submodule_path; do
+            _submodule_repo="$_pwd_for_key/$_submodule_path"
+            _remaining_files=$(( _untracked_max_files - _git_untracked_files ))
+            _remaining_bytes=$(( _untracked_max_bytes - _git_untracked_bytes ))
+            if ! _submodule_untracked_result="$(_pc_heavy_git_untracked_token "$_submodule_repo" "$_remaining_files" "$_remaining_bytes" 2>/dev/null)"; then
+              _submodule_fingerprint_failed=1
+              break
+            fi
+            _submodule_untracked_files="${_submodule_untracked_result%%:*}"
+            _submodule_untracked_rest="${_submodule_untracked_result#*:}"
+            _submodule_untracked_bytes="${_submodule_untracked_rest%%:*}"
+            _submodule_untracked_state="${_submodule_untracked_rest#*:}"
+            _git_untracked_files=$(( _git_untracked_files + _submodule_untracked_files ))
+            _git_untracked_bytes=$(( _git_untracked_bytes + _submodule_untracked_bytes ))
+            if [ -n "$_submodule_untracked_state" ] &&
+               ! printf '%s\0%s\0' "$_submodule_path" "$_submodule_untracked_state" >> "$_submodule_untracked_file"; then
+              _submodule_fingerprint_failed=1
+              break
+            fi
+          done < "$_submodule_paths_file"
+
+          if [ "$_submodule_fingerprint_failed" = 1 ]; then
+            echo "[pc-heavy] coalescing disabled — submodule untracked fingerprint incomplete" >&2
+            _coalesce_enabled=0
+            _coalesce_fingerprint_complete=0
+          elif [ -s "$_submodule_untracked_file" ]; then
+            _submodule_untracked_state="$(sha1sum < "$_submodule_untracked_file" 2>/dev/null)" || _submodule_untracked_state=""
+            _submodule_untracked_state="${_submodule_untracked_state%% *}"
+            if [ -n "$_submodule_untracked_state" ]; then
+              _tree_token="$_tree_token|submodule-untracked:$_submodule_untracked_state"
+            else
+              echo "[pc-heavy] coalescing disabled — submodule untracked fingerprint incomplete" >&2
+              _coalesce_enabled=0
+              _coalesce_fingerprint_complete=0
+            fi
+          fi
+        fi
+        rm -f "${_submodule_paths_file:-}" "${_submodule_untracked_file:-}" 2>/dev/null || true
       fi
     fi
     if [ "$_git_is_worktree" = 0 ]; then
@@ -3368,6 +3533,9 @@ if [ "$_coalesce_enabled" = 1 ]; then
     fi
   fi
 
+  # No cached result may be read or written when any source component was
+  # incomplete. Fall through below to execute the command without coalescing.
+  if [ "$_coalesce_fingerprint_complete" = 1 ]; then
   # ── Result-affecting ENVIRONMENT (EI-18699972365875475; blocker filed by EI-78) ──
   # cwd+argv+token is a COLLIDING key for any command that takes result-changing
   # input through the ENVIRONMENT rather than argv, and that is not hypothetical:
@@ -3455,6 +3623,7 @@ if [ "$_coalesce_enabled" = 1 ]; then
 
   # True when $_c_exit exists and is fresh enough to reuse.
   _coalesce_fresh() {
+    [ "$_coalesce_fingerprint_complete" = 1 ] || return 1
     _c_read_exit || return 1
     _mt=$(stat -c %Y "$_c_exit" 2>/dev/null) || return 1
     _now=$(date +%s)
@@ -3569,7 +3738,9 @@ if [ "$_coalesce_enabled" = 1 ]; then
       # it out. Written immediately after winning the lock; _leader_alive
       # tolerates the sub-millisecond gap where the dir exists unstamped.
       _leader_id > "$_c_lockdir/pid" 2>/dev/null || true
-      _do_cache_write=1
+      if [ "$_coalesce_fingerprint_complete" = 1 ]; then
+        _do_cache_write=1
+      fi
       # Also sweep the leader's in-progress output temps and capture FIFOs
       # (EI-19368312145172418):
       # a leader killed mid-run would otherwise leave a `.part` behind. Both are
@@ -3606,6 +3777,7 @@ if [ "$_coalesce_enabled" = 1 ]; then
     [ "${EPOCHSECONDS:-$(date +%s)}" -ge "$_c_deadline" ] && break
     sleep 0.3
   done
+  fi
 fi
 
 # Try each slot non-blocking; hold the first free one open on its own fd.

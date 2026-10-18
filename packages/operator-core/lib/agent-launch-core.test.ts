@@ -1061,6 +1061,31 @@ describe('resolveResumeTarget', () => {
     });
   });
 
+  it('uses the live same-host presence pid for a headless source when adv_sessions has no pid', async () => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22660,
+      workspace_id: 'ws-codex',
+      coord_owner_id: OWNER,
+      session_id: null,
+      agent: 'codex',
+      pid: 531338,
+      cwd: '/repo',
+      launch_argv: ['psu', '--agent=codex', '--headless'],
+      started_at: '2026-10-18T00:00:00.000Z',
+      binding_started_at: '2026-10-18 00:00:00.000123+00',
+      ended_at: null,
+      ended_by: null,
+    }] as unknown[]);
+
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({
+      ok: true,
+      pid: 531338,
+      headless: true,
+    });
+    const queries = launchCoreSql.mock.calls.map((call) => String(call[0]?.join(' ')));
+    expect(queries.some((query) => query.includes('coord_presence') && query.includes('--headless'))).toBe(true);
+  });
+
   it('recovers the recorded Codex model and source from launch_argv for a resume', async () => {
     launchCoreSql.mockResolvedValue([{
       id: 22662,

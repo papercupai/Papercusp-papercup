@@ -2711,6 +2711,112 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     }));
   });
 
+  it('reports an admission-floor refusal instead of a takeover race when the expected holder is unchanged', async () => {
+    const launchSpy = mockLaunch();
+    const ownership = {
+      eventKey: 'gate-red-streak:papercusp',
+      workItem: 'WI-38026',
+      claimState: 'held',
+      unknown: null,
+      takenBy: 'su-ambiguous-holder',
+      takenAt: new Date().toISOString(),
+      lastProgressAt: new Date().toISOString(),
+      expiresAt: null,
+      holderSessionState: 'draining',
+      duplicates: [],
+      thread: { recent: [], total: 0 },
+    };
+    vi.doMock('../../coord/gate-ownership', () => ({
+      readGateOwnership: vi.fn(async () => ownership),
+      shouldStandDownForLivePeer: vi.fn(() => false),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => true),
+      ownershipContradicted: vi.fn(() => false),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
+    }));
+    const wakeRecipients = vi.fn(async () => ({
+      targets: ['su-ambiguous-holder'],
+      keys: ['coord:inbox-wake:su-ambiguous-holder'],
+      woken: 0,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+    }));
+    vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
+    mockAutomaticTransferTarget('su-caller');
+    const claimWorkItem = vi.fn(async () => null);
+    const getWorkItem = vi.fn(async () => ({
+      id: 'WI-38026',
+      family: 'issue',
+      harness: 'papercusp',
+      assignee: 'su-ambiguous-holder',
+    } as never));
+    const explainIssueClaimFloors = vi.fn(async () => [{
+      id: 'WI-38026',
+      admissible: false,
+      refusedBy: 'already-taken',
+      failedFloors: ['already-taken', 'admission-pending'],
+      detail: 'the item remains assigned to the expected holder',
+    }]);
+    vi.doMock('../../work-items', async () => {
+      const actual = await vi.importActual<typeof import('../../work-items')>('../../work-items');
+      return { ...actual, claimWorkItem, getWorkItem, explainIssueClaimFloors };
+    });
+    const assessForceRelease = vi.fn(async () => ({
+      allowed: true,
+      basis: 'holder-wake-missed' as const,
+      holderLiveness: {},
+    }));
+    const recordForceTransitionAudit = vi.fn(async () => {});
+    const notifyForceTransition = vi.fn(async () => {});
+    vi.doMock('../work_items/release-force-guard', async () => {
+      const actual = await vi.importActual<typeof import('../work_items/release-force-guard')>(
+        '../work_items/release-force-guard',
+      );
+      return { ...actual, assessForceRelease, recordForceTransitionAudit, notifyForceTransition };
+    });
+
+    const { default: tool } = await import('./checkpoint-run');
+    const metadata = vi.fn();
+    const b = parse((await tool.handler({}, MAKE_CTX('operator', {
+      uiClientId: 'su-caller',
+      workspaceId: 'papercusp-workspace',
+      metadata,
+    }))) as never);
+
+    expect(claimWorkItem).toHaveBeenCalledWith('WI-38026', 'su-caller', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-ambiguous-holder',
+    });
+    expect(getWorkItem).toHaveBeenCalledWith('WI-38026', 'papercusp');
+    expect(explainIssueClaimFloors).toHaveBeenCalledWith('papercusp', ['WI-38026'], {
+      assignee: 'su-caller',
+      includeAllFloors: true,
+    });
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'force_blocked_by_claim_floor',
+      work_item: 'WI-38026',
+      expected_holder: 'su-ambiguous-holder',
+      current_holder: 'su-ambiguous-holder',
+      claim_floor: {
+        refused_by: 'admission-pending',
+        failed_floors: ['already-taken', 'admission-pending'],
+      },
+    });
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(recordForceTransitionAudit).not.toHaveBeenCalled();
+    expect(notifyForceTransition).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      standDown: 'force_blocked_by_claim_floor',
+      standDownWorkItem: 'WI-38026',
+      standDownTakenBy: 'su-ambiguous-holder',
+      standDownClaimFloor: 'admission-pending',
+    }));
+  });
+
   it('P-008: an expired critical progress lease transfers despite a live, wakeable holder', async () => {
     const launchSpy = mockLaunch();
     const staleProgress = new Date(Date.now() - 31 * 60_000).toISOString();

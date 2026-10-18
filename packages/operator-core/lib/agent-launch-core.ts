@@ -15,6 +15,7 @@
  *     its presence rows are reaped, so roster-gated coord:wake cannot reach it —
  *     the first turn is delivered through the psu pty-host discovery socket.
  */
+import { hostname } from 'node:os';
 import { z } from 'zod';
 import { FRESH_VERIFY_TIMEOUT_MS } from './agent-kickoff/launch-budgets.mjs';
 import { getOrgPg } from '@papercusp/db-org';
@@ -415,10 +416,28 @@ export async function resolveResumeTarget(ref: {
        ORDER BY t.ingested_at DESC
        LIMIT 1
     )
-    SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-           window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, display, started_at, ended_at, exit_code,
-           ended_by, launch_argv, started_at::text AS binding_started_at
-      FROM harness_shared.adv_sessions
+    -- Headless psu launches record their own process liveness on coord_presence
+    -- from the supervisor beat, while bootstrap cannot know that pid yet. Use
+    -- that live same-host witness only when the launch is explicitly headless;
+    -- interactive rows keep their durable adv_sessions pid semantics. The
+    -- presence row is TTL-reaped and the host equality prevents probing a
+    -- remote pid from this operator process.
+    SELECT s.id, s.workspace_id, s.plan_slug, s.agent, s.role, s.feature, s.mode, s.terminal_bin,
+           COALESCE(
+             s.pid,
+             CASE WHEN s.launch_argv ? '--headless' THEN (
+               SELECT p.pid
+                 FROM harness_shared.coord_presence p
+                WHERE p.owner_id = s.coord_owner_id
+                  AND p.workspace_id = s.workspace_id
+                  AND p.host = ${hostname()}
+                  AND p.pid IS NOT NULL
+                LIMIT 1
+             ) END
+           ) AS pid,
+           s.window_id, s.omp_thread_id, s.label, s.cwd, s.coord_owner_id, s.session_id, s.display, s.started_at, s.ended_at, s.exit_code,
+           s.ended_by, s.launch_argv, s.started_at::text AS binding_started_at
+      FROM harness_shared.adv_sessions s
      WHERE ${
        sessionId
          ? sql`session_id = ${sessionId}
