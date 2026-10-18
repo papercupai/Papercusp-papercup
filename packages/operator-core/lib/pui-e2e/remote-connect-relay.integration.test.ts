@@ -30,7 +30,7 @@ import {
   PSU_CONNECTION_STORE_VERSION,
   savePsuConnectionStore,
 } from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
-import { ensurePuiBinary, REPO_ROOT } from './pui-binary';
+import { assertPuiBinaryUnchanged, ensurePuiBinary, REPO_ROOT, snapshotCurrentPuiBinary } from './pui-binary';
 
 const WORKSPACE = 'ws-relay-e2e';
 const TOKEN = `pct_${'r'.repeat(43)}`;
@@ -42,6 +42,7 @@ const CONTROLLER =
 
 let root = '';
 let pui = '';
+let puiSnapshot: ReturnType<typeof snapshotCurrentPuiBinary> | undefined;
 let origin = '';
 let profileName = '';
 let server: Server;
@@ -91,7 +92,11 @@ function serveWorkspaceTerminal(socket: WebSocket) {
 }
 
 beforeAll(async () => {
-  pui = ensurePuiBinary();
+  // Both endpoints execute a private, measured copy, even if another build
+  // replaces the shared cargo output while this relay run is in progress.
+  puiSnapshot = snapshotCurrentPuiBinary(ensurePuiBinary());
+  pui = puiSnapshot.binary;
+  console.log('PUI_RELAY_BINARY_IDENTITY', JSON.stringify({ phase: 'before', ...puiSnapshot }));
   root = mkdtempSync(path.join(tmpdir(), 'pui-remote-relay-'));
   for (const dir of ['local-bin', 'workspace-bin', 'workspace-home', 'home']) mkdirSync(path.join(root, dir));
   // The "workspace host" ships the same pui, like a real Papercusp release.
@@ -173,6 +178,14 @@ afterAll(async () => {
   relay?.close();
   await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
   if (root) rmSync(root, { recursive: true, force: true });
+  if (puiSnapshot) {
+    try {
+      assertPuiBinaryUnchanged(puiSnapshot.binary, puiSnapshot.sha256);
+      console.log('PUI_RELAY_BINARY_IDENTITY', JSON.stringify({ phase: 'after', ...puiSnapshot }));
+    } finally {
+      rmSync(puiSnapshot.directory, { recursive: true, force: true });
+    }
+  }
 });
 
 /** Run the LOCAL pui under a real PTY until it exits; returns its output and status. */
