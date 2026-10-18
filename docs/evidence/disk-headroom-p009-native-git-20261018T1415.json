@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Current staging native Git placement and root refusal, 2026-10-18T14:15Z",
+  "framework": "operational",
+  "command": ["ptool", "--url", "http://127.0.0.1:3170", "capability:git", "--json", "-"],
+  "startedAt": "2026-10-18T14:15:12.804Z",
+  "finishedAt": "2026-10-18T14:15:41.757Z",
+  "exitCode": 0,
+  "summary": "Fresh native capability:git placement/refusal check after the measured staging runtime environment changed. Default scratch clone used /mnt/data, pinned the requested detached ref, removed remotes, and explicit root-side materialisation was refused before creation.",
+  "assertions": [
+    {"id": "default-clone-on-separate-data-device", "passed": true, "evidence": "Returned /mnt/data/tmp/papercusp-git-scratch-yoP54K; clone st_dev=66304, root st_dev=66307, /mnt/data st_dev=66304."},
+    {"id": "requested-exact-ref-detached", "passed": true, "evidence": "Clone HEAD resolved 43662ff52aff1f5408a823cb34c817f5ed0ea18b; symbolic-ref returned no branch."},
+    {"id": "clone-remotes-removed", "passed": true, "evidence": "git remote -v was empty after the native operation."},
+    {"id": "explicit-root-destination-refused-before-creation", "passed": true, "evidence": "Native call returned scratch_clone_failed with root-filesystem refusal; requested destination remained absent."}
+  ],
+  "archive": {
+    "workItem": "WI-6554700010014939",
+    "plan": "disk-durable-headroom-2026-10-15",
+    "planItem": "P-009",
+    "requestedRef": "43662ff52aff1f5408a823cb34c817f5ed0ea18b",
+    "runtime": "http://127.0.0.1:3170",
+    "defaultResultFile": "/tmp/p009-native-current-default.out",
+    "rootRefusalResultFile": "/tmp/p009-native-current-root.err",
+    "rootRefusalDestination": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/e9919-git-native-root-refusal-20261018T1415",
+    "sourceFingerprint": "sha256-file-set-v1:104f9f6702f05c1e0f30d463518a9531ab0b5250226fb5025a8020ebe34e7ff7",
+    "testFingerprint": "sha256-file-set-v1:fec20643d7e33bdaf060253f041e9e2ecc32e1a23c9d6b068966a260ddd1f22b",
+    "environmentChangedSincePriorProof": true
+  }
+}
