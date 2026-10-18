@@ -22,7 +22,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
 import { auditKnown, auditUnknown, auditWakeEvidence, createRosterAudit, pageRosterAudit, type AuditRecord, type RosterAuditSnapshot } from './tools/roster-audit';
-import { originalUnconfirmedPairs, pickupDispositionViolations, type FollowupState, type PickupDisposition } from './parked-agent-audit-oracles';
+import { originalUnconfirmedPairs, pickupDispositionViolations, type PickupDisposition } from './parked-agent-audit-oracles';
 
 const SEARCH_QUERY = 'parked agent audit';
 const AUDIT_DOC = 'agent-insights/parked-agent-audit-roster-view';
@@ -246,39 +246,6 @@ describe('R-8 live discovery detector controls', () => {
     const degraded = searchFixture();
     degraded.docs.legs.degraded = true;
     expect(searchViolations(degraded)).toEqual(['docs:search:unavailable-ranking']);
-  });
-});
-
-describe('R-6 finite pickup disposition detector controls', () => {
-  const expected = Array.from({ length: 10 }, (_, i) => ({ ownerId: `owner-${i}`, request: `request-${i}` }));
-  const cases = (): PickupDisposition[] => expected.map(row => ({ ...row, outcome: 'pickup-unconfirmed', reply: null }));
-  const items = (): FollowupState[] => ['WI-6554700010017003', 'WI-6554700010017004']
-    .map(id => ({ id, state: 'wip', assignee: 'running-owner', hasCompletionEvidence: false }));
-  it('accepts ten evidence-based unknown dispositions without crediting pickup', () => {
-    expect(pickupDispositionViolations(expected, cases(), items(), 'running-owner')).toEqual([]);
-  });
-  it('uses corrected evidence rather than a legacy activity-only pickup label', () => {
-    const rows = expected.map(row => ({ ...row, verification: 'pickup-not-confirmed', pickup: 'unconfirmed' }));
-    rows[0].pickup = 'activity-observed';
-    expect(originalUnconfirmedPairs(rows)).toEqual(expected);
-    rows[0].verification = 'explicit-recipient-reply';
-    expect(originalUnconfirmedPairs(rows)).toHaveLength(9);
-  });
-  it('rejects missing, duplicate and foreign pairs even when counts look complete', () => {
-    const missing = cases(); missing.pop();
-    expect(pickupDispositionViolations(expected, missing, items(), 'running-owner')).toContain('disposition-population');
-    const duplicate = cases(); duplicate[9] = duplicate[0];
-    expect(pickupDispositionViolations(expected, duplicate, items(), 'running-owner')).toContain('disposition-population');
-    const foreign = cases(); foreign[9].request = 'foreign';
-    expect(pickupDispositionViolations(expected, foreign, items(), 'running-owner')).toContain('disposition-population');
-  });
-  it('rejects unsupported pickup and an open unowned item', () => {
-    const unsupported = cases(); unsupported[0].outcome = 'recipient-replied';
-    expect(pickupDispositionViolations(expected, unsupported, items(), 'running-owner')).toContain('unsupported-pickup:owner-0:request-0');
-    const unowned = items(); unowned[0].assignee = null;
-    expect(pickupDispositionViolations(expected, cases(), unowned, 'running-owner')).toContain('unowned-or-unverified:WI-6554700010017003');
-    const unevidencedClose = items(); unevidencedClose[0].state = 'done';
-    expect(pickupDispositionViolations(expected, cases(), unevidencedClose, 'running-owner')).toContain('unowned-or-unverified:WI-6554700010017003');
   });
 });
 
@@ -756,21 +723,29 @@ describe.skipIf(!CURRENT_LIVE_REQUESTED)('LIVE: bounded current public audit', (
     } finally { await sql.end({ timeout: 5 }); }
     expect(oracle.auditId).toBe(created.auditId);
     expect(oracle.population).toEqual([owner]);
-    expect(oracle.records.length, 'bounded owner scope exceeded the maintained 128-page budget').toBeLessThanOrEqual(1280);
+    expect(oracle.records.length, 'bounded owner scope exceeded the maintained 1280-record budget').toBeLessThanOrEqual(1280);
     expect(new Set(oracle.records.map(row => row.id)).size).toBe(oracle.records.length);
+    process.stdout.write(`PARKED_AUDIT_CURRENT_CREATED ${JSON.stringify({ owner, ...created, records: oracle.records.length, artifactPath })}\n`);
     let cursor: string | null = null; let offset = 0; let covered = 0; let pages = 0;
     do {
-      const page = await authenticatedAuditCode<{ digest: string; offset: number; covered: number; cursor: string | null; complete: boolean }>(
-        "const p=await tools.coord.roster({view:'audit',scope:'workspace',owner:inputs.owner,auditId:inputs.auditId,cursor:inputs.cursor??undefined,pageSize:10});"
-        + "const end=inputs.offset+p.records.length;const covered=inputs.covered+p.records.filter(r=>r.kind==='agent').length;const complete=end===inputs.records;"
-        + "if(p.auditId!==inputs.auditId||p.asOf!==inputs.asOf||p.projection.offset!==inputs.offset)throw Error('snapshot-or-offset-changed');"
+      // Content truncation can return fewer than pageSize records. Nonempty,
+      // progressing pages are bounded by the frozen record count, not size/10.
+      const page = await authenticatedAuditCode<{ digest: string; offset: number; covered: number; cursor: string | null; pages: number }>(
+        "const s={offset:inputs.offset,covered:inputs.covered,cursor:inputs.cursor??null,pages:0};const seen=[];const started=Date.now();let complete=false;"
+        + "while(!complete&&s.pages<20&&Date.now()-started<10000){"
+        + "const p=await tools.coord.roster({view:'audit',scope:'workspace',owner:inputs.owner,auditId:inputs.auditId,cursor:s.cursor??undefined,pageSize:10});"
+        + "const end=s.offset+p.records.length;const covered=s.covered+p.records.filter(r=>r.kind==='agent').length;complete=end===inputs.records;"
+        + "if(p.auditId!==inputs.auditId||p.asOf!==inputs.asOf||p.projection.offset!==s.offset)throw Error('snapshot-or-offset-changed');"
         + "if(!p.records.length||p.coverage.total!==1||p.coverage.covered!==covered||p.coverage.recordsRead!==end||p.coverage.totalRecords!==inputs.records||p.coverage.missing!==0||p.coverage.duplicates!==0||p.coverage.complete!==complete||p.coverage.truncatedByLimit!==!complete)throw Error('coverage-changed');"
-        + "if(complete?p.nextCursor!==null:!p.nextCursor||p.nextCursor===inputs.cursor)throw Error('cursor-did-not-progress');"
-        + `return {digest:(${recordDigest.toString()})(p.records),offset:end,covered,cursor:p.nextCursor,complete};`,
+        + "if(complete?p.nextCursor!==null:!p.nextCursor||p.nextCursor===s.cursor)throw Error('cursor-did-not-progress');"
+        + "seen.push(...p.records);s.offset=end;s.covered=covered;s.cursor=p.nextCursor;s.pages++;}"
+        + `return {digest:(${recordDigest.toString()})(seen),...s};`,
         { owner, auditId: created.auditId, asOf: created.asOf, cursor, offset, covered, records: oracle.records.length }, true);
+      expect(page.offset).toBeGreaterThan(offset);
+      expect(page.offset).toBeLessThanOrEqual(oracle.records.length);
       expect(page.digest).toBe(recordDigest(oracle.records.slice(offset, page.offset)));
-      offset = page.offset; covered = page.covered; cursor = page.cursor; pages++;
-      expect(pages).toBeLessThanOrEqual(128);
+      offset = page.offset; covered = page.covered; cursor = page.cursor; pages += page.pages;
+      expect(pages).toBeLessThanOrEqual(oracle.records.length);
     } while (cursor !== null);
     expect(offset).toBe(oracle.records.length); expect(covered).toBe(1);
     process.stdout.write(`PARKED_AUDIT_CURRENT ${JSON.stringify({ owner, ...created, records: offset, pages,

@@ -292,13 +292,13 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     expect(updates[0]).not.toContain('SET version');
   });
 
-  it('still requires original Intent when admitting a fresh structured BAR', () => {
+  it.each([false, true])('still requires original Intent for a fresh BAR with completeness=%s', (requireContractCompleteness) => {
     const f = legacyMaterializationFixture();
     const built = buildAcceptanceBarSeed({
       planSlug: 'subject-plan', planContent: f.render(), actorId: 'new-author',
       declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
       subjectPlanRevision: 1, planStatus: 'draft', rubricSlug: 'acceptance-subject-plan',
-      rubricRevision: 1, requireContractCompleteness: true,
+      rubricRevision: 1, requireContractCompleteness,
     });
     expect(built).toMatchObject({ ok: false, error: 'bar_requirement_parse_failed' });
   });

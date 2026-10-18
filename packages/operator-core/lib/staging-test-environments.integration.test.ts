@@ -75,6 +75,41 @@ describe('current-build execution route contract', () => {
     }
   }, 220000);
 
+  it('rebuilds and repairs an auto Codex home in the private native runtime without model inference', () => {
+    const probe = `
+      import assert from 'node:assert/strict';
+      import { readFileSync } from 'node:fs';
+      import { prepareCurrentSuNativeScenario } from './packages/operator-core/test/current-su-native-http-scenario.ts';
+      import { rebuildSuLaunchArtifact } from './packages/operator-core/lib/su-persona-render.ts';
+      import { composeModePromptSection } from './packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts';
+      import { ensureSuCodexHomeConfigAsync } from './packages/operator-core/lib/role-codex-home.ts';
+      import { readSuperuserToken } from './packages/operator-core/lib/superuser-token.ts';
+      const workspace = process.env.PAPERCUSP_WORKSPACE_ID;
+      await prepareCurrentSuNativeScenario(workspace);
+      const record = { v: 1, agent: 'codex', workspaceId: workspace, harnessSlug: workspace,
+        profile: 'generic', contextSize: 'trimmed', personaTier: 'full', model: 'gpt-6-luna',
+        planSlug: null, launchedBy: null, autoMode: true, drainMode: false, loopArmed: false,
+        headless: true, fleet: null, stack: [] };
+      const rebuilt = await rebuildSuLaunchArtifact({ ownerId: 'su-private-home-repair',
+        operatorBaseUrl: process.env.PAPERCUSP_OPERATOR_URL, record,
+        modeSection: composeModePromptSection(record) });
+      const home = await ensureSuCodexHomeConfigAsync({ sessionKey: 1,
+        sid: 'su-private-home-repair', mcpUrl: rebuilt.spec.mcpUrl, promptText: rebuilt.promptText,
+        model: record.model, token: readSuperuserToken(), headless: true,
+        codexGatewayAuto: true, recoverMissingHome: true, trustDir: rebuilt.spec.cwd });
+      assert.ok(readFileSync(home.configPath, 'utf8').includes('papercusp-codex-gateway'));
+      console.log('PRIVATE_NATIVE_HOME_REPAIR ' + JSON.stringify({ repaired: home.repaired,
+        promptRepaired: home.promptRepaired, providerForwarding: false }));
+    `;
+    const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
+      '--input-type=module', '-e', probe], {
+      cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
+    });
+    expect(result.status, result.stdout.slice(-3000) + result.stderr.slice(-5000)).toBe(0);
+    expect(result.stdout).toContain('PRIVATE_NATIVE_HOME_REPAIR ');
+  }, 200_000);
+
   it('prepares the dummy account, real hooks and MCP bearer in the native fixture private home', () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-setup-'));
     try {

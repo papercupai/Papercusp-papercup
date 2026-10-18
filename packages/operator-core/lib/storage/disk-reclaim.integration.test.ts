@@ -553,27 +553,69 @@ describe('retention on a real fixture tree', () => {
     }
   });
 
-  it('finishes an advancing root beyond its inspection allowance before applying the cap', async () => {
+  it.each(['advancing-census', 'expired-inspection', 'expired-admission', 'expired-run'] as const)
+    ('finishes an advancing root beyond its inspection allowance before applying the cap (%s)', async mode => {
     const { root, options } = await setup();
     const old = join(root, 'old'); await writeFile(old, 'old data');
-    const receipt = await runDiskReclaimOnce({ ...options, budgetMs: 20, runBudgetMs: 10_000,
-      policy: options.policy.map((cls) => ({ ...cls, maxBytes: 1 })),
-      inspectTrees: async (path, input) => {
-        if (!input.paths) {
-          // A productive native walk needs longer than the JS inspection
-          // allowance, while remaining well within this run's absolute bound.
-          await new Promise((done) => setTimeout(done, 30));
-          if ((input.timeoutMs ?? 0) <= 30) return { entries: [], retained: [], inspectedNodes: 0,
-            retainedRecentTrees: 0, error: 'retention native census timed out' };
+    let clock = Date.now(), admissions = 0, censuses = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const scanHolders = vi.fn(options.scanHolders);
+    fixtureMutex.observe = phase => {
+      if (phase === 'mutex-callback') {
+        admissions++;
+        if (mode === 'expired-admission') clock += 10_001;
+      }
+    };
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, budgetMs: 20, runBudgetMs: 10_000, scanHolders,
+        policy: options.policy.map((cls) => ({ ...cls, maxBytes: 1 })),
+        record: async (phase, details) => {
+          // This write follows the paused native span and spends JS inspection
+          // time. Scheduler latency must not choose which budget this case tests.
+          if (mode === 'expired-inspection' && phase === 'progress' &&
+              (details as { phase?: string }).phase === 'census-finish') clock += 21;
+        },
+        inspectTrees: async (path, input) => {
+          expect(input.paths).toBeUndefined();
+          censuses++;
+          expect(input.timeoutMs).toBeGreaterThan(30);
           expect(input.progressTimeoutMs).toBe(20);
+          // Keep native inspection and deletion real. Its real inactivity and
+          // absolute timers are covered in disk-consumer-census.test.ts; only
+          // the JS deadline clock advances at the selected stage in this test.
+          const census = await inspectRetentionTrees(path, { ...input, progressTimeoutMs: undefined });
+          if (mode === 'advancing-census') clock += 30;
+          if (mode === 'expired-run') clock += 10_001;
+          return census;
+        } });
+      const evidence = JSON.stringify({ mode, admissions, censusCalls: censuses, errors: receipt.errors,
+        scan: receipt.scan, censuses: receipt.censuses, effects: receipt.effects });
+      expect(admissions, evidence).toBe(1);
+      expect(censuses, evidence).toBe(mode === 'expired-admission' ? 0 : 1);
+      if (mode === 'advancing-census') {
+        expect(receipt.complete, evidence).toBe(true);
+        expect(receipt.errors, evidence).toEqual([]);
+        expect(scanHolders, evidence).toHaveBeenCalledTimes(2);
+        expect(receipt.caps?.[0], evidence).toMatchObject({ afterBytes: 0, overByBytes: 0 });
+        await expect(stat(old)).rejects.toMatchObject({ code: 'ENOENT' });
+      } else {
+        expect(receipt.complete, evidence).toBe(false);
+        expect(receipt.entries.filter(entry => entry.status === 'removed'), evidence).toEqual([]);
+        expect(await readFile(old, 'utf8'), evidence).toBe('old data');
+        if (mode === 'expired-admission') {
+          expect(receipt.errors, evidence).toEqual(['retention run budget exhausted']);
+          expect(scanHolders, evidence).not.toHaveBeenCalled();
+        } else if (mode === 'expired-inspection') {
+          expect(receipt.errors, evidence).toContain('incomplete tree scan: retention scan budget exhausted');
+          expect(receipt.scan?.stoppedAtRoot, evidence).toBe(root);
+          expect(scanHolders, evidence).toHaveBeenCalledTimes(1);
+        } else {
+          expect(receipt.errors, evidence).toContain(`incomplete retention effects:${root}: effect budget exhausted; resume with a fresh policy census`);
+          expect(receipt.effects, evidence).toEqual([expect.objectContaining({ processed: 0, stopped: true })]);
+          expect(scanHolders, evidence).not.toHaveBeenCalled();
         }
-        // Native inactivity supervision is covered with real subprocesses in
-        // disk-consumer-census.test.ts; this fixture isolates run-budget routing.
-        return inspectRetentionTrees(path, { ...input, progressTimeoutMs: undefined });
-      } });
-    expect(receipt.complete, JSON.stringify({ errors: receipt.errors, censuses: receipt.censuses, effects: receipt.effects })).toBe(true); expect(receipt.errors).toEqual([]);
-    expect(receipt.caps?.[0]).toMatchObject({ afterBytes: 0, overByBytes: 0 });
-    await expect(stat(old)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+    } finally { now.mockRestore(); }
   });
 
   it('persists root census timeout attribution without copying allocation inventories', async () => {

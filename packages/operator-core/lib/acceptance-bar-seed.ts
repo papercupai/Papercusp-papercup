@@ -772,6 +772,16 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       barProvenance: prior.barProvenance ?? seeded.barProvenance,
     } as ProposeRubricCriterion;
   });
+  // The parser admits historical absence so an existing reviewed BAR can be
+  // materialized honestly. A newly authored structured BAR still owes Intent,
+  // independently of the optional METHOD/check/layer completeness sweep.
+  if (input.cohort === 'post-epoch' && !input.backfilled) {
+    const missingIntent = requirements.bars.filter((bar) => freshBarKeys.has(bar.barKey) && bar.criterion && !bar.criterion.intent);
+    if (missingIntent.length > 0) return refusal(missingIntent.map((bar) => ({
+      code: 'bar_requirement_parse_failed' as const, barKey: bar.barKey,
+      detail: `${bar.barKey}: a fresh requirement block must declare its original Intent`,
+    })));
+  }
   // P-003/P-029: shift the METHOD/check/layer contract left to activation, where the
   // repair is a text edit of a draft instead of a barHash-changing amendment that
   // discards bound proof. Legacy-backfilled BARs describe work that already exists.
