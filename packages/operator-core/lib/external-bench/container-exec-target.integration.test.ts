@@ -17,7 +17,9 @@ import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import { createScopedNativeSandboxSpawn, NATIVE_CONTAINER_EXEC_ENV } from '@papercusp/orchestrator/fleet-srt-spawn';
+import { codexSessionFrameObserved } from '../../../../apps/operator/scripts/psu-pty-host.mjs';
 
 import { backendBinOverrideEnvKey, resolveBackendLaunch } from '../backend-bin-resolve.mjs';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../inference-gateway/codex-cli-bridge';
@@ -106,6 +108,59 @@ afterAll(async () => {
 });
 
 describe('container exec target against a live container', () => {
+  it.runIf(process.platform === 'linux')('reaches the native Codex composer in the trusted container workdir before kickoff', async () => {
+    const base = mkdtempSync(join(root, 'native-trust-'));
+    const homes = join(base, 'homes'), perHomes = join(base, 'task-homes');
+    const home = join(homes, 'session-1'), checkout = join(base, 'checkout');
+    for (const dir of [home, perHomes, checkout]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(home, 'config.toml'), [
+      'model = "gpt-6-luna"', 'model_provider = "private-trust"', 'web_search = "disabled"',
+      '[features]', 'apps = false', 'plugins = false', 'remote_plugin = false',
+      '[projects."/observer-checkout"]', 'trust_level = "trusted"',
+      '[model_providers.private-trust]', 'name = "Offline trust fixture"',
+      'base_url = "http://127.0.0.1:9/v1"', 'wire_api = "responses"',
+      'requires_openai_auth = false', 'supports_websockets = false',
+      'request_max_retries = 0', 'stream_max_retries = 0', '',
+    ].join('\n'), { mode: 0o600 });
+    const cid = await startContainer(['--user', `${process.getuid!()}:${process.getgid!()}`,
+      '-v', `${checkout}:/app`, '-v', `${perHomes}:${homes}`,
+      '-v', `${resolveContainerCodexBinary()}:${CONTAINER_CODEX_BIN_PATH}:ro`]);
+    let primaryError: unknown;
+    try {
+      const { wrapperPath } = materializeDockerExecWrapper({ kind: 'docker-exec', containerId: cid,
+        workdir: '/app', binPath: CONTAINER_CODEX_BIN_PATH,
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } },
+      { dir: mkdtempSync(join(root, 'trust-wrapper-')) });
+      const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, CODEX_HOME: home, TERM: 'xterm-256color' };
+      const child = createRequire(import.meta.url)('@lydell/node-pty').spawn(wrapperPath,
+        ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust'],
+        { env, cwd: base, cols: 120, rows: 30 });
+      const result = await new Promise<{ output: string; frame: boolean; exitCode: number }>((resolve, reject) => {
+        let output = '', probes = '', frame = false;
+        const timer = setTimeout(() => child.kill('SIGTERM'), 20_000);
+        const cleanupTimer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('native trust TUI did not terminate')); }, 22_000);
+        const data = child.onData((chunk: string) => {
+          output = (output + chunk).slice(-65536);
+          probes += chunk;
+          if (probes.includes('\x1b[6n')) child.write('\x1b[1;1R');
+          probes = probes.slice(-3);
+          if (!frame && codexSessionFrameObserved(output, { dims: { cols: 120, rows: 30 } })) {
+            frame = true;
+            child.kill('SIGTERM');
+          }
+        });
+        child.onExit(({ exitCode }: { exitCode: number }) => {
+          clearTimeout(timer); clearTimeout(cleanupTimer); data.dispose();
+          resolve({ output, frame, exitCode });
+        });
+      });
+      console.info('NATIVE_CONTAINER_TRUST_PROOF', JSON.stringify(result));
+      expect(result.frame, result.output).toBe(true);
+      expect(result.output.replace(/\s+/g, '')).not.toContain('Trustthisfolder?');
+    } catch (error) { primaryError = error; throw error; }
+    finally { await removeContainer(cid, primaryError); }
+  }, 90_000);
+
   it('records timeout kills as failures even when the child exits with a numeric code', async () => {
     const result = await command(process.execPath, ['-e',
       "process.on('SIGTERM', () => process.exit(143)); setInterval(() => {}, 1000)"], undefined, 1_000);

@@ -349,6 +349,10 @@ describe('acceptance BAR seed builder', () => {
     // here is caught by the length assertion below.
     const everyShape: Record<string, Record<string, unknown>> = {
       tests: { kind: 'tests', files: ['lib/evidence.test.ts'], testName: 'suite > exact case' },
+      'tests-cases': { kind: 'tests', files: ['lib/evidence.test.ts', 'lib/evidence.integration.test.ts'], cases: [
+        { file: 'lib/evidence.test.ts', testName: 'unit behavior' },
+        { file: 'lib/evidence.integration.test.ts', testName: 'integrated behavior' },
+      ] },
       cargo: { kind: 'cargo', manifestPath: 'native/Cargo.toml', sourceFiles: ['native/src/lib.rs'], test: 'limits' },
       instrument: { kind: 'instrument', instrumentKey: 'upload-limit-meter' },
       'probe-single': { kind: 'probe', probe: probes[0] },

@@ -16,6 +16,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
+import { REGISTERED_VITEST_FILE_PROJECTS } from '@papercusp/test-config/execution-details';
 import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -403,6 +404,23 @@ function nonWorkspaceVitestRoute(rootRelative, absolute, root) {
   return { cwd, config: match.config, absolute, requested: relative(cwd, absolute) };
 }
 
+/**
+ * Some workspaces keep integration suites in an explicit Vitest project inside their unit
+ * config. Prefer that declared project over the repository-level filename-suffix fallback, whose
+ * `vitest.integration.config.ts` may not include the workspace's file at all.
+ */
+function registeredVitestFileRoute(rootRelative, absolute, root) {
+  const normalized = rootRelative.split(sep).join('/');
+  const project = REGISTERED_VITEST_FILE_PROJECTS.find((candidate) =>
+    candidate.files.some((file) => `${candidate.root}/${file}` === normalized),
+  );
+  if (!project) return null;
+  const cwd = resolve(root, project.root);
+  const config = 'vitest.config.ts';
+  if (!existsSync(resolve(cwd, config))) return null;
+  return { cwd, config, absolute, requested: relative(cwd, absolute) };
+}
+
 function nonWorkspaceNodeRoute(rootRelative, absolute, root) {
   const normalized = rootRelative.split(sep).join('/');
   const match = NON_WORKSPACE_NODE_ROUTES.find(
@@ -437,6 +455,8 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
 
   const nonWorkspaceRoute = nonWorkspaceVitestRoute(rootRelative, absolute, root);
   if (nonWorkspaceRoute) return nonWorkspaceRoute;
+  const registeredRoute = registeredVitestFileRoute(rootRelative, absolute, root);
+  if (registeredRoute) return registeredRoute;
 
   const wantsIntegration = /\.integration\.(?:test|spec)\.[cm]?[jt]sx?$/.test(absolute);
   const wantsE2e = /\.e2e\.test\.[cm]?[jt]sx?$/.test(absolute);

@@ -1852,6 +1852,17 @@ describe('current benchmark restart and live binding', () => {
     expect(f.ports.listTasks).toHaveBeenCalledWith({ workspaceId: 'bench-private', labelPrefix: currentBenchRunLabel('run-1'), includeEnded: true, limit: 1000 });
     expect(f.ports.killTask).toHaveBeenCalledExactlyOnceWith('task-own');
   });
+  it('accepts a terminal cleanup refusal only when the confined scope was verified empty', async () => {
+    const f = fixture();
+    vi.mocked(f.ports.killTask).mockResolvedValue({
+      ok: false,
+      taskId: 'task-own',
+      action: 'kill',
+      error: 'not_live',
+      detail: 'state is exited — reap requested but scope pc-task-own holds no live process right now; nothing to reap',
+    });
+    expect(await recoverCurrentBenchRun(f.ports, options)).toEqual(['task-own']);
+  });
   it('fails closed on a truncated cleanup census', async () => {
     const f = fixture(); vi.mocked(f.ports.listTasks).mockResolvedValue(Array.from({ length: 1000 }, () => f.row));
     await expect(recoverCurrentBenchRun(f.ports, options)).rejects.toThrow(/census exceeded/);

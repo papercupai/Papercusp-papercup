@@ -39,7 +39,7 @@ export interface LiveVerificationFields {
 
 /** Per check kind, the fields that only say WHERE/HOW the proof runs, not WHAT it proves. */
 export const VERIFICATION_ONLY_CHECK_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  tests: ['files', 'testName'],
+  tests: ['files', 'testName', 'cases'],
 };
 
 function neutralCheck(check: LiveRequirementCheck): LiveRequirementCheck {

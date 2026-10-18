@@ -11,11 +11,36 @@
  * their next evidence refresh.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 export const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
+
+export function assertPuiBinaryUnchanged(binary: string, sha256: string): string {
+  const actual = createHash('sha256').update(readFileSync(binary)).digest('hex');
+  if (actual !== sha256) throw new Error(`PUI binary changed during acceptance: ${binary}; expected ${sha256}, got ${actual}`);
+  return actual;
+}
+
+/** Cargo's shared output may be replaced by another build while panes start. */
+export function snapshotCurrentPuiBinary(source: string) {
+  const sha256 = createHash('sha256').update(readFileSync(source)).digest('hex');
+  const directory = mkdtempSync(path.join(tmpdir(), 'pui-current-binary-'));
+  const binary = path.join(directory, 'pui');
+  try {
+    copyFileSync(source, binary);
+    assertPuiBinaryUnchanged(source, sha256);
+    assertPuiBinaryUnchanged(binary, sha256);
+    chmodSync(binary, 0o555);
+    return { binary, directory, source, sha256 };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
 
 function cargoTargetDir(): string | null {
   const probe = spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps'], {

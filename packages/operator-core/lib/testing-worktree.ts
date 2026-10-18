@@ -15,6 +15,7 @@ import {
   isMutationProbeRun,
   resolveProbeSubjectExemption,
   resolveProbeSubjectExemptionSync,
+  WORKTREE_SNAPSHOT_GIT_BUDGETS_MS,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { findVerifierSourceRoot, readVerifierSourceReceiptSync } from './verifier-source';
 
@@ -129,8 +130,22 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
     commit, porcelain,
     ...(failures.length ? { provenanceError: failures.slice(0, 2).join('; ').slice(0, 500) } : {}),
   });
-  const commit = readGit(['rev-parse', 'HEAD']) || null;
-  const porcelain = readGit(['status', '--porcelain', '--untracked-files=all']);
+  // Match the shared reporter's existing bounded snapshot policy. Playwright's
+  // synchronous onBegin cannot await the final-capture runner; a single short
+  // attempt here had drifted from the Vitest and mutation-exemption readers.
+  const readWithPolicy = (args: string[]): string | null => {
+    const failureStart = failures.length;
+    for (const budget of WORKTREE_SNAPSHOT_GIT_BUDGETS_MS) {
+      const output = readGit(args, root, budget);
+      if (output !== null) {
+        failures.splice(failureStart);
+        return output;
+      }
+    }
+    return null;
+  };
+  const commit = readWithPolicy(['rev-parse', 'HEAD']) || null;
+  const porcelain = readWithPolicy(['status', '--porcelain', '--untracked-files=all']);
   if (!porcelain || !isMutationProbeRun()) return snapshot(commit, porcelain);
   const exemption = resolveProbeSubjectExemptionSync(root, (cmd, gitRoot, budget) => {
     if (cmd === 'git rev-parse --show-toplevel') return readGit(['rev-parse', '--show-toplevel'], gitRoot, budget);

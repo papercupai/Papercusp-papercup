@@ -267,6 +267,14 @@ export function renderDockerExecWrapper(target: DockerExecTarget, opts: RenderWr
     containerId: target.containerId,
     workdir: target.workdir,
     binPath: target.binPath,
+    // Bootstrap seeds the observer checkout's project trust. The maintained
+    // Codex mount runs in a different directory inside the task container, so
+    // carry that same launch grant to its exact cwd, on fresh start and resume.
+    // A CLI override leaves the private config bytes/mode untouched; generic
+    // shell probes keep their own argv.
+    codexWorkdirArgs: target.binPath === CONTAINER_CODEX_BIN_PATH && target.sessionRelocation?.sessionEnv === 'CODEX_HOME'
+      ? ['-c', `projects.${JSON.stringify(target.workdir)}.trust_level="trusted"`]
+      : [],
     forward: [...(opts.forwardEnvPatterns ?? DEFAULT_FORWARD_ENV_PATTERNS)],
     never: [...(opts.neverForwardEnvPatterns ?? NEVER_FORWARD_ENV_PATTERNS)],
     relocation: target.sessionRelocation
@@ -444,7 +452,7 @@ const argv = [...cfg.dockerArgs, 'exec', '-i'];
 if (process.stdin.isTTY && process.stdout.isTTY) argv.push('-t');
 argv.push('-w', cfg.workdir);
 for (const n of names) argv.push('-e', n);
-argv.push(cfg.containerId, cfg.binPath, ...process.argv.slice(2));
+argv.push(cfg.containerId, cfg.binPath, ...cfg.codexWorkdirArgs, ...process.argv.slice(2));
 const child = spawn(cfg.dockerBin, argv, { stdio: 'inherit' });
 const relay = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 for (const sig of relay) process.on(sig, () => { try { child.kill(sig); } catch {} });

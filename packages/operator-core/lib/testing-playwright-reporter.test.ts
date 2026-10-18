@@ -9,12 +9,13 @@ import { createHash } from 'node:crypto';
 
 const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
 const source = vi.hoisted(() => ({ root: '/portal', after: vi.fn() }));
+const sourceDirt = vi.hoisted(() => vi.fn(() => false));
 vi.mock('postgres', () => ({ default: () => sql }));
 vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   resolveReporterSourceRoot: () => source.root,
   captureTestSourceSnapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }),
   captureTestSourceSnapshotAsync: () => source.after() ?? Promise.resolve({ commit: 'a'.repeat(40), porcelain: '' }),
-  computeWorktreeDirty: () => false,
+  computeWorktreeDirty: sourceDirt,
 }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
   resolveAgentWorkspaceRoot: () => '/operator',
@@ -34,9 +35,29 @@ type RuntimeReader = NonNullable<ReturnType<typeof prepareNativeRuntimeReader>>;
  *  call-site exception testing/typed-mock.ts sanctions, not a stale fixture. */
 const violatesSyncReaderContract = (impl: () => Promise<unknown>) => impl as unknown as RuntimeReader;
 
-afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; source.after.mockReset(); });
+afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; source.after.mockReset(); sourceDirt.mockReset().mockReturnValue(false); });
 
 describe('portable Playwright ledger reporter', () => {
+  it('retains provenance failure diagnostics in validated metadata even when assertions pass', async () => {
+    vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
+    sql.mockReset().mockResolvedValue([{ id: '12347' }]);
+    sourceDirt.mockReturnValue(true);
+    source.after.mockResolvedValue({ commit: 'a'.repeat(40), porcelain: null,
+      provenanceError: 'git status exhausted bounded capture policy' });
+    const reporter = new Reporter();
+    reporter.onBegin();
+    reporter.onTestEnd({ title: 'selection persists', titlePath: () => ['selection persists'],
+      location: { file: '/portal/e2e/selection.spec.ts' } } as never,
+    { status: 'passed', startTime: new Date(), duration: 10 } as never);
+    await reporter.onEnd();
+    await reporter.onExit();
+    expect(sql).toHaveBeenCalledOnce();
+    const details = sql.mock.calls[0]!.at(-1);
+    expect(details).toMatchObject({ passed: 1, failed: 0, worktreeDirty: true,
+      worktreeDirtyReason: expect.stringContaining('git status exhausted bounded capture policy') });
+    expect(parseTestRunExecutionDetails(details)).toEqual(details);
+  });
+
   it('waits for final source custody before inserting a passing result', async () => {
     vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
     sql.mockReset().mockResolvedValue([{ id: '12346' }]);

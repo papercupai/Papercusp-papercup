@@ -72,6 +72,23 @@ describe('native P017 pipeline source-runtime measurement selector', () => {
     expect(result.data).toEqual({ repoRoot: '/native-fixture', submodule: null, acceptedSource, servingRuntimes });
     expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'target.ts', expectedSourceSha256: digest }));
   });
+  it('keeps native readiness and exact containment together when unrelated gate detail is oversized', async () => {
+    const digest = 'd'.repeat(64);
+    const acceptedSource = { expectedSha256: digest, observedSha256: digest, matches: true,
+      deployedContains: false, runtimeContainment: { 'staging-operator': true } };
+    vi.mocked(gitPipelinePosition).mockResolvedValue({ repoRoot: '/native-fixture', submodule: null,
+      acceptedSource, servingRuntimes: [{ runtime: 'staging-operator', containsChange: true }],
+      gate: { verdictStaleReason: 'unrelated gate detail '.repeat(2_000) } } as unknown as PipelinePosition);
+    const args = tool.args.parse({ path: 'target.ts', expectedSourceSha256: digest,
+      sourceRuntimeOnly: true, testClass: 'operator-api' });
+    const result = await tool.handler(args, {} as never) as { data: Record<string, unknown> };
+    expect(result.data.currentBuildTestRoute).toMatchObject({ id: 'operator-api',
+      readiness: 'ready', runtime: 'staging-operator', route: 'http://127.0.0.1:3170 after dev:pipeline_position containment check' });
+    expect(result.data.acceptedSource).toEqual(acceptedSource);
+    expect(result.data).not.toHaveProperty('gate');
+    expect(result.data).not.toHaveProperty('projection');
+    expect(JSON.stringify(result.data).length).toBeLessThan(2_000);
+  });
 });
 
 describe('dev:pipeline_position role allowlist', () => {

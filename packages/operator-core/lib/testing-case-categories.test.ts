@@ -27,6 +27,16 @@ import {
 const FILE = 'packages/operator-core/lib/widgets/widget.test.ts';
 const CASE = 'widget store > refuses a write';
 
+it('attributes an explicit multi-file rubric selector only to its named cases', () => {
+  const citation = { rubricId: 'r', criterionKey: 'c', files: [FILE, 'other.integration.test.ts'], cases: [
+    { file: FILE, testName: 'refuses a write' },
+    { file: 'other.integration.test.ts', testName: 'integrated control' },
+  ] };
+  expect(deriveCaseCitations(FILE, CASE, [citation], []).rubricChecks).toEqual([{ rubricId: 'r', criterionKey: 'c' }]);
+  expect(deriveCaseCitations(FILE, 'unrelated case', [citation], []).rubricChecks).toEqual([]);
+  expect(deriveCaseCitations('other.integration.test.ts', 'integrated control', [citation], []).rubricChecks).toHaveLength(1);
+});
+
 const run = (over: Partial<CaseRunRecord> = {}): CaseRunRecord => ({
   file: FILE,
   caseKey: CASE,

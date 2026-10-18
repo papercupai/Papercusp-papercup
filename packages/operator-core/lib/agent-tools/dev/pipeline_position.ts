@@ -921,8 +921,10 @@ export default defineTool({
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker, expectedSourceSha256: args.expectedSourceSha256 });
     if (args.sourceRuntimeOnly) {
       // Native graph joins need exact source/runtime identity; the ordinary bounded
-      // pipeline digest can omit the root or clip nested containment fields.
-      return { data: { repoRoot: result.repoRoot, submodule: result.submodule,
+      // pipeline digest can omit the root or clip nested containment fields. Keep
+      // the selected test route with this evidence so native preflights can check
+      // readiness without pulling in unrelated, potentially truncated gate detail.
+      return { data: { ...routeHint, repoRoot: result.repoRoot, submodule: result.submodule,
         acceptedSource: result.acceptedSource, servingRuntimes: result.servingRuntimes ?? [] } };
     }
     const subjectStamp = pipelineSubjectStamp(ctx as { harnessSlug?: string | null }, result.repoRoot);

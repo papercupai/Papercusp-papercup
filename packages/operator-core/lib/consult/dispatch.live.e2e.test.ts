@@ -72,7 +72,7 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
     const recordContext = { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: root };
     expect(resolveAgentWorkspaceRoot(recordContext), 'Recorder must measure this committed test tree').toBe(root);
     const route = call('dev:pipeline_position', {
-      path: 'packages/operator-core/lib/consult/consult-dispatch.ts', testClass: 'operator-api',
+      path: 'packages/operator-core/lib/consult/consult-dispatch.ts', testClass: 'operator-api', sourceRuntimeOnly: true,
       expectedSourceSha256: createHash('sha256').update(readFileSync(
         resolve(root, 'packages/operator-core/lib/consult/consult-dispatch.ts'))).digest('hex'),
       projection: { pick: ['currentBuildTestRoute', 'acceptedSource'] },

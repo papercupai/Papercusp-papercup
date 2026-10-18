@@ -233,7 +233,7 @@ describe('coord:roster', () => {
       expect(auditStore.build).not.toHaveBeenCalled();
       expect(auditStore.save).not.toHaveBeenCalled();
     });
-    it.each([undefined, NaN, Infinity, -1, 1.5])('refuses an unmeasured or invalid writer parked count (%s)', async parked => {
+    it.each([undefined, null, '1', true, NaN, Infinity, -Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])('refuses an unmeasured or invalid writer parked count (%s)', async parked => {
       const snapshotSource = vi.mocked(assemblePresenceSnapshot).getMockImplementation()!;
       vi.mocked(assemblePresenceSnapshot).mockImplementationOnce(async (resolved, opts) => {
         const snapshot = await snapshotSource(resolved, opts);

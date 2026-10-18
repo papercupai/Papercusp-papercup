@@ -3,14 +3,16 @@ import workItemsList from "./list";
 
 describe("work_items:list timestamp filters", () => {
   it.each(["createdSince", "updatedSince"] as const)(
-    "%s rejects the reported relative duration before query execution",
+    "%s rejects relative durations, including the reported 7d value, before query execution",
     (filter) => {
-      const parsed = workItemsList.args.safeParse({
-        harness: "papercusp",
-        [filter]: "30 min",
-      });
+      for (const value of ["30 min", "7d"]) {
+        const parsed = workItemsList.args.safeParse({
+          harness: "papercusp",
+          [filter]: value,
+        });
 
-      expect(parsed.success).toBe(false);
+        expect(parsed.success).toBe(false);
+      }
     },
   );
 

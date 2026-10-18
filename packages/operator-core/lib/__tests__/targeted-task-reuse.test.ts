@@ -136,7 +136,7 @@ describe('gate reuse on the degradation rail (P-004)', () => {
       env: baseEnv(), deps: deps({ loadProofs: async () => ({ proofs, rows: 25 }),
         recordReuse: async (task: string, decision: Parameters<typeof gateReuseObservations>[1]) => observations.push(...gateReuseObservations(task, decision)) }) });
     expect(armed.reused).toBe(0);
-    expect(observations).toEqual([{ eligible: 25, applied: 0, reason: 'otherRunner', scope: TASK }]);
+    expect(observations).toEqual([{ eligible: 25, applied: 0, populationKnown: true, reason: 'otherRunner', scope: TASK }]);
     const window = summarizeFallbackWindow('gate-pass-reuse', 60_000, observations.map((row) => ({ ...row, samples: 1 })));
     expect(judgeDegradation(window, { mechanism: 'gate-pass-reuse', scope: TASK })).toMatchObject({ kind: 'collapsed', reason: 'otherRunner' });
     armed.finish();
@@ -144,12 +144,12 @@ describe('gate reuse on the degradation rail (P-004)', () => {
 
   it.each(['dirty-checkout(2)', 'proofs-unavailable(timeout)', 'disabled-by-env', 'script-cannot-run-zero-files'])('does not invent a denominator for an unmeasured off-path decision (%s)', async (reason) => {
     const decisions = gateReuseObservations(TASK, { offReason: reason, eligible: 0 });
-    expect(decisions).toEqual([{ eligible: 0, applied: 0, reason: reason.split('(')[0], scope: TASK }]);
+    expect(decisions).toEqual([{ eligible: 0, applied: 0, populationKnown: true, reason: reason.split('(')[0], scope: TASK }]);
   });
 
   it('records healthy primary decisions and excludes overlapping diagnostic counters', () => {
     const decisions = gateReuseObservations(TASK, { summary: { candidates: 25, reused: 25, inertGlobal: 25, expiredClean: 25 } });
-    expect(decisions).toEqual([{ eligible: 25, applied: 25, reason: 'applied', scope: TASK }]);
+    expect(decisions).toEqual([{ eligible: 25, applied: 25, populationKnown: true, reason: 'applied', scope: TASK }]);
     const window = summarizeFallbackWindow('gate-pass-reuse', 60_000, decisions.map((row) => ({ ...row, samples: 1 })));
     expect(judgeDegradation(window, { mechanism: 'gate-pass-reuse', scope: TASK }).kind).toBe('recovered');
   });

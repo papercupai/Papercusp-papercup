@@ -36,6 +36,34 @@ export function resolvePtoolInvocationCandidates(args?: {}, env?: NodeJS.Process
 /** A changed operator is safe for dispatch only when the catalog marks the tool read-only. */
 export function canDispatchOnFallbackOperator(tool: any, fallbackUsed: any): boolean;
 /**
+ * Resolve the catalog entry whose read-only annotation governs a named
+ * launcher recovery. `tools:invoke` is a generic outer call, so its own
+ * annotation cannot establish whether the nested target is safe to move to a
+ * different same-host candidate. Keep malformed or interactive wrappers
+ * conservative by returning the outer entry when no nested target is known.
+ * @param {string | null | undefined} toolName
+ * @param {unknown} callArgs
+ * @param {ToolCatalogEntry[]} tools
+ * @returns {ToolCatalogEntry | null}
+ */
+export function resolvePtoolRecoveryTool(toolName: string | null | undefined, callArgs: unknown, tools?: ToolCatalogEntry[]): ToolCatalogEntry | null;
+/**
+ * Return whether the catalog proves that the requested named call is
+ * read-only. For a `tools:invoke` wrapper this deliberately follows the
+ * nested target; the generic wrapper's annotation describes the transport,
+ * not the operation it will execute.
+ * @param {string | null | undefined} toolName
+ * @param {unknown} callArgs
+ * @param {ToolCatalogEntry[]} tools
+ */
+export function isReadOnlyPtoolRecoveryRequest(toolName: string | null | undefined, callArgs: unknown, tools?: ToolCatalogEntry[]): boolean;
+/**
+ * Apply the fallback safety gate to a direct call or to a nested
+ * `tools:invoke` call. The outer wrapper is intentionally generic, so its
+ * annotation alone must not reject a nested target already proven read-only.
+ */
+export function canDispatchPtoolOnFallback(toolName: any, callArgs: any, tool: any, tools: any, fallbackUsed: any): boolean;
+/**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
  * URLs are pins: changing them behind the caller's back would violate the

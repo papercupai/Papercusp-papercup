@@ -394,6 +394,15 @@ describe('test-files router', () => {
     expect(route.requested).toBe('src/strict-args.test.ts');
   });
 
+  it('routes a registered Vitest file project before the repository integration fallback', () => {
+    const route = discoverTestRoute('apps/operator-public/src/__tests__/funded-turn-host.integration.test.ts');
+    expect(route).toMatchObject({
+      cwd: resolve(REPO_ROOT, 'apps/operator-public'),
+      config: 'vitest.config.ts',
+      requested: 'src/__tests__/funded-turn-host.integration.test.ts',
+    });
+  });
+
   it('honors negated workspace patterns when resolving package-relative test paths', () => {
     const root = mkdtempSync(join(tmpdir(), 'test-file-router-workspace-exclude-'));
     try {

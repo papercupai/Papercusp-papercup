@@ -20,6 +20,13 @@ import {
 } from './observation-types';
 
 describe('OBSERVATION_KINDS', () => {
+  it('round-trips the explicit file and case selectors of a multi-file tests check', () => {
+    const proof = { kind: 'tests', files: ['unit.test.ts', 'flow.integration.test.ts'], cases: [
+      { file: 'unit.test.ts', testName: 'unit control' },
+      { file: 'flow.integration.test.ts', testName: 'integration control' },
+    ], verdict: 'pass', passed: 2, failed: 0, matchedCases: 2, runId: 'selected-cases', measuredAt: '2026-10-18T04:00:00Z' };
+    expect(asStructuredObservation({ checkRuns: { proof } })?.checkRuns?.proof).toEqual(proof);
+  });
   it('round-trips complete ALL probe records and refuses empty, nested or contradictory aggregates', () => {
     const probe = { kind: 'tool', tool: 'status:read', args: {}, schemaRevision: 'historical-revision', expect: { path: '$.state', op: 'eq', value: 'green' } };
     const child = { kind: 'probe', probe, verdict: 'pass', status: 'fresh', executed: true, observed: 'green', measuredAt: '2026-10-03T07:00:00Z' };

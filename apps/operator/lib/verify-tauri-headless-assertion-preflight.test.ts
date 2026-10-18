@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -43,6 +44,10 @@ function runAssertion(assertionSource: string, useBashC = false, command?: strin
   writeFileSync(join(dir, 'papercusp-desktop/bin/lib/federation-asserts.sh'), '');
   writeFileSync(join(dir, 'scripts/lib/verify-tauri-assertion-env.mjs'),
     readFileSync(join(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs')));
+  // The copied helper dynamically imports shell-quote. Mirror the real
+  // repository dependency resolution from the synthetic REPO_DIR so the
+  // fixture exercises command grammar rather than a missing-parser failure.
+  symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
   writeFileSync(
     tool,
     '#!/usr/bin/env bash\nprintf "tool invoked\\n" >> "$VERIFY_TEST_INVOCATIONS"\nexit 0\n',
@@ -181,9 +186,11 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
       'ASSERTION_ARGS=(node --import tsx "$REPO_DIR/scripts/tauri-surface-verify-' + driver + '.mts" --e2e)',
       'validate_assertion_command_preflight',
     ].join('\n')], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: { ...process.env, REPO_DIR: ROOT,
-      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db', PAPERCUSP_TEST_RUN_WORKSPACE: 'native-owner-fixture' } });
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db', PAPERCUSP_TEST_RUN_WORKSPACE: 'native-owner-fixture',
+      PAPERCUSP_TEST_RUN_GROUP: 'native-owner-fixture-run' } });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('2 prerequisite(s)');
+    const expectedPrerequisites = driver === 'reports' ? '3 prerequisite(s)' : '2 prerequisite(s)';
+    expect(result.stdout).toContain(expectedPrerequisites);
     expect(`${result.stdout}${result.stderr}`).not.toContain('fixture-secret');
   });
 

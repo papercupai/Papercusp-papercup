@@ -72,6 +72,7 @@ export interface RubricTestsCitation {
   criterionKey: string;
   files: readonly string[];
   testName?: string;
+  cases?: ReadonlyArray<{ file: string; testName: string }>;
 }
 
 /** One live spec evidence binding that declares test cases. */
@@ -198,7 +199,9 @@ export function deriveCaseCitations(
   specBindings: readonly SpecBindingCitation[],
 ): CaseCitations {
   const rubric = rubricChecks
-    .filter((c) => c.files.some((citedFile) => citationNamesCase(file, caseKey, citedFile, c.testName)))
+    .filter((c) => c.cases !== undefined
+      ? c.cases.some((selector) => citationNamesCase(file, caseKey, selector.file, selector.testName))
+      : c.files.some((citedFile) => citationNamesCase(file, caseKey, citedFile, c.testName)))
     .map((c) => ({
       rubricId: c.rubricId,
       criterionKey: c.criterionKey,
@@ -361,6 +364,7 @@ async function defaultRubricChecks(): Promise<RubricTestsCitation[]> {
           criterionKey: criterion.key,
           files: check.files,
           ...(check.testName !== undefined ? { testName: check.testName } : {}),
+          ...(check.cases !== undefined ? { cases: check.cases } : {}),
         });
       }
     }

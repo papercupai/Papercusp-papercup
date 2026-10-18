@@ -16,7 +16,8 @@ import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execFile, fork, spawnSync } from 'node:child_process';
-import { runWorkbenchCommand } from './workbench-command';
+import { runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
+import { assertPuiBinaryUnchanged, snapshotCurrentPuiBinary } from './pui-binary';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -1549,6 +1550,8 @@ async function waitForPersistedChat(
 let db: OrgTestDb;
 let bin: string;
 let binarySha256: string;
+let currentBinarySnapshot: ReturnType<typeof snapshotCurrentPuiBinary> | undefined;
+let workbenchSocketRoot: string;
 let home: string;
 let operatorServer: ServerType;
 let operatorPort: number;
@@ -1839,9 +1842,16 @@ beforeAll(async () => {
   vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
   // Refuse an incomplete installed-store selection before the expensive bundle.
   bin = ensurePuiBinary();
+  if (!process.env.PUI_BIN) {
+    currentBinarySnapshot = snapshotCurrentPuiBinary(bin);
+    bin = currentBinarySnapshot.binary;
+  }
   operatorProcessBundlePath = buildOperatorProcessBundle();
   binarySha256 = createHash('sha256').update(readFileSync(bin)).digest('hex');
   home = mkdtempSync(path.join(tmpdir(), 'pui-agent-chat-e2e-'));
+  // AF_UNIX paths are limited to ~108 bytes, including Zellij's contract
+  // subdirectory and session name. The isolated runner's TMPDIR is too long.
+  workbenchSocketRoot = mkdtempSync(path.join(realpathSync('/tmp'), 'pui-z-'));
   const fixturePapercuspHome = path.join(home, '.papercusp');
   mkdirSync(fixturePapercuspHome, { recursive: true });
   writeFileSync(path.join(fixturePapercuspHome, 'pui-state.json'), JSON.stringify({ tutorialSeen: true }));
@@ -2356,6 +2366,13 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await finishTeardown([
+    () => {
+      if (bin && binarySha256) console.info('PUI_BINARY_IDENTITY_FINAL', JSON.stringify({
+        binary: bin, selectedSha256: binarySha256,
+        observedSha256: assertPuiBinaryUnchanged(bin, binarySha256),
+        currentBuildSource: currentBinarySnapshot?.source,
+      }));
+    },
     stopEngines,
     () => close(operatorServer),
     async () => { const { drainDetached } = await import('../detached-imports'); await drainDetached(); },
@@ -2372,11 +2389,14 @@ afterAll(async () => {
       operatorProcessBundleDir = undefined;
       operatorProcessBundlePath = undefined;
       if (home) rmSync(home, { recursive: true, force: true });
+      if (currentBinarySnapshot) rmSync(currentBinarySnapshot.directory, { recursive: true, force: true });
+      if (workbenchSocketRoot) rmSync(workbenchSocketRoot, { recursive: true, force: true });
     },
   ]);
 }, 120_000);
 
 afterEach(() => {
+  if (bin && binarySha256) assertPuiBinaryUnchanged(bin, binarySha256);
   for (const diagnostic of activeLaunchEventLoopDiagnostics) diagnostic.finish('test-finished');
 });
 afterEach(stopEngines);
@@ -4667,16 +4687,16 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   // work) beside it, in its own pid-keyed session that nothing can hijack.
   // Ending the chat ends `pui` and leaves no session behind.
   const zellijAvailable = spawnSync('zellij', ['--version']).status === 0;
-  // PuiPane's env carries no XDG_RUNTIME_DIR, so the zellij server it starts
-  // listens under /tmp/zellij-<uid>; query that same socket directory.
+  // A global inventory probes unrelated/retiring servers without a read
+  // deadline. Give this fixture its own sockets and observe their retirement
+  // before asking Zellij for the final inventory.
   const paneZellij = (args: string[]) => runWorkbenchCommand('zellij', args, {
-    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, TERM: 'xterm-256color' },
+    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, TERM: 'xterm-256color', ZELLIJ_SOCKET_DIR: workbenchSocketRoot },
     timeoutMs: 15_000,
   });
   const listSessions = async () => {
     const result = await paneZellij(['list-sessions', '--no-formatting']);
-    expect(result.status, JSON.stringify(result)).toBe(0);
-    return result.stdout;
+    return workbenchSessionList(result);
   };
   const startChatWorkbench = (cols: number, rows: number) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p030-launch-')));
@@ -4685,7 +4705,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     // `pui` is installed (~/.cargo/bin) and the test judges a stale build.
     const pane = new PuiPane(bin, operatorPort, home, {
       args: [], cwd: launchDir, cols, rows,
-      env: { PATH: `${path.dirname(bin)}:${process.env.PATH ?? '/usr/bin:/bin'}` },
+      env: { PATH: `${path.dirname(bin)}:${process.env.PATH ?? '/usr/bin:/bin'}`, ZELLIJ_SOCKET_DIR: workbenchSocketRoot },
     });
     const session = `pui-chat-${pane.pty.pid}`;
     const exited = pane.whenExited().then(({ exitCode }) => exitCode);
@@ -4723,6 +4743,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await wb.pane.waitFor([`Claude · ${wb.launchDir}`, `Zellij (${wb.session})`], { timeoutMs: 90_000 });
       expect(wb.pane.screen()).toMatch(/Zellij \(pui-chat-\d+\)/);
       expect(await listSessions()).toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
+      const liveSockets = await workbenchSessionSockets(workbenchSocketRoot, wb.session);
+      expect(liveSockets, 'live observer must see this session socket before judging its absence').toHaveLength(1);
       // The running session carries the chat pane and every workbench pane,
       // and the chat pane has focus. Read with `list-panes --json`, retried:
       // zellij 0.44.3's `dump-layout` exits 0 with EMPTY stdout on most calls
@@ -4775,6 +4797,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         wb.exited,
         new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 30_000)),
       ])).toBe(0);
+      await waitForWorkbenchSessionEnd(workbenchSocketRoot, wb.session);
       expect(await listSessions()).not.toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
       console.info('PUI_P030_CHAT_WORKBENCH_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, frame }));
     } finally { await wb.cleanup(); }

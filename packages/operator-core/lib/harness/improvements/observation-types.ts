@@ -666,6 +666,8 @@ export interface ScorecardTestsCheckRun {
    * per-case ledger (test_case_runs) — never the whole file (test-rubric-unification P-002).
    */
   testName?: string;
+  /** Explicit named cases across files, all resolved against this run's per-case ledger. */
+  cases?: Array<{ file: string; testName: string }>;
   /** How many recorded cases the testName filter matched (≥1; zero matches refuse the emit). */
   matchedCases?: number;
 }
@@ -2027,6 +2029,12 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
             ? { failures: r.failures.filter((x): x is string => typeof x === 'string') }
             : {}),
           ...(typeof r.testName === 'string' && r.testName.trim() !== '' ? { testName: r.testName } : {}),
+          ...(Array.isArray(r.cases) && r.cases.length > 0 && r.cases.every((selector: unknown) => {
+            if (!selector || typeof selector !== 'object') return false;
+            const s = selector as Record<string, unknown>;
+            return typeof s.file === 'string' && files.includes(s.file) &&
+              typeof s.testName === 'string' && s.testName.trim() !== '';
+          }) ? { cases: r.cases.map((selector: { file: string; testName: string }) => ({ file: selector.file, testName: selector.testName })) } : {}),
           ...(typeof r.matchedCases === 'number' && Number.isSafeInteger(r.matchedCases) && r.matchedCases > 0
             ? { matchedCases: r.matchedCases }
             : {}),

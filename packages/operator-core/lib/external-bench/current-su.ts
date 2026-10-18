@@ -1641,7 +1641,14 @@ async function retirePrefix(ports: Pick<CurrentSuBenchPorts, 'listTasks' | 'kill
   for (const task of tasks) {
     if (task.workspaceId !== workspaceId || typeof task.detail.label !== 'string' || !task.detail.label.startsWith(labelPrefix)) continue;
     const result = await ports.killTask(task.taskId);
-    if (!result.ok && result.error !== 'already_gone' && result.error !== 'task_not_found') throw new Error(`Benchmark cleanup failed for ${task.taskId}: ${result.error}`);
+    // The live benchmark port asks killTask to re-verify terminal residue. A
+    // terminal row whose confined scope is positively empty returns `not_live`
+    // with this detail; that is settled cleanup, not a failed teardown. Keep
+    // rejecting every other `not_live` result because it may be an unconfined
+    // or otherwise unverifiable residue row.
+    const verifiedEmpty = result.error === 'not_live' && result.detail?.includes('holds no live process right now; nothing to reap');
+    if (!result.ok && result.error !== 'already_gone' && result.error !== 'task_not_found' && !verifiedEmpty)
+      throw new Error(`Benchmark cleanup failed for ${task.taskId}: ${result.error}`);
     retired.push(task.taskId);
   }
   return retired;

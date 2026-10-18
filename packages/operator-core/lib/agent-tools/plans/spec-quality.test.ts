@@ -751,6 +751,38 @@ describe('evaluatePlanSpecQuality', () => {
     expect(rating.evidence).toContain('Detector coverage:');
   });
 
+  it.each([
+    'Customer-local operation remains available during a vendor outage.',
+    'Every foreign-tenant operation is denied.',
+    'Read-only operation leaves customer content unchanged.',
+  ])('accepts observable domain operation language: %s', (text) => {
+    for (const field of ['behavior', 'observation'] as const) {
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+        classRef: 'plan-class-feature-ship',
+        clauses: [clause(field === 'behavior'
+          ? { behavior: text }
+          : { falsifier: { observation: text } })],
+      });
+
+      expect(result.ratings['implementation-independence'].rating, field).toBe('pass');
+    }
+  });
+
+  it.each([
+    'The UI invokes the configure-slack-bugs operation.',
+    'The internal configure-slack-bugs operation configures the integration.',
+    'The `configure-slack-bugs` operation configures the integration.',
+  ])('still rejects an explicit internal operation reference: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship', clauses: [clause({ behavior })],
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.ratings['implementation-independence'].evidence).toContain('internal operation');
+  });
+
   it('rejects a bare camelCase function reference in implementation-independence', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',

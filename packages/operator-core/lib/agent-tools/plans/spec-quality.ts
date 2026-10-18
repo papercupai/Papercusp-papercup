@@ -369,7 +369,14 @@ function implementationCouplingReason(behavior: string): string | null {
   if (internalRouteCall) {
     return 'prescribes an internal route ' + JSON.stringify(internalRouteCall[0].trim());
   }
-  const operationReference = /\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\s+(?:op|operation)\b/i.exec(behavior);
+  // Hyphenated domain adjectives ("customer-local operation", "read-only
+  // operation") do not identify code. Require a call prescription, an explicit
+  // internal/name qualifier, or a quoted identifier before treating one as an
+  // implementation reference. Quoted names must not evade the same detector.
+  const operationReference =
+    /\b(?:calls?|called|invokes?|invoked|dispatch(?:es|ed)?|executes?|executed|runs?|ran)\s+(?:the\s+)?(?:internal\s+)?[a-z][a-z0-9]*(?:-[a-z0-9]+)+\s+(?:op|operation)\b/i.exec(behavior) ??
+    /\b(?:internal|named)\s+[a-z][a-z0-9]*(?:-[a-z0-9]+)+\s+(?:op|operation)\b/i.exec(behavior) ??
+    /[`'"][a-z][a-z0-9]*(?:-[a-z0-9]+)+[`'"]\s+(?:op|operation)\b/i.exec(behavior);
   if (operationReference) {
     return 'names an internal operation ' + JSON.stringify(operationReference[0]);
   }

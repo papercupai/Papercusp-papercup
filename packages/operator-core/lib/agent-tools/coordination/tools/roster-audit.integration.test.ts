@@ -55,12 +55,13 @@ describe('roster frozen audit PG persistence', () => {
   });
 
   it('keeps every frozen record unchanged when source evidence changes between pages', async () => {
-    const original = createRosterAudit({ ...build(), asOf: '2026-10-20T00:00:00.000Z', records: [
+    const sourceRecords = [
       ...build().records,
-      { id: 'work:a:one', ownerId: 'a', kind: 'work', fields: { next: auditKnown('original next step', 'fixture checkpoint', '2026-10-20T00:00:00.000Z') } },
-      { id: 'work:a:two', ownerId: 'a', kind: 'work', fields: { next: auditKnown('second next step', 'fixture checkpoint', '2026-10-20T00:00:00.000Z') } },
-    ] });
-    const expected = JSON.parse(JSON.stringify(original.records));
+      { id: 'work:a:one', ownerId: 'a', kind: 'work' as const, fields: { next: auditKnown('original next step', 'fixture checkpoint', '2026-10-20T00:00:00.000Z') } },
+      { id: 'work:a:two', ownerId: 'a', kind: 'work' as const, fields: { next: auditKnown('second next step', 'fixture checkpoint', '2026-10-20T00:00:00.000Z') } },
+    ];
+    const expected = JSON.parse(JSON.stringify(sourceRecords));
+    const original = createRosterAudit({ ...build(), asOf: '2026-10-20T00:00:00.000Z', records: sourceRecords });
     await saveRosterAudit(harness, original);
     const first = pageRosterAudit(original, scope, { pageSize: 1 });
     original.records[2].fields.next.value = 'changed live source';
@@ -85,17 +86,37 @@ describe('roster frozen audit PG persistence', () => {
     const artifacts = () => db.adminSql<{ rel_path: string; content: string }[]>`SELECT rel_path, content
       FROM harness_shared.harness_text_artifacts WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} ORDER BY rel_path`;
     const before = await artifacts();
-    const invalid = [
-      ...[undefined, null, '2', true, NaN, Infinity, -Infinity, -1, 1.5, 1, 3].map(expectedPopulation => ({ ...original, expectedPopulation })),
-      { ...original, population: ['a', 'a'] },
-      { ...original, records: [...original.records, original.records[0]] },
-      { ...original, auditId: 'f'.repeat(64) },
+    const invalid: Array<{ snapshot: unknown; code: string }> = [
+      ...[undefined, null, '2', true, NaN, Infinity, -Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]
+        .map(expectedPopulation => ({ snapshot: { ...original, expectedPopulation }, code: 'writer_count_invalid' })),
+      ...[1, 3].map(expectedPopulation => ({ snapshot: { ...original, expectedPopulation }, code: 'population_incomplete' })),
+      { snapshot: { ...original, population: [], records: [], expectedPopulation: 1 }, code: 'population_incomplete' },
+      { snapshot: { ...original, population: ['a', 'a'] }, code: 'population_duplicate' },
+      { snapshot: { ...original, records: [...original.records, original.records[0]] }, code: 'agent_coverage_invalid' },
+      { snapshot: { ...original, records: [...original.records, { ...original.records[0], kind: 'work' }] }, code: 'record_identity_invalid' },
+      { snapshot: { ...original, auditId: 'f'.repeat(64) }, code: 'audit_identity_invalid' },
     ];
-    for (const snapshot of invalid) {
-      await expect(saveRosterAudit(harness, snapshot as typeof original)).rejects.toThrow();
+    for (const { snapshot, code } of invalid) {
+      await expect(saveRosterAudit(harness, snapshot as typeof original)).rejects.toMatchObject({ code });
       expect(await artifacts()).toEqual(before);
       expect(await loadRosterAudit(harness, original.auditId, scope)).toEqual(original);
     }
+  });
+
+  it('persists the captured count while refusing a mismatch even after the live count converges', async () => {
+    const live = { count: 2 };
+    const captured = { ...build(), asOf: '2026-10-22T00:00:00.000Z', expectedPopulation: live.count };
+    const snapshot = createRosterAudit(captured);
+    live.count = 3;
+    await saveRosterAudit(harness, snapshot);
+    expect((await loadRosterAudit(harness, snapshot.auditId, scope))?.expectedPopulation).toBe(2);
+    const mismatched = { ...build(), asOf: '2026-10-22T01:00:00.000Z', expectedPopulation: live.count };
+    live.count = 2;
+    const before = await db.adminSql`SELECT rel_path, content FROM harness_shared.harness_text_artifacts
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} ORDER BY rel_path`;
+    await expect(saveRosterAudit(harness, mismatched)).rejects.toMatchObject({ code: 'population_incomplete' });
+    expect(await db.adminSql`SELECT rel_path, content FROM harness_shared.harness_text_artifacts
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} ORDER BY rel_path`).toEqual(before);
   });
 
   it('assembles measured modes, no-work owners and exact message pickup from PG', async () => {

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runLocalGit } from '../../scratch-git-clone';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
   MAX_RECORDED_PASSED_CASES,
@@ -62,7 +63,7 @@ describe('native Git scratch placement execution', () => {
       paths.add(clonePath);
       return { path: clonePath, source: '/repo', requestedRef: ref, sha: ref, submodules: 0, borrowedRepositories: 1 };
     });
-    const git = vi.fn(async (args: string[]) => ({
+    const git = vi.fn<typeof runLocalGit>(async (args: string[]) => ({
       code: args[0] === 'symbolic-ref' ? 1 : 0,
       output: args[0] === 'rev-parse' ? ref : '',
     }));
@@ -98,6 +99,39 @@ describe('native Git scratch placement execution', () => {
     expect(await executeGitScratchPlacement(f.ref, f.ctx, f.deps)).toMatchObject({ status: 'fail' });
     expect(f.deps.clone).not.toHaveBeenCalled();
     expect(f.persist.mock.calls[0][0].rows[0].outputTail).toContain('exact empty committed tree');
+  });
+
+  it.each([
+    { mode: 'detached', code: 1, status: 'pass' },
+    { mode: 'attached', code: 0, status: 'fail' },
+    { mode: 'not-a-repository', code: 128, status: 'fail' },
+  ] as const)('uses the production runner exit contract for $mode HEAD', async ({ mode, code, status }) => {
+    const repo = mkdtempSync(join(tmpdir(), 'record-run-detached-head-'));
+    try {
+      if (mode !== 'not-a-repository') {
+        git(repo, ['init', '-q']);
+        git(repo, ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+          'commit', '--allow-empty', '-qm', 'HEAD state fixture']);
+        if (mode === 'detached') git(repo, ['checkout', '--detach', '-q', 'HEAD']);
+      }
+      const f = fixture();
+      const scriptedGit = f.deps.git.getMockImplementation()!;
+      const actual = await runLocalGit(['symbolic-ref', '-q', 'HEAD'], repo, new AbortController().signal);
+      expect(actual.code).toBe(code);
+      if (mode === 'detached') expect(actual.output).toContain('[scratch-git-runner]');
+      f.deps.git.mockImplementation(async (args, cwd, signal) => args[0] === 'symbolic-ref'
+        ? runLocalGit(args, repo, signal) : scriptedGit(args, cwd, signal));
+      expect(await executeGitScratchPlacement(f.ref, f.ctx, f.deps)).toMatchObject({ status });
+      const row = f.persist.mock.calls[0][0].rows[0];
+      if (mode === 'detached') {
+        expect(row.execution).toMatchObject({ passedCaseTitles: expect.arrayContaining(['git-detached-head']) });
+      } else {
+        expect(row.outputTail).toContain(`symbolic-ref -q HEAD exitCode=${code}`);
+      }
+      expect(f.paths.size).toBe(0);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('fails when a root-side request is accepted and removes its uniquely owned probe', async () => {

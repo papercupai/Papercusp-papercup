@@ -60,6 +60,12 @@ describe('classifyRequirementBarEdit', () => {
   it('treats a tests-check file move as verification-only', () => {
     expect(classifyRequirementBarEdit(base, { ...base, check: { kind: 'tests', files: [NEW_TEST] } })).toBe('verification-only');
   });
+  it('keeps explicit file/case selectors in verification and overlays them without changing meaning', () => {
+    const check = { kind: 'tests', files: [NEW_TEST], cases: [{ file: NEW_TEST, testName: 'specific new case' }] };
+    expect(classifyRequirementBarEdit(base, { ...base, check })).toBe('verification-only');
+    const overlay = overlayLiveRequirementVerification([{ ...base, barKey: 'R-1' }], [{ barKey: 'R-1', criterion: { check } }]);
+    expect(overlay.criteria[0]?.check).toEqual(check);
+  });
   it('treats a method rewrite as verification-only', () => {
     expect(classifyRequirementBarEdit(base, { ...base, method: 'run it differently' })).toBe('verification-only');
   });

@@ -148,7 +148,7 @@ describe('R-2 — a successful close lacking a declared kind\'s catalog proof is
   it('a ui artifact that fails the live-drove-ui artifact check is refused with that check\'s reason', async () => {
     const r = expectRefused(
       await evaluateChangeKindGate(input({ kinds: ['ui'], kindEvidence: [FULL_PROOF.ui] }), {
-        verifyUiArtifacts: async () => ({ ok: false, basis: 'none', reason: 'queue-panel-after.png is a blank image' }),
+        verifyUiArtifacts: async () => ({ ok: false, basis: 'none', reason: 'queue-panel-after.png is a blank image', artifacts: [] }),
       }),
     );
     expect(missingFor(r, 'ui')).toContain('a real-app artifact that holds up — queue-panel-after.png is a blank image');
@@ -398,7 +398,7 @@ describe('R-6 — a close that owes no reason and carries every catalog proof fo
     const kinds: ChangeKind[] = ['ui', 'service', 'migration', 'logic', 'config'];
     const r = await evaluateChangeKindGate(
       input({ kinds, kindEvidence: kinds.map((k) => FULL_PROOF[k]) }),
-      { verifyUiArtifacts: async () => ({ ok: true, basis: 'image' }), unretainedUiArtifacts: async () => [] },
+      { verifyUiArtifacts: async () => ({ ok: true, basis: 'image', artifacts: [] }), unretainedUiArtifacts: async () => [] },
     );
     expect(r).toEqual({ applicable: true, outcome: 'pass', kinds });
   });

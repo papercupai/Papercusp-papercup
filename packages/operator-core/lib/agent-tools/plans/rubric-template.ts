@@ -236,6 +236,13 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
             'boundary. Requires exactly one file. At grading time it is resolved against the per-case ' +
             'results ledger; a filter matching zero recorded cases refuses the emit instead of passing.',
         ),
+      cases: z.array(z.object({
+        file: z.string().trim().min(1),
+        testName: z.string().trim().min(1).max(500),
+      }).strict()).min(1).max(200).optional().describe(
+        'Named cases required across the listed files. Every selector must resolve to executed cases, ' +
+        'and every file must have a selector. Mutually exclusive with the single-file testName shorthand.',
+      ),
     })
     .strict()
     .superRefine((check, ctx) => {
@@ -245,6 +252,20 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
           path: ['testName'],
           message: 'a tests check with testName must name exactly one file (the file the test case lives in)',
         });
+      }
+      if (check.cases !== undefined) {
+        if (check.testName !== undefined) {
+          ctx.addIssue({ code: 'custom', path: ['cases'], message: 'pass cases or testName, not both' });
+        }
+        const files = new Set(check.files);
+        const selectedFiles = new Set(check.cases.map((selector) => selector.file));
+        if (check.cases.some((selector) => !files.has(selector.file)) || check.files.some((file) => !selectedFiles.has(file))) {
+          ctx.addIssue({ code: 'custom', path: ['cases'], message: 'cases must select every check.files entry and no other file' });
+        }
+        const identities = check.cases.map((selector) => JSON.stringify([selector.file, selector.testName]));
+        if (new Set(identities).size !== identities.length) {
+          ctx.addIssue({ code: 'custom', path: ['cases'], message: 'duplicate file/testName selectors are not allowed' });
+        }
       }
     }),
   z
@@ -807,7 +828,7 @@ function stripUnknownRubricCheckKeys(check: unknown): { data: unknown; stripped:
   if (!check || typeof check !== 'object' || Array.isArray(check)) return { data: check, stripped: [] };
   const record = check as Record<string, unknown>;
   const fieldsByKind: Record<string, readonly string[]> = {
-    tests: ['kind', 'files', 'testName'],
+    tests: ['kind', 'files', 'testName', 'cases'],
     cargo: ['kind', 'manifestPath', 'sourceFiles', 'test'],
     instrument: ['kind', 'instrumentKey', 'expect', 'ratingBands'],
     probe: ['kind', 'probe', 'all', 'unit', 'ratingBands'],

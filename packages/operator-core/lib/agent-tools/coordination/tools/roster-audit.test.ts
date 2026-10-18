@@ -55,25 +55,39 @@ describe('complete frozen roster audit paging', () => {
   it.each([undefined, null, '2', true, NaN, Infinity, -Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
     'refuses invalid writer count %s at the internal typed boundary', expectedPopulation => {
       expect(() => createRosterAudit({ ...fixture(), expectedPopulation: expectedPopulation as number }))
-        .toThrow(/measured non-negative safe integer/);
+        .toThrowError(expect.objectContaining({ code: 'writer_count_invalid' }));
     },
   );
   it.each([1, 3])('refuses either direction of population mismatch (%s)', expectedPopulation => {
-    expect(() => createRosterAudit({ ...fixture(), expectedPopulation })).toThrow(/population/);
+    expect(() => createRosterAudit({ ...fixture(), expectedPopulation }))
+      .toThrowError(expect.objectContaining({ code: 'population_incomplete' }));
+  });
+  it('refuses an empty census with a nonzero count and accepts measured negative zero', () => {
+    const empty = { ...fixture(), population: [], records: [] };
+    expect(() => createRosterAudit({ ...empty, expectedPopulation: 1 }))
+      .toThrowError(expect.objectContaining({ code: 'population_incomplete' }));
+    expect(createRosterAudit({ ...empty, expectedPopulation: -0 }).expectedPopulation).toBe(-0);
   });
   it('permits distinct work records for one owner and refuses a duplicated record identity', () => {
     const records = [record('a'), record('a', 'work', ':one'), record('a', 'work', ':two'), record('b')];
     expect(fixture(records).records).toEqual(records);
-    expect(() => fixture([...records, records[1]])).toThrow(/duplicate identity/);
+    expect(() => fixture([...records, records[1]]))
+      .toThrowError(expect.objectContaining({ code: 'record_identity_invalid' }));
+    expect(() => fixture([...records, { ...records[1], ownerId: 'b' }]))
+      .toThrowError(expect.objectContaining({ code: 'record_identity_invalid' }));
   });
   it('refuses cross-workspace, cross-lens, malformed and foreign-snapshot cursors', () => {
     const snapshot = fixture();
     const cursor = pageRosterAudit(snapshot, scope, { pageSize: 1 }).nextCursor!;
-    expect(() => pageRosterAudit(snapshot, { ...scope, workspaceId: 'ws-b' }, { cursor })).toThrow(/workspace/);
-    expect(() => pageRosterAudit(snapshot, { ...scope, owner: 'a' }, { cursor })).toThrow(/workspace/);
-    expect(() => pageRosterAudit(snapshot, scope, { cursor: 'garbage' })).toThrow(/exact nextCursor/);
+    expect(() => pageRosterAudit(snapshot, { ...scope, workspaceId: 'ws-b' }, { cursor }))
+      .toThrowError(expect.objectContaining({ code: 'audit_scope_mismatch' }));
+    expect(() => pageRosterAudit(snapshot, { ...scope, owner: 'a' }, { cursor }))
+      .toThrowError(expect.objectContaining({ code: 'audit_scope_mismatch' }));
+    expect(() => pageRosterAudit(snapshot, scope, { cursor: 'garbage' }))
+      .toThrowError(expect.objectContaining({ code: 'invalid_cursor' }));
     const other = createRosterAudit({ ...snapshot, asOf: '2026-10-19T00:00:00Z' });
-    expect(() => pageRosterAudit(other, scope, { cursor })).toThrow(/different audit/);
+    expect(() => pageRosterAudit(other, scope, { cursor }))
+      .toThrowError(expect.objectContaining({ code: 'cursor_scope_mismatch' }));
   });
   it('represents an empty measured population as complete without fabricating a row', () => {
     const snapshot = createRosterAudit({ ...fixture(), population: [], records: [], expectedPopulation: 0 });

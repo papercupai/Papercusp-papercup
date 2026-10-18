@@ -874,7 +874,10 @@ export async function executeGitScratchPlacement(
         check('git-exact-ref', await read(['rev-parse', 'HEAD'], actual) === ref, `requested=${ref}`);
         check('git-remotes-removed', await read(['remote'], actual) === '', 'The actual checkout must have no remotes.');
         const detached = await git(['symbolic-ref', '-q', 'HEAD'], actual, signal);
-        check('git-detached-head', detached.code === 1 && detached.output.trim() === '', 'Actual symbolic-ref must report detached HEAD.');
+        // Git uses exit 1 for detached HEAD; runLocalGit decorates nonzero
+        // exits with diagnostics, so output emptiness is not its contract.
+        check('git-detached-head', detached.code === 1,
+          `symbolic-ref -q HEAD exitCode=${detached.code}; output=${detached.output.slice(-1500)}`);
         let refusal = '';
         try { await clone({ source: root, ref, destination, signal }); }
         catch (error) { refusal = error instanceof Error ? error.message : String(error); }

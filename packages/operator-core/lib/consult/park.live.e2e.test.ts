@@ -67,7 +67,7 @@ describe.skipIf(!profilePath)('consult-backed parking on the loaded staging oper
     expect(owner).toBe(process.env.PAPERCUSP_SID);
     for (const path of ['packages/operator-core/lib/consult/park-adapters.ts',
       'packages/operator-core/lib/consult/park-prod.ts']) {
-      const route = call('dev:pipeline_position', { path, testClass: 'operator-api',
+      const route = call('dev:pipeline_position', { path, testClass: 'operator-api', sourceRuntimeOnly: true,
         expectedSourceSha256: createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex'),
         projection: { pick: ['acceptedSource', 'currentBuildTestRoute'] } }, origin);
       expect(route.currentBuildTestRoute.readiness).toBe('ready');

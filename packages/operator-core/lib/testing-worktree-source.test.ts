@@ -3,9 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifierSourceFiles, type VerifierSourceReceipt } from './verifier-source';
+import { WORKTREE_SNAPSHOT_GIT_BUDGETS_MS } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureTestSourceSnapshot, captureTestSourceSnapshotAsync, captureWorktreeSnapshotAsync, computeWorktreeDirty, resolveReporterSourceRoot } from './testing-worktree';
 
-const gitProbe = vi.hoisted(() => vi.fn(() => { throw new Error('Git probe must not run for an archive'); }));
+const gitProbe = vi.hoisted(() => vi.fn((_command: string, _args: string[], _options: { timeout?: number }): string => {
+  throw new Error('Git probe must not run for an archive');
+}));
 const asyncGit = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<typeof import('node:child_process')>(), execFileSync: gitProbe,
@@ -16,7 +19,7 @@ const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
-  gitProbe.mockClear();
+  gitProbe.mockReset();
   asyncGit.mockReset();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -80,6 +83,34 @@ describe('receipt-backed test source snapshots', () => {
     expect(captureTestSourceSnapshot(root)).toMatchObject({ commit: null, porcelain: null,
       provenanceError: expect.stringContaining('must be outside the archive') });
     expect(gitProbe).not.toHaveBeenCalled();
+  });
+});
+
+describe('synchronous reporter snapshot policy', () => {
+  it.each(['', ' M source.ts'])('recovers slow status without hiding dirty source: %j', porcelain => {
+    gitProbe.mockImplementation((_command, args, options) => {
+      if (!args.includes('status')) return 'a'.repeat(40);
+      if (options.timeout === WORKTREE_SNAPSHOT_GIT_BUDGETS_MS[0]) {
+        throw Object.assign(new Error('status timed out'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
+      }
+      return porcelain;
+    });
+    const snapshot = captureTestSourceSnapshot('/retained-checkout');
+    expect(snapshot).toEqual({ commit: 'a'.repeat(40), porcelain: porcelain.trim() });
+    expect(gitProbe.mock.calls.filter(([, args]) => args.includes('status')).map(([, , options]) => options.timeout))
+      .toEqual([...WORKTREE_SNAPSHOT_GIT_BUDGETS_MS]);
+    expect(computeWorktreeDirty({ commit: 'a'.repeat(40), porcelain: '' }, snapshot)).toBe(Boolean(porcelain));
+  });
+
+  it('retains terminal diagnostics and refuses unknown source after every bounded attempt fails', () => {
+    gitProbe.mockImplementation((_command, args) => {
+      if (!args.includes('status')) return 'a'.repeat(40);
+      throw Object.assign(new Error('status timed out'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
+    });
+    const snapshot = captureTestSourceSnapshot('/retained-checkout');
+    expect(snapshot.porcelain).toBeNull();
+    for (const budget of WORKTREE_SNAPSHOT_GIT_BUDGETS_MS) expect(snapshot.provenanceError).toContain(`budget=${budget}ms`);
+    expect(computeWorktreeDirty({ commit: 'a'.repeat(40), porcelain: '' }, snapshot)).toBe(true);
   });
 });
 

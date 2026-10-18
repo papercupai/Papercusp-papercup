@@ -198,6 +198,40 @@ function routeOperatorThroughProxy(operatorUrl, env) {
 }
 
 /**
+ * A launcher-managed shell can retain the green resilient proxy (:9071) even
+ * though its child was started from a staging session. When the handoff has no
+ * runtime target hint, the configured staging proxy is the only same-host
+ * route that can recover a current tools/list generation. Keep this candidate
+ * narrow: explicit target hints and caller URL pins remain authoritative.
+ * @param {string} operatorUrl
+ * @param {EnvironmentMap} env
+ * @returns {string | null}
+ */
+function resolveLauncherManagedStagingProxyCandidate(operatorUrl, env) {
+  if (
+    env[OPERATOR_URL_PROVENANCE_ENV] !== LAUNCHER_OPERATOR_URL_PROVENANCE ||
+    env.PAPERCUSP_MCP_PROXY === '0' ||
+    env.PAPERCUSP_MCP_STAGING_PROXY === '0' ||
+    validLocalPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT)
+  ) return null;
+
+  const stagingPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT);
+  if (!stagingPort) return null;
+  const resilientProxyPort = validLocalPort(env.PAPERCUSP_MCP_PROXY_PORT) ?? '9071';
+  try {
+    const url = new URL(operatorUrl);
+    const localHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase());
+    const currentPort = url.port || (url.protocol === 'https:' ? '443' : '80');
+    if (!localHost || url.protocol !== 'http:' || currentPort !== resilientProxyPort || stagingPort === resilientProxyPort) {
+      return null;
+    }
+    return `http://127.0.0.1:${stagingPort}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the implicit operator candidates for ptool. An operator-host shell
  * can retain a dead PAPERCUSP_HONO_PORT after its per-session host exits; the
  * canonical green operator is still a safe recovery target in that case.
@@ -214,22 +248,34 @@ export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = 
   if (explicit) return [routeOperatorThroughProxy(explicit, env)];
 
   const primary = resolvePtoolOperatorBase(env);
+  const candidates = [primary];
   const selfPort = typeof env.PAPERCUSP_HONO_PORT === 'string'
     ? env.PAPERCUSP_HONO_PORT.trim()
     : '';
-  if (!/^\d+$/.test(selfPort) || Number(selfPort) < 1 || Number(selfPort) > 65535) return [primary];
-  try {
-    const parsed = new URL(primary);
-    const localHost = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1';
-    const parsedPort = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
-    if (localHost && selfPort !== '3070' && parsedPort === selfPort) {
-      return [primary, `${parsed.protocol}//127.0.0.1:3070`];
+  if (/^\d+$/.test(selfPort) && Number(selfPort) >= 1 && Number(selfPort) <= 65535) {
+    try {
+      const parsed = new URL(primary);
+      const localHost = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1';
+      const parsedPort = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+      if (localHost && selfPort !== '3070' && parsedPort === selfPort) {
+        candidates.push(`${parsed.protocol}//127.0.0.1:3070`);
+      }
+    } catch {
+      // connectWithLocalRetry will report malformed primary URLs; do not mask
+      // that diagnostic while resolving an optional fallback.
     }
-  } catch {
-    // connectWithLocalRetry will report malformed primary URLs; do not mask
-    // that diagnostic while resolving an optional fallback.
   }
-  return [primary];
+
+  // EI-26241405834268362: a managed 9071 handoff can expose a legacy
+  // tools/list without a serving generation while the same host's 9171
+  // staging proxy serves the current catalog. The main path uses this second
+  // candidate only after the catalog identifies the requested tool as
+  // read-only; mutations remain pinned to the original route and fail closed.
+  const managedStagingProxy = resolveLauncherManagedStagingProxyCandidate(primary, env);
+  if (managedStagingProxy && !candidates.includes(managedStagingProxy)) {
+    candidates.push(managedStagingProxy);
+  }
+  return [...new Set(candidates)];
 }
 
 /**
@@ -239,17 +285,62 @@ export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = 
  * callers can then explicitly pin that host with --url for a subsequent call.
  */
 export function resolvePtoolInvocationCandidates(args = {}, env = process.env) {
-  // Keep the implicit self-host fallback available for named calls too. A
-  // candidate is only selected when the initial MCP handshake cannot reach
-  // the primary route; main() then requires readOnlyHint before dispatching a
-  // call on a different operator. Explicit --url remains a single pinned
-  // candidate.
+  // Keep the implicit self-host and launcher-managed staging candidates
+  // available for named calls too. A changed candidate is selected only when
+  // main() has catalog evidence that the requested tool is read-only.
+  // Explicit --url remains a single pinned candidate.
   return resolvePtoolOperatorCandidates(env, args.url);
 }
 
 /** A changed operator is safe for dispatch only when the catalog marks the tool read-only. */
 export function canDispatchOnFallbackOperator(tool, fallbackUsed) {
   return !fallbackUsed || tool?.annotations?.readOnlyHint === true;
+}
+
+/**
+ * Resolve the catalog entry whose read-only annotation governs a named
+ * launcher recovery. `tools:invoke` is a generic outer call, so its own
+ * annotation cannot establish whether the nested target is safe to move to a
+ * different same-host candidate. Keep malformed or interactive wrappers
+ * conservative by returning the outer entry when no nested target is known.
+ * @param {string | null | undefined} toolName
+ * @param {unknown} callArgs
+ * @param {ToolCatalogEntry[]} tools
+ * @returns {ToolCatalogEntry | null}
+ */
+export function resolvePtoolRecoveryTool(toolName, callArgs, tools = []) {
+  const requestedName = toolName === 'tools:invoke' &&
+      callArgs && typeof callArgs === 'object' && !Array.isArray(callArgs) &&
+      typeof callArgs.name === 'string' && callArgs.name.trim()
+    ? callArgs.name.trim()
+    : typeof toolName === 'string' && toolName.trim()
+      ? toolName.trim()
+      : null;
+  if (!requestedName) return null;
+  return tools.find((entry) => entry?.name === requestedName) ?? null;
+}
+
+/**
+ * Return whether the catalog proves that the requested named call is
+ * read-only. For a `tools:invoke` wrapper this deliberately follows the
+ * nested target; the generic wrapper's annotation describes the transport,
+ * not the operation it will execute.
+ * @param {string | null | undefined} toolName
+ * @param {unknown} callArgs
+ * @param {ToolCatalogEntry[]} tools
+ */
+export function isReadOnlyPtoolRecoveryRequest(toolName, callArgs, tools = []) {
+  return resolvePtoolRecoveryTool(toolName, callArgs, tools)?.annotations?.readOnlyHint === true;
+}
+
+/**
+ * Apply the fallback safety gate to a direct call or to a nested
+ * `tools:invoke` call. The outer wrapper is intentionally generic, so its
+ * annotation alone must not reject a nested target already proven read-only.
+ */
+export function canDispatchPtoolOnFallback(toolName, callArgs, tool, tools, fallbackUsed) {
+  return !fallbackUsed || canDispatchOnFallbackOperator(tool, true) ||
+    isReadOnlyPtoolRecoveryRequest(toolName, callArgs, tools);
 }
 
 const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
@@ -4318,6 +4409,10 @@ async function main() {
 
   let operatorUrl = args.url || OPERATOR_URL;
   let operatorCandidates = resolvePtoolInvocationCandidates(args, process.env);
+  const managedReadRecoveryCandidate = resolveLauncherManagedStagingProxyCandidate(
+    resolvePtoolOperatorBase(process.env),
+    process.env,
+  );
   const initiallySelectedOperatorUrl = operatorCandidates[0];
   let operatorFallbackUsed = false;
   let operatorFallbackUrl = null;
@@ -4331,16 +4426,23 @@ async function main() {
   const tokenPaths = resolveTokenPaths({ tokenFile: args.tokenFile });
   let activeTokenFile = null;
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
-  const rediscover = !args.tool && Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
+  const rediscover = shouldRediscoverOperatorUrl(args, process.env) &&
+    Object.keys(retryOptions).length === 0
+    ? discoverOperatorUrl
+    : null;
   const ptoolConnectionTraceId = randomUUID();
   const ptoolLauncherSource = ptoolOperatorUrlSource(args, process.env);
   const launcherScriptPath = ptoolLauncherScriptPath();
   let operatorConnectSequence = 0;
   const connectOperator = async ({
-    preferredIndex = 0, tokenFile = activeTokenFile, nativeSessionOverride,
+    preferredIndex = 0, onlyCandidate = false, tokenFile = activeTokenFile, nativeSessionOverride,
   } = {}) => {
     const sequence = ++operatorConnectSequence;
-    const candidates = preferredIndex > 0
+    const candidates = onlyCandidate
+      ? operatorCandidates[preferredIndex]
+        ? [operatorCandidates[preferredIndex]]
+        : []
+      : preferredIndex > 0
       ? [
         ...operatorCandidates.slice(preferredIndex),
         ...operatorCandidates.slice(0, preferredIndex),
@@ -4526,6 +4628,64 @@ async function main() {
       }
       if (discovery.error) throw discovery.error;
       tools = discovery.tools;
+
+      // A launcher-managed inherited proxy can answer tools/list with a
+      // legacy catalog that lacks serving-generation metadata. If the named
+      // target is explicitly read-only, try the same-host staging candidate
+      // once and use it only when its catalog carries a current generation.
+      // This keeps the generation gate intact for writes and for unannotated
+      // tools; they still fail closed on the original route.
+      if (args.tool && operatorCandidates.length > 1) {
+        const recoveryIndex = managedReadRecoveryCandidate
+          ? operatorCandidates.indexOf(managedReadRecoveryCandidate)
+          : -1;
+        const initialTool = resolvePtoolRecoveryTool(args.tool, inputArgs, tools);
+        const initialGeneration = initialTool?._meta?.['papercusp/servingGeneration'];
+        if (
+          args.tool !== 'tools:find' &&
+          isReadOnlyPtoolRecoveryRequest(args.tool, inputArgs, tools) &&
+          !(typeof initialGeneration === 'string' && initialGeneration.trim()) &&
+          recoveryIndex > 0 &&
+          operatorCandidates[recoveryIndex] !== operatorUrl
+        ) {
+          const savedState = {
+            operatorUrl,
+            operatorCandidates: [...operatorCandidates],
+            operatorFallbackUsed,
+            operatorFallbackUrl,
+            activeTokenFile,
+          };
+          let fallbackClient = null;
+          try {
+            fallbackClient = await connectOperator({ preferredIndex: recoveryIndex, onlyCandidate: true });
+            const fallbackTools = await listAllTools(fallbackClient, {
+              retryLocalErrors: isLocalOperatorUrl(operatorUrl),
+            });
+            const fallbackTool = fallbackTools.find((entry) => entry?.name === args.tool);
+            const fallbackGeneration = fallbackTool?._meta?.['papercusp/servingGeneration'];
+            if (
+              fallbackTool &&
+              isReadOnlyPtoolRecoveryRequest(args.tool, inputArgs, fallbackTools) &&
+              typeof fallbackGeneration === 'string' &&
+              fallbackGeneration.trim()
+            ) {
+              await closeClientQuietly(client);
+              client = fallbackClient;
+              fallbackClient = null;
+              tools = fallbackTools;
+            } else {
+              throw new Error('launcher-managed read recovery candidate did not provide a current read-only catalog entry');
+            }
+          } catch {
+            if (fallbackClient) await closeClientQuietly(fallbackClient);
+            operatorUrl = savedState.operatorUrl;
+            operatorCandidates = savedState.operatorCandidates;
+            operatorFallbackUsed = savedState.operatorFallbackUsed;
+            operatorFallbackUrl = savedState.operatorFallbackUrl;
+            activeTokenFile = savedState.activeTokenFile;
+          }
+        }
+      }
     } catch (error) {
       if (canDispatchWithoutCatalog(args.tool, inputKind, error)) {
         if (operatorFallbackUsed) {
@@ -4630,7 +4790,7 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    if (!canDispatchOnFallbackOperator(tool, operatorFallbackUsed)) {
+    if (!canDispatchPtoolOnFallback(toolName, inputArgs, tool, tools, operatorFallbackUsed)) {
       console.error(
         `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
           `because the call began at ${initiallySelectedOperatorUrl} and this tool is not marked read-only. ` +

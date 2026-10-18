@@ -1532,9 +1532,10 @@ export async function evaluateCriterionTestChecks(input: {
   // Path resolution is per-criterion and must keep its own refusal (D-006), so a stale
   // path still names the criterion that carries it. Doing all of it up front also means
   // a rubric with one bad path costs zero test runs instead of failing partway through.
-  const planned: { key: string; files: string[]; testName?: string }[] = [];
+  const planned: { key: string; files: string[]; testName?: string; cases?: Array<{ file: string; testName: string }> }[] = [];
   for (const c of input.criteria) {
     if (c.check?.kind !== 'tests') continue;
+    const check = c.check;
     if (input.ratings[c.key] === undefined) continue;
     // Re-resolve at grading time — the tree has moved since propose. A path that no
     // longer resolves REFUSES the emit rather than silently passing (D-006 verbatim).
@@ -1554,8 +1555,14 @@ export async function evaluateCriterionTestChecks(input: {
     }
     planned.push({
       key: c.key,
-      files: validation.normalizedByKey[c.key] ?? [...c.check.files],
-      ...(c.check.testName !== undefined ? { testName: c.check.testName } : {}),
+      files: validation.normalizedByKey[c.key] ?? [...check.files],
+      ...(check.testName !== undefined ? { testName: check.testName } : {}),
+      ...(check.cases !== undefined ? {
+        cases: check.cases.map((selector) => ({
+          ...selector,
+          file: (validation.normalizedByKey[c.key] ?? check.files)[check.files.indexOf(selector.file)]!,
+        })),
+      } : {}),
     });
   }
   if (planned.length === 0) return { ok: true, checkRuns };
@@ -1634,7 +1641,7 @@ export async function evaluateCriterionTestChecks(input: {
   const countsFor = (file: string): ReportedTestFileCounts | undefined =>
     byFile[file] ?? byIdentity.get(reportedTestFileIdentity(file, reportRoot));
 
-  for (const { key, files, testName } of planned) {
+  for (const { key, files, testName, cases: selectedCases } of planned) {
     // A file the report never mentions is UNJUDGED, not passed. Without this the batch's
     // green aggregate would vouch for a file that silently failed to run at all.
     const missing = files.filter((f) => countsFor(f) === undefined);
@@ -1679,43 +1686,52 @@ export async function evaluateCriterionTestChecks(input: {
     // The whole-file counts above still had to be judged, but they no longer decide the
     // verdict: a filter that matches zero recorded cases is refused, never a pass.
     let caseJudgment: { passed: number; failed: number; matched: number; failures: string[] } | null = null;
-    if (testName !== undefined) {
-      const file = files[0]!;
-      let cases: RecordedTestCase[] | null;
-      try {
-        cases = await (input.caseLoader ?? loadCriterionCheckCases)({ testRunIds: run.testRunIds ?? [], file });
-      } catch (error) {
-        return {
-          ok: false,
-          error: 'check_run_failed',
-          criterionKey: key,
-          detail:
-            `criterion '${key}' filters ${file} by testName ${JSON.stringify(testName)}, but its recorded ` +
-            `cases could not be read (${error instanceof Error ? error.message : String(error)}). An unread ` +
-            `case filter is unjudged, not a pass.`,
-        };
+    const selectors = selectedCases ?? (testName !== undefined ? [{ file: files[0]!, testName }] : undefined);
+    if (selectors !== undefined) {
+      const matched = new Map<string, { file: string; entry: RecordedTestCase }>();
+      const loaded = new Map<string, RecordedTestCase[] | null>();
+      for (const { file, testName: selectorName } of selectors) {
+        let cases: RecordedTestCase[] | null;
+        try {
+          if (!loaded.has(file)) {
+            loaded.set(file, await (input.caseLoader ?? loadCriterionCheckCases)({ testRunIds: run.testRunIds ?? [], file }));
+          }
+          cases = loaded.get(file)!;
+        } catch (error) {
+          return {
+            ok: false,
+            error: 'check_run_failed',
+            criterionKey: key,
+            detail:
+              `criterion '${key}' filters ${file} by testName ${JSON.stringify(selectorName)}, but its recorded ` +
+              `cases could not be read (${error instanceof Error ? error.message : String(error)}). An unread ` +
+              `case filter is unjudged, not a pass.`,
+          };
+        }
+        const resolution = resolveTestCaseFilter({ file, testName: selectorName }, cases);
+        if (!resolution.ok) {
+          return {
+            ok: false,
+            error: 'check_test_case_unresolved',
+            criterionKey: key,
+            code: resolution.code,
+            file: resolution.file,
+            testName: resolution.testName,
+            recordedSample: resolution.recordedSample,
+            detail: `criterion '${key}': ${resolution.message}`,
+          };
+        }
+        for (const entry of resolution.matched) {
+          matched.set(JSON.stringify([file, entry.caseKey, entry.occurrence]), { file, entry });
+        }
       }
-      const resolution = resolveTestCaseFilter({ file, testName }, cases);
-      if (!resolution.ok) {
-        return {
-          ok: false,
-          error: 'check_test_case_unresolved',
-          criterionKey: key,
-          code: resolution.code,
-          file: resolution.file,
-          testName: resolution.testName,
-          recordedSample: resolution.recordedSample,
-          detail: `criterion '${key}': ${resolution.message}`,
-        };
-      }
+      const entries = [...matched.values()];
       caseJudgment = {
-        passed: resolution.passed,
-        failed: resolution.failed,
-        matched: resolution.matched.length,
-        failures: resolution.matched
-          .filter((c) => c.status === 'fail')
-          .slice(0, 10)
-          .map((c) => `${file}: ${c.caseKey}`),
+        passed: entries.filter(({ entry }) => entry.status === 'pass').length,
+        failed: entries.filter(({ entry }) => entry.status === 'fail').length,
+        matched: entries.length,
+        failures: entries.filter(({ entry }) => entry.status === 'fail').slice(0, 10)
+          .map(({ file, entry }) => `${file}: ${entry.caseKey}`),
       };
     }
     const passed = caseJudgment?.passed ?? files.reduce((n, f) => n + (countsFor(f)?.passed ?? 0), 0);
@@ -1730,7 +1746,9 @@ export async function evaluateCriterionTestChecks(input: {
       runId: run.runId ?? null,
       ...(run.testRunIds !== undefined ? { testRunIds: [...run.testRunIds] } : {}),
       measuredAt: nowIso(),
-      ...(caseJudgment !== null ? { testName, matchedCases: caseJudgment.matched } : {}),
+      ...(caseJudgment !== null ? { matchedCases: caseJudgment.matched } : {}),
+      ...(testName !== undefined ? { testName } : {}),
+      ...(selectedCases !== undefined ? { cases: selectedCases } : {}),
       ...(caseJudgment !== null && caseJudgment.failures.length > 0 ? { failures: caseJudgment.failures } : {}),
       ...(caseJudgment === null && failed > 0 && Array.isArray(run.failures)
         ? {

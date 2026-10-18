@@ -184,14 +184,14 @@ describe('the generated wrapper, executed', () => {
 });
 
 describe('session-dir relocation (D-026 step 3)', () => {
-  function layout() {
+  function layout(workdir = target.workdir, binPath = target.binPath) {
     const base = mkdtempSync(join(root, 'reloc-'));
     const homes = join(base, 'su-codex-homes'), sqlite = join(base, 'codex-sqlite-homes');
     const perHomes = join(base, 'task-homes'), perSqlite = join(base, 'task-sqlite');
     mkdirSync(join(homes, 'session-7'), { recursive: true });
     writeFileSync(join(homes, 'session-7', 'config.toml'), 'model = "x"\n');
     mkdirSync(join(homes, 'session-8'), { recursive: true });
-    const relocated: DockerExecTarget = { ...target, sessionRelocation: { sessionEnv: 'CODEX_HOME',
+    const relocated: DockerExecTarget = { ...target, workdir, binPath, sessionRelocation: { sessionEnv: 'CODEX_HOME',
       roots: [{ hostRoot: homes, perTaskDir: perHomes }, { hostRoot: sqlite, perTaskDir: perSqlite }] } };
     const run = (home: string) => {
       const { wrapperPath } = materializeDockerExecWrapper(relocated, { dir: mkdtempSync(join(root, 'rw-')), dockerBin: fakeDocker });
@@ -199,6 +199,30 @@ describe('session-dir relocation (D-026 step 3)', () => {
     };
     return { homes, sqlite, perHomes, perSqlite, run };
   }
+
+  it.each(['/app', '/task.dir/project "quoted"'])('trusts only the in-container workdir %s for relocated Codex', workdir => {
+    const l = layout(workdir);
+    const home = join(l.homes, 'session-7');
+    const config = 'model = "x"\n[projects."/observer-checkout"]\ntrust_level = "trusted"\n';
+    rmSync(join(home, 'config.toml'));
+    writeFileSync(join(home, 'config.toml'), config, { mode: 0o600 });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(l.run(home).status).toBe(0);
+      const argv = readFileSync(argvLog, 'utf8').trimEnd().split('\n');
+      expect(argv.slice(argv.indexOf(CONTAINER_CODEX_BIN_PATH) + 1)).toEqual([
+        '-c', `projects.${JSON.stringify(workdir)}.trust_level="trusted"`, '--version',
+      ]);
+      expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(config);
+      expect(statSync(join(home, 'config.toml')).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('keeps generic container probe arguments unchanged during relocation', () => {
+    const l = layout('/app', '/bin/sh');
+    expect(l.run(join(l.homes, 'session-7')).status).toBe(0);
+    const argv = readFileSync(argvLog, 'utf8').trimEnd().split('\n');
+    expect(argv.slice(argv.indexOf('/bin/sh') + 1)).toEqual(['--version']);
+  });
 
   it('moves the session home into the per-task dir, leaves a host symlink, and pre-creates the SQLite home', () => {
     const l = layout();

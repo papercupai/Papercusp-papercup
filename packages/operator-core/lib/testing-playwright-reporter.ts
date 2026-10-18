@@ -92,6 +92,7 @@ interface TestRunRow {
   finishedAt: Date;
   outputTail: string | null;
   worktreeDirty: boolean;
+  worktreeDirtyReason?: string;
   mutation?: MutationDescriptor;
   passed: number;
   failed: number;
@@ -151,6 +152,7 @@ export function playwrightExecutionDetails(
     ...(row.mutation ? { mutation: row.mutation } : {}),
     commitSha: run.commitSha,
     worktreeDirty: row.worktreeDirty,
+    ...(row.worktreeDirty && row.worktreeDirtyReason ? { worktreeDirtyReason: row.worktreeDirtyReason } : {}),
     ...(row.runtimeEnvironmentBefore ? {
       runtimeEnvironmentBeforeCaptureStatus: row.runtimeEnvironmentBefore.status,
       ...(row.runtimeEnvironmentBefore.witness ? { runtimeEnvironmentBefore: row.runtimeEnvironmentBefore.witness } : {}),
@@ -471,6 +473,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               finishedAt: new Date(agg.finishedAt),
               outputTail,
               worktreeDirty,
+              ...(worktreeDirty && dirtReason ? { worktreeDirtyReason: dirtReason } : {}),
               mutation: mutationDescriptorForRow(this.mutationInvocation, resolveMutationProbePhase(),
                 sha256OfTestFile(file)),
               passed: agg.passed,

@@ -50,11 +50,14 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       '[ "$PAPERCUSP_FAKE_LLM" = "1" ] || { echo "rig: native host missing fake LLM" >&2; exit 43; }',
       '[ "$1" = "--" ] || { echo "rig: expected --" >&2; exit 42; }',
       'shift',
+      // Keep the actual admission contract: a stub must not accept an assertion
+      // command that the native rig would reject before boot.
+      `node '${join(REPO_ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs')}' --command "$@" || exit $?`,
       `export HARNESS_ADMIN_DATABASE_URL='${ISOLATED}'`,
       // The real rig also rebinds the workspace identity for the app under test.
       `export PAPERCUSP_WORKSPACE_ID='${ISOLATED_WS}' PAPERCUSP_WORKSPACE='${ISOLATED_WS}'`,
       'export VERIFY_TAURI_DEV_URL=http://127.0.0.1:1420',
-      'if [ -n "${E2E_FIXTURE_SOURCE_ROOT:-}" ]; then export OPERATOR_SOURCE_ROOT="$E2E_FIXTURE_SOURCE_ROOT"; fi',
+      `export OPERATOR_SOURCE_ROOT="\${E2E_FIXTURE_SOURCE_ROOT:-${REPO_ROOT}}"`,
       'if [ -n "${E2E_FIXTURE_ASSERT_DIR:-}" ]; then export VH_PHASE_DIR="$E2E_FIXTURE_ASSERT_DIR"; fi',
       '"$@"',
       'rc=$?',
@@ -199,6 +202,27 @@ function run(
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it('admits its maintained assertion through the real native preflight', () => {
+    const f = fixture(0);
+    const result = run(f, ['e2e/content-reading.spec.ts', '--workers=1']);
+    expect(result.status, result.out).toBe(0);
+    expect(result.recorded?.cwd).toBe(join(REPO_ROOT, 'apps/operator'));
+    expect(result.recorded?.argv).toContain('e2e/content-reading.spec.ts');
+  });
+
+  it('refuses its file-backed assertion without the verifier-owned source', () => {
+    const f = fixture(0);
+    const result = spawnSync('bash', [join(REPO_ROOT, 'scripts/lib/operator-e2e-assertion.sh')], {
+      env: { ...process.env, OPERATOR_SOURCE_ROOT: '', PATH: `${f.dir}:${process.env.PATH ?? ''}`,
+        E2E_FIXTURE_VITE_CWD: f.viteCwd },
+      encoding: 'utf8', timeout: 5_000,
+    });
+    expect(result.status, result.stderr).toBe(97);
+    expect(result.stderr).toContain('owned OPERATOR_SOURCE_ROOT is required');
+    expect(existsSync(f.viteCwd)).toBe(false);
+    expect(existsSync(f.record)).toBe(false);
+  });
+
   it.each(['retain', 'plan'])('stops before the native rig when harness %s fails', stage => {
     const f = fixture(0);
     const rigStarted = join(f.dir, 'rig-started');
@@ -286,7 +310,9 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(existsSync(join(f.dir, 'working-tree/operator-e2e-source-inputs.json'))).toBe(false);
   });
 
-  it.each([false, true])('checks mandatory native helper drift before spawning the rig (dirty: %s)', dirty => {
+  it.each([null, 'apps/operator/bin/release/dependency-generation.sh',
+    'scripts/run-operator-e2e-isolated.sh', 'scripts/lib/operator-e2e-assertion.sh',
+    'scripts/lib/verify-tauri-assertion-env.mjs'])('checks mandatory native helper drift before spawning the rig (dirty: %s)', dirtyPath => {
     const f = fixture(0);
     const repo = join(f.dir, 'source');
     const acceptance = 'apps/operator/acceptance.ts';
@@ -303,7 +329,7 @@ describe('run-operator-e2e-isolated.sh', () => {
         env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } });
       expect(result.status, result.stderr).toBe(0);
     }
-    if (dirty) writeFileSync(join(repo, 'apps/operator/bin/release/dependency-generation.sh'), 'peer edit');
+    if (dirtyPath) writeFileSync(join(repo, dirtyPath), 'peer edit');
     const inputs = join(f.dir, 'inputs.json');
     writeFileSync(inputs, JSON.stringify([acceptance]));
     // Redirect only the guard's repository to the synthetic source. The real
@@ -325,9 +351,9 @@ describe('run-operator-e2e-isolated.sh', () => {
       VERIFY_TAURI_SOURCE_INPUTS: '', E2E_FIXTURE_GUARD_REPO: repo, E2E_FIXTURE_NODE: process.execPath,
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
     });
-    expect(result.status, result.out).toBe(dirty ? 2 : 0);
-    expect(existsSync(marker)).toBe(!dirty);
-    if (dirty) expect(result.out).toContain('dirty tested-input mismatch: apps/operator/bin/release/dependency-generation.sh');
+    expect(result.status, result.out).toBe(dirtyPath ? 2 : 0);
+    expect(existsSync(marker)).toBe(!dirtyPath);
+    if (dirtyPath) expect(result.out).toContain(`dirty tested-input mismatch: ${dirtyPath}`);
   });
 
   it('rejects invalid committed acceptance inputs before spawning the native rig', () => {

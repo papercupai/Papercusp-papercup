@@ -40,6 +40,9 @@ import {
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
   canDispatchOnFallbackOperator,
+  resolvePtoolRecoveryTool,
+  isReadOnlyPtoolRecoveryRequest,
+  canDispatchPtoolOnFallback,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
@@ -521,6 +524,64 @@ describe('ptool operator routing', () => {
     expect(resolvePtoolOperatorCandidates(managed)).toEqual(['http://127.0.0.1:9271']);
   });
 
+  it('adds the configured staging proxy as a managed named-read recovery candidate when the target hint is absent', () => {
+    const managed = {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+    };
+    expect(resolvePtoolOperatorCandidates(managed)).toEqual([
+      'http://127.0.0.1:9071',
+      'http://127.0.0.1:9171',
+    ]);
+    expect(resolvePtoolInvocationCandidates({ tool: 'work_items:get' }, managed)).toEqual([
+      'http://127.0.0.1:9071',
+      'http://127.0.0.1:9171',
+    ]);
+    // The fallback candidate is usable only for catalog-confirmed reads. A
+    // write remains blocked when the initial catalog is legacy or the route
+    // changes underneath it.
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: true } }, true)).toBe(true);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: false } }, true)).toBe(false);
+  });
+
+  it('uses the nested tools:invoke target when deciding whether managed recovery may move a read', () => {
+    const catalog = [
+      { name: 'tools:invoke', annotations: { readOnlyHint: false } },
+      { name: 'work_items:get', annotations: { readOnlyHint: true } },
+      { name: 'work_items:complete', annotations: { readOnlyHint: false } },
+    ];
+
+    expect(resolvePtoolRecoveryTool('tools:invoke', {
+      name: 'work_items:get',
+      args: { id: 'EI-1' },
+    }, catalog)?.name).toBe('work_items:get');
+    expect(resolvePtoolRecoveryTool('tools:invoke', {
+      name: 'work_items:complete',
+      args: { id: 'EI-1' },
+    }, catalog)?.annotations?.readOnlyHint).toBe(false);
+    expect(resolvePtoolRecoveryTool('tools:invoke', {}, catalog)?.name).toBe('tools:invoke');
+    expect(resolvePtoolRecoveryTool('work_items:get', {}, catalog)?.name).toBe('work_items:get');
+    expect(isReadOnlyPtoolRecoveryRequest('tools:invoke', { name: 'work_items:get' }, catalog)).toBe(true);
+    expect(isReadOnlyPtoolRecoveryRequest('tools:invoke', { name: 'work_items:complete' }, catalog)).toBe(false);
+    expect(isReadOnlyPtoolRecoveryRequest('tools:invoke', {}, catalog)).toBe(false);
+    expect(canDispatchPtoolOnFallback(
+      'tools:invoke', { name: 'work_items:get' }, catalog[0], catalog, true,
+    )).toBe(true);
+    expect(canDispatchPtoolOnFallback(
+      'tools:invoke', { name: 'work_items:complete' }, catalog[0], catalog, true,
+    )).toBe(false);
+  });
+
+  it('does not infer a staging recovery route when the launcher supplied a target hint', () => {
+    expect(resolvePtoolOperatorCandidates({
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    })).toEqual(['http://127.0.0.1:3070']);
+  });
+
   it('routes an explicit local :3271 pin through the same-vintage :9271 proxy', () => {
     const env = {
       PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
@@ -589,6 +650,10 @@ describe('ptool operator routing', () => {
 
   it('rediscovers a launcher-managed inherited URL after a wake-respawn', () => {
     expect(shouldRediscoverOperatorUrl({}, {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    })).toBe(true);
+    expect(shouldRediscoverOperatorUrl({ tool: 'work_items:get' }, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
       PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
     })).toBe(true);

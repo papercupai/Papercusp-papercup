@@ -1599,6 +1599,66 @@ describe('tests check with a testName filter', () => {
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: ['a.test.ts'], testName: '   ' }).success).toBe(false);
   });
 
+  const INTEGRATION = 'packages/x/named.integration.test.ts';
+  writeFileSync(join(root, INTEGRATION), 'export {};\n');
+  const selected = () => ({ kind: 'tests' as const, files: [FILE, INTEGRATION], cases: [
+    { file: FILE, testName: 'refuses a write' },
+    { file: INTEGRATION, testName: 'integrated > serves an authorized call' },
+  ] });
+  const integratedCases = [{ caseKey: 'integrated > serves an authorized call', occurrence: 1, status: 'pass' as const, durationMs: 8 }];
+
+  it('requires named selectors for every file and refuses unknown files, duplicates and mixed shorthand', () => {
+    expect(rubricCriterionCheckSchema.safeParse(selected()).success).toBe(true);
+    for (const bad of [
+      { ...selected(), cases: selected().cases.slice(0, 1) },
+      { ...selected(), cases: [...selected().cases, { file: 'other.test.ts', testName: 'case' }] },
+      { ...selected(), cases: [...selected().cases, selected().cases[0]] },
+      { ...selected(), testName: 'refuses a write' },
+      { ...selected(), cases: [] },
+    ]) expect(rubricCriterionCheckSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it('judges required unit and integration cases in one batch and ignores unrelated failures', async () => {
+    const seen: string[] = [];
+    const batch = vi.fn<CriterionCheckRunner>(runner);
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'det', check: selected() }], ratings: { det: { rating: 'healthy' } }, root, runner: batch,
+      caseLoader: async ({ file }) => { seen.push(file); return file === FILE ? CASES : integratedCases; },
+    });
+    expect(batch).toHaveBeenCalledOnce();
+    expect(batch.mock.calls[0]![0].files).toEqual([FILE, INTEGRATION]);
+    expect(seen).toEqual([FILE, INTEGRATION]);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.checkRuns.det).toMatchObject({ verdict: 'pass', passed: 2, failed: 0, matchedCases: 2, cases: selected().cases });
+  });
+
+  it.each(['missing', 'skipped', 'unrecorded', 'unreadable', 'failed'])('refuses an unproved required integration case: %s', async (mode) => {
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'det', check: selected() }], ratings: { det: { rating: 'healthy' } }, root, runner,
+      caseLoader: async ({ file }) => {
+        if (file === FILE) return CASES;
+        if (mode === 'unreadable') throw new Error('ledger read failed');
+        if (mode === 'unrecorded') return null;
+        if (mode === 'missing') return [{ ...integratedCases[0]!, caseKey: 'renamed case' }];
+        return [{ ...integratedCases[0]!, status: mode === 'failed' ? 'fail' : 'skip' }];
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe(mode === 'failed' ? 'check_contradicted' : mode === 'unreadable' ? 'check_run_failed' : 'check_test_case_unresolved');
+  });
+
+  it('loads a file once and counts overlapping case selectors once', async () => {
+    const loader = vi.fn<CriterionCaseLoader>(loaderOf(CASES));
+    const check = { ...testsCheck([FILE]), cases: [
+      { file: FILE, testName: 'refuses a write' },
+      { file: FILE, testName: 'probe sql > refuses a write' },
+    ] };
+    const res = await evaluateCriterionTestChecks({ criteria: [{ key: 'det', check }], ratings: { det: { rating: 'healthy' } }, root, runner, caseLoader: loader });
+    expect(loader).toHaveBeenCalledOnce();
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.checkRuns.det).toMatchObject({ passed: 1, failed: 0, matchedCases: 1 });
+  });
+
   it('refuses a filter that matches zero recorded cases instead of counting it as a pass', async () => {
     const res = await evaluateCriterionTestChecks({
       criteria: named('probe sql > renamed away'),
