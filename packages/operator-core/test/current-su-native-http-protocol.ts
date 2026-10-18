@@ -2,10 +2,32 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
+import { decode } from '@papercusp/result-encoding';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../lib/inference-gateway/codex-cli-bridge';
 
 type Body = Record<string, unknown>;
 type Tool = { type: string; name: string; tools?: Tool[] };
+
+function queuedCompactionAcknowledgement(value: unknown): boolean {
+  if (typeof value === 'string') {
+    try { return queuedCompactionAcknowledgement(JSON.parse(value)); } catch { /* Try the lossless compact format. */ }
+    const marker = /^format:\s*toon\n/.exec(value);
+    if (!marker) return false;
+    try { return queuedCompactionAcknowledgement(decode(value.slice(marker[0].length), 'toon')); }
+    catch { return false; }
+  }
+  if (Array.isArray(value)) return value.some(queuedCompactionAcknowledgement);
+  if (!value || typeof value !== 'object') return false;
+  const body = value as Body;
+  if (body.isError === true || body.ok === false) return false;
+  if (body.requested === true && (body.respawn === 'queued' || body.status === 'queued')) return true;
+  if (body.structuredContent !== undefined) return queuedCompactionAcknowledgement(body.structuredContent);
+  if (Array.isArray(body.content)) return queuedCompactionAcknowledgement(body.content);
+  // Native code-mode results use input_text; direct MCP results use text.
+  // Decode only these transport bodies, never incidental prose in other fields.
+  return ['text', 'input_text'].includes(String(body.type)) && typeof body.text === 'string'
+    && queuedCompactionAcknowledgement(body.text);
+}
 
 function offeredTools(body: Body) {
   const flattened: Array<Tool & { namespace?: string }> = [];
@@ -76,8 +98,8 @@ export function createCurrentSuNativeProtocol() {
       census.push(row);
       try {
         if (stage === 'compact' && result('compact')) {
-          const received = (JSON.stringify(result('compact')!.output) ?? '').replace(/\\+"/g, '"');
-          assert.ok(/"requested"\s*:\s*true/.test(received) && received.includes('queued'),
+          const received = JSON.stringify(result('compact')!.output) ?? '';
+          assert.ok(queuedCompactionAcknowledgement(result('compact')!.output),
             'Managed boundary did not queue: ' + received.slice(-5000));
           stage = 'queued';
         }

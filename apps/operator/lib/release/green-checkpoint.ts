@@ -17392,6 +17392,13 @@ export async function runGreenCheckpoint(
       onPostVerdictDeadline,
     );
   }
+  // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
+  // cheap non-test legs MEASURED at repairHead so gate_health/failingTests stays fresh
+  // and the hold's ledger row names the failing legs. Run this BEFORE per-leg routing:
+  // the measurement can retire a signature entry that just passed, and routing the
+  // pre-measurement snapshot would re-open a condition for that already-fixed leg.
+  // Additive + fail-safe (see helper).
+  finalResult = await augmentWithRepairTickLegs(finalResult, deps);
   // P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): route each failing leg of the
   // queue this tick ended holding to its own claimable item, from the same funnel every
   // return site passes through, so no branch can skip it. An unreadable queue is skipped
@@ -17423,10 +17430,7 @@ export async function runGreenCheckpoint(
       onPostVerdictDeadline,
     );
   }
-  // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
-  // cheap non-test legs MEASURED at repairHead so gate_health/failingTests stays fresh
-  // and the hold's ledger row names the failing legs. Additive + fail-safe (see helper).
-  return augmentWithRepairTickLegs(finalResult, deps);
+  return finalResult;
 }
 
 /**

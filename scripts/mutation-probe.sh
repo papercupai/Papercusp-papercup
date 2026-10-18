@@ -815,7 +815,7 @@ PROBE_ADMISSION_FD=""
 PROBE_MANIFEST=""
 PROBE_MUTANT_FILE="$SCRATCH/in-tree-mutant"
 PROBE_MUTANT_SUM=""
-PROBE_MUTATION_APPLIED=0
+PROBE_MUTATION_ARMED=0
 if [ "$IN_TREE" -eq 1 ]; then
   command -v bwrap >/dev/null || die "--in-tree requires bwrap to isolate concurrent testing:run children"
   ADMISSION_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel)" ||
@@ -959,7 +959,7 @@ finish() {
   elif [ "$now" = "$ORIG_SUM" ]; then
     RESTORE_STATUS="verified-identical"
     log "tree integrity: VERIFIED — $FILE is byte-identical to its pre-probe state"
-  elif [ "$IN_TREE" = "1" ] && [ "$PROBE_MUTATION_APPLIED" = "1" ] &&
+  elif [ "$IN_TREE" = "1" ] && [ "$PROBE_MUTATION_ARMED" = "1" ] &&
       [ -n "$PROBE_MUTANT_SUM" ] && [ "$now" = "$PROBE_MUTANT_SUM" ]; then
     # The only bytes on disk are the probe's own mutant, so restoring BASE is
     # safe. The caller's path lock remains the serialization boundary for this
@@ -1441,17 +1441,31 @@ test_run_receipt_file() {
   printf '%s/test-run-receipts.%s.jsonl' "$SCRATCH" "$1"
 }
 
-# The reporter must write probe receipts to the same database this script
-# resolves for other test-run tooling. In particular, with-test-pg sets
-# PAPERCUSP_PG_PORT and intentionally leaves HARNESS_ADMIN_DATABASE_URL unset;
-# without this explicit sink the reporter falls through to its localhost:5432
-# fallback and the receipt can disappear with the private test database.
+# The reporter needs an explicit durable evidence sink. Outside private PG,
+# resolve the ordinary script database once and propagate it to guard children.
+# Under private PG, only the caller's reporter-only sink can outlive teardown;
+# never infer it from the isolated product database.
 ensure_test_runs_db_url() {
   local supplied="${PAPERCUSP_TEST_RUNS_DB_URL-}"
   local resolved
   if [[ "$supplied" =~ [^[:space:]] ]]; then
     export PAPERCUSP_TEST_RUNS_DB_URL="$supplied"
     return 0
+  fi
+
+  # A mutation probe's receipt is bindable evidence only when it outlives the
+  # guard process. PAPERCUSP_PG_PORT selects the dedicated Postgres owned by
+  # with-test-pg; resolving the reporter to that
+  # port would produce IDs that disappear during wrapper teardown.  Refuse
+  # before the baseline so a caught mutant can never be mistaken for durable
+  # evidence.  The wrapper performs the same check at its boundary, but the
+  # probe creates its per-phase receipt file inside the child, after that
+  # boundary, so this is the recurrence guard for nested probes.
+  # SKIP_PG_DISCOVERY alone also occurs in hermetic unit tests with no private
+  # database; it suppresses discovery, but does not identify a disposable sink.
+  if [[ -n "${PAPERCUSP_PG_PORT-}" ]]; then
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error phase=preflight reason=private-ledger-sink-required\n'
+    die "PAPERCUSP_TEST_RUNS_DB_URL is required before a mutation probe under an isolated Postgres; the inferred private sink is disposable and cannot supply bindable receipts"
   fi
 
   [ -n "$RUNNER_ROOT" ] && [ -f "$RUNNER_ROOT/scripts/lib/pg-url.mjs" ] \
@@ -2833,10 +2847,14 @@ if [ "$IN_TREE" -eq 1 ]; then
     die "the tracked file no longer matches the pre-probe snapshot; no in-tree mutation was applied."
   fi
 fi
-perl -pi -e "$MUTATE" "$TARGET" || die "mutation command failed"
 if [ "$IN_TREE" -eq 1 ]; then
-  PROBE_MUTATION_APPLIED=1
+  # Arm restoration before the child can write. Bash can enter finish() on a
+  # pending signal before executing the next assignment after perl returns.
+  # finish() still restores only the exact precomputed mutant bytes; a signal
+  # before the write or a peer's different edit cannot authorize a restore.
+  PROBE_MUTATION_ARMED=1
 fi
+perl -pi -e "$MUTATE" "$TARGET" || die "mutation command failed"
 
 # Show the exact mutation before running the guard. This makes an accidental
 # match in indentation/comments visible immediately instead of being inferred

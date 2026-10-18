@@ -544,18 +544,53 @@ describe('native retention completion', () => {
     const started = new Promise<void>((resolve) => { ready = resolve; });
     const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
     const completion = vi.fn(async () => ({ status: 'delegated' }));
+    const observeTiming = vi.fn();
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
       options.onSpawn(child as unknown as ChildProcess, 'residual-task'); ready();
       return { child, taskId: 'residual-task', waitForCompletion: completion };
     });
     delegateKill.mockResolvedValueOnce({ ok: false, taskId: 'residual-task', action: 'kill', error: 'incomplete', detail: 'scope still populated' });
-    const result = nativeRetentionCommand('/repo', 'sleep', ['300'], { timeoutMs: 50 });
+    const result = nativeRetentionCommand('/repo', 'sleep', ['300'], { timeoutMs: 50, observeTiming });
     await started; await vi.advanceTimersByTimeAsync(50);
     await expect(result).resolves.toMatchObject({ ok: false, detail: {
       error: 'delegate timeout', cleanup: { ok: false, error: 'incomplete', detail: 'scope still populated' },
     } });
     expect(completion).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
+    expect(observeTiming).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      timeoutMs: 50, settledBy: 'timeout', settledAfterMs: 50,
+      cleanupStartedAfterMs: 50, cleanupFinishedAfterMs: 50,
+      cleanupResult: { ok: false, error: 'incomplete' }, completedAfterMs: null,
+    }));
+  });
+
+  it('records timeout settlement separately from a later zero exit and delayed cleanup', async () => {
+    vi.useFakeTimers();
+    let ready!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
+    const observeTiming = vi.fn();
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'late-zero-exit-task'); ready();
+      return { child, taskId: 'late-zero-exit-task', waitForCompletion: async () => ({ status: 'recorded' }) };
+    });
+    delegateKill.mockImplementationOnce(async () => {
+      await cleanup;
+      return { ok: true, taskId: 'late-zero-exit-task', action: 'kill' };
+    });
+    const result = nativeRetentionCommand('/repo', 'fixture-worker', [], { timeoutMs: 50, observeTiming });
+    await started; await vi.advanceTimersByTimeAsync(50);
+    expect(observeTiming).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(25); child.emit('close', 0, null);
+    await vi.advanceTimersByTimeAsync(10); release();
+    await expect(result).resolves.toMatchObject({ ok: false, detail: { error: 'delegate timeout' } });
+    expect(observeTiming).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: 'late-zero-exit-task', timeoutMs: 50,
+      settledBy: 'timeout', settledAfterMs: 50, childClosedAfterMs: 75,
+      cleanupStartedAfterMs: 50, cleanupFinishedAfterMs: 85, cleanupResult: { ok: true },
+      completedAfterMs: 85, totalMs: 85,
+    }));
   });
 
   it('retains bounded worker phase stderr on a timeout without contaminating JSON stdout', async () => {
@@ -641,8 +676,10 @@ describe('native retention completion', () => {
       expect(observeTiming).not.toHaveBeenCalled();
       release(); await expect(result).resolves.toMatchObject({ ok: true });
       expect(observeTiming).toHaveBeenCalledExactlyOnceWith({
-        taskId: 'timed-retention-task', totalMs: 342, spawnedAfterMs: 15,
+        taskId: 'timed-retention-task', totalMs: 342, timeoutMs: 120_000, spawnedAfterMs: 15,
         childClosedAfterMs: 22, launchReturnedAfterMs: 42, completedAfterMs: 342,
+        settledBy: 'close', settledAfterMs: 22,
+        cleanupStartedAfterMs: null, cleanupFinishedAfterMs: null, cleanupResult: null,
         stages: [{ name: 'spawn-register-task', elapsedMs: 5 }, { name: 'spawn-mark-running', elapsedMs: 42 }],
       });
     } finally { release(); now.mockRestore(); }

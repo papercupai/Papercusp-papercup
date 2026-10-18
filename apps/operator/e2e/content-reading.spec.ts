@@ -180,6 +180,7 @@ test('cancel summary ignores a late result and cannot start obsolete speech', as
   await page.getByRole('button', { name: 'Summarize and read', exact: true }).click();
   await requestReceived;
   await page.getByRole('button', { name: 'Cancel summary', exact: true }).click();
+  await expect(page.getByRole('status', { name: 'Summary status', exact: true })).toHaveText('Summary canceled.');
   release();
   await expect(page.getByRole('button', { name: 'Summarize', exact: true })).toBeEnabled();
   await expect(page.getByRole('region', { name: 'Summary', exact: true })).toHaveCount(0);

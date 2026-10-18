@@ -5693,7 +5693,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
   );
 
   it(
-    'books a verifier-exhausted RECYCLE carry as dropped, cleans up fatally, and never emits delivered (WI-42318)',
+    'books a verifier-exhausted RECYCLE carry as dropped, keeps the child controllable, and never emits delivered (WI-42318)',
     async () => {
       const ownerId = `su-recycle-submit-drop-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
@@ -5751,15 +5751,42 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         }
 
         expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(2);
+        // WI-6554700010009740 defers a submitted carry to the stronger native
+        // proof. Keep the submit failure observable without treating it as the
+        // terminal verdict: this fixture has no native id or persisted turn.
         expect(events).toContainEqual(expect.objectContaining({
-          kind: 'respawn-carry-dropped',
+          kind: 'submit-verify-unconfirmed',
+          label: 'recycle carry-note',
+          reason: 'native-submission-unconfirmed',
+          terminated: false,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'startup-turn-dropped',
+          label: 'recycle carry-note',
           reason: 'submit-verification-exhausted',
           attempts: 1,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'turn-start-unverified',
+          mode: 'recycle',
+          detail: 'missing-native-id',
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-dropped',
+          reason: 'turn-start-unverified',
+          attempts: 1,
           outputSeen: true,
+          turnStartVerified: false,
         }));
         expect(events.some((event) => event.kind === 'respawn-carry-delivered')).toBe(false);
-        expect(await done).toBe(1);
-        expect(exitCode).toBe(1);
+        // Missing native proof does not establish child death. The host keeps
+        // its control socket available until the child explicitly quits.
+        expect(exitCode).toBeNull();
+        expect(existsSync(sock)).toBe(true);
+        expect(existsSync(meta)).toBe(true);
+        await rawInject(sock, 'QUIT\n');
+        expect(await done).toBe(0);
+        expect(exitCode).toBe(0);
         expect(existsSync(sock)).toBe(false);
         expect(existsSync(meta)).toBe(false);
       } finally {

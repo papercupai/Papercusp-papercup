@@ -46,6 +46,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { parser as createStreamJsonParser } from "stream-json";
 import { normalizeMcpName } from "@papercusp/tooldef";
+import { papercuspPath } from "@papercusp/host-platform/home";
 import {
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
   MCP_REQUEST_TRACE_HEADER,
@@ -921,7 +922,7 @@ const MCP_PROXY_GENERATION_AFFINITY_IDLE_MS = 10 * 60_000;
 /** The shared host token used by the superuser MCP endpoint. */
 export function defaultSuperuserTokenPath(): string {
   const configured = process.env.PAPERCUSP_MCP_TOKEN_FILE?.trim();
-  return configured || join(homedir(), ".papercusp", "superuser-token");
+  return configured || papercuspPath("superuser-token");
 }
 
 /** Read the current bearer without caching it across requests. */

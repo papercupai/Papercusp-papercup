@@ -9,11 +9,13 @@
  * them — hence "post-deploy". It is idempotent + dry-run-by-default, so a premature
  * or repeated run is safe (a no-op once everything is migrated).
  *
- * WHAT it does: for every OPEN `repeated-tool-error:*` EI whose class is now
- * fingerprinted (caller/transient) but whose stored key lacks a fingerprint, it
- * recomputes the fingerprint from the EI's stored body sample and appends it — so
- * the open EI keeps matching what the live collector now emits, instead of being
- * orphaned + re-filed (re-file churn). The reusable engine is
+ * WHAT it does: for every OPEN `repeated-tool-error:*` EI still keyed in a legacy
+ * shape (a message-fingerprint segment, or no code/field for structural/caller),
+ * it recomputes the current STRUCTURAL key (bug-inflow-one-problem-one-row-2026-10-18
+ * D-004) from the EI's stored body sample plus the failure's error_code from the
+ * invocation ledger — so the open EI keeps matching what the live collector now
+ * emits, instead of being orphaned + re-filed (re-file churn). Several legacy rows
+ * that fold onto one structural key report as collisions (left as-is for the fold). The reusable engine is
  * operator-core/lib/harness/improvements/watchdog-key-migration.ts; this script is
  * just the live-PG wiring + CLI. Any FUTURE key-shape change = a new deriver + a
  * one-line swap here.
@@ -30,6 +32,8 @@ import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import {
   recomputeWatchdogKeys,
   deriveToolErrorWatchdogKey,
+  extractSampleFromBody,
+  parseRepeatedToolErrorKey,
   REPEATED_TOOL_ERROR_PREFIX,
   type RecomputeDeps,
 } from '@papercusp/operator-core/lib/harness/improvements/watchdog-key-migration';
@@ -80,8 +84,42 @@ async function main(): Promise<void> {
     },
   };
 
+  // bug-inflow-one-problem-one-row-2026-10-18 D-004: a structural/caller key names
+  // the failure's error CODE, which the EI body does not carry. Look it up in the
+  // invocation ledger by tool + the stored sample (the collector's sample is the
+  // first 800 chars of the message), newest failure first. Absent → the deriver
+  // falls back to a code carried in the message itself.
+  const codeById = new Map<string, string | null>();
+  const errorCodeOf = (candidate: ImprovementCandidate): string | null =>
+    codeById.get(String(candidate.id)) ?? null;
+  const listOpenKeyed = deps.listOpenKeyed;
+  deps.listOpenKeyed = async () => {
+    const candidates = await listOpenKeyed();
+    for (const c of candidates) {
+      const parsed = parseRepeatedToolErrorKey(String(c.watchdogKey ?? ''));
+      const sample = extractSampleFromBody(c.body);
+      if (!parsed || parsed.errorCode !== null || !sample) continue;
+      if (parsed.klass !== 'structural' && parsed.klass !== 'caller') continue;
+      const rows = await sql<{ error_code: string | null }[]>`
+        SELECT error_code
+          FROM harness_shared.tool_invocations
+         WHERE tool_name = ${parsed.tool}
+           AND status <> 'ok'
+           AND invoked_at > now() - interval '30 days'
+           AND left(error_message, 800) = ${sample}
+         ORDER BY invoked_at DESC
+         LIMIT 1`;
+      codeById.set(String(c.id), rows[0]?.error_code ?? null);
+    }
+    return candidates;
+  };
+
   try {
-    const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, deps, { dryRun: !execute });
+    const res = await recomputeWatchdogKeys(
+      (candidate) => deriveToolErrorWatchdogKey(candidate, errorCodeOf),
+      deps,
+      { dryRun: !execute },
+    );
     const mode = res.dryRun ? 'DRY RUN (no writes — pass --execute to apply)' : 'EXECUTED';
     process.stdout.write(
       `\nwatchdog-key recompute — ${mode}\n` +

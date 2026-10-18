@@ -26,10 +26,11 @@ import {
   classifyToolError,
   toolErrorFingerprint,
   toolErrorSignalKey,
+  toolErrorKeyParts,
   toolErrorClassSqlCase,
   toolErrorFingerprintSqlCase,
   TOOL_ERROR_RULES,
-  FINGERPRINTED_TOOL_ERROR_CLASSES,
+  TOOL_KEYED_TOOL_ERROR_CLASSES,
   normalizeSuspectedToolFailure,
   toolFailureSignatureKey,
   parseToolFailureSignatureKey,
@@ -1171,49 +1172,91 @@ describe('toolErrorFingerprint (P-012) — mirrors the SQL skeleton', () => {
     expect(toolErrorFingerprint('429 — 500 (#3)')).toBeNull();
   });
 
-  it('separates two DISTINCT caller modes under one tool (the P-012 collision the structural-only fp left)', () => {
-    const a = toolErrorFingerprint('invalid_args: note: Too big: expected string to have <=400 characters');
-    const b = toolErrorFingerprint('invalid_args: status: Invalid option: expected one of "draft"|"ready"');
-    expect(a).not.toBe(b);
-    // …and the keys they produce differ, so they stop masking each other:
-    expect(toolErrorSignalKey('plans:new', 'caller', a)).not.toBe(toolErrorSignalKey('plans:new', 'caller', b));
+  it('still separates two DISTINCT caller modes under one tool — by field path, not wording', () => {
+    const aMsg = 'invalid_args: note: Too big: expected string to have <=400 characters';
+    const bMsg = 'invalid_args: status: Invalid option: expected one of "draft"|"ready"';
+    expect(toolErrorFingerprint(aMsg)).not.toBe(toolErrorFingerprint(bMsg));
+    const a = toolErrorKeyParts('invalid_input', aMsg);
+    const b = toolErrorKeyParts('invalid_input', bMsg);
+    expect(a).toEqual({ errorCode: 'invalid_args', fieldPath: 'note' });
+    expect(b).toEqual({ errorCode: 'invalid_args', fieldPath: 'status' });
+    expect(toolErrorSignalKey('plans:new', 'caller', a.errorCode, a.fieldPath))
+      .not.toBe(toolErrorSignalKey('plans:new', 'caller', b.errorCode, b.fieldPath));
   });
 
-  it('separates failures with a shared first-six-token boilerplate prefix (EI-25714783883986261)', () => {
+  it('folds transient failures with different wording onto ONE row per tool (R-1, EI-25714783883986261)', () => {
     const first = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
       'No edit attempted. Reconcile authoritative lock for crates/papercup-core/tests/android_uniffi_abi_guard.rs in mobile coordination_domain before writing or retrying.';
     const second = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
       'No edit attempted. Reconcile authoritative lock for packages/operator-core/lib/agent-tools/improvements/capture.test.ts in papercusp coordination before writing or retrying.';
-    const oldPrefix = (message: string) => message.toLowerCase()
-      .replace(/[0-9]+/g, '').replace(/[^a-z]+/g, ' ').trim().split(' ').slice(0, 6).join('-');
-
-    expect(oldPrefix(first)).toBe('p-cargo-ci-binding-test-file');
-    expect(oldPrefix(second)).toBe(oldPrefix(first));
+    // The fingerprint still tells the two wordings apart (reporter corroboration)…
     expect(toolErrorFingerprint(first)).not.toBe(toolErrorFingerprint(second));
-    expect(toolErrorSignalKey('locks:acquire', 'transient', toolErrorFingerprint(first)))
-      .not.toBe(toolErrorSignalKey('locks:acquire', 'transient', toolErrorFingerprint(second)));
+    // …but the signal key is the tool alone, so both count onto one row.
+    const keyOf = (m: string) => {
+      const parts = toolErrorKeyParts(null, m);
+      return toolErrorSignalKey('locks:acquire', 'transient', parts.errorCode, parts.fieldPath);
+    };
+    expect(keyOf(first)).toBe('locks:acquire:transient');
+    expect(keyOf(second)).toBe(keyOf(first));
   });
 });
 
-describe('toolErrorSignalKey (P-012) — fingerprint by class', () => {
-  it('appends the fingerprint for the fingerprinted classes', () => {
-    expect(toolErrorSignalKey('memory:search', 'structural', 'cannot-read-properties-of-undefined'))
-      .toBe('memory:search:structural:cannot-read-properties-of-undefined');
-    expect(toolErrorSignalKey('plans:new', 'caller', 'invalid-args-note-too-big-expected'))
-      .toBe('plans:new:caller:invalid-args-note-too-big-expected');
-    expect(toolErrorSignalKey('slow:tool', 'transient', 'too-many-clients-already'))
-      .toBe('slow:tool:transient:too-many-clients-already');
+describe('toolErrorSignalKey — structural identity (bug-inflow-one-problem-one-row-2026-10-18 D-004)', () => {
+  it('keys structural and caller by tool + class + error code + field path', () => {
+    expect(toolErrorSignalKey('memory:search', 'structural', 'handler_error', 'field-unknown'))
+      .toBe('memory:search:structural:handler_error:field-unknown');
+    expect(toolErrorSignalKey('plans:new', 'caller', 'invalid_args', 'items.n.id'))
+      .toBe('plans:new:caller:invalid_args:items.n.id');
   });
 
-  it('keeps rate-limit COARSE (one capacity concern — never fingerprinted)', () => {
-    expect(FINGERPRINTED_TOOL_ERROR_CLASSES.has('rate-limit')).toBe(false);
-    expect(toolErrorSignalKey('memory:search', 'rate-limit', 'openai-embed-failed-error-message-rate'))
-      .toBe('memory:search:rate-limit');
+  it('keys transient and rate-limit by tool alone (one capacity reading per tool)', () => {
+    expect(TOOL_KEYED_TOOL_ERROR_CLASSES.has('transient')).toBe(true);
+    expect(TOOL_KEYED_TOOL_ERROR_CLASSES.has('rate-limit')).toBe(true);
+    expect(toolErrorSignalKey('slow:tool', 'transient', 'timeout', 'x')).toBe('slow:tool:transient');
+    expect(toolErrorSignalKey('memory:search', 'rate-limit', 'rate_limited', null)).toBe('memory:search:rate-limit');
   });
 
-  it('falls back to the bare key when no fingerprint is derivable (legacy / pre-fingerprint ticks)', () => {
-    expect(toolErrorSignalKey('docs:get', 'structural', null)).toBe('docs:get:structural');
-    expect(toolErrorSignalKey('coord:thread', 'caller', undefined)).toBe('coord:thread:caller');
+  it('names unknown code / field explicitly instead of dropping the segments', () => {
+    expect(toolErrorSignalKey('docs:get', 'structural', null, null))
+      .toBe('docs:get:structural:error-code-unknown:field-unknown');
+    expect(toolErrorSignalKey('coord:thread', 'caller', undefined, '')).toBe('coord:thread:caller:error-code-unknown:field-unknown');
+  });
+
+  it('never carries an md5 message digest', () => {
+    const parts = toolErrorKeyParts('handler_error', 'column "initiative" does not exist (relation 7731)');
+    expect(toolErrorSignalKey('plans:list', 'structural', parts.errorCode, parts.fieldPath)).not.toMatch(/md5-/);
+  });
+});
+
+describe('toolErrorKeyParts — error code + field path read out of the failure', () => {
+  it.each([
+    // [column code, message, expected code, expected field]
+    ['invalid_input', 'invalid_input: invalid_args: Unrecognized key: "request_key"', 'invalid_args', 'request_key'],
+    ['invalid_input', 'invalid_input: invalid_args: Unrecognized keys: "a", "b"', 'invalid_args', 'a'],
+    ['invalid_input', 'invalid_input: invalid_args: scope.2: Invalid option: expected one of "a"|"b"', 'invalid_args', 'scope.n'],
+    ['invalid_input', 'invalid_args: items.0.id: Required', 'invalid_args', 'items.n.id'],
+    ['invalid_input', 'invalid_args: items.12.refs.3: Required', 'invalid_args', 'items.n.refs.n'],
+    ['handler_error', 'handler_error: {"ok":false,"reason":"evidence_not_selectable","detail":"WI-123"}', 'evidence_not_selectable', 'field-unknown'],
+    ['handler_error', 'handler_error: claim_conflict: held by su-abc until 14:00', 'claim_conflict', 'field-unknown'],
+    ['not_found', 'handler_error: claim_conflict: held', 'not_found', 'field-unknown'],
+    [null, 'Cannot read properties of undefined (reading "id")', 'error-code-unknown', 'field-unknown'],
+    ['handler_error', 'Cannot read properties of undefined', 'handler_error', 'field-unknown'],
+  ] as const)('(%s, %s) → %s @ %s', (code, message, wantCode, wantField) => {
+    expect(toolErrorKeyParts(code, message)).toEqual({ errorCode: wantCode, fieldPath: wantField });
+  });
+
+  it('gives messages that differ only in ids, paths and values the SAME parts (R-2/R-3)', () => {
+    const a = toolErrorKeyParts('handler_error', 'handler_error: claim_conflict: WI-1 held by su-aaa until 10:00');
+    const b = toolErrorKeyParts('handler_error', 'handler_error: claim_conflict: WI-99 held by su-zzz until 23:59 (lock 7f)');
+    expect(a).toEqual(b);
+    const c = toolErrorKeyParts('invalid_input', 'invalid_args: items.0.id: expected string, received number 42');
+    const d = toolErrorKeyParts('invalid_input', 'invalid_args: items.7.id: expected string, received undefined');
+    expect(c).toEqual(d);
+  });
+
+  it('never reads prose as a machine code (a code needs an underscore)', () => {
+    expect(toolErrorKeyParts(null, 'timeout: the request took too long').errorCode).toBe('error-code-unknown');
+    expect(toolErrorKeyParts(null, 'Error: something broke').errorCode).toBe('error-code-unknown');
   });
 });
 
@@ -1486,8 +1529,9 @@ describe('known-external tool-failure classes — deny the direct bypass for an 
   it('does not disturb the dedup identity it sits beside (watchdogKey/fingerprint unchanged)', () => {
     const message = 'Failed to create unified exec process: No such file or directory (os error 2)';
     const normalized = normalizeSuspectedToolFailure({ toolName: 'exec_command', errorCode: 'CreateProcess', message });
+    const parts = toolErrorKeyParts('CreateProcess', message);
     expect(normalized.watchdogKey).toBe(
-      `repeated-tool-error:${toolErrorSignalKey('exec_command', normalized.class, normalized.messageFingerprint)}`,
+      `repeated-tool-error:${toolErrorSignalKey('exec_command', normalized.class, parts.errorCode, parts.fieldPath)}`,
     );
   });
 

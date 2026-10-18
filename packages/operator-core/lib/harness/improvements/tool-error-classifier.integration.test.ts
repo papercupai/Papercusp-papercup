@@ -18,6 +18,9 @@ import {
   toolErrorFingerprint,
   toolErrorClassSqlCase,
   toolErrorFingerprintSqlCase,
+  toolErrorKeyParts,
+  toolErrorKeyPartsSql,
+  toolErrorSignalKey,
   FINGERPRINTED_TOOL_ERROR_CLASSES,
 } from './tool-error-classifier';
 import { collectToolErrorSignals } from './watchdog';
@@ -165,6 +168,57 @@ describe('generated SQL fingerprint ↔ toolErrorFingerprint parity (P-012)', ()
   });
 });
 
+describe('generated SQL key parts ↔ toolErrorKeyParts parity (bug-inflow-one-problem-one-row-2026-10-18 D-004)', () => {
+  const EXTRA: Array<{ code: string | null; message: string }> = [
+    { code: 'invalid_input', message: 'invalid_input: invalid_args: Unrecognized key: "request_key"' },
+    { code: 'invalid_input', message: 'invalid_input: invalid_args: scope.2: Invalid option: expected one of "a"|"b"' },
+    { code: 'invalid_input', message: 'invalid_args: items.12.refs.3: Required' },
+    { code: 'handler_error', message: 'handler_error: {"ok":false,"reason":"evidence_not_selectable","detail":"WI-1"}' },
+    { code: 'handler_error', message: 'handler_error: claim_conflict: held by su-abc until 14:00' },
+    { code: 'handler_error', message: 'column "ownerId" of relation "work_items" does not exist' },
+    { code: 'not_found', message: 'handler_error: claim_conflict: held' },
+    { code: null, message: 'Cannot read properties of undefined (reading "id")' },
+    { code: '  ', message: '' },
+    { code: 'column "id" does not exist', message: '{"error":"column \\"id\\" does not exist","code":"42703"}' },
+  ];
+
+  it('computes the same code + field in SQL and TS for every corpus row and edge case', async () => {
+    const sql = db.adminSql;
+    const inputs = [
+      ...TOOL_ERROR_CORPUS.map((r) => ({ code: r.errorCode ?? null, message: r.message })),
+      ...EXTRA,
+    ];
+    await sql`CREATE TEMP TABLE IF NOT EXISTS key_parts_input (idx int, error_code text, error_message text)`;
+    await sql`DELETE FROM key_parts_input`;
+    for (const [idx, r] of inputs.entries()) {
+      await sql`INSERT INTO key_parts_input (idx, error_code, error_message) VALUES (${idx}, ${r.code}, ${r.message})`;
+    }
+    const rows = await sql<{ idx: number; code_key: string; field_key: string }[]>`
+      SELECT idx, ${toolErrorKeyPartsSql(sql)} FROM key_parts_input ORDER BY idx`;
+    expect(rows).toHaveLength(inputs.length);
+    const disagreements: string[] = [];
+    for (const row of rows) {
+      const input = inputs[row.idx];
+      const ts = toolErrorKeyParts(input.code, input.message);
+      if (row.code_key !== ts.errorCode || row.field_key !== ts.fieldPath) {
+        disagreements.push(`idx=${row.idx}: SQL=${row.code_key}@${row.field_key} TS=${ts.errorCode}@${ts.fieldPath} :: ${input.message.slice(0, 70)}`);
+      }
+    }
+    expect(disagreements).toEqual([]);
+    // Positive control: the edge cases really exercise the non-default branches.
+    const extraRows = rows.slice(TOOL_ERROR_CORPUS.length);
+    expect(extraRows.map((r) => `${r.code_key}@${r.field_key}`)).toEqual(expect.arrayContaining([
+      'invalid_args@request_key',
+      'invalid_args@scope.n',
+      'invalid_args@items.n.refs.n',
+      'evidence_not_selectable@field-unknown',
+      'claim_conflict@field-unknown',
+      'handler_error@ownerid',
+      'error-code-unknown@field-unknown',
+    ]));
+  });
+});
+
 describe('the FULL collectToolErrorSignals query embeds the generated fragments validly (P-011)', () => {
   it('runs against real PG without a syntax error and emits new-shape fingerprinted keys', async () => {
     const sql = db.adminSql;
@@ -192,20 +246,30 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
         await sql`
           INSERT INTO harness_shared.tool_invocations
             (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status, error_code, error_message, invoked_at)
-          VALUES ('*', '', '', ${s.tool}, 'su', '', '', ${s.status}, ${s.code}, ${s.msg}, now())`;
+          VALUES ('*', '', '', ${s.tool}, 'su', '', '', ${s.status}, ${s.code}, ${s.msg},
+                  now() - make_interval(hours => ${k % 4}))`;
       }
     }
 
     const signals = await collectToolErrorSignals(sql, { toolLatencyBudgets: SEED_LATENCY_BUDGETS });
     expect(Array.isArray(signals)).toBe(true);
     const keys = signals.map((s) => s.key);
-    // the two caller modes split into distinct fingerprinted keys (P-012)…
-    const expectedFingerprintedKeys = seed.slice(0, 4).map((sample) =>
-      `${sample.tool}:${classifyToolError(sample.code, sample.status, sample.msg)}:${toolErrorFingerprint(sample.msg)}`);
-    for (const expected of expectedFingerprintedKeys) expect(keys).toContain(expected);
-    expect(new Set(expectedFingerprintedKeys).size).toBe(4);
-    // …and the timeout is a fingerprinted transient key.
-    expect(keys.some((k) => k.startsWith('plans:list:transient:'))).toBe(true);
+    // the caller / structural modes split by code + field, never by message digest
+    // (bug-inflow-one-problem-one-row-2026-10-18 D-004)…
+    const expectedStructuralKeys = seed.slice(0, 4).map((sample) => {
+      const parts = toolErrorKeyParts(sample.code, sample.msg);
+      return toolErrorSignalKey(sample.tool, classifyToolError(sample.code, sample.status, sample.msg), parts.errorCode, parts.fieldPath);
+    });
+    expect(expectedStructuralKeys).toEqual(expect.arrayContaining([
+      'plans:new:caller:invalid_args:note',
+      'plans:new:caller:invalid_args:status',
+      'tools:invoke:caller:invalid_args:workspace',
+    ]));
+    for (const expected of expectedStructuralKeys) expect(keys).toContain(expected);
+    expect(new Set(expectedStructuralKeys).size).toBe(4);
+    expect(keys.some((k) => /md5-/.test(k))).toBe(false);
+    // …and the sustained timeout is ONE transient row for the tool (R-1).
+    expect(keys.filter((k) => k.startsWith('plans:list:transient'))).toEqual(['plans:list:transient']);
     // The same two cancellation rows that met the structural count floor must not
     // re-enter the auto-implementation lane as a false major bug.
     expect(keys.some((k) => k.startsWith('capability:git-evidence:structural:'))).toBe(false);

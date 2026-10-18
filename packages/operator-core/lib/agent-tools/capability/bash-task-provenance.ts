@@ -68,6 +68,31 @@ export class BashProvenanceRefusal extends Error {
 const WORK_ITEM_ID_RE = /^(?:WI|EI|F)-[A-Za-z0-9._-]+$/;
 /** Held-claim scan width for verifying an explicit id (the single-claim fallback reads 2). */
 const EXPLICIT_HELD_SCAN_LIMIT = 200;
+/** Keep a refusal actionable without allowing a large claim set to flood the response. */
+const HELD_ID_HINT_CAP = 8;
+
+function heldWorkItemRefusalHint(explicit: string, held: readonly { id: string }[]): string {
+  const ids = [...new Set(held.map((item) => item.id.trim()).filter(Boolean))];
+  if (ids.length === 0) {
+    return ' Re-read the exact id from scheduler:get_next or work_items:get; do not shorten or infer an id.';
+  }
+
+  const prefixMatches = ids.filter((id) => id.startsWith(explicit));
+  if (prefixMatches.length === 1) {
+    return (
+      ` The supplied value is a prefix of your held item '${prefixMatches[0]}'; pass that full id. ` +
+      'Re-read the exact id from scheduler:get_next or work_items:get; do not shorten or infer an id.'
+    );
+  }
+
+  const shown = ids.slice(0, HELD_ID_HINT_CAP);
+  const more = ids.length - shown.length;
+  return (
+    ` Your currently held work-item id${ids.length === 1 ? ' is' : 's are'} ` +
+    `${shown.join(', ')}${more > 0 ? `, plus ${more} more` : ''}. ` +
+    'Re-read the exact id from scheduler:get_next or work_items:get; do not shorten or infer an id.'
+  );
+}
 
 const DEFAULT_BASH_PROVENANCE_DEPS: BashTaskProvenanceDeps = {
   resolveIdentity: resolveAgentIdentity,
@@ -146,7 +171,9 @@ export async function resolveBashTaskProvenance(
       if (held && !held.some((h) => h.id === explicit)) {
         throw new BashProvenanceRefusal(
           'work_item_not_held',
-          `work_item_id '${explicit}' is not one of your currently held, non-terminal work-items. A direct by-id claim of a terminal item does not create an active hold; choose a held item or omit work_item_id.`,
+          `work_item_id '${explicit}' is not one of your currently held, non-terminal work-items. ` +
+            'A direct by-id claim of a terminal item does not create an active hold; choose a held item or omit work_item_id.' +
+            heldWorkItemRefusalHint(explicit, held),
         );
       }
     }

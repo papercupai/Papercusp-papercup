@@ -13,6 +13,8 @@
  *                             (max `work_items.state_changed_at` over `source_plan_slug`);
  *  - `previously-drifting`  the prior conformance result still reported a drifting
  *                             requirement, so it gets another bounded verification pass;
+ *  - `previous-run-failed`  the prior sweep could not record a conformance result, so a
+ *                             transient write or dependency failure is retried promptly;
  *  - `interval-elapsed`       the per-plan interval passed since the last run.
  *
  * A run is the existing {@link runPlanConformance} (checks + drift alarms) with the existing
@@ -46,11 +48,14 @@ export type SweepTrigger =
   | 'footprint-changed'
   | 'work-item-transitioned'
   | 'previously-drifting'
+  | 'previous-run-failed'
   | 'interval-elapsed';
 
 export interface SweepOutcomeWatermark {
   /** Requirement bar keys that were still drifting at the end of the prior run. */
   drifting?: readonly string[];
+  /** A bounded error from the prior sweep attempt, when no conformance result was recorded. */
+  error?: string | null;
 }
 
 export interface SweepWatermark {
@@ -93,6 +98,7 @@ export function sweepTriggersFor(candidate: SweepCandidate, nowMs: number, planI
   const seen = ms(wm.lastTransitionAt);
   if (current !== null && (seen === null || current > seen)) triggers.push('work-item-transitioned');
   if ((wm.lastOutcome?.drifting?.length ?? 0) > 0) triggers.push('previously-drifting');
+  if (typeof wm.lastOutcome?.error === 'string' && wm.lastOutcome.error.length > 0) triggers.push('previous-run-failed');
   const last = ms(wm.lastRunAt);
   if (last === null || nowMs - last >= planIntervalSec * 1000) triggers.push('interval-elapsed');
   return triggers;
@@ -328,18 +334,19 @@ export function productionSweepDeps(input: { workspaceId: string }): SpecConform
          WHERE workspace_id = ${workspaceId}`;
       return new Map(rows.map((row) => {
         const lastOutcome = row.last_outcome && typeof row.last_outcome === 'object'
-          ? row.last_outcome as { drifting?: unknown }
+          ? row.last_outcome as { drifting?: unknown; error?: unknown }
           : null;
         const drifting = Array.isArray(lastOutcome?.drifting)
           ? lastOutcome.drifting.filter((barKey): barKey is string => typeof barKey === 'string')
           : [];
+        const error = typeof lastOutcome?.error === 'string' && lastOutcome.error.length > 0 ? lastOutcome.error : null;
         return [
           sweepPlanKey(row.harness_slug, row.plan_slug),
           {
             lastRunAt: toIso(row.last_run_at) ?? new Date(0).toISOString(),
             footprintHeadSha: row.footprint_head_sha,
             lastTransitionAt: toIso(row.last_transition_at),
-            lastOutcome: { drifting },
+            lastOutcome: { drifting, error },
           },
         ] as const;
       }));

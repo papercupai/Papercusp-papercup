@@ -26,9 +26,9 @@
  */
 
 import {
-  toolErrorFingerprint,
+  toolErrorKeyParts,
   toolErrorSignalKey,
-  FINGERPRINTED_TOOL_ERROR_CLASSES,
+  TOOL_KEYED_TOOL_ERROR_CLASSES,
   type ToolErrorClass,
 } from './tool-error-classifier';
 import type { ImprovementCandidate } from './policy';
@@ -38,27 +38,38 @@ export const REPEATED_TOOL_ERROR_PREFIX = 'repeated-tool-error:';
 
 const TOOL_ERROR_CLASSES: readonly ToolErrorClass[] = ['structural', 'transient', 'caller', 'rate-limit'];
 
-/** A parsed `repeated-tool-error:<tool>:<class>[:<fingerprint>]` key. */
+/**
+ * A parsed repeated-tool-error key. Current shape
+ * (bug-inflow-one-problem-one-row-2026-10-18 D-004):
+ *   `<tool>:<class>` (transient / rate-limit) or
+ *   `<tool>:<class>:<errorCode>:<fieldPath>` (structural / caller).
+ * LEGACY open rows still carry `<tool>:<class>:<fingerprint>` (one remainder
+ * segment) until the key migration re-keys them; those parse with `fingerprint`
+ * set and `errorCode`/`fieldPath` null.
+ */
 export interface ParsedToolErrorKey {
   tool: string;
   klass: ToolErrorClass;
+  errorCode: string | null;
+  fieldPath: string | null;
   fingerprint: string | null;
 }
 
+// Non-greedy tool group: the FIRST whole class segment splits tool from the rest,
+// so a tool name containing `:` (e.g. `plans:list`) never confuses the split.
 const TOOL_ERROR_KEY_RE = new RegExp(
-  `^repeated-tool-error:(.+):(${TOOL_ERROR_CLASSES.join('|')})(?::(.+))?$`,
+  `^repeated-tool-error:(.+?):(${TOOL_ERROR_CLASSES.join('|')})(?::(.+))?$`,
 );
 
-/**
- * Pure: parse a repeated-tool-error watchdogKey into its parts. The class token
- * is matched as a whole segment (anchored by `:` / end), so a tool name
- * containing `:` (e.g. `plans:list`) and a hyphen-joined fingerprint never
- * confuse the split. Returns null for any non-tool-error key.
- */
+/** Pure: parse a repeated-tool-error watchdogKey into its parts; null for any other key. */
 export function parseRepeatedToolErrorKey(key: string): ParsedToolErrorKey | null {
   const m = TOOL_ERROR_KEY_RE.exec(key);
   if (!m) return null;
-  return { tool: m[1], klass: m[2] as ToolErrorClass, fingerprint: m[3] ?? null };
+  const rest = m[3] ?? null;
+  const sep = rest ? rest.indexOf(':') : -1;
+  return sep > 0
+    ? { tool: m[1], klass: m[2] as ToolErrorClass, errorCode: rest!.slice(0, sep), fieldPath: rest!.slice(sep + 1), fingerprint: null }
+    : { tool: m[1], klass: m[2] as ToolErrorClass, errorCode: null, fieldPath: null, fingerprint: rest };
 }
 
 /**
@@ -74,26 +85,36 @@ export function extractSampleFromBody(body: string | null | undefined): string |
 }
 
 /**
- * For an OPEN tool-error EI whose key is a fingerprinted class but carries no
- * current full-message digest, recompute it from the stored sample. Returns null
- * (no migration) for:
- *   - non-tool-error keys,
- *   - `rate-limit` (deliberately coarse — one capacity concern),
- *   - keys that already carry a current `md5-<hex>` fingerprint,
- *   - EIs whose body yields no derivable fingerprint.
+ * For an OPEN tool-error EI still keyed in a LEGACY shape (a message fingerprint
+ * segment, or a structural/caller key with no code/field), recompute the current
+ * structural key (bug-inflow-one-problem-one-row-2026-10-18 D-004) so it keeps
+ * matching what the live collector emits:
+ *   - transient / rate-limit → `<tool>:<class>` (no sample needed);
+ *   - structural / caller → `<tool>:<class>:<errorCode>:<fieldPath>` derived from
+ *     the stored sample plus the failure's `error_code` column, which the body
+ *     does not carry: `errorCodeOf` supplies it (the CLI looks it up in the
+ *     invocation ledger). Without it only a code carried IN the message is used.
+ * Returns null (no migration) for non-tool-error keys, keys already in the
+ * current shape, and structural/caller EIs with no stored sample.
  */
-export function deriveToolErrorWatchdogKey(candidate: ImprovementCandidate): string | null {
+export function deriveToolErrorWatchdogKey(
+  candidate: ImprovementCandidate,
+  errorCodeOf?: (candidate: ImprovementCandidate, tool: string, sample: string) => string | null,
+): string | null {
   const key = candidate.watchdogKey;
   if (typeof key !== 'string' || !key.startsWith(REPEATED_TOOL_ERROR_PREFIX)) return null;
   const parsed = parseRepeatedToolErrorKey(key);
   if (!parsed) return null;
-  // rate-limit is never fingerprinted. Old first-six-token keys are upgraded;
-  // current digests already match the collector's live key shape.
-  if (!FINGERPRINTED_TOOL_ERROR_CLASSES.has(parsed.klass)) return null;
-  if (parsed.fingerprint && /^md5-[a-f0-9]{32}$/.test(parsed.fingerprint)) return null;
-  const fp = toolErrorFingerprint(extractSampleFromBody(candidate.body));
-  if (!fp) return null;
-  const newKey = `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(parsed.tool, parsed.klass, fp)}`;
+  let newKey: string;
+  if (TOOL_KEYED_TOOL_ERROR_CLASSES.has(parsed.klass)) {
+    newKey = `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(parsed.tool, parsed.klass, null, null)}`;
+  } else {
+    if (parsed.errorCode !== null) return null; // already structural
+    const sample = extractSampleFromBody(candidate.body);
+    if (!sample) return null;
+    const parts = toolErrorKeyParts(errorCodeOf?.(candidate, parsed.tool, sample) ?? null, sample);
+    newKey = `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(parsed.tool, parsed.klass, parts.errorCode, parts.fieldPath)}`;
+  }
   return newKey === key ? null : newKey;
 }
 

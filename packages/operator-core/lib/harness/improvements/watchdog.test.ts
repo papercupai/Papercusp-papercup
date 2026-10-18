@@ -216,7 +216,7 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
       { tool_name: 'docs:get', class: 'structural' as const, n: 7, total: 7, sample: 'boom' },
     ];
     const signals = toolErrorSignalsFromRows(rows);
-    expect(signals.map((s) => s.key)).toEqual(['docs:get:structural']);
+    expect(signals.map((s) => s.key)).toEqual(['docs:get:structural:error-code-unknown:field-unknown']);
     expect(signals[0].source).toBe('repeated-tool-error');
   });
 
@@ -228,7 +228,10 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
       { tool_name: 'memory:search', class: 'structural' as const, n: 18, total: 263, sample: 'workspace-scoped call' },
     ]);
     expect(signals.map((s) => s.key)).toEqual(
-      expect.arrayContaining(['memory:remember:structural', 'memory:search:structural']),
+      expect.arrayContaining([
+        'memory:remember:structural:error-code-unknown:field-unknown',
+        'memory:search:structural:error-code-unknown:field-unknown',
+      ]),
     );
     expect(signals.every((s) => s.severity === 'major' && s.kind === 'bug')).toBe(true);
   });
@@ -238,7 +241,7 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
       [{ tool_name: 'x:y', class: 'structural' as const, n: 3, total: 4, sample: null }],
       { structuralMinCount: 5 }, // raise the COUNT bar so only the RATE test (3/4 = 75%) can fire it
     );
-    expect(signals.map((s) => s.key)).toEqual(['x:y:structural']);
+    expect(signals.map((s) => s.key)).toEqual(['x:y:structural:error-code-unknown:field-unknown']);
   });
 
   it('a single structural error does NOT fire (one-off noise is gated)', () => {
@@ -247,32 +250,37 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     ).toEqual([]);
   });
 
-  it('TRANSIENT is volume-gated; ≥50 escalates to major', () => {
+  it('TRANSIENT is volume-, rate- AND duration-gated (R-1); ≥50 escalates to major', () => {
     const signals = toolErrorSignalsFromRows([
-      { tool_name: 'plans:list', class: 'transient' as const, n: 14, total: 1000, sample: 'exceeded timeout' }, // <15 → no
-      { tool_name: 'slow:tool', class: 'transient' as const, n: 60, total: 100, sample: 'exceeded timeout' }, // ≥50 → major
+      { tool_name: 'plans:list', class: 'transient' as const, n: 14, total: 20, active_hours: 6, sample: 'exceeded timeout' }, // <15 → no
+      { tool_name: 'busy:tool', class: 'transient' as const, n: 60, total: 1000, active_hours: 6, sample: 'exceeded timeout' }, // 6% → no
+      { tool_name: 'burst:tool', class: 'transient' as const, n: 60, total: 100, active_hours: 1, sample: 'exceeded timeout' }, // one hour → no
+      { tool_name: 'slow:tool', class: 'transient' as const, n: 60, total: 100, active_hours: 4, sample: 'exceeded timeout' }, // sustained → major
     ]);
     expect(signals.map((s) => s.key)).toEqual(['slow:tool:transient']);
     expect(signals[0].severity).toBe('major');
     expect(signals[0].kind).toBe('bug');
+    expect(signals[0].body).toMatch(/across 4 hours/);
   });
 
   it('CALLER/DX errors route to kind=change at low severity, only on a sustained pattern (≥10)', () => {
     const signals = toolErrorSignalsFromRows([
-      { tool_name: 'coord:thread', class: 'caller' as const, n: 13, total: 22, sample: 'invalid_args: root_msg_id' }, // ≥10
-      { tool_name: 'rare:tool', class: 'caller' as const, n: 3, total: 5, sample: 'invalid_args: slug' }, // <10
+      { tool_name: 'coord:thread', class: 'caller' as const, code_key: 'invalid_args', field_key: 'root_msg_id', n: 13, total: 22, sample: 'invalid_args: root_msg_id: Required' }, // ≥10
+      { tool_name: 'rare:tool', class: 'caller' as const, code_key: 'invalid_args', field_key: 'slug', n: 3, total: 5, sample: 'invalid_args: slug: Required' }, // <10
     ]);
-    expect(signals.map((s) => s.key)).toEqual(['coord:thread:caller']);
+    expect(signals.map((s) => s.key)).toEqual(['coord:thread:caller:invalid_args:root_msg_id']);
+    expect(signals[0].title).toContain('(invalid_args @ root_msg_id)');
     expect(signals[0].kind).toBe('change');
     expect(signals[0].severity).toBe('minor');
   });
 
   it('the SQL collector keeps qualifying caller groups beyond the former top-30 cap', async () => {
-    const targetKey = 'capability:read:caller:superuser-native-session-verifier-unavailable';
+    const targetKey = 'capability:read:caller:superuser_native_session_verifier_unavailable:field-unknown';
     const rows = Array.from({ length: 30 }, (_, index) => ({
       tool_name: 'other:tool-' + index,
       class: 'caller' as const,
-      fingerprint: 'other-caller-' + index,
+      code_key: 'invalid_args',
+      field_key: 'representative',
       n: 20,
       total: 40,
       sample: 'invalid_args: representative',
@@ -280,7 +288,8 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     rows.push({
       tool_name: 'capability:read',
       class: 'caller',
-      fingerprint: 'superuser-native-session-verifier-unavailable',
+      code_key: 'superuser_native_session_verifier_unavailable',
+      field_key: 'field-unknown',
       n: 13,
       total: 9_654,
       sample: 'superuser_native_session_verifier_unavailable',
@@ -323,24 +332,37 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     expect(signals[0].body).toMatch(/EXTERNAL CAPACITY/);
   });
 
-  it('STRUCTURAL key is sharpened by the SQL fingerprint so two DIFFERENT modes under one tool do not mask each other (P-003)', () => {
+  it('STRUCTURAL key carries code + field so two DIFFERENT contracts under one tool do not mask each other (P-003, D-004)', () => {
     const signals = toolErrorSignalsFromRows([
-      { tool_name: 'memory:search', class: 'structural' as const, fingerprint: 'built-in-tool-memory-search-requires', n: 4, total: 50, sample: 'requires a workspace-scoped call' },
-      { tool_name: 'memory:search', class: 'structural' as const, fingerprint: 'cannot-read-properties-of-undefined', n: 3, total: 50, sample: 'Cannot read properties of undefined' },
+      { tool_name: 'memory:search', class: 'structural' as const, code_key: 'workspace_required', field_key: 'field-unknown', n: 4, total: 50, sample: 'requires a workspace-scoped call' },
+      { tool_name: 'memory:search', class: 'structural' as const, code_key: 'handler_error', field_key: 'field-unknown', n: 3, total: 50, sample: 'Cannot read properties of undefined' },
     ]);
     expect(signals.map((s) => s.key).sort()).toEqual([
-      'memory:search:structural:built-in-tool-memory-search-requires',
-      'memory:search:structural:cannot-read-properties-of-undefined',
+      'memory:search:structural:handler_error:field-unknown',
+      'memory:search:structural:workspace_required:field-unknown',
     ]);
-    // Titles diverge per mode too, so the capture-core search-first dedup can't re-collapse them.
+    // Titles diverge per contract too, so the capture-core search-first dedup can't re-collapse them.
     expect(new Set(signals.map((s) => s.title)).size).toBe(2);
   });
 
-  it('STRUCTURAL without a fingerprint keeps the legacy bare key (back-compat: pre-fingerprint ticks)', () => {
+  it('rows that share one structural key yield ONE signal however they arrive (R-3)', () => {
+    // An injected collector (or a grouping change) may still hand over one row per
+    // wording; the fold must not turn wordings back into separate filings.
+    const signals = toolErrorSignalsFromRows([
+      { tool_name: 'plans:claim', class: 'structural' as const, code_key: 'claim_conflict', field_key: 'field-unknown', n: 2, total: 40, sample: 'claim_conflict: WI-1 held by su-a', latest_at: '2026-10-18T10:00:00Z' },
+      { tool_name: 'plans:claim', class: 'structural' as const, code_key: 'claim_conflict', field_key: 'field-unknown', n: 3, total: 40, sample: 'claim_conflict: WI-9 held by su-z', latest_at: '2026-10-18T11:00:00Z' },
+    ]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].key).toBe('plans:claim:structural:claim_conflict:field-unknown');
+    expect(signals[0].body).toMatch(/5×/);
+    expect(signals[0].body).toContain('WI-9 held by su-z'); // newest sample wins
+  });
+
+  it('a row with no code/field names them unknown rather than dropping the segments', () => {
     const signals = toolErrorSignalsFromRows([
       { tool_name: 'docs:get', class: 'structural' as const, n: 7, total: 7, sample: 'boom' },
     ]);
-    expect(signals.map((s) => s.key)).toEqual(['docs:get:structural']);
+    expect(signals.map((s) => s.key)).toEqual(['docs:get:structural:error-code-unknown:field-unknown']);
   });
 
   it('coalesces a multi-tool, multi-session timeout burst into one shared-resource signal', () => {
@@ -395,15 +417,15 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
 
   it('suppresses only correlated transient per-tool signals; structural/caller/rate-limit stay independent', () => {
     const rows = [
-      { tool_name: 'coord:inbox', class: 'transient' as const, n: 15, total: 20, sample: 'timeout' },
+      { tool_name: 'coord:inbox', class: 'transient' as const, n: 15, total: 20, active_hours: 5, sample: 'timeout' },
       { tool_name: 'docs:get', class: 'structural' as const, n: 2, total: 2, sample: 'missing table' },
-      { tool_name: 'plans:new', class: 'caller' as const, n: 10, total: 10, sample: 'invalid_args: status' },
+      { tool_name: 'plans:new', class: 'caller' as const, code_key: 'invalid_args', field_key: 'status', n: 10, total: 10, sample: 'invalid_args: status' },
       { tool_name: 'memory:search', class: 'rate-limit' as const, n: 8, total: 8, sample: 'rate limit reached' },
     ];
     const signals = toolErrorSignalsFromRows(rows, {}, new Set(['coord:inbox']));
     expect(signals.map((signal) => signal.key)).toEqual([
-      'docs:get:structural',
-      'plans:new:caller',
+      'docs:get:structural:error-code-unknown:field-unknown',
+      'plans:new:caller:invalid_args:status',
       'memory:search:rate-limit',
     ]);
   });
@@ -1507,9 +1529,9 @@ describe('watchdog COVERAGE self-test — the original miss is caught end-to-end
     expect(classifyToolError('unauthorized', 'error', 'x')).toBe('structural');
     expect(classifyToolError(null, 'error', 'requires a workspace-scoped call')).toBe('structural');
     const signals = toolErrorSignalsFromRows([
-      { tool_name: 'memory:search', class: 'structural' as const, n: 2, total: 21, sample: 'workspace-scoped call' },
+      { tool_name: 'memory:search', class: 'structural' as const, code_key: 'workspace_required', field_key: 'field-unknown', n: 2, total: 21, sample: 'workspace-scoped call' },
     ]);
-    expect(signals.map((s) => s.key)).toEqual(['memory:search:structural']);
+    expect(signals.map((s) => s.key)).toEqual(['memory:search:structural:workspace_required:field-unknown']);
     expect(signals[0].severity).toBe('major');
   });
 

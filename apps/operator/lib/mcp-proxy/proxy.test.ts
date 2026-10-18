@@ -1023,6 +1023,27 @@ describe("WI-41045 — refresh the superuser bearer at the proxy boundary", () =
       }),
     ).toBe(headers);
   });
+
+  it("uses the same PAPERCUSP_HOME token root as the operator validator", () => {
+    const previousHome = process.env.PAPERCUSP_HOME;
+    vi.stubEnv("PAPERCUSP_HOME", "/tmp/workspace-scoped-papercusp");
+    try {
+      const refreshed = injectCurrentSuperuserBearer(
+        "/api/mcp?superuser=1",
+        { authorization: "Bearer stale-client-token" },
+        {
+          readToken: (path) => {
+            expect(path).toBe("/tmp/workspace-scoped-papercusp/superuser-token");
+            return "workspace-token";
+          },
+        },
+      );
+      expect(refreshed.authorization).toBe("Bearer workspace-token");
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousHome;
+    }
+  });
 });
 
 describe("upstream hop-by-hop headers", () => {

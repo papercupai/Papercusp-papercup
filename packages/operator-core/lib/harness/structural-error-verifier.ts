@@ -30,6 +30,7 @@ import { setIssueState } from '../issues-engineer';
 import {
   toolErrorClassSqlCase,
   toolErrorFingerprintSqlCase,
+  toolErrorKeyPartsSql,
 } from './improvements/tool-error-classifier';
 import { parseRepeatedToolErrorKey } from './improvements/watchdog-key-migration';
 
@@ -235,6 +236,7 @@ export function makePgStructuralVerifierDeps(
         WITH classified AS (
           SELECT tool_name,
                  ${toolErrorClassSqlCase(sql)} AS class,
+                 error_code,
                  error_message
             FROM harness_shared.tool_invocations
            WHERE tool_name = ${tool}
@@ -245,14 +247,19 @@ export function makePgStructuralVerifierDeps(
         tagged AS (
           SELECT tool_name,
                  class,
-                 ${toolErrorFingerprintSqlCase(sql)} AS fingerprint
+                 ${toolErrorFingerprintSqlCase(sql)} AS fingerprint,
+                 ${toolErrorKeyPartsSql(sql)}
             FROM classified
         )
         SELECT COUNT(*)::text AS n
           FROM tagged
          WHERE tool_name = ${tool}
            AND class = 'structural'
-           AND fingerprint IS NOT DISTINCT FROM ${parsed.fingerprint}
+           AND ${parsed.errorCode !== null
+             // Current structural key (bug-inflow-one-problem-one-row-2026-10-18 D-004).
+             ? sql`code_key = ${parsed.errorCode} AND field_key = ${parsed.fieldPath}`
+             // LEGACY fingerprint key, until the key migration re-keys the row.
+             : sql`fingerprint IS NOT DISTINCT FROM ${parsed.fingerprint}`}
       `;
       return Number(rows[0]?.n ?? 0);
     },

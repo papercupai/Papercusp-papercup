@@ -538,7 +538,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'Held work-item this job is for. Required when you hold multiple work-items or held-item attribution cannot be measured; name one you currently hold. Otherwise optional. Overrides your declared goal for task-ledger attribution and the slow-attempt loop gate.',
+        'Held work-item this job is for. Required when you hold multiple work-items or held-item attribution cannot be measured; pass the exact full id returned by scheduler:get_next or work_items:get. Shortened or inferred ids are refused with the current held ids. Otherwise optional. Overrides your declared goal for task-ledger attribution and the slow-attempt loop gate.',
       ),
     parent_task_id: z.string().regex(/^[0-9a-z]{4,64}$/).optional().describe(
       'Durable task that owns this nested launch. Pass PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID from a managed caller. Must be live and owned by the same caller, workspace, harness and work-item; subtree cancellation then includes this child.',

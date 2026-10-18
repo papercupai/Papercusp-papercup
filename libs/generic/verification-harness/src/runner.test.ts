@@ -812,13 +812,14 @@ describe('verify-tauri-headless prepare diagnostics', () => {
       'verifier-host-import-smoke',
       'assertion-input-manifest',
       'assertion-script-snapshot',
-      'verifier-bridge-ownership',
       'freshness-check-script',
     ]) {
-      // Bridge ownership keeps the generic helper; parent preparation uses admission.
-      const runner = step === 'verifier-bridge-ownership' ? 'vh_run_step' : 'verifier_run_step';
-      expect(prepare).toContain(`${runner} ${step}`);
+      expect(prepare).toContain(`verifier_run_step ${step}`);
     }
+    // WI-6554700010017687: the --boot-only env file's ownership check runs in
+    // the CALLER's shell, where no vh_* helper exists, so it is not a verifier
+    // step. A vh_run_step wrapper there exits 127 and the file never loads.
+    expect(prepare).not.toContain('vh_run_step verifier-bridge-ownership');
     expect(prepare).toContain('vh_step isolated-database-prepare');
   });
 });

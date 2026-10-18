@@ -163,6 +163,7 @@ function ReadingControls() {
   const [sourceText, setSourceText] = useState('');
   const [summaryText, setSummaryText] = useState('');
   const [summaryWarnings, setSummaryWarnings] = useState<string[]>([]);
+  const [summaryCanceled, setSummaryCanceled] = useState(false);
   const [length, setLength] = useState('standard');
   const [focus, setFocus] = useState('');
   const [language, setLanguage] = useState('');
@@ -177,7 +178,7 @@ function ReadingControls() {
   const setControlsOpen = (next: boolean) => {
     if (next) {
       const selection = window.getSelection()?.toString();
-      if (selection) { setSourceText(selection); setSummaryText(''); setSummaryWarnings([]); }
+      if (selection) { setSourceText(selection); setSummaryText(''); setSummaryWarnings([]); setSummaryCanceled(false); }
     }
     setOpen(next);
   };
@@ -189,7 +190,7 @@ function ReadingControls() {
     if (!sourceText.trim()) { toast.error('Select or paste text to summarize.'); return; }
     summaryRequest.current?.abort();
     const controller = new AbortController(); summaryRequest.current = controller;
-    setSummarizing(true); setSummaryText(''); setSummaryWarnings([]);
+    setSummarizing(true); setSummaryText(''); setSummaryWarnings([]); setSummaryCanceled(false);
     try {
       const response = await fetch('/api/agent-mcp/operator-tts', {
         method: 'POST', headers: { 'content-type': 'application/json' }, signal: controller.signal,
@@ -207,11 +208,11 @@ function ReadingControls() {
       if (summaryRequest.current === controller) { summaryRequest.current = null; setSummarizing(false); }
     }
   };
-  const cancelSummary = () => { summaryRequest.current?.abort(); summaryRequest.current = null; setSummarizing(false); };
+  const cancelSummary = () => { summaryRequest.current?.abort(); summaryRequest.current = null; setSummarizing(false); setSummaryCanceled(true); };
   return (
     <Popover open={open} onOpenChange={setControlsOpen} ariaLabel="Original reading controls" trigger={<Button variant="ghost" onMouseDown={event => event.preventDefault()} aria-label="Read selected text aloud">{active ? 'Reading' : 'Read aloud'}</Button>}>
       <div role="group" aria-label="Original reading controls">
-        <label>Text to read or summarize<textarea aria-label="Text to read or summarize" value={sourceText} onChange={event => { setSourceText(event.target.value); setSummaryText(''); setSummaryWarnings([]); }} disabled={summarizing} /></label>
+        <label>Text to read or summarize<textarea aria-label="Text to read or summarize" value={sourceText} onChange={event => { setSourceText(event.target.value); setSummaryText(''); setSummaryWarnings([]); setSummaryCanceled(false); }} disabled={summarizing} /></label>
         <label><Checkbox ariaLabel="Allow selected text to use cloud speech" checked={allowCloud} onChange={setAllowCloud} /> Allow selected text to use cloud speech</label>
         <Button variant="neutral" onMouseDown={event => event.preventDefault()} onClick={readSelection} disabled={active || summarizing}>Read selection</Button>
         <label><Checkbox ariaLabel="Allow this text to use a cloud summary model" checked={allowSummaryCloud} onChange={setAllowSummaryCloud} /> Allow this text to use a cloud summary model</label>
@@ -224,7 +225,8 @@ function ReadingControls() {
         </details>
         <Button variant="neutral" onClick={() => void summarizeSelection(false)} disabled={active || summarizing}>Summarize</Button>
         <Button variant="neutral" onClick={() => void summarizeSelection(true)} disabled={active || summarizing}>Summarize and read</Button>
-        {summarizing && <><span role="status">Summarizing…</span><Button variant="neutral" onClick={cancelSummary}>Cancel summary</Button></>}
+        {(summarizing || summaryCanceled) && <span role="status" aria-label="Summary status">{summarizing ? 'Summarizing…' : 'Summary canceled.'}</span>}
+        {summarizing && <Button variant="neutral" onClick={cancelSummary}>Cancel summary</Button>}
         {summaryText && <div role="region" aria-label="Summary"><p style={{ whiteSpace: 'pre-wrap' }}>{summaryText}</p><p>Summary of the supplied text.</p>{summaryWarnings.length > 0 && <p>{summaryWarnings.join(' ')}</p>}</div>}
         {active && reading.readingId && <>
           <Button variant="neutral" onClick={() => controlReading(reading.readingId!, reading.status === 'paused' ? 'resume' : 'pause')}>{reading.status === 'paused' ? 'Resume' : 'Pause'}</Button>

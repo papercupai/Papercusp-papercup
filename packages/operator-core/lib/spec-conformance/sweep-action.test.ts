@@ -63,6 +63,16 @@ describe('trigger selection (R-23)', () => {
     expect(sweepTriggersFor(candidate, NOW, interval)).toEqual(['previously-drifting']);
   });
 
+  it('retries a plan whose prior sweep failed before recording conformance', () => {
+    const candidate = {
+      key: 'h/p',
+      watermark: wm({ lastOutcome: { error: 'work-item hold prevented reconciliation' } }),
+      footprintChanged: false,
+      lastTransitionAt: iso(NOW - 2 * HOUR),
+    };
+    expect(sweepTriggersFor(candidate, NOW, interval)).toEqual(['previous-run-failed']);
+  });
+
   it('does not treat a clean prior result as a drift trigger', () => {
     const candidate = {
       key: 'h/p',

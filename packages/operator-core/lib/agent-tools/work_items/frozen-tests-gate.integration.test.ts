@@ -188,6 +188,23 @@ describe('frozen-test pilot completion (real Postgres)',() => {
     expect(await register()).toMatchObject({ok:false});
     expect((await getWorkItem(itemId,HARNESS))?.payload).not.toHaveProperty('_frozenTests');
   });
+  it('requires an implementer reservation before checking author independence',async () => {
+    await h.sql`UPDATE harness_shared.work_items SET taken_by=NULL
+      WHERE workspace_id=${WS} AND feature_id=${itemId}`;
+    // Releasing taken_by appends durable history in a BEFORE trigger. Clear the
+    // fixture history afterward, without firing that trigger a second time.
+    await h.sql`UPDATE harness_shared.work_items SET last_released_by=NULL,terminal_owner=NULL,worked_by_history='[]'::jsonb
+      WHERE workspace_id=${WS} AND feature_id=${itemId}`;
+    const [unassigned]=await h.sql`SELECT taken_by,last_released_by,terminal_owner,worked_by_history
+      FROM harness_shared.work_items WHERE workspace_id=${WS} AND feature_id=${itemId}`;
+    expect(unassigned).toMatchObject({taken_by:null,last_released_by:null,terminal_owner:null,worked_by_history:[]});
+    expect((await getWorkItem(itemId,HARNESS))?.assignee).toBeNull();
+    expect(await register()).toMatchObject({ok:false,error:'frozen_tests_implementer_unassigned'});
+    expect((await getWorkItem(itemId,HARNESS))?.payload).not.toHaveProperty('_frozenTests');
+    await h.sql`UPDATE harness_shared.work_items SET taken_by=${BUILDER}
+      WHERE workspace_id=${WS} AND feature_id=${itemId}`;
+    expect(await register()).toMatchObject({ok:true,frozenTests:{revision:1}});
+  });
   it('refuses uncalibrated infrastructure-red evidence',async () => {
     await h.sql`UPDATE harness_shared.test_runs SET execution_details=jsonb_set(execution_details,'{failedCaseTitles}','[]') WHERE id=${redId}`;
     expect(await register()).toMatchObject({ok:false});

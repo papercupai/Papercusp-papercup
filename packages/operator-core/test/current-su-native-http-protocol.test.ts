@@ -84,6 +84,42 @@ it('does not accept queue prose outside the matching compaction output', () => {
   expect(protocol.carryRequested).toBe(false);
 });
 
+const queuedToon = 'format: toon\nok: true\nrequested: true\nrespawn: queued\npriorRespawn:\n  outcome: none';
+it.each([
+  queuedToon,
+  JSON.stringify({ content: [{ type: 'text', text: queuedToon }] }),
+  JSON.stringify([{ type: 'input_text', text: 'Wall time: 1.1892 seconds\nOutput:' },
+    { type: 'input_text', text: queuedToon },
+    { type: 'input_text', text: 'See also: config:set-compaction-limit' },
+    { type: 'input_text', text: 'ℹ served by build 1668bd8404cd' }]),
+])('accepts the correlated lossless TOON queue response in native framing (%#)', received => {
+  const protocol = createCurrentSuNativeProtocol();
+  protocol.respond(kickoff, proof);
+  protocol.respond({ ...kickoff, input: [output('call_private_edit', 'ok')] }, proof);
+  protocol.respond({ ...kickoff, input: [output('call_private_compact', received)] }, proof);
+  expect(protocol.carryRequested).toBe(true);
+  expect(protocol.carryInputSeen).toBe(false);
+  protocol.respond({ ...kickoff, input: 'codex-carry-lineage predecessor:predecessor' }, proof);
+  expect(protocol.carryInputSeen).toBe(true);
+});
+
+it.each([
+  '{"requested":true,"status":"not-queued","note":"queued"}',
+  '{"requested":"true","respawn":"queued"}',
+  '{"ok":false,"requested":true,"respawn":"queued"}',
+  JSON.stringify({ isError: true, content: [{ type: 'text', text: queuedToon }] }),
+  JSON.stringify({ note: queuedToon }),
+  'format: toon\nrequested: false\nrespawn: queued',
+  'format: toon\n<<<not valid toon>>>',
+])('rejects refusal, malformed data and incidental queue prose (%#)', received => {
+  const protocol = createCurrentSuNativeProtocol();
+  protocol.respond(kickoff, proof);
+  protocol.respond({ ...kickoff, input: [output('call_private_edit', 'ok')] }, proof);
+  expect(() => protocol.respond({ ...kickoff, input: [output('call_private_compact', received)] }, proof))
+    .toThrow('Managed boundary did not queue');
+  expect(protocol.carryRequested).toBe(false);
+});
+
 it('repeats only the same idempotent kickoff and never replays tools after the queued boundary', () => {
   const protocol = createCurrentSuNativeProtocol();
   expect(calls(protocol.respond(kickoff, proof))[0].call_id).toBe('call_private_edit');

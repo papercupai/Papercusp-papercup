@@ -17,7 +17,7 @@
  * The routine-side consumption (ledger persist + gate_health refresh) is pinned in
  * packages/operator-core/lib/harness/routines/release-actions*.test.ts.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -386,6 +386,15 @@ describe("augmentWithRepairTickLegs", () => {
     failingSignatures: ["lint:tsc"],
     legs: [{ id: "lint:tsc", status: "fail", durationMs: 5 }],
   };
+
+  it("routes after repair-tick augmentation so fixed legs are not re-opened from a stale snapshot", () => {
+    const source = readFileSync(new URL("./green-checkpoint.ts", import.meta.url), "utf8");
+    const run = source.slice(source.indexOf("export async function runGreenCheckpoint"));
+    const augment = run.indexOf("finalResult = await augmentWithRepairTickLegs(finalResult, deps);");
+    const route = run.indexOf("deps.routeFrozenRepairLegsToAgents &&");
+    expect(augment).toBeGreaterThanOrEqual(0);
+    expect(route).toBeGreaterThan(augment);
+  });
 
   it("attaches the measurement on an awaiting-fixer repair hold, asking for the full registry at repairHead", async () => {
     const runRepairTickLegs = vi.fn(async () => measured);

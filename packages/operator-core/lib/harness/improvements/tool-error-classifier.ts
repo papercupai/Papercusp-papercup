@@ -366,8 +366,13 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
  * every provider-429 under a tool is the SAME capacity concern, so fingerprinting
  * it would FRAGMENT one EI into many — the opposite of dedup.
  *
- * Both the SQL fingerprint CASE (`toolErrorFingerprintSqlCase`) and the TS key
- * builder read this set, so they cannot drift on which classes are fingerprinted.
+ * Both the SQL fingerprint CASE (`toolErrorFingerprintSqlCase`) and the TS
+ * fingerprint read this set, so they cannot drift on which classes are fingerprinted.
+ *
+ * bug-inflow-one-problem-one-row-2026-10-18 D-004: the fingerprint no longer
+ * shapes the signal KEY (`toolErrorSignalKey` is structural). It remains the
+ * per-reporter corroboration dimension and the identity of LEGACY open keys the
+ * structural verifier still has to read until the key migration re-keys them.
  */
 export const FINGERPRINTED_TOOL_ERROR_CLASSES: ReadonlySet<ToolErrorClass> =
   new Set<ToolErrorClass>(['structural', 'caller', 'transient']);
@@ -496,17 +501,158 @@ export function toolErrorFingerprintSqlCase<T>(sql: SqlTag<T>): T {
   ELSE NULL END`;
 }
 
-/** The dedup key for a repeated-tool-error signal: `<tool>:<class>` plus a
- *  `:<fingerprint>` segment for the fingerprinted classes (when a fingerprint
- *  was derivable). Single source for the live collector AND the key-migration
- *  routine, so a migrated key matches what the next tick produces. */
+// ── Structural signal identity (bug-inflow-one-problem-one-row-2026-10-18 D-003/D-004) ──
+//
+// The watchdog's repeated-tool-error key used to embed an MD5 of the message
+// skeleton, so one defect whose message carried an id, a path or a value split
+// into one row per wording (R-3). The key is now STRUCTURAL: tool + class, plus
+// error code + field path for the classes that name a fixable shape (structural,
+// caller). Transient and rate-limit failures key by tool alone (R-1): they are a
+// load/capacity reading about the tool, not distinct defects.
+//
+// Every pattern below obeys the dual-engine constraint documented at the top of
+// this file: each is valid POSIX ERE for Postgres and valid JS, applied to the
+// LOWERCASED message, and `toolErrorKeyPartsSql` mirrors `toolErrorKeyParts`
+// exactly (row-by-row parity in tool-error-classifier.integration.test.ts).
+
+/** Classes whose signal key names one row per TOOL (no code / field segments). */
+export const TOOL_KEYED_TOOL_ERROR_CLASSES: ReadonlySet<ToolErrorClass> =
+  new Set<ToolErrorClass>(['transient', 'rate-limit']);
+
+/**
+ * Error codes that name the dispatch envelope rather than the failure. A more
+ * specific code carried in the message (`invalid_input: invalid_args: …`) wins
+ * over these, so a reporter quoting the inner code and the ledger's envelope
+ * code still land on one key. `invalid_input` is the envelope the dispatch layer
+ * puts around every schema refusal (measured 2026-10-18: ~4.4k/day).
+ */
+export const GENERIC_TOOL_ERROR_CODES: readonly string[] = ['handler_error', 'invalid_input', 'error', 'internal_error'];
+
+/** Envelope prefixes stripped before reading a leading machine code. */
+const TOOL_ERROR_WRAPPER_PREFIX_PATTERN = '^ *((handler_error|invalid_input) *: *)+';
+/** A leading `snake_code:` (at least one underscore — prose never matches). */
+const TOOL_ERROR_PREFIX_CODE_PATTERN = '^([a-z][a-z0-9]*(_[a-z0-9]+)+) *:';
+/** A JSON envelope field naming a machine code; the code is group 2. */
+const TOOL_ERROR_JSON_CODE_PATTERN = '"(reason|error|code)" *: *"([a-z][a-z0-9]*(_[a-z0-9]+)+)"';
+/** zod `Unrecognized key(s): "x"`; the key is group 1. */
+const TOOL_ERROR_UNRECOGNIZED_KEY_PATTERN = 'unrecognized keys? *: *"([^"]+)"';
+/** zod path after `invalid_args:` — `invalid_args: items.0.id: …`; the path is group 1. */
+const TOOL_ERROR_ARGS_PATH_PATTERN = 'invalid_args *: *([a-z_][a-z0-9_]*(\\.[a-z0-9_]+)*) *: ';
+/**
+ * Postgres `column "x" [of relation "y"] does not exist`; the column is group 1.
+ * Two missing columns under one tool are two contracts (EI-22437036851108668: one
+ * repaired, one still failing), so the column is the field that keeps them apart.
+ */
+const TOOL_ERROR_PG_COLUMN_PATTERN = 'column "([^"]+)" (of relation "[^"]+" )?does not exist';
+/** A numeric path segment (array index), normalized to `.n`. Applied twice. */
+const TOOL_ERROR_NUMERIC_SEGMENT_PATTERN = '\\.[0-9]+(\\.|$)';
+
+export const ERROR_CODE_UNKNOWN = 'error-code-unknown';
+export const FIELD_UNKNOWN = 'field-unknown';
+
+function firstGroup(re: RegExp, text: string, group = 1): string | null {
+  const m = re.exec(text);
+  return m?.[group] ?? null;
+}
+
+const WRAPPER_PREFIX_RE = new RegExp(TOOL_ERROR_WRAPPER_PREFIX_PATTERN);
+const PREFIX_CODE_RE = new RegExp(TOOL_ERROR_PREFIX_CODE_PATTERN);
+const JSON_CODE_RE = new RegExp(TOOL_ERROR_JSON_CODE_PATTERN);
+const UNRECOGNIZED_KEY_RE = new RegExp(TOOL_ERROR_UNRECOGNIZED_KEY_PATTERN);
+const ARGS_PATH_RE = new RegExp(TOOL_ERROR_ARGS_PATH_PATTERN);
+const PG_COLUMN_RE = new RegExp(TOOL_ERROR_PG_COLUMN_PATTERN);
+const NUMERIC_SEGMENT_RE = new RegExp(TOOL_ERROR_NUMERIC_SEGMENT_PATTERN, 'g');
+
+/**
+ * Pure: the structural identity of one failure — the error code and field path
+ * the signal key is built from. Message wording never enters the key; only a
+ * machine code or a field path read out of it does.
+ *
+ * errorCode precedence: a specific `error_code` column value; else a machine code
+ * carried by a generic-coded message (JSON `"reason"`, then a leading
+ * `snake_code:` after the `handler_error:` / `invalid_input:` wrappers); else the
+ * generic column value; else `error-code-unknown`.
+ * fieldPath: zod `Unrecognized key: "x"`, else the path after `invalid_args:`,
+ * else a Postgres missing column; array indices normalized to `n`; else
+ * `field-unknown`.
+ */
+export function toolErrorKeyParts(
+  errorCode: string | null | undefined,
+  message: string | null | undefined,
+): { errorCode: string; fieldPath: string } {
+  const lower = (message ?? '').toLowerCase();
+  const column = (errorCode ?? '').trim().toLowerCase();
+  const generic = (code: string | null): boolean => !code || GENERIC_TOOL_ERROR_CODES.includes(code);
+  const jsonCode = firstGroup(JSON_CODE_RE, lower, 2);
+  const prefixCode = firstGroup(PREFIX_CODE_RE, lower.replace(WRAPPER_PREFIX_RE, ''));
+  const code = !generic(column)
+    ? column
+    : !generic(jsonCode) ? jsonCode
+      : !generic(prefixCode) ? prefixCode
+        : column || null;
+  const rawField = firstGroup(UNRECOGNIZED_KEY_RE, lower)
+    ?? firstGroup(ARGS_PATH_RE, lower)
+    ?? firstGroup(PG_COLUMN_RE, lower);
+  const field = rawField == null
+    ? null
+    : rawField.replace(NUMERIC_SEGMENT_RE, '.n$1').replace(NUMERIC_SEGMENT_RE, '.n$1');
+  return {
+    errorCode: correlationSegment(code, ERROR_CODE_UNKNOWN),
+    fieldPath: correlationSegment(field, FIELD_UNKNOWN),
+  };
+}
+
+/** SQL mirror of `correlationSegment` over an already-lowercased expression. */
+function correlationSegmentSql<T>(sql: SqlTag<T>, expr: T, fallback: string): T {
+  return sql`coalesce(nullif(left(regexp_replace(regexp_replace(coalesce(${expr}, ''),
+    '[^a-z0-9._:-]+', '-', 'g'), '^-+|-+$', '', 'g'), 80), ''), ${fallback})`;
+}
+
+/**
+ * SQL mirror of `toolErrorKeyParts`: two select-list items, `code_key` and
+ * `field_key`, computed from the bare `error_code` / `error_message` columns.
+ * Embed where those are in scope. Parity with the TS fn is proven row-by-row by
+ * the integration test.
+ */
+export function toolErrorKeyPartsSql<T>(sql: SqlTag<T>): T {
+  const lowerMsg = sql`lower(coalesce(error_message, ''))`;
+  const column = sql`nullif(lower(trim(coalesce(error_code, ''))), '')`;
+  const generic = GENERIC_TOOL_ERROR_CODES as string[];
+  const jsonCode = sql`(regexp_match(${lowerMsg}, ${TOOL_ERROR_JSON_CODE_PATTERN}))[2]`;
+  const prefixCode = sql`substring(regexp_replace(${lowerMsg}, ${TOOL_ERROR_WRAPPER_PREFIX_PATTERN}, '')
+    from ${TOOL_ERROR_PREFIX_CODE_PATTERN})`;
+  const code = sql`CASE
+      WHEN ${column} IS NOT NULL AND NOT (${column} = ANY(${generic}::text[])) THEN ${column}
+      WHEN ${jsonCode} IS NOT NULL AND NOT (${jsonCode} = ANY(${generic}::text[])) THEN ${jsonCode}
+      WHEN ${prefixCode} IS NOT NULL AND NOT (${prefixCode} = ANY(${generic}::text[])) THEN ${prefixCode}
+      ELSE ${column} END`;
+  const rawField = sql`coalesce(substring(${lowerMsg} from ${TOOL_ERROR_UNRECOGNIZED_KEY_PATTERN}),
+    substring(${lowerMsg} from ${TOOL_ERROR_ARGS_PATH_PATTERN}),
+    substring(${lowerMsg} from ${TOOL_ERROR_PG_COLUMN_PATTERN}))`;
+  // The replacement is a bound value ('.n' + backreference 1), never SQL text, so
+  // its backslash cannot be re-escaped by the template layer.
+  const replacement = '.n\\1';
+  const field = sql`regexp_replace(regexp_replace(${rawField}, ${TOOL_ERROR_NUMERIC_SEGMENT_PATTERN}, ${replacement}, 'g'),
+    ${TOOL_ERROR_NUMERIC_SEGMENT_PATTERN}, ${replacement}, 'g')`;
+  return sql`${correlationSegmentSql(sql, code, ERROR_CODE_UNKNOWN)} AS code_key,
+    ${correlationSegmentSql(sql, field, FIELD_UNKNOWN)} AS field_key`;
+}
+
+/**
+ * The dedup key for a repeated-tool-error signal. Transient and rate-limit:
+ * `<tool>:<class>` (one row per tool). Structural and caller:
+ * `<tool>:<class>:<errorCode>:<fieldPath>`. Single source for the live
+ * collector, agent-report normalization, the structural verifier and the
+ * key-migration routine, so every reader and writer agrees on one identity.
+ */
 export function toolErrorSignalKey(
   toolName: string,
   klass: ToolErrorClass,
-  fingerprint: string | null | undefined,
+  errorCode: string | null | undefined,
+  fieldPath: string | null | undefined,
 ): string {
-  const fp = FINGERPRINTED_TOOL_ERROR_CLASSES.has(klass) && fingerprint ? fingerprint : null;
-  return fp ? `${toolName}:${klass}:${fp}` : `${toolName}:${klass}`;
+  if (TOOL_KEYED_TOOL_ERROR_CLASSES.has(klass)) return `${toolName}:${klass}`;
+  return `${toolName}:${klass}:${correlationSegment(errorCode, ERROR_CODE_UNKNOWN)}:${correlationSegment(fieldPath, FIELD_UNKNOWN)}`;
 }
 
 /**
@@ -827,7 +973,11 @@ export function toolFailureClassKey(
 export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): NormalizedToolFailure {
   const klass = classifyToolError(input.errorCode, input.status, input.message);
   const messageFingerprint = toolErrorFingerprint(input.message);
-  const signalKey = toolErrorSignalKey(input.toolName.trim(), klass, messageFingerprint);
+  // The exact watchdog identity is derived from the measured code + message the
+  // invocation ledger also holds — never from the reporter's own fieldPath — so a
+  // probation row and the collector's signal for the same failure share one key.
+  const keyParts = toolErrorKeyParts(input.errorCode, input.message);
+  const signalKey = toolErrorSignalKey(input.toolName.trim(), klass, keyParts.errorCode, keyParts.fieldPath);
   const classIdentity = toolFailureClassIdentity(input, klass);
   const correlationFingerprint = [
     correlationSegment(input.toolName, 'unknown-tool'),

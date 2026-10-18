@@ -151,6 +151,36 @@ describe('bash task provenance — a caller-named work_item_id (WI-10004202)', (
     ).rejects.toMatchObject({ name: 'BashProvenanceRefusal', code: 'work_item_not_held' });
   });
 
+  it('names the exact held id when a caller supplies a shortened value', async () => {
+    const fullId = 'WI-6554700010010786';
+    await expect(
+      resolveBashTaskProvenance(
+        CTX,
+        'papercusp',
+        deps({ held: [{ id: fullId }] }),
+        { explicitWorkItemId: 'WI-6554700010786' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'work_item_not_held',
+      message: expect.stringContaining(fullId),
+    });
+  });
+
+  it('identifies a unique prefix instead of leaving the caller to guess', async () => {
+    const fullId = 'WI-6554700010010786';
+    await expect(
+      resolveBashTaskProvenance(
+        CTX,
+        'papercusp',
+        deps({ held: [{ id: fullId }] }),
+        { explicitWorkItemId: 'WI-655470' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'work_item_not_held',
+      message: expect.stringContaining(`prefix of your held item '${fullId}'`),
+    });
+  });
+
   it('refuses a value that is not a work-item id', async () => {
     await expect(
       resolveBashTaskProvenance(CTX, 'papercusp', deps({ held: [] }), { explicitWorkItemId: 'plan#P-004' }),

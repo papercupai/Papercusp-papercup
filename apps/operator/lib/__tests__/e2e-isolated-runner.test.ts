@@ -67,6 +67,9 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
   );
   const pw = join(dir, 'playwright.sh');
   const npm = join(dir, 'npm');
+  // A formatted log that the runner never recognizes must fail promptly rather than
+  // leave a server behind when spawnSync reaches its outer deadline.
+  const viteServer = `node -e 'const http=require("node:http");const port=Number(process.env.OPERATOR_E2E_PORT);const style="${viteLogStyle}";const deadline=style==="bare"?null:setTimeout(()=>process.exit(81),5000);const s=http.createServer((_req,res)=>{clearTimeout(deadline);res.writeHead(200,{"content-type":"text/plain"});res.end("ready")});s.listen(port,"127.0.0.1",()=>{const url="http://127.0.0.1:"+s.address().port+"/";const esc=String.fromCharCode(27);console.log(style==="color"?"  "+esc+"[32m➜"+esc+"[39m  "+esc+"[1mLocal:"+esc+"[22m   "+esc+"[36m"+url+esc+"[39m":style==="arrow"?"  ➜  Local:   "+url:"  Local: "+url)})'`;
   writeFileSync(
     npm,
     [
@@ -87,9 +90,17 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       '[ "$OPERATOR_E2E_PORT" = "$vite_port" ] || { echo "vite stub CLI/env port mismatch: $vite_port / $OPERATOR_E2E_PORT" >&2; exit 80; }',
       'case " $* " in *" --host 127.0.0.1 "*) ;; *) echo "vite stub expected loopback host: $*" >&2; exit 74;; esac',
       'case " $* " in *" --strictPort "*) ;; *) echo "vite stub expected strictPort: $*" >&2; exit 76;; esac',
-      // A formatted log that the runner never recognizes must fail promptly rather than
-      // leave a server behind when spawnSync reaches its outer deadline.
-      `exec node -e 'const http=require("node:http");const port=Number(process.env.OPERATOR_E2E_PORT);const style="${viteLogStyle}";const deadline=style==="bare"?null:setTimeout(()=>process.exit(81),5000);const s=http.createServer((_req,res)=>{clearTimeout(deadline);res.writeHead(200,{"content-type":"text/plain"});res.end("ready")});s.listen(port,"127.0.0.1",()=>{const url="http://127.0.0.1:"+s.address().port+"/";const esc=String.fromCharCode(27);console.log(style==="color"?"  "+esc+"[32m➜"+esc+"[39m  "+esc+"[1mLocal:"+esc+"[22m   "+esc+"[36m"+url+esc+"[39m":style==="arrow"?"  ➜  Local:   "+url:"  Local: "+url)})'`,
+      // The real `npm run dev` is two npm hops deep and does not carry SIGTERM through
+      // its `sh -c` child, so the server outlives a signal sent only to the launched
+      // npm (WI-6554700010017702). Opt in to that shape: fork the server, record its
+      // pid, and wait, so a TERM to this stub kills the stub alone.
+      'if [ -n "${E2E_FIXTURE_VITE_LEAF_PID:-}" ]; then',
+      `  ${viteServer} &`,
+      '  echo "$!" > "$E2E_FIXTURE_VITE_LEAF_PID"',
+      '  wait "$!"',
+      '  exit $?',
+      'fi',
+      `exec ${viteServer}`,
     ].join('\n'),
   );
   writeFileSync(
@@ -508,6 +519,34 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(r.out).toContain('verdict=pass');
   });
 
+  it('stops the whole dev-server tree, not only the npm process it launched', async () => {
+    // WI-6554700010017702: six Vite servers outlived their assertion for 7-10 days,
+    // rooted in frozen sources the rig had already deleted.
+    const f = fixture(0);
+    const leafPidFile = join(f.dir, 'vite-leaf.pid');
+    let leaf = 0;
+    const alive = (pid: number) => {
+      try {
+        // A zombie is dead for this purpose: it holds no port and no files.
+        return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]?.[0] !== 'Z';
+      } catch {
+        return false;
+      }
+    };
+    try {
+      const r = run(f, [], { E2E_FIXTURE_VITE_LEAF_PID: leafPidFile });
+      expect(r.status, r.out).toBe(0);
+      expect(r.recorded?.viteStatus, r.out).toBe(200);
+      leaf = Number(readFileSync(leafPidFile, 'utf8').trim());
+      expect(leaf).toBeGreaterThan(0);
+      const deadline = Date.now() + 3_000;
+      while (alive(leaf) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 50));
+      expect(alive(leaf), `Vite server ${leaf} outlived its assertion`).toBe(false);
+    } finally {
+      if (leaf > 0 && alive(leaf)) process.kill(leaf, 'SIGKILL');
+    }
+  });
+
   it('runs Playwright (and only Playwright) inside the network-namespace wrapper', () => {
     // WI-6554700010008480: host interface churn must not reach the browser.
     const f = fixture(3);
@@ -582,6 +621,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     const res = spawnSync('bash', ['-c', [
       'set -eu',
       'verify_assertion_input_integrity() { return 0; }',
+      'preflight_verifier_task_deadline() { return 0; }',
       'verifier_begin_phase() { :; }',
       'log() { :; }',
       'ISOLATED_DB=0',
@@ -605,6 +645,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     const res = spawnSync('bash', ['-c', [
       'set -eu',
       'verify_assertion_input_integrity() { return 0; }',
+      'preflight_verifier_task_deadline() { return 0; }',
       'verifier_begin_phase() { VH_PHASE_DIR="$E2E_FIXTURE_ASSERT_DIR"; }',
       'log() { :; }',
       'ISOLATED_DB=0',

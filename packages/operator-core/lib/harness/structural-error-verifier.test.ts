@@ -15,7 +15,7 @@ import {
   parseRepeatedToolErrorKey,
 } from './improvements/watchdog-key-migration';
 import {
-  toolErrorFingerprint,
+  toolErrorKeyParts,
   toolErrorSignalKey,
   type ToolErrorClass,
 } from './improvements/tool-error-classifier';
@@ -137,14 +137,17 @@ const item = (
   issueId: string,
   tool: string,
   ageMs: number,
-  fingerprint: string | null = null,
-): OpenStructuralItem => ({
-  workspaceId: 'ws',
-  issueId,
-  tool,
-  watchdogKey: `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(tool, 'structural', fingerprint)}`,
-  ageMs,
-});
+  message: string | null = null,
+): OpenStructuralItem => {
+  const parts = toolErrorKeyParts('handler_error', message);
+  return {
+    workspaceId: 'ws',
+    issueId,
+    tool,
+    watchdogKey: `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(tool, 'structural', parts.errorCode, parts.fieldPath)}`,
+    ageMs,
+  };
+};
 
 describe('runStructuralErrorVerifierOnce (orchestration)', () => {
   it('resolves the quiet+old items and keeps the still-erroring / young ones', async () => {
@@ -210,16 +213,18 @@ describe('runStructuralErrorVerifierOnce (orchestration)', () => {
 
   /**
    * The load-bearing half-repair case from EI-22437036851108668: two distinct
-   * structural fingerprints share one tool, but only one contract has been fixed.
+   * structural contracts share one tool, but only one has been fixed. Under the
+   * structural key (bug-inflow-one-problem-one-row-2026-10-18 D-004) the missing
+   * column is the field segment, so the two filings keep distinct keys.
    * Recurrence lookup MUST use the complete watchdogKey; a tool-wide count would
    * either keep the repaired filing open forever or close the still-failing sibling.
    */
-  it('keeps a still-failing same-tool fingerprint open while resolving its repaired sibling', async () => {
+  it('keeps a still-failing same-tool contract open while resolving its repaired sibling', async () => {
     const tool = 'shared:tool';
-    const repairedFingerprint = toolErrorFingerprint('column "ownerId" does not exist')!;
-    const stillFailingFingerprint = toolErrorFingerprint('column "limit" does not exist')!;
-    const repaired = item('EI-repaired', tool, 9 * HOUR, repairedFingerprint);
-    const stillFailing = item('EI-still-failing', tool, 9 * HOUR, stillFailingFingerprint);
+    const repaired = item('EI-repaired', tool, 9 * HOUR, 'column "ownerId" does not exist');
+    const stillFailing = item('EI-still-failing', tool, 9 * HOUR, 'column "limit" does not exist');
+    expect(repaired.watchdogKey).toBe('repeated-tool-error:shared:tool:structural:handler_error:ownerid');
+    expect(stillFailing.watchdogKey).not.toBe(repaired.watchdogKey);
     const deps = makeFakeDeps(
       [repaired, stillFailing],
       {},
@@ -252,27 +257,30 @@ describe('runStructuralErrorVerifierOnce (orchestration)', () => {
  */
 describe('STRUCTURAL_WATCHDOG_KEY_PATTERN (the exact pre-filter handed to Postgres)', () => {
   const re = new RegExp(STRUCTURAL_WATCHDOG_KEY_PATTERN);
-  const mint = (tool: string, klass: ToolErrorClass, fp: string | null) =>
-    `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(tool, klass, fp)}`;
+  const mint = (tool: string, klass: ToolErrorClass, code: string | null, field: string | null) =>
+    `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(tool, klass, code, field)}`;
+  // Shapes still carried by OPEN rows minted before the structural key (D-004)
+  // until the key migration re-keys them; the pre-filter must keep admitting them.
+  const LEGACY_FINGERPRINTED = 'repeated-tool-error:dev:cache_stats:structural:md5-0123456789abcdef0123456789abcdef';
+  const LEGACY_BARE = 'repeated-tool-error:activity:recent:structural';
 
-  it('admits a FINGERPRINTED structural key — the common minted form', () => {
-    const key = mint('dev:cache_stats', 'structural', 'unsupported-unicode-escape');
-    expect(key).toBe('repeated-tool-error:dev:cache_stats:structural:unsupported-unicode-escape');
+  it('admits the CURRENT structural key — code + field segments after the class token', () => {
+    const key = mint('dev:cache_stats', 'structural', 'unsupported_unicode_escape', null);
+    expect(key).toBe('repeated-tool-error:dev:cache_stats:structural:unsupported_unicode_escape:field-unknown');
     expect(re.test(key)).toBe(true);
-    // Precisely why the old filter missed it: the key does NOT end at the class token.
+    // Precisely why the old filter missed this shape: the key does NOT end at the class token.
     expect(key.endsWith(':structural')).toBe(false);
   });
 
-  it('still admits a BARE structural key (no fingerprint was derivable)', () => {
-    const key = mint('activity:recent', 'structural', null);
-    expect(key).toBe('repeated-tool-error:activity:recent:structural');
-    expect(re.test(key)).toBe(true);
+  it('still admits LEGACY fingerprinted and bare structural keys', () => {
+    expect(re.test(LEGACY_FINGERPRINTED)).toBe(true);
+    expect(re.test(LEGACY_BARE)).toBe(true);
   });
 
-  it('rejects every OTHER tool-error class, fingerprinted or not', () => {
+  it('rejects every OTHER tool-error class, with or without segments', () => {
     for (const klass of ['transient', 'caller', 'rate-limit'] as const) {
-      expect(re.test(mint('activity:report', klass, 'some-fingerprint'))).toBe(false);
-      expect(re.test(mint('activity:report', klass, null))).toBe(false);
+      expect(re.test(mint('activity:report', klass, 'some_code', 'some.field'))).toBe(false);
+      expect(re.test(mint('activity:report', klass, null, null))).toBe(false);
     }
   });
 
@@ -292,31 +300,35 @@ describe('STRUCTURAL_WATCHDOG_KEY_PATTERN (the exact pre-filter handed to Postgr
   it('CONTROL: the old suffix-anchored filter provably misses the common form', () => {
     // Regex equivalent of the removed `LIKE 'repeated-tool-error:%:structural'`.
     const OLD_SUFFIX_ANCHORED = /^repeated-tool-error:.*:structural$/;
-    const fingerprinted = mint('dev:cache_stats', 'structural', 'unsupported-unicode-escape');
-    const bare = mint('activity:recent', 'structural', null);
+    const current = mint('dev:cache_stats', 'structural', 'unsupported_unicode_escape', null);
 
-    // The defect: the old filter drops the fingerprinted (common) form entirely...
-    expect(OLD_SUFFIX_ANCHORED.test(fingerprinted)).toBe(false);
+    // The defect: the old filter drops every segmented (common) form entirely...
+    expect(OLD_SUFFIX_ANCHORED.test(current)).toBe(false);
+    expect(OLD_SUFFIX_ANCHORED.test(LEGACY_FINGERPRINTED)).toBe(false);
     // ...while still admitting the bare form, which is why it looked healthy.
-    expect(OLD_SUFFIX_ANCHORED.test(bare)).toBe(true);
+    expect(OLD_SUFFIX_ANCHORED.test(LEGACY_BARE)).toBe(true);
 
-    // The fix admits both — so the two patterns genuinely disagree, and this suite
-    // fails if the pattern is ever reverted.
-    expect(re.test(fingerprinted)).toBe(true);
-    expect(re.test(bare)).toBe(true);
+    // The fix admits all three — so the two patterns genuinely disagree, and this
+    // suite fails if the pattern is ever reverted.
+    expect(re.test(current)).toBe(true);
+    expect(re.test(LEGACY_FINGERPRINTED)).toBe(true);
+    expect(re.test(LEGACY_BARE)).toBe(true);
   });
 
   it('agrees with the parser (the stated authority) on everything it admits', () => {
-    const admitted = [
-      mint('dev:cache_stats', 'structural', 'unsupported-unicode-escape'),
-      mint('activity:recent', 'structural', null),
-      mint('a:b:c:deeply:nested', 'structural', 'fp-x'),
+    const cases = [
+      { key: mint('dev:cache_stats', 'structural', 'unsupported_unicode_escape', null), tool: 'dev:cache_stats', code: 'unsupported_unicode_escape', field: 'field-unknown' },
+      { key: mint('a:b:c:deeply:nested', 'structural', 'handler_error', 'items.n.id'), tool: 'a:b:c:deeply:nested', code: 'handler_error', field: 'items.n.id' },
+      { key: LEGACY_FINGERPRINTED, tool: 'dev:cache_stats', code: null, field: null },
+      { key: LEGACY_BARE, tool: 'activity:recent', code: null, field: null },
     ];
-    for (const key of admitted) {
-      expect(re.test(key)).toBe(true);
-      const parsed = parseRepeatedToolErrorKey(key);
+    for (const c of cases) {
+      expect(re.test(c.key)).toBe(true);
+      const parsed = parseRepeatedToolErrorKey(c.key);
       expect(parsed?.klass).toBe('structural');
-      expect(parsed?.tool).toBeTruthy();
+      expect(parsed?.tool).toBe(c.tool);
+      expect(parsed?.errorCode).toBe(c.code);
+      expect(parsed?.fieldPath).toBe(c.field);
     }
   });
 });

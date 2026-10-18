@@ -8,9 +8,11 @@
  * guard pins the safer contract: a private per-run env file plus an ownership
  * check against both the current caller and the target process.
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
@@ -41,6 +43,103 @@ describe('EI-20226754912676562 — --boot-only handoff is per-run and owner-veri
     expect(src).toContain('verify_tauri_assert_owned');
   });
 });
+
+/**
+ * WI-6554700010017687 — the env file must load in a plain caller shell.
+ *
+ * Its body is a literal heredoc that runs in the CALLER's shell, where none
+ * of the verifier's vh_* helpers exist. A source-text pin cannot see that
+ * boundary (a mechanical vh_run_step rename passed every pin and made
+ * `source env.sh` exit 127 for nine days), so this sources the real body in
+ * `bash --noprofile --norc` against a live target process.
+ */
+const ENV_BODY = src.match(
+  /cat <<'BOOT_ONLY_ENV_SCRIPT'\n([\s\S]*?)\nBOOT_ONLY_ENV_SCRIPT\n/,
+)?.[1];
+
+describe.skipIf(process.platform !== 'linux')(
+  'WI-6554700010017687 — the --boot-only env file loads in a caller shell',
+  () => {
+    const OWNER = 'su-wi17687-owner';
+    const DISPLAY = ':977';
+    const PORT = '45977';
+    const PROVENANCE = 'wi17687-provenance';
+    let target: ChildProcess;
+    let dir: string;
+    let envFile: string;
+
+    beforeAll(() => {
+      // The "bridge" whose /proc/<pid>/environ the ownership check reads.
+      target = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], {
+        env: {
+          DISPLAY,
+          OPERATOR_DEV_PORT: PORT,
+          PAPERCUSP_SID: OWNER,
+          PAPERCUSP_TAURI_LAUNCH_PROVENANCE: PROVENANCE,
+        },
+        stdio: 'ignore',
+      });
+      dir = mkdtempSync(join(tmpdir(), 'wi17687-'));
+      envFile = join(dir, 'env.sh');
+      const bin = process.execPath;
+      const header = [
+        `VERIFY_TAURI_PID=${target.pid}`,
+        `VERIFY_TAURI_PORT=${PORT}`,
+        `VERIFY_TAURI_DISPLAY=${DISPLAY}`,
+        `VERIFY_TAURI_OWNER_SID=${OWNER}`,
+        `VERIFY_TAURI_LAUNCH_PROVENANCE=${PROVENANCE}`,
+        `VERIFY_TAURI_AGENT_TOOLS_BIN=${bin}`,
+        `VERIFY_TAURI_AGENT_TOOLS_BIN_DIR=${dirname(bin)}`,
+        `VERIFY_TAURI_CARGO_BIN=${bin}`,
+        `VERIFY_TAURI_CARGO_BIN_DIR=${dirname(bin)}`,
+      ].join('\n');
+      writeFileSync(envFile, `${header}\n${ENV_BODY ?? ''}\n`);
+    });
+
+    afterAll(() => {
+      target?.kill('SIGKILL');
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    function sourceAs(sid: string) {
+      // No vh_* helper is defined here: this is exactly the caller's shell.
+      const script = [
+        'source "$1"; rc=$?',
+        'echo "RC=$rc"',
+        'echo "VH=$(type -t vh_run_step || echo none)"',
+        // A child process proves the values are EXPORTED, not just set.
+        `${JSON.stringify(process.execPath)} -e 'console.log("CHILD_DISPLAY=" + (process.env.DISPLAY ?? "")); console.log("CHILD_PID=" + (process.env.VERIFY_TAURI_PID ?? ""))'`,
+      ].join('\n');
+      return spawnSync('bash', ['--noprofile', '--norc', '-c', script, 'bash', envFile], {
+        env: { PATH: process.env.PATH ?? '/usr/bin:/bin', PAPERCUSP_SID: sid, DISPLAY: ':1' },
+        encoding: 'utf8',
+      });
+    }
+
+    it('extracts the env-file body from the script', () => {
+      expect(ENV_BODY).toBeTruthy();
+      expect(ENV_BODY).toContain('verify_tauri_assert_owned');
+    });
+
+    it('sources cleanly for the owning session and exports the rig DISPLAY', () => {
+      const r = sourceAs(OWNER);
+      expect(r.stderr).not.toContain('command not found');
+      expect(r.stdout).toContain('RC=0');
+      expect(r.stdout).toContain('VH=none');
+      // The caller's own DISPLAY (:1, the owner's desktop) must be replaced.
+      expect(r.stdout).toContain(`CHILD_DISPLAY=${DISPLAY}`);
+      expect(r.stdout).toContain(`CHILD_PID=${target.pid}`);
+    });
+
+    it('still refuses a different session and exports nothing', () => {
+      const r = sourceAs('su-someone-else');
+      expect(r.stdout).toContain('RC=1');
+      expect(r.stderr).toContain('owned by another session');
+      expect(r.stdout).toContain('CHILD_DISPLAY=:1');
+      expect(r.stdout).toContain('CHILD_PID=\n');
+    });
+  },
+);
 
 describe('WI-10004544 — Xvfb teardown is bound to the originating run', () => {
   const startDisplayServer = src.match(

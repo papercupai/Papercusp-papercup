@@ -2931,6 +2931,40 @@ function finishPlanStamp(workItem: Record<string, unknown>): FinishPlanStamp | n
   return stamp as FinishPlanStamp;
 }
 
+/**
+ * The linked plan a close is conformance-checked against, and the harness that plan lives in.
+ *
+ * WI-6554700010017295: when the item carries a finish stamp (`payload.plan_item`), the linked
+ * plan IS the stamped (plan_slug, harness_slug) pair, the same plan the finish saga reflects
+ * the item into. `source_plan_slug` is not a substitute. For a plan-run execution item it
+ * names the TEMPLATE (e.g. `bug-triage`), while the stamp names the run INSTANCE
+ * (`bug-triage@run-<id>`) stored in the app harness (`execution.appHarnessSlug`). With a
+ * separate app harness the template does not exist there, so pairing the template slug with
+ * either harness found nothing and refused the close with `conformance_mapping_unavailable`.
+ * The instance is a verbatim clone of the template, so its requirement map is the template's.
+ * An unstamped item falls back to its own source plan in its own harness.
+ */
+export function conformanceClosurePlanLink(
+  item: {
+    harness?: string | null;
+    sourcePlanSlug?: string | null;
+    sourcePlanItemIds?: readonly string[] | null;
+  },
+  stamp: FinishPlanStamp | null,
+): { planSlug: string | undefined; planItemIds: string[]; harnessSlug: string } {
+  const declaredItemIds = item.sourcePlanItemIds?.length ? [...item.sourcePlanItemIds] : [];
+  if (stamp) {
+    // Declared item ids belong to the source plan; keep them only when it is the stamped plan.
+    const sameAsSource = item.sourcePlanSlug === stamp.plan_slug && declaredItemIds.length > 0;
+    return {
+      planSlug: stamp.plan_slug,
+      planItemIds: sameAsSource ? declaredItemIds : [stamp.item_id],
+      harnessSlug: stamp.harness_slug,
+    };
+  }
+  return { planSlug: item.sourcePlanSlug ?? undefined, planItemIds: declaredItemIds, harnessSlug: item.harness ?? '' };
+}
+
 function reflectedTerminalStatus(state: string): 'done' | 'dropped' | null {
   if (state === 'passed' || state === 'resolved' || state === 'done') return 'done';
   if (state === 'deprecated' || state === 'closed' || state === 'dropped') return 'dropped';
@@ -4339,14 +4373,15 @@ async function completeOne(
 
   // P-029: read the existing plan linkage and BAR map before any completion write.
   if (closeIntentRequested && !isAbandonedClose) {
-    const stamp = finishPlanStamp(existing as unknown as Record<string, unknown>);
-    const planSlug = existing.sourcePlanSlug ?? stamp?.plan_slug;
-    const planItemIds = existing.sourcePlanItemIds?.length ? existing.sourcePlanItemIds : stamp ? [stamp.item_id] : [];
+    const { planSlug, planItemIds, harnessSlug: planHarnessSlug } = conformanceClosurePlanLink(
+      existing,
+      finishPlanStamp(existing as unknown as Record<string, unknown>),
+    );
     if (planSlug) {
       try {
         const assessment = await conformanceClosureAssessment({
           workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
-          harnessSlug: existing.harness ?? stamp?.harness_slug ?? '',
+          harnessSlug: planHarnessSlug,
           planSlug, planItemIds, completion: it.completion, item: existing,
           skipConformance: duplicateCloseCoverageException,
         });

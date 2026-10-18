@@ -514,23 +514,37 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     fireEvent.click(screen.getByRole('button', { name: /^Summarize$/ }));
     await screen.findByRole('region', { name: 'Summary' });
     expect(startReadingSpy).not.toHaveBeenCalled();
-    expect(JSON.parse(send.mock.calls[0]![1]!.body as string)).toMatchObject({ operation: 'summarize', content: { text: 'Original source with exact tail', partial: true }, summary: { allowCloud: true, length: 'short', focus: 'numbers' } });
+    const summaryCall = send.mock.calls.find(([url]) => url === '/api/agent-mcp/operator-tts')!;
+    expect(JSON.parse(summaryCall[1]!.body as string)).toMatchObject({ operation: 'summarize', content: { text: 'Original source with exact tail', partial: true }, summary: { allowCloud: true, length: 'short', focus: 'numbers' } });
     fireEvent.click(screen.getByRole('button', { name: 'Summarize and read' }));
     await waitFor(() => expect(startReadingSpy).toHaveBeenCalledWith('Explicit concise summary', expect.objectContaining({ allowCloud: false })));
   });
   it('cancels a summary request and ignores late output before it can speak', async () => {
     let finish!: (response: Response) => void;
-    const send = vi.fn((_url: unknown, _init?: RequestInit) => new Promise<Response>(resolve => { finish = resolve; }));
+    const summaryRequests: RequestInit[] = [];
+    const send = vi.fn((url: unknown, init?: RequestInit) => {
+      if (url !== '/api/agent-mcp/operator-tts') return Promise.resolve(Response.json({}));
+      summaryRequests.push(init!);
+      return new Promise<Response>(resolve => { finish = resolve; });
+    });
     vi.stubGlobal('fetch', send);
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByRole('button', { name: 'Read selected text aloud' }));
     fireEvent.change(await screen.findByRole('textbox', { name: 'Text to read or summarize' }), { target: { value: 'Selected source' } });
     fireEvent.click(screen.getByRole('button', { name: 'Summarize and read' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel summary' }));
-    expect(send.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+    expect(summaryRequests[0]!.signal!.aborted).toBe(true);
+    expect(screen.getByRole('status', { name: 'Summary status' }).textContent).toBe('Summary canceled.');
     await act(async () => { finish(Response.json({ ok: true, summary: 'Late obsolete summary', coverage: { complete: true, warnings: [] } })); });
     expect(startReadingSpy).not.toHaveBeenCalled();
     expect(screen.queryByRole('region', { name: 'Summary' })).toBeNull();
+    expect(screen.getByRole('status', { name: 'Summary status' }).textContent).toBe('Summary canceled.');
+    fireEvent.click(screen.getByRole('button', { name: /^Summarize$/ }));
+    expect(screen.getByRole('status', { name: 'Summary status' }).textContent).toBe('Summarizing…');
+    await act(async () => { finish(Response.json({ ok: true, summary: 'Fresh summary', coverage: { complete: true, warnings: [] } })); });
+    expect(screen.queryByRole('status', { name: 'Summary status' })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Summary' }).textContent).toContain('Fresh summary');
+    expect(startReadingSpy).not.toHaveBeenCalled();
   });
 
   it('the TTS speak-responses mute lives on the chat bar: hydrates, flips + persists, re-syncs on broadcast (WI-4740)', async () => {

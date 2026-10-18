@@ -5163,12 +5163,24 @@ export async function commitAttributedGroups(
   } = {},
 ): Promise<{ committedAny: boolean; committedCount: number; error?: string }> {
   const excludeSet = new Set(excludePaths);
-  // Child worktree edits cannot change a superproject gitlink. A protected
-  // child edit with the same committed pointer must not strand root sources;
-  // actual child HEAD changes still appear with --ignore-submodules=dirty.
+  // Child worktree edits cannot change a superproject gitlink. Status also
+  // reports staged reverts when the shared index has an obsolete gitlink, so
+  // even --ignore-submodules=dirty cannot establish a pending pointer change.
   const allDirty = await dirtyFiles(runGit, repoPath, { ignoreSubmodules: 'dirty' });
   const prioritySet = new Set(opts.priorityPaths ?? []);
-  const dirtyPriorityPaths = allDirty.filter((f) => prioritySet.has(f));
+  const pendingPriorityPaths = async (paths: string[]): Promise<string[]> => {
+    const pending: string[] = [];
+    for (const path of paths.filter((f) => prioritySet.has(f))) {
+      const committed = await runGit(['rev-parse', '--verify', `HEAD:${path}`], repoPath);
+      const childHead = await headSha(runGit, join(repoPath, path));
+      // An unreadable pin is unknown, not proof that the pointer is unchanged.
+      if (committed.code !== 0 || !committed.stdout.trim() || !childHead || committed.stdout.trim() !== childHead) {
+        pending.push(path);
+      }
+    }
+    return pending;
+  };
+  const dirtyPriorityPaths = await pendingPriorityPaths(allDirty);
   const blockedPriorityPaths = dirtyPriorityPaths.filter((f) => excludeSet.has(f));
   const dirty = allDirty.filter((f) => !excludeSet.has(f) && !prioritySet.has(f));
   // Commit the anonymous residual first. Script-created and otherwise unattributed
@@ -5235,8 +5247,9 @@ export async function commitAttributedGroups(
     } else if (priority.status === 'error') {
       return { committedAny, committedCount, error: priority.error };
     }
-    const remainingPriorityPaths = (await dirtyFiles(runGit, repoPath, { ignoreSubmodules: 'dirty' }))
-      .filter((f) => prioritySet.has(f));
+    const remainingPriorityPaths = await pendingPriorityPaths(
+      await dirtyFiles(runGit, repoPath, { ignoreSubmodules: 'dirty' }),
+    );
     if (remainingPriorityPaths.length > 0) {
       if (priority.status === 'nothing') {
         opts.deferAttributedPaths?.([...new Set(groups.filter((g) => g.agent !== null).flatMap((g) => g.files))]);

@@ -148,6 +148,10 @@ export interface ProductionConformanceDepsInput {
   workspaceId: string;
   harnessSlug: string;
   planSlug: string;
+  /** Injectable probe dispatcher for focused tests; production uses the palette dispatcher. */
+  dispatchTool?: Parameters<typeof rescoreProbeDispatcher>[1];
+  /** Injectable probe evaluator for focused tests; production uses the continuity evaluator. */
+  evaluateProbes?: typeof evaluateCriterionProbeChecks;
   /**
    * Requirements carrying an approved deviation (R-17, P-028). Defaults to
    * {@link planApprovedDeviations}: re-derived from the plan's CURRENT text on every
@@ -177,10 +181,10 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
       }
       if (check.kind === 'probe') {
         const criterion = { key: request.checkId, check };
-        const evaluation = await evaluateCriterionProbeChecks({
+        const evaluation = await (input.evaluateProbes ?? evaluateCriterionProbeChecks)({
           criteria: [criterion],
           ratings: { [request.checkId]: { rating: 'unknown' } },
-          dispatchTool: rescoreProbeDispatcher(input.harnessSlug),
+          dispatchTool: rescoreProbeDispatcher(input.harnessSlug, input.dispatchTool, input.workspaceId),
         });
         if (!evaluation.ok) {
           return { kind: 'probe', verdict: 'error', value: null, unit: null, measuredAt: nowIso(), detail: `probe unjudged: ${evaluation.error}` };

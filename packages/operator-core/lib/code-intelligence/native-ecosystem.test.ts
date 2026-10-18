@@ -191,8 +191,8 @@ describe('native CLI fixture runtime and deadline guards', () => {
     const chunks: string[] = [];
     await expect(nativeFixtureProcess(process.execPath,
       ['-e', 'console.log("NATIVE_INCIDENT_API_STAGE=waiting-for-handler"); setInterval(() => {}, 1000)'],
-      { cwd: process.cwd(), timeoutMs: 300, onOutput: text => chunks.push(text) }))
-      .rejects.toThrow(/deadline 300ms exceeded[\s\S]*waiting-for-handler/);
+      { cwd: process.cwd(), timeoutMs: 5_000, onOutput: text => chunks.push(text) }))
+      .rejects.toThrow(/deadline 5000ms exceeded[\s\S]*waiting-for-handler/);
     expect(chunks.join('')).toContain('waiting-for-handler');
   });
   it.each([false, true])('preserves early and late phase clocks after output truncation (deadline %s)', async timedOut => {

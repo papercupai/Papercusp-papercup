@@ -69,9 +69,10 @@ import {
   classifyToolError,
   toolErrorSignalKey,
   toolErrorClassSqlCase,
-  toolErrorFingerprintSqlCase,
+  toolErrorKeyPartsSql,
   type ToolErrorClass,
 } from './tool-error-classifier';
+import { parseRepeatedToolErrorKey } from './watchdog-key-migration';
 import { dispatchWrapperExclusionPredicate } from '../../agent-tools/sessions/automatic-tool-names';
 import type { ImprovementSeverity } from './policy';
 import type { LearningSloOptions } from './learning-slo';
@@ -837,6 +838,15 @@ export interface CollectOptions extends LearningSloOptions, EngagementCollectorO
   structuralMinCallsForRate?: number;
   /** Transient tool-error (timeout/load) volume bar. Default 15 (raised — timeouts are noisy). */
   transientMinCount?: number;
+  /**
+   * Transient failures must also be a sustained SHARE of the tool's calls
+   * (bug-inflow-one-problem-one-row-2026-10-18 R-1). Default 0.2.
+   */
+  transientMinRate?: number;
+  /** ...and span at least this many distinct clock hours of the window (R-1). Default 3. */
+  transientMinActiveHours?: number;
+  /** New repeated-tool-error rows a single tool may mint per 24h (R-3 daily cap). Default 1. */
+  toolErrorDailyMintCap?: number;
   /**
    * Shared-resource timeout correlation window. A burst of transient failures from
    * several tools and coordination owners in this window is filed once as a
@@ -1754,20 +1764,23 @@ export async function collectSmokeFailSignals(sql: Sql, workspaceId: string, opt
 // for internal use, or imported directly from the module by new callers.
 export { classifyToolError, type ToolErrorClass };
 
-interface ClassifiedToolErrorRow {
+export interface ClassifiedToolErrorRow {
   tool_name: string;
   /** SQL alias `class`; one of ToolErrorClass. */
   class: ToolErrorClass;
   /**
-   * Full normalized-message digest (P-003/P-012): SQL-computed for fingerprinted
-   * classes, null otherwise. Appended to the dedup key so distinct failure modes
-   * under the same tool do not collapse onto one key.
+   * Structural identity (bug-inflow-one-problem-one-row-2026-10-18 D-004):
+   * `toolErrorKeyPartsSql`'s error code + field path. Structural/caller keys use
+   * them; transient/rate-limit rows carry null (one row per tool).
    */
-  fingerprint?: string | null;
-  /** Failures of this class for this tool in the window. */
+  code_key?: string | null;
+  field_key?: string | null;
+  /** Failures of this class for this key in the window. */
   n: number;
   /** Total calls (any status) for this tool in the window — the rate denominator. */
   total: number;
+  /** Distinct clock hours with at least one such failure — the "sustained" measure (R-1). */
+  active_hours?: number | null;
   sample: string | null;
   /** Newest failure timestamp in the window (P-005 latestAt). */
   latest_at?: string | Date | null;
@@ -2066,6 +2079,94 @@ export function isImprovementLoopTool(toolName: string): boolean {
   return /^improvements:/.test(toolName) || /^system:improvement-/.test(toolName);
 }
 
+/** A classified row folded onto its structural signal key. */
+export interface KeyedToolErrorRow extends ClassifiedToolErrorRow {
+  key: string;
+}
+
+/**
+ * Pure (bug-inflow-one-problem-one-row-2026-10-18 R-1/R-3): fold rows that share
+ * one structural signal key into ONE aggregate, so exactly one signal per key is
+ * possible however the rows arrived (the SQL already groups by key; an injected
+ * collector or a future grouping change must not reintroduce one signal per
+ * wording). Counts and active hours sum (bounded by the window), the rate
+ * denominator is the tool's total, the sample is the newest.
+ */
+export function aggregateToolErrorRowsByKey(rows: readonly ClassifiedToolErrorRow[]): KeyedToolErrorRow[] {
+  const byKey = new Map<string, KeyedToolErrorRow>();
+  for (const r of rows) {
+    const key = toolErrorSignalKey(r.tool_name, r.class, r.code_key, r.field_key);
+    const prior = byKey.get(key);
+    if (!prior) {
+      byKey.set(key, { ...r, key });
+      continue;
+    }
+    const priorMs = prior.latest_at ? new Date(prior.latest_at).getTime() : 0;
+    const rowMs = r.latest_at ? new Date(r.latest_at).getTime() : 0;
+    const newer = rowMs > priorMs;
+    byKey.set(key, {
+      ...prior,
+      n: prior.n + r.n,
+      total: Math.max(prior.total, r.total, prior.n + r.n),
+      active_hours: (prior.active_hours ?? 0) + (r.active_hours ?? 0),
+      sample: newer ? r.sample ?? prior.sample : prior.sample ?? r.sample,
+      latest_at: newer ? r.latest_at : prior.latest_at,
+    });
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * Pure (bug-inflow-one-problem-one-row-2026-10-18 R-3 daily cap): admit at most
+ * `cap` NEW repeated-tool-error rows per tool per 24h. `fresh` are signals with no
+ * open row (the key pre-filter already routed repeats of an open row away — they
+ * count onto that row). `mintedByTool` is how many repeated-tool-error rows each
+ * tool already minted in the last 24h. Within one tool the highest-severity
+ * signal goes first. Capped signals are DEFERRED, never dropped: they stay
+ * visible to the next tick and to the next day's budget. Other sources pass.
+ */
+export function capToolErrorMintsPerTool(
+  fresh: readonly WatchdogSignal[],
+  mintedByTool: ReadonlyMap<string, number>,
+  cap = 1,
+): { admitted: WatchdogSignal[]; capped: WatchdogSignal[] } {
+  const limit = Math.max(0, cap);
+  const used = new Map<string, number>(mintedByTool);
+  const admitted: WatchdogSignal[] = [];
+  const capped: WatchdogSignal[] = [];
+  const ranked = [...fresh].sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+  const cappedSet = new Set<WatchdogSignal>();
+  for (const s of ranked) {
+    if (s.source !== 'repeated-tool-error') continue;
+    const tool = parseRepeatedToolErrorKey(watchdogKeyOf(s))?.tool;
+    if (!tool) continue;
+    const n = used.get(tool) ?? 0;
+    if (n >= limit) cappedSet.add(s);
+    else used.set(tool, n + 1);
+  }
+  for (const s of fresh) (cappedSet.has(s) ? capped : admitted).push(s);
+  return { admitted, capped };
+}
+
+/** Default R-3 cap reader: repeated-tool-error rows minted per tool in the last 24h. */
+export async function readToolErrorMintsByTool(
+  workspaceId: string,
+  sql: Sql = getOrgPg().sql,
+): Promise<Map<string, number>> {
+  const rows = await sql<{ k: string }[]>`
+    SELECT payload->>'watchdogKey' AS k
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND created_ts > now() - interval '24 hours'
+       AND payload->>'watchdogKey' LIKE 'repeated-tool-error:%'`;
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    const tool = parseRepeatedToolErrorKey(r.k)?.tool;
+    if (tool) out.set(tool, (out.get(tool) ?? 0) + 1);
+  }
+  return out;
+}
+
 /**
  * Pure (P-006/D-006 + P-008/D-009): per-(tool,class) aggregate rows → signals,
  * excluding the loop's own tools. Each class has its own FIRE bar + severity + kind:
@@ -2084,33 +2185,36 @@ export function toolErrorSignalsFromRows(
   const structuralRate = opts.structuralMinRate ?? 0.5;
   const structuralRateCalls = opts.structuralMinCallsForRate ?? 3;
   const transientMin = opts.transientMinCount ?? 15;
+  const transientMinRate = opts.transientMinRate ?? 0.2;
+  const transientMinHours = opts.transientMinActiveHours ?? 3;
   const callerMin = opts.callerMinCount ?? 10;
   const rateLimitMin = opts.rateLimitMinCount ?? 8;
   const rateLimitMajor = opts.rateLimitMajorCount ?? 30;
 
   const out: WatchdogSignal[] = [];
-  for (const r of rows) {
+  for (const r of aggregateToolErrorRowsByKey(rows)) {
     if (isImprovementLoopTool(r.tool_name)) continue;
     const rate = r.total > 0 ? r.n / r.total : 0;
     const pct = Math.round(rate * 100);
     const sample = (r.sample ?? '').slice(0, 800) || '(no message)';
     const latestAt = toIsoOrUndefined(r.latest_at);
-    // The dedup key: tool:class[:fingerprint]. The fingerprint sharpens the key for
-    // the FINGERPRINTED classes — structural + caller + transient (P-003 + P-012) —
-    // so two genuinely DIFFERENT same-class modes under one tool don't collapse onto
-    // one key and mask each other; rate-limit stays COARSE (one capacity concern).
-    // toolErrorSignalKey is the single source (tool-error-classifier.ts), also used by
-    // the post-deploy key-migration backfill so a migrated key matches this exactly.
-    // `fp` (title display) tracks r.fingerprint, which the SQL already nulls for rate-limit.
-    const fp = r.fingerprint ?? null;
-    const key = toolErrorSignalKey(r.tool_name, r.class, r.fingerprint);
+    // The dedup key is STRUCTURAL (bug-inflow-one-problem-one-row-2026-10-18
+    // D-003/D-004): tool + class, plus error code + field path for structural and
+    // caller. Message wording never enters it, so a defect whose message carries an
+    // id or a value stays ONE row whose repeatCount climbs (R-3). Transient and
+    // rate-limit key by tool alone (R-1). toolErrorSignalKey is the single source,
+    // shared with agent-report normalization and the key migration.
+    const key = r.key;
+    const shape = r.class === 'structural' || r.class === 'caller'
+      ? ` (${r.code_key ?? 'error-code-unknown'} @ ${r.field_key ?? 'field-unknown'})`
+      : '';
 
     if (r.class === 'structural') {
       if (!(r.n >= structuralMin || (r.total >= structuralRateCalls && rate >= structuralRate))) continue;
       out.push({
         source: 'repeated-tool-error',
         key,
-        title: `Tool ${r.tool_name} returns a structural error${fp ? ` (${fp})` : ''}`,
+        title: `Tool ${r.tool_name} returns a structural error${shape}`,
         body:
           `Watchdog signal (structural tool-error): ${r.tool_name} returned a deterministic error ${r.n}× ` +
           `(${pct}% of ${r.total} calls) in the window — the shape that recurs identically (a bug/misconfig), ` +
@@ -2121,14 +2225,17 @@ export function toolErrorSignalsFromRows(
       });
     } else if (r.class === 'transient') {
       if (correlatedTransientTools.has(r.tool_name)) continue;
-      if (r.n < transientMin) continue;
+      // R-1: a transient failure is COUNTED, not filed, unless the tool stays above
+      // a sustained rate — enough volume, a real share of its calls, and spread
+      // over several hours (a single burst is load, not a tool problem).
+      if (r.n < transientMin || rate < transientMinRate || (r.active_hours ?? 0) < transientMinHours) continue;
       out.push({
         source: 'repeated-tool-error',
         key,
-        title: `Tool ${r.tool_name} timing out repeatedly${fp ? ` (${fp})` : ''}`,
+        title: `Tool ${r.tool_name} timing out repeatedly`,
         body:
           `Watchdog signal (transient tool-error): ${r.tool_name} timed out / errored transiently ${r.n}× ` +
-          `(${pct}% of ${r.total} calls) recently.\n\nSample: ${sample}`,
+          `(${pct}% of ${r.total} calls) across ${r.active_hours ?? 0} hours of the window.\n\nSample: ${sample}`,
         severity: r.n >= 50 ? 'major' : 'minor',
         kind: 'bug',
         latestAt,
@@ -2158,7 +2265,7 @@ export function toolErrorSignalsFromRows(
       out.push({
         source: 'repeated-tool-error',
         key,
-        title: `Tool ${r.tool_name} repeatedly rejecting caller input${fp ? ` (${fp})` : ''}`,
+        title: `Tool ${r.tool_name} repeatedly rejecting caller input${shape}`,
         body:
           `Watchdog signal (caller/DX tool-error): ${r.tool_name} rejected caller input ${r.n}× ` +
           `(${pct}% of ${r.total} calls) — a sustained pattern suggests a confusing schema or a ` +
@@ -2213,6 +2320,10 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
         -- so the in-DB SQL and the TS fn CANNOT drift (P-011). The per-class FIRE bars
         -- live in toolErrorSignalsFromRows; the loop's own tools are excluded below.
         ${toolErrorClassSqlCase(sql)} AS class,
+        -- Structural identity (bug-inflow-one-problem-one-row-2026-10-18 D-004):
+        -- error code + field path, GENERATED from the same patterns
+        -- toolErrorKeyParts walks in TS (parity: tool-error-classifier.integration.test.ts).
+        ${toolErrorKeyPartsSql(sql)},
         error_message,
         invoked_at
         FROM harness_shared.tool_invocations
@@ -2233,24 +2344,22 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
          AND ${dispatchWrapperExclusionPredicate(sql)}
        GROUP BY tool_name
     ),
-    -- P-003 + P-012 fingerprint: an MD5 digest of the full digit/punct-stripped
-    -- normalized message, computed by the GENERATED CASE from
-    -- FINGERPRINTED_TOOL_ERROR_CLASSES (tool-error-classifier.ts). structural + caller +
-    -- transient are fingerprinted, so distinct same-class modes under one tool split into
-    -- separate keys instead of masking each other; rate-limit stays coarse (one capacity
-    -- concern). toolErrorFingerprint() mirrors this exact digest in TS for the
-    -- key-migration backfill — parity proven by the integration test.
+    -- Transient and rate-limit are keyed by TOOL alone (R-1: one row per tool), so
+    -- their code/field segments are nulled before grouping; structural and caller
+    -- group by tool + error code + field path (R-2/R-3). No message fingerprint.
     tagged AS (
       SELECT tool_name, class, error_message, invoked_at,
-        ${toolErrorFingerprintSqlCase(sql)} AS fingerprint
+        CASE WHEN class IN ('transient', 'rate-limit') THEN NULL ELSE code_key END AS code_key,
+        CASE WHEN class IN ('transient', 'rate-limit') THEN NULL ELSE field_key END AS field_key
         FROM fail
     )
-    SELECT tagged.tool_name, tagged.class, tagged.fingerprint, count(*)::int AS n,
+    SELECT tagged.tool_name, tagged.class, tagged.code_key, tagged.field_key, count(*)::int AS n,
            COALESCE(tot.total, count(*))::int AS total,
+           count(DISTINCT date_trunc('hour', tagged.invoked_at))::int AS active_hours,
            max(tagged.error_message) AS sample,
            max(tagged.invoked_at) AS latest_at
       FROM tagged LEFT JOIN tot ON tot.tool_name = tagged.tool_name
-     GROUP BY tagged.tool_name, tagged.class, tagged.fingerprint, tot.total
+     GROUP BY tagged.tool_name, tagged.class, tagged.code_key, tagged.field_key, tot.total
     HAVING
        (tagged.class = 'structural' AND (
          count(*) >= ${structuralMinCount}
@@ -4316,6 +4425,8 @@ export interface WatchdogDeps {
   processAutoClose?: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
   /** Re-detect file-backed red tests immediately before capture; fails open on read errors. */
   redetectRedTests?: RedTestRedetect;
+  /** R-3 daily cap: repeated-tool-error rows minted per tool in the last 24h (fails open). */
+  readToolErrorMintsByTool?: (workspaceId: string) => Promise<ReadonlyMap<string, number>>;
 }
 
 /** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down.
@@ -4811,15 +4922,9 @@ export function rollupWatchdogTicks(ticks: readonly WatchdogRollupTick[]): Watch
     }
     for (const k of t.knownOpenKeys ?? []) {
       if (!k.startsWith('repeated-tool-error:')) continue;
-      const cls = /:rate-limit$/.test(k)
-        ? 'rate-limit'
-        : /:transient$/.test(k)
-          ? 'transient'
-          : /:caller$/.test(k)
-            ? 'caller'
-            : /:structural$/.test(k) || /:structural:/.test(k)
-              ? 'structural'
-              : 'other';
+      // The parser is the one authority on a key's class: suffix regexes missed
+      // every `:caller:<…>` key and counted it as 'other'.
+      const cls = parseRepeatedToolErrorKey(k)?.klass ?? 'other';
       toolErrorByClass[cls] = (toolErrorByClass[cls] ?? 0) + 1;
     }
   }
@@ -5197,6 +5302,8 @@ interface ResolvedTickDeps {
   processAging: (workspaceId: string, knownOpen: readonly KnownOpenAgingInput[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
   processAutoClose: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
   redetectRedTests?: RedTestRedetect;
+  /** R-3 daily cap: repeated-tool-error rows minted per tool in the last 24h. Default reads PG. */
+  readToolErrorMintsByTool?: (workspaceId: string) => Promise<ReadonlyMap<string, number>>;
   collect?: () => Promise<WatchdogSignal[]>;
   collectors?: WatchdogCollector[];
 }
@@ -5326,8 +5433,23 @@ async function runWatchdogTickBody(
   // capture path, even when their source is normally a metric. Keep the shared
   // source classification unchanged; organic metric signals remain suppressed.
   const isFileable = (s: WatchdogSignal) => s.origin === 'drill' || sourceFilesWorkItem(s.source);
-  const fileable = partition.fresh.filter(isFileable);
+  let fileable = partition.fresh.filter(isFileable);
   const metricSuppressed = partition.fresh.filter((s) => !isFileable(s));
+  // bug-inflow-one-problem-one-row-2026-10-18 R-3: at most N NEW repeated-tool-error
+  // rows per tool per 24h. Repeats of an OPEN row never reach here (the key
+  // pre-filter routed them onto that row), so the cap bounds only minting. A capped
+  // signal is deferred, not dropped. Fails OPEN: an unreadable mint count admits.
+  let toolErrorCapped: WatchdogSignal[] = [];
+  if (deps.readToolErrorMintsByTool && fileable.some((s) => s.source === 'repeated-tool-error')) {
+    try {
+      const minted = await deps.readToolErrorMintsByTool(workspaceId);
+      const capped = capToolErrorMintsPerTool(fileable, minted, opts.toolErrorDailyMintCap ?? 1);
+      fileable = capped.admitted;
+      toolErrorCapped = capped.capped;
+    } catch (e) {
+      console.warn(`[improvement-watchdog] tool-error daily cap unavailable (admitting): ${e instanceof Error ? e.message : e}`);
+    }
+  }
 
   const planCap = Math.max(0, opts.maxPerTick ?? 3);
   // Reuses the single prior-tick read above (P-011: `ran` only, so a skipped tick can't wipe
@@ -5449,7 +5571,7 @@ async function runWatchdogTickBody(
     captured,
     declinedDuplicates,
     deferred: plan.deferred.length,
-    deferredKeys: plan.deferred.map((s) => `${s.source}:${s.key}`),
+    deferredKeys: [...plan.deferred, ...toolErrorCapped].map((s) => `${s.source}:${s.key}`),
     knownOpen: partition.knownOpen.length,
     knownOpenKeys: partition.knownOpen.map(watchdogKeyOf),
     staleResolved: partition.staleResolved.length,
@@ -5532,6 +5654,9 @@ export async function runWatchdogTick(
     ?? (!deps?.collect && !deps?.collectors
       ? ((paths: string[], o: CollectOptions) => collectRedTestSignals(getOrgPg().sql, o, paths))
       : undefined);
+  // Same opt-in rule: an injected-collector (unit) tick never reads PG for the cap.
+  const readToolErrorMints = deps?.readToolErrorMintsByTool
+    ?? (!deps?.collect && !deps?.collectors ? (ws: string) => readToolErrorMintsByTool(ws) : undefined);
 
   const outcome = await withLock(workspaceId, () =>
     runWatchdogTickBody(workspaceId, opts, {
@@ -5543,6 +5668,7 @@ export async function runWatchdogTick(
       processAging,
       processAutoClose,
       redetectRedTests,
+      readToolErrorMintsByTool: readToolErrorMints,
       collect: deps?.collect,
       collectors: deps?.collectors,
     }),
@@ -5594,6 +5720,7 @@ export const PAYLOAD_TUNABLE_KEYS = [
   // collector bars (CollectOptions)
   'redTestWindowHours', 'redTestMinFails', 'toolErrorWindowHours', 'structuralMinCount',
   'structuralMinRate', 'structuralMinCallsForRate', 'transientMinCount', 'callerMinCount',
+  'transientMinRate', 'transientMinActiveHours', 'toolErrorDailyMintCap',
   'softFailureMinRun',
   'serviceHealthMaxStaleMs', 'smokeFailRecentHours', 'expiredLeaseWindowDays',
   'expiredLeaseMinCount', 'failedSpawnWindowHours', 'failedSpawnMinCount',

@@ -433,18 +433,22 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   });
 
   describe('test-run ledger sink routing', () => {
-    const resolvedSink = 'postgresql://harness_admin:harness_admin_pwd@localhost:6543/papercusp';
+    const resolvedSink = 'postgresql://ledger.example:5444/papercusp';
 
     it.each([
-      ['unset', undefined],
-      ['blank', ' \t '],
-    ] as const)('resolves the reporter sink from pg-url.mjs when the caller value is %s', (_label, supplied) => {
+      ['port', 'unset', '6543', undefined, undefined],
+      ['port', 'blank', '6543', undefined, ' \t '],
+      ['both', 'unset', '6543', '1', undefined],
+      ['both', 'blank', '6543', '1', ' \t '],
+    ] as const)('refuses an inferred disposable reporter sink with %s isolation and %s caller value', (_isolation, _label, port, discovery, supplied) => {
+      const marker = join(dir, 'guard-ran');
       const env: NodeJS.ProcessEnv = {
         ...process.env,
-        PAPERCUSP_PG_PORT: '6543',
-        PAPERCUSP_SKIP_PG_DISCOVERY: '1',
-        EXPECTED_TEST_RUNS_DB_URL: resolvedSink,
+        PROBE_TEST_GUARD_MARKER: marker,
       };
+      env.PAPERCUSP_PG_PORT = port;
+      if (discovery === undefined) delete env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      else env.PAPERCUSP_SKIP_PG_DISCOVERY = discovery;
       delete env.HARNESS_ADMIN_DATABASE_URL;
       if (supplied === undefined) delete env.PAPERCUSP_TEST_RUNS_DB_URL;
       else env.PAPERCUSP_TEST_RUNS_DB_URL = supplied;
@@ -452,9 +456,37 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       const { code, out } = runProbeIO([
         '--file', subject,
         '--mutate', 's/beta/BETA/',
-        '--test', 'test "$PAPERCUSP_TEST_RUNS_DB_URL" = "$EXPECTED_TEST_RUNS_DB_URL" && grep -q "^beta$" {}',
+        '--test', 'touch "$PROBE_TEST_GUARD_MARKER"; grep -q "^beta$" {}',
       ], env);
 
+      expect(code, out).toBe(2);
+      expect(out).toContain('verdict=harness-error phase=preflight reason=private-ledger-sink-required');
+      expect(out).toContain('PAPERCUSP_TEST_RUNS_DB_URL is required');
+      expect(existsSync(marker)).toBe(false);
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it.each([
+      ['unset', 'enabled', undefined, undefined],
+      ['blank', 'enabled', ' \t ', undefined],
+      ['unset', 'disabled', undefined, '1'],
+      ['blank', 'disabled', ' \t ', '1'],
+    ] as const)('resolves the ordinary reporter sink with %s caller value and discovery %s when no private port exists', (_label, _discovery, supplied, discovery) => {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        HARNESS_ADMIN_DATABASE_URL: resolvedSink,
+        EXPECTED_TEST_RUNS_DB_URL: resolvedSink,
+      };
+      delete env.PAPERCUSP_PG_PORT;
+      if (discovery === undefined) delete env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      else env.PAPERCUSP_SKIP_PG_DISCOVERY = discovery;
+      if (supplied === undefined) delete env.PAPERCUSP_TEST_RUNS_DB_URL;
+      else env.PAPERCUSP_TEST_RUNS_DB_URL = supplied;
+      const { code, out } = runProbeIO([
+        '--file', subject,
+        '--mutate', 's/beta/BETA/',
+        '--test', 'test "$PAPERCUSP_TEST_RUNS_DB_URL" = "$EXPECTED_TEST_RUNS_DB_URL" && grep -q "^beta$" {}',
+      ], env);
       expect(code, out).toBe(0);
       expect(out).toContain('verdict=caught');
       expect(read()).toBe(ORIGINAL);
@@ -2504,6 +2536,51 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     const dirtyWindow = source.slice(mutationAt, supervisedGuardAt);
     expect(dirtyWindow).not.toContain('$(');
     expect(dirtyWindow).not.toContain(String.fromCharCode(96));
+  });
+
+  it.each([false, true])('handles SIGTERM at the completed mutation write boundary (peer edit: %s)', (peerEdit) => {
+    // Signal the waiting probe before its mutation command returns. Polling
+    // for dirty bytes made this boundary an occasional full-suite failure.
+    const signalBin = join(dir, 'signal-bin');
+    const signalMarker = join(dir, 'mutation-boundary-signalled');
+    const realPerl = spawnSync('sh', ['-c', 'command -v perl'], {
+      encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
+    }).stdout.trim();
+    expect(realPerl).not.toBe('');
+    mkdirSync(signalBin);
+    writeFileSync(join(signalBin, 'perl'), `#!/usr/bin/env bash
+"$MUTATION_PROBE_REAL_PERL" "$@"
+rc=$?
+if [ "$1" = -pi ] && [ "$rc" -eq 0 ]; then
+  : > "$MUTATION_PROBE_SIGNAL_MARKER"
+  if [ "$MUTATION_PROBE_BOUNDARY_PEER_EDIT" = 1 ]; then
+    printf 'peer-edit\\n' > "$MUTATION_PROBE_BOUNDARY_SUBJECT"
+  fi
+  kill -TERM "$PPID"
+fi
+exit "$rc"
+`, { mode: 0o755 });
+    const { code, out } = runProbeIO([
+      '--in-tree', ACCEPT_SWEEP, '--file', subject,
+      '--mutate', 's/beta/BETA/', '--test', 'grep -q "^beta$" {}',
+    ], {
+      ...process.env,
+      PATH: `${signalBin}:${process.env.PATH ?? ''}`,
+      MUTATION_PROBE_REAL_PERL: realPerl,
+      MUTATION_PROBE_SIGNAL_MARKER: signalMarker,
+      MUTATION_PROBE_BOUNDARY_PEER_EDIT: peerEdit ? '1' : '0',
+      MUTATION_PROBE_BOUNDARY_SUBJECT: subject,
+    });
+    expect(existsSync(signalMarker), out).toBe(true);
+    expect(code, out).toBe(peerEdit ? 3 : 143);
+    expect(read()).toBe(peerEdit ? 'peer-edit\n' : ORIGINAL);
+    if (peerEdit) {
+      expect(out).toContain('MUTATION_PROBE_TREE_RESULT status=concurrent-change-preserved');
+      expect(restoredRecord()).toBeNull();
+    } else {
+      expect(out).toContain('tree integrity: VERIFIED');
+      expect(restoredRecord()).toEqual(verifiedOriginal());
+    }
   });
 
   it('restores PROMPTLY on SIGTERM mid-probe — not merely eventually', async () => {

@@ -9,6 +9,7 @@ import { auditRequestProvenance, buildRosterAudit, loadRosterAudit, saveRosterAu
 import { recordOwnerDirective } from '../../../owner-directives';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { publishReport } from '../../../report-library';
+import { pickupDispositionViolations } from '../parked-agent-audit-oracles';
 
 const fixture = vi.hoisted(() => ({ workspaceId: 'audit-test-ws', sql: null as unknown }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
@@ -138,6 +139,36 @@ describe('roster frozen audit PG persistence', () => {
     const end = pageRosterAudit(restored!, scope, { cursor: page.nextCursor! });
     expect(end.records.map(row => row.ownerId)).toEqual(['b']);
     expect(end.coverage).toMatchObject({ total: 2, covered: 2, complete: true });
+  });
+
+  it('reads ten persisted dispositions and accountable follow-ups from PG', async () => {
+    const expected = Array.from({ length: 10 }, (_, i) => ({ ownerId: 'owner-' + i, request: 'request-' + i }));
+    for (const row of expected) {
+      await db.adminSql`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, msg_id, body, ts)
+        VALUES (${scope.workspaceId}, 'messages', ${row.request},
+          ${db.adminSql.json({ ...row, outcome: 'pickup-unconfirmed', reply: null })},
+          ${'2026-10-18T03:00:00.000Z'}::timestamptz)`;
+    }
+    const ids = ['WI-6554700010017003', 'WI-6554700010017004'];
+    for (const id of ids) {
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, taken_by)
+        VALUES (${scope.workspaceId}, ${harness}, ${id}, 'feature', 'accountable follow-up', 'wip', 'reader-a')`;
+    }
+    const cases = (await db.adminSql<{ body: { ownerId: string; request: string; outcome: string; reply: null } }[]>`
+      SELECT body FROM harness_shared.coord_event_log WHERE workspace_id=${scope.workspaceId}
+        AND surface='messages' AND msg_id = ANY(${expected.map(row => row.request)}) ORDER BY msg_id`).map(row => row.body);
+    const readItems = async () => (await db.adminSql<{ feature_id: string; status: string; taken_by: string | null }[]>`
+      SELECT feature_id, status, taken_by FROM harness_shared.work_items
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND feature_id = ANY(${ids})`)
+      .map(row => ({ id: row.feature_id, state: row.status, assignee: row.taken_by, hasCompletionEvidence: false }));
+    expect(pickupDispositionViolations(expected, cases, await readItems(), 'reader-a')).toEqual([]);
+    const duplicate = cases.slice(); duplicate[9] = duplicate[0];
+    expect(pickupDispositionViolations(expected, duplicate, await readItems(), 'reader-a')).toContain('disposition-population');
+    await db.adminSql`UPDATE harness_shared.work_items SET taken_by=NULL
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND feature_id=${ids[0]}`;
+    expect(pickupDispositionViolations(expected, cases, await readItems(), 'reader-a'))
+      .toContain('unowned-or-unverified:WI-6554700010017003');
   });
   it('resolves captured directive ledger rows after persistence without upgrading agent or unverified text', async () => {
     const text = 'Audit the parked population and retain the source owner request.';
@@ -269,6 +300,31 @@ describe('roster frozen audit PG persistence', () => {
     expect(snapshot.population).toEqual(['audit-agent-a', 'audit-agent-b']);
     await saveRosterAudit(harness, snapshot);
     expect(await loadRosterAudit(harness, snapshot.auditId, scope)).toEqual(snapshot);
+  });
+
+  it('does not promote PG queue or delivery rows into recipient pickup', async () => {
+    const asOf = '2026-10-18T04:00:00.000Z';
+    const owner = 'audit-stages';
+    for (const msgId of ['stages-queued', 'stages-delivered']) {
+      await db.adminSql`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, msg_id, body, ts)
+        VALUES (${scope.workspaceId}, 'messages', ${msgId},
+          ${db.adminSql.json({ from: 'requester', to: [owner], wake: 'required' })}, ${asOf}::timestamptz)`;
+    }
+    await db.adminSql`INSERT INTO harness_shared.event_wake_deliveries
+      (workspace_id, await_id, subscriber_id, event_key, payload, status, turn_proof, turn_started_at, created_at)
+      VALUES (${DEFAULT_COORD_WORKSPACE}, 2, ${owner}, ${'coord:inbox-wake:' + owner},
+        ${db.adminSql.json({ msg_id: 'stages-delivered' })}, 'delivered', 'awaiting', NULL, ${asOf}::timestamptz)`;
+    const snapshot = await buildRosterAudit({ harness, scope, asOf, expectedPopulation: 1,
+      viewer: { ownerId: 'reader-a' }, agents: [{ ownerId: owner, sessionState: 'parked' }] });
+    const queued = snapshot.records.find(row => row.id === 'wake:' + owner + ':stages-queued')!;
+    const delivered = snapshot.records.find(row => row.id === 'wake:' + owner + ':stages-delivered')!;
+    expect(queued.fields.queued).toMatchObject({ status: 'known', value: true });
+    expect(queued.fields.delivered.status).toBe('unknown');
+    expect(delivered.fields.delivered).toMatchObject({ status: 'known', value: true });
+    for (const row of [queued, delivered]) {
+      expect(row.fields.turnStarted.status).toBe('unknown');
+      expect(row.fields.replied.status).toBe('unknown');
+    }
   });
 
   it('retains harness-qualified feature claims with unknown missing checkpoints', async () => {

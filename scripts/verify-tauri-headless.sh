@@ -158,7 +158,11 @@
 #     per-run env file plus a stop-script path, and returns WITHOUT tearing
 #     down — for a multi-step interactive verification session. The source
 #     file re-checks caller PAPERCUSP_SID and target-process provenance before
-#     exporting its variables. Run the printed stop script when done; NEVER
+#     exporting its variables, and (like the assertion form) also exports
+#     DISPLAY=$VERIFY_TAURI_DISPLAY, so screenshots and X tools run from the
+#     sourcing shell hit the rig's Xvfb, never the owner's desktop. Source it
+#     in a plain shell; it needs none of this script's internal helpers.
+#     Run the printed stop script when done; NEVER
 #     leave it running unattended (mirrors the two-instance-*-smoke.sh
 #     leaked-Xvfb lesson, WI-2115 — a display left up starves the next run).
 #     A capability:bash launch refuses this form before booting because that
@@ -2798,7 +2802,10 @@ verify_tauri_assert_owned() {
   return 0
 }
 
-if ! vh_run_step verifier-bridge-ownership verify_tauri_assert_owned; then
+# WI-6554700010017687: this body runs in the CALLER's shell, where the
+# verifier's vh_* step helpers are not defined. Call the check directly; a
+# `vh_run_step` wrapper here exits 127 and the file refuses to load.
+if ! verify_tauri_assert_owned; then
   # `return` is valid only when this file is sourced. Keep the source-only
   # contract explicit while still failing safely if somebody executes it.
   if (return 0 2>/dev/null); then
@@ -2815,6 +2822,11 @@ case ":${PATH:-}:" in
   *":$VERIFY_TAURI_CARGO_BIN_DIR:"*) ;;
   *) PATH="$VERIFY_TAURI_CARGO_BIN_DIR:${PATH:-/usr/local/bin:/usr/bin:/bin}" ;;
 esac
+# Same display contract as the assertion-command mode (export DISPLAY beside
+# VERIFY_TAURI_DISPLAY): screenshots and xdotool from the caller shell target
+# this rig's Xvfb, never the owner's live desktop.
+DISPLAY="$VERIFY_TAURI_DISPLAY"
+export DISPLAY
 export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
 export VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
 export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DEV_URL VERIFY_TAURI_DISPLAY

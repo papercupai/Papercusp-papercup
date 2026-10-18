@@ -550,6 +550,110 @@ export interface SpecTestAdequacyResult {
   };
 }
 
+/** Independently observed candidate identities, not caller-supplied freshness overrides. */
+export interface SpecEvidenceMatrixIdentity {
+  sourceSha: string | null;
+  testFile: string | null;
+  testBlob: string | null;
+  /** null is an explicit not-applicable declaration; incomplete objects remain unknown. */
+  artifact: { buildId: string | null; sha256: string | null } | null;
+}
+
+export interface SpecEvidenceMatrixRequirement {
+  rowId: string;
+  clause: SpecClauseRevision;
+  scenarioId: string;
+  caseTitle: string;
+  candidate: SpecEvidenceMatrixIdentity;
+  evidencePlane: 'tree' | 'live';
+}
+
+export interface SpecEvidenceMatrixObservation {
+  rowId: string;
+  evidence: SpecEvidenceForAdequacy;
+  observed: SpecEvidenceMatrixIdentity;
+  evidencePlane: 'tree' | 'live';
+  claimsShipment: boolean;
+  setupOnly: boolean;
+}
+
+/**
+ * Compare an independently enumerated journey inventory with reader/ledger observations.
+ * Iterate REQUIREMENTS so absent proof cannot shrink the population. Reuse the clause
+ * evaluator for binding, execution and freshness; identity equality never upgrades an
+ * attestation to server measurement. This checks coverage/identity, not journey behavior
+ * or shipment approval. A synthetic positive control is calibration, not plan acceptance.
+ */
+export function evaluateSpecEvidenceMatrix(input: {
+  required: readonly SpecEvidenceMatrixRequirement[];
+  observed: readonly SpecEvidenceMatrixObservation[];
+  classRef: PlanClassRubricRef;
+}) {
+  const byId = new Map<string, SpecEvidenceMatrixObservation[]>();
+  for (const row of input.observed) {
+    byId.set(row.rowId, [...(byId.get(row.rowId) ?? []), row]);
+  }
+  const requiredIds = new Set(input.required.map((row) => row.rowId));
+  const extraRowIds = [...byId.keys()].filter((id) => !requiredIds.has(id));
+  const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  const rows = input.required.map((required) => {
+    const rules: string[] = [];
+    if (!nonempty(required.rowId) || !nonempty(required.scenarioId) || !nonempty(required.caseTitle)) {
+      rules.push('incomplete-required-row');
+    }
+    if (input.required.filter((row) => row.rowId === required.rowId).length !== 1) {
+      rules.push('duplicate-required-row');
+    }
+    const matches = byId.get(required.rowId) ?? [];
+    if (matches.length !== 1) {
+      rules.push(matches.length === 0 ? 'missing-required-row' : 'duplicate-observed-row');
+      return { rowId: required.rowId, rules };
+    }
+    const row = matches[0]!;
+    const proof = row.evidence;
+    if (proof.planSlug !== required.clause.planSlug || proof.specId !== required.clause.specId ||
+        proof.specRevision !== required.clause.revision || proof.specFingerprint !== required.clause.contentHash) {
+      rules.push('clause-identity-mismatch');
+    }
+    if (!Number.isSafeInteger(proof.id) || proof.id! <= 0) rules.push('missing-immutable-binding');
+    for (const field of ['sourceSha', 'testFile', 'testBlob'] as const) {
+      if (!nonempty(required.candidate[field]) || !nonempty(row.observed[field]) ||
+          required.candidate[field] !== row.observed[field]) rules.push(`${field}-identity-mismatch`);
+    }
+    const candidateArtifact = required.candidate.artifact;
+    const observedArtifact = row.observed.artifact;
+    if (candidateArtifact === null ? observedArtifact !== null :
+        !candidateArtifact || !observedArtifact ||
+        !nonempty(candidateArtifact.buildId) || !nonempty(candidateArtifact.sha256) ||
+        candidateArtifact.buildId !== observedArtifact.buildId || candidateArtifact.sha256 !== observedArtifact.sha256) {
+      rules.push('artifact-identity-mismatch');
+    }
+    if (proof.testRunProvenance?.filePath !== required.candidate.testFile ||
+        !proof.testRunExecution?.passedCaseTitles?.includes(required.caseTitle)) {
+      rules.push('unmatched-executed-case');
+    }
+    if (row.setupOnly !== false) rules.push('setup-only-or-unknown');
+    if (readSpecEvidencePlane(proof.details) !== row.evidencePlane) rules.push('binding-plane-mismatch');
+    if (row.evidencePlane !== required.evidencePlane) rules.push('evidence-plane-mismatch');
+    if (row.claimsShipment && row.evidencePlane !== 'live') rules.push('tree-evidence-claimed-as-shipment');
+    if (proof.currentness.provenance !== 'server-measured') rules.push('identity-not-server-measured');
+    const evaluated = evaluateSpecTestAdequacy({
+      clause: required.clause, evidence: [proof], classRef: input.classRef,
+    });
+    for (const criterion of ['traceability', 'execution-integrity', 'freshness'] as const) {
+      if (evaluated.ratings[criterion].rating !== 'pass') rules.push(criterion);
+    }
+    return { rowId: required.rowId, rules };
+  });
+  return {
+    healthy: rows.length > 0 && extraRowIds.length === 0 && rows.every((row) => row.rules.length === 0),
+    requiredRowCount: input.required.length,
+    observedRowCount: input.observed.length,
+    rows,
+    extraRowIds,
+  };
+}
+
 const HIGH_RISK_BEHAVIOR_CLASSES = new Set<SpecBehaviorClass>([
   'authorization',
   'concurrency',

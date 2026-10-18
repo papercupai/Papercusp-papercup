@@ -31,6 +31,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   runGitSync,
+  commitAttributedGroups,
   defaultRunToolCatalogGenerator,
   defaultRunGeneratedDeclarationsGenerator,
   defaultRunToolRoutingCheck,
@@ -4353,6 +4354,109 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(git(subRepo, 'status', '--porcelain')).toContain('sub.txt');
     expect(git(repo, 'status', '--porcelain', 'root-attributed.ts')).toBe('');
     expect(logs.join('\n')).not.toContain('deferring attributed source path(s)');
+  });
+
+  it.each([false, true])('commits attributed root sources with a stale shared-index gitlink (protected child: %s)', async (protectedChild) => {
+    const subRepo = join(repo, 'libs/sub');
+    const originalPointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
+    // Create a valid alternate commit without moving either repository's HEAD.
+    const stalePointer = git(subRepo, 'commit-tree', git(subRepo, 'rev-parse', 'HEAD^{tree}'),
+      '-p', originalPointer, '-m', 'stale index fixture');
+    git(repo, 'update-index', '--cacheinfo', '160000', stalePointer, 'libs/sub');
+    expect(stalePointer).not.toBe(originalPointer);
+    expect(git(subRepo, 'rev-parse', 'HEAD')).toBe(originalPointer);
+    expect(git(repo, 'rev-parse', ':libs/sub')).toBe(stalePointer);
+    if (protectedChild) writeFileSync(join(subRepo, 'sub.txt'), 'protected child work\n');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      excludePaths: protectedChild ? ['libs/sub/sub.txt'] : [],
+      log: message => logs.push(message),
+      loadRoster: async () => [{
+        agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'update independent root source',
+        files: ['root-attributed.ts'],
+      }],
+    });
+
+    expect(out.status).toBe('synced');
+    expect(logs.join('\n')).not.toContain('deferring attributed source path(s)');
+    expect(git(superOrigin, 'show', 'main:root-attributed.ts')).toBe('export const sourceVersion = 2;');
+    expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(originalPointer);
+    expect(git(subRepo, 'rev-parse', 'HEAD')).toBe(originalPointer);
+    expect(git(repo, 'status', '--porcelain', 'root-attributed.ts')).toBe('');
+    if (protectedChild) expect(readFileSync(join(subRepo, 'sub.txt'), 'utf8')).toBe('protected child work\n');
+  });
+
+  it.each(['parent pin', 'child HEAD'])('retains the attributed-source hold when the %s is unreadable', async (unreadable) => {
+    const subRepo = join(repo, 'libs/sub');
+    const originalPointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
+    const stalePointer = git(subRepo, 'commit-tree', git(subRepo, 'rev-parse', 'HEAD^{tree}'),
+      '-p', originalPointer, '-m', 'stale index fixture');
+    git(repo, 'update-index', '--cacheinfo', '160000', stalePointer, 'libs/sub');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+    let readingChild = false;
+    let refusedReads = 0;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (cwd === repo && args.join(' ') === 'rev-parse --verify HEAD:libs/sub') {
+        readingChild = true;
+        if (unreadable === 'parent pin') {
+          refusedReads += 1;
+          return { code: 128, stdout: '', stderr: 'fixture: unreadable parent pin' };
+        }
+      } else if (readingChild && cwd === subRepo && args.join(' ') === 'rev-parse HEAD') {
+        readingChild = false;
+        if (unreadable === 'child HEAD') {
+          refusedReads += 1;
+          return { code: 128, stdout: '', stderr: 'fixture: unreadable child HEAD' };
+        }
+      }
+      return directRunGit(args, cwd, options);
+    };
+    const logs: string[] = [];
+
+    await runGitSync('test', {
+      repoPath: repo, runGit, log: message => logs.push(message),
+      loadRoster: async () => [{
+        agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'update independent root source',
+        files: ['root-attributed.ts'],
+      }],
+    });
+
+    expect(refusedReads).toBeGreaterThan(0);
+    expect(logs.join('\n')).toContain('deferring attributed source path(s)');
+    expect(git(superOrigin, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('root-attributed.ts');
+    expect(readFileSync(join(repo, 'root-attributed.ts'), 'utf8')).toBe('export const sourceVersion = 2;\n');
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(originalPointer);
+  });
+
+  it('retains the attributed-source hold for a genuinely changed protected gitlink', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    const originalPointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
+    writeFileSync(join(subRepo, 'sub.txt'), 'sub-v2\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'protected pointer fixture');
+    const changedPointer = git(subRepo, 'rev-parse', 'HEAD');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+    const deferred: string[] = [];
+    const out = await commitAttributedGroups(directRunGit, repo, new Map([
+      ['root-attributed.ts', {
+        agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'update independent root source',
+      }],
+    ]), ['libs/sub'], 'auto-commit test', {
+      priorityPaths: ['libs/sub'],
+      deferAttributedPaths: paths => deferred.push(...paths),
+    });
+
+    expect(changedPointer).not.toBe(originalPointer);
+    expect(out.committedAny).toBe(false);
+    expect(out.error).toContain('priority gitlink path(s) are excluded');
+    expect(deferred).toEqual(['root-attributed.ts']);
+    expect(git(repo, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('root-attributed.ts');
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(originalPointer);
+    expect(git(subRepo, 'rev-parse', 'HEAD')).toBe(changedPointer);
   });
 
   it('falls back to one catch-all when the priority gitlink commit CAS is refused', async () => {

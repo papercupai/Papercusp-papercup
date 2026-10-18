@@ -12,6 +12,7 @@ import {
   classifySpecEvidenceLineage,
   crossGenerationAuditProbeArgs,
   evaluateSpecTestAdequacy,
+  evaluateSpecEvidenceMatrix,
   resolveFixtureAbsenceVerifications,
   latestLogicalEvidence,
   mutationMeasuredFailedCase,
@@ -490,6 +491,128 @@ function successfulTestBinding(
     },
   });
 }
+
+describe('machine-first R5 evidence matrix calibration', () => {
+  // Deliberately synthetic, complete controls. Actual plan receipts are separately measured;
+  // these fixtures must never be cited as execution of the machine-first journeys.
+  function matrix() {
+    const owners = [
+      ['R-1', 'P-001', 'machine-switch'], ['R-2', 'P-002', 'hosted-signup'],
+      ['R-3', 'P-003', 'personal-machine'], ['R-4', 'P-004', 'machine-first-launch'],
+      ['R-6', 'P-003', 'tenant-boundary'], ['R-8', 'P-006', 'connection-guide'],
+      ['R-9', 'P-005', 'byoc-cli'], ['R-10', 'P-005', 'unsealed-refusal'],
+    ];
+    const required = owners.map(([bar, item, scenario]) => ({
+      rowId: `${item}/${bar}/${scenario}`,
+      clause: clause({
+        planSlug: 'machine-first-calibration', planItemId: item!,
+        specId: `AUTO-BAR-${bar}-${item}`, contentHash: `sha256:${bar}-${item}`,
+      }),
+      scenarioId: scenario!, caseTitle: `machine-first > ${scenario}`,
+      candidate: {
+        sourceSha: 'candidate-source', testFile: `test/${scenario}.integration.test.ts`,
+        testBlob: 'candidate-test-blob', artifact: { buildId: 'candidate-build', sha256: 'candidate-archive' },
+      },
+      evidencePlane: 'tree' as const,
+    }));
+    const observed = required.map((row, index) => ({
+      rowId: row.rowId,
+      evidence: {
+        ...successfulTestBinding(row.candidate.testFile, { testCases: [row.caseTitle] }),
+        id: index + 1, planSlug: row.clause.planSlug, specId: row.clause.specId,
+        specFingerprint: row.clause.contentHash,
+        details: {
+          ...successfulTestBinding(row.candidate.testFile, { testCases: [row.caseTitle] }).details,
+          evidencePlane: 'tree',
+        },
+      },
+      observed: structuredClone(row.candidate), evidencePlane: 'tree' as const,
+      claimsShipment: false, setupOnly: false,
+    }));
+    return { required, observed, classRef: 'plan-class-feature-ship' as const };
+  }
+
+  it('accepts the complete matched executed baseline without certifying journey behavior', () => {
+    const result = evaluateSpecEvidenceMatrix(matrix());
+    expect(result).toMatchObject({ healthy: true, requiredRowCount: 8, observedRowCount: 8, extraRowIds: [] });
+    expect(result.rows.every((row) => row.rules.length === 0)).toBe(true);
+  });
+
+  it('rejects an altered copy with a missing required journey without shrinking the inventory', () => {
+    const copy = matrix();
+    const removed = copy.observed.splice(1, 1)[0]!;
+    const result = evaluateSpecEvidenceMatrix(copy);
+    expect(result).toMatchObject({ healthy: false, requiredRowCount: 8, observedRowCount: 7 });
+    expect(result.rows.find((row) => row.rowId === removed.rowId)?.rules).toEqual(['missing-required-row']);
+  });
+
+  it.each(['sourceSha', 'testBlob', 'artifact', 'freshness'] as const)(
+    'rejects an altered copy with mismatched/stale %s identity', (field) => {
+      const copy = matrix();
+      const row = copy.observed[1]!;
+      if (field === 'artifact') row.observed.artifact.sha256 = 'older-archive';
+      else if (field === 'freshness') {
+        row.evidence.currentness = { ...row.evidence.currentness, overall: 'stale', staleReasons: ['source-fingerprint-changed'] };
+      } else row.observed[field] = 'older-bytes';
+      const result = evaluateSpecEvidenceMatrix(copy);
+      expect(result.healthy).toBe(false);
+      expect(result.rows[1]!.rules).toContain(field === 'freshness' ? field : `${field}-identity-mismatch`);
+      expect(result.rows.filter((entry) => entry.rules.length > 0)).toHaveLength(1);
+    },
+  );
+
+  it.each(['skipped', 'setup-only', 'unexecuted', 'unmatched-case'] as const)(
+    'rejects an altered copy with a %s receipt despite binder success claims', (mode) => {
+      const copy = matrix();
+      const row = copy.observed[1]!;
+      if (mode === 'setup-only') row.setupOnly = true;
+      else if (mode === 'unexecuted') row.evidence.testRunExecution!.passed = 0;
+      else {
+        row.evidence.testRunExecution!.passedCaseTitles = ['some other case'];
+        if (mode === 'skipped') row.evidence.testRunExecution!.skipped = 1;
+      }
+      const result = evaluateSpecEvidenceMatrix(copy);
+      expect(result.healthy).toBe(false);
+      expect(result.rows[1]!.rules).toContain(mode === 'setup-only' ? 'setup-only-or-unknown' :
+        mode === 'unexecuted' ? 'execution-integrity' : 'unmatched-executed-case');
+    },
+  );
+
+  it('rejects an altered copy relabelling tree evidence as deployed shipment', () => {
+    const copy = matrix();
+    copy.observed[1]!.claimsShipment = true;
+    const result = evaluateSpecEvidenceMatrix(copy);
+    expect(result.healthy).toBe(false);
+    expect(result.rows[1]!.rules).toContain('tree-evidence-claimed-as-shipment');
+  });
+
+  it('uses the binding plane when a matrix row is relabelled as live', () => {
+    const copy = matrix();
+    const observed = { ...copy.observed[1]!, evidencePlane: 'live' as const, claimsShipment: true };
+    const required = { ...copy.required[1]!, evidencePlane: 'live' as const };
+    const result = evaluateSpecEvidenceMatrix({ ...copy, required: [required], observed: [observed] });
+    expect(result.healthy).toBe(false);
+    expect(result.rows[0]!.rules).toContain('binding-plane-mismatch');
+  });
+
+  it('refuses empty, duplicate, extra, unknown and attested matrices', () => {
+    expect(evaluateSpecEvidenceMatrix({ ...matrix(), required: [], observed: [] }).healthy).toBe(false);
+    const changes = [
+      (copy: ReturnType<typeof matrix>) => copy.required.push(copy.required[0]!),
+      (copy: ReturnType<typeof matrix>) => copy.observed.push(copy.observed[0]!),
+      (copy: ReturnType<typeof matrix>) => { copy.observed[0]!.rowId = 'unexpected-journey'; },
+      (copy: ReturnType<typeof matrix>) => { copy.required[0]!.candidate.sourceSha = ''; copy.observed[0]!.observed.sourceSha = ''; },
+      (copy: ReturnType<typeof matrix>) => { copy.observed[0]!.evidence.currentness.provenance = 'attested-current'; },
+      (copy: ReturnType<typeof matrix>) => { copy.observed[0]!.evidence.id = undefined; },
+      (copy: ReturnType<typeof matrix>) => { copy.observed[0]!.evidence.specRevision = 99; },
+    ];
+    for (const alter of changes) {
+      const copy = matrix();
+      alter(copy);
+      expect(evaluateSpecEvidenceMatrix(copy).healthy).toBe(false);
+    }
+  });
+});
 
 describe('source BAR registered test files', () => {
   const requiredFiles = [

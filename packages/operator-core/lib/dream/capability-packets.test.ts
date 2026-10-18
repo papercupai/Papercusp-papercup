@@ -5,12 +5,45 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { REPOMIX_PINNED_VERSION, SECRET_DENY_GLOBS, type PackerResult } from '../code-intelligence/packer-facade';
 import type { CodeIntelAnswer } from '../code-intelligence/contracts';
 import { getPilotCapabilityManifest } from './capability-catalog';
-import { buildCapabilityPacket, verifyCapabilityPacket, type CapabilityPacketDeps } from './capability-packets';
+import {
+  buildCapabilityPacket,
+  CAPABILITY_GRAPH_INITIAL_BUDGET_MS,
+  CAPABILITY_GRAPH_RECOVERY_BUDGET_MS,
+  queryCapabilityGraph,
+  verifyCapabilityPacket,
+  type CapabilityPacketDeps,
+} from './capability-packets';
 import { capabilityHash, type CapabilityPacket } from './capability-contracts';
+import { firstPartyCallersOffthread } from '../code-intelligence/first-party-callers-offthread';
+
+// Keep the controllable test double partial: this file is imported into the
+// native-ecosystem aggregate, where capability-review's source discovery must
+// still see the real compiler worker after these tests finish.
+const graphWorker = vi.hoisted(() => {
+  const mock = vi.fn();
+  mock.mockResolvedValue({
+    error: 'graph unavailable',
+    sites: [],
+    freshness: { health: 'unknown', staleVsDisk: null },
+    evidence: undefined,
+  } as never);
+  return mock;
+});
+const realGraphWorker = vi.hoisted(() => ({
+  fn: undefined as typeof import('../code-intelligence/first-party-callers-offthread').firstPartyCallersOffthread | undefined,
+}));
+vi.mock('../code-intelligence/first-party-callers-offthread', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../code-intelligence/first-party-callers-offthread')>();
+  realGraphWorker.fn = actual.firstPartyCallersOffthread;
+  graphWorker.mockImplementation(actual.firstPartyCallersOffthread);
+  return { ...actual, firstPartyCallersOffthread: graphWorker };
+});
 
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  graphWorker.mockReset();
+  if (realGraphWorker.fn) graphWorker.mockImplementation(realGraphWorker.fn);
 });
 
 async function fixture() {
@@ -118,6 +151,20 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
   return result;
 }
 describe('source-backed capability extraction', () => {
+  it('retries a timed-out compiler graph worker with a bounded recovery budget', async () => {
+    const worker = vi.mocked(firstPartyCallersOffthread);
+    const timedOut = { error: `the callers worker exceeded its ${CAPABILITY_GRAPH_INITIAL_BUDGET_MS} ms deadline and was killed`,
+      sites: [], evidence: undefined } as never;
+    const recovered = { error: null, sites: [], evidence: undefined } as never;
+    worker.mockReset().mockResolvedValueOnce(timedOut).mockResolvedValueOnce(recovered);
+
+    await expect(queryCapabilityGraph('/repo', 'repo', 'target', 'target.ts', ['target.ts'])).resolves.toBe(recovered);
+    expect(worker).toHaveBeenNthCalledWith(1, expect.objectContaining({ root: '/repo', name: 'target', filePath: 'target.ts' }),
+      { budgetMs: CAPABILITY_GRAPH_INITIAL_BUDGET_MS });
+    expect(worker).toHaveBeenNthCalledWith(2, expect.objectContaining({ root: '/repo', name: 'target', filePath: 'target.ts' }),
+      { budgetMs: CAPABILITY_GRAPH_RECOVERY_BUDGET_MS });
+  });
+
   it('P022: binds compiler boundaries to cited bytes without changing capability claims', async () => {
     const f = await fixture(), ref = f.input.unit.evidence[0]!;
     ref.anchor = 'export function nativePacketTarget()';

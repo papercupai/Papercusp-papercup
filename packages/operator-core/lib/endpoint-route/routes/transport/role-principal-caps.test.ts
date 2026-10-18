@@ -141,6 +141,7 @@ describe('loadRoleCapabilities', () => {
         'intel:read',
         'operator:write',
         'testing:run',
+        'capability:fs-read',
       ]) {
         expect(caps.has(capability), `release-fixer missing ${capability}`).toBe(true);
       }

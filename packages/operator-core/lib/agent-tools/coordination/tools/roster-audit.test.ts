@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { auditKnown, auditUnknown, auditWakeEvidence, createRosterAudit, pageRosterAudit, type AuditRecord, type AuditScope } from './roster-audit';
+import { originalUnconfirmedPairs, pickupDispositionViolations } from '../parked-agent-audit-oracles';
 
 const asOf = '2026-10-18T00:00:00.000Z';
 const scope: AuditScope = { workspaceId: 'ws-a', scope: 'workspace', potId: null, owner: null };
@@ -136,5 +137,59 @@ describe('message-linked wake outcome evidence', () => {
     });
     expect(positive.turnStarted.value).toBe(true);
     expect(positive.replied.value).toBe(true);
+  });
+  it('keeps queued, delivered, started and replied independently unknown without their own proof', () => {
+    const absent = auditWakeEvidence({ ...input, messageExists: false });
+    for (const field of ['queued', 'delivered', 'turnStarted', 'replied'] as const) {
+      expect(absent[field]).toMatchObject({ status: 'unknown' });
+      expect(absent[field].value).toBeUndefined();
+    }
+    const queued = auditWakeEvidence(input);
+    expect(queued.queued).toMatchObject({ status: 'known', value: true });
+    expect(queued.delivered.status).toBe('unknown');
+    const unrelated = auditWakeEvidence({ ...input,
+      deliveries: [{ ownerId: 'a', msgId: 'other', status: 'delivered', turnProof: 'observed', turnStartedAt: asOf }],
+      replies: [{ from: 'other', relatedMsgId: 'm-1' }],
+    });
+    for (const field of ['delivered', 'turnStarted', 'replied'] as const) expect(unrelated[field].status).toBe('unknown');
+    for (const [turnProof, turnStartedAt] of [['observed', null], ['observed', 'invalid'], ['awaiting', asOf]]) {
+      expect(auditWakeEvidence({ ...input, deliveries: [{ ownerId: 'a', msgId: 'm-1',
+        status: 'delivered', turnProof, turnStartedAt }] }).turnStarted.status).toBe('unknown');
+    }
+    expect(auditWakeEvidence({ ...input, deliveries: [{ ownerId: 'a', msgId: 'm-1',
+      status: 'delivered', turnProof: 'host-attested', turnStartedAt: asOf }] }).turnStarted.value).toBe(true);
+  });
+});
+
+describe('P-001/P-002 disposition oracle controls', () => {
+  const expected = Array.from({ length: 10 }, (_, i) => ({ ownerId: 'owner-' + i, request: 'request-' + i }));
+  const cases = () => expected.map(row => ({ ...row, outcome: 'pickup-unconfirmed', reply: null }));
+  const items = () => ['WI-6554700010017003', 'WI-6554700010017004']
+    .map(id => ({ id, state: 'wip', assignee: 'running-owner' as string | null, hasCompletionEvidence: false }));
+
+  it('accepts exactly ten evidence dispositions and preserves unknown pickup', () => {
+    expect(pickupDispositionViolations(expected, cases(), items(), 'running-owner')).toEqual([]);
+    expect(originalUnconfirmedPairs(expected.map(row => ({ ...row, verification: 'pickup-not-confirmed' })))).toEqual(expected);
+  });
+
+  it('rejects population, unsupported pickup, and unowned follow-up mutations', () => {
+    const duplicate = cases(); duplicate[9] = duplicate[0];
+    expect(pickupDispositionViolations(expected, duplicate, items(), 'running-owner')).toContain('disposition-population');
+    const pickup = cases(); pickup[0].outcome = 'recipient-replied';
+    expect(pickupDispositionViolations(expected, pickup, items(), 'running-owner')).toContain('unsupported-pickup:owner-0:request-0');
+    const unowned = items(); unowned[0].assignee = null;
+    expect(pickupDispositionViolations(expected, cases(), unowned, 'running-owner')).toContain('unowned-or-unverified:WI-6554700010017003');
+  });
+  it('requires ownership or terminal proof for each follow-up independently', () => {
+    for (const id of ['WI-6554700010017003', 'WI-6554700010017004']) {
+      expect(pickupDispositionViolations(expected, cases(), items().filter(row => row.id !== id), 'running-owner'))
+        .toContain('unowned-or-unverified:' + id);
+      const closed = items();
+      const item = closed.find(row => row.id === id)!;
+      item.state = 'done'; item.assignee = null;
+      expect(pickupDispositionViolations(expected, cases(), closed, 'running-owner')).toContain('unowned-or-unverified:' + id);
+      item.hasCompletionEvidence = true;
+      expect(pickupDispositionViolations(expected, cases(), closed, 'running-owner')).toEqual([]);
+    }
   });
 });

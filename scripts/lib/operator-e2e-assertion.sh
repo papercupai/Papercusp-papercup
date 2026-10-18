@@ -28,6 +28,14 @@ if [ -n "$assertion_evidence" ]; then
 else
   vite_log=$(mktemp "${TMPDIR:-/tmp}/operator-e2e-vite.XXXXXX") || exit 98
 fi
+# WI-6554700010017702: `npm run dev` here is two npm hops deep (apps/operator's
+# dev script runs `npm --workspace @papercusp/operator-vite run dev`), and npm
+# does not carry SIGTERM through its `sh -c` child. Signalling only the outer
+# npm left the inner npm, its shell and Vite running under `systemd --user`,
+# rooted in the frozen source that the rig deletes next: six such servers ran
+# for 7-10 days. setsid gives the dev server its own process group (a background
+# job is never a group leader, so setsid does not fork and $! is that group's
+# id); cleanup signals the whole group.
 env -u PORT \
   OPERATOR_E2E_PORT="$requested_port" \
   PAPERCUSP_BIND_HOST=127.0.0.1 \
@@ -35,13 +43,19 @@ env -u PORT \
   PAPERCUSP_FAKE_LLM=1 \
   PAPERCUSP_DEV_WATCH=0 \
   PAPERCUSP_API_TARGET="${VERIFY_TAURI_DEV_URL:-}" \
-  npm run dev -- -- --host 127.0.0.1 --port "$requested_port" --strictPort >"$vite_log" 2>&1 &
+  setsid npm run dev -- -- --host 127.0.0.1 --port "$requested_port" --strictPort >"$vite_log" 2>&1 &
 vite_pid=$!
 cleanup_vite() {
-  if kill -0 "$vite_pid" 2>/dev/null; then
-    kill "$vite_pid" 2>/dev/null || true
-    wait "$vite_pid" 2>/dev/null || true
+  if kill -0 -- "-$vite_pid" 2>/dev/null; then
+    kill -TERM -- "-$vite_pid" 2>/dev/null || true
+    local waited=0
+    while kill -0 -- "-$vite_pid" 2>/dev/null && [ "$waited" -lt 20 ]; do
+      sleep 0.25
+      waited=$((waited + 1))
+    done
+    kill -KILL -- "-$vite_pid" 2>/dev/null || true
   fi
+  wait "$vite_pid" 2>/dev/null || true
   # The frozen source is deleted by the rig after this shell exits. Logs in
   # its retained assertion phase remain available for post-run diagnosis.
   [ -n "$assertion_evidence" ] || rm -f "$vite_log"

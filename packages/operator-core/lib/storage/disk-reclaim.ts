@@ -71,6 +71,13 @@ export interface NativeRetentionTiming {
   childClosedAfterMs: number | null;
   launchReturnedAfterMs: number | null;
   completedAfterMs: number | null;
+  /** Additive receipt fields: absent on older retained timing records. */
+  timeoutMs?: number;
+  settledBy?: 'close' | 'timeout' | 'child-error' | 'input-error' | 'launch-error' | null;
+  settledAfterMs?: number | null;
+  cleanupStartedAfterMs?: number | null;
+  cleanupFinishedAfterMs?: number | null;
+  cleanupResult?: { ok: boolean; error?: string } | null;
   stages: Array<{ name: string; elapsedMs: number }>;
 }
 export interface DiskReclaimReceipt {
@@ -1393,25 +1400,28 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
   const { killTask } = await import('../task-manager/control');
   const started = Date.now();
   const elapsed = () => Math.max(0, Date.now() - started);
+  const timeoutMs = options.timeoutMs ?? 120_000;
   const timing: NativeRetentionTiming = { taskId: null, totalMs: 0, spawnedAfterMs: null,
-    childClosedAfterMs: null, launchReturnedAfterMs: null, completedAfterMs: null, stages: [] };
+    childClosedAfterMs: null, launchReturnedAfterMs: null, completedAfterMs: null,
+    timeoutMs, settledBy: null, settledAfterMs: null,
+    cleanupStartedAfterMs: null, cleanupFinishedAfterMs: null, cleanupResult: null, stages: [] };
   let finish!: (result: { ok: boolean; detail: unknown }) => void;
   const observed = new Promise<{ ok: boolean; detail: unknown }>((resolve) => { finish = resolve; });
   let output = '', stderr = '', taskId: string | null = null, settled = false;
   let outputTruncated = false, needsTermination = false;
-  const timeoutMs = options.timeoutMs ?? 120_000;
   const outputLimit = options.outputLimit ?? 4000;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const done = (ok: boolean, detail: unknown) => {
+  const done = (ok: boolean, detail: unknown, settledBy: NonNullable<NativeRetentionTiming['settledBy']>) => {
     if (settled) return;
+    timing.settledBy = settledBy; timing.settledAfterMs = elapsed();
     settled = true; clearTimeout(timer);
     finish({ ok, detail: options.stdoutOnly && detail && typeof detail === 'object'
       ? { ...detail, stderr, outputTruncated } : detail });
   };
-  const abort = (error: string) => {
+  const abort = (error: string, settledBy: 'timeout' | 'input-error') => {
     if (settled) return;
     needsTermination = true;
-    done(false, { error, taskId, output });
+    done(false, { error, taskId, output }, settledBy);
   };
   try {
     const spawned = await managedSpawn(command, args, {
@@ -1426,7 +1436,7 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
       onSpawn: (child, id) => {
         taskId = id;
         timing.taskId = id; timing.spawnedAfterMs = elapsed();
-        timer = setTimeout(() => abort('delegate timeout'), timeoutMs);
+        timer = setTimeout(() => abort('delegate timeout', 'timeout'), timeoutMs);
         timer.unref();
         child.stdout?.setEncoding('utf8');
         child.stderr?.setEncoding('utf8');
@@ -1438,17 +1448,17 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
         child.stdout?.on('data', append);
         if (!options.stdoutOnly) child.stderr?.on('data', append);
         else child.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4000); });
-        child.once('error', (error) => done(false, { error: message(error), taskId, output }));
+        child.once('error', (error) => done(false, { error: message(error), taskId, output }, 'child-error'));
         child.once('close', (code, signal) => {
           timing.childClosedAfterMs = elapsed();
-          done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output });
+          done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output }, 'close');
         });
         if (options.stdin !== undefined) {
           if (!child.stdin) {
-            abort('delegate input pipe unavailable');
+            abort('delegate input pipe unavailable', 'input-error');
           } else {
             child.stdin.once('error', (error) => {
-              abort(`delegate input:${message(error)}`);
+              abort(`delegate input:${message(error)}`, 'input-error');
             });
             child.stdin.end(options.stdin);
           }
@@ -1461,8 +1471,11 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
       // The handle belongs to systemd-run, whose death can leave its payload
       // live. Wait for enrollment above, then reap and verify the owned task
       // through its existing scope/identity control before returning a receipt.
+      timing.cleanupStartedAfterMs = elapsed();
       const cleanup = await killTask(spawned.taskId, { signal: 'SIGKILL', reapTerminalResidue: true })
         .catch((error: unknown) => ({ ok: false as const, error: message(error) }));
+      timing.cleanupFinishedAfterMs = elapsed();
+      timing.cleanupResult = { ok: cleanup.ok, ...(!cleanup.ok ? { error: cleanup.error } : {}) };
       if (!cleanup.ok && cleanup.error !== 'already_gone') {
         return { ok: false, detail: { ...result.detail as Record<string, unknown>, cleanup } };
       }
@@ -1470,7 +1483,7 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
     await spawned.waitForCompletion();
     timing.completedAfterMs = elapsed();
     return result;
-  } catch (error) { done(false, { error: message(error), taskId, output }); }
+  } catch (error) { done(false, { error: message(error), taskId, output }, 'launch-error'); }
   finally {
     timing.totalMs = elapsed();
     options.observeTiming?.(timing);

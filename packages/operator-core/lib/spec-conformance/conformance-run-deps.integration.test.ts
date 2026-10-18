@@ -2,6 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { judgeTestsFromLedger, productionConformanceDeps } from './conformance-run-deps';
 import * as ledger from '../check-results-ledger';
+import { evaluateCriterionProbeChecks } from '../rubrics-criterion-checks';
+import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
 
 describe('conformance test-ledger evidence population', () => {
   let db: FreshPgDb;
@@ -76,5 +78,61 @@ describe('conformance test-ledger evidence population', () => {
         check: { kind: 'instrument', instrumentKey: 'storage:cold-mounts-reboot' } });
       expect(run).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'workspace', harnessSlug: 'harness' }));
     } finally { run.mockRestore(); }
+  });
+
+  it('binds executable probe checks to the canonical workspace', async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown>; workspace: string | undefined }> = [];
+    const dispatchTool = async (opts: { name: string; args: Record<string, unknown>; harness?: string }) => {
+      calls.push({ name: opts.name, args: opts.args, workspace: currentRequestWorkspaceId() });
+      return { content: [{ type: 'text', text: '{"value":"next-sha"}' }] };
+    };
+    const probe = {
+      kind: 'state-cell' as const,
+      cell: 'deploy.3070.sha',
+      schemaRevision: 'test-revision',
+      expect: { op: 'ne' as const, path: '$.value', value: 'd740fc3802877d1c8c3b1068768681ee32ef0025' },
+    };
+    const evaluateProbes: typeof evaluateCriterionProbeChecks = async ({ dispatchTool: probeDispatch }) => {
+      await probeDispatch?.('state:read', { cell: 'deploy.3070.sha' });
+      return {
+        ok: true,
+        checkRuns: {
+          'R-4': {
+            kind: 'probe' as const,
+            probe,
+            verdict: 'pass' as const,
+            status: 'fresh' as const,
+            executed: true,
+            observed: 'next-sha',
+            measuredAt: '2026-10-18T17:00:00.000Z',
+          },
+        },
+      };
+    };
+    const deps = productionConformanceDeps({
+      workspaceId: 'delivery-workspace',
+      harnessSlug: 'harness',
+      planSlug: 'plan',
+      dispatchTool,
+      evaluateProbes,
+    });
+
+    const result = await runWithWorkspace('ambient-workspace', async () => {
+      const value = await deps.evaluateCheck({
+        barKey: 'R-4',
+        role: 'outcome',
+        checkId: 'R-4',
+        check: {
+          kind: 'probe',
+          probe,
+        },
+      });
+      expect(currentRequestWorkspaceId()).toBe('ambient-workspace');
+      return value;
+    });
+
+    expect(result).toMatchObject({ kind: 'probe', verdict: 'pass', value: 'next-sha' });
+    expect(calls).toEqual([{ name: 'state:read', args: { cell: 'deploy.3070.sha' }, workspace: 'delivery-workspace' }]);
+    expect(currentRequestWorkspaceId()).toBeUndefined();
   });
 });
