@@ -82,9 +82,24 @@ export async function readCapabilitySource(rootPath: string, path: string): Prom
 }
 
 /** Compiler context over the exact cited files, under the packet's fixed deadline. */
-export const queryCapabilityGraph: NonNullable<CapabilityPacketDeps['graph']> =
-  (root, repositoryId, name, filePath, paths) => firstPartyCallersOffthread({ root, repositoryId,
-    vendorDir: LSP_VENDOR_DIR, name, filePath, paths, op: 'context', contextScope: 'cited-files', limit: 12 }, { budgetMs: 6_000 });
+export const CAPABILITY_GRAPH_INITIAL_BUDGET_MS = 6_000;
+export const CAPABILITY_GRAPH_RECOVERY_BUDGET_MS = 15_000;
+
+const isWorkerDeadline = (answer: CodeIntelAnswer): boolean =>
+  typeof answer.error === 'string' && /exceeded its \d+ ms deadline/.test(answer.error);
+
+/**
+ * A cold compiler worker can cross the short packet budget while the host is
+ * busy. Retry only that measured deadline failure with a bounded recovery
+ * budget; crashes and semantic refusals remain explicit evidence failures.
+ */
+export const queryCapabilityGraph: NonNullable<CapabilityPacketDeps['graph']> = async (root, repositoryId, name, filePath, paths) => {
+    const job = { root, repositoryId, vendorDir: LSP_VENDOR_DIR, name, filePath, paths,
+      op: 'context' as const, contextScope: 'cited-files' as const, limit: 12 };
+    const first = await firstPartyCallersOffthread(job, { budgetMs: CAPABILITY_GRAPH_INITIAL_BUDGET_MS });
+    if (!isWorkerDeadline(first)) return first;
+    return firstPartyCallersOffthread(job, { budgetMs: CAPABILITY_GRAPH_RECOVERY_BUDGET_MS });
+  };
 
 const defaultDeps: CapabilityPacketDeps = {
   cache: new PgL2Store(),

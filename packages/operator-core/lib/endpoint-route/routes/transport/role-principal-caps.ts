@@ -62,6 +62,10 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'intel:read',
     'operator:write',
     'testing:run',
+    // Result-door recovery cursors point at capability:read scratch pages. The
+    // role allowlist already exposes that tool; keep its capability grant paired
+    // so a clipped release:repair-queue/code:run result remains recoverable.
+    'capability:fs-read',
     // The ATTRIBUTION pair. The persona forbids `git blame` for "who caused this"
     // (git-sync commits the whole tree under one identity — WI-5111) and directs the
     // fixer to the two read-only routes that DO resolve: the commissioning
