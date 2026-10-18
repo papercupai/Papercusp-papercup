@@ -585,6 +585,9 @@ describe('evaluatePlanSpecQuality', () => {
     'A supported OpenRouter agent job completes through the existing runtime with correct provider-reported cost and the declared key/retention policy.',
     'The existing cloud organization subscription flow implements the owner-approved public self-service offer under cloud-portal-public-release-2026-10-13 with verified live billing and bounded disclosed consumption.',
     'A witnessed control-plane failure produces one accountable alarm through the existing alarm subscription mechanism.',
+    'FAQ content stays synchronized through the existing source-linked maintenance pipeline.',
+    'The FAQ maintenance process extends the existing source-linked pipeline.',
+    'The existing source-linked maintenance pipeline provides FAQ revision tracking.',
     'Reuse the runtime usage ledger and existing workspace diagnostics for per-call token counts.',
     'Reuse PostHog for disclosed, consented hosted portal events.',
     'Extend existing lifecycle, health, public-ingress and API instrumentation.',
@@ -673,6 +676,10 @@ describe('evaluatePlanSpecQuality', () => {
     expect(controls.length).toBeGreaterThanOrEqual(4);
     expect(new Set(controls.map(({ expected }) => expected))).toEqual(new Set(['coupled', 'independent']));
     expect(controls.every(({ expected, actual, passed }) => passed && actual === expected)).toBe(true);
+    expect(controls).toContainEqual({
+      behavior: 'FAQ content stays synchronized through the existing source-linked maintenance pipeline.',
+      expected: 'coupled', actual: 'coupled', passed: true,
+    });
     expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceClauseDiagnostics');
     expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceDetectorControls');
     expect(result.ratings['implementation-independence'].evidence).toContain('structural pattern detection');
@@ -694,6 +701,11 @@ describe('evaluatePlanSpecQuality', () => {
       label: 'an existing-page reuse mandate',
       behavior: 'The integration setup flow extends the existing page.',
       expected: 'existing implementation surface',
+    },
+    {
+      label: 'an existing pipeline reuse mandate',
+      behavior: 'FAQ content stays synchronized through the existing source-linked maintenance pipeline.',
+      expected: 'implementation reuse or selection',
     },
     {
       label: 'filesystem permission mode',

@@ -141,7 +141,9 @@ fi
 # staging barrier alive after this script exits (the android-ci failure mode).
 # The keeper owns fd 9 and only receives mode changes over a pipe; the main
 # workflow and all of its children never receive the lock descriptor.
-STAGING_SYNC_LOCK_KEEPER_PID=""
+# Bash owns STAGING_SYNC_LOCK_KEEPER_PID and unsets it when the coprocess exits.
+# Keep our cleanup receipt separately so cleanup is safe even after reaping.
+STAGING_SYNC_LOCK_PROCESS_PID=""
 STAGING_SYNC_LOCK_READ_FD=""
 STAGING_SYNC_LOCK_WRITE_FD=""
 STAGING_SYNC_LOCK_OWNER_PID="$$"
@@ -151,6 +153,17 @@ staging_sync_lock_start() {
     exec 9>"$STAGING_SYNC_LOCK_PATH"
     if ! flock -n 9; then
       printf '%s\n' busy
+      # Keep the coprocess alive until the parent acknowledges the result.
+      # Bash removes the generated named-coproc PID variables as soon as a
+      # short-lived coprocess exits; that made the parent cleanup path expand
+      # STAGING_SYNC_LOCK_KEEPER_PID under nounset and abort on a benign busy
+      # lock before it could release its pipe/fd state.
+      staging_lock_command=""
+      while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
+        if IFS= read -r -t 1 staging_lock_command; then
+          [[ "$staging_lock_command" == release ]] && break
+        fi
+      done
       exit 75
     fi
     printf '%s\n' exclusive
@@ -171,9 +184,10 @@ staging_sync_lock_start() {
     done
     flock -u 9
   }
-  STAGING_SYNC_LOCK_READ_FD="${STAGING_SYNC_LOCK_KEEPER[0]}"
-  STAGING_SYNC_LOCK_WRITE_FD="${STAGING_SYNC_LOCK_KEEPER[1]}"
-  STAGING_SYNC_LOCK_KEEPER_PID="$STAGING_SYNC_LOCK_KEEPER_PID"
+  STAGING_SYNC_LOCK_PROCESS_PID="${STAGING_SYNC_LOCK_KEEPER_PID:-}"
+  STAGING_SYNC_LOCK_READ_FD="${STAGING_SYNC_LOCK_KEEPER[0]:-}"
+  STAGING_SYNC_LOCK_WRITE_FD="${STAGING_SYNC_LOCK_KEEPER[1]:-}"
+  [[ -n "$STAGING_SYNC_LOCK_PROCESS_PID" && -n "$STAGING_SYNC_LOCK_READ_FD" && -n "$STAGING_SYNC_LOCK_WRITE_FD" ]] || return 1
   staging_lock_state=""
   if ! IFS= read -r staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD"; then
     return 1
@@ -192,10 +206,14 @@ staging_sync_lock_shared() {
 }
 
 staging_sync_lock_release() {
-  [[ -n "$STAGING_SYNC_LOCK_KEEPER_PID" ]] || return 0
-  printf '%s\n' release >&"$STAGING_SYNC_LOCK_WRITE_FD" 2>/dev/null || true
-  wait "$STAGING_SYNC_LOCK_KEEPER_PID" 2>/dev/null || true
-  STAGING_SYNC_LOCK_KEEPER_PID=""
+  local keeper_pid="$STAGING_SYNC_LOCK_PROCESS_PID"
+  [[ -n "$keeper_pid" ]] || return 0
+  STAGING_SYNC_LOCK_PROCESS_PID=""
+  # An already-exited keeper can leave a closed pipe. Keep the write in this
+  # shell: Bash's coprocess descriptors are not reliably inherited by a
+  # subshell, and a subshell here would silently lose the release handshake.
+  printf '%s\n' release 2>/dev/null >&"$STAGING_SYNC_LOCK_WRITE_FD" || true
+  wait "$keeper_pid" 2>/dev/null || true
 }
 
 staging_alias_bootstrap() {

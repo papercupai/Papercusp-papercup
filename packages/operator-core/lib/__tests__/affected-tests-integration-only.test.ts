@@ -25,6 +25,7 @@ import {
   executedMapResultPath,
 } from '../../../../scripts/lib/executed-source-map.mjs';
 import { LANE_SCRIPTS } from '../../../../scripts/lib/targeted-task-reuse.mjs';
+import { PC_TEST_PARTIAL_SKIP_LIST_ENV, TEST_REUSE_SKIP_LIST_ENV } from '../../../../scripts/lib/test-pass-reuse.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
@@ -60,11 +61,34 @@ function captureEnvironment({
       RUN_LOG_ROOT: '/tmp/capture', RUN_TOKEN: runToken, LANE_SCRIPTS,
       executedMapRecordingEnabled: () => executedMapRecordingEnabled(env), executedMapResultPath,
       EXECUTED_MAP_WORKSPACE_ENV, EXECUTED_MAP_RESULT_ENV, EXECUTED_MAP_OUT_ENV,
-      EXECUTED_MAP_NO_PERSIST_ENV, TEST_REUSE_SKIP_LIST_ENV: 'PC_TEST_REUSE_SKIP_LIST',
+      EXECUTED_MAP_NO_PERSIST_ENV, PC_TEST_PARTIAL_SKIP_LIST_ENV, TEST_REUSE_SKIP_LIST_ENV,
       createHash, taskKey: (t: typeof task) => `${t.ws.name}::${t.script}`,
     },
   ) };
 }
+
+describe('completed-module failure diagnostics (WI-6554700010017368)', () => {
+  it.each(['test', ...LANE_SCRIPTS, 'test:integration'])(
+    'arms %s even when reusable source-map recording is off', script => {
+      const env = captureEnvironment({ script, env: { AFFECTED_RECORD_EXECUTED_SOURCES: '0' } });
+      expect(env.PAPERCUSP_TEST_FAILURE_DETAILS_PATH).toMatch(/^\/tmp\/capture\/.*\.failures\.json$/);
+      expect(env[EXECUTED_MAP_RESULT_ENV]).toBeUndefined();
+    });
+
+  it('isolates workspaces, runs and retries and replaces an inherited output path', () => {
+    const scenarios = [{}, { workspace: '@probe/other' }, { runToken: 'run-b' },
+      { journalLabel: 'retry', extraArgs: ['a.test.ts'] },
+      { journalLabel: 'retry', extraArgs: ['b.test.ts'] }];
+    const outputs = scenarios.map(s => captureEnvironment({ ...s, env: {
+      PAPERCUSP_TEST_FAILURE_DETAILS_PATH: '/outer/shared.json',
+    } }).PAPERCUSP_TEST_FAILURE_DETAILS_PATH);
+    expect(outputs.every(path => path && path !== '/outer/shared.json')).toBe(true);
+    expect(new Set(outputs).size).toBe(scenarios.length);
+    expect(captureEnvironment({ script: 'lint:el-tools', env: {
+      PAPERCUSP_TEST_FAILURE_DETAILS_PATH: '/outer/shared.json',
+    } }).PAPERCUSP_TEST_FAILURE_DETAILS_PATH).toBeUndefined();
+  });
+});
 
 describe('integration executed-source capture (EI-25197689746466505)', () => {
   it('arms an integration task with its own source diagnostics and no-persist reporter', () => {

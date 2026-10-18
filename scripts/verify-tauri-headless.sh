@@ -1080,6 +1080,23 @@ select_verifier_snapshot_root() {
 # Run in this shell: a command substitution would discard the selected mode.
 vh_run_step verifier-snapshot-root select_verifier_snapshot_root || exit $?
 
+# Root-device donors select independent copies above. Validate their task
+# envelope now, before Cargo capacity, native checks, or source export. Keep
+# the frozen-tree recheck at the copy boundary as protection against drift.
+preflight_verifier_copy_memory() {
+  [ "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}" = copy ] || return 0
+  node --input-type=module -e '
+    const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
+    const limit = readTaskCgroupMemoryMaxMb();
+    if (!(Number.isFinite(limit) && limit > 0)) {
+      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; launch with the tracked capability:bash test runner");
+      process.exit(2);
+    }
+    console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
+  ' "$REPO_DIR/scripts/lib/task-cgroup-limits.mjs"
+}
+vh_run_step verifier-copy-memory preflight_verifier_copy_memory || exit $?
+
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
 # slot descriptor for the whole run; tauri-guarded inherits this exact target.

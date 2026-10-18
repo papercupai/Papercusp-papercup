@@ -138,8 +138,19 @@ export type WorkItemAdmission = 'pending' | 'admitted' | 'auto' | 'unreviewed';
  */
 export type BornAdmission = Extract<WorkItemAdmission, 'pending' | 'auto'>;
 
-export function isAdmitted(admission: string | null | undefined): boolean {
-  return admission !== 'pending';
+/**
+ * A row is admitted when duplicate screening is not pending AND it carries no duplicate
+ * verdict (migration 1534, bug-inflow-one-problem-one-row-2026-10-18#D-001: owner
+ * directive #1990 — a duplicate is a FIELD the gate checks, not a comment). ANY non-null
+ * `duplicate_of` means "this problem already has a row", whether or not the canonical is
+ * still open, so the duplicate is never claimable. Pass `duplicateOf` whenever the row
+ * was read with it; {@link admittedWhereSql} is the SQL twin and applies both halves.
+ */
+export function isAdmitted(
+  admission: string | null | undefined,
+  duplicateOf?: string | null,
+): boolean {
+  return admission !== 'pending' && duplicateOf == null;
 }
 
 /**
@@ -425,8 +436,13 @@ export function admittedWhereSql(sql: OrgSql, qualifier?: 'wi' | 'ei') {
   // relation shapes behind this one builder prevents the feature view, the issue
   // base table, and the aliased engineer_issues listing from drifting into subtly
   // different NULL semantics.
-  const column = sql.unsafe(qualifier ? `${qualifier}.admission` : 'admission');
-  return sql`(${column} IS DISTINCT FROM 'pending')`;
+  const prefix = qualifier ? `${qualifier}.` : '';
+  const admission = sql.unsafe(`${prefix}admission`);
+  // Migration 1534 (D-001): a duplicate verdict is a typed column every relation shape
+  // carries (base table + both views), so the gate reads it here, once, for every
+  // claim/place chokepoint.
+  const duplicateOf = sql.unsafe(`${prefix}duplicate_of`);
+  return sql`(${admission} IS DISTINCT FROM 'pending' AND ${duplicateOf} IS NULL)`;
 }
 
 /**
@@ -775,18 +791,19 @@ export async function isWorkItemAutoPickable(
       origin: string | null;
       audit_verdict: string | null;
       admission: string | null;
+      duplicate_of: string | null;
       verified_author_github_user_id: number | string | null;
       author_pubkey: string | null;
     }[]
   >`
-    SELECT origin, audit_verdict, admission, verified_author_github_user_id, author_pubkey
+    SELECT origin, audit_verdict, admission, duplicate_of, verified_author_github_user_id, author_pubkey
       FROM harness_shared.harness_features_consolidated
      WHERE harness_slug = ${opts.harness}
        AND workspace_id = ${ws}
        AND feature_id = ${workItemId}
      LIMIT 1`;
   if (!rows[0]) return false;
-  if (!isAdmitted(rows[0].admission)) return false;
+  if (!isAdmitted(rows[0].admission, rows[0].duplicate_of)) return false;
   // Local / auditor-admitted fast path (no trust-list read needed).
   if (isAutoPickable(rows[0].origin, rows[0].audit_verdict)) return true;
   // OWN-NODE fast-path: authored by a key this workspace knows as its own. Checked
@@ -828,12 +845,12 @@ export async function isWorkItemDuplicateAdmitted(
   if (!workItemId) return false;
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ admission: string | null }[]>`
-    SELECT admission
+  const rows = await sql<{ admission: string | null; duplicate_of: string | null }[]>`
+    SELECT admission, duplicate_of
       FROM harness_shared.work_items
      WHERE workspace_id = ${ws} AND feature_id = ${workItemId}
      LIMIT 1`;
-  return rows[0] ? isAdmitted(rows[0].admission) : false;
+  return rows[0] ? isAdmitted(rows[0].admission, rows[0].duplicate_of) : false;
 }
 
 /**

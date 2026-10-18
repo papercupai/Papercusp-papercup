@@ -73,6 +73,25 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     }
   });
 
+  it('gives isolated integration runs their existing retention owner while keeping VM archives review-only', () => {
+    const cls = RETENTION_POLICY.find(candidate => candidate.id === 'vh-isolated-runs')!;
+    expect(cls.keep).toEqual({ kind: 'newest', keep: 30 });
+    expect(cls.enforcers).toEqual([expect.objectContaining({
+      kind: 'existing',
+      ref: 'papercusp/libs/generic/verification-harness/src/runner.ts pruneEvidenceRoot',
+    })]);
+    for (const root of [
+      `${HOME}/.local/state/verification-harness/isolated-integration`,
+      '/mnt/data/offload/verification-harness/isolated-integration',
+    ]) {
+      expect(classifyPath(`${root}/20261016T000000Z-1/result.json`, policy)).toMatchObject({ classId: cls.id });
+      expect(del(`${root}/20261016T000000Z-1/result.json`)).toBe(cls.id);
+    }
+    const vm = `${HOME}/.local/state/verification-harness/vm-archive/e2e-p021-mac.disabled.tar.gz`;
+    expect(classifyPath(vm, policy)).toMatchObject({ classId: 'vh-other-state' });
+    expect(del(vm)).toBeNull();
+  });
+
   it('derives every named shell enforcer from the registry and pins its reviewed executable source', () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
     const scripts = RETENTION_POLICY.flatMap((cls) => cls.enforcers.flatMap((enforcer) => {

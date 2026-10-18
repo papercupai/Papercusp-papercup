@@ -10,6 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { isNonAutomatedBehaviorClass, NON_AUTOMATED_BEHAVIOR_CLASS } from './plan-verification-profile';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
@@ -801,9 +802,10 @@ export async function synchronizeAcceptanceBarRevision(
       // forward below, and spec quality accepts an exemption only on a non-automated
       // clause, so recomputing the class from the BAR's automated proof contract
       // invalidated the carried exemption on every amendment (WI-6554700010017078).
-      behaviorClass: clause.lifecycle_status === 'exempt' && clause.behavior_class === 'non-automated'
-        ? 'non-automated'
-        : preserveRefinements && !['happy-path', 'non-automated'].includes(clause.behavior_class)
+      behaviorClass: clause.lifecycle_status === 'exempt' && isNonAutomatedBehaviorClass(clause.behavior_class)
+        ? NON_AUTOMATED_BEHAVIOR_CLASS
+        : preserveRefinements && clause.behavior_class !== 'happy-path' &&
+          !isNonAutomatedBehaviorClass(clause.behavior_class)
         ? clause.behavior_class
         : clause.mutation_required ? 'happy-path'
           : acceptanceBarBehaviorClass(criterion.evidencePlane, requiredTestLayers, criterion.check),

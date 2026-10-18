@@ -2167,6 +2167,36 @@ describe('link projection — non-blocks rels', () => {
     expect(await wi.unlinkWorkItem(bug.id, { kind: 'issue', ref: other.id }, 'duplicates')).toEqual({ ok: true });
     expect(await links.listOut({ kind: 'issue', ref: bug.id })).toHaveLength(0);
   });
+
+  it('a duplicates edge sets the typed duplicate_of verdict the admission gate reads; unlink withdraws it (migration 1534, D-001)', async () => {
+    const { isWorkItemDuplicateAdmitted } = await import('./work-items-admission');
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'src', harness: 'papercup', createdBy: 'agA' });
+    const other = await wi.createWorkItem({ kind: 'bug', title: 'canonical', harness: 'papercup', createdBy: 'agA' });
+    const third = await wi.createWorkItem({ kind: 'bug', title: 'another', harness: 'papercup', createdBy: 'agA' });
+    const verdict = async (id: string) =>
+      (
+        await db.sql<{ duplicate_of: string | null; duplicate_source: string | null; matched: string | null }[]>`
+          SELECT duplicate_of, duplicate_source, duplicate_evidence->>'matchedOn' AS matched
+            FROM harness_shared.work_items WHERE feature_id = ${id}`
+      )[0];
+    expect(await isWorkItemDuplicateAdmitted(bug.id)).toBe(true);
+
+    await wi.linkWorkItem(bug.id, { kind: 'issue', ref: other.id }, 'duplicates', { by: 'agA' });
+    expect(await verdict(bug.id)).toEqual({ duplicate_of: other.id, duplicate_source: 'agent', matched: 'agent-link' });
+    expect(await isWorkItemDuplicateAdmitted(bug.id)).toBe(false);
+    // The canonical itself is untouched.
+    expect(await verdict(other.id)).toEqual({ duplicate_of: null, duplicate_source: null, matched: null });
+
+    // First writer wins: a second duplicates edge does not move the verdict, and unlinking
+    // that second edge does not clear the verdict naming the first target.
+    await wi.linkWorkItem(bug.id, { kind: 'issue', ref: third.id }, 'duplicates', { by: 'agA' });
+    await wi.unlinkWorkItem(bug.id, { kind: 'issue', ref: third.id }, 'duplicates');
+    expect((await verdict(bug.id)).duplicate_of).toBe(other.id);
+
+    await wi.unlinkWorkItem(bug.id, { kind: 'issue', ref: other.id }, 'duplicates');
+    expect(await verdict(bug.id)).toEqual({ duplicate_of: null, duplicate_source: null, matched: null });
+    expect(await isWorkItemDuplicateAdmitted(bug.id)).toBe(true);
+  });
 });
 
 describe('promote side-effects + the re-promote guard (engine level)', () => {

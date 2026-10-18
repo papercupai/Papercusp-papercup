@@ -1232,6 +1232,43 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
   });
 });
 
+describe("independent copy memory admission precedes native preparation", () => {
+  const start = src.indexOf('preflight_verifier_copy_memory() {');
+  const end = src.indexOf('\n# EI-25558788631579977:', start);
+
+  it.each([null, 0, 4096])('checks the selected copy ceiling before allocating native capacity (%s)', limit => {
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-copy-memory-'));
+    mkdirSync(resolve(fixture, 'scripts/lib'), { recursive: true });
+    writeFileSync(resolve(fixture, 'scripts/lib/task-cgroup-limits.mjs'),
+      `export function readTaskCgroupMemoryMaxMb() { return ${limit}; }`);
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'vh_run_step() { shift; "$@"; }',
+        src.slice(start, end),
+        'echo native-capacity-started',
+      ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: {
+        ...process.env, REPO_DIR: fixture, VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy',
+      } });
+      expect(result.status, result.stderr).toBe(limit ? 0 : 2);
+      expect(result.stdout.includes('native-capacity-started')).toBe(Boolean(limit));
+      expect(result.stderr).toContain(limit ? 'VERIFY_TAURI_COPY_MEMORY_MAX_MB=4096' : 'VERIFY_TAURI_COPY_MEMORY_UNBOUNDED');
+      expect(end).toBeLessThan(src.indexOf('preflight_native_cargo() {'));
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it('retains the hardlink route without requiring a copy ceiling', () => {
+    const result = spawnSync('bash', ['-c', [
+      'vh_run_step() { shift; "$@"; }', src.slice(start, end),
+    ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: {
+      ...process.env, REPO_DIR: '/unused', VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'hardlink',
+    } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe('');
+  });
+});
+
 describe("native copy callers preserve frozen helpers and bounded admission", () => {
   function snapshot(mode: string, bounded = true) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-copy-helper-"));
@@ -1239,7 +1276,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
     const helper = resolve(frozen, "papercusp-desktop/bin/lib/pinned-deps.sh");
     mkdirSync(resolve(frozen, "scripts/lib"), { recursive: true });
     mkdirSync(resolve(frozen, "papercusp-desktop/bin/lib"), { recursive: true });
-    writeFileSync(resolve(frozen, "scripts/lib/budgeted-task-scheduler.mjs"),
+    writeFileSync(resolve(frozen, "scripts/lib/task-cgroup-limits.mjs"),
       `export function readTaskCgroupMemoryMaxMb() { return ${bounded ? 4096 : "null"}; }`);
     writeFileSync(resolve(frozen, "scripts/pc-heavy.sh"),
       'echo admission >> "$WORK/order"\nshift\n"$@"');

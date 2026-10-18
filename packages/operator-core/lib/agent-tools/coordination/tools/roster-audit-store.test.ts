@@ -71,6 +71,43 @@ describe('audit wake association', () => {
 });
 
 describe('audit persistence validation', () => {
+  beforeEach(() => { fake.sql.mockReset(); });
+  const snapshot = () => createRosterAudit({
+    asOf: '2026-10-18T00:00:00Z',
+    scope: { workspaceId: 'ws-a', scope: 'workspace', potId: null, owner: null },
+    population: ['a', 'b'], expectedPopulation: 2,
+    records: ['a', 'b'].map(ownerId => ({ id: 'agent:' + ownerId, ownerId, kind: 'agent' as const,
+      fields: { state: auditKnown('parked', 'fixture source', '2026-10-18T00:00:00Z') } })),
+    provenance: { status: 'unknown', directiveId: null, sourceRef: null, turnOrigin: null, quote: null },
+    previous: { status: 'known', auditId: null, asOf: null, total: null, corrections: [] },
+  });
+  it.each([undefined, null, '2', true, NaN, Infinity, -Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'refuses invalid count %s without issuing any SQL', async expectedPopulation => {
+      const invalid = { ...snapshot(), expectedPopulation };
+      if (expectedPopulation === undefined) delete invalid.expectedPopulation;
+      await expect(saveRosterAudit('test', invalid as ReturnType<typeof snapshot>))
+        .rejects.toMatchObject({ code: 'writer_count_invalid' });
+      expect(fake.sql).not.toHaveBeenCalled();
+    },
+  );
+  it.each([1, 3])('refuses mismatched count %s without issuing any SQL', async expectedPopulation => {
+    await expect(saveRosterAudit('test', { ...snapshot(), expectedPopulation }))
+      .rejects.toMatchObject({ code: 'population_incomplete' });
+    expect(fake.sql).not.toHaveBeenCalled();
+  });
+  it('refuses duplicate census, header and audit-wide record identities without issuing SQL', async () => {
+    const valid = snapshot();
+    const invalid = [
+      { value: { ...valid, population: ['a', 'a'] }, code: 'population_duplicate' },
+      { value: { ...valid, records: [...valid.records, valid.records[0]] }, code: 'agent_coverage_invalid' },
+      { value: { ...valid, records: [...valid.records, { ...valid.records[0], kind: 'work' as const, ownerId: 'b' }] }, code: 'record_identity_invalid' },
+      { value: { ...valid, population: [], records: [], expectedPopulation: 1 }, code: 'population_incomplete' },
+    ];
+    for (const { value, code } of invalid) {
+      await expect(saveRosterAudit('test', value)).rejects.toMatchObject({ code });
+      expect(fake.sql).not.toHaveBeenCalled();
+    }
+  });
   it('rejects a forged snapshot before issuing any SQL', async () => {
     const asOf = '2026-10-18T00:00:00Z';
     const snapshot = createRosterAudit({ asOf,

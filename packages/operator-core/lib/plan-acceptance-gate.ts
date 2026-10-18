@@ -84,6 +84,7 @@ import {
   type ExemptMapping,
   type NonCodeItemProof,
 } from './plan-requirement-realization';
+import { isReasonedNonCodeAudit, unfinishedItemsAreAuditedNonCode } from './plan-verification-profile';
 import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
@@ -451,21 +452,6 @@ export interface PlanAcceptanceGateOpts {
   collectAllBlockers?: boolean;
   /** Read whether a pending meta-scorecard's owner is paused before dispatch can settle it. */
   readGradingAuditDispatchSuppression?: (targetOwnerId?: string | null) => Promise<GradingAuditDispatchSuppression | null>;
-}
-
-/**
- * Whether every unfinished item is explicitly classified as non-code by the
- * effective completion audit. Exported as a pure seam because this exception is a
- * narrow lifecycle rule: widening it accidentally would recruit graders while real
- * implementation work is still open.
- */
-export function unfinishedItemsAreAuditedNonCode(
-  unfinished: readonly { itemId: string }[],
-  effectiveAudits: readonly { entry: { itemId: string; verdict: string } }[],
-): boolean {
-  if (unfinished.length === 0) return false;
-  const verdictByItem = new Map(effectiveAudits.map(({ entry }) => [entry.itemId, entry.verdict]));
-  return unfinished.every((item) => verdictByItem.get(item.itemId) === 'not-code');
 }
 
 /**
@@ -1236,8 +1222,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         // Resolve that existing exemption contract only for reasoned not-code items;
         // a failed clause read leaves the requirement unproven.
         const nonCodeItems = items.filter((item) => item.status === 'done' &&
-          effectiveByItem.get(item.itemId)?.entry.verdict === 'not-code' &&
-          Boolean(effectiveByItem.get(item.itemId)?.entry.note?.trim()));
+          isReasonedNonCodeAudit(effectiveByItem.get(item.itemId)?.entry));
         const exemptionProofs = nonCodeItems.length && planHarnessSlug
           ? await listSpecClauses({
               planSlug, harnessSlug: planHarnessSlug, workspaceId: activeWorkspaceId(),

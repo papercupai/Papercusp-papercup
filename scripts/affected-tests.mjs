@@ -2134,6 +2134,26 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "packages/operator-core/lib/scout/pty-host-health-lane.test.ts",
   },
   {
+    // identity-system-everything-migration-2026-10-18 P-005 (R-16, #D-009). The
+    // shrink-only identity-surface lint lives in operator-core, but the surfaces it
+    // polices sit in other workspaces: operator prompts and hooks in @papercusp/web,
+    // blueprint prompts and orchestrator constants in the libs/papercusp submodule.
+    // A new prompt or hook there never selects operator-core, so without this entry
+    // a new surface outside the identity system would first red at the fleet gate.
+    // Match the census's own source domains (identity-surface-census.ts).
+    workspace: "@papercusp/operator-core",
+    script: "test:identity-surfaces",
+    appliesTo: (f) =>
+      f === "libs/papercusp" ||
+      f.startsWith("apps/operator/prompts/") ||
+      f.startsWith("apps/operator/scripts/hooks/") ||
+      f.startsWith("libs/papercusp/packages/harness/blueprints/") ||
+      (/\.tsx?$/.test(f) &&
+        (f.startsWith("packages/") || f.startsWith("apps/operator/lib/") || f.startsWith("apps/operator/bin/") ||
+          f.startsWith("libs/papercusp/packages/"))) ||
+      f === "scripts/gen-identity-surface-census.ts",
+  },
+  {
     // Phone media sources are outside npm workspaces. Include all three layers even
     // when the web unit suite is selected; it excludes the integration suite.
     workspace: "@papercusp/web",
@@ -7015,6 +7035,13 @@ function runCapturedTask(
     executedMapRecordingEnabled() &&
     (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script) ||
       spawnTask.script === "test:integration");
+  // Preserve completed-module errors even if a watchdog kills Vitest before its
+  // final report. Reuse the reporter's diagnostic sidecar, isolated by attempt.
+  const failureDetailsPath = (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script) ||
+    spawnTask.script === "test:integration")
+    ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.${createHash("sha256")
+      .update(JSON.stringify([taskKey(context.t), journalLabel, extraArgs])).digest("hex").slice(0, 16)}.failures.json`
+    : null;
   const executedMapResultFile =
     recordsExecutedMap && extraArgs.length === 0 && scriptOverride == null
       ? executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, `${context.t.ws.name}::${context.t.script}`)
@@ -7033,12 +7060,14 @@ function runCapturedTask(
     [EXECUTED_MAP_RESULT_ENV]: _inheritedExecutedMapResult,
     [EXECUTED_MAP_WORKSPACE_ENV]: _inheritedExecutedMapWorkspace,
     [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut,
+    PAPERCUSP_TEST_FAILURE_DETAILS_PATH: _inheritedFailureDetailsPath,
     AFFECTED_PARTIAL_RESUME: _inheritedPartialResume,
     ...parentEnv
   } = process.env;
   const childEnv = {
     ...parentEnv,
     ...(specEnv ?? {}),
+    ...(failureDetailsPath ? { PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath } : {}),
     ...(relatedFilterList ? { [RELATED_FILTER_LIST_ENV]: relatedFilterList.path } : {}),
     ...(reuseSkipList ? { [TEST_REUSE_SKIP_LIST_ENV]: reuseSkipList.path } : {}),
     // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): arm the executed-source-map
@@ -7324,6 +7353,11 @@ function runCapturedTask(
         wsDir: join(ROOT, context.t.ws.dir),
       }),
     );
+  }
+  if (failureDetailsPath) {
+    try { unlinkSync(failureDetailsPath); } catch { /* first invocation or unavailable diagnostics */ }
+    outSync(`AFFECTED_TASK_DIAGNOSTICS task=${JSON.stringify(taskKey(spawnTask))} ` +
+      `label=${journalLabel} failures=${JSON.stringify(failureDetailsPath)}`);
   }
   const governedOptions = {
     workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,

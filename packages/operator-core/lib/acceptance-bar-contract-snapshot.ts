@@ -9,6 +9,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { SelectionVia } from '@papercusp/ranked-selection';
+import { isNonAutomatedBehaviorClass } from './plan-verification-profile';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   classifyRubricEvidenceCurrentness,
@@ -390,7 +391,7 @@ export function barRequiresAutomatedProof(bar: AcceptanceBarTrace): boolean {
   // BAR still projects `behaviorClass: 'happy-path'` on the `tree` plane, and re-deriving the
   // floor from the clause class below would reinstate a floor the projection deliberately lifted.
   if (typeof bar.automatedProofRequired === 'boolean') return bar.automatedProofRequired;
-  return bar.behaviorClass !== 'non-automated' ||
+  return !isNonAutomatedBehaviorClass(bar.behaviorClass) ||
     (bar.requiredTestLayers?.length ?? 0) > 0 || bar.mutationRequired === true;
 }
 
@@ -431,7 +432,7 @@ export function projectedAutomatedProofRequired(input: {
   // A tests check is an authored automated obligation even on a live/deployed
   // plane, whose generated clauses otherwise have the non-automated class.
   return input.structuredTestsCheck || (!explicitlyManual && (input.clauses.length === 0 || input.clauses.some((clause) =>
-    clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
+    !isNonAutomatedBehaviorClass(clause.behaviorClass) || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
   )));
 }
 

@@ -167,6 +167,26 @@ describe('native CLI fixture runtime and deadline guards', () => {
       throw new Error('must not attempt expansion');
     })).toThrow(/incomplete evidence/);
   });
+  it('recovers a complete selected projection from a field-truncated envelope only when opted in', () => {
+    const payload = Buffer.from(JSON.stringify({ content: [
+      { type: 'text', text: 'field-level truncation warning' },
+      { type: 'text', text: JSON.stringify({ currentBuildTestRoute: { readiness: 'ready' },
+        servingRuntimes: [{ runtime: 'staging-operator', containsChange: true }] }) },
+    ] }));
+    const envelope = { schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete',
+      incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      content: [{ kind: 'reference', uri: 'papercusp://scratch/test/projected' }] };
+    const result = { status: 0, stdout: JSON.stringify(envelope), stderr: '' };
+    const page = { ok: true, encoding: 'base64', byte_offset: 0, byte_length: payload.length,
+      total_bytes: payload.length, eof: true, next_cursor: null, data: payload.toString('base64'),
+      reference: { schemaVersion: 'papercusp.scratch-reference/v1', byteCount: payload.length,
+        sha256: createHash('sha256').update(payload).digest('hex') } };
+    expect(() => recoverNativeCliResult(result, () => page)).toThrow(/incomplete evidence/);
+    expect(recoverNativeCliResult(result, () => page, { allowProjectedPartial: true })).toEqual({
+      currentBuildTestRoute: { readiness: 'ready' },
+      servingRuntimes: [{ runtime: 'staging-operator', containsChange: true }],
+    });
+  });
   it('retains child phase diagnostics and terminates a timed-out private process', async () => {
     const chunks: string[] = [];
     await expect(nativeFixtureProcess(process.execPath,

@@ -90,6 +90,8 @@ export const PC_HEAVY_VOLATILE_IDENTITY_ENV = Object.freeze([
  */
 export const AFFECTED_TESTS_TRANSPORT_IDENTITY_ENV = Object.freeze([
   "PC_EXECUTED_SOURCE_MAP_RESULT",
+  // Completed-module diagnostic output, isolated by runner/task/attempt.
+  "PAPERCUSP_TEST_FAILURE_DETAILS_PATH",
 ]);
 
 export function passingTaskVerdictIdentityEnvironment(environment) {

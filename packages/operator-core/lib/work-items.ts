@@ -10429,6 +10429,41 @@ export async function removeDerivedBlockerSubscriptionsForSettledTarget(target: 
   await subs.unsubscribeDerivedForTarget(target);
 }
 
+/**
+ * Migration 1534 (bug-inflow-one-problem-one-row-2026-10-18#D-001, owner directive #1990):
+ * a `duplicates` edge is mirrored onto the typed `duplicate_of` field the admission gate
+ * (admittedWhereSql) reads, so a declared duplicate stops being claimable. First writer
+ * wins (`duplicate_of IS NULL`); unlinking the same edge withdraws the verdict. Feature ids
+ * are workspace-unique, so (workspace_id, feature_id) is the exact row.
+ */
+async function stampDuplicateVerdictFromLink(id: string, dst: ObjectRef, by: string | undefined): Promise<void> {
+  const target = await import('./work-items-events').then((m) => m.workItemIdFromRef(dst));
+  if (!target || target.id === id) return;
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.work_items
+       SET duplicate_of = ${target.id},
+           duplicate_source = 'agent',
+           duplicate_confidence = NULL,
+           duplicate_evidence = jsonb_build_object('matchedOn', 'agent-link', 'by', ${by ?? null}::text)
+     WHERE workspace_id = ${activeWorkspaceId()}
+       AND feature_id = ${id}
+       AND duplicate_of IS NULL`;
+}
+
+/** Inverse of {@link stampDuplicateVerdictFromLink}: only the verdict naming THIS target clears. */
+async function clearDuplicateVerdictForLink(id: string, dst: ObjectRef): Promise<void> {
+  const target = await import('./work-items-events').then((m) => m.workItemIdFromRef(dst));
+  if (!target) return;
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.work_items
+       SET duplicate_of = NULL, duplicate_source = NULL, duplicate_confidence = NULL, duplicate_evidence = NULL
+     WHERE workspace_id = ${activeWorkspaceId()}
+       AND feature_id = ${id}
+       AND duplicate_of = ${target.id}`;
+}
+
 /** Linkable.link — an edge from this work-item to a target ObjectRef (rel blocks|relates|duplicates|fixes|…). */
 export async function linkWorkItem(
   id: string,
@@ -10451,6 +10486,7 @@ export async function linkWorkItem(
       await linkFeatureRelationBounded(src, dst, rel, opts.by);
     }
   }
+  if (rel === 'duplicates') await stampDuplicateVerdictFromLink(id, dst, opts.by);
   if (rel === 'blocks') await syncDerivedBlockerSubscriptions(dst);
   if (rel === 'blocks') {
     const dependentRef = await import('./work-items-events').then((m) => m.workItemIdFromRef(dst));
@@ -10481,6 +10517,7 @@ export async function unlinkWorkItem(
     }
   }
   if (rel === 'blocks') await subs.unsubscribeDerivedForEdge(dst, workItemObjectRef(wi));
+  if (rel === 'duplicates') await clearDuplicateVerdictForLink(id, dst);
   // WI-4034 (the unlink gap): removing a `blocks` edge can be the dependent's
   // LAST live blocker clearing — the same condition emitWorkItemSettledEvents
   // fires `work-item:unblocked:<dst>` for when the blocker SETTLES. Before this,

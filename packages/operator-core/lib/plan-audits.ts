@@ -39,6 +39,7 @@
  * files that exist, which is a strictly weaker and still useful claim.
  */
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { isNonCodeAuditVerdict } from './plan-verification-profile';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -1750,7 +1751,7 @@ export function summarizeCoverage(items: AuditItemEntry[]): AuditCoverage {
     else unverifiedIds.push(it.itemId);
     if (kinds.some((k) => k !== 'none')) cited += 1;
     if (kinds.length > 0 && kinds.every((k) => k === 'none')) none += 1;
-    if (it.verdict === 'not-code') notCode.push(it.itemId);
+    if (isNonCodeAuditVerdict(it.verdict)) notCode.push(it.itemId);
     if (it.verdict === 'partial' || it.verdict === 'missing') unresolved.push(it.itemId);
     if (it.verdict === 'dropped') dropped.push({ itemId: it.itemId, reason: it.note ?? '' });
   }

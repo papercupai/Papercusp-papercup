@@ -1807,6 +1807,71 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
     expect(script.slice(downgrade, downgradeEnd)).toContain('could not downgrade');
   });
 
+  it('preserves a busy checkout lock when its coprocess exits before repeated cleanup', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const helperStart = script.indexOf('# Keep the checkout flock in a dedicated coprocess.');
+    const helperEnd = script.indexOf('staging_alias_bootstrap()', helperStart);
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    const helper = script.slice(helperStart, helperEnd);
+    const dir = mkdtempSync(join(tmpdir(), 'staging-lock-busy-'));
+    const lock = join(dir, 'checkout.lock');
+    try {
+      const r = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        helper,
+        `STAGING_SYNC_LOCK_PATH=${JSON.stringify(lock)}`,
+        'exec 8>"$STAGING_SYNC_LOCK_PATH"',
+        'flock -n 8',
+        'if staging_sync_lock_start; then echo unexpected_acquisition; exit 90; else status=$?; fi',
+        'printf "start_status=%s\\n" "$status"',
+        'staging_sync_lock_release',
+        'staging_sync_lock_release',
+        'if flock -n "$STAGING_SYNC_LOCK_PATH" -c true; then echo owner_lock=lost; exit 91; else echo owner_lock=held; fi',
+        'flock -u 8',
+        'flock -n "$STAGING_SYNC_LOCK_PATH" -c true',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000 });
+      expect(r.error).toBeUndefined();
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain('start_status=75');
+      expect(r.stdout).toContain('owner_lock=held');
+      expect(r.stderr).not.toContain('unbound variable');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans up idempotently after Bash has reaped the lock keeper', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const helperStart = script.indexOf('# Keep the checkout flock in a dedicated coprocess.');
+    const helperEnd = script.indexOf('staging_alias_bootstrap()', helperStart);
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    const helper = script.slice(helperStart, helperEnd);
+    const dir = mkdtempSync(join(tmpdir(), 'staging-lock-reaped-'));
+    const lock = join(dir, 'checkout.lock');
+    try {
+      const r = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        helper,
+        `STAGING_SYNC_LOCK_PATH=${JSON.stringify(lock)}`,
+        'staging_sync_lock_start',
+        'keeper="$STAGING_SYNC_LOCK_KEEPER_PID"',
+        'kill "$keeper"',
+        'wait "$keeper" 2>/dev/null || true',
+        '[[ ! -v STAGING_SYNC_LOCK_KEEPER_PID ]]',
+        'staging_sync_lock_release',
+        'staging_sync_lock_release',
+        'flock -n "$STAGING_SYNC_LOCK_PATH" -c true',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000 });
+      expect(r.error).toBeUndefined();
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stderr).not.toContain('unbound variable');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the staging lock out of child processes', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     const helperStart = script.indexOf('# Keep the checkout flock in a dedicated coprocess.');
@@ -1826,7 +1891,8 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
         'staging_sync_lock_release',
         `if flock -n ${JSON.stringify(lock)} -c true; then echo lock_after_keeper_release=free; else echo lock_after_keeper_release=held; fi`,
         'wait "$child"',
-      ].join('\n')], { encoding: 'utf8' });
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000 });
+      expect(r.error).toBeUndefined();
       expect(r.status).toBe(0);
       expect(r.stdout).toContain('lock_after_keeper_release=free');
     } finally {

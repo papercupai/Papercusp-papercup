@@ -21,7 +21,7 @@ import { execFile, execSync, execFileSync } from 'node:child_process';
 import { constants as osConstants, tmpdir } from 'node:os';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
@@ -3185,7 +3185,18 @@ export function writeLintTscRunMarker({
   if (!markerRel) return false;
 
   try {
-    const target = resolve(root, markerRel);
+    let outputRoot = root;
+    const sourceReceipt = process.env.VERIFY_TAURI_SOURCE_RECEIPT?.trim();
+    if (sourceReceipt) {
+      // The verifier already transports an independent receipt outside its
+      // immutable source. Keep this run's advisory output beside that receipt;
+      // it must neither alter the archive nor replace a current-tree verdict.
+      const receipt = realpathSync(sourceReceipt);
+      const fromSource = relative(realpathSync(root), receipt);
+      if (!isAbsolute(fromSource) && fromSource !== '..' && !fromSource.startsWith(`..${sep}`)) return false;
+      outputRoot = dirname(receipt);
+    }
+    const target = resolve(outputRoot, markerRel);
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(
       target,

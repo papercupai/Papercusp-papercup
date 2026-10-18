@@ -17,11 +17,11 @@ import {
   type WorkItemForContract,
 } from '../plans/behavior-contract-resolver';
 import type { EnforcementEligibility } from '../plans/spec-enforcement-eligibility';
+import { isNonAutomatedBehaviorClass, isNonCodeWorkItemKind } from '../../plan-verification-profile';
 import {
   adequacyCardRevisionDisposition,
   activeSpecEvidence,
   evaluateSpecTestAdequacy,
-  isNonCodeWorkItemKind,
   requiredProofFloor,
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
   specTestAdequacySubjectRef,
@@ -209,7 +209,7 @@ function isRegisteredInventoryExemption(
     clause.sourceValId === null &&
     clause.sourceBar == null &&
     clause.behavior.trim().length > 0 &&
-    clause.behaviorClass === 'non-automated' &&
+    isNonAutomatedBehaviorClass(clause.behaviorClass) &&
     clause.requiredEvidence.length === 0 &&
     clause.requiredTestLayers.length === 0 &&
     !clause.mutationRequired &&
@@ -692,7 +692,7 @@ export async function specTestAdequacyCompletionGate(
     // 'exempt' (40 clauses already use it). Reach for that, not a new clause state.
     const potentiallyTestRequiring = clauses.filter(
       (clause) =>
-        clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
+        !isNonAutomatedBehaviorClass(clause.behaviorClass) || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
     );
     if (potentiallyTestRequiring.length === 0)
       return withReport({

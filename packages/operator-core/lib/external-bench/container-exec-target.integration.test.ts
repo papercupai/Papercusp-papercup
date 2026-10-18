@@ -108,11 +108,23 @@ afterAll(async () => {
 });
 
 describe('container exec target against a live container', () => {
-  it.runIf(process.platform === 'linux')('reaches the native Codex composer in the trusted container workdir before kickoff', async () => {
+  it.runIf(process.platform === 'linux').each(['directory', 'repository'] as const)(
+    'reaches the native Codex composer in the trusted container workdir before kickoff (%s)', async checkoutKind => {
     const base = mkdtempSync(join(root, 'native-trust-'));
     const homes = join(base, 'homes'), perHomes = join(base, 'task-homes');
     const home = join(homes, 'session-1'), checkout = join(base, 'checkout');
     for (const dir of [home, perHomes, checkout]) mkdirSync(dir, { recursive: true });
+    if (checkoutKind === 'repository') {
+      const initialized = await command('git', ['init', '-q', '--initial-branch=main', checkout]);
+      expect(initialized.status, JSON.stringify(initialized)).toBe(0);
+      // Match managed carry's repository-backed /app. An empty directory can
+      // reach the composer without consulting project trust at all.
+      const imported = spawnSync('git', ['-C', checkout, 'fast-import', '--quiet'], { encoding: 'utf8',
+        input: 'blob\nmark :1\ndata 7\nbefore\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 answer.txt\n\ndone\n' });
+      expect(imported.status, imported.stderr).toBe(0);
+      const reset = await command('git', ['-C', checkout, 'reset', '--hard', 'HEAD']);
+      expect(reset.status, JSON.stringify(reset)).toBe(0);
+    }
     writeFileSync(join(home, 'config.toml'), [
       'model = "gpt-6-luna"', 'model_provider = "private-trust"', 'web_search = "disabled"',
       '[features]', 'apps = false', 'plugins = false', 'remote_plugin = false',

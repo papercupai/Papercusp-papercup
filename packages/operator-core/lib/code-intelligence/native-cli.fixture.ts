@@ -133,13 +133,27 @@ export function nativeCliResult(result: { status: number | null; stdout: string;
     && Object.keys(parsed).every(key => key === 'ok' || key === 'data') ? parsed.data : parsed;
 }
 
+export type NativeCliRecoveryOptions = {
+  /**
+   * Accept a field-truncated result door only when the caller requested a
+   * projection and the door contains a complete JSON projection item. The
+   * default remains fail-closed for all incomplete envelopes.
+   */
+  allowProjectedPartial?: boolean;
+};
+
 /** Expand only explicitly recoverable result-door references; never accept a partial source. */
 export function recoverNativeCliResult(result: Parameters<typeof nativeCliResult>[0],
-  read: (args: Record<string, unknown>) => Record<string, any>) {
+  read: (args: Record<string, unknown>) => Record<string, any>,
+  options: NativeCliRecoveryOptions = {}) {
   let envelope;
   try { envelope = JSON.parse(result.stdout); } catch { return nativeCliResult(result); }
+  const projectedPartial = options.allowProjectedPartial === true
+    && envelope?.incomplete?.reason === 'under-budget-partial-result'
+    && envelope.incomplete.recoverable === false;
   if (result.status !== 0 || result.error || envelope?.schemaVersion !== 'papercusp.output-envelope/v1'
-    || envelope.state !== 'incomplete' || envelope.incomplete?.recoverable !== true) return nativeCliResult(result);
+    || envelope.state !== 'incomplete'
+    || (envelope.incomplete?.recoverable !== true && !projectedPartial)) return nativeCliResult(result);
   const reference = envelope.content?.length === 1 ? envelope.content[0] : null;
   if (reference?.kind !== 'reference' || typeof reference.uri !== 'string') return nativeCliResult(result);
   const pages: Buffer[] = [];
@@ -164,13 +178,24 @@ export function recoverNativeCliResult(result: Parameters<typeof nativeCliResult
     || createHash('sha256').update(payload).digest('hex') !== manifest?.sha256)
     throw new Error('Native CLI recovery reference integrity failed');
   const recovered = JSON.parse(payload.toString('utf8'));
-  if (recovered.isError === true || recovered.content?.length !== 1 || recovered.content[0].type !== 'text')
+  if (recovered.isError === true || !Array.isArray(recovered.content))
     throw new Error('Invalid native CLI recovery payload');
-  return nativeCliResult({ ...result, stdout: recovered.content[0].text });
+  if (recovered.content.length === 1 && recovered.content[0].type === 'text')
+    return nativeCliResult({ ...result, stdout: recovered.content[0].text });
+  if (!projectedPartial) throw new Error('Invalid native CLI recovery payload');
+  const projected = recovered.content
+    .filter((entry: any) => entry?.type === 'text' && typeof entry.text === 'string')
+    .map((entry: any) => {
+      try { return JSON.parse(entry.text); } catch { return null; }
+    })
+    .find((entry: any) => entry && typeof entry === 'object' && !Array.isArray(entry)
+      && !(entry.schemaVersion === 'papercusp.output-envelope/v1' && entry.state === 'incomplete'));
+  if (!projected) throw new Error('Invalid native CLI projected recovery payload');
+  return nativeCliResult({ ...result, stdout: JSON.stringify(projected) });
 }
 
 export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>,
-  invoke: typeof spawnSync = spawnSync): Record<string, any> {
+  invoke: typeof spawnSync = spawnSync, options: NativeCliRecoveryOptions = {}): Record<string, any> {
   const plan = nativeCliPlan(baseUrl, name, args);
   const startedAt = performance.now();
   // Write to the worker's actual descriptor: Vitest buffers console output until
@@ -194,5 +219,5 @@ export function nativeCliCall(baseUrl: string, name: string, args: Record<string
   }
   progress('settled', result);
   return recoverNativeCliResult(result,
-    pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs, invoke)) as Record<string, any>;
+    pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs, invoke), options) as Record<string, any>;
 }

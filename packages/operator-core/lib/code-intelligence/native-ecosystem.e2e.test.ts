@@ -318,8 +318,10 @@ describe.runIf(Boolean(baseUrl))('native P021 real CLI source/path expansion', (
 
 describe.runIf(Boolean(baseUrl))('native P014 required BAR real CLI interface change report', () => {
   it('exposes the changed response field and its incompatible registered fixture client, then clears the mismatch after the client adapts', () => {
-    const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/code-intelligence/first-party-callers.ts',
-      testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
+    const route = nativeCliCall(baseUrl!, 'dev:pipeline_position', {
+      path: 'packages/operator-core/lib/code-intelligence/first-party-callers.ts',
+      testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] },
+    }, spawnSync, { allowProjectedPartial: true });
     expect(route.currentBuildTestRoute.readiness).toBe('ready');
     expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
       row.runtime === 'staging-operator' && row.containsChange === true)).toBe(true);
@@ -393,7 +395,7 @@ describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real
 describe.runIf(Boolean(baseUrl))('native P017 required BAR real CLI runtime provenance', () => {
   it('identifies a containing current-build artifact and keeps a newer private source distinct', async () => {
     const sourcePath = 'packages/operator-core/lib/code-intelligence/source-runtime-provenance.ts';
-    const route = call('dev:pipeline_position', { path: sourcePath, testClass: 'operator-api',
+    const route = call('dev:pipeline_position', { path: sourcePath, testClass: 'operator-api', sourceRuntimeOnly: true,
       projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
     expect(route.currentBuildTestRoute.id).toBe('operator-api');
     expect(route.servingRuntimes.some((runtime: { runtime: string; containsChange: boolean | null }) =>

@@ -951,6 +951,35 @@ describe('session-scoped lint:tsc run marker writer (EI-19421388108187854)', () 
     }
   });
 
+  it('writes verifier markers beside the independent receipt without changing the frozen source', () => {
+    const container = mkdtempSync(join(tmpdir(), 'lint-tsc-verifier-marker-'));
+    const root = join(container, 'frozen-source');
+    const receipt = join(container, 'source-receipt.json');
+    mkdirSync(root);
+    writeFileSync(receipt, JSON.stringify({ sourceCommit: 'abc1234567' }));
+    const previous = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+    process.env.VERIFY_TAURI_SOURCE_RECEIPT = receipt;
+    try {
+      expect(writeLintTscRunMarker({ root, label: 'plugin-loader', runStartIso,
+        headSha: 'abc1234567', scope: 'all', files: null, sessionId: 'verifier-a' })).toBe(true);
+      expect(existsSync(join(root, '.papercusp'))).toBe(false);
+      expect(JSON.parse(readFileSync(join(container, '.papercusp', 'scratch',
+        'lint-tsc-last-run.verifier-a.json'), 'utf8'))).toMatchObject({
+        label: 'plugin-loader', head: 'abc1234567', scope: 'all',
+      });
+      const invalidReceipt = join(root, 'source-receipt.json');
+      writeFileSync(invalidReceipt, '{}');
+      process.env.VERIFY_TAURI_SOURCE_RECEIPT = invalidReceipt;
+      expect(writeLintTscRunMarker({ root, label: 'plugin-loader', runStartIso,
+        headSha: 'abc1234567', scope: 'all', files: null, sessionId: 'verifier-b' })).toBe(false);
+      expect(existsSync(join(root, '.papercusp'))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+      else process.env.VERIFY_TAURI_SOURCE_RECEIPT = previous;
+      rmSync(container, { recursive: true, force: true });
+    }
+  });
+
   it('refuses missing or unsafe session identities instead of writing a shared marker', () => {
     const root = mkdtempSync(join(tmpdir(), 'lint-tsc-session-marker-'));
     const input = {

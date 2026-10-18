@@ -7,6 +7,10 @@ import { once } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import type { Server } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+// Evaluate this fixture-owning suite first. Vitest aggregates the imported BAR
+// suites into one worker, so its hoisted DB mock and LSP socket setup must be
+// registered before another suite loads the production DB/LSP singletons.
+import './native-language-acceptance.integration.test';
 // Keep the required ecosystem BAR suite on the real subsystem integration paths.
 import '../harness/docs/native-source-change.integration.test';
 import '../agent-tools/plans/native-planning-advice.integration.test';
@@ -16,7 +20,6 @@ import '../dream/capability-packets.integration.test';
 import './scoped-contracts.integration.test';
 import './first-party-discovery.integration.test';
 import './semgrep-taint-facade.integration.test';
-import './native-language-acceptance.integration.test';
 import '../dream/capability-review-sources.integration.test';
 // Enable the interfaces in this isolated fixture; analysis/transport code is real.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn().mockResolvedValue(true) }));

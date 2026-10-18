@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { isNonCodeAuditVerdict } from '../../plan-verification-profile';
 import { execFileSync } from 'node:child_process';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
@@ -1270,7 +1271,7 @@ export default defineTool({
             `deliverable genuinely is not source, the verdict is 'not-code' (with \`note\`), not 'implemented'.`,
         });
       }
-      if (it.verdict === 'not-code' && !it.note) {
+      if (isNonCodeAuditVerdict(it.verdict) && !it.note) {
         // The widest escape hatch in the design — wider than `none`, and unmetered until
         // D-008. A reason is the minimum bar, and summarizeCoverage now counts these.
         problems.push({

@@ -8,6 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import { parsePlan } from '@papercusp/plan-parser';
+import { isNonAutomatedBehaviorClass } from './plan-verification-profile';
 import {
   acceptanceRubricCriterionSchema,
   rubricTemplateDataAuthoringSchema,
@@ -565,7 +566,7 @@ export function acceptanceBarSourceContractProblems(
       requiredTestLayers: layers,
       automatedProofRequired:
         criterion?.check?.kind === 'tests' ||
-        acceptanceBarBehaviorClass(evidencePlane, layers, criterion?.check) !== 'non-automated',
+        !isNonAutomatedBehaviorClass(acceptanceBarBehaviorClass(evidencePlane, layers, criterion?.check)),
     });
     if (gaps.length === 0) continue;
     let repair: string;

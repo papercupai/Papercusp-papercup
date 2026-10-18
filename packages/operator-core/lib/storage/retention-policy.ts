@@ -435,6 +435,24 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     ],
     note: 'Foreign (hand-parked) entries are pruned by pruneEvidenceRoot in the same module at finalize; see WI-6554700010010390.',
   },
+  {
+    id: 'vh-isolated-runs',
+    title: 'Verification-harness isolated integration runs',
+    origin: 'agent',
+    roots: [
+      '~/.local/state/verification-harness/isolated-integration',
+      '/mnt/data/offload/verification-harness/isolated-integration',
+    ],
+    keep: { kind: 'newest', keep: 30 },
+    enforcers: [
+      {
+        kind: 'existing',
+        ref: 'papercusp/libs/generic/verification-harness/src/runner.ts pruneEvidenceRoot',
+        schedule: 'after each isolated-integration harness run (recordIsolatedIntegrationProof)',
+      },
+    ],
+    note: 'The runner retains immutable originals under retained/ and prunes completed runs plus foreign entries under its retention mutex. This class names that owner explicitly; the generic standing reclaim does not sweep retained receipts.',
+  },
   // ── Agent classes the standing reclaim enforces ──────────────────────────
   {
     id: 'release-cut-worktrees',

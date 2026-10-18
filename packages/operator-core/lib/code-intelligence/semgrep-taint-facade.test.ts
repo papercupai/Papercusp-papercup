@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -60,32 +60,44 @@ describe('local-taint evidence admission boundaries', () => {
       expect(readFileSync(join(root, 'keep'), 'utf8')).toBe('foreign bytes');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it('compiles for the CommonJS root and launches provisioning while preserving the source guard', async () => {
+  it('compiles for the CommonJS root and launches provisioning without touching the ambient runtime', async () => {
     const root = fileURLToPath(new URL('../../../../', import.meta.url));
     const script = new URL('../../../../scripts/provision-lsp.ts', import.meta.url);
+    const home = mkdtempSync(join(tmpdir(), 'native-taint-cli-home-'));
+    const vendor = join(home, 'vendor', 'semgrep', SEMGREP_VERSION);
     // Reuse cut-seed-cli.test.ts's guarded CLI pattern. This command loads
     // source only; scoped tsImport cannot resolve its CJS package subpaths.
-    expect(() => transformSync(readFileSync(script, 'utf8'), { format: 'cjs', loader: 'ts' })).not.toThrow();
-    const resolver = [
-      'export async function resolve(specifier, context, nextResolve) {',
-      '  const resolved = await nextResolve(specifier, context);',
-      '  if (resolved.url.startsWith("file:") &&',
-      '      (new URL(resolved.url).pathname.endsWith(".ts") || new URL(resolved.url).pathname.endsWith(".tsx")) &&',
-      '      !resolved.url.includes("/node_modules/"))',
-      '    return { ...resolved, format: "module-typescript" };',
-      '  return resolved;',
-      '}',
-    ].join('\n');
-    const bootstrap = [
-      'import { register } from "node:module";',
-      'register("data:text/javascript," + encodeURIComponent(' + JSON.stringify(resolver) + '), import.meta.url);',
-      'process.argv = [process.execPath, ' + JSON.stringify(fileURLToPath(script)) + ', "semgrep"];',
-      'await import(' + JSON.stringify(script.href) + ');',
-    ].join('\n');
-    const result = await promisify(execFile)(process.execPath,
-      ['--import', 'tsx', '--input-type=module', '-e', bootstrap],
-      { cwd: root, timeout: 30_000, maxBuffer: 16 * 1024 });
-    expect(JSON.parse(result.stdout)).toMatchObject({ version: SEMGREP_VERSION, reused: true, distributionAdmission: false });
+    try {
+      mkdirSync(vendor, { recursive: true });
+      const marker = join(vendor, 'keep');
+      writeFileSync(marker, 'foreign bytes');
+      expect(() => transformSync(readFileSync(script, 'utf8'), { format: 'cjs', loader: 'ts' })).not.toThrow();
+      const resolver = [
+        'export async function resolve(specifier, context, nextResolve) {',
+        '  const resolved = await nextResolve(specifier, context);',
+        '  if (resolved.url.startsWith("file:") &&',
+        '      (new URL(resolved.url).pathname.endsWith(".ts") || new URL(resolved.url).pathname.endsWith(".tsx")) &&',
+        '      !resolved.url.includes("/node_modules/"))',
+        '    return { ...resolved, format: "module-typescript" };',
+        '  return resolved;',
+        '}',
+      ].join('\n');
+      const bootstrap = [
+        'import { register } from "node:module";',
+        'register("data:text/javascript," + encodeURIComponent(' + JSON.stringify(resolver) + '), import.meta.url);',
+        'process.argv = [process.execPath, ' + JSON.stringify(fileURLToPath(script)) + ', "semgrep"];',
+        'await import(' + JSON.stringify(script.href) + ');',
+      ].join('\n');
+      let childError: unknown;
+      try {
+        await promisify(execFile)(process.execPath,
+          ['--import', 'tsx', '--input-type=module', '-e', bootstrap],
+          { cwd: root, env: { ...process.env, PAPERCUSP_HOME: home }, timeout: 30_000, maxBuffer: 16 * 1024 });
+      } catch (error) { childError = error; }
+      expect(childError).toBeInstanceOf(Error);
+      expect((childError as { stderr?: string } | undefined)?.stderr).toContain('semgrep_runtime_existing_incomplete');
+      expect(readFileSync(marker, 'utf8')).toBe('foreign bytes');
+    } finally { rmSync(home, { recursive: true, force: true }); }
   }, 45_000);
   it('refuses findings that cannot be tied to a captured path, rule and one-based location', () => {
     for (const row of [

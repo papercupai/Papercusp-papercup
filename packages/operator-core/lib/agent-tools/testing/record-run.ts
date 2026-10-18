@@ -14,7 +14,8 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { access, realpath, rm, stat } from 'node:fs/promises';
 import { createScratchClone, runLocalGit } from '../../scratch-git-clone';
 import { z } from 'zod';
@@ -469,6 +470,25 @@ export async function verifyOperationalCheckDefinitionAtCommit(
   }
 }
 
+/** Pin the checkout containing the loaded instrument, including Git worktrees.
+ * The capability root deliberately names the agent's edit tree; a bundled
+ * serving instrument can execute from a different committed checkout.
+ */
+export async function resolveOperationalSourceRoot(
+  moduleUrl = import.meta.url,
+  git: typeof runGit = runGit,
+): Promise<string | null> {
+  try {
+    const modulePath = realpathSync(fileURLToPath(moduleUrl));
+    const result = await git(['rev-parse', '--show-toplevel'], dirname(modulePath));
+    const candidate = result.stdout.trim();
+    if (result.code !== 0 || !isAbsolute(candidate)) return null;
+    const root = realpathSync(candidate);
+    const path = relative(root, modulePath);
+    return path && path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path) ? root : null;
+  } catch { return null; }
+}
+
 /**
  * Native operational producers execute here rather than importing fingerprints
  * from an artifact. Reuse the recorder's assertion contract and canonical ledger;
@@ -493,6 +513,7 @@ export async function executeOperationalRun(
     readRuntime: (units: string[], workspaceId: string) => Promise<string | null>;
     persist: RecordOperationalRunDeps['persist'];
     verifyDefinition?: typeof verifyOperationalCheckDefinitionAtCommit;
+    sourceRoot?: () => Promise<string | null>;
   } = {
     snapshot: captureWorktreeSnapshotAsync,
     readRuntime: async (units, workspaceId) =>
@@ -511,7 +532,10 @@ export async function executeOperationalRun(
     || units.some(unit => !unit || unit.trim() !== unit || unit.length > 120)) {
     return { ok: false, error: 'invalid_runtime_units' as const };
   }
-  const root = resolveAgentWorkspaceRoot(ctx);
+  // Source provenance belongs to the loaded instrument. Its callback retains
+  // the original context for operation paths, placement and private test data.
+  const root = await (deps.sourceRoot ?? resolveOperationalSourceRoot)().catch(() => null);
+  if (!root) return { ok: false, error: 'operational_source_root_unavailable' as const };
   const path = relative(root, resolve(root, definition.filePath));
   if (!path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) {
     return { ok: false, error: 'invalid_check_path' as const };

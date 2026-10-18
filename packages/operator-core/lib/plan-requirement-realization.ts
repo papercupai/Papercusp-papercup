@@ -62,6 +62,7 @@ import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './accept
 import { barRequiresAutomatedProof } from './acceptance-bar-contract-snapshot';
 import { isEnforceableSpecLifecycle, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import { validExplicitExemption } from './agent-tools/plans/spec-quality';
+import { isReasonedNonCodeAudit } from './plan-verification-profile';
 import { readSpecEvidencePlane } from './agent-tools/plans/spec-evidence-store';
 
 /** Derived from the canonical BAR evaluator, never from a doc citation or a completion claim. */
@@ -415,8 +416,8 @@ export function judgeRequirementRealization(
       // D-008 still governs CODE verification. A reasoned, completed not-code item
       // can realize an operational outcome through separately evaluated BAR proof;
       // its doc/none citations remain non-verifying and cannot satisfy this alone.
-      const nonCodeProven = currentStatus === 'done' && audit.entry.verdict === 'not-code' &&
-        Boolean(audit.entry.note?.trim()) && input.nonCodeItemProofs?.some((proof) =>
+      const nonCodeProven = currentStatus === 'done' && isReasonedNonCodeAudit(audit.entry) &&
+        input.nonCodeItemProofs?.some((proof) =>
           proof.planItemId === trimmed &&
           ((proof.barKeys.length > 0 && proof.evidenceRefs.length > 0) || Boolean(proof.exemptionRefs?.length)));
       if (!audit.entry.citations.some(isVerifyingCitation) && !nonCodeProven) {

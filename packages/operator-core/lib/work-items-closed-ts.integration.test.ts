@@ -86,6 +86,13 @@ const KNOWN_INAPPLICABLE: KnownInapplicableMigration[] = [
       'severity_projection from payload and verifies it against payload. The canonical ' +
       'live-shape fixture covers it.',
   },
+  {
+    file: '1534-work-items-duplicate-of.sql',
+    reason:
+      '1534 locks and patches work_items_claimable (built by 1301 over claim_floors) and ' +
+      'verifies all three work_items views, none of which this minimal fixture builds. ' +
+      'work-items-duplicate-of.integration.test.ts applies it to production-shaped views.',
+  },
 ];
 
 const WS = 'ws-closed-ts';

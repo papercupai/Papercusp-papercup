@@ -1,6 +1,7 @@
 /** Canonical first-class plan spec clause storage (P-002 / D-001..D-003). */
 import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from '../../pg-timestamp';
 import { resolveSpecScopeSlug } from './adhoc-spec-scope';
 import { resolvePlanScope } from './source';
@@ -317,7 +318,7 @@ export function differsOnlyInAcceptanceProvenance(
     // against the immutable prior revision, so a changed obligation never carries.
     ...(prior.lifecycleStatus === 'exempt' &&
       (input.lifecycleStatus === 'accepted' || input.lifecycleStatus === 'active') &&
-      input.behaviorClass === 'non-automated' &&
+      isNonAutomatedBehaviorClass(input.behaviorClass) &&
       (input.requiredTestLayers?.length ?? 0) === 0 && !input.mutationRequired &&
       input.exemption == null && prior.exemption != null
       ? { exemption: prior.exemption }

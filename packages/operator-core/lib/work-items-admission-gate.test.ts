@@ -42,6 +42,18 @@ describe('isAdmitted — the admission-gate predicate', () => {
     expect(isAdmitted('some-state-added-later')).toBe(true);
   });
 
+  it('refuses any row carrying a duplicate verdict, whatever its admission state (migration 1534, D-001)', () => {
+    // Owner directive #1990: the duplicate is a FIELD the gate checks. ANY non-null
+    // duplicate_of refuses — an admitted, auto, or legacy-NULL row included.
+    for (const admission of [null, undefined, 'admitted', 'auto', 'unreviewed', 'pending'] as const) {
+      expect(isAdmitted(admission, 'EI-1')).toBe(false);
+    }
+    // Absent/NULL verdict leaves the admission axis exactly as before.
+    expect(isAdmitted('admitted', null)).toBe(true);
+    expect(isAdmitted(null, undefined)).toBe(true);
+    expect(isAdmitted('pending', null)).toBe(false);
+  });
+
   describe('falsifiability controls — these MUST disagree with the subject', () => {
     it('CALIBRATION: the subject itself passes the cases the controls are judged on', () => {
       // If this fails, the controls below prove nothing.
@@ -62,6 +74,13 @@ describe('isAdmitted — the admission-gate predicate', () => {
       expect(wrongNullIsPending('pending')).toBe(isAdmitted('pending'));
       expect(wrongNullIsPending('admitted')).toBe(isAdmitted('admitted'));
     });
+
+    it('control C (admission-only gate) wrongly admits a filed duplicate', () => {
+      const wrongAdmissionOnly = (a: string | null | undefined, _dup?: string | null): boolean => a !== 'pending';
+      expect(wrongAdmissionOnly('admitted', 'EI-1')).toBe(true); // subject says false
+      expect(wrongAdmissionOnly('admitted', 'EI-1')).not.toBe(isAdmitted('admitted', 'EI-1'));
+      expect(wrongAdmissionOnly('admitted', null)).toBe(isAdmitted('admitted', null));
+    });
   });
 });
 
@@ -76,6 +95,17 @@ describe('admittedWhereSql — every relation shape shares NULL-safe semantics',
     expect(render(admittedWhereSql(sql, 'ei'))).toContain('ei.admission');
     for (const qualifier of [undefined, 'wi', 'ei'] as const) {
       expect(render(admittedWhereSql(sql, qualifier))).toContain("IS DISTINCT FROM 'pending'");
+    }
+  });
+
+  it('every relation shape also refuses a row carrying a duplicate verdict, on its own alias', () => {
+    const render = (value: unknown) => JSON.stringify(value);
+    expect(render(admittedWhereSql(sql))).toContain('duplicate_of');
+    expect(render(admittedWhereSql(sql))).not.toContain('.duplicate_of');
+    expect(render(admittedWhereSql(sql, 'wi'))).toContain('wi.duplicate_of');
+    expect(render(admittedWhereSql(sql, 'ei'))).toContain('ei.duplicate_of');
+    for (const qualifier of [undefined, 'wi', 'ei'] as const) {
+      expect(render(admittedWhereSql(sql, qualifier))).toContain(' IS NULL)');
     }
   });
 });

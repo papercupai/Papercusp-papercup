@@ -1285,6 +1285,22 @@ async function persistAdmissionDuplicateLink(
     VALUES (${input.workspaceId}, ${src.kind}, ${src.ref}, ${dst.kind}, ${dst.ref}, 'duplicates',
             ${input.actor}, to_timestamp(${input.nowMs} / 1000.0))
     ON CONFLICT (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel) DO NOTHING`;
+  // Migration 1534 (bug-inflow-one-problem-one-row-2026-10-18#D-001): the verdict is a
+  // FIELD the admission gate reads, not only a link. Same transaction as the link, so the
+  // two cannot disagree. COALESCE keeps an earlier verdict (first writer wins); the
+  // promoter's judgement carries no numeric score, so confidence stays NULL.
+  await sql`
+    UPDATE harness_shared.work_items
+       SET duplicate_of = COALESCE(duplicate_of, ${input.canonical.id}),
+           duplicate_source = COALESCE(duplicate_source, 'admission-promoter'),
+           duplicate_evidence = COALESCE(
+             duplicate_evidence,
+             jsonb_build_object('matchedOn', 'admission-promoter', 'actor', ${input.actor}::text)
+           )
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.loser.harnessSlug}
+       AND feature_id = ${input.loser.id}
+       AND feature_id <> ${input.canonical.id}`;
 }
 
 function nullableFiniteMs(value: string | number | null | undefined): number | null {

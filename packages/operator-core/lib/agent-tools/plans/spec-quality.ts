@@ -1,6 +1,7 @@
 /** Plan-level spec quality over the exact current first-class clause set (P-004). */
 import { createHash } from 'node:crypto';
 import type { SpecClauseRevision } from './spec-clauses-store';
+import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import {
   computeSpecSetHash,
   normalizeSpecSemanticText,
@@ -171,7 +172,7 @@ function trimmedField(value: unknown): string | null {
 }
 
 export function validExplicitExemption(clause: SpecClauseRevision): boolean {
-  if (clause.lifecycleStatus !== 'exempt' || clause.behaviorClass !== 'non-automated') return false;
+  if (clause.lifecycleStatus !== 'exempt' || !isNonAutomatedBehaviorClass(clause.behaviorClass)) return false;
   const exemption = clause.exemption;
   if (!exemption || typeof exemption !== 'object' || Array.isArray(exemption)) return false;
   return Boolean(trimmedField(exemption.justification) && trimmedField(exemption.provenance));
@@ -229,7 +230,7 @@ function prerequisiteRuntimeBarMismatches(input: {
       .map((clause) => clause.planItemId),
     ...input.behavioralClauses
       .filter((clause) =>
-        clause.behaviorClass === 'non-automated' &&
+        isNonAutomatedBehaviorClass(clause.behaviorClass) &&
         clause.requiredTestLayers.length === 0 &&
         !clause.mutationRequired,
       )
@@ -241,7 +242,7 @@ function prerequisiteRuntimeBarMismatches(input: {
   const runtimeImplementations = input.behavioralClauses.filter(
     (clause) =>
       !clause.sourceBar &&
-      clause.behaviorClass !== 'non-automated' &&
+      !isNonAutomatedBehaviorClass(clause.behaviorClass) &&
       requiresRuntimeEvidence(clause),
   );
   const mismatches: PlanSpecQualityResult['details']['prerequisiteRuntimeBarMismatches'] = [];
@@ -253,7 +254,7 @@ function prerequisiteRuntimeBarMismatches(input: {
       (clause) =>
         clause.planItemId === prerequisiteItemId &&
         !clause.sourceBar &&
-        clause.behaviorClass !== 'non-automated',
+        !isNonAutomatedBehaviorClass(clause.behaviorClass),
     )) continue;
 
     const descendants = dependentItemIdsOf(prerequisiteItemId, input.planItemIds, input.planItems);
@@ -381,7 +382,7 @@ function implementationCouplingReason(behavior: string): string | null {
     return 'names an internal operation ' + JSON.stringify(operationReference[0]);
   }
   const existingSurfaceReuse =
-    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\b/i.exec(behavior);
+    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|records?|capability)\b/i.exec(behavior);
   if (existingSurfaceReuse) {
     return 'prescribes reuse of an existing implementation surface ' + JSON.stringify(existingSurfaceReuse[0].trim());
   }
@@ -390,8 +391,8 @@ function implementationCouplingReason(behavior: string): string | null {
   // Restrict the former to implementation nouns and usage/subject positions:
   // an existing customer/account is an observable identity, not code coupling.
   const implementationPrescription =
-    /\b(?:through|via|using)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\b/i.exec(behavior) ??
-    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior);
+    /\b(?:through|via|using)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|records?|capability)\b/i.exec(behavior) ??
+    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior);
   if (implementationPrescription) {
     return 'prescribes implementation reuse or selection ' + JSON.stringify(implementationPrescription[0].trim());
   }
@@ -484,7 +485,7 @@ function planClassFit(classRef: PlanClassRubricRef, clauses: SpecClauseRevision[
     };
   }
   const ok = clauses.some(
-    (clause) => clause.behaviorClass === 'observability' || clause.behaviorClass === 'non-automated',
+    (clause) => clause.behaviorClass === 'observability' || isNonAutomatedBehaviorClass(clause.behaviorClass),
   );
   return {
     ok,
@@ -813,6 +814,7 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'The customer job completes through the existing runtime.', expected: 'coupled' as const },
     { behavior: 'The existing cloud subscription flow implements the approved offer.', expected: 'coupled' as const },
     { behavior: 'A failure produces an alarm through the existing alarm subscription mechanism.', expected: 'coupled' as const },
+    { behavior: 'FAQ content stays synchronized through the existing source-linked maintenance pipeline.', expected: 'coupled' as const },
     { behavior: 'Reuse the runtime usage ledger for per-call token counts.', expected: 'coupled' as const },
     { behavior: 'Reuse PostHog for consented portal events.', expected: 'coupled' as const },
     { behavior: 'Reuse prior clean receipts when current; reuse PostHog for consented portal events.', expected: 'coupled' as const },
@@ -832,7 +834,7 @@ export function evaluatePlanSpecQuality(input: {
   const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
   const implementationIndependenceCoverage =
     ' Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).' +
-    ' Detector coverage: implementation filenames/symbols, repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    ' Detector coverage: implementation filenames/symbols, repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, pipelines, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
     behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
     ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +

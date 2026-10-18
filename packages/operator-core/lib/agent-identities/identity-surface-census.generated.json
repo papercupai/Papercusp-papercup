@@ -1,0 +1,1834 @@
+{
+  "schemaVersion": 1,
+  "generator": "npm run gen:identity-surface-census",
+  "suRenderParityBaseline": "pending: identity-definitions-own-policy-2026-10-17#P-001 (frozen su render)",
+  "counts": {
+    "flat-role-prompt": 109,
+    "prompt-constant": 90,
+    "injection-hook": 55,
+    "kernel-splice": 28
+  },
+  "hookKinds": {
+    "identity-dispatch": 5,
+    "guard": 18,
+    "context": 28,
+    "plumbing": 4
+  },
+  "entries": [
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/architect.tools.md",
+      "path": "apps/operator/prompts/architect.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/auditor.persona.md",
+      "path": "apps/operator/prompts/auditor.persona.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/auditor.tools.md",
+      "path": "apps/operator/prompts/auditor.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/debugger.tools.md",
+      "path": "apps/operator/prompts/debugger.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/kickoffs/new-plan.md",
+      "path": "apps/operator/prompts/kickoffs/new-plan.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/onboarding-tutor.md",
+      "path": "apps/operator/prompts/onboarding-tutor.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/operator.converse.md",
+      "path": "apps/operator/prompts/operator.converse.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/operator.examples.md",
+      "path": "apps/operator/prompts/operator.examples.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/operator.persona.md",
+      "path": "apps/operator/prompts/operator.persona.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/operator.shell.md",
+      "path": "apps/operator/prompts/operator.shell.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/operator.tools.md",
+      "path": "apps/operator/prompts/operator.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/oracle.persona.md",
+      "path": "apps/operator/prompts/oracle.persona.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/oracle.tools.md",
+      "path": "apps/operator/prompts/oracle.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercup-deep.persona.md",
+      "path": "apps/operator/prompts/papercup-deep.persona.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercup-deep.tools.md",
+      "path": "apps/operator/prompts/papercup-deep.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercup.converse.md",
+      "path": "apps/operator/prompts/papercup.converse.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercup.persona.md",
+      "path": "apps/operator/prompts/papercup.persona.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercup.shell.md",
+      "path": "apps/operator/prompts/papercup.shell.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercup.tools.md",
+      "path": "apps/operator/prompts/papercup.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercusp-compaction.base.md",
+      "path": "apps/operator/prompts/papercusp-compaction.base.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercusp-compaction.claude.md",
+      "path": "apps/operator/prompts/papercusp-compaction.claude.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercusp-compaction.protocol.md",
+      "path": "apps/operator/prompts/papercusp-compaction.protocol.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercusp-su-power.tools.md",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercusp-su.claude.md",
+      "path": "apps/operator/prompts/papercusp-su.claude.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercusp-su.codex.md",
+      "path": "apps/operator/prompts/papercusp-su.codex.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/papercusp-su.omp.md",
+      "path": "apps/operator/prompts/papercusp-su.omp.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/reviewer.tools.md",
+      "path": "apps/operator/prompts/reviewer.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/scoper.tools.md",
+      "path": "apps/operator/prompts/scoper.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/tester.tools.md",
+      "path": "apps/operator/prompts/tester.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/validator.tools.md",
+      "path": "apps/operator/prompts/validator.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:apps/operator/prompts/worker.tools.md",
+      "path": "apps/operator/prompts/worker.tools.md",
+      "kind": "operator-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/architect.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/architect.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/auditor.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/auditor.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/committer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/committer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/content-fixer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/content-fixer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/crosscheck.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/crosscheck.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/cup.base.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/cup.base.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/curator.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/curator.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/debugger.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/debugger.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/dimension-reviewer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/dimension-reviewer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/directed-implementer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/directed-implementer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/director.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/director.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/discoverer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/discoverer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/doc-steward.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/doc-steward.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/documenter.base.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/documenter.base.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/documenter.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/documenter.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/finding-verifier.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/finding-verifier.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/findings-synthesizer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/findings-synthesizer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/foreign-session.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/foreign-session.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/gym-director.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/gym-director.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/infra-reviewer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/infra-reviewer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/judge.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/judge.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/kettle.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/kettle.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/merge-resolver.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/merge-resolver.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/migration-director.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/migration-director.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/migration-verifier.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/migration-verifier.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/monitor.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/monitor.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/mug.base.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/mug.base.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/mug.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/mug.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/operator.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/operator.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/orchestrator.base.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/orchestrator.base.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/orchestrator.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/orchestrator.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/pair-director.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/pair-director.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/papercup-deep.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/papercup-deep.md",
+      "kind": "base:later"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/papercup.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/papercup.md",
+      "kind": "base:later"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/planner.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/planner.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/promote.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/promote.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/proposer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/proposer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/release-fixer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/release-fixer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/release-manager.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/release-manager.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/research-director.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/research-director.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/researcher.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/researcher.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/review-director.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/review-director.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/reviewer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/reviewer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/scanner.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/scanner.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/scoper.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/scoper.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/searcher.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/searcher.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/security-reviewer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/security-reviewer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "kind": "base:decomposed-v1"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/summarizer.base.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/summarizer.base.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/synthesizer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/synthesizer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/task-generator.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/task-generator.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/test-writer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/test-writer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/tester.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/tester.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/transformer.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/transformer.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/ui-qa.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/ui-qa.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/validator.base.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/validator.base.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/validator.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/validator.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/variant-runner.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/variant-runner.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/verifier.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/verifier.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/worker.base.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/worker.base.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/base/prompts/worker.md",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/worker.md",
+      "kind": "base:role"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/coding-factory/prompts/agent-base-overlay.md",
+      "path": "libs/papercusp/packages/harness/blueprints/coding-factory/prompts/agent-base-overlay.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/coding-solo/prompts/worker.md",
+      "path": "libs/papercusp/packages/harness/blueprints/coding-solo/prompts/worker.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/coding/prompts/cup.md",
+      "path": "libs/papercusp/packages/harness/blueprints/coding/prompts/cup.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/coding/prompts/kettle.md",
+      "path": "libs/papercusp/packages/harness/blueprints/coding/prompts/kettle.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/coding/prompts/mug.md",
+      "path": "libs/papercusp/packages/harness/blueprints/coding/prompts/mug.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/coding/prompts/operator.md",
+      "path": "libs/papercusp/packages/harness/blueprints/coding/prompts/operator.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/gaia-agent/prompts/gaia-worker.md",
+      "path": "libs/papercusp/packages/harness/blueprints/gaia-agent/prompts/gaia-worker.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/gym/prompts/judge.md",
+      "path": "libs/papercusp/packages/harness/blueprints/gym/prompts/judge.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/implement/prompts/worker.md",
+      "path": "libs/papercusp/packages/harness/blueprints/implement/prompts/worker.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/scan/prompts/scanner.md",
+      "path": "libs/papercusp/packages/harness/blueprints/scan/prompts/scanner.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/vote/prompts/advocate.md",
+      "path": "libs/papercusp/packages/harness/blueprints/vote/prompts/advocate.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/vote/prompts/voter.md",
+      "path": "libs/papercusp/packages/harness/blueprints/vote/prompts/voter.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/work/prompts/cup.md",
+      "path": "libs/papercusp/packages/harness/blueprints/work/prompts/cup.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/work/prompts/documenter.md",
+      "path": "libs/papercusp/packages/harness/blueprints/work/prompts/documenter.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/work/prompts/judge.md",
+      "path": "libs/papercusp/packages/harness/blueprints/work/prompts/judge.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "flat-role-prompt",
+      "id": "flat-role-prompt:libs/papercusp/packages/harness/blueprints/work/prompts/mug.md",
+      "path": "libs/papercusp/packages/harness/blueprints/work/prompts/mug.md",
+      "kind": "blueprint-prompt"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/artifact-url-delivery-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/artifact-url-delivery-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/ask-gate-mirror.sh",
+      "path": "apps/operator/scripts/hooks/cc/ask-gate-mirror.sh",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/guard-operator-desktop.mjs",
+      "path": "apps/operator/scripts/hooks/cc/guard-operator-desktop.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/lifecycle-report.sh",
+      "path": "apps/operator/scripts/hooks/cc/lifecycle-report.sh",
+      "kind": "plumbing"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttoolbatch-locks-release.sh",
+      "path": "apps/operator/scripts/hooks/cc/posttoolbatch-locks-release.sh",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttoolbatch-midturn-context.sh",
+      "path": "apps/operator/scripts/hooks/cc/posttoolbatch-midturn-context.sh",
+      "kind": "identity-dispatch",
+      "inside": true
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-behavioural-strand-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-behavioural-strand-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-cli-entry-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-cli-entry-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-css-design-primitives-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-css-design-primitives-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-locks-release.sh",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-locks-release.sh",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-mdx-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-mdx-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-migration-fixture-drift-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-migration-fixture-drift-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-mjs-import-declaration-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-mjs-import-declaration-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-mock-cast-escape-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-mock-cast-escape-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-objective-title.sh",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-objective-title.sh",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-proof-stale-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-proof-stale-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-registry-census-drift-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-registry-census-drift-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-resource-governor-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-resource-governor-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-su-instance-override-reseed.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-su-instance-override-reseed.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-tool-prompt-weight-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-tool-prompt-weight-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-ts-parse-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-ts-parse-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-tsc-verdict-stale-nudge.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-tsc-verdict-stale-nudge.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-write-byte-integrity-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-write-byte-integrity-guard.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs",
+      "path": "apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-activity-report.sh",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-activity-report.sh",
+      "kind": "plumbing"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-apply-patch-duplicate-target-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-apply-patch-duplicate-target-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-codex-rtk-rewrite.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-codex-rtk-rewrite.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-content-lint.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-content-lint.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-control-bytes-content-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-control-bytes-content-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-generated-file-edit-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-generated-file-edit-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-identity-guard.sh",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-identity-guard.sh",
+      "kind": "identity-dispatch",
+      "inside": true
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-locks-acquire.sh",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-locks-acquire.sh",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-nul-byte-edit-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-nul-byte-edit-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-plans-read-guard.sh",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-plans-read-guard.sh",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-restricted-egress-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-restricted-egress-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-schedule-wakeup-provenance.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-schedule-wakeup-provenance.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-tool-prompt-weight-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-tool-prompt-weight-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-unreserved-migration-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-unreserved-migration-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/pretooluse-write-overwrite-guard.mjs",
+      "path": "apps/operator/scripts/hooks/cc/pretooluse-write-overwrite-guard.mjs",
+      "kind": "guard"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/regenerate-declaration-before-lock-release.mjs",
+      "path": "apps/operator/scripts/hooks/cc/regenerate-declaration-before-lock-release.mjs",
+      "kind": "plumbing"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/sessionstart-identity-context.sh",
+      "path": "apps/operator/scripts/hooks/cc/sessionstart-identity-context.sh",
+      "kind": "identity-dispatch",
+      "inside": true
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/stop-identity-context.sh",
+      "path": "apps/operator/scripts/hooks/cc/stop-identity-context.sh",
+      "kind": "identity-dispatch",
+      "inside": true
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
+      "path": "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/stop-turn-journal.sh",
+      "path": "apps/operator/scripts/hooks/cc/stop-turn-journal.sh",
+      "kind": "plumbing"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/userpromptsubmit-memory.sh",
+      "path": "apps/operator/scripts/hooks/cc/userpromptsubmit-memory.sh",
+      "kind": "identity-dispatch",
+      "inside": true
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh",
+      "path": "apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh",
+      "kind": "context"
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/workitem-verify-nudge.sh",
+      "path": "apps/operator/scripts/hooks/cc/workitem-verify-nudge.sh",
+      "kind": "context"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#AUTO-MODE",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "AUTO-MODE",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#COMPACTION",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "COMPACTION",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#COORD-LEGEND",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "COORD-LEGEND",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#FULL-ONLY",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "FULL-ONLY",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#PROJECT-GUIDE",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "PROJECT-GUIDE",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#PROMOTION-MODEL",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "PROMOTION-MODEL",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#RESULT-DOOR",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "RESULT-DOOR",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#SHARED-BASE-NOTES",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "SHARED-BASE-NOTES",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#WIRE-SCHEMAS",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "WIRE-SCHEMAS",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-engineer.tools.md#WORKSPACE-MAP",
+      "path": "apps/operator/prompts/papercusp-su-engineer.tools.md",
+      "name": "WORKSPACE-MAP",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#AUTO-MODE",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "AUTO-MODE",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#COMPACTION",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "COMPACTION",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#COORD-LEGEND",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "COORD-LEGEND",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#PROJECT-GUIDE",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "PROJECT-GUIDE",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#PROMOTION-MODEL",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "PROMOTION-MODEL",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#RESULT-DOOR",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "RESULT-DOOR",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#SHARED-BASE-NOTES",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "SHARED-BASE-NOTES",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#WIRE-SCHEMAS",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "WIRE-SCHEMAS",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:apps/operator/prompts/papercusp-su-power.tools.md#WORKSPACE-MAP",
+      "path": "apps/operator/prompts/papercusp-su-power.tools.md",
+      "name": "WORKSPACE-MAP",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#AUTO-MODE",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "AUTO-MODE",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#COMPACTION",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "COMPACTION",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#COORD-LEGEND",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "COORD-LEGEND",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#PROJECT-GUIDE",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "PROJECT-GUIDE",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#PROMOTION-MODEL",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "PROMOTION-MODEL",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#RESULT-DOOR",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "RESULT-DOOR",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#SHARED-BASE-NOTES",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "SHARED-BASE-NOTES",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#WIRE-SCHEMAS",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "WIRE-SCHEMAS",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "kernel-splice",
+      "id": "kernel-splice:libs/papercusp/packages/harness/blueprints/base/prompts/su.md#WORKSPACE-MAP",
+      "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+      "name": "WORKSPACE-MAP",
+      "kind": "splice-marker"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#ACCOUNT_ROUTING_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "ACCOUNT_ROUTING_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#AGENT_ACTIVITY_TRUTH_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "AGENT_ACTIVITY_TRUTH_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#CODE_RUN_NUDGE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "CODE_RUN_NUDGE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#CONCURRENCY_FIRST_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "CONCURRENCY_FIRST_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#COUPLING_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "COUPLING_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#DEPLOY_PIPELINE_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "DEPLOY_PIPELINE_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#EVIDENCE_DISCIPLINE_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "EVIDENCE_DISCIPLINE_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#FINISH_THE_ROLLOUT_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "FINISH_THE_ROLLOUT_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#FRICTION_TRIPWIRE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "FRICTION_TRIPWIRE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#OBSERVATION_CAPTURE_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "OBSERVATION_CAPTURE_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#OBSERVATION_RUBRIC_NUDGE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "OBSERVATION_RUBRIC_NUDGE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#PEER_REPLY_PRIORITY_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "PEER_REPLY_PRIORITY_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#PEER_WAKE_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "PEER_WAKE_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#REUSE_FIRST_NUDGE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "REUSE_FIRST_NUDGE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#STATE_PLANE_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "STATE_PLANE_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#TESTING_STANDARD",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "TESTING_STANDARD",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#VERIFICATION_STANDARD",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "VERIFICATION_STANDARD",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#WAIT_LOOP_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "WAIT_LOOP_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#WORK_RECORD_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "WORK_RECORD_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#WRITE_THROUGH_NOTE",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "WRITE_THROUGH_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#YIELD_POLICY",
+      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
+      "name": "YIELD_POLICY",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/tiered-context.ts#TIER_1_PREAMBLE",
+      "path": "libs/papercusp/packages/orchestrator/src/tiered-context.ts",
+      "name": "TIER_1_PREAMBLE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-launch-core.ts#IMMUTABLE_MEMBER_LAUNCH_LINEAGE_GUARD",
+      "path": "packages/operator-core/lib/agent-launch-core.ts",
+      "name": "IMMUTABLE_MEMBER_LAUNCH_LINEAGE_GUARD",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-loop/session-compaction.ts#SUMMARIZE_SYSTEM",
+      "path": "packages/operator-core/lib/agent-loop/session-compaction.ts",
+      "name": "SUMMARIZE_SYSTEM",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/_harness-scope.ts#HARNESS_REQUIRED_DETAIL",
+      "path": "packages/operator-core/lib/agent-tools/_harness-scope.ts",
+      "name": "HARNESS_REQUIRED_DETAIL",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/coordination/compaction-recovery.ts#MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION",
+      "path": "packages/operator-core/lib/agent-tools/coordination/compaction-recovery.ts",
+      "name": "MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/coordination/message-fields.ts#BODY_MUST_BE_ARRAY_MESSAGE",
+      "path": "packages/operator-core/lib/agent-tools/coordination/message-fields.ts",
+      "name": "BODY_MUST_BE_ARRAY_MESSAGE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/coordination/owner-chat-turn.ts#OWNER_CHAT_TURN_NOTE",
+      "path": "packages/operator-core/lib/agent-tools/coordination/owner-chat-turn.ts",
+      "name": "OWNER_CHAT_TURN_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts#LEADER_AUTO_MODE_DIRECTIVE",
+      "path": "packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts",
+      "name": "LEADER_AUTO_MODE_DIRECTIVE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts#LEADER_STANDING_JOB",
+      "path": "packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts",
+      "name": "LEADER_STANDING_JOB",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/plans/context-bundle.ts#LAUNCH_PREAMBLE",
+      "path": "packages/operator-core/lib/agent-tools/plans/context-bundle.ts",
+      "name": "LAUNCH_PREAMBLE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/plans/product-shaping.ts#PRODUCT_SHAPING_GUIDANCE",
+      "path": "packages/operator-core/lib/agent-tools/plans/product-shaping.ts",
+      "name": "PRODUCT_SHAPING_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/rubrics/amend.ts#REVIEW_NOT_REQUESTED_NEXT",
+      "path": "packages/operator-core/lib/agent-tools/rubrics/amend.ts",
+      "name": "REVIEW_NOT_REQUESTED_NEXT",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/scheduler/get_next.ts#IDLE_PULL_MISS_ADVICE",
+      "path": "packages/operator-core/lib/agent-tools/scheduler/get_next.ts",
+      "name": "IDLE_PULL_MISS_ADVICE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/work_items/complete.ts#SERVER_STAMPED_TREE_STAMP_MESSAGE",
+      "path": "packages/operator-core/lib/agent-tools/work_items/complete.ts",
+      "name": "SERVER_STAMPED_TREE_STAMP_MESSAGE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/work_items/complete.ts#SPEC_ADEQUACY_CURRENTNESS_GUIDANCE",
+      "path": "packages/operator-core/lib/agent-tools/work_items/complete.ts",
+      "name": "SPEC_ADEQUACY_CURRENTNESS_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts#SPEC_ADEQUACY_ATTESTATION_GUIDANCE",
+      "path": "packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts",
+      "name": "SPEC_ADEQUACY_ATTESTATION_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/carry-doc.ts#JUDGE_SAFE_POST_COMPACTION_RECOVERY_INSTRUCTION",
+      "path": "packages/operator-core/lib/carry-doc.ts",
+      "name": "JUDGE_SAFE_POST_COMPACTION_RECOVERY_INSTRUCTION",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/carry-surface-provenance-lint.ts#PROVENANCE_LINT_DOWNGRADED_NOTE",
+      "path": "packages/operator-core/lib/carry-surface-provenance-lint.ts",
+      "name": "PROVENANCE_LINT_DOWNGRADED_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/carry-surface-provenance-lint.ts#PROVENANCE_LINT_MECHANISM_NOTE",
+      "path": "packages/operator-core/lib/carry-surface-provenance-lint.ts",
+      "name": "PROVENANCE_LINT_MECHANISM_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/carry-surface-provenance-lint.ts#PROVENANCE_LINT_NOTE",
+      "path": "packages/operator-core/lib/carry-surface-provenance-lint.ts",
+      "name": "PROVENANCE_LINT_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/code-intelligence/contracts.ts#RIPGREP_SCOPE_GUIDANCE",
+      "path": "packages/operator-core/lib/code-intelligence/contracts.ts",
+      "name": "RIPGREP_SCOPE_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/consult/grading-cascade.ts#ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE",
+      "path": "packages/operator-core/lib/consult/grading-cascade.ts",
+      "name": "ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/consult/grading-cascade.ts#ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE",
+      "path": "packages/operator-core/lib/consult/grading-cascade.ts",
+      "name": "ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/design-spec/designer-prompt.ts#FRAMING",
+      "path": "packages/operator-core/lib/design-spec/designer-prompt.ts",
+      "name": "FRAMING",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/dream/capability-review.ts#SYSTEM",
+      "path": "packages/operator-core/lib/dream/capability-review.ts",
+      "name": "SYSTEM",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts#AUTO_MODE_DIRECTIVE",
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts",
+      "name": "AUTO_MODE_DIRECTIVE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts#AUTO_MODE_DIRECTIVE_LOOP_ARMED",
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts",
+      "name": "AUTO_MODE_DIRECTIVE_LOOP_ARMED",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts#CONTEXT_DISCIPLINE_DIRECTIVE",
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts",
+      "name": "CONTEXT_DISCIPLINE_DIRECTIVE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts#DRAIN_MODE_DIRECTIVE",
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts",
+      "name": "DRAIN_MODE_DIRECTIVE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#LEADER_AUTO_MODE_KICKOFF_DIRECTIVE",
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
+      "name": "LEADER_AUTO_MODE_KICKOFF_DIRECTIVE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#PAPERCUSP_MCP_INSTRUCTIONS",
+      "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+      "name": "PAPERCUSP_MCP_INSTRUCTIONS",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/events/await/timeout-fallback.ts#TIMEOUT_WAKE_GUIDANCE",
+      "path": "packages/operator-core/lib/events/await/timeout-fallback.ts",
+      "name": "TIMEOUT_WAKE_GUIDANCE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/external-bench/gaia/agent.ts#GAIA_SYSTEM_PROMPT",
+      "path": "packages/operator-core/lib/external-bench/gaia/agent.ts",
+      "name": "GAIA_SYSTEM_PROMPT",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/external-bench/gaia/hive-arm.ts#DECOMPOSE_SYSTEM",
+      "path": "packages/operator-core/lib/external-bench/gaia/hive-arm.ts",
+      "name": "DECOMPOSE_SYSTEM",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/external-bench/gdpval/agent.ts#GDPVAL_AGENT_SYSTEM",
+      "path": "packages/operator-core/lib/external-bench/gdpval/agent.ts",
+      "name": "GDPVAL_AGENT_SYSTEM",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/external-bench/grader/gdpval.ts#GDPVAL_JUDGE_SYSTEM",
+      "path": "packages/operator-core/lib/external-bench/grader/gdpval.ts",
+      "name": "GDPVAL_JUDGE_SYSTEM",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/external-bench/hive-backlog-live.ts#BENCH_BEE_DIRECTIVE",
+      "path": "packages/operator-core/lib/external-bench/hive-backlog-live.ts",
+      "name": "BENCH_BEE_DIRECTIVE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts#BENCH_BEE_DIRECTIVE",
+      "path": "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
+      "name": "BENCH_BEE_DIRECTIVE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/harness/improvements/observation-title-guidance.ts#CONDITION_KEY_RULE",
+      "path": "packages/operator-core/lib/harness/improvements/observation-title-guidance.ts",
+      "name": "CONDITION_KEY_RULE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/harness/routines/loop.ts#COLD_LOOP_WAKE_ADDENDUM",
+      "path": "packages/operator-core/lib/harness/routines/loop.ts",
+      "name": "COLD_LOOP_WAKE_ADDENDUM",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/harness/routines/loop.ts#DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE",
+      "path": "packages/operator-core/lib/harness/routines/loop.ts",
+      "name": "DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/harness/routines/loop.ts#GATED_LOOP_WAKE_ADDENDUM",
+      "path": "packages/operator-core/lib/harness/routines/loop.ts",
+      "name": "GATED_LOOP_WAKE_ADDENDUM",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/harness/routines/loop.ts#MONITOR_LOOP_WAKE_PROMPT_TEMPLATE",
+      "path": "packages/operator-core/lib/harness/routines/loop.ts",
+      "name": "MONITOR_LOOP_WAKE_PROMPT_TEMPLATE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts#RESTART_SAFETY_NOTE",
+      "path": "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
+      "name": "RESTART_SAFETY_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/interactive-claude-config.ts#RECOVER_HOOK_SOURCE",
+      "path": "packages/operator-core/lib/interactive-claude-config.ts",
+      "name": "RECOVER_HOOK_SOURCE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/interest-fold.ts#NOTE",
+      "path": "packages/operator-core/lib/interest-fold.ts",
+      "name": "NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/memory/jev-admission-request.ts#CONTENT_RELEVANCE_INSTRUCTIONS",
+      "path": "packages/operator-core/lib/memory/jev-admission-request.ts",
+      "name": "CONTENT_RELEVANCE_INSTRUCTIONS",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/memory/jev-conflict-judge.ts#CONTENT_CONFLICT_INSTRUCTIONS",
+      "path": "packages/operator-core/lib/memory/jev-conflict-judge.ts",
+      "name": "CONTENT_CONFLICT_INSTRUCTIONS",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/operator-converse-prompt.ts#OPERATOR_CONVERSE_PROMPT",
+      "path": "packages/operator-core/lib/operator-converse-prompt.ts",
+      "name": "OPERATOR_CONVERSE_PROMPT",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/operator-persona.ts#OPERATOR_FEW_SHOTS",
+      "path": "packages/operator-core/lib/operator-persona.ts",
+      "name": "OPERATOR_FEW_SHOTS",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/operator-persona.ts#OPERATOR_PERSONA_PROMPT",
+      "path": "packages/operator-core/lib/operator-persona.ts",
+      "name": "OPERATOR_PERSONA_PROMPT",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/operator-prompt-system.ts#INLINE_FALLBACK",
+      "path": "packages/operator-core/lib/operator-prompt-system.ts",
+      "name": "INLINE_FALLBACK",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/operator-prompt.ts#FIRST_RUN_INTRO",
+      "path": "packages/operator-core/lib/operator-prompt.ts",
+      "name": "FIRST_RUN_INTRO",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/personal-vault/delegated-read.ts#DELEGATE_SYSTEM_PROMPT",
+      "path": "packages/operator-core/lib/personal-vault/delegated-read.ts",
+      "name": "DELEGATE_SYSTEM_PROMPT",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/pot/owner-claim-guard.ts#UNVERIFIED_OWNER_CLAIM_GUIDANCE",
+      "path": "packages/operator-core/lib/pot/owner-claim-guard.ts",
+      "name": "UNVERIFIED_OWNER_CLAIM_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/pr-host/agent-reviewer.ts#REVIEWER_SYSTEM_PROMPT",
+      "path": "packages/operator-core/lib/pr-host/agent-reviewer.ts",
+      "name": "REVIEWER_SYSTEM_PROMPT",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/scheduler/fleet-scope-admission.ts#FLEET_MISS_WIND_DOWN_ADVICE",
+      "path": "packages/operator-core/lib/scheduler/fleet-scope-admission.ts",
+      "name": "FLEET_MISS_WIND_DOWN_ADVICE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/scout/feedback-loop-prompt.ts#SCOUT_DRAFT_LOOP_NOTE",
+      "path": "packages/operator-core/lib/scout/feedback-loop-prompt.ts",
+      "name": "SCOUT_DRAFT_LOOP_NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/scout/feedback-loop-prompt.ts#SCOUT_FEEDBACK_LOOP_GUIDANCE",
+      "path": "packages/operator-core/lib/scout/feedback-loop-prompt.ts",
+      "name": "SCOUT_FEEDBACK_LOOP_GUIDANCE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/scout/revise.ts#REVISION_SYSTEM",
+      "path": "packages/operator-core/lib/scout/revise.ts",
+      "name": "REVISION_SYSTEM",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/search/jev-contradiction-judge.ts#CONTENT_CONTRADICTION_INSTRUCTIONS",
+      "path": "packages/operator-core/lib/search/jev-contradiction-judge.ts",
+      "name": "CONTENT_CONTRADICTION_INSTRUCTIONS",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/state-plane-stamp.ts#NOTE",
+      "path": "packages/operator-core/lib/state-plane-stamp.ts",
+      "name": "NOTE",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/task-manager/lifecycle-judgement.ts#SYSTEMD_DBUS_ABSENCE_GUIDANCE",
+      "path": "packages/operator-core/lib/task-manager/lifecycle-judgement.ts",
+      "name": "SYSTEMD_DBUS_ABSENCE_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/task-manager/lifecycle-judgement.ts#TERMINAL_RESIDUE_VERIFICATION_GUIDANCE",
+      "path": "packages/operator-core/lib/task-manager/lifecycle-judgement.ts",
+      "name": "TERMINAL_RESIDUE_VERIFICATION_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/task-manager/lifecycle-judgement.ts#UNACCOUNTED_GONE_VERIFICATION_GUIDANCE",
+      "path": "packages/operator-core/lib/task-manager/lifecycle-judgement.ts",
+      "name": "UNACCOUNTED_GONE_VERIFICATION_GUIDANCE",
+      "kind": "prompt-named"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/turn-end-observation-policy.ts#TURN_END_OBSERVATION",
+      "path": "packages/operator-core/lib/turn-end-observation-policy.ts",
+      "name": "TURN_END_OBSERVATION",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/voice-engines/elevenlabs-agent-sync.ts#PAPERCUP_FRONT_PROMPT",
+      "path": "packages/operator-core/lib/voice-engines/elevenlabs-agent-sync.ts",
+      "name": "PAPERCUP_FRONT_PROMPT",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/voice-engines/openai-realtime.ts#TOOL_ROUTING",
+      "path": "packages/operator-core/lib/voice-engines/openai-realtime.ts",
+      "name": "TOOL_ROUTING",
+      "kind": "second-person"
+    },
+    {
+      "class": "prompt-constant",
+      "id": "prompt-constant:packages/operator-core/lib/voice-node/operator-voice-session-deps.ts#EL_RELAY_PERSONA",
+      "path": "packages/operator-core/lib/voice-node/operator-voice-session-deps.ts",
+      "name": "EL_RELAY_PERSONA",
+      "kind": "second-person"
+    }
+  ]
+}

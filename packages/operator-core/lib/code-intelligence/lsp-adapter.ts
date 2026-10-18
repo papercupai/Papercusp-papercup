@@ -1,4 +1,3 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * The thin Papercusp-owned in-operator LSP adapter (plan
  * `code-intelligence-routing-lsp-gitnexus-2026-08-20`, D-002 / D-006, P-008).
@@ -80,7 +79,7 @@ export type LspLanguage = typeof LSP_LANGUAGES[number];
 
 /** Select once at daemon bootstrap, so a warm client cannot change installations. */
 export function resolveLspVendorDir(setting: string | undefined = process.env.PAPERCUSP_LSP_VENDOR_DIR): string {
-  if (setting === undefined) return papercuspPath('vendor', 'lsp');
+  if (setting === undefined) return join(homedir(), '.papercusp', 'vendor', 'lsp');
   if (!isAbsolute(setting) || resolvePath(setting) !== setting)
     throw new Error('PAPERCUSP_LSP_VENDOR_DIR must be an absolute canonical directory');
   try {
@@ -1354,7 +1353,7 @@ async function startClient(language: LspLanguage, rootPath: string, semanticPlug
   }
 
   const args = [...spec.serverArgs];
-  const goBin = papercuspPath('vendor', 'go', 'go', 'bin');
+  const goBin = join(homedir(), '.papercusp', 'vendor', 'go', 'go', 'bin');
   const env = language === 'go' && existsSync(join(goBin, 'go'))
     ? { ...process.env, PATH: `${goBin}:${process.env.PATH ?? ''}`, GOTOOLCHAIN: 'local' }
     : process.env;

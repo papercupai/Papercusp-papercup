@@ -77,7 +77,8 @@ describe('roster frozen audit PG persistence', () => {
       cursor = page.nextCursor;
     }
     expect(actual).toEqual(expected);
-    expect(() => pageRosterAudit(newer, scope, { cursor: first.nextCursor! })).toThrow(/different audit/);
+    expect(() => pageRosterAudit(newer, scope, { cursor: first.nextCursor! }))
+      .toThrowError(expect.objectContaining({ code: 'cursor_scope_mismatch' }));
   });
 
   it('preserves all stored artifacts and an existing valid snapshot on every invalid save', async () => {

@@ -3244,6 +3244,19 @@ export const BYPASS_REGISTRY = new Map([
         "The one retry in this file wraps store.enqueue — the write that CREATES the receipt — via acquireWithContentionRetry, and is keyed by idempotencyKey: a pg lock/statement timeout aborts its transaction so nothing is committed, and if an earlier attempt HAD committed, the retry returns that same row and the requestFingerprint check still raises a genuine idempotency conflict. Non-contention faults propagate on the first attempt. Admission is PRE-execution, so dropping the record would mean running ungoverned; the retry is the correct lever. The detector recognizes the retry callback and receipt-producing enqueue operation rather than unrelated option-type fields.",
     },
   ],
+  // ── identity-surface census: a bounded git index read (identity-system-everything-migration-2026-10-18 P-001) ──
+  [
+    "packages/operator-core/lib/agent-identities/identity-surface-census.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for identity-surface-census.ts: the sole child is a synchronous local `git ls-files -z` index listing with a 60s timeout, run only by the census generator script and its drift test. execFileSync waits for exit, so no detached process, worker or resident queue outlives the call, and it holds no machine capacity a Governor.admit ticket would meter.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("execFileSync('git', ['-C', cwd, 'ls-files', '-z', '--', ...pathspecs]") &&
+        source.includes("timeout: GIT_LS_FILES_TIMEOUT_MS") &&
+        !/\bdetached\b/.test(stripCommentsAndStrings(source)),
+    },
+  ],
 ]);
 
 function registryKey(path, code) {

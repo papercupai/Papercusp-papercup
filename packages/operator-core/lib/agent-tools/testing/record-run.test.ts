@@ -166,6 +166,7 @@ describe('native operational execution witnesses', () => {
   function fixture() {
     const fingerprint = 'c'.repeat(64);
     const deps = {
+      sourceRoot: vi.fn(async () => process.cwd()),
       snapshot: vi.fn(() => ({ commit: 'b'.repeat(40), porcelain: '' })),
       readRuntime: vi.fn(async () => fingerprint),
       verifyDefinition: vi.fn(async () => true),
@@ -207,6 +208,35 @@ describe('native operational execution witnesses', () => {
     expect(recorded.worktreeDirty).toBe(false);
     expect(f.deps.readRuntime).toHaveBeenCalledWith(['staging-api'], 'workspace-test');
   });
+
+  it('records the loaded instrument source independently of the canonical operation tree', async () => {
+    const f = fixture();
+    const sourceRoot = join(process.cwd(), '.native-runtime-source');
+    const result = await executeOperationalRun(f.definition, f.ctx, {
+      ...f.deps, sourceRoot: async () => sourceRoot,
+    });
+    expect(result).toMatchObject({ ok: true, status: 'pass' });
+    expect(f.deps.snapshot.mock.calls).toEqual([[sourceRoot], [sourceRoot]]);
+    expect(f.deps.verifyDefinition).toHaveBeenCalledWith(sourceRoot, 'scripts/check.ts', 'b'.repeat(40));
+    expect(f.deps.persist.mock.calls[0][0]).toMatchObject({ root: sourceRoot, worktreeDirty: false });
+    expect(f.ctx.projectDir).toBe(process.cwd());
+  });
+
+  it.each([null, new Error('loaded source unavailable')])(
+    'refuses unavailable execution source without substituting the operation tree: %s', async unavailable => {
+      const f = fixture();
+      const result = await executeOperationalRun(f.definition, f.ctx, {
+        ...f.deps, sourceRoot: async () => {
+          if (unavailable instanceof Error) throw unavailable;
+          return unavailable;
+        },
+      });
+      expect(result).toMatchObject({ ok: false, error: 'operational_source_root_unavailable' });
+      expect(f.deps.snapshot).not.toHaveBeenCalled();
+      expect(f.definition.run).not.toHaveBeenCalled();
+      expect(f.deps.persist).not.toHaveBeenCalled();
+    },
+  );
 
   it('retains the original native command scope despite callback properties or argument mutation', async () => {
     const f = fixture();

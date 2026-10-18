@@ -247,6 +247,14 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     -- agent work, which is what every built-in kind resolves to.
     nature text NOT NULL DEFAULT 'work',
     audience text DEFAULT 'agent',
+    -- migration 1534 (bug-inflow-one-problem-one-row-2026-10-18#D-001): the typed duplicate
+    -- verdict admittedWhereSql reads on EVERY claim path (base table, engineer_issues, and
+    -- harness_features_consolidated) — a fixture without it fails those queries with
+    -- 'column "duplicate_of" does not exist'. CHECKs omitted per the superset stance.
+    duplicate_of text,
+    duplicate_source text,
+    duplicate_confidence real,
+    duplicate_evidence jsonb,
     _search tsvector GENERATED ALWAYS AS (
       setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
       setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
@@ -398,7 +406,10 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       needs_owner_action,
       -- migration 1323 (P-010): nature and audience, appended last like 1110.
       nature,
-      audience
+      audience,
+      -- migration 1534 (D-001): the duplicate verdict + its writer, appended last.
+      duplicate_of,
+      duplicate_source
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;

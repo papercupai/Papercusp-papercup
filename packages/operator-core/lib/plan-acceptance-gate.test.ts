@@ -15,8 +15,8 @@ import {
   messageWithAdditionalBlockers,
   planAcceptanceRepairAction,
   receiverHeldAcceptanceRefusal,
-  unfinishedItemsAreAuditedNonCode,
 } from './plan-acceptance-gate';
+import { unfinishedItemsAreAuditedNonCode } from './plan-verification-profile';
 import { ACCEPTANCE_GRADING_NO_CLAIM_FACT } from './consult/grading-cascade';
 import {
   getAcceptanceRubricForPlan,

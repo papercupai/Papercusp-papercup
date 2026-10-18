@@ -1286,8 +1286,10 @@ export const CC_HOOK_FILES = [
   'pc_nested_cli.mjs',
 ] as const;
 
-/** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
-const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
+/** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x.
+ * Exported for the identity-surface census (`agent-identities/identity-surface-census.ts`),
+ * which counts hook ENTRYPOINTS only. */
+export const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
   'pc_home.mjs',
   'pc_tty.py',
   'mcp_response.py',
