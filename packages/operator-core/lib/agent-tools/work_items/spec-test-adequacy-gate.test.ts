@@ -1567,21 +1567,32 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
 
   it.each([false, true])('compares shared scenario receipt fingerprints without losing drift (changed=%s)', async (changed) => {
     const scenarios = ['admin-account', 'unrelated-account'];
+    const testCases = scenarios.map((scenario) => `${scenario}: unauthorized events are refused`);
     const scenarioClause = clause({
       falsifier: { observation: 'An unauthorized caller succeeds.', requiredScenarios: scenarios },
     });
     const baseline = listedEvidence();
+    baseline.testRunExecution = { ...passingExecution(), passed: testCases.length, passedCaseTitles: testCases };
     baseline.details = {
       ...baseline.details,
-      adequacy: { ...((baseline.details.adequacy ?? {}) as Record<string, unknown>), scenarioIds: scenarios },
+      adequacy: { ...((baseline.details.adequacy ?? {}) as Record<string, unknown>), scenarioIds: scenarios, testCases },
     };
     const mutations = scenarios.map((target, index) => {
       const row = counterexampleEvidence({ id: 2 + index });
       return {
         ...row,
+        testRunExecution: { ...row.testRunExecution!, failed: testCases.length },
+        testRunProvenance: {
+          ...row.testRunProvenance!,
+          mutationFailedCaseTitles: testCases,
+          mutationFailureLines: testCases.map((title) => `${title}: measured assertion failure`),
+        },
         details: {
           ...row.details,
-          adequacy: { ...((row.details.adequacy ?? {}) as Record<string, unknown>), targeted: target, scenarioIds: [target] },
+          adequacy: {
+            ...((row.details.adequacy ?? {}) as Record<string, unknown>),
+            targeted: target, scenarioIds: [target], testCases: [testCases[index]],
+          },
         },
       };
     });
@@ -1589,7 +1600,7 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
     const live = evaluateSpecTestAdequacy({
       clause: scenarioClause, evidence: rows, classRef: 'plan-class-feature-ship',
     });
-    expect(live.verdict).toBe('pass');
+    expect(live.verdict, JSON.stringify(live.ratings)).toBe('pass');
     const card = stampedCard(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION, {
       ratings: live.ratings,
       rerunRecipe: {
