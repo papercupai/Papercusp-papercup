@@ -185,6 +185,33 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
       `${value.sid ? 'PAPERCUSP_PARKED_AUDIT_OWNER' : 'PAPERCUSP_SID'} is required before verifier preparation`);
   });
 
+  it.each(['caller', ' caller '])('refuses the authenticated caller as a parked target before native preparation (%j)', owner => {
+    const { dir, invocations, result } = runAssertion('true', true, undefined, {
+      PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,
+      PAPERCUSP_WORKSPACE: 'app-workspace', VERIFY_TAURI_ISOLATED_DB: '0',
+      PAPERCUSP_SID: 'caller', PAPERCUSP_PARKED_CURRENT_LIVE: '1',
+      PAPERCUSP_PARKED_AUDIT_OWNER: owner,
+    });
+    try {
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('PAPERCUSP_PARKED_AUDIT_OWNER must differ from PAPERCUSP_SID');
+      expect(readFileSync(invocations, 'utf8')).toBe('');
+      expect(readdirSync(dir).filter(entry => entry.startsWith('verify-tauri-headless.'))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('allows the caller target when the parked-current check is disabled', () => {
+    const result = spawnSync(process.execPath,
+      [resolve(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs'), '--command', 'bash', '-c', 'true'], {
+        encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: {
+          ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,
+          PAPERCUSP_WORKSPACE: 'app-workspace', VERIFY_TAURI_ISOLATED_DB: '0',
+          PAPERCUSP_SID: 'caller', PAPERCUSP_PARKED_CURRENT_LIVE: '0', PAPERCUSP_PARKED_AUDIT_OWNER: 'caller',
+        },
+      });
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   it('refuses an unreadable live profile before allocating the native rig', () => {
     const { dir, invocations, result } = runAssertion('true', true, undefined, {
       PAPERCUSP_APP_OPERATION_LIVE_PROFILE: '/missing/live-profile.json',

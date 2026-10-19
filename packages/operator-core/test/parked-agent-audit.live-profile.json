@@ -5,7 +5,8 @@
     {
       "env": "PAPERCUSP_PARKED_CURRENT_LIVE",
       "equals": "1",
-      "requiredEnv": ["PAPERCUSP_PARKED_AUDIT_OWNER"]
+      "requiredEnv": ["PAPERCUSP_PARKED_AUDIT_OWNER"],
+      "distinctEnv": [["PAPERCUSP_PARKED_AUDIT_OWNER", "PAPERCUSP_SID"]]
     }
   ]
 }

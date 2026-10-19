@@ -165,7 +165,17 @@ if (assertionPath === '--command') {
         fail('live profile has invalid conditional environment rules');
       const [flag] = names([rule.env]);
       const dependent = names(rule.requiredEnv);
+      const distinct = rule.distinctEnv ?? [];
+      if (!Array.isArray(distinct) || distinct.some(pair => !Array.isArray(pair) || pair.length !== 2))
+        fail('live profile has invalid distinct environment pairs');
+      for (const pair of distinct) names(pair);
       if (process.env[flag] === rule.equals) selected.push(...dependent);
+      if (process.env[flag] === rule.equals) {
+        for (const [left, right] of distinct) {
+          if (process.env[left]?.trim() && process.env[left].trim() === process.env[right]?.trim())
+            fail(`${left} must differ from ${right} before verifier preparation (live profile)`);
+        }
+      }
     }
     // These values are generated and exported by the maintained isolated-DB
     // verifier before assertion execution. Caller identity/ledger inputs still
