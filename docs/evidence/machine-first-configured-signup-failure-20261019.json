@@ -1,0 +1,494 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010017864",
+  "parentWorkItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "scope": "Failed current-source configured private Portal hosted destination observation. Does not execute external AuthKit signup or establish complete R2 or shipment.",
+  "candidate": "3dAxA6pZltFWhx8iDSkco-20261019053825014-382633-fba0267b",
+  "sourceRootDigest": "d198660887463b2fb7eece761a4eb059f6834dd1b925abae15ab3e90ed816f87",
+  "sourceWholeDigest": "be4874b729dee8656306a9b50e98af764606435ed4d0b846c27e8f9885462148",
+  "configuredBuild": {
+    "exitCode": 0,
+    "publicLinksDigest": "0f5665edb563272ee28801685274297c7ca7dd87a9481fab51acd1a882bd3ff0",
+    "indexHeadStatus": 200,
+    "compiledUtilitySetting": {
+      "name": "NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL",
+      "sha256": "ce95e26ef3f2ec725113f88391a58ad49d7f9880ff165d1a85007e924ab39dc8"
+    }
+  },
+  "preflight": {
+    "sourceRootMatches": true,
+    "sourceWholeMatches": true,
+    "packagedPrebundles": "passed before runtime",
+    "servingListener": {
+      "selector": {
+        "pid": 499894,
+        "launcherPid": 499863,
+        "origin": "http://127.0.0.1:35391"
+      },
+      "measurement": {
+        "status": "measured",
+        "measuredAt": "2026-10-19T05:41:07.306Z",
+        "pid": 499894,
+        "startTicks": "117743651",
+        "release": "3dAxA6pZltFWhx8iDSkco-20261019053825014-382633-fba0267b",
+        "buildId": "3dAxA6pZltFWhx8iDSkco",
+        "sourceRootDigest": "d198660887463b2fb7eece761a4eb059f6834dd1b925abae15ab3e90ed816f87",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "entry": {
+          "status": "unmeasured",
+          "reason": "process_arguments_do_not_identify_entry"
+        },
+        "launcher": {
+          "pid": 499863,
+          "startTicks": "117743646",
+          "entry": {
+            "path": "standalone-entry.mjs",
+            "sha256": "7a319e738808f6449e4e9ba6c13445d9f06e71b356589d207a0b8ab8a7dee2fa"
+          },
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "argvSha256": "03b7af262be611a36cef9a36e4636b7f645ac2673321aa803ebac7f53c3168bb",
+          "relation": "direct-parent"
+        },
+        "argvSha256": "0217f923e3be6914497b9e1eddc543dd80c7c1d818899f3a7d4d027a78ca7e6d",
+        "listener": {
+          "host": "127.0.0.1",
+          "port": 35391
+        },
+        "settings": [
+          {
+            "name": "HOSTNAME",
+            "sha256": "12ca17b49af2289436f303e0166030a21e525d266e209267433801a8fd4071a0"
+          },
+          {
+            "name": "NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL",
+            "sha256": "7fa4af271cecf0a2aa8d655e9a4643ee4dc903c18f275717095fcabe7a5c3553"
+          },
+          {
+            "name": "NEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL",
+            "sha256": "5cfc311af1927460caef7dcfbb2c5e01778bb10868756151e684147a6e280fe4"
+          },
+          {
+            "name": "NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL",
+            "sha256": "ce95e26ef3f2ec725113f88391a58ad49d7f9880ff165d1a85007e924ab39dc8"
+          },
+          {
+            "name": "NEXT_WEBPACK_PARALLELISM",
+            "sha256": null
+          },
+          {
+            "name": "NODE_ENV",
+            "sha256": "ab8e18ef4ebebeddc0b3152ce9c9006e14fc05242e3fc9ce32246ea6a9543074"
+          },
+          {
+            "name": "NODE_OPTIONS",
+            "sha256": "a075889b481bd2aacd0148df471106d4c9215e9caa5e815528aec72170fba3dd"
+          },
+          {
+            "name": "PAPERCUSP_HOSTED_PUBLIC_ORIGIN",
+            "sha256": "ff31e68f9b58211172fcb2f79147c5e559ef034a0f98d8367565c3a5656e419c"
+          },
+          {
+            "name": "PAPERCUSP_WORKSPACE",
+            "sha256": "7d92935681782da7db86233ce6bce4dfc963c2ae76363f13f373340f6a28d3d1"
+          },
+          {
+            "name": "PORT",
+            "sha256": "d72f00251bbb12bf3565ab00c2d3f15ca25d68bdf312aed202926689a590934d"
+          },
+          {
+            "name": "PORTAL_BUILD_DIST_DIR",
+            "sha256": null
+          },
+          {
+            "name": "PORTAL_LOCAL_MODE",
+            "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+          },
+          {
+            "name": "PORTAL_OPERATOR_ORIGIN",
+            "sha256": "112d4803059a7d7e991a743ec014663dc7940bf19a7894fdb6af71c40147c53f"
+          }
+        ],
+        "scope": "Selected local process, executable and owned listener at measurement time; an explicit immutable parent launcher establishes direct lineage when the child's entry is unmeasured. Selected initial process settings from /proc, not later in-process overrides. Credentials and other environment values excluded."
+      }
+    }
+  },
+  "browser": {
+    "file": "e2e/portal-utility-welcome.spec.ts",
+    "testSha256": "65f947800812db6bb8dd5315143938083d12477b75a0eb5bc98ee76d33eb8c98",
+    "title": "served hosted signup utility: published download, reload, fallback and keyboard Continue",
+    "status": "failed",
+    "exitCode": 1,
+    "stats": {
+      "startTime": "2026-10-19T05:41:09.200Z",
+      "duration": 46267.942,
+      "expected": 0,
+      "skipped": 0,
+      "unexpected": 1,
+      "flaky": 0
+    },
+    "errors": [
+      {
+        "location": {
+          "file": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/e2e/portal-utility-welcome.spec.ts",
+          "column": 44,
+          "line": 794
+        },
+        "message": "Error: expect(received).toBeNull()\n\nReceived: \"canceled\"\n\n  792 |             await dialog.getByRole(\"link\", { name: \"Download psu + pui again\" }).click();\n  793 |             const manual = await retry;\n> 794 |             expect(await manual.failure()).toBeNull();\n      |                                            ^\n  795 |             row.manualRetry = { filename: manual.suggestedFilename(), completed: true };\n  796 |             await attempts.record(\"manual-retry\", 1, 1);\n  797 |           }\n    at $HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/e2e/portal-utility-welcome.spec.ts:794:44"
+      }
+    ]
+  },
+  "receipt": {
+    "scope": "Real new TEST-account admission and served signup destination; external AuthKit form and final shipment excluded",
+    "cases": [
+      {
+        "scenario": "published",
+        "tenantMatches": true,
+        "requestedUrls": [
+          "https://127.0.0.1:32885/api/downloads/utility?target=linux-x86_64&resolve=1",
+          "https://127.0.0.1:32885/api/downloads/utility?target=linux-x86_64&resolve=1"
+        ],
+        "attemptCounter": {
+          "metric": "Hidden utility download anchor click invocations, counted before optional browser-block injection; excludes manual links, resolver requests and download completion.",
+          "detectorSource": {
+            "path": "e2e/portal-utility-welcome.spec.ts",
+            "sha256": "65f947800812db6bb8dd5315143938083d12477b75a0eb5bc98ee76d33eb8c98",
+            "qualification": "Detector checkout identity only; immutable Portal and archive source equivalence require separate proof."
+          },
+          "phases": [
+            {
+              "phase": "initial",
+              "expected": {
+                "inDocument": 1,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 1,
+                "total": 1
+              }
+            },
+            {
+              "phase": "destination-reload",
+              "expected": {
+                "inDocument": 0,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 0,
+                "total": 1
+              }
+            },
+            {
+              "phase": "keyboard-continue",
+              "expected": {
+                "inDocument": 0,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 0,
+                "total": 1
+              }
+            },
+            {
+              "phase": "ordinary-gui-navigation",
+              "expected": {
+                "inDocument": 0,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 0,
+                "total": 1
+              }
+            }
+          ]
+        },
+        "download": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "bytes": 69542264,
+          "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6"
+        },
+        "callbackReloadDownloadCount": 1,
+        "utilityContinueUrl": "https://127.0.0.1:32885/?app=home&firstRun=deferred",
+        "productGuideChoice": "skipped through the existing guide control",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 1,
+        "continueUrl": "https://127.0.0.1:32885/?app=home"
+      },
+      {
+        "scenario": "blocked-storage-denied",
+        "tenantMatches": true,
+        "requestedUrls": [
+          "https://127.0.0.1:32885/api/downloads/utility?target=linux-x86_64&resolve=1"
+        ],
+        "attemptCounter": {
+          "metric": "Hidden utility download anchor click invocations, counted before optional browser-block injection; excludes manual links, resolver requests and download completion.",
+          "detectorSource": {
+            "path": "e2e/portal-utility-welcome.spec.ts",
+            "sha256": "65f947800812db6bb8dd5315143938083d12477b75a0eb5bc98ee76d33eb8c98",
+            "qualification": "Detector checkout identity only; immutable Portal and archive source equivalence require separate proof."
+          },
+          "phases": [
+            {
+              "phase": "initial",
+              "expected": {
+                "inDocument": 1,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 1,
+                "total": 1
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "3dAxA6pZltFWhx8iDSkco",
+      "release": "3dAxA6pZltFWhx8iDSkco-20261019053825014-382633-fba0267b",
+      "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "publishedAt": "2026-10-19T05:38:25.014Z",
+      "sourceRootDigest": "d198660887463b2fb7eece761a4eb059f6834dd1b925abae15ab3e90ed816f87",
+      "buildProvenance": {
+        "schemaVersion": 1,
+        "sourceRootDigest": "d198660887463b2fb7eece761a4eb059f6834dd1b925abae15ab3e90ed816f87",
+        "sourceWholeDigest": "be4874b729dee8656306a9b50e98af764606435ed4d0b846c27e8f9885462148",
+        "environment": {
+          "scope": "node-toolchain-lockfile-and-selected-settings",
+          "platform": "linux",
+          "arch": "x64",
+          "node": {
+            "version": "v25.9.0",
+            "versions": {
+              "node": "25.9.0",
+              "acorn": "8.16.0",
+              "ada": "3.4.4",
+              "amaro": "1.1.8",
+              "ares": "1.34.6",
+              "brotli": "1.2.0",
+              "cldr": "48.0",
+              "icu": "78.2",
+              "lief": "0.17.0",
+              "llhttp": "9.3.1",
+              "merve": "1.2.2",
+              "modules": "141",
+              "napi": "10",
+              "nbytes": "0.1.3",
+              "ncrypto": "0.0.1",
+              "nghttp2": "1.68.0",
+              "nghttp3": "",
+              "ngtcp2": "",
+              "openssl": "3.5.5",
+              "simdjson": "4.5.0",
+              "simdutf": "7.3.3",
+              "sqlite": "3.51.3",
+              "tz": "2026a",
+              "undici": "7.24.4",
+              "unicode": "17.0",
+              "uv": "1.51.0",
+              "uvwasi": "0.0.23",
+              "v8": "14.1.146.11-node.25",
+              "zlib": "1.3.1-e00f703",
+              "zstd": "1.5.7"
+            },
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627"
+          },
+          "files": [
+            {
+              "path": "package-lock.json",
+              "sha256": "7a1ed180e4e0d5045e1e114f00b7c4d89a3eeb17247213040771d389861d79e0"
+            },
+            {
+              "path": "node_modules/esbuild/package.json",
+              "sha256": "9d0bc453f4e791553c4cc2298ba023b409241fd9801e494741666eb0f6051490"
+            },
+            {
+              "path": "node_modules/esbuild/bin/esbuild",
+              "sha256": "e1698a3d5c6c0798fee4fd3b5cc816651f460c63d390a7a26ea4beb0b1884100"
+            },
+            {
+              "path": "node_modules/next/package.json",
+              "sha256": "3ae720e4b8cdad7503935b27b0d14e04390068bf10d6e685797ccf1044051967"
+            },
+            {
+              "path": "node_modules/next/dist/bin/next",
+              "sha256": "1a9608a4eb56a55042bbf0903c0a031613f729f09cd2e7fb4e1f4b31afc9c4e0"
+            }
+          ],
+          "settings": [
+            {
+              "name": "HOSTNAME",
+              "sha256": null
+            },
+            {
+              "name": "NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL",
+              "sha256": "7fa4af271cecf0a2aa8d655e9a4643ee4dc903c18f275717095fcabe7a5c3553"
+            },
+            {
+              "name": "NEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL",
+              "sha256": "5cfc311af1927460caef7dcfbb2c5e01778bb10868756151e684147a6e280fe4"
+            },
+            {
+              "name": "NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL",
+              "sha256": "ce95e26ef3f2ec725113f88391a58ad49d7f9880ff165d1a85007e924ab39dc8"
+            },
+            {
+              "name": "NEXT_WEBPACK_PARALLELISM",
+              "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a"
+            },
+            {
+              "name": "NODE_ENV",
+              "sha256": null
+            },
+            {
+              "name": "NODE_OPTIONS",
+              "sha256": "a075889b481bd2aacd0148df471106d4c9215e9caa5e815528aec72170fba3dd"
+            },
+            {
+              "name": "PAPERCUSP_HOSTED_PUBLIC_ORIGIN",
+              "sha256": null
+            },
+            {
+              "name": "PAPERCUSP_WORKSPACE",
+              "sha256": "24201c2745800b53f808f1453ded79e6bcd37ed1757e8683f6a5e888dc1a90b2"
+            },
+            {
+              "name": "PORT",
+              "sha256": null
+            },
+            {
+              "name": "PORTAL_BUILD_DIST_DIR",
+              "sha256": "5883e85f876d816fd8e3a24f8ca9d51eaa65d8b1df1602a753418295da5d48d8"
+            },
+            {
+              "name": "PORTAL_LOCAL_MODE",
+              "sha256": null
+            },
+            {
+              "name": "PORTAL_OPERATOR_ORIGIN",
+              "sha256": null
+            }
+          ],
+          "digest": "aa9a65daf2adabb7ba4dcf472a5e5260211d6d6987c1103a6ebf5fb90290e0ef"
+        },
+        "serverPrebundles": [
+          {
+            "path": "node_modules/@portal/hosted-auth-runtime",
+            "bundleSha256": "851ac5859905e7698c01ced6a963225fa76c50b8f3487030b8921cbceb5fc6b4",
+            "packageSha256": "0d92709fac58fe78bb82f78b23c68bc102e41ec11aa9d54f49558d6ef315c596"
+          },
+          {
+            "path": "node_modules/@portal/web-runtime",
+            "bundleSha256": "0f21bad670985109feaa96665c87195e02951df69408a6e89a6f0bef3ba73ccc",
+            "packageSha256": "6d750a41ffdc990267d547e28c960cd018fd2cdf43998e51d3d15bdbe5ce03f4"
+          }
+        ]
+      }
+    },
+    "accountCleanup": true
+  },
+  "diagnosis": {
+    "observedFailure": "Manual download failure() returned canceled in blocked-storage-denied scenario at line794. Initial published download completed and its destination reload/Continue/GUI assertions passed.",
+    "rootCause": "unconfirmed; product and harness causes not yet distinguished",
+    "next": "Inspect cancellation lifecycle and maintained harness diagnostics before any further expensive served run. Preserve failure; do not label a flake or widen a timeout."
+  },
+  "cleanup": {
+    "accountCleanup": true,
+    "runtime": {
+      "children": [
+        {
+          "pid": 477772,
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "pid": 499863,
+          "exitCode": 0,
+          "signal": null
+        }
+      ],
+      "at": "2026-10-19T05:41:59.988Z"
+    },
+    "directOwnedProcesses": [
+      {
+        "pid": 477545,
+        "gone": true
+      },
+      {
+        "pid": 477772,
+        "gone": true
+      },
+      {
+        "pid": 499863,
+        "gone": true
+      },
+      {
+        "pid": 499894,
+        "gone": true
+      }
+    ],
+    "privateHomeRemoved": true,
+    "isolatedRuntime": {
+      "kind": "isolated-runtime-cleanup",
+      "stage": "complete",
+      "elapsedMs": 1455,
+      "supervisorPid": 461656,
+      "workspace": "test-runtime-5901884a-9c4",
+      "runtimeRoot": "/tmp/pcv/papercusp-test-runtime-cTzC5V",
+      "dataDir": "/tmp/pcv/papercusp-test-pg-yqELL5",
+      "pgPort": 40895,
+      "runtimeRemoved": true,
+      "pgDataRemoved": true
+    }
+  },
+  "rawArtifacts": [
+    {
+      "path": "/tmp/machine-first-configured-served-20261019-0538-acceptance.log",
+      "sha256": "e9f80cd9828b0c3a6ace5874fe24df82fe02a7cb3d7af9631e9676ce181687b0"
+    },
+    {
+      "path": "/tmp/machine-first-configured-served-20261019-0538-browser.json",
+      "sha256": "31c0fbde0a3777ba2f7c1c83f737ea541f3264bbf5d65ead34796d465cb8f36c"
+    },
+    {
+      "path": "/tmp/machine-first-configured-served-20261019-0538-runtime.json",
+      "sha256": "121192080c30c9f49a68101a71c2708215e7068ba9040decc44b68026f1c5d24"
+    },
+    {
+      "path": "/tmp/machine-first-configured-served-20261019-0538-launcher-receipt.json",
+      "sha256": "f92b856f3d154ef226d93e87d1554b31b7348682946b8bdb72da3dee0237bec5"
+    },
+    {
+      "path": "/tmp/machine-first-configured-served-20261019-0538-launcher-source.mjs",
+      "sha256": "61c067a64289da628830a7d6f83c7c21e24ccb3e84f5052abc05291e95a246b2"
+    },
+    {
+      "path": "/tmp/machine-first-configured-served-20261019-0538-custody-preflight.json",
+      "sha256": "a6e96ac7251c70484acbebd64e4a90a6f43c699924790aca8ecb360213933b16"
+    },
+    {
+      "path": "/tmp/machine-first-configured-candidate-20261019-0538.json",
+      "sha256": "bf3bc788f36a6c2fb903e8f2291f4c3c2cadd26786145df7bb49de1e44a86551"
+    },
+    {
+      "path": "/tmp/machine-first-configured-candidate-20261019-0538.log",
+      "sha256": "08e23d05e0a423260d26e8af43594aa478a22015cdc61ac1909c2fc53290a9da"
+    }
+  ],
+  "authorizationCorrection": {
+    "source": "session_turn:codex:01a14187-8f38-7b83-aedf-db07205ce9af:11",
+    "decision": "machine-first-access-and-signup-utility-download-2026-10-15#D-003",
+    "workItemPost": 1191208,
+    "note": "Verified shipment including required archive republication is already authorized. No additional blanket publication approval is asserted."
+  },
+  "remaining": [
+    "Diagnose and durably repair manual retry cancellation with maintained recurrence guard",
+    "Passing full configured served destination receipt",
+    "Compatible archive containing current launcher",
+    "R1 two-GUI/two-target/two-window continuity proof",
+    "Exact shipped-artifact R7 verification"
+  ]
+}

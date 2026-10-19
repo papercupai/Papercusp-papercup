@@ -74,5 +74,6 @@
     "paths": ["scripts/source-integrity.mjs", "tests/served-artifact.test.ts", "e2e/served-artifact.ts", "e2e/portal-utility-welcome.spec.ts"],
     "wakeOnGrant": true
   },
-  "remaining": ["Passing configured current-source hosted destination browser receipt (parent WI-6554700010015411)", "Compatible public archive containing current launcher", "R1 two-GUI/two-target/two-window agent-continuity acceptance", "Final shipped-artifact R7 and Avi publication approval"]
+  "authorizationCorrection": "Owner source turn :11 and canonical D-003 already authorize verified shipment including required archive republication; see parent work-item post1191208. No additional blanket publication approval is asserted.",
+  "remaining": ["Passing configured current-source hosted destination browser receipt (parent WI-6554700010015411)", "Compatible public archive containing current launcher", "R1 two-GUI/two-target/two-window agent-continuity acceptance", "Final shipped-artifact R7 verification"]
 }
