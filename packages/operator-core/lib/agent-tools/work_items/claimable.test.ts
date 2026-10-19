@@ -381,19 +381,23 @@ describe('work_items:claimable handler', () => {
       view: { filter: { field: 'goal', op: '=', value: 'g' } },
       states: ['open'],
     });
-    const cupRecord = (specId: string) => ({
+    const cupRecord = (specId: string, revision = 3) => ({
       source: 'cup' as const,
-      spec: specWith(specId, 3),
-      revision: 3,
+      spec: specWith(specId, revision),
+      revision,
       updatedBy: null,
       updatedAt: null,
       harnessSlug: null,
     });
-    const fleetResolved = (specId: string, matchedBy: 'fleet-slug' | 'spec-id' = 'fleet-slug') => ({
+    const fleetResolved = (
+      specId: string,
+      matchedBy: 'fleet-slug' | 'spec-id' = 'fleet-slug',
+      revision = 3,
+    ) => ({
       record: {
         source: 'fleet' as const,
-        spec: specWith(specId, 3),
-        revision: 3,
+        spec: specWith(specId, revision),
+        revision,
         updatedBy: null,
         updatedAt: null,
         harnessSlug: null,
@@ -415,6 +419,7 @@ describe('work_items:claimable handler', () => {
       expect(out.claimableCallerScope.fleetSpecComparison).toEqual({
         fleetSlug: FLEET,
         callerSpecId: 'plans-start-dry-run-lane',
+        callerSpecRevision: 3,
         fleetSpecId: 'goal-fleet-lane',
         fleetSpecRevision: 3,
         diverges: true,
@@ -437,6 +442,26 @@ describe('work_items:claimable handler', () => {
       expect(out.note).not.toContain('CALLER SPEC');
     });
 
+    it('same spec id but different revisions: reports diverges and names both revisions', async () => {
+      recordM.mockResolvedValue(cupRecord('shared-lane', 15));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'member' });
+      recM.mockResolvedValueOnce(fleetResolved('shared-lane', 'fleet-slug', 14));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope.fleetSpecComparison).toEqual({
+        fleetSlug: FLEET,
+        callerSpecId: 'shared-lane',
+        callerSpecRevision: 15,
+        fleetSpecId: 'shared-lane',
+        fleetSpecRevision: 14,
+        diverges: true,
+      });
+      expect(out.note).toContain("CALLER SPEC ≠ YOUR FLEET'S SPEC");
+      expect(out.note).toContain("'shared-lane' rev 15");
+      expect(out.note).toContain("spec 'shared-lane' rev 14");
+    });
+
     it("fleet spec unreadable: diverges is null (not false) and the note says it MAY differ", async () => {
       recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
       membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'leader' });
@@ -447,6 +472,7 @@ describe('work_items:claimable handler', () => {
       expect(out.claimableCallerScope.fleetSpecComparison).toEqual({
         fleetSlug: FLEET,
         callerSpecId: 'plans-start-dry-run-lane',
+        callerSpecRevision: 3,
         fleetSpecId: null,
         fleetSpecRevision: null,
         diverges: null,

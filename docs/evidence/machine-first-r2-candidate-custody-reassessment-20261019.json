@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "framework": "operational",
+  "scope": "New source-custody reassessment after WI7851; measurement only, no browser or acceptance run",
+  "measuredAt": "2026-10-19T03:48:04.217Z",
+  "originalReceipt": {
+    "path": "/tmp/machine-first-p002-provenance-verification-20261019-0319.json",
+    "sha256": "bbe20cea272b6484d2ed7c237166a2bd6334b468b9754c7bbd2fe3a40eea518a"
+  },
+  "candidate": {
+    "release": "vt9Fj4tqJxsn6iaQRA8yb-20261019031846603-3549374-dc7d005a",
+    "buildId": "vt9Fj4tqJxsn6iaQRA8yb",
+    "publishedAt": "2026-10-19T03:18:46.603Z",
+    "manifestSha256": "622bd7ffceb18d004524df0165c6c5ca92d7dbae5635c262648d4841e1189b8c",
+    "manifestUnchangedFromRetainedReceipt": true,
+    "recordedRootDigest": "6cf1c6c1a88a5c87ba969ff5dca38b92839f0a07d57db0288b503232cf16b22e",
+    "recordedWholeDigest": "777b58937462feb935a7fa5c720758db9276afd0b994b83f4c6afcad4a4cdd72"
+  },
+  "currentSource": {
+    "rootDigest": "0d3f5de661d3d9d9f763a6c55eb972196be811bcc4be0af3225f6ea7e9ec39d2",
+    "wholeDigest": "c6899193dcb10444e2e87a4f60d47409a8f6aa4eb8858bc352cf25145ece02e8",
+    "rootStableDuringMeasurement": true,
+    "retainedFiles": [
+      {
+        "path": "scripts/source-integrity.mjs",
+        "retainedSha256": "f7be22c9854e0922eaf4c4aebf2d8ef981e0bf4880d2a4be30f8e7220e667b4c",
+        "currentSha256": "f7be22c9854e0922eaf4c4aebf2d8ef981e0bf4880d2a4be30f8e7220e667b4c"
+      },
+      {
+        "path": "scripts/build-standalone.mjs",
+        "retainedSha256": "a7d2516f571937446a3df7881593b2c7a42ec3232e5eb9626a80064a52b6e7fc",
+        "currentSha256": "426c8ce66e99bc4dc99e3fe751b4593cc7c28420b144aa01a4a58d17a0dc1985"
+      },
+      {
+        "path": "scripts/copy-standalone.mjs",
+        "retainedSha256": "d5da0a6e5f07e0dac0f93d28502aa0bfb4e78ab6fd13e9b59a5edfcd7cc55454",
+        "currentSha256": "d5da0a6e5f07e0dac0f93d28502aa0bfb4e78ab6fd13e9b59a5edfcd7cc55454"
+      },
+      {
+        "path": "scripts/standalone-runtime.mjs",
+        "retainedSha256": "3716ac647081ab9424e8f33ff8071d886f38c7cc06ec9bf4bc2863da220a43ae",
+        "currentSha256": "7f0e01079b39c7002d424ce707edc0eddb0e28822e0db10a4c087b52833a80c4"
+      },
+      {
+        "path": "scripts/standalone-runtime.d.mts",
+        "retainedSha256": "fb7f595052299b39de96d428bbee91b4f55dfda31dcbd039f39337ec7a604160",
+        "currentSha256": "64a0b57ee3b5b9ecef055f6b0cd026d5696411e55bc9e012ca72857eee540d92"
+      },
+      {
+        "path": "e2e/served-artifact.ts",
+        "retainedSha256": "a57a6b5ce5a81decab37978c3ee7ce7852a34e687544eb30bdbcd5c589a4ad52",
+        "currentSha256": "a57a6b5ce5a81decab37978c3ee7ce7852a34e687544eb30bdbcd5c589a4ad52"
+      },
+      {
+        "path": "e2e/portal-utility-welcome.spec.ts",
+        "retainedSha256": "ff68fcd665f1532dba58418b3823c6f0e99006dd373ddbf2dd5b5918a23d8b6e",
+        "currentSha256": "ff68fcd665f1532dba58418b3823c6f0e99006dd373ddbf2dd5b5918a23d8b6e"
+      },
+      {
+        "path": "e2e/hosted-test-user.ts",
+        "retainedSha256": "8d5540bf829999c69083326ed24e7fb5a0a3187864771ae763dbf7bf7f545e5d",
+        "currentSha256": "8d5540bf829999c69083326ed24e7fb5a0a3187864771ae763dbf7bf7f545e5d"
+      },
+      {
+        "path": "playwright.config.ts",
+        "retainedSha256": "37e5f2ee213c2241443e5dff25ddccd7599394c884da2874b5492e860217f6c9",
+        "currentSha256": "37e5f2ee213c2241443e5dff25ddccd7599394c884da2874b5492e860217f6c9"
+      },
+      {
+        "path": "package-lock.json",
+        "retainedSha256": "7a1ed180e4e0d5045e1e114f00b7c4d89a3eeb17247213040771d389861d79e0",
+        "currentSha256": "7a1ed180e4e0d5045e1e114f00b7c4d89a3eeb17247213040771d389861d79e0"
+      }
+    ]
+  },
+  "rootDifferenceAttribution": {
+    "method": "Replace only the four measured file digest and size records with exact blobs from candidate retention commit; preserve original record ordering, mode, paths and all other current root records. Rehash with maintained fingerprint serialization. No file or release metadata is modified.",
+    "retentionCommit": "104e4aa6573640f4b60e6e41735fa7288dfd6749",
+    "changedFiles": [
+      {
+        "path": "scripts/build-standalone.mjs",
+        "candidateRetentionCommitSha256": "a7d2516f571937446a3df7881593b2c7a42ec3232e5eb9626a80064a52b6e7fc",
+        "currentSha256": "426c8ce66e99bc4dc99e3fe751b4593cc7c28420b144aa01a4a58d17a0dc1985",
+        "candidateBytes": 52585,
+        "currentBytes": 52954
+      },
+      {
+        "path": "scripts/standalone-runtime.mjs",
+        "candidateRetentionCommitSha256": "3716ac647081ab9424e8f33ff8071d886f38c7cc06ec9bf4bc2863da220a43ae",
+        "currentSha256": "7f0e01079b39c7002d424ce707edc0eddb0e28822e0db10a4c087b52833a80c4",
+        "candidateBytes": 28460,
+        "currentBytes": 29747
+      },
+      {
+        "path": "scripts/standalone-runtime.d.mts",
+        "candidateRetentionCommitSha256": "fb7f595052299b39de96d428bbee91b4f55dfda31dcbd039f39337ec7a604160",
+        "currentSha256": "64a0b57ee3b5b9ecef055f6b0cd026d5696411e55bc9e012ca72857eee540d92",
+        "candidateBytes": 4857,
+        "currentBytes": 5002
+      },
+      {
+        "path": "tests/build-standalone.test.ts",
+        "candidateRetentionCommitSha256": "b4013e085e51e566b8f8229584f551c38f5400eae0981c1f5ee93ad957e63873",
+        "currentSha256": "67a9eb6939bd5313094858684554cbc7895692942f088c3d2b848720e0f901da",
+        "candidateBytes": 61615,
+        "currentBytes": 65959
+      }
+    ],
+    "reversedRootDigest": "6cf1c6c1a88a5c87ba969ff5dca38b92839f0a07d57db0288b503232cf16b22e",
+    "matchesCandidateRoot": true,
+    "qualification": "A match attributes the root-local content difference at this read to these four files. It does not establish historical linked-source or complete environment equivalence."
+  },
+  "currentCustodyGuard": {
+    "outcome": "refused",
+    "reason": "utility_served_source_digest_mismatch"
+  },
+  "packagedBuildProvenanceValid": true,
+  "serverPrebundles": [
+    {
+      "path": "node_modules/@portal/hosted-auth-runtime",
+      "bundleSha256": "851ac5859905e7698c01ced6a963225fa76c50b8f3487030b8921cbceb5fc6b4",
+      "packageSha256": "0d92709fac58fe78bb82f78b23c68bc102e41ec11aa9d54f49558d6ef315c596",
+      "rebuiltSha256": "851ac5859905e7698c01ced6a963225fa76c50b8f3487030b8921cbceb5fc6b4",
+      "rebuiltByteEqual": true
+    },
+    {
+      "path": "node_modules/@portal/web-runtime",
+      "bundleSha256": "0f21bad670985109feaa96665c87195e02951df69408a6e89a6f0bef3ba73ccc",
+      "packageSha256": "6d750a41ffdc990267d547e28c960cd018fd2cdf43998e51d3d15bdbe5ce03f4",
+      "rebuiltSha256": "0f21bad670985109feaa96665c87195e02951df69408a6e89a6f0bef3ba73ccc",
+      "rebuiltByteEqual": true
+    }
+  ],
+  "servingRuntimeEnvironment": {
+    "status": "unmeasured",
+    "reason": "No Portal runtime was started."
+  },
+  "noAcceptanceClaim": true,
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "rawMeasurement": {
+    "path": "/tmp/machine-first-p002-custody-reassessment-20261019-0348.json",
+    "sha256": "add626cc092a2d8bf0bf923a767ed1a0560c3210619f29b2bde6b786f46b88ce"
+  },
+  "publicArchiveReadiness": {
+    "observedAt": "2026-10-19T03:42:55.496358+00:00",
+    "url": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/latest.json",
+    "httpStatus": 200,
+    "manifestSha256": "9454f2274951cc200a2d94b3231140a7f2569e8c380d578485530b21e1060a6c",
+    "priorManifestBytesEqual": true,
+    "sourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+    "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+    "archiveSameAsIncompatibleRetainedAudit": true,
+    "version": "0.1.0",
+    "target": "linux-x86_64",
+    "noArchiveRedownload": true,
+    "noAcceptanceClaim": true
+  },
+  "reuse": {
+    "sourceFingerprint": "Portal scripts/source-integrity.mjs#fingerprintReleaseSource",
+    "buildPackages": "Portal scripts/source-integrity.mjs#assertBuildProvenance and rebuildServerPrebundles",
+    "custodyGuard": "Portal e2e/served-artifact.ts#assertUtilitySourceCustody",
+    "recipeSearch": "Existing source-snapshot continuity recipes cover detector maps, not this immutable candidate; this measurement directly reuses the maintained Portal primitives."
+  },
+  "interpretation": [
+    "Original candidate metadata and retained preparation receipt remain unchanged. The observed current root is different; its equality with the candidate is not inherited.",
+    "Replacing only the four measured digest/size records with retained-commit blobs reconstructs the original root digest. This attributes the root-local difference; it neither restores a source snapshot nor changes acceptance metadata.",
+    "The consumed hosted-auth and web output bytes still reproduce exactly. This bounded output equality does not override the root-custody refusal or establish complete source/environment equivalence.",
+    "The one public manifest read still names the same archive whose retained audit lacks current launcher changes; no archive was redownloaded and no producer was monitored."
+  ],
+  "remainingUnverified": [
+    "Current compatible archive and current-source hosted browser acceptance with actual Portal PID/listener and direct automatic-attempt phases.",
+    "Real AuthKit signup/callback and returning-signin currentness remain separate from cookie-admitted destination receipts.",
+    "R1 manual/architecture acceptance, full R2, R7 final release, Avi publication approval and shipment."
+  ],
+  "nextAction": "Preserve the original immutable candidate and all saved proof. Its current-source custody guard is measurably blocked by source drift. Before a necessary hosted acceptance leg, use a fresh maintained candidate after required source edits, and verify compatible archive readiness; do not rebuild or replay saved tests solely for reconstruction. Complete any independent uncovered author-evidence step first.",
+  "executionBoundary": {
+    "browserExecutions": 0,
+    "testSuiteExecutions": 0,
+    "productionBuilds": 0,
+    "accountsCreated": 0,
+    "runtimesStarted": 0,
+    "protectedRuntimeRestarts": 0,
+    "artifactMetadataWrites": 0,
+    "archiveRedownloads": 0,
+    "peerOrGateMonitoring": 0,
+    "checkpointChecksRetired": 0
+  },
+  "fullSourceEnvironmentEquivalence": false,
+  "verdict": "Source custody reassessed: immutable package integrity and bounded output equality verified; current-source guard refuses; full acceptance remains open."
+}

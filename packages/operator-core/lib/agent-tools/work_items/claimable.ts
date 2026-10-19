@@ -76,10 +76,11 @@ export interface ClaimableHarnessScope {
 export interface CallerFleetSpecComparison {
   fleetSlug: string;
   callerSpecId: string;
+  callerSpecRevision: number | null;
   /** The fleet's stored spec id; null when the fleet's sentinel row could not be read. */
   fleetSpecId: string | null;
   fleetSpecRevision: number | null;
-  /** true = different specs; false = same spec id; null = the fleet's spec was unreadable. */
+  /** true = different spec identity or revision; false = same spec id and revision; null = the fleet's spec was unreadable. */
   diverges: boolean | null;
 }
 
@@ -87,6 +88,7 @@ async function compareCallerSpecToFleet(args: {
   workspaceId: string | undefined;
   ownerId: string;
   callerSpecId: string;
+  callerSpecRevision: number | null;
 }): Promise<CallerFleetSpecComparison | undefined> {
   if (!args.workspaceId) return undefined;
   try {
@@ -101,15 +103,27 @@ async function compareCallerSpecToFleet(args: {
     // Only a match on the fleet-slug namespace is THIS fleet's spec; a specId/revN hit would
     // be some other fleet's row wearing a coincident name.
     if (!resolved || resolved.matchedBy !== 'fleet-slug') {
-      return { fleetSlug, callerSpecId: args.callerSpecId, fleetSpecId: null, fleetSpecRevision: null, diverges: null };
+      return {
+        fleetSlug,
+        callerSpecId: args.callerSpecId,
+        callerSpecRevision: args.callerSpecRevision,
+        fleetSpecId: null,
+        fleetSpecRevision: null,
+        diverges: null,
+      };
     }
     const fleetSpecId = resolved.record.spec.specId ?? null;
+    const fleetSpecRevision = resolved.record.revision;
     return {
       fleetSlug,
       callerSpecId: args.callerSpecId,
+      callerSpecRevision: args.callerSpecRevision,
       fleetSpecId,
-      fleetSpecRevision: resolved.record.revision,
-      diverges: fleetSpecId === null ? null : fleetSpecId !== args.callerSpecId,
+      fleetSpecRevision,
+      diverges:
+        fleetSpecId === null
+          ? null
+          : fleetSpecId !== args.callerSpecId || fleetSpecRevision !== args.callerSpecRevision,
     };
   } catch {
     // A comparison that could not be made is simply absent — never a reason to fail the read.
@@ -128,7 +142,7 @@ function describeCallerFleetSpecNote(c: CallerFleetSpecComparison | undefined): 
   }
   return (
     ` ⚠ CALLER SPEC ≠ YOUR FLEET'S SPEC: this count is the caller-effective lane — a per-agent spec ` +
-    `'${c.callerSpecId}' that overrides fleet '${c.fleetSlug}' (spec '${c.fleetSpecId}'` +
+    `'${c.callerSpecId}'${c.callerSpecRevision !== null ? ` rev ${c.callerSpecRevision}` : ''} that overrides fleet '${c.fleetSlug}' (spec '${c.fleetSpecId}'` +
     `${c.fleetSpecRevision !== null ? ` rev ${c.fleetSpecRevision}` : ''}). It says NOTHING about that fleet's ` +
     `claimable backlog: a 0 here does not mean the fleet has no work, and is no reason to rewrite its claim spec. ` +
     `Read the fleet lane with spec:'${c.fleetSlug}'.`
@@ -431,6 +445,7 @@ export default defineTool({
             workspaceId: ws,
             ownerId: assignee,
             callerSpecId: callerRecord.spec.specId,
+            callerSpecRevision: callerRecord.revision,
           });
         }
         if (callerRecord.source === 'fleet' && callerRecord.fleetSlug) {
