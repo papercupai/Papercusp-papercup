@@ -730,7 +730,7 @@ describe.skipIf(!CURRENT_LIVE_REQUESTED)('LIVE: bounded current public audit', (
     do {
       // Content truncation can return fewer than pageSize records. Nonempty,
       // progressing pages are bounded by the frozen record count, not size/10.
-      const page = await authenticatedAuditCode<{ digest: string; offset: number; covered: number; cursor: string | null; pages: number }>(
+      const page: { digest: string; offset: number; covered: number; cursor: string | null; pages: number } = await authenticatedAuditCode(
         "const s={offset:inputs.offset,covered:inputs.covered,cursor:inputs.cursor??null,pages:0};const seen=[];const started=Date.now();let complete=false;"
         + "while(!complete&&s.pages<20&&Date.now()-started<10000){"
         + "const p=await tools.coord.roster({view:'audit',scope:'workspace',owner:inputs.owner,auditId:inputs.auditId,cursor:s.cursor??undefined,pageSize:10});"
