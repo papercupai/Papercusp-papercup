@@ -11,7 +11,7 @@ import { auditRequestProvenance, buildRosterAudit, loadRosterAudit, saveRosterAu
 import { recordOwnerDirective } from '../../../owner-directives';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { publishReport } from '../../../report-library';
-import { pickupDispositionViolations } from '../parked-agent-audit-oracles';
+import { parkedAuditOperatorRoute, pickupDispositionViolations } from '../parked-agent-audit-oracles';
 import { getWorkItemsByIds } from '../../../work-items';
 import { setWorkItemCheckpoint } from '../../../work-item-checkpoint';
 import { registerHarnessProject } from '../../plans/__tests__/_pg-tool-fixture';
@@ -37,7 +37,7 @@ describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 cur
     const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../..');
     const env = { ...process.env }; delete env.PAPERCUSP_SCRATCH_ROOT;
     const run = async (script: string) => {
-      const response = await retryRejectedLiveRead(() => promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--port', '3170',
+      const response = await retryRejectedLiveRead(() => promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--port', parkedAuditOperatorRoute().port,
         '--client', process.env.PAPERCUSP_SID!, '--workspace', process.env.PAPERCUSP_WORKSPACE!, '--harness', '*',
         JSON.stringify({ script, timeoutSec: 30, projection: { pick: ['ok', 'summary', 'summaryNotice', 'partial', 'childFailures', 'error'] } })],
       { env, encoding: 'utf8', timeout: 60_000, maxBuffer: 2 * 1024 * 1024 }));
@@ -86,7 +86,7 @@ describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 cur
     for (const header of headers) {
       expect(header.supersededBy.sort()).toEqual(headers.filter(h => h.supersedes === header.ref.slice(7)).map(h => h.ref).sort());
     }
-    process.stdout.write(`PARKED_AUDIT_R5 ${JSON.stringify({ auditId, editions: headers.length, countQuoteRecords: quotes.length, pages, correctedInstanceSeen, errors: [] })}\n`);
+    process.stdout.write(`PARKED_AUDIT_R5 ${JSON.stringify({ auditId, route: parkedAuditOperatorRoute().origin, editions: headers.length, countQuoteRecords: quotes.length, pages, correctedInstanceSeen, errors: [] })}\n`);
   }, 600_000);
 });
 

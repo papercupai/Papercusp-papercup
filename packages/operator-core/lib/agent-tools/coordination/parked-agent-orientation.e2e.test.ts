@@ -23,14 +23,23 @@ describe.skipIf(!LIVE && inject('papercuspTestLayer') !== 'e2e')('LIVE: R-7 prod
     const env = { ...process.env }; delete env.PAPERCUSP_SCRATCH_ROOT;
     const listener = `coord:inbox-wake:${owner}`;
     const gate = 'parked-audit-orientation-' + randomUUID();
+    const isolated = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED === '1';
+    if (isolated) {
+      expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
+      expect(parkedAuditOperatorRoute().port).not.toBe('3170');
+    }
     // A private bounded await supplies the positive control independently of
     // expired session subscriptions. Finally cancels it and settles its gate.
     // Bound the observation before code:run shapes its result. Other real waits
     // must not crowd out either positive control or the rendered action fields.
-    const script = `const listener=${JSON.stringify(listener)};`
+    const script = `const listener=${JSON.stringify(listener)};const isolated=${isolated};`
       + `const declaration=await tools.events.emit({event:${JSON.stringify(gate)},announce:true,announceScope:'harness',announceScopeRef:'papercusp',expiresSec:180});`
       + "if(!declaration.ok||!declaration.event)throw Error('test gate declaration unavailable');"
-      + "let wait;try{const substantive=declaration.event;"
+      // The fresh disposable DB has no SessionStart listener. Arm it through
+      // the actual production tool; shared runs retain their existing listener.
+      + "let wait,listenerWatch;try{const substantive=declaration.event;"
+      + "if(isolated){const armed=await tools.coord.await_inbox({note:'Temporary R7 isolated acceptance listener.'});"
+      + "if(!armed.ok||!armed.watch?.id)throw Error('test inbox listener unavailable');listenerWatch=armed.watch.id;}"
       + "wait=await tools.events.await({event:substantive,after_generation:declaration.generation,timeout_sec:120,on_timeout:'wake',note:'Temporary R7 acceptance positive control; cancelled in finally.'});"
       + "if(!wait.ok||!wait.await_id)throw Error('test substantive await unavailable');"
       + "const selected=x=>x===listener||x===substantive;"
@@ -42,7 +51,9 @@ describe.skipIf(!LIVE && inject('papercuspTestLayer') !== 'e2e')('LIVE: R-7 prod
       + "rows:r.obligations.evaluations.filter(x=>x.family==='waiting-on'&&(x.title.includes(listener)||x.title.startsWith('Awaiting '+substantive)))"
       + ".map(x=>({title:x.title,status:x.status,priority:x.priority,id:x.id,sourceGeneration:x.sourceGeneration,ruleRevision:x.ruleRevision,"
       + "scope:{goalId:x.scope.goalId},action:x.action?{summary:x.action.summary,recoveryRef:x.action.recoveryRef}:undefined,clearsWhen:{summary:x.clearsWhen.summary}}))};"
-      + "}finally{if(wait?.await_id)await tools.events.cancel({await_id:wait.await_id});await tools.events.emit({event:declaration.event,summary:'Temporary R7 acceptance control settled after await cleanup.'});}";
+      + "}finally{if(wait?.await_id)await tools.events.cancel({await_id:wait.await_id});"
+      + "if(listenerWatch)await tools.events.cancel({await_id:listenerWatch});"
+      + "await tools.events.emit({event:declaration.event,summary:'Temporary R7 acceptance control settled after await cleanup.'});}";
     const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
       'code:run', '--port', parkedAuditOperatorRoute().port, '--client', owner!, '--workspace', workspace!, '--harness', 'papercusp',
       JSON.stringify({ script, timeoutSec: 45,
@@ -68,7 +79,7 @@ describe.skipIf(!LIVE && inject('papercuspTestLayer') !== 'e2e')('LIVE: R-7 prod
     expect(real?.priority).toBe('normal');
     expect(formatAgentObligationLine(real!, 'action')).toContain(`[BLOCKED] Awaiting ${substantive}`);
     expect(observed.rows.map(row => formatAgentObligationLine(row, 'action')).join('\n')).not.toContain(listener);
-    process.stdout.write(`PARKED_AUDIT_R7 ${JSON.stringify({ owner, route: parkedAuditOperatorRoute().origin,
+    process.stdout.write(`PARKED_AUDIT_R7 ${JSON.stringify({ owner, route: parkedAuditOperatorRoute().origin, isolated,
       armedListener: true, realAwaitBlocked: true, errors: [] })}\n`);
   }, 120_000);
 });
