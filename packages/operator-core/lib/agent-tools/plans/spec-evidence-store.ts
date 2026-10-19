@@ -3062,7 +3062,9 @@ function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMea
   return selector.kind === 'verification-harness' ? [
     ['verify-tauri-headless', selector.verifierRunId, 'result.json'],
     ['verify-tauri-headless', selector.verifierRunId, 'phases/prepare/verifier-source-receipt.json'],
-    [selector.journeyHarness, selector.journeyRunId, 'result.json'],
+    ...(selector.journeyHarness === 'verify-tauri-headless' ? [] : [
+      [selector.journeyHarness, selector.journeyRunId, 'result.json'] as const,
+    ]),
     ...(['operator-e2e-isolated', 'verify-tauri-headless'].includes(selector.journeyHarness) ? [] : [
       [selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'] as const,
     ]),
@@ -3282,9 +3284,10 @@ export async function measureCompletedTestRuntime(
   try {
     const operatorE2e = selector.journeyHarness === 'operator-e2e-isolated';
     const verifierSourceJourney = operatorE2e || directVerifier;
-    const [verifier, receipt, journey, manifest] = await Promise.all(
+    const [verifier, receipt, journeyArtifact, manifest] = await Promise.all(
       completedRuntimeArtifactRefs(selector).map(async ([harness, runId, file]) =>
         (await readCompletedRuntimeArtifact(harness, runId, file)).data));
+    const journey = directVerifier ? verifier : journeyArtifact;
     const completed = (result: any, harness: string, runId: string) => result?.schemaVersion === 1
       && result.harness === harness && result.runId === runId && result.verdict === 'pass'
       && !result.reuseFromRunId && Array.isArray(result.phases) && result.phases.length > 0

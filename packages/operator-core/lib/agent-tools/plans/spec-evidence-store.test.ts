@@ -502,7 +502,7 @@ describe('completed isolated runtime certification', () => {
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
   it.each(['shared-runtime', 'different-run', 'unit-layer', 'skipped', 'dirty', 'deployed',
-    'missing-witness', 'unqualified-source', 'changed-source', 'incomplete-verifier', 'outside-lifecycle'])(
+    'missing-witness', 'unqualified-source', 'changed-source-receipt', 'incomplete-verifier', 'outside-lifecycle'])(
     'refuses unsupported or incomplete directly executed verifier proof: %s', async failure => {
       const state = await setupDirectVerifier();
       if (failure === 'shared-runtime') state.basis.runtimeUnits = ['hono-host:3170'];
@@ -513,12 +513,19 @@ describe('completed isolated runtime certification', () => {
       if (failure === 'deployed') state.row.details.evidencePlane = 'deployed';
       if (failure === 'missing-witness') delete (state.execution as any).runtimeEnvironmentBefore;
       if (failure === 'unqualified-source') state.receipt.testedInputs = state.receipt.files.filter(file => file.dimension === 'test');
-      if (failure === 'changed-source') await writeFile(join(root, 'src/feature.ts'), 'changed source');
+      if (failure === 'changed-source-receipt') state.receipt.files[0].sha256 = '0'.repeat(64);
       if (failure === 'incomplete-verifier') state.verifier.verdict = 'fail';
       if (failure === 'outside-lifecycle') Object.assign(state.verifier, { endedAt: at(39) });
       await state.save();
       expect((await read()).currentness.dimensions.environment).toBe('unknown');
     });
+  it('rejects changed current source bytes against the original direct-verifier Git objects', async () => {
+    const state = await setupDirectVerifier();
+    await writeFile(join(root, 'src/feature.ts'), 'changed source');
+    const current = await measureRepoFilesEvidenceDetailedAtRoot(root, state.basis);
+    expect(await measureCompletedTestRuntime(state.row as any, state.basis, current.files,
+      { workspaceId: 'workspace-test', harnessSlug: 'papercusp' }, root)).toBeNull();
+  });
 
   async function setupOperatorE2e() {
     const state = await setup();
