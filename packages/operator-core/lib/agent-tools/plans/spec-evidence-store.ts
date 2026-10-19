@@ -3226,7 +3226,10 @@ export async function measureCompletedTestRuntime(
       && row.test_run_present
       && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
   if (!selector || !recipe.runtimeUnits || !certifiesCompletedTestRow(row.evidence_kind)
-    || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
+    // Direct native assertions can support tree clauses too. Their recorded
+    // witness, immutable source and complete lifecycle must still certify them.
+    || (row.details.evidencePlane !== 'live' && !(directVerifier && row.details.evidencePlane === 'tree'))
+    || row.test_run_status !== 'pass'
     || !(selector.kind === 'llm-in-process' ? row.test_run_framework === 'llm-test'
       : selector.kind === 'verification-harness' ? ['vitest', 'playwright'].includes(row.test_run_framework ?? '')
       : row.test_run_framework === 'vitest')

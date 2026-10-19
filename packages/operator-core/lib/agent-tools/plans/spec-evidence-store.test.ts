@@ -493,18 +493,22 @@ describe('completed isolated runtime certification', () => {
     await state.save();
     return { ...state, basis };
   }
-  it.each(['integration', 'e2e'])('certifies directly executed native Vitest %s proof after its verifier exits', async layer => {
-    const state = await setupDirectVerifier(layer);
-    expect((await read()).currentness).toMatchObject({ overall: 'current',
-      dimensions: { source: 'current', test: 'current', environment: 'current' } });
-    await measureAndPinRepoFilesEvidenceAtRoot(root, state.basis);
-    await rm(join(artifacts, 'verify-tauri-headless', verifierRunId), { recursive: true });
-    expect((await read()).currentness.dimensions.environment).toBe('current');
-  });
-  it.each(['shared-runtime', 'different-run', 'unit-layer', 'skipped', 'dirty', 'deployed',
-    'missing-witness', 'unqualified-source', 'changed-source-receipt', 'incomplete-verifier', 'outside-lifecycle'])(
-    'refuses unsupported or incomplete directly executed verifier proof: %s', async failure => {
+  it.each([['integration', 'tree'], ['integration', 'live'], ['e2e', 'tree'], ['e2e', 'live']] as const)(
+    'certifies directly executed native Vitest %s proof on the %s plane after its verifier exits', async (layer, plane) => {
+      const state = await setupDirectVerifier(layer);
+      state.row.details.evidencePlane = plane;
+      expect((await read()).currentness).toMatchObject({ overall: 'current',
+        dimensions: { source: 'current', test: 'current', environment: 'current' } });
+      await measureAndPinRepoFilesEvidenceAtRoot(root, state.basis);
+      await rm(join(artifacts, 'verify-tauri-headless', verifierRunId), { recursive: true });
+      expect((await read()).currentness.dimensions.environment).toBe('current');
+    });
+  it.each(['live', 'tree'].flatMap(plane => ['shared-runtime', 'different-run', 'unit-layer', 'skipped', 'dirty', 'deployed',
+    'missing-witness', 'unqualified-source', 'changed-source-receipt', 'incomplete-verifier', 'outside-lifecycle']
+    .map(failure => [failure, plane])))(
+    'refuses unsupported or incomplete directly executed verifier proof: %s on the %s plane', async (failure, plane) => {
       const state = await setupDirectVerifier();
+      state.row.details.evidencePlane = plane;
       if (failure === 'shared-runtime') state.basis.runtimeUnits = ['hono-host:3170'];
       if (failure === 'different-run') state.basis.completedRuntime.journeyRunId = journeyRunId;
       if (failure === 'unit-layer') state.execution.testLayer = 'unit';
