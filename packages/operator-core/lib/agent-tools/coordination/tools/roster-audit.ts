@@ -96,7 +96,7 @@ export function auditKnown<T>(value: T, source: string, observedAt: string): Aud
   return { status: 'known', value, source, observedAt };
 }
 
-export function auditUnknown(source: string, observedAt: string, reason: string): AuditField {
+export function auditUnknown<T = unknown>(source: string, observedAt: string, reason: string): AuditField<T> {
   return { status: 'unknown', source, observedAt, reason };
 }
 

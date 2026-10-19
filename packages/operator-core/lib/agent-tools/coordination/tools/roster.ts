@@ -41,7 +41,7 @@ import {
 import { resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { resolveAgentIdentity } from '../identity';
 import { PRESENCE_TIER_CAPS, shapeCoordPresence } from './presence-shape';
-import { decodeAuditCursor, RosterAuditError } from './roster-audit';
+import { decodeAuditCursor, RosterAuditError, type RosterAuditSnapshot } from './roster-audit';
 import { withBoundedTimeout } from '../../../bounded-timeout';
 
 /**
@@ -285,7 +285,7 @@ export default defineTool({
           });
         };
         const auditId = args.auditId ?? (args.cursor ? decodeAuditCursor(args.cursor).auditId : undefined);
-        let snapshot;
+        let snapshot: RosterAuditSnapshot | null = null;
         if (auditId) {
           const loaded = await boundedAuditStep('load', () => loadRosterAudit(harness, auditId, scopeKey), null);
           if (loaded.degraded) throw new RosterAuditError('audit_timeout', 'Frozen audit read exceeded the 45-second request budget; retry with the same auditId.');
@@ -314,10 +314,12 @@ export default defineTool({
             agents: agents as unknown as Array<Record<string, unknown>>, expectedPopulation,
             directiveId: args.auditDirectiveId, viewer: resolveViewer(ctx as never) }), null);
           if (built.degraded || !built.value) throw new RosterAuditError('audit_timeout', 'Audit census assembly exceeded the 45-second request budget; no snapshot was persisted. Retry the audit.');
-          snapshot = built.value;
-          const saved = await boundedAuditStep('save', () => saveRosterAudit(harness, snapshot), undefined);
+          const builtSnapshot = built.value;
+          snapshot = builtSnapshot;
+          const saved = await boundedAuditStep('save', () => saveRosterAudit(harness, builtSnapshot), undefined);
           if (saved.degraded) throw new RosterAuditError('audit_timeout', 'Audit snapshot persistence exceeded the 45-second request budget; retry the audit with the returned auditId if available.');
         }
+        if (!snapshot) throw new RosterAuditError('audit_missing', 'Frozen audit snapshot was not established.');
         return { content: [{ type: 'text' as const, text: JSON.stringify(pageRosterAuditResponse(snapshot, scopeKey, args.cursor, args.pageSize)) }] };
       } catch (error) {
         const e = error as { code?: string; message?: string };

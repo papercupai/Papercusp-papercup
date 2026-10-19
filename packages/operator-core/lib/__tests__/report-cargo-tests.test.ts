@@ -147,16 +147,17 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
     mutantDiff: '-original\n+mutated\n', mutantDiffTruncated: false,
     testCommandSha256: 'c'.repeat(64), testCommand: 'cargo test --manifest-path Cargo.toml',
   };
-  it.each([
+  const cargoLedgerCases: Array<[string, string | undefined, string, string | undefined, string, string | undefined]> = [
     ['explicit ledger', ' postgresql://ledger.example/evidence ', 'postgresql://ledger.example/evidence', 'baseline', 'valid', 'p032-cargo-ledger'],
-    ['runtime fallback', undefined, 'postgresql://runtime.example/private', 'copy-baseline', 'valid'],
-    ['blank ledger fallback', '  ', 'postgresql://runtime.example/private', 'mutant', 'valid'],
+    ['runtime fallback', undefined, 'postgresql://runtime.example/private', 'copy-baseline', 'valid', undefined],
+    ['blank ledger fallback', '  ', 'postgresql://runtime.example/private', 'mutant', 'valid', undefined],
     ['ordinary run', undefined, 'postgresql://runtime.example/private', undefined, 'valid', "cargo ordinary: owner's run"],
     ['empty run group', undefined, 'postgresql://runtime.example/private', undefined, 'valid', ''],
-    ['malformed descriptor', undefined, 'postgresql://runtime.example/private', 'mutant', 'malformed'],
-    ['unknown descriptor field', undefined, 'postgresql://runtime.example/private', 'mutant', 'unknown-field'],
-    ['absent descriptor', undefined, 'postgresql://runtime.example/private', 'mutant', 'absent'],
-  ])('records the real CLI inserts in the %s', (_label, ledgerUrl, expectedUrl, phase, descriptorKind, runGroup) => {
+    ['malformed descriptor', undefined, 'postgresql://runtime.example/private', 'mutant', 'malformed', undefined],
+    ['unknown descriptor field', undefined, 'postgresql://runtime.example/private', 'mutant', 'unknown-field', undefined],
+    ['absent descriptor', undefined, 'postgresql://runtime.example/private', 'mutant', 'absent', undefined],
+  ];
+  it.each(cargoLedgerCases)('records the real CLI inserts in the %s', (_label, ledgerUrl, expectedUrl, phase, descriptorKind, runGroup) => {
     const root = mkdtempSync(join(tmpdir(), 'cargo-ledger-destination-'));
     const inserts = join(root, 'inserts.jsonl');
     const loader = join(root, 'loader.mjs');

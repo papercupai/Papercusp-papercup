@@ -46,7 +46,8 @@ describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 aut
     const editions: Edition[] = []; const quotes: Quote[] = [];
     let cursor: string | null = null; let complete = false; let count = -1; let pages = 0;
     while (!complete && pages < 200) {
-      const page = await read<{ auditId: string; nextCursor: string | null; count: number;
+      const page: { auditId: string; nextCursor: string | null; count: number;
+        kind?: string; edition?: Edition; quote?: Quote } = await read<{ auditId: string; nextCursor: string | null; count: number;
         kind?: string; edition?: Edition; quote?: Quote }>(
         'const p=await tools.coord.roster({view:"audit",scope:"workspace",auditId:' + JSON.stringify(AUDIT_ID)
         + ',cursor:' + (cursor === null ? 'undefined' : JSON.stringify(cursor)) + ',pageSize:1});'

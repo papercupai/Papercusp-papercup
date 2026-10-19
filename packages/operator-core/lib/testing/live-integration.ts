@@ -46,7 +46,7 @@ export async function retryRejectedLiveRead<T>(
     } catch (error) {
       const failure = error as { code?: unknown; stderr?: unknown } | null;
       const line = typeof failure?.stderr === 'string'
-        ? failure.stderr.split('\n').findLast(line => line.startsWith('MCP_ERROR: '))
+        ? failure.stderr.split('\n').reverse().find((line: string) => line.startsWith('MCP_ERROR: '))
         : undefined;
       let refused = false;
       if (failure?.code === 1 && line) {
