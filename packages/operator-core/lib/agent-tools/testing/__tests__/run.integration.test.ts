@@ -1340,6 +1340,28 @@ describe('testing:run (integration)', () => {
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
+  it('binds parked scorecard live setup to its authenticated caller before the router starts', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-scorecard-profile-');
+    const suite = 'packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts';
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await mkdir(dirname(join(root, suite)), { recursive: true });
+    await writeFile(join(root, suite), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const runRouterFn = vi.fn(async (_args: string[], _cwd: string, env: NodeJS.ProcessEnv) => {
+      expect(env).toMatchObject({ PAPERCUSP_SID: 'authenticated-grader', PAPERCUSP_WORKSPACE: 'grading-workspace',
+        PAPERCUSP_APP_OPERATION_LIVE_PROFILE: 'packages/operator-core/test/parked-agent-audit.live-profile.json',
+        PAPERCUSP_PARKED_SEARCH_LIVE: '1', PAPERCUSP_PARKED_AUDIT_LIVE: '0', PAPERCUSP_PARKED_CURRENT_LIVE: '0' });
+      return { code: 0, signal: null, timedOut: false, aborted: false,
+        output: '# tests 1\n# pass 1\n# fail 0\n# skipped 0\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed' };
+    });
+    const result = await runTestFilesCore({ root, files: [suite],
+      runId: 'scorecard-check-' + 'c'.repeat(40) + '-0', actorId: 'authenticated-grader', workspaceId: 'grading-workspace' },
+    { runRouterFn });
+    expect(result.ok).toBe(true);
+    expect(runRouterFn).toHaveBeenCalledOnce();
+  });
+
   it('forwards public caller bounds through the real handler and router environment', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-public-deadline-');
     await mkdir(join(root, 'scripts'), { recursive: true });

@@ -325,7 +325,8 @@ export async function runRecoverableScorecardChecks(
     sourceSha?: (root: string) => string | null | Promise<string | null>;
   } = {},
 ): Promise<CriterionCheckRunnerResult> {
-  const runFiles = deps.runFiles ?? runCriterionCheckFiles;
+  const executeFiles = deps.runFiles ?? runCriterionCheckFiles;
+  const runFiles: CriterionCheckRunner = (request) => executeFiles({ ...request, actorId: binding.createdBy });
   const workspaceId = opts.workspaceId;
   const harnessSlug = opts.harnessSlug;
   const sourceSha = await (deps.sourceSha ?? ((root) => revParseAsync(root, 'HEAD')))(opts.root);
@@ -3710,7 +3711,7 @@ export async function emitScorecard(
             // force:true expressly asks for a fresh sample even when the evidence
             // fingerprint is unchanged; never satisfy it from an older check run.
             runner: args.force
-              ? runCriterionCheckFiles
+              ? (opts: Parameters<CriterionCheckRunner>[0]) => runCriterionCheckFiles({ ...opts, actorId: input.createdBy })
               : (opts: Parameters<CriterionCheckRunner>[0]) => (deps.runRecoverableChecks ?? runRecoverableScorecardChecks)(opts, {
                   rubricRef: args.rubricRef,
                   rubricRevision: rubricRevision ?? null,

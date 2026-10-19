@@ -709,6 +709,8 @@ export type CriterionCheckRunner = (opts: {
   root: string;
   timeoutMs?: number;
   workspaceId?: string;
+  /** Authenticated scorecard emitter, supplied by the handler rather than environment. */
+  actorId?: string;
   harnessSlug?: string;
   runId?: string;
 }) => Promise<CriterionCheckRunnerResult>;

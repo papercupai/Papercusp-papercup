@@ -304,8 +304,12 @@ describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-
     const prefix = 'audits/parked-agent-resumption-2026-10-17-637d7/';
     const expected = await call(`const r=await tools.artifacts.load({slug:'papercusp',rel_path:'${prefix}final-edition.json'});const a=JSON.parse(r.results[0].content);return (${originalUnconfirmedPairs.toString()})(a.rows);`);
     const cases = await call(`const r=await tools.artifacts.load({slug:'papercusp',rel_path:'${prefix}pickup-reconciliation-7947311d.json'});return JSON.parse(r.results[0].content).cases;`);
-    const items = await call("const r=await tools.work_items.get({ids:['WI-6554700010017003','WI-6554700010017004'],harness:'papercusp',threadLimit:0});return r.results.map(x=>({id:x.id,state:x.workItem.state,assignee:x.workItem.assignee,hasCompletionEvidence:x.hasCompletionEvidence===true}));");
-    const errors = pickupDispositionViolations(expected, cases, items, process.env.PAPERCUSP_SID!);
+    const items = await call("const r=await tools.work_items.get({ids:['WI-6554700010017003','WI-6554700010017004'],harness:'papercusp',threadLimit:0});return r.results.map(x=>({id:x.id,state:x.workItem.state,assignee:x.workItem.assignee,createdBy:x.workItem.createdBy,hasCompletionEvidence:x.hasCompletionEvidence===true}));");
+    // The observer need not own the audited work. Its original accountable
+    // agent is the proposal's recorded creator, independent of today's claim.
+    const auditOwner = items.find((item: { id: string }) => item.id === 'WI-6554700010017003')?.createdBy;
+    expect(typeof auditOwner === 'string' && auditOwner.trim().length > 0, 'original accountable agent is recorded').toBe(true);
+    const errors = pickupDispositionViolations(expected, cases, items, auditOwner);
     process.stdout.write(`PARKED_AUDIT_R6 ${JSON.stringify({ observedAt: new Date().toISOString(), pairs: expected.length,
       dispositions: cases.length, replied: cases.filter((row: PickupDisposition) => row.outcome === 'recipient-replied').length,
       unconfirmed: cases.filter((row: PickupDisposition) => row.outcome === 'pickup-unconfirmed').length, errors })}\n`);

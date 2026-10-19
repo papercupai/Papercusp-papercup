@@ -32,6 +32,14 @@ describe('R-6 live evidence boundary', () => {
   it('accepts evidence-based unknown dispositions without crediting pickup', () => {
     expect(pickupDispositionViolations(expected, cases(), items(), 'running-owner')).toEqual([]);
   });
+  it('checks the original accountable owner independently of the grading observer', () => {
+    expect(pickupDispositionViolations(expected, cases(), items(), 'running-owner')).toEqual([]);
+    expect(pickupDispositionViolations(expected, cases(), items(), 'independent-grader'))
+      .toEqual(['unowned-or-unverified:WI-6554700010017003', 'unowned-or-unverified:WI-6554700010017004']);
+    expect(liveE2eSource).toContain('createdBy:x.workItem.createdBy');
+    expect(liveE2eSource).toContain("item.id === 'WI-6554700010017003')?.createdBy");
+    expect(liveE2eSource).toContain('pickupDispositionViolations(expected, cases, items, auditOwner)');
+  });
   it('uses corrected evidence rather than a legacy activity-only pickup label', () => {
     const rows = expected.map(row => ({ ...row, verification: 'pickup-not-confirmed', pickup: 'unconfirmed' }));
     rows[0].pickup = 'activity-observed';

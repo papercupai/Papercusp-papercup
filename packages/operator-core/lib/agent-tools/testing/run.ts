@@ -1,4 +1,5 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
+import { parkedAuditScorecardEnvironment } from '../coordination/parked-agent-audit-oracles';
 /**
  * testing:run — run exact test files and return a DISTILLED result.
  *
@@ -3296,6 +3297,8 @@ export interface RunTestFilesCoreOptions {
   signal?: AbortSignal;
   /** Request scope to stamp on the reporter's durable test-run rows. */
   workspaceId?: string;
+  /** Authenticated internal caller; never supplied by public testing:run arguments. */
+  actorId?: string;
   harnessSlug?: string;
   /** Work-item a detached recovery run is attributed to (expensive-verification-loops P-001). */
   workItemId?: string;
@@ -3546,6 +3549,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
       ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
     };
+    Object.assign(childEnv, parkedAuditScorecardEnvironment(childEnv, {
+      files: pathResolution.files, actorId: opts.actorId, workspaceId: opts.workspaceId,
+    }));
     // An absolute child cutoff includes preparation/admission time and leaves
     // a separate cleanup reserve before the task's final deadline.
     childEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS = String(

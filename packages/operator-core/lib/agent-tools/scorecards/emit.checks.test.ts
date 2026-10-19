@@ -81,6 +81,11 @@ vi.mock('../../acceptance-author-identity', () => ({
   areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
   resolvePlanImplementerIdentities: vi.fn(async () => []),
 }));
+// This suite supplies its legacy vetting card below. The current-critique
+// reader is a separate PG-backed collaborator and must not escape that fixture.
+vi.mock('../../acceptance-rubric-critique', () => ({
+  readCurrentAcceptanceRubricCritique: async () => null,
+}));
 // These tests own deterministic criterion checks, not the post-write wake bridge.
 // Keep the newly-created-card event from reaching its real PG-backed await latch.
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
@@ -202,6 +207,7 @@ describe('scorecards:emit interrupted check-run recovery (EI-24189399333592974)'
     });
     expect(first.runId).toBe(`${prefix}-0`);
     expect(runFiles).toHaveBeenCalledOnce();
+    expect(runFiles.mock.calls[0]?.[0]).toMatchObject({ actorId: binding.createdBy });
 
     runFiles.mockClear();
     const replay = await runRecoverableScorecardChecks(opts, binding, {

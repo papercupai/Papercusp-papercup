@@ -1,7 +1,54 @@
 import { describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { parkedAuditOperatorRoute, parkedAuditToolFailure } from './parked-agent-audit-oracles';
+import { parkedAuditOperatorRoute, parkedAuditScorecardEnvironment, parkedAuditToolFailure } from './parked-agent-audit-oracles';
+
+describe('parked audit scorecard execution configuration', () => {
+  const suite = 'packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts';
+  const group = { PAPERCUSP_TEST_RUN_GROUP: 'scorecard-check-' + 'a'.repeat(40) + '-0' };
+  const request = { files: [suite], actorId: 'authenticated-grader', workspaceId: 'caller-workspace' };
+  it('leaves ordinary CI, unrelated suites and explicit manual opt-out unchanged', () => {
+    for (const env of [{}, { PAPERCUSP_TEST_RUN_GROUP: 'ordinary-run' },
+      { PAPERCUSP_TEST_RUN_GROUP: 'scorecard-check-invalid' }, { ...group, PAPERCUSP_PARKED_SEARCH_LIVE: '0' }]) {
+      expect(parkedAuditScorecardEnvironment(env, request)).toEqual({});
+    }
+    expect(parkedAuditScorecardEnvironment(group, { ...request, files: ['other.e2e.test.ts'] })).toEqual({});
+    expect(parkedAuditScorecardEnvironment({ PAPERCUSP_PARKED_SEARCH_LIVE: '1' }, request)).toEqual({});
+  });
+  it('configures fresh live checks with caller scope and the maintained profile before collection', () => {
+    const result = parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_SID: 'stale-server-owner',
+      PAPERCUSP_WORKSPACE: 'stale-server-workspace', PAPERCUSP_PARKED_AUDIT_LIVE: '1',
+      PAPERCUSP_PARKED_CURRENT_LIVE: '1' }, { ...request, files: ['/checkout/' + suite] });
+    expect(result).toEqual({ PAPERCUSP_SID: 'authenticated-grader', PAPERCUSP_WORKSPACE: 'caller-workspace',
+      PAPERCUSP_APP_OPERATION_LIVE_PROFILE: 'packages/operator-core/test/parked-agent-audit.live-profile.json',
+      PAPERCUSP_PARKED_SEARCH_LIVE: '1', PAPERCUSP_PARKED_AUDIT_LIVE: '0', PAPERCUSP_PARKED_CURRENT_LIVE: '0' });
+    expect(parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_PARKED_SEARCH_LIVE: '1' }, request)).toEqual(result);
+  });
+  it.each([{ actorId: undefined }, { actorId: ' ' }, { workspaceId: undefined },
+    { workspaceId: ' ' }, { workspaceId: '*' }])('refuses absent authenticated scope: %j', missing => {
+    expect(() => parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_SID: 'server-owner',
+      PAPERCUSP_WORKSPACE: 'ledger-workspace' }, { ...request, ...missing }))
+      .toThrow('parked-audit-scorecard-authenticated-scope-required');
+  });
+  it.each(['', 'other-profile.json'])('refuses an explicitly missing or wrong profile: %s', profile => {
+    expect(() => parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profile }, request))
+      .toThrow('parked-audit-scorecard-live-profile-mismatch');
+  });
+  it('uses the same scoped profile for R7 and honors each suite opt-out independently', () => {
+    const orientation = 'packages/operator-core/lib/agent-tools/coordination/parked-agent-orientation.e2e.test.ts';
+    const result = parkedAuditScorecardEnvironment(group, { ...request, files: [orientation] });
+    expect(result.PAPERCUSP_PARKED_ORIENTATION_LIVE).toBe('1');
+    expect(result.PAPERCUSP_PARKED_SEARCH_LIVE).toBeUndefined();
+    expect(result.PAPERCUSP_SID).toBe(request.actorId);
+    expect(result.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe('packages/operator-core/test/parked-agent-audit.live-profile.json');
+    expect(parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_PARKED_ORIENTATION_LIVE: '0' },
+      { ...request, files: [orientation] })).toEqual({});
+    const mixed = parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_PARKED_SEARCH_LIVE: '0' },
+      { ...request, files: [suite, orientation] });
+    expect(mixed.PAPERCUSP_PARKED_ORIENTATION_LIVE).toBe('1');
+    expect(mixed.PAPERCUSP_PARKED_SEARCH_LIVE).toBeUndefined();
+  });
+});
 
 const native = {
   VERIFY_TAURI_PID: '1234', VERIFY_TAURI_PORT: '23170',
