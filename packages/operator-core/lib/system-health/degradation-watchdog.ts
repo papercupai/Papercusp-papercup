@@ -40,6 +40,13 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { pinModuleState } from '@papercusp/module-singleton';
 
 import { DEGRADATION_CONDITION_PREFIX } from '../coord/actionable-conditions';
+import {
+  coordHasPgFastPath,
+  coordScopeReady,
+  coordScopeWorkspace,
+  coordSql,
+} from '../agent-tools/coordination/log';
+import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-log-gc';
 import type { FallbackWindow, ScopedFallbackWindow } from '../degradation/fallback-observations';
 import type { SevereEventBroadcast, SevereEventResolution } from '../severe-event-broadcast';
 import { runWithWorkspace } from '../workspace-als';
@@ -746,7 +753,52 @@ async function readOpenConditionStates(): Promise<Array<{ condition_key: string;
 }
 
 async function defaultReadOpenConditionEpisodes(): Promise<Array<{ conditionKey: string; openedAtMs: number }>> {
-  const states = await readOpenConditionStates();
+  // The aggregate condition reader is intentionally capped across every
+  // subsystem. A one-shot degraded alarm can therefore fall out of that
+  // window while unrelated condition traffic keeps arriving, even though its
+  // lifecycle is still open. Read the degraded family directly so recovery
+  // sees every open episode in the retention horizon (WI-6554700010017855).
+  const { computeConditionStates, readConditionEnvelopes } = await import(
+    '../agent-tools/coordination/tools/conditions'
+  );
+  let envelopes: Record<string, unknown>[];
+  if (!coordHasPgFastPath()) {
+    // Non-PG seams (the in-memory test log and legacy file backend) already
+    // expose their complete log through readConditionEnvelopes().
+    envelopes = await readConditionEnvelopes();
+  } else {
+    await coordScopeReady();
+    const workspaceId = coordScopeWorkspace();
+    const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+    const keyPattern = `${DEGRADATION_CONDITION_PREFIX}%`;
+    const sql = coordSql();
+    const rows = await sql<Array<{ body: unknown }>>`
+      SELECT id, body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId}
+         AND surface = 'messages'
+         AND ts >= ${sinceBound}
+         AND (
+           body->>'condition_key' LIKE ${keyPattern}
+           OR body->>'resolves_condition' LIKE ${keyPattern}
+           OR EXISTS (
+             SELECT 1
+               FROM jsonb_array_elements_text(
+                 CASE WHEN jsonb_typeof(body->'resolves_conditions') = 'array'
+                   THEN body->'resolves_conditions' ELSE '[]'::jsonb END
+               ) AS resolved(condition_key)
+              WHERE resolved.condition_key LIKE ${keyPattern}
+           )
+         )
+       ORDER BY id ASC
+    `;
+    // Keep the rows in log order so a re-alarm after a resolution opens a
+    // fresh episode in computeConditionStates().
+    envelopes = rows.map((row) =>
+      (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as Record<string, unknown>,
+    );
+  }
+  const states = computeConditionStates(envelopes);
   return states
     .filter((s) => s.open && s.condition_key.startsWith(DEGRADATION_CONDITION_PREFIX))
     .map((s) => ({ conditionKey: s.condition_key, openedAtMs: Date.parse(s.open_since ?? '') }))
@@ -948,6 +1000,10 @@ export async function runDegradationSweepOnce(
   if (deps.readOpenConditionEpisodes) {
     try {
       openEpisodes = await deps.readOpenConditionEpisodes();
+      // The aggregate key fold is bounded across all condition families. The
+      // family-specific episode reader is the authoritative recovery fallback
+      // for a degraded key that has fallen outside that aggregate window.
+      for (const episode of openEpisodes) openKeys.add(episode.conditionKey);
     } catch (e) {
       out.errors.push(`open-condition episodes read: ${errMsg(e)}`);
     }

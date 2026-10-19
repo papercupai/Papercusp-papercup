@@ -386,6 +386,20 @@ describe('runDegradationSweepOnce — one alarm per episode against a durable op
     expect(r.errors[0]).toContain('fold unavailable');
   });
 
+  it('uses the family episode read to recover a key missing from the bounded aggregate fold', async () => {
+    const key = degradationConditionKey(M, null, 'otherRunner');
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      readOpenConditionKeys: async () => [],
+      readOpenConditionEpisodes: async () => [{ conditionKey: key, openedAtMs: Date.now() - 60_000 }],
+      readWindows: async () => [{ scope: null, window: windowOf(40, 30) }],
+    });
+
+    expect(r.resolved).toEqual([key]);
+    expect(resolutions).toHaveLength(1);
+    expect(open.has(key)).toBe(false);
+  });
+
   it('one unreadable mechanism does not stop the others', async () => {
     const other: DegradationMechanism = { mechanism: 'other-mechanism', description: 'x' };
     const r = await runDegradationSweepOnce({

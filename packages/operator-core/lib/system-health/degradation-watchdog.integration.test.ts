@@ -76,6 +76,7 @@ vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
 const { observeFallback, flushFallbackObservations, readFallbackWindowsByScope, _resetFallbackObservationsForTests } = await import(
   '../degradation/fallback-observations'
 );
+const { CONDITIONS_FAST_PATH_ROW_CAP } = await import('../agent-tools/coordination/tools/conditions');
 const { runDegradationSweepOnce, degradationConditionKey, getDegradationMechanism, _resetDegradationPruneClockForTests } =
   await import('./degradation-watchdog');
 const { runConditionStalenessTick } = await import('./condition-staleness-alarm');
@@ -101,9 +102,9 @@ function tick() {
   });
 }
 
-async function observe(eligible: number, applied: number, reason: string): Promise<void> {
+async function observe(eligible: number, applied: number, reason: string, scope = SCOPE): Promise<void> {
   const correlationId = randomUUID();
-  expect(observeFallback(MECHANISM, { eligible, applied, reason, scope: SCOPE }, {
+  expect(observeFallback(MECHANISM, { eligible, applied, reason, scope }, {
     workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint',
     correlationId,
   })).toBe(true);
@@ -118,7 +119,7 @@ async function observe(eligible: number, applied: number, reason: string): Promi
   // The writer batches process-wide observations. Verify this call's exact row rather than
   // assuming its flush count excludes other producers that shared the batch.
   expect(flushed).toMatchObject({ failed: 0 });
-  expect(rows).toMatchObject([{ reason, scope: SCOPE, samples: 1, eligible, applied,
+  expect(rows).toMatchObject([{ reason, scope, samples: 1, eligible, applied,
     workspace_id: 'default', process_tag: 'gate-reuse:green-checkpoint', correlation_id: correlationId }]);
   expect(rows).toHaveLength(1);
 }
@@ -373,6 +374,36 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     // A later measurable decision on this task settles the same condition.
     expect(await recordGateReuseDecision(task, { summary: { candidates: 1, reused: 1 } }, gateContext)).toBe(true);
     expect((await runDegradationSweepOnce()).resolved).toEqual([key]);
+  }, 180_000);
+
+  it('recovers an old degraded episode outside the bounded aggregate condition window', async () => {
+    const task = '@fixture/operator-core::test:old-open-episode';
+    const key = degradationConditionKey(MECHANISM, task, 'otherRunner');
+
+    // Seed one old open degraded episode, then saturate the cross-family
+    // aggregate reader with newer unrelated condition alarms. The family
+    // reader used by degradation recovery must still find the first key.
+    expect(await broadcastSevereEvent({
+      conditionKey: key,
+      oneShot: true,
+      summary: 'old degraded episode',
+      body: 'regression fixture',
+    })).toBe(true);
+    await db.adminSql`
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, msg_id, body, ts)
+      SELECT ${WS}, 'messages', 'degraded-window-filler-' || g::text,
+             jsonb_build_object('condition_key', 'degraded:unrelated:' || g::text, 'one_shot', true),
+             CURRENT_TIMESTAMP + (g * INTERVAL '1 millisecond')
+        FROM generate_series(1, ${CONDITIONS_FAST_PATH_ROW_CAP + 1}) AS g
+    `;
+
+    // Recovery is scope keyed: write the healthy sample for the same task whose
+    // old episode was recovered, rather than the unrelated default fixture scope.
+    await observe(20, 20, 'applied', task);
+    const sweep = await runDegradationSweepOnce({ prune: null });
+    expect(sweep.errors).toEqual([]);
+    expect(sweep.resolved).toEqual([key]);
+    expect(await alarmCount(key)).toBe(1);
   }, 180_000);
 
   it('the seed mechanism is registered scope-keyed, so this test exercises the shipped registration', () => {
