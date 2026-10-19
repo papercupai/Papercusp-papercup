@@ -31,6 +31,7 @@ import {
   rmSync,
   lstatSync,
   symlinkSync,
+  chmodSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -565,6 +566,29 @@ describe('Codex resume reconciles project MCP servers', () => {
 });
 
 describe('Codex managed carry keeps the selected account route', () => {
+  it.runIf(process.getuid?.() !== 0).each([false, true])(
+    'distinguishes successful HTTP repair from private config route refusal (private=%s)', async privateConfig => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-private-route-'));
+    const home = join(root, 'session-7'), config = join(home, 'config.toml');
+    mkdirSync(home);
+    writeFileSync(config, 'model = "fixture"\n');
+    const failures: any[] = [];
+    try {
+      if (privateConfig) chmodSync(config, 0);
+      const result = await launcher.ensureCodexHomeViaOperator('su-private-route', home, 7, {
+        env: { PAPERCUSP_SU_CODEX_HOMES_DIR: root }, operatorUrl: 'http://operator', routeMode: 'auto',
+        onFailure: failure => { failures.push(failure); },
+        fetchImpl: async () => ({ status: 200, ok: true, json: async () => ({ ok: true, repaired: false }) }),
+      });
+      if (privateConfig) {
+        expect(result).toBeNull();
+        expect(failures).toMatchObject([{ stage: 'home-route', reason: 'route-restore-failed', status: 200 }]);
+      } else {
+        expect(result).toMatchObject({ ok: true });
+        expect(failures).toEqual([]);
+      }
+    } finally { chmodSync(config, 0o600); rmSync(root, { recursive: true, force: true }); }
+  });
   it.each([
     ['loopback', 'http://127.0.0.1:3170', { kind: 'loopback', protocol: 'http', port: 3170 }],
     ['remote', 'https://private-user:private-password@private-host.example:4443/private-path?private-query',

@@ -222,7 +222,7 @@ import {
   SCOPED_INFERENCE_GATEWAY_ENV,
   snapshotScopedInferenceGateway,
 } from "@papercusp/orchestrator/codex-gateway-config";
-import { createScopedNativeSandboxSpawn } from "@papercusp/orchestrator/fleet-srt-spawn";
+import { createScopedNativeSandboxSpawn, NATIVE_CONTAINER_EXEC_ENV } from "@papercusp/orchestrator/fleet-srt-spawn";
 import {
   prepareOmpGatewayModelsConfig,
   ompGatewayModelsConfig,
@@ -16541,6 +16541,21 @@ export async function ensureCodexHomeViaOperator(
   // readiness check unrepaired (WI-10006770).
   if (codexHome !== suCodexHomeForAdvSession(advSessionId, env)) return failed('foreign-home');
   try {
+    if (env[NATIVE_CONTAINER_EXEC_ENV] !== undefined) {
+      stage = 'home-ownership';
+      traceStep('home-ownership', () => {
+        // Reuse the spawn boundary's route + executable hash verification.
+        // The control cannot fall back to an unbound command or ambient Docker.
+        const cwd = process.cwd();
+        if (env.CODEX_HOME !== codexHome) throw new Error('Native ownership home binding changed');
+        const boundSpawn = createScopedNativeSandboxSpawn({ env, cwd });
+        const boundary = JSON.parse(env[NATIVE_CONTAINER_EXEC_ENV]);
+        if (!boundSpawn) throw new Error('Native ownership boundary is unavailable');
+        const returned = boundSpawn(boundary.command, ['--papercusp-return-session-ownership'],
+          { cwd, env, stdio: 'ignore', timeout: 15000 }, spawnSync);
+        if (returned.error || returned.status !== 0) throw new Error('Native ownership return failed');
+      });
+    }
     stage = 'operator-route';
     const resolvedOperatorUrl = await traceStep('operator-route', () =>
       operatorUrl ??
@@ -16612,7 +16627,8 @@ export async function ensureCodexHomeViaOperator(
     }
     return r;
   } catch (err) {
-    return failed(stage === 'home-route' ? 'route-restore-failed'
+    return failed(stage === 'home-ownership' ? 'ownership-return-failed'
+      : stage === 'home-route' ? 'route-restore-failed'
       : stage === 'operator-route' ? 'operator-route-failed' : 'request-failed', err);
   }
 }

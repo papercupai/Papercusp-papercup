@@ -37,9 +37,14 @@ async function readCompleteCodexSource(binding: { nativeSessionId: string; codex
   const [{ constants }, path] = await Promise.all([import('node:fs'), import('node:path')]);
   const file = await findCodexRolloutPathByUuid(binding.nativeSessionId, { homeOverride: binding.codexHome });
   if (!file) throw new CodexSourceProofError('identity-usage-incomplete', 'the host native transcript is unavailable');
-  const root = await fs.realpath(path.join(binding.codexHome, 'sessions'));
-  const realFile = await fs.realpath(file), relative = path.relative(root, realFile);
-  if (realFile !== file || !relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+  const root = path.join(await fs.realpath(binding.codexHome), 'sessions');
+  // The maintained container wrapper relocates the host-issued home itself.
+  // Resolve that capability root, while refusing links below it: a rollout
+  // cannot redirect the proof to a different file inside or outside the home.
+  const relative = path.relative(path.resolve(binding.codexHome, 'sessions'), file);
+  const realFile = await fs.realpath(file);
+  if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) ||
+      realFile !== path.join(root, relative)) {
     throw new CodexSourceProofError('identity-usage-binding-mismatch', 'the native transcript must belong to this exact runtime home');
   }
   const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);

@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createScopedNativeSandboxSpawn, NATIVE_CONTAINER_EXEC_ENV } from '@papercusp/orchestrator/fleet-srt-spawn';
 import { codexSessionFrameObserved } from '../../../../apps/operator/scripts/psu-pty-host.mjs';
+import { ensureCodexHomeViaOperator } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 import { backendBinOverrideEnvKey, resolveBackendLaunch } from '../backend-bin-resolve.mjs';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../inference-gateway/codex-cli-bridge';
@@ -114,6 +115,54 @@ afterAll(async () => {
 });
 
 describe('container exec target against a live container', () => {
+  it.runIf(process.platform === 'linux' && process.getuid?.() !== 0)(
+    'restores the carry route after private native config replacement without touching sibling sessions', async () => {
+    const base = mkdtempSync(join(root, 'carry-handback-'));
+    const homes = join(base, 'homes'), mounted = join(base, 'mounted'), home = join(homes, 'session-7');
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(mounted, 'session-8'), { recursive: true });
+    const config = 'model = "fixture-model"\n';
+    writeFileSync(join(home, 'config.toml'), config, { mode: 0o600 });
+    const cid = await startContainer(['-v', `${mounted}:${homes}`]);
+    let primaryError: unknown;
+    try {
+      const { wrapperPath, nativeBoundary } = materializeDockerExecWrapper({ kind: 'docker-exec', containerId: cid,
+        workdir: '/', binPath: '/bin/true',
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: mounted }] } },
+      { dir: mkdtempSync(join(root, 'carry-wrapper-')) });
+      const env = { ...process.env, PAPERCUSP_AGENT: 'codex', CODEX_HOME: home,
+        PAPERCUSP_SU_CODEX_HOMES_DIR: homes, PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9',
+        PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto', PAPERCUSP_BACKEND_BIN_CODEX: wrapperPath,
+        PAPERCUSP_NATIVE_CONTAINER_EXEC: JSON.stringify(nativeBoundary),
+        PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: 'http://127.0.0.1:9', token: 'a'.repeat(32) }) };
+      const launched = await command(wrapperPath, [], env);
+      expect(launched.status, JSON.stringify(launched)).toBe(0);
+      const replaced = await command('docker', ['exec', '-u', '0', cid, 'sh', '-c',
+        'cp "$1/config.toml" "$1/config.next" && chmod 600 "$1/config.next" && mv "$1/config.next" "$1/config.toml" && touch "$2/private"',
+        'sh', home, join(homes, 'session-8')]);
+      expect(replaced.status, JSON.stringify(replaced)).toBe(0);
+      expect(() => readFileSync(join(home, 'config.toml'))).toThrow(expect.objectContaining({ code: 'EACCES' }));
+      const inode = statSync(join(home, 'config.toml')).ino;
+      const failures: unknown[] = [];
+      let requests = 0;
+      const repaired = await ensureCodexHomeViaOperator('su-carry-handback', home, 7, {
+        env, operatorUrl: 'http://127.0.0.1:9', routeMode: 'auto', onFailure: failure => { failures.push(failure); },
+        fetchImpl: async () => {
+          requests++;
+          // Return ownership before operator IO, preserving private bytes/mode
+          // and the native writer's inode. No sibling session is handed back.
+          expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(config);
+          expect(statSync(join(home, 'config.toml'))).toMatchObject({ uid: process.getuid!(), ino: inode });
+          expect(statSync(join(home, 'config.toml')).mode & 0o777).toBe(0o600);
+          expect(statSync(join(mounted, 'session-8', 'private')).uid).toBe(0);
+          return { status: 200, ok: true, json: async () => ({ ok: true, repaired: false }) };
+        },
+      });
+      expect({ repaired, failures, requests }).toMatchObject({ repaired: { ok: true }, failures: [], requests: 1 });
+      expect(readFileSync(join(home, 'config.toml'), 'utf8')).toContain('model_provider = "papercusp-codex-gateway"');
+    } catch (error) { primaryError = error; throw error; }
+    finally { await removeContainer(cid, primaryError); }
+  });
   it.runIf(process.platform === 'linux').each(['directory', 'repository'] as const)(
     'reaches the native Codex composer in the trusted container workdir before kickoff (%s)', async checkoutKind => {
     const base = mkdtempSync(join(root, 'native-trust-'));

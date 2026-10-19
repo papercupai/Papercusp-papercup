@@ -203,6 +203,27 @@ describe('complete closed Codex source accounting', () => {
       if (result.ok) expect(result.events[0].usage).toMatchObject({ inputTokens: 80, cacheReadTokens: 20, cacheCreationTokens: 0 });
     });
   });
+  it.each([false, true])('reads closed usage before retirement with container-relocated home=%s', async relocated => {
+    await fixture(async ({ home, file, sql, calls }) => {
+      const mounted = home + '-mounted';
+      try {
+        if (relocated) {
+          // The maintained container wrapper moves this exact session directory
+          // and leaves its conventional host path as a symlink before launch.
+          await fs.rename(home, mounted);
+          await fs.symlink(mounted, home);
+        }
+        const result = await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home });
+        expect(result).toMatchObject({ complete: true, sessions: [{ nativeSessionId: session,
+          usage: { ok: true, file, nativeTurnIds: ['turn-1'], events: [{ usage: {
+            inputTokens: 80, outputTokens: 10, cacheReadTokens: 20,
+          } }] } }] });
+        expect(calls).toEqual([['bench-private', file]]);
+      } finally {
+        if (relocated) await fs.rm(mounted, { recursive: true, force: true });
+      }
+    });
+  });
   it.each(['open turn', 'partial record', 'malformed tail'] as const)('retains the proven closed-turn subtotal with an incomplete %s', async tail => {
     await fixture(async ({ home, file, sql }) => {
       const suffix = tail === 'open turn' ? line({ type: 'turn_context', payload: { turn_id: 'turn-2', model: 'configured-alias' } }) :
@@ -257,6 +278,16 @@ describe('complete closed Codex source accounting', () => {
       const outside = join(home, 'other-runtime.jsonl');
       await fs.rename(file, outside); await fs.symlink(outside, file);
       expect(await read(sql, home)).toMatchObject({ ok: false });
+    });
+  });
+  it('refuses a redirected sessions directory beneath the host-issued home', async () => {
+    await fixture(async ({ home, sql }) => {
+      const outside = home + '-foreign-sessions';
+      try {
+        await fs.rename(join(home, 'sessions'), outside);
+        await fs.symlink(outside, join(home, 'sessions'));
+        expect(await read(sql, home)).toMatchObject({ ok: false });
+      } finally { await fs.rm(outside, { recursive: true, force: true }); }
     });
   });
   it('includes earlier native carry sources rather than returning only the latest session', async () => {

@@ -223,6 +223,31 @@ describe('session-dir relocation (D-026 step 3)', () => {
     const argv = readFileSync(argvLog, 'utf8').trimEnd().split('\n');
     expect(argv.slice(argv.indexOf('/bin/sh') + 1)).toEqual(['--version']);
   });
+  it.each(['returned', 'fresh', 'daemon-refused', 'foreign-link', 'foreign-home'])(
+    'returns only exact relocated session ownership and fails closed: %s', mode => {
+    const l = layout(), home = join(l.homes, 'session-7');
+    if (mode !== 'fresh') expect(l.run(home).status).toBe(0);
+    rmSync(argvLog, { force: true });
+    if (mode === 'foreign-link') {
+      rmSync(home);
+      symlinkSync(join(l.homes, 'session-8'), home);
+    }
+    const { wrapperPath } = materializeDockerExecWrapper({ ...target,
+      sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [
+        { hostRoot: l.homes, perTaskDir: l.perHomes }, { hostRoot: l.sqlite, perTaskDir: l.perSqlite },
+      ] } }, { dir: mkdtempSync(join(root, 'ownership-')), dockerBin: fakeDocker });
+    const result = spawnSync(wrapperPath, ['--papercusp-return-session-ownership'], {
+      env: { PATH: '/usr/bin:/bin', CODEX_HOME: mode === 'foreign-home' ? join(l.homes, 'nested', 'session-7') : home,
+        ...(mode === 'daemon-refused' ? { FAKE_DOCKER_EXIT: '7' } : {}) }, encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(mode === 'returned' || mode === 'fresh' ? 0 : 126);
+    if (mode === 'returned' || mode === 'daemon-refused') {
+      expect(readFileSync(argvLog, 'utf8').trimEnd().split('\n')).toEqual([
+        'exec', '-u', '0', target.containerId, 'chown', '-hR', `${process.getuid!()}:${process.getgid!()}`,
+        home, join(l.sqlite, 'session-7'),
+      ]);
+    } else expect(existsSync(argvLog)).toBe(false);
+  });
 
   it('moves the session home into the per-task dir, leaves a host symlink, and pre-creates the SQLite home', () => {
     const l = layout();

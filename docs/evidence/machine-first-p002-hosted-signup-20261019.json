@@ -1,0 +1,287 @@
+{
+  "schemaVersion": 1,
+  "framework": "playwright",
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "measuredAt": "2026-10-19T01:06:11.708Z",
+  "scope": "Current immutable Portal, genuine TEST-account admission, cookie-admitted hosted signup destination only",
+  "source": {
+    "measuredAt": "2026-10-19T01:03:00.590Z",
+    "rootDigest": "eab7efca5a40e1054d3240a88ad12d56890e2de78557f8c4f14457145fd5d5b5",
+    "wholeDigest": "5f5fced8cde8f2e3aeb8ed2b964310b35d4fb57ceadb0637ebc6e65bfdb415e3",
+    "entries": 21465,
+    "linkedEntries": 20933,
+    "test": {
+      "path": "e2e/portal-utility-welcome.spec.ts",
+      "sha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d"
+    }
+  },
+  "linkedOperatorRuntimeProvenance": {
+    "method": "Rebuilt with the maintained scripts/build-standalone.mjs bundleCommonJsRuntime options, esbuild write:false, then compared exact bytes to immutable release packages. This establishes these consumed server cones; no complete historical linked-file equivalence is claimed.",
+    "hostedAuth": {
+      "packagedAndRebuiltSha256": "851ac5859905e7698c01ced6a963225fa76c50b8f3487030b8921cbceb5fc6b4",
+      "bytes": 2726251,
+      "inputs": 832,
+      "byteEqual": true
+    },
+    "web": {
+      "packagedAndRebuiltSha256": "0f21bad670985109feaa96665c87195e02951df69408a6e89a6f0bef3ba73ccc",
+      "bytes": 1538068,
+      "inputs": 446,
+      "byteEqual": true
+    }
+  },
+  "test": {
+    "title": "served hosted signup utility: published download, reload, fallback and keyboard Continue",
+    "testFile": "e2e/portal-utility-welcome.spec.ts",
+    "testSha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d",
+    "status": "passed",
+    "stats": {
+      "startTime": "2026-10-19T01:05:18.911Z",
+      "duration": 46345.753000000004,
+      "expected": 1,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "retries": 0,
+    "report": {
+      "path": "/tmp/mf-r2-served-current-v4-20261019.json",
+      "sha256": "be24e8f70504d03cf73b6d32495c0e3d12a4eac15d8c7c2685f50105d4e096d9"
+    },
+    "log": {
+      "path": "/tmp/mf-r2-served-current-v4-20261019-browser.log",
+      "sha256": "66369878fbee952865fbaa9ed19457ca22e24bb9bfa15c93a8047d00b7022dcd"
+    },
+    "ledger": {
+      "receiptId": "69177013-48f2-4e4c-99ce-584890cf1853",
+      "attempt": 0,
+      "filePath": "e2e/portal-utility-welcome.spec.ts",
+      "status": "pass",
+      "row": {
+        "filePath": "e2e/portal-utility-welcome.spec.ts",
+        "status": "pass",
+        "durationMs": 32081,
+        "startedAt": "2026-10-19T01:05:21.169Z",
+        "finishedAt": "2026-10-19T01:05:53.250Z",
+        "outputTail": null,
+        "isScratchConfig": false,
+        "worktreeDirty": false,
+        "commitSha": "5118d631446a3206ff2321c66ee18da211c1defe",
+        "receiptId": "69177013-48f2-4e4c-99ce-584890cf1853",
+        "receiptAttempt": 0
+      },
+      "outcome": "inserted",
+      "id": "21388103"
+    },
+    "runtimeTestExit": {
+      "code": 0,
+      "signal": null
+    }
+  },
+  "receipt": {
+    "scope": "Real new TEST-account admission and served signup destination; external AuthKit form and final shipment excluded",
+    "cases": [
+      {
+        "scenario": "published",
+        "tenantMatches": true,
+        "requestedUrls": [
+          "https://127.0.0.1:46855/api/downloads/utility?target=linux-x86_64&resolve=1",
+          "https://127.0.0.1:46855/api/downloads/utility?target=linux-x86_64&resolve=1"
+        ],
+        "download": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "bytes": 69542264,
+          "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6"
+        },
+        "callbackReloadDownloadCount": 1,
+        "utilityContinueUrl": "https://127.0.0.1:46855/?app=home&firstRun=deferred",
+        "productGuideChoice": "skipped through the existing guide control",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 1,
+        "continueUrl": "https://127.0.0.1:46855/?app=home"
+      },
+      {
+        "scenario": "blocked-storage-denied",
+        "tenantMatches": true,
+        "requestedUrls": [
+          "https://127.0.0.1:46855/api/downloads/utility?target=linux-x86_64&resolve=1"
+        ],
+        "manualRetry": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "completed": true
+        },
+        "utilityContinueUrl": "https://127.0.0.1:46855/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 1,
+        "continueUrl": "https://127.0.0.1:46855/?app=home"
+      },
+      {
+        "scenario": "unavailable",
+        "tenantMatches": true,
+        "requestedUrls": [
+          "https://127.0.0.1:46855/api/downloads/utility?target=linux-x86_64&resolve=1"
+        ],
+        "failureInjection": "same-origin publisher route 503",
+        "utilityContinueUrl": "https://127.0.0.1:46855/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 0,
+        "continueUrl": "https://127.0.0.1:46855/?app=home"
+      },
+      {
+        "scenario": "windows",
+        "tenantMatches": true,
+        "requestedUrls": [],
+        "failureInjection": null,
+        "utilityContinueUrl": "https://127.0.0.1:46855/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 0,
+        "continueUrl": "https://127.0.0.1:46855/?app=home"
+      }
+    ],
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "EuGuX2xXqsxzomgod14T-",
+      "release": "EuGuX2xXqsxzomgod14T-20261019002159896-733094-c6a5054b",
+      "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "publishedAt": "2026-10-19T00:21:59.896Z",
+      "sourceRootDigest": "eab7efca5a40e1054d3240a88ad12d56890e2de78557f8c4f14457145fd5d5b5"
+    },
+    "accountCleanup": true
+  },
+  "runtimeCleanup": {
+    "startedAt": "2026-10-19T01:04:25.049Z",
+    "release": "EuGuX2xXqsxzomgod14T-20261019002159896-733094-c6a5054b",
+    "origin": "https://127.0.0.1:46855",
+    "hostedOrigin": "http://127.0.0.1:46849",
+    "workspace": "test-runtime-798a7322-be6",
+    "privateHome": "/tmp/pcv/papercusp-test-runtime-amu5OE/home",
+    "scope": "Cookie-admitted served destination only; real AuthKit and archive freshness excluded",
+    "processes": [
+      {
+        "role": "hosted",
+        "pid": 2527610,
+        "exitCode": null,
+        "signal": "SIGABRT",
+        "forced": false,
+        "alive": false
+      },
+      {
+        "role": "portal",
+        "pid": 2560984,
+        "exitCode": 143,
+        "signal": null,
+        "forced": false,
+        "alive": false
+      },
+      {
+        "role": "browser",
+        "pid": 2565057,
+        "exitCode": 0,
+        "signal": null,
+        "forced": false,
+        "alive": false
+      }
+    ],
+    "testExit": {
+      "code": 0,
+      "signal": null
+    },
+    "stats": {
+      "startTime": "2026-10-19T01:05:18.911Z",
+      "duration": 46345.753000000004,
+      "expected": 1,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "allStopped": true,
+    "finishedAt": "2026-10-19T01:06:11.708Z"
+  },
+  "privatePgWrapperCleanup": {
+    "kind": "isolated-runtime-cleanup",
+    "stage": "complete",
+    "elapsedMs": 1929,
+    "supervisorPid": 2520343,
+    "workspace": "test-runtime-798a7322-be6",
+    "runtimeRoot": "/tmp/pcv/papercusp-test-runtime-amu5OE",
+    "dataDir": "/tmp/pcv/papercusp-test-pg-WdDEVN",
+    "pgPort": 46657,
+    "runtimeRemoved": true,
+    "pgDataRemoved": true
+  },
+  "wrapperExit": 0,
+  "rawReceipt": {
+    "path": "/tmp/mf-r2-served-current-v4-20261019-receipt.json",
+    "sha256": "8e639ba0eb17e3a2c5e357b7d8011d1166eb340488c510f46a6b36764e543b5e"
+  },
+  "screenshots": [
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-blocked-storage-denied-gui.png",
+      "sha256": "ee8ecbb062fa1182292399430d1a70132cf68b20d157b221985d6868144471d3"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-blocked-storage-denied.png",
+      "sha256": "363a148b182476ee956f5a26385c4fcfb68b65672c9816d30b1892a27add5c5a"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-published-gui.png",
+      "sha256": "f73f08d859d9fad02833546d205876f7d9876fafa357ea41a34f4ad35ebf360b"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-published.png",
+      "sha256": "0b2048f01f0ff0fafd55fc975edf2a0eea0bf019f0ec96a40fa14dc4fa66a2aa"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-unavailable-gui.png",
+      "sha256": "6cfc88033ad40898d431a760114c1a13960f957c1784d445af6cde51e9a361a5"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-unavailable.png",
+      "sha256": "1430a13447e6ec1873270ace102b4b71a92b90dcf7fc00bc4436e80a0984b825"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-windows-gui.png",
+      "sha256": "6cfc88033ad40898d431a760114c1a13960f957c1784d445af6cde51e9a361a5"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-windows.png",
+      "sha256": "1430a13447e6ec1873270ace102b4b71a92b90dcf7fc00bc4436e80a0984b825"
+    }
+  ],
+  "archiveFreshness": {
+    "downloadedSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+    "sameBytesAsRetained20261017Archive": true,
+    "inclusionOfCurrentLauncherChanges": false,
+    "priorAudit": "docs/evidence/machine-first-signup-archive-audit-20261017.json"
+  },
+  "harnessAudit": {
+    "collectionPreflight": "Corrected unanchored maintained title filter listed exactly one test before allocating final private runtime. Prior strict anchored filter selected zero cases; that runtime was fully removed without account creation.",
+    "preliminaryRuntimeReceipt": "/tmp/mf-r2-served-current-20261019-runtime.json"
+  },
+  "shutdownObservation": {
+    "role": "private hosted helper",
+    "signal": "SIGABRT",
+    "stderr": "corrupted double-linked list",
+    "observedAfter": "SIGTERM during owned cleanup, after browser pass and provider-account cleanup",
+    "cause": "not established",
+    "log": {
+      "path": "/tmp/mf-r2-served-current-v4-20261019-hosted.log",
+      "sha256": "55d09d629428e68cb77722196884bbc0ad30c5ba36e932f231b71d8463449a56"
+    }
+  },
+  "limitations": [
+    "External AuthKit signup form, callback redemption, and real returning-signin proof remain separate retained receipts; this cookie-admitted case does not replace them.",
+    "The callbackReloadDownloadCount and returningSignInDownloadCount field names describe destination reload and navigation inside this case, not real AuthKit flows.",
+    "Current public download still has the identical older archive bytes with current launcher changes absent. Full R2 remains open.",
+    "Positive auth and archive traffic are real; publisher 503, blocked automatic anchor click, and denied browser storage are intentional fault injections. Windows scenario verifies platform fallback, not native Windows execution.",
+    "Rendered Portal GUI and utility modal were visually inspected. Empty-account workspace inventory and unrelated dashboard data availability are outside this case.",
+    "All owned processes and disposable databases are gone, but the hosted helper aborted during shutdown; cleanup termination is established, graceful shutdown is not.",
+    "Private current-build acceptance does not satisfy Avi architecture choice, R1 manual two-GUI/two-window acceptance, R7 release, publication or shipment."
+  ],
+  "publicExport": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson",
+    "privatePreExportSha256": "962336b0cb3b029528b8bf02dd40f91fb521c2d5ea87f30fa3abd91475d20ede",
+    "scope": "Identity-safe public copy of the completed run. Original private report and measured content hashes are unchanged."
+  }
+}

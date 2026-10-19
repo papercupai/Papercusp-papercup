@@ -442,6 +442,36 @@ function rewriteOrigins(o, sessionEnv) {
     fs.renameSync(tmp, file);
   }
 }
+// Host-only lifecycle control, invoked through the SHA-bound native executable
+// before home repair. Preserve native bytes/inodes/private modes; return only
+// this relocated session, never a shared root or a sibling session.
+if (process.argv.length === 3 && process.argv[2] === '--papercusp-return-session-ownership') {
+  const r = cfg.relocation;
+  const home = r && process.env[r.sessionEnv];
+  if (!home || path.resolve(path.dirname(home)) !== r.roots[0].hostRoot)
+    refuse('ownership return requires the exact session home');
+  const uid = process.getuid && process.getuid(), gid = process.getgid && process.getgid();
+  if (!Number.isInteger(uid) || !Number.isInteger(gid)) refuse('ownership return requires host credentials');
+  const name = path.basename(home), paths = [];
+  for (const root of r.roots) {
+    const src = path.join(root.hostRoot, name), dst = path.join(root.perTaskDir, name);
+    let st;
+    try { st = fs.lstatSync(src); } catch (e) {
+      if (e.code === 'ENOENT') continue;
+      refuse('cannot inspect ownership return binding');
+    }
+    if (st.isDirectory()) continue; // fresh, not yet container-writable
+    if (!st.isSymbolicLink() || path.resolve(path.dirname(src), fs.readlinkSync(src)) !== dst)
+      refuse('ownership return binding changed');
+    paths.push(src);
+  }
+  if (paths.length) {
+    const returned = spawnSync(cfg.dockerBin, [...cfg.dockerArgs, 'exec', '-u', '0', cfg.containerId,
+      'chown', '-hR', uid + ':' + gid, ...paths], { stdio: 'ignore', timeout: 10000 });
+    if (returned.error || returned.status !== 0) refuse('session ownership return failed');
+  }
+  process.exit(0);
+}
 const bridged = cfg.hookBridge ? bridgeHooks(cfg.hookBridge, cfg.relocation.sessionEnv) : null;
 if (cfg.relocation) relocate(cfg.relocation);
 if (cfg.originRewrite) rewriteOrigins(cfg.originRewrite, cfg.relocation.sessionEnv);

@@ -53,6 +53,36 @@ async function read(viewer: number | null) {
     inspectEquity: async (p, holder) => inspectEquity(reader, { ...p.finance!.equity!, holder }) });
 }
 
+describe('P-009 fixture calibration — stored identities, authority and chain balances', () => {
+  it('calibrates the complete membership and pay fixture without using the people projection', async () => {
+    expect(members.map(member => member.githubUserId)).toEqual([1, 2, 3, 4]);
+    const profiles = await db.adminSql`
+      SELECT person_id, member_github_user_id, pay_amount::text AS amount, pay_currency, pay_cadence
+        FROM harness_shared.dao_hr_work_profiles
+       WHERE workspace_id = ${WS} AND dao_slug = ${DAO} ORDER BY person_id`;
+    expect(profiles.map(row => [row.person_id, Number(row.member_github_user_id), row.amount, row.pay_currency, row.pay_cadence]))
+      .toEqual([
+        ['PER-admin', 3, '50000.00', 'USD', 'annual'],
+        ['PER-alice', 1, '50000.00', 'USD', 'annual'],
+        ['PER-bob', 2, '70000.00', 'USD', 'annual'],
+        ['PER-candidate', 99, '50000.00', 'USD', 'annual'],
+      ]);
+    const people = await db.adminSql`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND harness_slug = 'papercusp' AND item_kind = 'person' ORDER BY feature_id`;
+    expect(people.map(row => row.feature_id)).toEqual(['PER-admin', 'PER-alice', 'PER-bob', 'PER-candidate']);
+    const admins = await db.adminSql`
+      SELECT person_id FROM harness_shared.dao_hr_admins
+       WHERE workspace_id = ${WS} AND dao_slug = ${DAO} ORDER BY person_id`;
+    expect(admins.map(row => row.person_id)).toEqual(['PER-admin']);
+    // Direct ABI calls keep the economic oracle independent of inspectEquity
+    // and projectPersonEquity, which the behavioral cases exercise below.
+    expect(await chain.read(chain.equity, 'totalSupply')).toBe(100000n);
+    expect(await chain.read(chain.equity, 'balanceOf', [chain.accounts[0]])).toBe(100000n);
+    expect(await chain.read(chain.equity, 'balanceOf', [chain.accounts[1]])).toBe(0n);
+  });
+});
+
 describe('SPEC-P-009 / A — the directory population is current membership', () => {
   it('includes a member with no work profile and excludes an unadmitted candidate profile', async () => {
     const rows = await read(1);
