@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { retryRejectedLiveRead } from '../../testing/live-integration';
+import { parkedAuditOperatorRoute } from './parked-agent-audit-oracles';
 
 const PROFILE = 'packages/operator-core/test/parked-agent-audit.live-profile.json';
 const AUDIT_ID = '45250822471a901a36bec955ae89fc2f8ab107058c6b9c93864b2fa8bfd8ef12';
@@ -32,7 +33,7 @@ describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 aut
     // Each subprocess authenticates separately and reloads persisted state.
     const read = async <T,>(script: string): Promise<T> => {
       const response = await retryRejectedLiveRead(() => promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
-        'code:run', '--port', '3170', '--client', process.env.PAPERCUSP_SID!,
+        'code:run', '--port', parkedAuditOperatorRoute().port, '--client', process.env.PAPERCUSP_SID!,
         '--workspace', process.env.PAPERCUSP_WORKSPACE!, '--harness', '*',
         JSON.stringify({ script, timeoutSec: 30,
           projection: { pick: ['ok', 'summary', 'summaryNotice', 'partial', 'childFailures', 'error'] } })],
