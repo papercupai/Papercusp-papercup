@@ -23,6 +23,7 @@ import { getContractExecution } from './contracts-esign';
 import { DocumensoAdapter, DocumensoError } from './documenso';
 import type { DaoCapTable, DaoWorkspaceView } from '../dao-workspace-types';
 import type { EquityArtifacts } from '../equity/compile';
+import { nativeHttpPhase } from './native-bootstrap-runtime';
 
 describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.env.DAO_HR_NATIVE_CONFIG)('P012 actual native hiring journey', () => {
   it('creates, approves, signs, votes, accepts and admits one candidate, then reads People, org and cap table', async () => {
@@ -33,6 +34,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const privateEnv = nativeChildEnvironment(profile);
     const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, onnotice: () => {} });
     const ws = profile.workspaceId, slug = 'workbench-native', key = { workspaceId: ws, daoSlug: slug };
+    const retainHttpFailure = (diagnostic: object) => writeFileSync(config.resultPath + '.http-failure.json', JSON.stringify(diagnostic), { mode: 0o600 });
     const browser = await chromium.launch({ headless: true });
     const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN || 'tauri-agent-tools';
     const native = (...args: string[]) => execFileSync(tool, [...args, '--pid', String(profile.tauriPID)], { encoding: 'utf8', env: privateEnv, timeout: 65_000 });
@@ -86,10 +88,10 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       expect(result.body.ok, 'Product result for ' + op).toBe(true); return result.body;
     };
     const captureResponses = () => ev(captureWorkbenchResponses());
-    const rpc = async (method: string, params: unknown[] = []) => {
+    const rpc = async (method: string, params: unknown[] = []) => nativeHttpPhase('wallet-rpc', async () => {
       const r = await fetch(config.rpc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
       const result = await r.json(); if (result.error) throw new Error('Test wallet RPC: ' + result.error.message); return result.result;
-    };
+    }, retainHttpFailure);
     const equityAbi = (JSON.parse(readFileSync(new URL('../equity/artifacts.json', import.meta.url), 'utf8')) as EquityArtifacts).contracts.PapercuspEquityV2.abi;
     const equitySnapshot = (title: 'Cap table' | 'My equity') => {
       const section = 'document.querySelector(' + JSON.stringify('section[aria-label="' + title + '"]') + ')';
@@ -208,14 +210,18 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         }
       }, { timeout: 30_000 }).toBe(true);
       // Delivery transport only; completion verifies the provider accounts, signatures and sealed artifacts itself.
-      const completed = await fetch(health.origin + '/api/dao-hr/documenso/webhook', { method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Documenso-Secret': process.env.DOCUMENSO_WEBHOOK_SECRET! },
-        body: JSON.stringify(completionEvent) });
-      await assertCompletionResponse(completed, diagnostic => writeFileSync(config.resultPath + '.completion-response.json', JSON.stringify(diagnostic, null, 2)));
+      await nativeHttpPhase('provider-completion-webhook', async () => {
+        const completed = await fetch(health.origin + '/api/dao-hr/documenso/webhook', { method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Documenso-Secret': process.env.DOCUMENSO_WEBHOOK_SECRET! },
+          body: JSON.stringify(completionEvent) });
+        await assertCompletionResponse(completed, diagnostic => writeFileSync(config.resultPath + '.completion-response.json', JSON.stringify(diagnostic, null, 2)));
+      }, retainHttpFailure);
       reload(); textHas('Executed document hash:');
       for (const kind of ['sealed', 'certificate']) {
-        const artifact = await fetch(health.origin + '/api/pot/' + slug + '/contracts/' + offerId + '/document?kind=' + kind);
-        expect(artifact.status).toBe(200); expect(Buffer.from(await artifact.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
+        await nativeHttpPhase(kind === 'sealed' ? 'sealed-document' : 'audit-certificate', async () => {
+          const artifact = await fetch(health.origin + '/api/pot/' + slug + '/contracts/' + offerId + '/document?kind=' + kind);
+          expect(artifact.status).toBe(200); expect(Buffer.from(await artifact.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
+        }, retainHttpFailure);
       }
       browserActor('candidate'); navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); textHas('Request wallet challenge'); captureResponses();
       field('Wallet address', config.accounts[1]); field('Wallet chain ID', '1'); click('Request wallet challenge');

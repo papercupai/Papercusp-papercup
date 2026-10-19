@@ -2,9 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics } from './native-bootstrap-runtime';
+import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
 
 const repo = resolve(import.meta.dirname, '../../../..');
@@ -27,18 +28,48 @@ describe('native bootstrap admission and lifecycle', () => {
     expect(() => nativeBootstrapEnvironment({ PAPERCUSP_WORKSPACE: 'fixture' }, '')).toThrow('DB_URL');
   });
 
+  it('retains the exact native HTTP phase when a real peer closes the socket without retaining request secrets', async () => {
+    const server = createServer((request, response) => { response.destroy(); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as { port: number };
+    const retained: object[] = [];
+    try {
+      await expect(nativeHttpPhase('sealed-document', async () => {
+        const response = await fetch('http://127.0.0.1:' + address.port + '/private-contract?token=secret',
+          { headers: { Authorization: 'Bearer secret' }, signal: AbortSignal.timeout(5000) });
+        return response.arrayBuffer();
+      }, diagnostic => retained.push(diagnostic))).rejects.toThrow('Native HTTP phase failed: sealed-document; errorCode=UND_ERR_SOCKET');
+      expect(retained).toEqual([{ phase: 'sealed-document', errorCode: 'UND_ERR_SOCKET' }]);
+      expect(JSON.stringify(retained)).not.toMatch(/secret|private-contract|127\.0\.0\.1/);
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
+  it('classifies body-read failures and preserves successful native HTTP results', async () => {
+    const retained: object[] = [];
+    const response = new Response(new ReadableStream({ start(controller) {
+      controller.error(new Error('private provider response', { cause: { code: 'PRIVATE_TOKEN' } }));
+    } }));
+    await expect(nativeHttpPhase('audit-certificate', () => response.arrayBuffer(), diagnostic => retained.push(diagnostic)))
+      .rejects.toThrow('Native HTTP phase failed: audit-certificate; errorCode=unclassified');
+    expect(retained).toEqual([{ phase: 'audit-certificate', errorCode: 'unclassified' }]);
+    expect(await nativeHttpPhase('wallet-rpc', async () => 'transaction-hash', diagnostic => retained.push(diagnostic)))
+      .toBe('transaction-hash');
+    expect(retained).toHaveLength(1);
+  });
+
   it('retains failed verifier assertion snapshots through scratch teardown without copying credentials', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'daohr-diagnostic-retention-'));
     const scratch = join(dir, 'private'), evidence = join(dir, 'evidence');
     mkdirSync(scratch); mkdirSync(evidence);
     const result = join(scratch, 'result.json'), log = join(evidence, 'native.log');
     const suffixes = ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json',
-      '.completion-response.json', '.control-failure.json'];
+      '.completion-response.json', '.control-failure.json', '.http-failure.json'];
     const snapshots = [
       ...suffixes.slice(0, 3).map((suffix, i) => ({ failure: suffix, step: i, text: 'Native candidate' })),
       { status: 409, ok: false, error: 'invalid_completion',
         completion: { check: 'envelope_schema', providerStatus: 'PENDING', invalidFields: ['completedAt'] } },
       { scope: 'onboarding', control: 'Wallet signature', controls: [], alerts: [] },
+      { phase: 'sealed-document', errorCode: 'UND_ERR_SOCKET' },
     ];
     writeFileSync(join(scratch, 'native-config.json'), '{"privateKey":"secret"}');
     writeFileSync(join(scratch, 'candidate-provider.json'), '{"cookies":["secret"]}');

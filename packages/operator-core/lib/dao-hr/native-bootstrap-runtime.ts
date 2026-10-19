@@ -13,11 +13,26 @@ export const NATIVE_BOOTSTRAP_TIMEOUT_MS = 5 * 60_000
   + Object.values(NATIVE_VERIFIER_PHASE_BUDGETS).reduce((sum, value) => sum + value, 0)
   + NATIVE_BOOTSTRAP_TEARDOWN_MS;
 
+/** Classify the whole HTTP operation, including body reads, without retaining URLs or secrets. */
+export async function nativeHttpPhase<T>(phase: 'wallet-rpc' | 'provider-completion-webhook' | 'sealed-document' | 'audit-certificate',
+  action: () => Promise<T>, retain: (diagnostic: { phase: string; errorCode: string }) => void): Promise<T> {
+  try { return await action(); }
+  catch (error) {
+    const cause = error instanceof Error ? error.cause : undefined;
+    const code = (cause && typeof cause === 'object' && 'code' in cause ? cause.code :
+      error && typeof error === 'object' && 'code' in error ? error.code : undefined);
+    const errorCode = ['UND_ERR_SOCKET', 'ECONNRESET', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT', 'ABORT_ERR']
+      .find(known => known === code) ?? 'unclassified';
+    retain({ phase, errorCode });
+    throw new Error('Native HTTP phase failed: ' + phase + '; errorCode=' + errorCode);
+  }
+}
+
 /** Retain only assertion snapshots; config and provider sessions stay in private scratch. */
 export function retainNativeDiagnostics(resultPath: string, logPath: string) {
   const retained: Array<{ suffix: string; status: 'retained' | 'skipped' | 'error'; path?: string; reason?: string }> = [];
   for (const suffix of ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json',
-    '.completion-response.json', '.control-failure.json']) {
+    '.completion-response.json', '.control-failure.json', '.http-failure.json']) {
     let input: number | undefined, output: number | undefined;
     try {
       input = openSync(resultPath + suffix, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
