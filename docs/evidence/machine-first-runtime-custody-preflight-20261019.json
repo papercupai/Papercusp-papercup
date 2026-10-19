@@ -22,7 +22,35 @@
     "measuredImmediateCause": "The explicit selector named standalone-entry.mjs, whose child server.js owns the HTTP listener.",
     "confirmedSourceConstraint": "Next start-server.js assigns process.title; a Node mechanism read confirmed that assignment replaces /proc command-line script arguments with the title alone.",
     "detectorGap": "Maintained custody tests cover a direct Node listener with preserved command-line arguments, not the production launcher/Next topology.",
-    "durableFixStatus": "not implemented: first regression patch refused by peer build lock; nothing in the patch was written"
+    "durableFixStatus": "Initial attempt was blocked by the peer build lock; the later granted edit and verified repair are recorded in custodyResolution below."
+  },
+  "custodyResolution": {
+    "sourceRepository": "portal",
+    "sourceCommit": "50fbd13434d523e620c791e7d751eb2fa58ac7b1",
+    "rootCause": "The custody oracle conflated the immutable standalone launcher with its listening child and required a script argv that Next replaces through process.title.",
+    "fix": "Measure the actual listener and verify its direct immutable parent launcher; retain an explicitly unmeasured child entry when argv no longer identifies it.",
+    "files": ["scripts/source-integrity.mjs", "tests/served-artifact.test.ts", "e2e/served-artifact.ts", "e2e/portal-utility-welcome.spec.ts"],
+    "regression": {
+      "framework": "vitest",
+      "files": ["tests/served-artifact.test.ts", "tests/source-integrity.test.ts"],
+      "red": { "failed": 3, "passed": 47, "log": "/tmp/machine-first-runtime-custody-red-20261019.log", "sha256": "0777aa822012e291ea63202669bc9272d77ace0127fad7aec42703c248c0d222" },
+      "green": { "passed": 70, "failed": 0, "skipped": 0, "log": "/tmp/machine-first-runtime-custody-green-20261019.log", "sha256": "f586f46e3c87253f1909887611557e334c9bedf6d79d257fe3494d273a008307" },
+      "guards": ["title-rewriting child listener", "unrelated launcher refusal", "wrapper-as-listener refusal", "invalid launcher refusal", "direct-listener compatibility"]
+    },
+    "productionPreflight": {
+      "candidate": "pX6DPlsuc99EtSlpU1oQM-20261019050244320-3209300-552b0abb",
+      "sourceRootDigest": "d198660887463b2fb7eece761a4eb059f6834dd1b925abae15ab3e90ed816f87",
+      "status": "measured",
+      "listenerPid": 3300523,
+      "launcherPid": 3300496,
+      "relation": "direct-parent",
+      "childEntryStatus": "unmeasured",
+      "childEntryReason": "process_arguments_do_not_identify_entry",
+      "receipt": "/tmp/machine-first-runtime-custody-served-20261019-custody-preflight.json",
+      "receiptSha256": "24dff6463dabbd8bee9ca147929ebf9cb3991de2acd2db1381502a78180ee397",
+      "runtimeReceiptSha256": "51b0280f5dfbb820098881cbe85c1308d0eacf2d38f25531a6ebc47fe519d8d3"
+    },
+    "acceptanceBoundary": "Custody passed in the real production preflight and maintained browser. The broader browser failed on omitted public download build configuration, owned by parent WI-6554700010015411; no R2 or shipment claim. Runtime and TEST account cleanup completed."
   },
   "cleanup": {
     "directOwnedPidsGone": [2148833, 2149025, 2183054],
@@ -46,5 +74,5 @@
     "paths": ["scripts/source-integrity.mjs", "tests/served-artifact.test.ts", "e2e/served-artifact.ts", "e2e/portal-utility-welcome.spec.ts"],
     "wakeOnGrant": true
   },
-  "remaining": ["Durable custody fix and conventional regression", "Passing current-source hosted destination browser receipt", "Compatible public archive containing current launcher", "R1 two-GUI/two-target/two-window agent-continuity acceptance", "Final shipped-artifact R7 and Avi publication approval"]
+  "remaining": ["Passing configured current-source hosted destination browser receipt (parent WI-6554700010015411)", "Compatible public archive containing current launcher", "R1 two-GUI/two-target/two-window agent-continuity acceptance", "Final shipped-artifact R7 and Avi publication approval"]
 }
