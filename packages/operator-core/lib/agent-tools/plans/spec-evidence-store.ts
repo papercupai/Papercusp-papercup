@@ -3170,12 +3170,15 @@ async function retainCompletedRuntimeArtifacts(recipe: RepoFilesEvidenceMeasurem
 
 /**
  * Rows whose recorded test execution completed-runtime certification may re-verify: the
- * implementer's own `test` row, and an `independent-verification` row re-observing that
- * same run (EI-25847620673275477). bindSpecEvidence admits the latter only with source and
- * environment fingerprints equal to the cited row's, carrying its run, plane and identity.
+ * implementer's `test` row, an operational/check observation carrying the same test
+ * receipt, and an `independent-verification` row re-observing that run (EI-25847620673275477).
+ * Every kind must still pass the original ledger, source, scope and lifecycle checks.
+ * bindSpecEvidence admits independent verification only with source and environment
+ * fingerprints equal to the cited row's, carrying its run, plane and identity.
  */
 function certifiesCompletedTestRow(kind: string): boolean {
-  return kind === 'test' || kind === 'independent-verification';
+  return kind === 'test' || kind === 'check' || kind === 'operational'
+    || kind === 'independent-verification';
 }
 
 /** Resolve legacy isolated bindings from their original ledger, without rewriting a recipe or any pin. */

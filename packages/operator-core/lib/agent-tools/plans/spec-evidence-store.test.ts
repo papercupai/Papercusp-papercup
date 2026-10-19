@@ -348,8 +348,9 @@ describe('completed isolated runtime certification', () => {
   });
   // EI-25847620673275477: the judge's re-observation of this same run read environment=unknown,
   // which made the bar proof_uncertain and refused grading.
-  it.each([['independent-verification', 'current'], ['manual', 'unknown']] as const)(
-    'certifies a %s row carrying the same completed run only when it is test or independent-verification',
+  it.each([['independent-verification', 'current'], ['check', 'current'],
+    ['operational', 'current'], ['manual', 'unknown']] as const)(
+    'certifies a %s row carrying the same completed test run',
     async (kind, expected) => {
       const state = await setupIsolated();
       (state.row as any).evidence_kind = kind;
@@ -470,12 +471,27 @@ describe('completed isolated runtime certification', () => {
       }
     },
   );
-  it.each([['independent-verification', 'current'], ['manual', 'unknown']] as const)(
-    'certifies a completed harness run on a %s row only for test or independent-verification (EI-25847620673275477)',
+  it.each([['independent-verification', 'current'], ['check', 'current'],
+    ['operational', 'current'], ['manual', 'unknown']] as const)(
+    'certifies a completed harness run on a %s row carrying the same test receipt',
     async (kind, expected) => {
       const state = await setup();
       (state.row as any).evidence_kind = kind;
       expect((await read()).currentness.dimensions.environment).toBe(expected);
+    });
+  it.each(['check', 'operational'] as const)(
+    'keeps completed %s observations subject to execution and scope guards', async kind => {
+      for (const invalid of ['missing-ledger', 'dirty', 'failed', 'skipped', 'wrong-scope', 'wrong-runtime']) {
+        const state = await setup();
+        (state.row as any).evidence_kind = kind;
+        if (invalid === 'missing-ledger') (state.row as any).test_run_status = null;
+        if (invalid === 'dirty') state.row.test_run_worktree_dirty = true;
+        if (invalid === 'failed') state.execution.failed = 1;
+        if (invalid === 'skipped') state.execution.skipped = 1;
+        if (invalid === 'wrong-scope') state.execution.workspaceId = 'foreign-workspace';
+        if (invalid === 'wrong-runtime') state.execution.runtimeEnvironmentAfter.fingerprint = 'b'.repeat(64);
+        expect((await read()).currentness.dimensions.environment, invalid).toBe('unknown');
+      }
     });
   // EI-25420516419064831: the maintained browser driver wraps the whole
   // verifier, rather than writing a native journey manifest inside the test.
