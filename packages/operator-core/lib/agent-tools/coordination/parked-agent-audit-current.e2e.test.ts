@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
 import { pageRosterAudit, type RosterAuditSnapshot } from './tools/roster-audit';
+import { parkedAuditOperatorRoute } from './parked-agent-audit-oracles';
 
 const LIVE = process.env.PAPERCUSP_PARKED_CURRENT_LIVE === '1';
 const ID = '45250822471a901a36bec955ae89fc2f8ab107058c6b9c93864b2fa8bfd8ef12';
@@ -66,7 +67,7 @@ describe.skipIf(!LIVE && inject('papercuspTestLayer') !== 'e2e')('LIVE: R-1 curr
       + "const out=[];for(const cursor of inputs.cursors){const p=await tools.coord.roster({view:'audit',scope:'workspace',auditId:inputs.id,cursor:cursor??undefined,pageSize:1});"
       + "out.push({auditId:p.auditId,asOf:p.asOf,offset:p.projection.offset,coverage:p.coverage,nextCursor:p.nextCursor,recordsDigest:digest(p.records)});}return out;";
     const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
-      'code:run', '--port', '3170', '--client', owner!, '--workspace', workspace!, '--harness', '*',
+      'code:run', '--port', parkedAuditOperatorRoute().port, '--client', owner!, '--workspace', workspace!, '--harness', '*',
       JSON.stringify({ script, inputs: { id: ID, cursors: probes.map(p => p.cursor) }, timeoutSec: 45,
         projection: { pick: ['ok', 'summary', 'summaryNotice', 'partial', 'childFailures'] } })],
     { env, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });

@@ -20,7 +20,7 @@ describe('R-6 live evidence boundary', () => {
     expect(liveE2eSource).toContain("process.env.PAPERCUSP_PARKED_SEARCH_LIVE === '1'");
     expect(liveE2eSource).toContain("expect(SEARCH_LIVE_REQUESTED, 'R-6 requires an actual live measurement').toBe(true);");
     expect(liveE2eSource).toContain("expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe(AUDIT_LIVE_PROFILE);");
-    expect(liveE2eSource).toContain("'code:run', '--port', '3170', '--client'");
+    expect(liveE2eSource).toContain("'code:run', '--port', parkedAuditOperatorRoute().port, '--client'");
     expect(liveE2eSource).toContain('PARKED_AUDIT_R6 ${JSON.stringify');
   });
 
