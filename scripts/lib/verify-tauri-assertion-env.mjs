@@ -3,7 +3,8 @@
 // assignments; never source the assertion before the owned Tauri rig exists.
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { basename, dirname, posix } from 'node:path';
+import { basename, dirname, posix, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const [assertionPath, manifestPath] = process.argv.slice(2);
 const fail = (reason) => {
@@ -89,6 +90,46 @@ if (assertionPath === '--command') {
     }
   }
   const required = new Set();
+  // The live profile is already the runtime config's prerequisite contract.
+  // Check it before copying dependencies/building the native app, rather than
+  // discovering a missing caller identity only when Vitest collects tests.
+  if (process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE) {
+    let profile;
+    try {
+      const root = process.env.PAPERCUSP_REPO_DIR ?? fileURLToPath(new URL('../..', import.meta.url));
+      profile = JSON.parse(readFileSync(resolvePath(root,
+        process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE), 'utf8'));
+    } catch { fail('live profile could not be read'); }
+    const names = value => {
+      if (!Array.isArray(value) || value.some(name => typeof name !== 'string'
+        || !/^[A-Z][A-Z0-9_]*$/.test(name))) fail('live profile has invalid required environment names');
+      return value;
+    };
+    const selected = [...names(profile?.requiredEnv ?? [])];
+    const conditional = profile?.requiredEnvWhen ?? [];
+    if (!Array.isArray(conditional)) fail('live profile has invalid conditional environment rules');
+    for (const rule of conditional) {
+      if (!rule || typeof rule !== 'object' || typeof rule.equals !== 'string')
+        fail('live profile has invalid conditional environment rules');
+      const [flag] = names([rule.env]);
+      const dependent = names(rule.requiredEnv);
+      if (process.env[flag] === rule.equals) selected.push(...dependent);
+    }
+    // These values are generated and exported by the maintained isolated-DB
+    // verifier before assertion execution. Caller identity/ledger inputs still
+    // have to exist now; a ledger workspace cannot replace the app workspace.
+    const generated = process.env.VERIFY_TAURI_ISOLATED_DB === '1' ? new Set([
+      'PAPERCUSP_HOME', 'PAPERCUSP_SU_CODEX_HOMES_DIR', 'PAPERCUSP_WORKSPACE',
+      'PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_WORKSPACES_ROOT', 'HARNESS_ADMIN_DATABASE_URL',
+      'HARNESS_DATABASE_URL', 'PAPERCUSP_PG_PORT', 'PAPERCUSP_SKIP_PG_DISCOVERY',
+      'PAPERCUSP_VERIFY_TAURI_ISOLATED',
+    ]) : new Set();
+    for (const key of new Set(selected)) {
+      if (generated.has(key)) continue;
+      if (!process.env[key]?.trim()) fail(`${key} is required before verifier preparation (live profile)`);
+      required.add(key);
+    }
+  }
   for (const argument of args) {
     let header;
     let descriptor;

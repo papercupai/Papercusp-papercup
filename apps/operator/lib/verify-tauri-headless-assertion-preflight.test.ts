@@ -44,6 +44,11 @@ function runAssertion(assertionSource: string, useBashC = false, command?: strin
   writeFileSync(join(dir, 'papercusp-desktop/bin/lib/federation-asserts.sh'), '');
   writeFileSync(join(dir, 'scripts/lib/verify-tauri-assertion-env.mjs'),
     readFileSync(join(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs')));
+  // Deadline admission precedes argv preflight in the real entrypoint. Keep
+  // its maintained pure helpers so the fixture reaches the boundary it tests.
+  for (const helper of ['verify-tauri-deadline.mjs', 'task-deadline.mjs']) {
+    writeFileSync(join(dir, 'scripts/lib', helper), readFileSync(join(ROOT, 'scripts/lib', helper)));
+  }
   // The copied helper dynamically imports shell-quote. Mirror the real
   // repository dependency resolution from the synthetic REPO_DIR so the
   // fixture exercises command grammar rather than a missing-parser failure.
@@ -67,6 +72,8 @@ function runAssertion(assertionSource: string, useBashC = false, command?: strin
       PAPERCUSP_REPO_DIR: dir,
       PAPERCUSP_SID: 'test-assertion-preflight',
       PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '',
+      PAPERCUSP_APP_OPERATION_LIVE_PROFILE: '',
       TMPDIR: dir,
       VERIFY_TEST_INVOCATIONS: invocations,
       VERIFY_TAURI_AGENT_TOOLS_BIN: tool,
@@ -140,6 +147,56 @@ function runManifestPreflight(actual: string, claimed: string, claimedRoot?: str
 }
 
 describe('EI-21974634479405756 — assertion command preflight', () => {
+  const parkedProfile = resolve(ROOT, 'packages/operator-core/test/parked-agent-audit.live-profile.json');
+
+  it.each(['', '   '])('rejects a missing live-profile app workspace before native preparation (%j)', workspace => {
+    const { dir, invocations, result } = runAssertion('true', true, undefined, {
+      PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,
+      PAPERCUSP_WORKSPACE: workspace,
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'ledger-only',
+      VERIFY_TAURI_ISOLATED_DB: '0',
+    });
+    try {
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('PAPERCUSP_WORKSPACE is required before verifier preparation (live profile)');
+      expect(readFileSync(invocations, 'utf8')).toBe('');
+      expect(readdirSync(dir).filter(entry => entry.startsWith('verify-tauri-headless.'))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { isolated: '0', workspace: 'app-workspace', sid: 'caller', current: '0', owner: '', status: 0 },
+    { isolated: '1', workspace: '', sid: 'caller', current: '0', owner: '', status: 0 },
+    { isolated: '1', workspace: '', sid: '', current: '0', owner: '', status: 2 },
+    { isolated: '1', workspace: '', sid: 'caller', current: '1', owner: '', status: 2 },
+    { isolated: '0', workspace: 'app-workspace', sid: 'caller', current: '1', owner: 'actual-owner', status: 0 },
+  ])('checks caller inputs and defers only verifier-generated isolated values ($isolated/$sid/$current)', value => {
+    const result = spawnSync(process.execPath,
+      [resolve(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs'), '--command', 'bash', '-c', 'true'], {
+        encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: {
+          ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,
+          VERIFY_TAURI_ISOLATED_DB: value.isolated, PAPERCUSP_WORKSPACE: value.workspace,
+          PAPERCUSP_SID: value.sid, PAPERCUSP_PARKED_CURRENT_LIVE: value.current,
+          PAPERCUSP_PARKED_AUDIT_OWNER: value.owner,
+        },
+      });
+    expect(result.status, result.stderr).toBe(value.status);
+    if (value.status === 2) expect(result.stderr).toContain(
+      `${value.sid ? 'PAPERCUSP_PARKED_AUDIT_OWNER' : 'PAPERCUSP_SID'} is required before verifier preparation`);
+  });
+
+  it('refuses an unreadable live profile before allocating the native rig', () => {
+    const { dir, invocations, result } = runAssertion('true', true, undefined, {
+      PAPERCUSP_APP_OPERATION_LIVE_PROFILE: '/missing/live-profile.json',
+    });
+    try {
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('live profile could not be read');
+      expect(readFileSync(invocations, 'utf8')).toBe('');
+      expect(readdirSync(dir).filter(entry => entry.startsWith('verify-tauri-headless.'))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it.each(['reports', 'dao-workbench'])('rejects a missing native %s ledger before cargo, bridge or resource allocation', driver => {
     const { dir, invocations, result } = runAssertion('', false,
       [process.execPath, '--import', 'tsx', resolve(ROOT, 'scripts/tauri-surface-verify-' + driver + '.mts'), '--e2e'],
