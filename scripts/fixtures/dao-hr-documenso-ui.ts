@@ -58,9 +58,23 @@ async function uiPhase<T>(page: Page, name: string, action: () => Promise<T>): P
         ['password-policy', 'Password should not be common'],
       ].filter(([, message]) => text.includes(message!)).map(([code]) => code);
     }).catch(() => []);
+    const fieldLayout = name.includes('provider canvas signature field') ?
+      await page.locator('#field-tooltip').evaluateAll(elements => elements.slice(0, 4).map(element => {
+        const { x, y, width, height } = element.getBoundingClientRect();
+        const document = element.ownerDocument;
+        const centerTarget = document.elementFromPoint(x + width / 2, y + height / 2)?.tagName;
+        // Geometry and fixed tag categories only: no DOM text, attributes,
+        // URLs or provider identities enter the retained failure evidence.
+        return { x, y, width, height,
+          viewportWidth: document.defaultView?.innerWidth ?? 0,
+          viewportHeight: document.defaultView?.innerHeight ?? 0,
+          canvasCount: document.querySelectorAll('canvas').length,
+          centerTarget: ['CANVAS', 'BUTTON', 'INPUT', 'DIV', 'SPAN'].includes(centerTarget ?? '') ? centerTarget : 'other' };
+      })).catch(() => []) : undefined;
     const errorType = error instanceof Error && ['TimeoutError', 'AssertionError', 'Error'].includes(error.name) ? error.name : 'unexpected';
     throw new Error('Documenso UI phase failed: ' + name + '; errorType=' + errorType +
-      '; errorCode=' + safeUiErrorCode(error) + '; issues=' + JSON.stringify(issues) + '; controls=' + JSON.stringify(controls));
+      '; errorCode=' + safeUiErrorCode(error) + '; issues=' + JSON.stringify(issues) + '; controls=' + JSON.stringify(controls) +
+      (fieldLayout === undefined ? '' : '; fieldLayout=' + JSON.stringify(fieldLayout)));
   }
 }
 
@@ -166,15 +180,20 @@ export async function sign(page: Page, url: string) {
     await page.goto(url);
     await page.getByRole('button', { name: 'Next Field', exact: true }).first().click();
   });
-  await uiPhase(page, 'click provider canvas signature field', async () => {
+  const field = page.locator('#field-tooltip');
+  await uiPhase(page, 'locate provider canvas signature field', async () => {
     // Envelope API v2 uses Konva canvas, not the legacy data-field-type DOM.
     // Next Field positions this provider-owned overlay at the unsigned field.
-    // Click its screen center through the pointer; never inject canvas state.
-    const field = page.locator('#field-tooltip');
     await field.waitFor({ state: 'visible' });
+  });
+  const bounds = await uiPhase(page, 'position provider canvas signature field', async () => {
     await field.scrollIntoViewIfNeeded();
     const bounds = await field.boundingBox();
     expect(Boolean(bounds && bounds.width > 0 && bounds.height > 0)).toBe(true);
+    return bounds!;
+  });
+  await uiPhase(page, 'activate provider canvas signature field', async () => {
+    // Click its screen center through the pointer; never inject canvas state.
     await page.mouse.click(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
     await expect.poll(async () => await page.getByRole('button', { name: 'Complete', exact: true }).count() > 0 ||
       await page.getByRole('dialog').isVisible(), { timeout: 30_000 }).toBe(true);

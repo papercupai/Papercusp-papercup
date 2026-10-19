@@ -35,7 +35,11 @@ describe.skipIf(!enabled)('P006 real Documenso sandbox — authenticated sequent
       const secret = randomBytes(32).toString('hex');
       const adapter = new DocumensoAdapter({ baseUrl, apiKey: await accountToken(company.page), webhookSecret: secret });
       const contractId = 'daohr-nonbinding-' + suffix;
-      const pdf = await contractPdf(['NON-BINDING SANDBOX TEST. No employment, membership, shares or legal obligations are created.']);
+      // Native contracts combine several documents. Keep the final signature
+      // page outside the initial PDF viewport for BOTH sequential signers.
+      const pdf = await contractPdf(Array.from({ length: 4 }, (_, index) =>
+        'NON-BINDING SANDBOX TEST document ' + (index + 1) + '. No employment, membership, shares or legal obligations are created.'));
+      expect(pdf.lastPage).toBe(5);
       const envelopeId = await adapter.create({ contractId, ...pdf, signers });
       const links = await adapter.distribute(envelopeId);
       expect(await adapter.reconcile({ contractId, envelopeId, signers, pdf: pdf.pdf })).toBe('PENDING');
