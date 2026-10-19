@@ -47,9 +47,17 @@ describe.skipIf(!enabled)('P006 real Documenso sandbox — authenticated sequent
         payload: { envelopeId, externalId: contractId, status: 'COMPLETED' } });
       await expect(adapter.completed(event, { contractId, envelopeId, signers })).rejects.toMatchObject({ code: 'invalid_completion' });
       await authenticatedAccount(candidate.page, signers[0].email);
-      await sign(candidate.page, links.find(link => link.email === signers[0].email)!.signingUrl);
+      // Native bootstrap saves the provider sessions before the desktop boots.
+      // Exercise the same fresh-context boundary instead of reusing signup tabs
+      // with an already populated document-viewer cache.
+      const candidateSigning = await browser.newContext({ storageState: await candidate.context.storageState() });
+      const companySigning = await browser.newContext({ storageState: await company.context.storageState() });
+      contexts.push(candidateSigning, companySigning);
+      await candidate.context.close();
+      await company.context.close();
+      await sign(await candidateSigning.newPage(), links.find(link => link.email === signers[0].email)!.signingUrl);
       await expect(adapter.completed(event, { contractId, envelopeId, signers })).rejects.toMatchObject({ code: 'invalid_completion' });
-      await sign(company.page, links.find(link => link.email === signers[1].email)!.signingUrl);
+      await sign(await companySigning.newPage(), links.find(link => link.email === signers[1].email)!.signingUrl);
       const completed = async (stage: 'after_second_sign' | 'after_finalization') => {
         try {
           const result = await adapter.completed(event, { contractId, envelopeId, signers });
