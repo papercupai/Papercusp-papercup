@@ -15,7 +15,7 @@
  * fragment under bash, plus the verifier's REAL env-line block, so the probed
  * database and the launched one cannot silently diverge again.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -136,6 +136,54 @@ describe('WI-10007640 — a verifier snapshot launches against the same DB the p
     // The PG probe also checks that DEV_ENV_FILE is nonempty before sourcing it.
     const sites = LAUNCHER.split('\n').filter((l) => /set -a && if .*DEV_ENV_FILE/.test(l));
     expect(sites.length).toBe(3);
+  });
+});
+
+describe('live verifier authenticated runtime precondition', () => {
+  it.each([0, 1])('retains server/caller paths without credentials when the authenticated read exits %s', async (exitCode) => {
+    tmp = mkdtempSync(join(tmpdir(), 'verifier-runtime-auth-'));
+    const scripts = join(tmp, 'scripts'); mkdirSync(scripts);
+    const serverHome = join(tmp, 'server'); mkdirSync(serverHome);
+    const callerHome = join(tmp, 'caller'); mkdirSync(callerHome);
+    const NEVER_EMIT_MARKER = 'never-emit-me';
+    writeFileSync(join(serverHome, 'superuser-token'), NEVER_EMIT_MARKER);
+    writeFileSync(join(callerHome, 'superuser-token'), NEVER_EMIT_MARKER);
+    // Execute the captured helper bytes, as the other verifier fixtures do;
+    // the managed child loader substitutes HEAD for a dirty repository entry.
+    const helper = join(tmp, 'verify-tauri-assertion-env.mjs');
+    writeFileSync(helper, readFileSync(join(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs')));
+    writeFileSync(join(scripts, 'mcp-call.mjs'), `
+      export const superuserTokenPaths = () => [process.env.PAPERCUSP_HOME + '/superuser-token'];
+      export const resolveMcpWorkspace = () => process.env.PAPERCUSP_WORKSPACE;
+      if (process.argv[2] === 'coord:whoami') {
+        if (${exitCode}) { console.error('superuser_invalid_bearer'); process.exit(1); }
+        console.log(JSON.stringify({ownerId:process.env.PAPERCUSP_SID,workspaceId:process.env.PAPERCUSP_WORKSPACE}));
+      }
+    `);
+    const server = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+      env: { ...process.env, PAPERCUSP_HOME: serverHome, OPERATOR_DEV_PORT: '45911' }, stdio: 'ignore',
+    });
+    await new Promise<void>((resolve, reject) => { server.once('spawn', resolve); server.once('error', reject); });
+    try {
+      const evidence = join(tmp, 'auth.json');
+      const result = spawnSync(process.execPath, [helper,
+        '--runtime-mcp', String(server.pid), '45911', evidence], { encoding: 'utf8',
+        env: { ...process.env, PAPERCUSP_REPO_DIR: tmp, PAPERCUSP_HOME: callerHome,
+          PAPERCUSP_SID: 'test-runtime-auth', PAPERCUSP_WORKSPACE: 'test-auth-workspace' } });
+      expect(result.status, result.stderr).toBe(exitCode ? 2 : 0);
+      const raw = readFileSync(evidence, 'utf8');
+      const report = JSON.parse(raw);
+      expect(report).toMatchObject({ ok: !exitCode, server: { path: join(serverHome, 'superuser-token'), present: true },
+        caller: [{ path: join(callerHome, 'superuser-token'), present: true }],
+        call: { exitStatus: exitCode, invalidBearer: !!exitCode } });
+      expect(raw + result.stdout + result.stderr).not.toContain(NEVER_EMIT_MARKER);
+    } finally { server.kill(); await new Promise<void>(resolve => server.once('exit', () => resolve())); }
+  });
+
+  it('checks authentication after isolated assertion exports and before running assertions', () => {
+    const auth = VERIFIER.indexOf(' --runtime-mcp');
+    expect(auth).toBeGreaterThan(VERIFIER.indexOf('export PAPERCUSP_HOME="$ISOLATED_HOME"'));
+    expect(auth).toBeLessThan(VERIFIER.indexOf('preflight_verifier_task_deadline assert || exit $?'));
   });
 });
 

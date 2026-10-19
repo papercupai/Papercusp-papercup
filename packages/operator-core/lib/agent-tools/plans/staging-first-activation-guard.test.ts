@@ -350,6 +350,34 @@ describe('staging-first activation guard', () => {
     }
   });
 
+  // EI-26408370779836831 and prior report EI-24184377732552227: these
+  // identifiers name custody/rubric dependencies, not the deployment plane.
+  it.each([
+    {
+      name: 'Android P-006 custody disposition',
+      ref: 'fleet:android-release:p006-directed-disposition',
+      nextVerb: 'Consume a genuinely new leader disposition on the exact event or directed inbox; do not re-arm periodic monitoring.',
+    },
+    {
+      name: 'Android lint custody disposition',
+      ref: 'fleet:android-release:p006-directed-disposition',
+      nextVerb: 'Consume qualified new custody/route/disposition evidence from current leader; retain original claim and do not replay consumed trials.',
+    },
+    {
+      name: 'release-named acceptance rubric',
+      ref: 'rubric:acceptance-pui-first-party-public-release-2026-09-07@6:R-03-check',
+      nextVerb: 'events:await',
+    },
+  ])('does not infer deployment from $name', ({ ref, nextVerb }) => {
+    const input = { itemId: 'WI-custody', itemText: 'Inspect custody and source prerequisites.', kind: 'gate' };
+    expect(stagingFirstBlockerProblem({ ...input, blockerText: `${ref}\n${nextVerb}` })).toBeNull();
+    // An unrelated identifier must not hide an actual deployed-main wait.
+    expect(stagingFirstBlockerProblem({
+      ...input,
+      blockerText: `${ref}\nwait for main to turn green before continuing implementation`,
+    })).toEqual(expect.objectContaining({ code: 'non_final_deployed_main_blocker' }));
+  });
+
   // Containment: the slug is blanked, not the blocker. A real release wait in the
   // same blocker text is still refused.
   it('still refuses a real release-plane wait that sits beside a plan-anchored ref', () => {

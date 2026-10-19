@@ -490,6 +490,53 @@ describe('expandTestRunBinding: mutation causal controls', () => {
       binding: { testRunId: 42, details: { causalControls: controls } } });
   });
 
+  it('adopts harness-null local controls before checking their scope', async () => {
+    const rows = new Map<number, TestRunEvidenceRow>([
+      [42, run({ status: 'fail', source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } })],
+      [10, run({ id: 10, source: 'mutation-probe', harness_slug: null,
+        execution_details: { mutationPhase: 'baseline' } })],
+      [11, run({ id: 11, source: 'mutation-probe', harness_slug: null,
+        execution_details: { mutationPhase: 'copy-baseline' } })],
+    ]);
+    const adopted: number[] = [];
+    const out = await expandTestRunBinding(input({ details: { causalControls: controls } }), SCOPE, {
+      loadRun: async (_scope, id) => rows.get(id) ?? null,
+      adoptRun: async (_scope, id) => {
+        const control = rows.get(id);
+        if (!control || control.harness_slug != null
+          || (control.workspace_id != null && control.workspace_id !== SCOPE.workspaceId)
+          || ['ci', 'admin-ui'].includes(String(control.source))) return false;
+        rows.set(id, { ...control, harness_slug: SCOPE.harnessSlug, workspace_id: SCOPE.workspaceId });
+        adopted.push(id);
+        return true;
+      },
+      resolveRoot: async () => root,
+    });
+
+    expect(out).toMatchObject({ ok: true,
+      binding: { testRunId: 42, details: { causalControls: controls } } });
+    expect(adopted).toEqual(expect.arrayContaining([10, 11]));
+  });
+
+  it('does not adopt CI or admin-ui controls that are harness-null by design', async () => {
+    const rows = new Map<number, TestRunEvidenceRow>([
+      [42, run({ status: 'fail', source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } })],
+      [10, run({ id: 10, source: 'ci', harness_slug: null,
+        execution_details: { mutationPhase: 'baseline' } })],
+      [11, run({ id: 11, source: 'mutation-probe',
+        execution_details: { mutationPhase: 'copy-baseline' } })],
+    ]);
+    const adopted: number[] = [];
+    const out = await expandTestRunBinding(input({ details: { causalControls: controls } }), SCOPE, {
+      loadRun: async (_scope, id) => rows.get(id) ?? null,
+      adoptRun: async (_scope, id) => { adopted.push(id); return true; },
+      resolveRoot: async () => root,
+    });
+
+    expect(out).toMatchObject({ ok: false, error: 'mutation_causal_controls_invalid', testRunId: 42 });
+    expect(adopted).not.toContain(10);
+  });
+
   it.each([
     ['another commit', { commit_sha: '123456789abcdef0' }],
     ['unknown commit', { commit_sha: null }],

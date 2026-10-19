@@ -1402,7 +1402,23 @@ export async function expandTestRunBinding(
     // ledger controls too, rather than trusting a copied caller description.
     const controls = input.details.causalControls as { baselineTestRunId: number; copyBaselineTestRunId: number };
     const controlIds = [controls.baselineTestRunId, controls.copyBaselineTestRunId];
-    const rows = await Promise.all(controlIds.map(id => deps.loadRun(scope, id)));
+    const rows = await Promise.all(controlIds.map(async id => {
+      let control = await deps.loadRun(scope, id);
+      // Mutation-probe controls are often recorded with harness_slug NULL before
+      // their first evidence bind. Attribute those local rows to this caller's
+      // harness using the same guarded adoption path as the mutant; otherwise a
+      // valid same-workspace/same-commit baseline is rejected before it can be
+      // bound. CI and admin-ui rows remain harness-NULL by design.
+      if (control !== null && control.harness_slug == null
+        && (control.workspace_id == null || control.workspace_id === scope.workspaceId)
+        && !NEVER_ADOPTED_SOURCES.has(String(control.source))) {
+        const adopted = await deps.adoptRun(scope, id);
+        control = adopted
+          ? { ...control, harness_slug: scope.harnessSlug, workspace_id: scope.workspaceId }
+          : await deps.loadRun(scope, id);
+      }
+      return control;
+    }));
     for (const [index, control] of rows.entries()) {
       if (!control || Number(control.id) !== controlIds[index] || control.status !== 'pass'
         || control.workspace_id !== scope.workspaceId || control.harness_slug !== (row.harness_slug ?? scope.harnessSlug)
