@@ -116,6 +116,9 @@ export function retainNativeDiagnostics(resultPath: string, logPath: string) {
       if (input !== undefined) closeSync(input);
     }
   }
+  // A retained completion response also exists after a successful journey.
+  // Reporting the receipt must not turn teardown into a console-policy failure.
+  if (retained.length) console.info('DAO_HR_NATIVE_DIAGNOSTICS=' + JSON.stringify(retained));
   return retained;
 }
 

@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runInNewContext } from 'node:vm';
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
 
@@ -194,6 +194,20 @@ describe('native bootstrap admission and lifecycle', () => {
       documentReplaced: state !== 'old-document', routerReady: state !== 'missing-router', workspaceReady: state !== 'missing-workspace',
     } }]);
     expect(JSON.stringify(diagnostics)).not.toMatch(/private|native\.fixture|https:/);
+  });
+
+  it('reports a successful completion receipt without failing the console policy', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'daohr-completion-retention-'));
+    const result = join(dir, 'result.json'), log = join(dir, 'native.log');
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      writeFileSync(result + '.completion-response.json', JSON.stringify({ status: 200, ok: true }));
+      const receipt = retainNativeDiagnostics(result, log);
+      expect(receipt).toEqual([{ suffix: '.completion-response.json', status: 'retained',
+        path: log + '.completion-response.json' }]);
+      expect(JSON.parse(readFileSync(log + '.completion-response.json', 'utf8'))).toEqual({ status: 200, ok: true });
+      expect(info).toHaveBeenCalledExactlyOnceWith('DAO_HR_NATIVE_DIAGNOSTICS=' + JSON.stringify(receipt));
+    } finally { info.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('retains failed verifier assertion snapshots through scratch teardown without copying credentials', async () => {

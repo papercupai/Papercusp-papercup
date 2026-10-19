@@ -144,8 +144,7 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       writeFileSync(logPath + '.result.json', JSON.stringify(result), { mode: 0o600 });
       console.log('DAO_HR_NATIVE_RESULT=' + JSON.stringify(result));
     } finally {
-      const diagnostics = retainNativeDiagnostics(join(directory, 'result.json'), logPath);
-      if (diagnostics.length) console.error('DAO_HR_NATIVE_DIAGNOSTICS=' + JSON.stringify(diagnostics));
+      retainNativeDiagnostics(join(directory, 'result.json'), logPath);
       await browser?.close(); await wallet?.stop(); await chain?.stop(); restoreIdentity?.();
       if (priorIsolation === undefined) delete process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
       else process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = priorIsolation;
