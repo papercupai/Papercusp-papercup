@@ -74,16 +74,15 @@ export default defineTool({
   name: 'scorecards:repair',
   profile: 'engineer',
   description:
-    'Immediately reconcile pending grading-integrity audits by dispatching independent auditors through the bounded, idempotency-keyed pending-audit dispatcher. ' +
-    `Pass targetIds for a pending scorecard named by a refusal; omitting them dispatches ${SCORECARD_REPAIR_NO_TARGET_SELECTION}. ` +
-    'For a generation-bound scorecard, invoke this tool through the operator-api runtime that serves its graded build; on local Papercusp staging, use the current-build :3170 route selected by dev:pipeline_position. The same-or-descendant generation guard remains fail-closed before reservation. ' +
-    'Pass gradingLaunch to use the same pinned model profile as the acceptance-grading sweep. ' +
-    'This is the callable repair path behind scorecards:emit and the acceptance-grading sweep.',
+    'Dispatch pending grading-integrity audits to independent auditors through the bounded idempotent dispatcher. ' +
+    `Pass targetIds for a refusal; omitting them dispatches ${SCORECARD_REPAIR_NO_TARGET_SELECTION}. ` +
+    'For a generation-bound scorecard, use the operator-api runtime that serves its graded build; on local staging, use the current-build :3170 route selected by dev:pipeline_position. The same-or-descendant guard is fail-closed before reservation. ' +
+    'Pass gradingLaunch for the acceptance-sweep profile. This is the repair path behind scorecards:emit.',
   guidance: {
-    when: 'scorecards:emit or a completion gate says a scorecard must be re-opened through the pending-audit dispatcher, or a known pending grading-integrity backlog needs an immediate bounded retry instead of waiting for the periodic sweep. For a generation-bound target, use dev:pipeline_position to select the operator-api runtime serving the graded build, then call this tool there; older or unproven runtimes are refused before reservation.',
-    notWhen: 'Do not use this to settle an audit yourself. It only dispatches an independent auditor; the auditor must re-read the target and emit exactly one grading-integrity card. Do not use it for ordinary same-rubric scorecard emission.',
+    when: 'Use when scorecards:emit or a completion gate requires reopening an audit, or a pending backlog needs an immediate bounded retry. For a generation-bound target, use dev:pipeline_position to select the operator-api runtime serving the graded build; older or unproven runtimes are refused before reservation.',
+    notWhen: 'Dispatch only: do not settle an audit yourself or use this for ordinary same-rubric scorecard emission. The independent auditor re-reads the target and emits one grading-integrity card.',
     chaining:
-      "scorecards:repair { targetIds:['EI-scorecard'] } → scorecards:get { issueId:'EI-scorecard' } → wait for the independent auditor → scorecards:list { subjectRef:'EI-scorecard' } to verify the gradingAudit settled.",
+      "scorecards:repair { targetIds:['EI-scorecard'] } → scorecards:get → await the auditor → scorecards:list to verify gradingAudit settled.",
     seeAlso: ['scorecards:get', 'scorecards:list', 'scorecards:emit'],
   },
   capability: 'coord:write',

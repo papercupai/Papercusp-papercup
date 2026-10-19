@@ -930,7 +930,7 @@ export async function executeGitScratchPlacement(
 export default defineTool({
   name: 'testing:record-run',
   description:
-    'Native checks: planTerminalCensus:{slug} measures canonical terminal state; gitScratchPlacement:{ref} uses an exact empty committed tree to measure production scratch-clone placement/root refusal and cleanup. Both record execution-time source/runtime witnesses. ' +
+    'Native checks: planTerminalCensus:{slug} measures canonical terminal state; gitScratchPlacement:{ref} uses an exact empty committed tree to measure production scratch-clone placement/root refusal and cleanup. ' +
     'Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. ' +
     'Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. ' +
     'Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. ' +
