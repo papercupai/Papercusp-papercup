@@ -39,7 +39,13 @@ describe('Native hiring controls with the real shared primitives', () => {
     evaluate(openWorkbenchDisclosure('Create a role', scope));
     expect(details.open).toBe(true);
     expect((screen.getByLabelText('Role title') as HTMLInputElement).value).toBe('Native engineer');
-    fireEvent.click(screen.getByRole('button', { name: 'Create role' }));
+    const submit = screen.getByRole('button', { name: 'Create role' });
+    const uiClick = vi.fn();
+    submit.addEventListener('click', uiClick);
+    evaluate(clickWorkbenchButton('Create role'));
+    // A direct API substitution can send the same payload. Require the
+    // rendered control's event as well as the resulting product request.
+    expect(uiClick).toHaveBeenCalledOnce();
     await waitFor(() => expect(fetcher.mock.calls.some(call => call.length > 1)).toBe(true));
     expect(fetcher).toHaveBeenCalledWith('/api/pot/dao/hiring', expect.objectContaining({ method: 'POST',
       body: JSON.stringify({ action: 'role', title: 'Native engineer', level: 'L3', managerPersonId: null, exclusive: false }) }));
