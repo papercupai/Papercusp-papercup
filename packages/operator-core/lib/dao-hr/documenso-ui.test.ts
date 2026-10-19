@@ -1,8 +1,36 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Browser } from 'playwright-core';
-import { assertCompletionResponse, register } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
+import type { Browser, Page } from 'playwright-core';
+import { assertCompletionResponse, register, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 
 describe('Documenso UI failure diagnostics', () => {
+  it.each(['locate', 'position', 'activate'] as const)('distinguishes a canvas %s failure while retaining only safe geometry', async stage => {
+    const NEVER_EMIT_MARKER = 'never-emit-me';
+    const failure = Object.assign(new Error('Timeout at https://provider.invalid/' + NEVER_EMIT_MARKER), { name: 'TimeoutError' });
+    const box = { x: 10, y: 80, width: 200, height: 40 };
+    const element = { textContent: NEVER_EMIT_MARKER, getAttribute: () => NEVER_EMIT_MARKER, getBoundingClientRect: () => box,
+      ownerDocument: { defaultView: { innerWidth: 800, innerHeight: 600 },
+        elementFromPoint: () => ({ tagName: 'CANVAS', textContent: NEVER_EMIT_MARKER }), querySelectorAll: () => [1, 2] } };
+    const field = {
+      waitFor: stage === 'locate' ? vi.fn().mockRejectedValue(failure) : vi.fn(),
+      scrollIntoViewIfNeeded: stage === 'position' ? vi.fn().mockRejectedValue(failure) : vi.fn(),
+      boundingBox: vi.fn().mockResolvedValue(box),
+      evaluateAll: vi.fn(async callback => callback([element])),
+    };
+    const page = {
+      goto: vi.fn(), getByRole: vi.fn(() => ({ first: () => ({ click: vi.fn() }) })),
+      mouse: { click: vi.fn().mockRejectedValue(failure) },
+      locator: vi.fn(selector => selector === '#field-tooltip' ? field : {
+        evaluateAll: vi.fn().mockResolvedValue([]), evaluate: vi.fn().mockResolvedValue([]),
+      }),
+    } as unknown as Page;
+    const error = await sign(page, 'https://provider.invalid/' + NEVER_EMIT_MARKER).then(() => null, value => value as Error);
+    expect(error!.message).toBe('Documenso UI phase failed: ' + stage + ' provider canvas signature field; ' +
+      'errorType=TimeoutError; errorCode=timeout; issues=[]; controls=[]; fieldLayout=' +
+      JSON.stringify([{ ...box, viewportWidth: 800, viewportHeight: 600, canvasCount: 2, centerTarget: 'CANVAS' }]));
+    expect(error!.stack).not.toContain(NEVER_EMIT_MARKER);
+    expect(error!.cause).toBeUndefined();
+    if (stage !== 'activate') expect(page.mouse.click).not.toHaveBeenCalled();
+  });
   it('reads and retains the allowlisted completion refusal before a failed status assertion', async () => {
     const retain = vi.fn();
     const response = Response.json({ ok: false, error: 'invalid_completion', message: 'private response text',
