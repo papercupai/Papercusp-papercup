@@ -22672,7 +22672,7 @@
           "POST"
         ]
       },
-      "description": "For { fromTestRun }, omit canonicalTestPath for local/Playwright rows (the recorded path is used); provide it only for a cargo test's defining .rs file or a mutation-probe copy-out run whose temporary mirror is unavailable. Before the first bind, supply fixturePaths or fixtureGlobs when calibration is needed, including the test file for inline fixtures; fixtures are not derived. A missing recipe leaves calibration unknown, and adding it to an already-bound run is refused. details.adequacy.fixtureCalibrated=true requires these paths; fixtureFree=true is not independent proof of fixture absence. Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.",
+      "description": "For { fromTestRun }, omit canonicalTestPath for local/Playwright rows (the recorded path is used); provide it only for a cargo test's defining .rs file or a mutation-probe copy-out run whose temporary mirror is unavailable. Before the first bind, supply fixturePaths or fixtureGlobs when calibration is needed, including the test file for inline fixtures; fixtures are not derived. A missing recipe leaves calibration unknown, and adding it to an already-bound run is refused. details.adequacy.fixtureCalibrated=true requires these paths; fixtureFree=true is not independent proof of fixture absence. Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.",
       "capabilities": [
         "plans:write"
       ],
@@ -31060,7 +31060,7 @@
           "POST"
         ]
       },
-      "description": "Immediately reconcile pending grading-integrity audits by dispatching independent auditors through the bounded, idempotency-keyed pending-audit dispatcher. Pass targetIds for a pending scorecard named by a refusal; omitting them dispatches up to 50 of the oldest pending cards among only the NEWEST 500 scorecards; an older pending card is reachable only via targetIds. For a generation-bound scorecard, invoke this tool through the operator-api runtime that serves its graded build; on local Papercusp staging, use the current-build :3170 route selected by dev:pipeline_position. The same-or-descendant generation guard remains fail-closed before reservation. Pass gradingLaunch to use the same pinned model profile as the acceptance-grading sweep. This is the callable repair path behind scorecards:emit and the acceptance-grading sweep.",
+      "description": "Dispatch pending grading-integrity audits to independent auditors through the bounded idempotent dispatcher. Pass targetIds for a refusal; omitting them dispatches up to 50 of the oldest pending cards among only the NEWEST 500 scorecards; an older pending card is reachable only via targetIds. For a generation-bound scorecard, use the operator-api runtime that serves its graded build; on local staging, use the current-build :3170 route selected by dev:pipeline_position. The same-or-descendant guard is fail-closed before reservation. Pass gradingLaunch for the acceptance-sweep profile. This is the repair path behind scorecards:emit.",
       "capabilities": [
         "coord:write"
       ],
@@ -31087,9 +31087,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "scorecards:emit or a completion gate says a scorecard must be re-opened through the pending-audit dispatcher, or a known pending grading-integrity backlog needs an immediate bounded retry instead of waiting for the periodic sweep. For a generation-bound target, use dev:pipeline_position to select the operator-api runtime serving the graded build, then call this tool there; older or unproven runtimes are refused before reservation.",
-        "notWhen": "Do not use this to settle an audit yourself. It only dispatches an independent auditor; the auditor must re-read the target and emit exactly one grading-integrity card. Do not use it for ordinary same-rubric scorecard emission.",
-        "chaining": "scorecards:repair { targetIds:['EI-scorecard'] } → scorecards:get { issueId:'EI-scorecard' } → wait for the independent auditor → scorecards:list { subjectRef:'EI-scorecard' } to verify the gradingAudit settled."
+        "when": "Use when scorecards:emit or a completion gate requires reopening an audit, or a pending backlog needs an immediate bounded retry. For a generation-bound target, use dev:pipeline_position to select the operator-api runtime serving the graded build; older or unproven runtimes are refused before reservation.",
+        "notWhen": "Dispatch only: do not settle an audit yourself or use this for ordinary same-rubric scorecard emission. The independent auditor re-reads the target and emits one grading-integrity card.",
+        "chaining": "scorecards:repair { targetIds:['EI-scorecard'] } → scorecards:get → await the auditor → scorecards:list to verify gradingAudit settled."
       }
     },
     {
@@ -33113,7 +33113,7 @@
           "POST"
         ]
       },
-      "description": "Native checks: planTerminalCensus:{slug} measures canonical terminal state; gitScratchPlacement:{ref} uses an exact empty committed tree to measure production scratch-clone placement/root refusal and cleanup. Both record execution-time source/runtime witnesses. Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. Evidence limit: 262144 bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.",
+      "description": "Native checks: planTerminalCensus:{slug} measures canonical terminal state; gitScratchPlacement:{ref} uses an exact empty committed tree to measure production scratch-clone placement/root refusal and cleanup. Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. Evidence limit: 262144 bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.",
       "capabilities": [
         "testing:run"
       ],
@@ -35325,7 +35325,7 @@
           "POST"
         ]
       },
-      "description": "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all real claim floors, via the SAME oracle scheduler:get_next uses. Fleet scoping uses `spec:'<fleet-slug>'`; this tool has no `fleet` argument. READ-ONLY. These review fields differ: `excludedSample.agentReview` samples rows blocked from ordinary issue claims and can include `revision-requested` reviews; it is not the pending-review queue. `excludedSample.queueControl.agentReview` lists pending reviewer candidates only. `queueControl` also separates active claims, hold-open leases, durable parks; `sampleExcluded` adds provenance, age, and UNPARK-condition detail without changing legacy floor fields.",
+      "description": "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter and all claim floors, using scheduler:get_next's oracle. Fleet scoping uses `spec:'<fleet-slug>'`; this tool has no `fleet` argument. READ-ONLY. `excludedSample.agentReview` samples ordinary-claim exclusions and can include `revision-requested` reviews; `excludedSample.queueControl.agentReview` lists pending reviewer candidates only. `queueControl` separates active claims, hold-open leases, durable parks; `sampleExcluded` adds provenance, age, and UNPARK details.",
       "capabilities": [
         "work_items:read"
       ],
@@ -35351,8 +35351,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. For a named fleet lane pass `spec:'<fleet-slug>'`; `fleet` is not an argument here. Work-predicate SSOT; not raw SQL/view.",
-        "notWhen": "Taking an item → work_items:claim / claim_next / scheduler:get_next (this only reports). Feature-family (F-…) claimability, or a backlog incl. gated rows → work_items:list. `includeObservations` is intentionally unsupported: observation-lane rows are never claimable. Curate them with work_items:list/work_items:search { includeObservations:true }, or pass sampleExcluded here to inspect them under the observationLane exclusion floor.",
+        "when": "Use before drain/wind-down, backlog reads, or picking work to count actual issue-family claimable items. For a named fleet lane pass `spec:'<fleet-slug>'`; `fleet` is not an argument here. Work-predicate SSOT, not raw SQL/view.",
+        "notWhen": "Taking an item → work_items:claim / claim_next / scheduler:get_next. Feature-family (F-…) or gated backlog → work_items:list. `includeObservations` is intentionally unsupported: observation-lane rows are never claimable; curate with work_items:list/work_items:search { includeObservations:true }, or pass sampleExcluded to inspect observationLane exclusions.",
         "chaining": "→ work_items:claim { id } (take a surfaced row) · scheduler:get_next (top-ranked pick)."
       }
     },
