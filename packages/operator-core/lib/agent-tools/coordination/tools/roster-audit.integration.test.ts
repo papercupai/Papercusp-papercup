@@ -11,7 +11,7 @@ import { auditRequestProvenance, buildRosterAudit, loadRosterAudit, saveRosterAu
 import { recordOwnerDirective } from '../../../owner-directives';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { publishReport } from '../../../report-library';
-import { parkedAuditOperatorRoute, pickupDispositionViolations } from '../parked-agent-audit-oracles';
+import { parkedAuditOperatorRoute, parkedAuditToolFailure, pickupDispositionViolations } from '../parked-agent-audit-oracles';
 import { getWorkItemsByIds } from '../../../work-items';
 import { setWorkItemCheckpoint } from '../../../work-item-checkpoint';
 import { registerHarnessProject } from '../../plans/__tests__/_pg-tool-fixture';
@@ -39,8 +39,8 @@ describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 cur
     const run = async (script: string) => {
       const response = await retryRejectedLiveRead(() => promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--port', parkedAuditOperatorRoute().port,
         '--client', process.env.PAPERCUSP_SID!, '--workspace', process.env.PAPERCUSP_WORKSPACE!, '--harness', '*',
-        JSON.stringify({ script, timeoutSec: 30, projection: { pick: ['ok', 'summary', 'summaryNotice', 'partial', 'childFailures', 'error'] } })],
-      { env, encoding: 'utf8', timeout: 60_000, maxBuffer: 2 * 1024 * 1024 }));
+        JSON.stringify({ script, timeoutSec: 30, projection: { pick: ['ok', 'summary', 'summaryNotice', 'partial', 'childFailures', 'error', 'rejectedMutations', 'okFalseMutations'] } })],
+      { env, encoding: 'utf8', timeout: 60_000, maxBuffer: 2 * 1024 * 1024 }).catch(parkedAuditToolFailure));
       const value = JSON.parse(response.stdout);
       expect(value.ok, value.error).toBe(true); expect(value.partial).not.toBe(true);
       expect(value.childFailures ?? []).toEqual([]); expect(value.summaryNotice?.truncated).not.toBe(true);

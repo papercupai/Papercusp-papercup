@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, inject, it } from 'vitest';
 import { formatAgentObligationLine, type AgentObligation } from '../../agent-obligations';
-import { parkedAuditOperatorRoute } from './parked-agent-audit-oracles';
+import { parkedAuditOperatorRoute, parkedAuditToolFailure } from './parked-agent-audit-oracles';
 
 const LIVE = process.env.PAPERCUSP_PARKED_ORIENTATION_LIVE === '1';
 const PROFILE = 'packages/operator-core/test/parked-agent-audit.live-profile.json';
@@ -57,8 +57,8 @@ describe.skipIf(!LIVE && inject('papercuspTestLayer') !== 'e2e')('LIVE: R-7 prod
     const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
       'code:run', '--port', parkedAuditOperatorRoute().port, '--client', owner!, '--workspace', workspace!, '--harness', 'papercusp',
       JSON.stringify({ script, timeoutSec: 45,
-        projection: { pick: ['ok', 'summary', 'partial', 'childFailures', 'summaryNotice'] } })],
-    { env, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });
+        projection: { pick: ['ok', 'summary', 'partial', 'childFailures', 'summaryNotice', 'error', 'rejectedMutations', 'okFalseMutations'] } })],
+    { env, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 }).catch(parkedAuditToolFailure);
     const value = JSON.parse(result.stdout);
     expect(value.ok).toBe(true);
     expect(value.partial).not.toBe(true);

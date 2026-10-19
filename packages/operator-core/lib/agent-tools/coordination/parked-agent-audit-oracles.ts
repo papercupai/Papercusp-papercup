@@ -12,6 +12,18 @@ export interface FollowupState {
   hasCompletionEvidence: boolean;
 }
 
+/** Keep a failed MCP child's structured refusal visible in the test failure. */
+export function parkedAuditToolFailure(error: unknown): never {
+  if (error instanceof Error) {
+    const stdout = (error as Error & { stdout?: unknown }).stdout;
+    if (typeof stdout === 'string' && stdout.trim()) {
+      const bounded = stdout.length > 6000 ? stdout.slice(0, 3000) + '\n…\n' + stdout.slice(-3000) : stdout;
+      error.message += '\nparked-audit-tool-result: ' + bounded;
+    }
+  }
+  throw error;
+}
+
 /** Pair the authenticated request destination with the verifier's runtime witness. */
 export function parkedAuditOperatorRoute(env: NodeJS.ProcessEnv = process.env) {
   const nativeKeys = ['VERIFY_TAURI_PID', 'VERIFY_TAURI_PORT', 'VERIFY_TAURI_DEV_URL',

@@ -22,7 +22,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
 import { auditKnown, auditUnknown, auditWakeEvidence, createRosterAudit, pageRosterAudit, type AuditRecord, type RosterAuditSnapshot } from './tools/roster-audit';
-import { originalUnconfirmedPairs, parkedAuditOperatorRoute, pickupDispositionViolations, type PickupDisposition } from './parked-agent-audit-oracles';
+import { originalUnconfirmedPairs, parkedAuditOperatorRoute, parkedAuditToolFailure, pickupDispositionViolations, type PickupDisposition } from './parked-agent-audit-oracles';
 
 const SEARCH_QUERY = 'parked agent audit';
 const AUDIT_DOC = 'agent-insights/parked-agent-audit-roster-view';
@@ -185,7 +185,7 @@ async function authenticatedAuditCode<T>(script: string, inputs: object = {}, fr
       else resolveResult({ stdout, stderr });
     });
     child.stdin.end(JSON.stringify({ script, inputs, timeoutSec: 45,
-      projection: { pick: ['ok', 'summary', 'summaryNotice', 'error', 'partial', 'childFailures'] } }));
+      projection: { pick: ['ok', 'summary', 'summaryNotice', 'error', 'partial', 'childFailures', 'rejectedMutations', 'okFalseMutations'] } }));
   }), undefined, frozenReadOnly);
   const value = JSON.parse(result.stdout);
   expect(value.ok, result.stderr).toBe(true);
@@ -293,8 +293,8 @@ describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-
       const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
         'code:run', '--port', parkedAuditOperatorRoute().port, '--client', process.env.PAPERCUSP_SID!,
         '--workspace', process.env.PAPERCUSP_WORKSPACE!, '--harness', 'papercusp',
-        JSON.stringify({ script, timeoutSec: 45, projection: { pick: ['ok', 'summary', 'partial', 'childFailures'] } })],
-      { env: toolEnv, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });
+        JSON.stringify({ script, timeoutSec: 45, projection: { pick: ['ok', 'summary', 'partial', 'childFailures', 'error', 'rejectedMutations', 'okFalseMutations'] } })],
+      { env: toolEnv, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 }).catch(parkedAuditToolFailure);
       const value = JSON.parse(result.stdout);
       expect(value.ok).toBe(true); expect(value.partial).not.toBe(true);
       expect(value.summaryNotice?.truncated, 'a clipped measurement is unavailable').not.toBe(true);
