@@ -14,11 +14,13 @@ import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSourc
 import { checkNativeLedger } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, NATIVE_BOOTSTRAP_TIMEOUT_MS,
   NATIVE_BOOTSTRAP_TEARDOWN_MS, NATIVE_VERIFIER_PHASE_BUDGETS } from './native-bootstrap-runtime';
+import { assertNativeHireResult } from './native-hire-result';
 
 const NATIVE_SOURCE_INPUTS = [
   'packages/operator-core/lib/dao-hr/native-bootstrap.e2e.test.ts',
   'packages/operator-core/lib/dao-hr/native.e2e.test.ts',
   'packages/operator-core/lib/dao-hr/native-bootstrap-runtime.ts',
+  'packages/operator-core/lib/dao-hr/native-hire-result.ts',
   'scripts/tauri-surface-verify-dao-hr.mts', 'scripts/fixtures/dao-hr-documenso-ui.ts',
   'scripts/fixtures/dao-hr-test-chain.ts', 'scripts/fixtures/dao-hr-wallet-binding.ts',
   'scripts/fixtures/dao-hr-wallet-binding-contract.ts', 'packages/operator-core/lib/dao-hr/wallet-binding-fixture.ts',
@@ -133,14 +135,7 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       } finally { closeSync(fd); }
       expect(code, 'Native boot/journey log: ' + logPath).toBe(0);
       const result = JSON.parse(readFileSync(join(directory, 'result.json'), 'utf8'));
-      expect(result).toMatchObject({ hireExecuted: true, acceptanceVerified: true, memberAdmitted: true, nonBinding: true,
-        capTableVerified: true, myEquityVerified: true, nonBindingVisible: true,
-        runtimeUnits: ['desktop-shell', 'documenso-sandbox', 'test-chain'], auditCertificateIdentityKind: 'provider-resource-path' });
-      expect(result.documensoEnvelopeId).toBeTruthy();
-      expect(result.auditCertificateId).toBe('/api/v2/envelope/' + encodeURIComponent(result.documensoEnvelopeId) + '/certificate/download');
-      expect(result.auditCertificateSha256).toMatch(/^0x[a-f0-9]{64}$/);
-      expect(result.documentHash.provider).toMatch(/^0x[a-f0-9]{64}$/);
-      expect(result.documentHash.stored).toBe(result.documentHash.provider);
+      assertNativeHireResult(result);
       writeFileSync(logPath + '.result.json', JSON.stringify(result), { mode: 0o600 });
       console.log('DAO_HR_NATIVE_RESULT=' + JSON.stringify(result));
     } finally {
