@@ -1565,6 +1565,51 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
     expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
   });
 
+  it.each([false, true])('compares shared scenario receipt fingerprints without losing drift (changed=%s)', async (changed) => {
+    const scenarios = ['admin-account', 'unrelated-account'];
+    const scenarioClause = clause({
+      falsifier: { observation: 'An unauthorized caller succeeds.', requiredScenarios: scenarios },
+    });
+    const baseline = listedEvidence();
+    baseline.details = {
+      ...baseline.details,
+      adequacy: { ...((baseline.details.adequacy ?? {}) as Record<string, unknown>), scenarioIds: scenarios },
+    };
+    const mutations = scenarios.map((target, index) => {
+      const row = counterexampleEvidence({ id: 2 + index });
+      return {
+        ...row,
+        details: {
+          ...row.details,
+          adequacy: { ...((row.details.adequacy ?? {}) as Record<string, unknown>), targeted: target, scenarioIds: [target] },
+        },
+      };
+    });
+    const rows = [baseline, ...mutations];
+    const live = evaluateSpecTestAdequacy({
+      clause: scenarioClause, evidence: rows, classRef: 'plan-class-feature-ship',
+    });
+    expect(live.verdict).toBe('pass');
+    const card = stampedCard(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION, {
+      ratings: live.ratings,
+      rerunRecipe: {
+        ...live.scorecardDraft.rerunRecipe,
+        current: { supplied: true, fingerprints: proofCohort([baseline, mutations[0]]) },
+      },
+    });
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([scenarioClause]);
+    deps.listEvidence.mockResolvedValue(changed ? rows.map((row, index) => index === 2
+      ? { ...row, fingerprints: { ...row.fingerprints, sourceFingerprint: 'git:changed-scenario-source' } }
+      : row) : rows);
+    deps.listCards.mockResolvedValue([card]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result.ok).toBe(!changed);
+    if (!result.ok) expect(result.reason).toContain('audited scorecard proof cohort differs');
+  });
+
   it('the evaluator stamps its rule revision on every card recipe, and it is past the pre-stamp revision', () => {
     expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBeGreaterThan(1);
   });

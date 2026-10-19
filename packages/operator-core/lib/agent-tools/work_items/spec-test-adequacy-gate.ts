@@ -377,10 +377,14 @@ function scorecardProofCohortMatches(
     evidenceRef: row.evidenceRef, ...row.fingerprints,
   }));
   const prior = recorded.fingerprints.map(tuple);
-  const sortTuples = (rows: (string | number | null)[][]) => rows.sort((a, b) =>
-    JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return live.length === selectedKeys.size &&
-    JSON.stringify(sortTuples(live)) === JSON.stringify(sortTuples(prior));
+  // Several scenario targets may cite one receipt with identical fingerprints.
+  // Their obligations remain separate in the evaluator; the audited fingerprint
+  // cohort records each proof identity once. Keep differing fingerprints distinct.
+  const cohort = (rows: (string | number | null)[][]) =>
+    [...new Set(rows.map((row) => JSON.stringify(row)))].sort();
+  const liveCohort = cohort(live);
+  return liveCohort.length === selectedKeys.size &&
+    JSON.stringify(liveCohort) === JSON.stringify(cohort(prior));
 }
 
 function scorecardMatches(
