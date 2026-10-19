@@ -33,6 +33,7 @@ import {
   exactPositiveSinglePlanSlugFromFilter,
   FALSIFIER_FORBIDDEN_TOOLS,
   fleetCapacityProviderForMembers,
+  LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS,
   LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS,
   LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
   LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
@@ -49,6 +50,7 @@ import {
   readLeaderMonitoringBlindAdvisory,
   recoverFleetRecordForLeaderControl,
   boundedLeaderBriefFleetMetricsRead,
+  boundedLeaderBriefFleetCampaignRead,
   readLeaderBriefFleetMetrics,
   leaderBriefFleetMetricsUnavailable,
   readLeaderBriefLaneHealth,
@@ -571,10 +573,44 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     }
   });
 
+  it('gives the campaign leg a multi-second bound so its sequential writer reads are not always timed out', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fallback = { campaign: null };
+    try {
+      const measuredDurationMs = 3_272.388;
+      const measuredTimerMs = Math.ceil(measuredDurationMs);
+      expect(LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS).toBe(5_000);
+      expect(LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS).toBeGreaterThan(measuredDurationMs);
+
+      const measuredRead = boundedLeaderBriefFleetCampaignRead(
+        () => new Promise((resolve) => setTimeout(() => resolve({ campaign: 'measured' }), measuredTimerMs)),
+        fallback,
+      );
+      await vi.advanceTimersByTimeAsync(measuredTimerMs);
+      await expect(measuredRead).resolves.toEqual({ campaign: 'measured' });
+
+      const slowRead = boundedLeaderBriefFleetCampaignRead(
+        () => new Promise((resolve) => setTimeout(() => resolve({ campaign: 'late' }), LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS + 1)),
+        fallback,
+      );
+      await vi.advanceTimersByTimeAsync(LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS);
+      await expect(slowRead).resolves.toEqual(fallback);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('leader-brief:fleet-campaign exceeded 5000ms'),
+      );
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it('keeps the cumulative server budget below the 30s MCP client deadline', async () => {
     expect(LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS).toBe(3_000);
     expect(LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS).toBe(750);
     expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(5_000);
+    expect(LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS).toBe(5_000);
     expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS).toBe(25_000);
     expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS).toBeLessThan(30_000);
 

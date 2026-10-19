@@ -228,6 +228,12 @@ export const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 3_000;
  * budget instead of inheriting the shorter headcount cutoff.
  */
 export const LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS = 5_000;
+/**
+ * The cross-epoch campaign read is a sequence of writer-backed aggregates and
+ * bounded evidence queries. It cannot fit the 750ms optional-decoration
+ * deadline; give it the same measured multi-second lane used by fleet metrics.
+ */
+export const LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS = 5_000;
 
 export type LeaderBriefSilentMembers =
   | { status: 'measured'; ownerIds: string[]; thresholdMs: number; paused: boolean }
@@ -475,6 +481,19 @@ export function boundedLeaderBriefFleetMetricsRead<T>(
     work,
     fallback,
     LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS,
+  );
+}
+
+/** Apply the dedicated deadline to the cross-epoch campaign leg. */
+export function boundedLeaderBriefFleetCampaignRead<T>(
+  work: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  return boundedLeaderBriefRead(
+    'fleet-campaign',
+    work,
+    fallback,
+    LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS,
   );
 }
 
@@ -5301,8 +5320,7 @@ export async function buildLeaderBrief(
   // unavailable-not-zero verdicts.
   let campaign: FleetCampaign | undefined;
   if (fleetCreatedAtMs != null) {
-    const campaignRead = await boundedLeaderBriefRead(
-      'fleet-campaign',
+    const campaignRead = await boundedLeaderBriefFleetCampaignRead(
       async () => {
         const { readFleetCampaign } = await import('./fleet-campaign');
         return readFleetCampaign({
