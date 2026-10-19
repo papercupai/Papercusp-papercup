@@ -176,8 +176,18 @@ export async function accountToken(page: Page) {
 }
 
 export async function sign(page: Page, url: string) {
-  await uiPhase(page, 'navigate signing link and reveal next field', async () => {
+  await uiPhase(page, 'navigate signing link', async () => {
     await page.goto(url);
+  });
+  await uiPhase(page, 'wait for provider PDF viewer readiness', async () => {
+    // Next Field is usable before the lazy PDF viewer mounts. Its handler
+    // sends data-scroll-to-page only to an existing [data-pdf-content]; an
+    // early click loses navigation to signature pages outside the overscan.
+    // A visible Konva canvas proves the client viewer mounted, rather than
+    // treating the server-rendered signing controls as viewer readiness.
+    await page.locator('[data-pdf-content] .konva-container canvas').first().waitFor({ state: 'visible' });
+  });
+  await uiPhase(page, 'reveal next provider signature field', async () => {
     await page.getByRole('button', { name: 'Next Field', exact: true }).first().click();
   });
   const field = page.locator('#field-tooltip');

@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { createConcurrencyGate } from '@papercusp/sync';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { listMyEventKeySubscriptions } from '../coordination/event-subscriptions';
@@ -89,6 +90,16 @@ const statusArgs = z.union([
     after_generation: z.never().optional().describe('Only valid with an exact `event` key.'),
   }),
 ]);
+
+/**
+ * A default status read fans out to five independent admin-pool queries. Under
+ * a wake storm, Promise.all across many callers can queue every query behind the
+ * same small pool and make the bounded acquisition deadline fail before any
+ * query starts. Keep status reads independently cancellable while limiting the
+ * per-process fan-out to leave pool capacity for writes and wake delivery.
+ */
+export const EVENTS_STATUS_READ_CONCURRENCY = 2;
+const eventsStatusReadGate = createConcurrencyGate(EVENTS_STATUS_READ_CONCURRENCY);
 
 /**
  * P-006 / D-005: the LATER seam that reports pickup. `turn_invoked` says only that the channel
@@ -362,7 +373,8 @@ export default defineTool({
     if (args.after_generation != null && !args.event) {
       throw new Error('events:status — after_generation requires an exact `event` key.');
     }
-    const identity = resolveAgentIdentity(ctx);
+    return eventsStatusReadGate.run(async () => {
+      const identity = resolveAgentIdentity(ctx);
     // Exact-key inspection is an authority read for one event.  Do not spend
     // the result budget rendering this caller's unrelated await tree first —
     // under a busy fleet that list can hide the only requested evidence.
@@ -578,7 +590,7 @@ export default defineTool({
         }
       : null;
     if (eventInspection) fitEventInspectionToBudget(eventInspection as BoundedEventInspection);
-    return {
+      return {
       content: [
         {
           type: 'text' as const,
@@ -663,6 +675,7 @@ export default defineTool({
           }),
         },
       ],
-    };
+      };
+    }, ctx.signal);
   },
 });

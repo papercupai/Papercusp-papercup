@@ -3,6 +3,56 @@ import type { Browser, Page } from 'playwright-core';
 import { assertCompletionResponse, register, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 
 describe('Documenso UI failure diagnostics', () => {
+  it.each([false, true])('waits for the PDF viewer before navigating to a virtualized signature field (signature dialog=%s)', async needsSignature => {
+    let viewerReady = false, fieldRevealed = false, dialogVisible = false, fieldSigned = false, completed = false;
+    const viewer = { first: () => viewer, waitFor: vi.fn(async () => {
+      // Model the separately loaded PDF viewer. An earlier Next Field click
+      // cannot set data-scroll-to-page on a viewer that does not exist yet.
+      await Promise.resolve();
+      viewerReady = true;
+    }) };
+    const field = {
+      waitFor: vi.fn(async () => { if (!fieldRevealed) throw Object.assign(new Error('Field page never mounted'), { name: 'TimeoutError' }); }),
+      scrollIntoViewIfNeeded: vi.fn(), boundingBox: vi.fn().mockResolvedValue({ x: 20, y: 30, width: 120, height: 40 }),
+      evaluateAll: async () => [],
+    };
+    const next = { first: () => next, click: vi.fn(async () => { fieldRevealed = viewerReady; }) };
+    const complete = { first: () => complete, count: async () => Number(fieldSigned), click: vi.fn(async () => { dialogVisible = true; }) };
+    const typedInput = { fill: vi.fn() };
+    const dialog = { isVisible: async () => dialogVisible,
+      getByRole: (role: string, options: { name: string }) => ({ click: vi.fn(async () => {
+        if (role === 'button' && options.name === 'Sign') {
+          if (fieldSigned) completed = true;
+          else fieldSigned = true;
+          dialogVisible = false;
+        }
+      }) }), getByTestId: () => typedInput };
+    const page = { goto: vi.fn(), locator: vi.fn(selector => selector === '#field-tooltip' ? field :
+      selector === '[data-pdf-content] .konva-container canvas' ? viewer :
+      { evaluateAll: async () => [], evaluate: async () => [] }),
+      getByRole: vi.fn((role, options) => role === 'dialog' ? dialog : options.name === 'Next Field' ? next : complete),
+      mouse: { click: vi.fn(async () => { dialogVisible = needsSignature; fieldSigned = !needsSignature; }) },
+    } as unknown as Page;
+    await sign(page, 'https://provider.invalid/private-signing-link');
+    expect(viewer.waitFor).toHaveBeenCalledOnce();
+    expect(next.click).toHaveBeenCalledOnce();
+    expect(page.mouse.click).toHaveBeenCalledWith(80, 50);
+    expect(typedInput.fill).toHaveBeenCalledTimes(Number(needsSignature));
+    expect(completed).toBe(true);
+  });
+
+  it('reports PDF readiness failure before clicking Next Field without retaining provider data', async () => {
+    const nextClick = vi.fn();
+    const page = { goto: vi.fn(), getByRole: () => ({ first: () => ({ click: nextClick }) }),
+      locator: (selector: string) => selector === '[data-pdf-content] .konva-container canvas' ?
+        { first: () => ({ waitFor: vi.fn().mockRejectedValue(Object.assign(new Error('private signing URL'), { name: 'TimeoutError' })) }) } :
+        { evaluateAll: async () => [], evaluate: async () => [] },
+    } as unknown as Page;
+    await expect(sign(page, 'https://provider.invalid/private-signing-link')).rejects.toThrow(
+      'Documenso UI phase failed: wait for provider PDF viewer readiness; errorType=TimeoutError; errorCode=timeout; issues=[]; controls=[]');
+    expect(nextClick).not.toHaveBeenCalled();
+  });
+
   it.each(['locate', 'position', 'activate'] as const)('distinguishes a canvas %s failure while retaining only safe geometry', async stage => {
     const NEVER_EMIT_MARKER = 'never-emit-me';
     const failure = Object.assign(new Error('Timeout at https://provider.invalid/' + NEVER_EMIT_MARKER), { name: 'TimeoutError' });
@@ -19,7 +69,8 @@ describe('Documenso UI failure diagnostics', () => {
     const page = {
       goto: vi.fn(), getByRole: vi.fn(() => ({ first: () => ({ click: vi.fn() }) })),
       mouse: { click: vi.fn().mockRejectedValue(failure) },
-      locator: vi.fn(selector => selector === '#field-tooltip' ? field : {
+      locator: vi.fn(selector => selector === '#field-tooltip' ? field : selector === '[data-pdf-content] .konva-container canvas' ?
+        { first: () => ({ waitFor: vi.fn() }) } : {
         evaluateAll: vi.fn().mockResolvedValue([]), evaluate: vi.fn().mockResolvedValue([]),
       }),
     } as unknown as Page;

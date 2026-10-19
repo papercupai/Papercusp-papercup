@@ -202,6 +202,29 @@ describe('events:status projection', () => {
     expect(status.skipWorkspaceTx).toBe(true);
   });
 
+  it('bounds concurrent status read bundles so each caller cannot fan out into the admin pool', async () => {
+    let active = 0;
+    let peak = 0;
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(listActiveAwaits).mockImplementation(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await hold;
+      active -= 1;
+      return [AWAIT_ROW];
+    });
+
+    const calls = Array.from({ length: 4 }, () => call({}));
+    await vi.waitFor(() => expect(active).toBe(2));
+    expect(peak).toBe(2);
+    release();
+    await Promise.all(calls);
+    expect(peak).toBe(2);
+  });
+
   it('projects await rows to await_id/event/policy/note/expires_ts/on_timeout/created_at', async () => {
     const out = await call({});
     expect(out.active_awaits[0]).toEqual({
