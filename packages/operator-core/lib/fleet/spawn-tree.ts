@@ -24,6 +24,7 @@ export type { SubtreeQuery as SubtreeOptions } from '@papercusp/structured-concu
 
 import type { Db } from './pg-stores';
 import { bareModelId, resolveCodexModel } from '../model-context-budget.mjs';
+import { resolveGatewayModel } from '../inference-gateway/model-aliases';
 
 /** Launch/request evidence extends the existing spawn row; it is never admission state. */
 export interface SpawnAccountRoute {
@@ -83,6 +84,19 @@ export function assertSpawnAccountRoute(spawnId: string, route: SpawnAccountRout
   }
 }
 
+/**
+ * Return the model id that the gateway records for a launch route's first request.
+ *
+ * Claude launch specs may carry the client-side `[1m]` window marker, while the
+ * Anthropic gateway strips that marker and records the real upstream API id. Keep
+ * the persisted launch route lossless and normalize only at this evidence seam.
+ */
+export function spawnRouteGatewayModel(route: Pick<SpawnAccountRoute, 'launchedBackend' | 'launchedModel'>): string {
+  return route.launchedBackend === 'claude-code'
+    ? resolveGatewayModel(route.launchedModel).model
+    : route.launchedModel;
+}
+
 export async function recordSpawnAccountRoute(sql: Db, spawnId: string, route: SpawnAccountRoute): Promise<void> {
   assertSpawnAccountRoute(spawnId, route);
   const rows = await sql`
@@ -117,7 +131,7 @@ export function verifySpawnFirstGatewayRequest(
   assertSpawnAccountRoute(spawnId, route);
   return !!request && request.ownerId === spawnId && !!request.requestId
     && request.outcome === 'ok' && request.finalStatus === 200
-    && request.model === route.launchedModel && request.effort === route.launchedEffort
+    && request.model === spawnRouteGatewayModel(route) && request.effort === route.launchedEffort
     && request.provider === (route.launchedBackend === 'codex' ? 'codex' : 'claude')
     && !!request.servingAccountId && route.resolvedAccountIds.includes(request.servingAccountId);
 }

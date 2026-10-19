@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertSpawnAccountRoute, verifySpawnFirstGatewayRequest,
+import { assertSpawnAccountRoute, spawnRouteGatewayModel, verifySpawnFirstGatewayRequest,
   type SpawnAccountRoute, type SpawnFirstGatewayRequest } from './spawn-tree';
 
 const route: SpawnAccountRoute = {
@@ -18,6 +18,25 @@ describe('exact spawn/first gateway request correlation', () => {
     expect(verifySpawnFirstGatewayRequest('s-primary', route, request)).toBe(true);
     expect(verifySpawnFirstGatewayRequest('s-primary', route, null)).toBe(false);
     expect(verifySpawnFirstGatewayRequest('s-primary', route, { ...request, servingAccountId: 'unrelated-headroom' })).toBe(false);
+  });
+  it('matches Claude gateway evidence to the upstream id while preserving the [1m] launch spec', () => {
+    const claudeRoute: SpawnAccountRoute = {
+      ...route,
+      launchedBackend: 'claude-code',
+      launchedModel: 'claude-sonnet-5[1m]',
+      resolvedAccountIds: ['claude-a'],
+    };
+    const claudeRequest: SpawnFirstGatewayRequest = {
+      ...request,
+      provider: 'claude',
+      protocol: 'anthropic-messages',
+      model: 'claude-sonnet-5',
+      servingAccountId: 'claude-a',
+    };
+    expect(spawnRouteGatewayModel(claudeRoute)).toBe('claude-sonnet-5');
+    expect(verifySpawnFirstGatewayRequest('s-primary', claudeRoute, claudeRequest)).toBe(true);
+    expect(verifySpawnFirstGatewayRequest('s-primary', claudeRoute,
+      { ...claudeRequest, model: 'claude-sonnet-5[1m]' })).toBe(false);
   });
   it.each([
     { ownerId: 's-foreign' }, { requestId: '' }, { provider: 'claude' },

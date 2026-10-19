@@ -17,6 +17,7 @@ import { CODEX_SAFE_DEFAULT_MODEL } from '../lib/model-context-budget.mjs';
 import { ONE_MILLION_MODEL_ALIASES } from '../lib/inference-gateway/model-aliases';
 import { makeCredentialResolver } from '../lib/inference-gateway/credential-store';
 import { privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse } from './private-http-workspace-preflight';
+import { spawnRouteGatewayModel } from '../lib/fleet/spawn-tree';
 
 // Reuse the maintained launch policy rather than a retired fixture model id.
 const [primaryModel, primaryEffort] = CODEX_SAFE_DEFAULT_MODEL.split(':');
@@ -275,7 +276,7 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       assert.equal(row.first_gateway_request.outcome, 'ok');
       assert.equal(row.first_gateway_request.servingAccountId, first.cache.servingAccountId);
       assert.ok(row.account_route.resolvedAccountIds.includes(first.cache.servingAccountId));
-      assert.equal(row.first_gateway_request.model, row.account_route.launchedModel);
+      assert.equal(row.first_gateway_request.model, spawnRouteGatewayModel(row.account_route));
       assert.equal(row.first_gateway_request.effort, row.account_route.launchedEffort);
       assert.equal(childConfig.model, row.account_route.launchedModel);
       assert.equal(childConfig.effort, row.account_route.launchedEffort);
