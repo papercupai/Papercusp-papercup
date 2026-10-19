@@ -27,6 +27,7 @@ const ADV_SESSION_ID = 900_000_000 + process.pid;
 const REVISION = 'a'.repeat(64);
 const savedRecord = {
   v: 1, agent: 'codex', workspaceId: 'papercusp-workspace',
+  codexSqliteHome: '/original-state/session-123',
   harnessSlug: null, profile: 'generic', contextSize: 'trimmed',
   personaTier: 'full', model: 'gpt-6-sol', planSlug: null,
   launchedBy: null, autoMode: false, drainMode: false,
@@ -122,7 +123,7 @@ beforeEach(() => {
   mocks.pinnedPrompt.mockReturnValue({ promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: REVISION });
   mocks.buildLaunchSpec.mockResolvedValue({ mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' });
   mocks.ensureHome.mockReturnValue({ repaired: true, promptRepaired: true,
-    codexHome: '/tmp/p006-home' });
+    codexHome: '/tmp/p006-home', sqliteHome: savedRecord.codexSqliteHome });
   mocks.allowsAmbient.mockResolvedValue(true);
   mocks.presence.mockResolvedValue(null);
   mocks.presenceRows.mockResolvedValue([]);
@@ -203,6 +204,34 @@ describe('resumable archived backend identity', () => {
 });
 
 describe('ensure-codex-home pinned-source recovery', () => {
+  it('repairs from the SQLite receipt pinned to the requested ADV session', async () => {
+    mocks.readRecord.mockResolvedValue({ ...savedRecord, codexSqliteHome: '/original-state/session-123' });
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+    expect((await call()).status).toBe(200);
+    expect(mocks.readRecord).toHaveBeenCalledExactlyOnceWith(OWNER, ADV_SESSION_ID);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({
+      recordedSqliteHome: '/original-state/session-123',
+    }));
+  });
+
+  it('records the recovered SQLite binding for a legacy launch receipt', async () => {
+    const { codexSqliteHome, ...legacy } = savedRecord;
+    mocks.readRecord.mockResolvedValue(legacy);
+    mocks.ensureHome.mockReturnValue({ repaired: false, promptRepaired: false, sqliteHome: codexSqliteHome });
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+    expect((await call()).status).toBe(200);
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledExactlyOnceWith(ADV_SESSION_ID, OWNER,
+      expect.objectContaining({ codexSqliteHome }));
+  });
+
   it.each([true, false])('reseeds the managed clone directory trust during home repair (ambient=%s)', async (ambient) => {
     const cwd = '/fixture/managed-clone-outside-ambient-trust';
     mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', cwd });

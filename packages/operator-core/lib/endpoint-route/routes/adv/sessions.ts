@@ -1695,7 +1695,7 @@ const ensureCodexHome = defineTool({
         import('../../../capability-envelope/session-confinement-store')
           .then(() => import('../../../capability-envelope/session-confinement-port')),
       ]);
-    const rawRecord = await readSuLaunchSpecByOwner(owner);
+    const rawRecord = await readSuLaunchSpecByOwner(owner, advSessionId);
     const persistedRecord = parseSuLaunchSpecRecord(rawRecord);
     const sessionRow = await getAdvSession(advSessionId);
     if (sessionRow?.coordOwnerId && sessionRow.coordOwnerId !== owner) {
@@ -1851,6 +1851,7 @@ const ensureCodexHome = defineTool({
     const repairCompactionLimit = await compactionLimitForResumeRow({ coordOwnerId: owner, launchArgv: sessionRow?.launchArgv }, repairModel);
     const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfigAsync({
       sessionKey: advSessionId,
+      recordedSqliteHome: repairRecord.codexSqliteHome,
       mcpUrl,
       sid: owner,
       model: repairModel,
@@ -1931,7 +1932,8 @@ const ensureCodexHome = defineTool({
       const recovered = await ensureConfig(connection.mcpUrl, pinned.promptText);
       // Model selection is independent of instruction activation. Preserve the
       // pinned identity while recording the model this resume actually chose.
-      if (modelChanged && !(await recordSuLaunchSpec(advSessionId, owner, repairRecord))) {
+      if ((modelChanged || recovered.sqliteHome !== repairRecord.codexSqliteHome) &&
+          !(await recordSuLaunchSpec(advSessionId, owner, { ...repairRecord, codexSqliteHome: recovered.sqliteHome }))) {
         throw new Error('repaired Codex model receipt was not persisted');
       }
       return new Response(JSON.stringify({
@@ -1941,7 +1943,7 @@ const ensureCodexHome = defineTool({
       }), { status: 200, headers: JSON_HEADERS });
     }
     const r = await ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText);
-    if (r.promptRepaired || modelChanged) {
+    if (r.promptRepaired || modelChanged || r.sqliteHome !== repairRecord.codexSqliteHome) {
       const artifact = rebuilt.artifact;
       const updatedRecord = r.promptRepaired ? {
         ...repairRecord,
@@ -1950,7 +1952,7 @@ const ensureCodexHome = defineTool({
         stateRevision: artifact.stateRevision,
         specificationArtifact: artifact.specificationArtifact,
       } : repairRecord;
-      if (!(await recordSuLaunchSpec(advSessionId, owner, updatedRecord))) {
+      if (!(await recordSuLaunchSpec(advSessionId, owner, { ...updatedRecord, codexSqliteHome: r.sqliteHome }))) {
         throw new Error('repaired Codex launch specification receipt was not persisted');
       }
     }

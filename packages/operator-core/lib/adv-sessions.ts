@@ -2222,14 +2222,18 @@ export async function recordSuLaunchSpec(
  * spec, or the store is unavailable — every one of which fail-softs the caller to
  * the inherited render.
  */
-export async function readSuLaunchSpecByOwner(coordOwnerId: string): Promise<unknown | null> {
+export async function readSuLaunchSpecByOwner(coordOwnerId: string, advSessionId?: number): Promise<unknown | null> {
   if (!coordOwnerId) return null;
+  // Home repair is keyed by a concrete ADV id. Never lend the newest owner's
+  // SQLite binding to an older native session; persona-only callers omit it.
+  if (advSessionId !== undefined && (!Number.isSafeInteger(advSessionId) || advSessionId <= 0)) return null;
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ launch_spec: unknown }[]>`
       SELECT launch_spec
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
+         AND (${advSessionId ?? null}::bigint IS NULL OR id = ${advSessionId ?? null})
        ORDER BY started_at DESC
        LIMIT 1
     `;

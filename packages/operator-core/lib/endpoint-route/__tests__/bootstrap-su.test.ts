@@ -134,6 +134,7 @@ const provisionLaunchIdentityResourcesMock = vi.fn(async (_input: unknown) => {}
 const resolveLaunchIdentityModelDefaultMock = vi.fn(async (_input: unknown): Promise<string | null> => null);
 const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   codexHome: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}`,
+  sqliteHome: `/fake/codex-sqlite-homes/session-${opts.sessionKey}`,
   agentsPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/AGENTS.md`,
   configPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/config.toml`,
 }));

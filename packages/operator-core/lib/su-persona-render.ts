@@ -283,6 +283,8 @@ export interface SuLaunchSpecRecord {
   loopArmed: boolean;
   /** Current launch posture. Optional for v1 rows written before this field existed. */
   headless?: boolean;
+  /** Native SQLite binding, persisted on the exact ADV launch row. */
+  codexSqliteHome?: string;
   fleet: { slug: string | null; role: string | null } | null;
   /** Resolved launch binding and the last artifact/state receipts (P-008). */
   stack?: string[];
@@ -516,6 +518,7 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     drainMode: r.drainMode === true,
     loopArmed: r.loopArmed === true,
     ...(typeof r.headless === 'boolean' ? { headless: r.headless } : {}),
+    ...(typeof r.codexSqliteHome === 'string' ? { codexSqliteHome: r.codexSqliteHome } : {}),
     fleet:
       r.fleet && typeof r.fleet === 'object'
         ? {

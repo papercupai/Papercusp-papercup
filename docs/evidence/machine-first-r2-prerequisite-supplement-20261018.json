@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "planRevision": 35,
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "specFingerprint": "b33d2e02514d78afb2bb4da54d564100384a7f2961a27c53319ceca2b994d390",
+  "rubricRevision": 11,
+  "readbackAt": "2026-10-18T23:44:21Z",
+  "scope": "Supplement to the immutable historical R2 case table. Records currentness of the three mandatory maintained unit prerequisites only. No test or browser was rerun; full R2, current-source browser acceptance, current archive inclusion and shipment remain open.",
+  "historicalTable": {
+    "path": "docs/evidence/machine-first-r2-case-table-20261018-v3.json",
+    "sha256": "91ebefbd9f2db888846e89a3eff2faff34e286ad3ff0b9fcc748bb60dfbdc398",
+    "commit": "ab184b59ddd3b2bccbe98c0154cf8c7436b8dff6",
+    "bindingId": 58341,
+    "sourceCurrentness": "unknown",
+    "unchanged": true,
+    "constituentReceiptHashChecks": {
+      "checked": 6,
+      "matched": 6,
+      "failed": 0
+    },
+    "qualification": "All twelve case rows retain their original release, source and observation scopes. This supplement does not update their browser or artifact currentness. The historical table and its binding still contain the earlier unit-prerequisite gap statement; only that statement is superseded by the unit readbacks below."
+  },
+  "readback": {
+    "tool": "plans:get-spec-evidence",
+    "args": {
+      "slug": "machine-first-access-and-signup-utility-download-2026-10-15",
+      "harness": "papercusp",
+      "specIds": ["AUTO-BAR-R-2-P-002"],
+      "workItemIds": ["WI-6554700010015411"],
+      "limit": 20,
+      "detail": "full"
+    },
+    "currentnessBasis": "Server-measured registered Portal source, test and fixture bytes compared against each existing binding's retained measurement recipe; test-run identity and immutable spec revision checked by the same read.",
+    "retainedExecutionIdentity": "The preceding recovery checked recorded source/test/fixture pins against their executed Portal commits and current registered Portal bytes. This read reuses those bindings and their server measurements; no new execution is claimed.",
+    "freshnessBoundary": "A point-in-time readback, not a standing claim. Re-read the referenced bindings before relying on currentness after a source, test, fixture or spec change."
+  },
+  "unitPrerequisites": [
+    {
+      "bindingId": 58347,
+      "evidenceRef": "tests/auth.test.ts",
+      "testRunId": 21282217,
+      "executedCommit": "74d3620bbf148aca8a5edcc7c2c5e776e6a78af1",
+      "sourceFingerprint": "sha256-file-set-v1:5eca1121eca602f71d9cae804d68b619fb4cd7fe7bb0b6d383d6c73fde554493",
+      "testFingerprint": "sha256-file-set-v1:57f453121c28a8ffc07118280c69e530bba1fff364df277228496a78be60f629",
+      "fixtureFingerprint": "sha256-file-set-v1:57f453121c28a8ffc07118280c69e530bba1fff364df277228496a78be60f629",
+      "execution": {"status": "pass", "passed": 10, "failed": 0, "skipped": 0, "collectionFailed": false},
+      "currentness": {
+        "overall": "current",
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "testRun": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "staleReasons": [],
+        "unknownReasons": [],
+        "provenance": "server-measured"
+      },
+      "qualification": "Maintained auth units; does not execute a real provider signup or browser callback."
+    },
+    {
+      "bindingId": 58348,
+      "recoveredFromBindingId": 57174,
+      "evidenceRef": "tests/utility-welcome.test.tsx",
+      "testRunId": 21383889,
+      "executedCommit": "5118d631446a3206ff2321c66ee18da211c1defe",
+      "sourceFingerprint": "sha256-file-set-v1:681e39dabcd2cfab7b0d60e2ef4ef7505c2266ec052c21f46525e1dcd0b853c8",
+      "testFingerprint": "sha256-file-set-v1:31b5f6b22c03301b6f90173ba80335a49cc0bd5ed5dbd49129d9dd2e38698999",
+      "fixtureFingerprint": "sha256-file-set-v1:31b5f6b22c03301b6f90173ba80335a49cc0bd5ed5dbd49129d9dd2e38698999",
+      "execution": {"status": "pass", "passed": 10, "failed": 0, "skipped": 0, "collectionFailed": false},
+      "currentness": {
+        "overall": "current",
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "testRun": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "staleReasons": [],
+        "unknownReasons": [],
+        "provenance": "server-measured"
+      },
+      "qualification": "Maintained utility-welcome units; does not refresh any served-browser observation."
+    },
+    {
+      "bindingId": 58349,
+      "recoveredFromBindingId": 57175,
+      "evidenceRef": "tests/shell-ui.test.tsx",
+      "testRunId": 21383888,
+      "executedCommit": "5118d631446a3206ff2321c66ee18da211c1defe",
+      "sourceFingerprint": "sha256-file-set-v1:7060e4adb2a5b07a7eb6c8c12b0bd0c639466c919e9470c30922e6f8f0adc31b",
+      "testFingerprint": "sha256-file-set-v1:a75b571416cd4a78ec94a2106a8702e1682f45773ead0741dfe6d18ee1389107",
+      "fixtureFingerprint": "sha256-file-set-v1:a75b571416cd4a78ec94a2106a8702e1682f45773ead0741dfe6d18ee1389107",
+      "execution": {"status": "pass", "passed": 116, "failed": 0, "skipped": 0, "collectionFailed": false},
+      "currentness": {
+        "overall": "current",
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "testRun": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "staleReasons": [],
+        "unknownReasons": [],
+        "provenance": "server-measured"
+      },
+      "qualification": "Maintained shell UI units; does not supply a current installed-candidate or archive acceptance verdict."
+    }
+  ],
+  "retainedExecutionTotals": {"suites": 3, "passed": 136, "failed": 0, "skipped": 0, "newRuns": 0},
+  "resolvedHistoricalGap": "Mandatory prerequisite ledger source/test currentness",
+  "remainingUnverified": [
+    "Current archive launcher inclusion fails in the retained public archive observation",
+    "Full source/environment currentness of the retained browser rows; one compared product file changed and historical browser rows were not rerun",
+    "Current installed-candidate acceptance, publication and final promotion/deployment/shipment"
+  ],
+  "preservedEvidence": [
+    {"path": "docs/evidence/machine-first-r5-evidence-matrix-20261018.json", "sha256": "aee49024c729ae4fb15991f2247c6112db616161ecd3d27109b86a50de98757d", "modified": false},
+    {"path": "docs/evidence/machine-first-r5-scenario-artifact-matrix-20261018.json", "sha256": "ba976ffe7bceb4a972c749ae7fc3d9047111bf7da31c8e09e525f0e1ffdc58f8", "modified": false}
+  ],
+  "executionBoundary": {"testsRerun": false, "browserRerun": false, "runtimeStarted": false, "runtimeRestarted": false, "peerAcceptanceDuplicated": false},
+  "noAcceptanceClaim": true,
+  "verdict": "unit-prerequisites-current-at-readback; full-R2-and-shipment-open"
+}

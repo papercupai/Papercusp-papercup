@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015516",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "historicalBindingId": 53785,
+  "originalReceiptSha256": "934700230ad7055cfdc395ab19e739ed0d0c98efce5e75ffbea381ade3f53329",
+  "originalReceipt": {
+    "schemaVersion": 1,
+    "measuredAt": "2026-10-17T04:04:54.152037+00:00",
+    "target": "linux-x86_64",
+    "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+    "sourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+    "archivePath": "/tmp/machine-first-published-utility-20261017.tar.gz",
+    "extractedRoot": "/tmp/machine-first-published-utility-20261017-5f720ea9e54b/pui-0.1.0-linux-x86_64",
+    "provenancePath": "/tmp/machine-first-published-utility-20261017-5f720ea9e54b/pui-0.1.0-linux-x86_64/PROVENANCE.json",
+    "cases": [
+      {
+        "entrypoint": "bin/psu",
+        "argv": [],
+        "firstPrompt": "Where should psu run?",
+        "exitCode": 130,
+        "selectedMachine": false,
+        "agentLaunched": false
+      },
+      {
+        "entrypoint": "bin/pui",
+        "argv": [
+          "--connect"
+        ],
+        "firstPrompt": "Where should pui run?",
+        "exitCode": 130,
+        "selectedMachine": false,
+        "agentLaunched": false
+      }
+    ],
+    "logs": {
+      "psu": {
+        "path": "/tmp/machine-first-published-first-prompt-20261017.log",
+        "sha256": "0a053eb5c8b4d98622979a932b0f60b919a2ccf78e4b01dc8613c8679cb5257f"
+      },
+      "puiConnect": {
+        "path": "/tmp/machine-first-published-pui-first-prompt-20261017.log",
+        "sha256": "a316e00200ee0628a24e63a0d06fae8a93478f86feee677cc3d1efc4081dbc04"
+      }
+    },
+    "versionObserved": {
+      "package": "0.1.0",
+      "pui": "0.1.0",
+      "psu": "0.0.1"
+    },
+    "scope": "Only published archive bytes, runtime versions and machine picker before selection; current feature shipment, remote attach, downstream choices, forwarding, reconnect and refusal acceptance are not established."
+  },
+  "qualification": "Historical partial archive probe only. Both PTYs were cancelled before machine selection. No current launcher, complete entrypoint, connection or shipment acceptance is established. The original archive remains a recorded current-launcher-inclusion gap in the R2 case table.",
+  "retirementReason": "The active R4 verification set now has five exact current ledger-backed test bindings. This historical supporting observation is retained as history rather than current executable R4 proof; it is not a product failure erased to obtain a pass.",
+  "replacementTestBindingIds": [
+    58375,
+    58376,
+    58377,
+    58378,
+    58379
+  ],
+  "shipmentOpen": true
+}

@@ -728,7 +728,7 @@ export async function defaultEnsureCodexHomeForWake(
       import('../../capability-envelope/session-confinement-store')
         .then(() => import('../../capability-envelope/session-confinement-port')),
     ]);
-    const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(input.owner));
+    const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(input.owner, input.advSessionId));
     const sessionRow = input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null));
     const record =
       persistedRecord ??
@@ -765,6 +765,7 @@ export async function defaultEnsureCodexHomeForWake(
       ok: true,
       ...(await ensureSuCodexHomeConfigAsync({
         sessionKey: input.advSessionId,
+        recordedSqliteHome: record.codexSqliteHome,
         mcpUrl: spec.mcpUrl,
         sid: input.owner,
         model: record.model,

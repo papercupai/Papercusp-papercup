@@ -23,6 +23,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { closeSync, openSync } from 'node:fs';
 import { readFile, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join, isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
@@ -1067,6 +1068,9 @@ export interface DetachedReportArtifact {
     harnessSlug: string;
     workspaceId: string;
   };
+  /** File-backed child output. Detached recovery must not inherit pipes owned by the operator. */
+  stdoutPath?: string;
+  stderrPath?: string;
 }
 
 interface PreparedDetachedReportArtifact extends DetachedReportArtifact {
@@ -1182,6 +1186,13 @@ async function reconcilePersistedReportArtifact(
     || epochMs(row.task_ended_at ?? null) === null) return snapshot;
   const artifacts = detachedArtifactsFromRow(snapshot, row);
   if (artifacts.length === 0) return snapshot;
+  const outputArtifact = artifacts.find(artifact => artifact.stdoutPath || artifact.stderrPath);
+  await appendDetachedOutput(
+    snapshot,
+    outputArtifact?.stdoutPath && outputArtifact.stderrPath
+      ? { stdoutPath: outputArtifact.stdoutPath, stderrPath: outputArtifact.stderrPath }
+      : null,
+  );
   try {
     const expanded = await expandDetachedReportArtifacts(artifacts);
     const reports = await Promise.all(expanded.map(async artifact => ({
@@ -1230,6 +1241,10 @@ async function reconcilePersistedReportArtifact(
     await Promise.all(expanded.map(async artifact => {
       await rm(artifact.reportPath, { force: true }).catch(() => undefined);
       if (artifact.failureDetailsPath) await rm(artifact.failureDetailsPath, { force: true }).catch(() => undefined);
+      if (artifact.stdoutPath) await rm(artifact.stdoutPath, { force: true }).catch(() => undefined);
+      if (artifact.stderrPath && artifact.stderrPath !== artifact.stdoutPath) {
+        await rm(artifact.stderrPath, { force: true }).catch(() => undefined);
+      }
     }));
     return recovered;
   } catch {
@@ -1278,6 +1293,7 @@ interface PreparedRun {
   scopeCgroupPath: string | null;
   wrapped: ReturnType<SyncEnrolment['wrap']>;
   detachedReportArtifacts: PreparedDetachedReportArtifact[];
+  detachedOutputPaths: { stdoutPath: string; stderrPath: string } | null;
 }
 
 function prepareRun(
@@ -1306,10 +1322,30 @@ function prepareRun(
   // process.cwd() is therefore not a safe implicit tree for detached runs.
   const cwd = snapshots?.cwd ?? req.cwd ?? resolveAgentWorkspaceRoot({});
   const worktreeBefore = snapshots?.worktreeBefore ?? captureWorktreeSnapshot(cwd);
-  const detachedReportArtifacts = snapshots?.detachedReportArtifacts ?? (req.detachedReportArtifacts ?? []).map((artifact) => ({
+  const preparedDetachedReportArtifacts = snapshots?.detachedReportArtifacts ?? (req.detachedReportArtifacts ?? []).map((artifact) => ({
     ...artifact,
     worktreeBefore: artifact.root === cwd ? worktreeBefore : captureWorktreeSnapshot(artifact.root),
   }));
+  // A detached recovery is deliberately independent of the operator process. Pipes
+  // inherited by a systemd scope point back at that process, so a staging restart
+  // closes the read end and can terminate the surviving router before Vitest flushes
+  // its JSON report. Give local recovery runs file-backed sinks and persist their
+  // paths beside the report metadata for the successor worker.
+  const detachedOutputPaths = req.testRunSource === 'local' && preparedDetachedReportArtifacts.length > 0
+    ? {
+        stdoutPath: join(
+          dirname(preparedDetachedReportArtifacts[0]!.reportPath),
+          `papercusp-testing-run-detached-${runId}.stdout.log`,
+        ),
+        stderrPath: join(
+          dirname(preparedDetachedReportArtifacts[0]!.reportPath),
+          `papercusp-testing-run-detached-${runId}.stderr.log`,
+        ),
+      }
+    : null;
+  const detachedReportArtifacts = detachedOutputPaths
+    ? preparedDetachedReportArtifacts.map((artifact) => ({ ...artifact, ...detachedOutputPaths }))
+    : preparedDetachedReportArtifacts;
   const childEnv = {
     ...process.env,
     ...req.env,
@@ -1360,6 +1396,7 @@ function prepareRun(
     scopeCgroupPath,
     wrapped,
     detachedReportArtifacts,
+    detachedOutputPaths,
   };
 }
 
@@ -1483,9 +1520,37 @@ async function persistDetachedReportArtifacts(
             /* swallow — sidecar cleanup is best-effort */
           });
         }
+        if (consumed && artifact.stdoutPath) {
+          await rm(artifact.stdoutPath, { force: true }).catch(() => {
+            /* swallow — output cleanup is best-effort */
+          });
+        }
+        if (consumed && artifact.stderrPath && artifact.stderrPath !== artifact.stdoutPath) {
+          await rm(artifact.stderrPath, { force: true }).catch(() => {
+            /* swallow — output cleanup is best-effort */
+          });
+        }
       }
     }),
   );
+}
+
+const DETACHED_OUTPUT_MARKER = '\n[detached-recovery] persisted child output\n';
+
+/** Read file-backed detached output once, so a successor can retain diagnostics after restart. */
+async function appendDetachedOutput(
+  snapshot: RunSnapshot,
+  paths: { stdoutPath: string; stderrPath: string } | null,
+): Promise<void> {
+  if (!paths || snapshot.output.includes(DETACHED_OUTPUT_MARKER)) return;
+  const [stdout, stderr] = await Promise.all([
+    readFile(paths.stdoutPath, 'utf8').catch(() => ''),
+    readFile(paths.stderrPath, 'utf8').catch(() => ''),
+  ]);
+  if (!stdout && !stderr) return;
+  appendSnapshotOutput(snapshot, DETACHED_OUTPUT_MARKER);
+  if (stdout) appendSnapshotOutput(snapshot, `stdout:\n${stdout}`);
+  if (stderr) appendSnapshotOutput(snapshot, `\nstderr:\n${stderr}`);
 }
 
 function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot: boolean; snapshotSql?: SqlLike }): RunSnapshot {
@@ -1500,6 +1565,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     scopeCgroupPath,
     wrapped,
     detachedReportArtifacts,
+    detachedOutputPaths,
   } = prepared;
   const state: RunState = {
     snapshot, proc: null, cwd, worktreeBefore, finalization: null,
@@ -1515,6 +1581,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
         // The final snapshot must be written only after detached report rows and
         // failure details have been reconciled; otherwise testing:run-status can
         // observe a terminal run while its Vitest evidence is still in flight.
+        await appendDetachedOutput(snapshot, detachedOutputPaths);
         await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts, configurationSnapshot);
         await persistFallbackRow(snapshot, worktreeBefore, cwd, configurationSnapshot);
         await persistRunSnapshot(snapshot, state.snapshotSql);
@@ -1535,16 +1602,28 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     finishSyncEnrolment(enrolment, outcome, { scopeCgroupPath });
   };
   let proc: ChildProcess;
+  let stdoutFd: number | undefined;
+  let stderrFd: number | undefined;
   try {
+    if (detachedOutputPaths) {
+      stdoutFd = openSync(detachedOutputPaths.stdoutPath, 'a', 0o600);
+      stderrFd = openSync(detachedOutputPaths.stderrPath, 'a', 0o600);
+    }
     proc = spawn(wrapped.binary, wrapped.argv, {
-      cwd,
-      env: childEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // Detached runs are process-group leaders. This is required both for
-      // admin cancellation and for timeout recovery launched by testing:run:
-      // the router may own a nested Vitest process tree.
-      detached: true,
-    });
+        cwd,
+        env: childEnv,
+        // Detached local recovery must not inherit pipes owned by the operator:
+        // a staging restart closes those pipes while the systemd scope survives,
+        // which can terminate the router before Vitest flushes its JSON report.
+        // Ordinary runs retain the historical pipes for live output.
+        stdio: detachedOutputPaths
+          ? ['ignore', stdoutFd!, stderrFd!]
+          : ['ignore', 'pipe', 'pipe'],
+        // Detached runs are process-group leaders. This is required both for
+        // admin cancellation and for timeout recovery launched by testing:run:
+        // the router may own a nested Vitest process tree.
+        detached: true,
+      });
   } catch (e) {
     snapshot.status = 'error';
     snapshot.exitCode = -1;
@@ -1557,6 +1636,9 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
       exitReason: `spawn error: ${e instanceof Error ? e.message : String(e)}`,
     });
     return snapshot;
+  } finally {
+    if (stdoutFd !== undefined) closeSync(stdoutFd);
+    if (stderrFd !== undefined) closeSync(stderrFd);
   }
 
   state.proc = proc;

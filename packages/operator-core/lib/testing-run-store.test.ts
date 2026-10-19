@@ -402,6 +402,44 @@ describe('task lifecycle handlers', () => {
       await rm(reportDir, { recursive: true, force: true });
     }
   });
+
+  it('uses file-backed sinks for local detached recovery so a host restart cannot close its stdout pipe', async () => {
+    const reportDir = await mkdtemp('/tmp/papercusp-testing-run-detached-sinks-');
+    const reportPath = join(reportDir, 'papercusp-testing-run-detached-report.json');
+    try {
+      const snap = store.startRun(req({
+        testRunSource: 'local',
+        detachedReportArtifacts: [{
+          reportPath,
+          root: '/tmp',
+          scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+        }],
+      }));
+      const detail = taskManagerMocks.begin.mock.calls[0]?.[0]?.detail as {
+        detachedReportArtifacts?: { artifacts?: Array<{ stdoutPath?: string; stderrPath?: string }> };
+      };
+      const artifact = detail.detachedReportArtifacts?.artifacts?.[0];
+      expect(artifact?.stdoutPath).toContain(`${snap.runId}.stdout.log`);
+      expect(artifact?.stderrPath).toContain(`${snap.runId}.stderr.log`);
+      expect(spawnMock).toHaveBeenCalledWith(
+        'npx',
+        ['vitest', 'run'],
+        expect.objectContaining({
+          detached: true,
+          stdio: ['ignore', expect.any(Number), expect.any(Number)],
+        }),
+      );
+
+      await writeFile(artifact!.stdoutPath!, 'child output retained across restart\n');
+      // The file-backed output is read by the close-time finalizer even though no
+      // operator-owned stdout pipe exists to deliver this chunk.
+      lastChild._emitClose(0);
+      await vi.waitFor(() => expect(store.getRun(snap.runId)?.output).toContain('child output retained across restart'));
+    } finally {
+      await rm(reportDir, { recursive: true, force: true });
+    }
+  });
+
   it('finishes once on child error even when the child subsequently closes', () => {
     const snap = store.startRun(req());
     const enrolment = taskManagerMocks.begin.mock.results[0]?.value;

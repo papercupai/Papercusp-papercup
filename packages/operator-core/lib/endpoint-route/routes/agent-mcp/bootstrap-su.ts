@@ -3055,6 +3055,7 @@ export const bootstrapSu = defineTool({
     // a raw launch — no per-launch .mcp.json needed for su).
     let promptFile = '';
     let codexHome: string | null = null;
+    let codexSqliteHome: string | null = null;
     let codexCompactionLimit: number | null = null;
     const ambientContextAllowed = await sessionAllowsAmbientContext({ ownerId: sid, workspaceId: workspace });
     try {
@@ -3086,6 +3087,7 @@ export const bootstrapSu = defineTool({
           isOwnerLive: async (priorSid) => (await findLiveHostAsync(priorSid)) != null,
         });
         codexHome = ch.codexHome;
+        codexSqliteHome = ch.sqliteHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics
         instructionLint = ch.instructionLint ?? lintInstructionText(promptText, 20, instructionRuntime);
         const codexBlockingInstructions = blockingInstructionConflicts(instructionLint);
@@ -3308,6 +3310,7 @@ export const bootstrapSu = defineTool({
     {
       const launchSpecRecord: SuLaunchSpecRecord = {
         v: 1,
+        ...(codexSqliteHome ? { codexSqliteHome } : {}),
         agent,
         workspaceId: workspace,
         harnessSlug,

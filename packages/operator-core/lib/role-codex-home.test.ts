@@ -37,7 +37,7 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => homeHolder.home };
 });
 const ownerSidSyncCalls = vi.hoisted(() => [] as string[]);
-const configWriteFault = vi.hoisted(() => ({ armed: false }));
+const configWriteFault = vi.hoisted(() => ({ armed: false, readCode: null as string | null }));
 vi.mock('node:fs', async (importActual) => {
   const actual = await importActual<typeof import('node:fs')>();
   const isOwnerSid = (path: unknown) => String(path).endsWith('.owner-sid');
@@ -49,6 +49,9 @@ vi.mock('node:fs', async (importActual) => {
     },
     readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
       if (isOwnerSid(args[0])) ownerSidSyncCalls.push('readFileSync');
+      if (configWriteFault.readCode && String(args[0]).endsWith('/config.toml')) {
+        throw Object.assign(new Error('injected config read failure'), { code: configWriteFault.readCode });
+      }
       return actual.readFileSync(...args);
     },
     writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
@@ -71,6 +74,7 @@ const savedPapercuspHome = process.env.PAPERCUSP_HOME;
 beforeEach(() => {
   ownerSidSyncCalls.length = 0;
   configWriteFault.armed = false;
+  configWriteFault.readCode = null;
   fakeHome = mkdtempSync(join(tmpdir(), 'role-codex-home-test-'));
   homeHolder.home = fakeHome;
   process.env.PAPERCUSP_HOME = join(fakeHome, '.papercusp');
@@ -81,6 +85,7 @@ beforeEach(() => {
 
 afterEach(() => {
   configWriteFault.armed = false;
+  configWriteFault.readCode = null;
   if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
   if (savedCodexSqliteHomes === undefined) delete process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
   else process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = savedCodexSqliteHomes;
@@ -1286,6 +1291,43 @@ describe('writeSuCodexHome', () => {
     expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
     expect(readFileSync(database, 'utf8')).toBe('native conversation state');
     expect(existsSync(replacementRoot)).toBe(false);
+  });
+
+  it.each(['EACCES', 'EPERM'])('repairs an unreadable SU config only with its recorded SQLite binding (%s)', async (code) => {
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'private-config', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-private-config', promptText: 'KEEP NATIVE STATE' };
+    const first = writeSuCodexHome(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    const transcript = join(first.codexHome, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(first.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(database, 'native state');
+    writeFileSync(transcript, 'native transcript');
+    const changedRoot = join(fakeHome, 'different-serving-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = changedRoot;
+    configWriteFault.readCode = code;
+    expect(() => ensureSuCodexHomeConfig(input)).toThrow('injected config read failure');
+    const repaired = ensureSuCodexHomeConfig({ ...input, recordedSqliteHome: first.sqliteHome });
+    configWriteFault.readCode = null;
+    expect(repaired).toMatchObject({ repaired: false, configUnreadable: true, sqliteHome: first.sqliteHome });
+    expect(parseToml(readFileSync(first.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(readFileSync(database, 'utf8')).toBe('native state');
+    expect(readFileSync(transcript, 'utf8')).toBe('native transcript');
+    expect(existsSync(changedRoot)).toBe(false);
+  });
+
+  it('refuses conflicting SU SQLite receipts and propagates non-permission read failures', async () => {
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'conflicting-su-state', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-conflicting-state', promptText: 'KEEP NATIVE STATE' };
+    const first = writeSuCodexHome(input);
+    expect(() => ensureSuCodexHomeConfig({ ...input, recordedSqliteHome: join(fakeHome, 'other-state') }))
+      .toThrow('launch receipt and configured sqlite_home disagree');
+    expect(() => ensureSuCodexHomeConfig({ ...input, recordedSqliteHome: 'relative-state' }))
+      .toThrow('recorded sqlite_home must be an absolute path');
+    configWriteFault.readCode = 'EIO';
+    expect(() => ensureSuCodexHomeConfig({ ...input, recordedSqliteHome: first.sqliteHome }))
+      .toThrow('injected config read failure');
   });
 
   it('repairs malformed config tails from the intact root SQLite binding without guessing a state location', async () => {

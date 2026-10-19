@@ -293,6 +293,11 @@ describe('parseSuLaunchSpecRecord', () => {
     expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(good)))).toEqual(good);
   });
 
+  it('retains the Codex SQLite receipt through persona parsing and refresh', () => {
+    const record = { ...good, agent: 'codex', codexSqliteHome: '/launch-state/session-123' };
+    expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
+  });
+
   it('retains an exact named selection pin and rejects malformed pins', () => {
     const selectedIdentity = { ref: 'composition:review-suite', sourceRevision: 'a'.repeat(64) };
     expect(parseSuLaunchSpecRecord({ ...good, stack: ['domain:review-domain'], selectedIdentity }))
