@@ -692,6 +692,24 @@ describe('evaluatePlanAcceptanceGate', () => {
       },
     );
 
+    it('reuses one supplied BAR snapshot across ship and deferred pre-grading', async () => {
+      const snapshot = Promise.resolve({} as never);
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase,
+        phase === 'ship' ? ['bar_snapshot_grading_missing'] : []));
+
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', {
+        acceptanceBarContractSnapshot: snapshot,
+      });
+
+      expect(result).toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+      const lifecycleCalls = mockBarLifecycle.mock.calls.filter((call) => call[1] === 'ship' || call[1] === 'pre-grading');
+      expect(lifecycleCalls).toHaveLength(2);
+      expect(lifecycleCalls[0]?.[2]).toMatchObject({ snapshot });
+      expect(lifecycleCalls[1]?.[2]).toMatchObject({ snapshot });
+    });
+
     it('threads explicit pending delivery only to pre-grading and retains the strict ship refusal', async () => {
       mockRubric.mockResolvedValue(acceptanceRubric());
       mockScorecards.mockResolvedValue([]);

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import {NuqsTestingAdapter} from 'nuqs/adapters/testing';
 import EngagementViews from './EngagementViews';
 import DaoWorkspaceDetails from '../DaoWorkspaceDetails';
 
@@ -66,7 +67,7 @@ describe('Signed engagement actions',()=>{
   });
   it('keeps signer onboarding and retained records reachable without contributor work access',async()=>{
     fetcher.mockResolvedValue(Response.json({ok:true,engagement:view({offboarding:{kind:'resigned',retainedEarned:'500'}})}));
-    render(<DaoWorkspaceDetails section="members" view={{directoryId:'dao',localHomeSlug:null,contractHomeSlug:'local-dao',status:'not-joined'}} loading={false} error="" />);
+    render(<NuqsTestingAdapter><DaoWorkspaceDetails section="members" view={{directoryId:'dao',localHomeSlug:null,contractHomeSlug:'local-dao',status:'not-joined'}} loading={false} error="" /></NuqsTestingAdapter>);
     const form=screen.getByRole('form',{name:'Open signed engagement'});
     fireEvent.change(within(form).getByLabelText('Signed offer reference'),{target:{value:'offer'}});fireEvent.submit(form);
     expect(screen.getByRole('region',{name:'Signer onboarding'})).toBeTruthy();await screen.findByText(/Retained earned shares: 500/);

@@ -280,6 +280,17 @@ describe('readAndEvaluateAcceptanceBarLifecycle — authoritative applicability'
     expect(await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-start'))
       .toMatchObject({ applicable: true, satisfied: true, codes: [] });
   });
+
+  it('evaluates a supplied snapshot without starting another BAR read', async () => {
+    const supplied = snapshot();
+
+    const result = await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'ship', {
+      snapshot: supplied,
+    });
+
+    expect(result).toMatchObject({ applicable: true, phase: 'ship' });
+    expect(readAcceptanceBarContractSnapshot).not.toHaveBeenCalled();
+  });
 });
 
 describe('operational realization from the canonical BAR snapshot', () => {

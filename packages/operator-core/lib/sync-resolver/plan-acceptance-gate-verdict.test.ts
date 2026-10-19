@@ -78,7 +78,10 @@ describe('P-011 acceptance-gate read — never flatten a non-check into a pass',
   it('threads the exact subject harness to both canonical readers', async () => {
     gateSpy.mockResolvedValue({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
     await run({ ...ARGS, harnessSlug: 'other-home' });
-    expect(gateSpy).toHaveBeenCalledWith('p-1', { harnessSlug: 'other-home' });
+    expect(gateSpy).toHaveBeenCalledWith('p-1', expect.objectContaining({
+      harnessSlug: 'other-home',
+      acceptanceBarContractSnapshot: expect.any(Promise),
+    }));
     expect(snapshotSpy).toHaveBeenCalledWith('p-1', {}, { harnessSlug: 'other-home' });
   });
 
@@ -101,7 +104,9 @@ describe('P-011 acceptance-gate read — never flatten a non-check into a pass',
   it('asks the gate about the plan it was given', async () => {
     gateSpy.mockResolvedValue({ satisfied: true });
     await run();
-    expect(gateSpy).toHaveBeenCalledWith('p-1');
+    expect(gateSpy).toHaveBeenCalledWith('p-1', expect.objectContaining({
+      acceptanceBarContractSnapshot: expect.any(Promise),
+    }));
     expect(snapshotSpy).toHaveBeenCalledWith('p-1');
   });
 
@@ -118,8 +123,33 @@ describe('P-011 acceptance-gate read — never flatten a non-check into a pass',
 
     await run({ ...ARGS, current });
 
-    expect(gateSpy).toHaveBeenCalledWith('p-1', { current });
+    expect(gateSpy).toHaveBeenCalledWith('p-1', expect.objectContaining({
+      current,
+      acceptanceBarContractSnapshot: expect.any(Promise),
+    }));
     expect(snapshotSpy).toHaveBeenCalledWith('p-1', {}, { current });
+  });
+
+  it('shares one in-flight BAR snapshot with the gate instead of rereading it', async () => {
+    const snapshot = {
+      schemaVersion: 1,
+      contentHash: 'shared-snapshot',
+      planSlug: 'p-1',
+      bars: [],
+    };
+    snapshotSpy.mockResolvedValue(snapshot);
+    gateSpy.mockImplementation(async (_planSlug: string, opts: {
+      acceptanceBarContractSnapshot?: Promise<unknown>;
+    }) => {
+      expect(opts.acceptanceBarContractSnapshot).toBeInstanceOf(Promise);
+      expect(await opts.acceptanceBarContractSnapshot).toBe(snapshot);
+      return { satisfied: false, code: 'plan_items_unfinished' };
+    });
+
+    const row = await run();
+
+    expect(snapshotSpy).toHaveBeenCalledTimes(1);
+    expect(row.acceptanceBarContractSnapshot).toBe(snapshot);
   });
 
   it('carries the shared BAR snapshot without re-deriving or summarizing it', async () => {

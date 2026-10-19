@@ -89,6 +89,7 @@ import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
 import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
+import type { AcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
 import { evaluateIndependentVerificationGate } from './independent-verification-gate';
@@ -401,6 +402,12 @@ export interface PlanAcceptanceGateOpts {
   harnessSlug?: string;
   /** Freshly measured fingerprints for the original requirements' bound proof. */
   current?: import('./agent-tools/plans/spec-evidence-store').EvidenceCurrentInput[];
+  /**
+   * Internal read-path seam: the sync resolver may already have an in-flight BAR
+   * snapshot. Sharing it keeps the resolver, ship phase, and deferred pre-grading
+   * phase on one immutable observation instead of repeating the bounded join.
+   */
+  acceptanceBarContractSnapshot?: AcceptanceBarContractSnapshot | Promise<AcceptanceBarContractSnapshot>;
   /**
    * An explicit, reasoned override of the CODE-TRUTH family only —
    * `plan_items_unfinished`, `acceptance_unaudited`, `audit_coverage_stale`,
@@ -872,6 +879,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         expectedApplicable,
         ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
         ...(opts.current ? { current: opts.current } : {}),
+        ...(opts.acceptanceBarContractSnapshot ? { snapshot: opts.acceptanceBarContractSnapshot } : {}),
       });
       nonCodeItemProofs = barLifecycle.nonCodeItemProofs ?? [];
       barContractApplicable = barLifecycle.applicable;
@@ -920,6 +928,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
           ...(opts.current ? { current: opts.current } : {}),
           ...(opts.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: opts.pendingDeliveryBarKeys } : {}),
+          ...(opts.acceptanceBarContractSnapshot ? { snapshot: opts.acceptanceBarContractSnapshot } : {}),
         });
         // P-038: the pre-grading verdict IS the explanation of this refusal — the ship-phase
         // codes include grading/author-verdict obligations nobody can work yet. Return it

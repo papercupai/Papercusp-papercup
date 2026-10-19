@@ -80,6 +80,12 @@ export interface AcceptanceBarLifecycleOptions {
   requireCompleteContractBeforeProof?: boolean;
   /** Pre-grading only. Scorecard doors require an unknown rating for every selected BAR. */
   pendingDeliveryBarKeys?: readonly string[];
+  /**
+   * Reuse a snapshot that the caller already read for this gate evaluation. A promise is
+   * accepted so independent readers can share one in-flight snapshot without serializing
+   * the resolver and the gate. The resolved snapshot remains immutable for every phase.
+   */
+  snapshot?: AcceptanceBarContractSnapshot | Promise<AcceptanceBarContractSnapshot>;
 }
 
 const DELIVERY_PROOF_CODES = new Set<AcceptanceBarSnapshotCode>([
@@ -582,10 +588,12 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
     harnessSlug?: string;
   } & AcceptanceBarLifecycleOptions = {},
 ): Promise<AcceptanceBarLifecycleVerdict> {
-  const snapshot = await readAcceptanceBarContractSnapshot(planSlug, {}, {
-    current: options.current,
-    ...(options.harnessSlug ? { harnessSlug: options.harnessSlug } : {}),
-  });
+  const snapshot = options.snapshot
+    ? await options.snapshot
+    : await readAcceptanceBarContractSnapshot(planSlug, {}, {
+        current: options.current,
+        ...(options.harnessSlug ? { harnessSlug: options.harnessSlug } : {}),
+      });
   // Only a positively identified legacy plan may bypass the contract. A missing,
   // unavailable, ambiguous, or truncated subject read cannot establish legacy
   // status, even when a generic start door has no adoption-marker assertion.

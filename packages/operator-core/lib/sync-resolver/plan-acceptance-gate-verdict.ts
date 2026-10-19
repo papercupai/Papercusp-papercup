@@ -121,18 +121,23 @@ export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateA
       ...(args.current ? { current: args.current } : {}),
     };
     const scoped = Object.keys(scope).length > 0;
+    // Share one in-flight BAR snapshot with the gate. The gate evaluates the same
+    // immutable snapshot for ship and (when grading is missing/stale) pre-grading;
+    // keeping this promise shared avoids a second and third bounded source join.
+    const snapshotPromise = scoped
+      ? snapshotMod.readAcceptanceBarContractSnapshot(planSlug, {}, scope)
+      : snapshotMod.readAcceptanceBarContractSnapshot(planSlug);
+    const snapshotResultPromise = snapshotPromise
+      .then((snapshot) => ({ snapshot, error: null as string | null }))
+      .catch((error) => ({
+        snapshot: null,
+        error: error instanceof Error ? error.message : String(error),
+      }));
     const [v, snapshotResult] = await Promise.all([
       scoped
-        ? mod.evaluatePlanAcceptanceGate(planSlug, scope)
-        : mod.evaluatePlanAcceptanceGate(planSlug),
-      (scoped
-        ? snapshotMod.readAcceptanceBarContractSnapshot(planSlug, {}, scope)
-        : snapshotMod.readAcceptanceBarContractSnapshot(planSlug))
-        .then((snapshot) => ({ snapshot, error: null as string | null }))
-        .catch((error) => ({
-          snapshot: null,
-          error: error instanceof Error ? error.message : String(error),
-        })),
+        ? mod.evaluatePlanAcceptanceGate(planSlug, { ...scope, acceptanceBarContractSnapshot: snapshotPromise })
+        : mod.evaluatePlanAcceptanceGate(planSlug, { acceptanceBarContractSnapshot: snapshotPromise }),
+      snapshotResultPromise,
     ]);
 
     return [
