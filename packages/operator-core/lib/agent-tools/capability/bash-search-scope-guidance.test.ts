@@ -75,7 +75,8 @@ describe('capability:bash — repository search scope guidance', () => {
 
     expect(description).toContain('Required when you hold multiple work-items');
     expect(description).toContain('held-item attribution cannot be measured');
-    expect(description).toContain('name one you currently hold');
+    expect(description).toContain('pass the exact full id returned by scheduler:get_next or work_items:get');
+    expect(description).toContain('Shortened or inferred ids are refused');
   });
 
   it('detects the reported unbounded all-ref pickaxe search but permits bounded or focused forms', () => {
