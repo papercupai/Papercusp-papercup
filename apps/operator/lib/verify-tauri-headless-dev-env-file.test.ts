@@ -139,6 +139,36 @@ describe('WI-10007640 — a verifier snapshot launches against the same DB the p
   });
 });
 
+describe('shared verifier runtime home', () => {
+  it.each(['workspace', 'explicit', 'isolated'])('keeps the parent and launched child on the %s home', mode => {
+    tmp = mkdtempSync(join(tmpdir(), 'verifier-runtime-home-'));
+    const workspaces = join(tmp, 'workspaces');
+    const workspaceHome = join(workspaces, 'auth-test', '.papercusp');
+    mkdirSync(workspaceHome, { recursive: true });
+    writeFileSync(join(workspaces, 'registry.json'), JSON.stringify({
+      current: 'auth-test', workspaces: [{ id: 'auth-test', name: 'Auth test', createdAt: 1 }],
+    }));
+    const block = sliceLines(VERIFIER,
+      'if [ "${ISOLATED_DB:-0}" != "1" ] && [ -z "${PAPERCUSP_HOME:-}" ]; then', 'fi');
+    const env: Record<string, string> = {
+      PATH: process.env.PATH ?? '/usr/bin:/bin', REPO_DIR: ROOT,
+      ISOLATED_DB: mode === 'isolated' ? '1' : '0',
+      PAPERCUSP_WORKSPACES_ROOT: workspaces, PAPERCUSP_WORKSPACE_ID: 'auth-test',
+    };
+    const explicit = join(tmp, 'explicit home');
+    if (mode === 'explicit') env.PAPERCUSP_HOME = explicit;
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail', block,
+      'printf "parent=%s\\n" "${PAPERCUSP_HOME:-}"',
+      'node -e \'console.log("child=" + (process.env.PAPERCUSP_HOME ?? ""))\'',
+    ].join('\n')], { env, encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const expected = mode === 'workspace' ? workspaceHome : mode === 'explicit' ? explicit : '';
+    expect(result.stdout.trim().split('\n')).toEqual(['parent=' + expected, 'child=' + expected]);
+    expect(VERIFIER.indexOf(block)).toBeLessThan(VERIFIER.indexOf('write_and_launch_tauri()'));
+  });
+});
+
 describe('live verifier authenticated runtime precondition', () => {
   it.each([0, 1])('retains server/caller paths without credentials when the authenticated read exits %s', async (exitCode) => {
     tmp = mkdtempSync(join(tmpdir(), 'verifier-runtime-auth-'));

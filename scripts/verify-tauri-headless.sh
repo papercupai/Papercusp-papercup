@@ -3794,6 +3794,14 @@ OPERATOR_SOURCE_ENV_LINE="PAPERCUSP_DEV_SOURCE_ROOT=\"$OPERATOR_SOURCE_ROOT\" PA
 if [ "${ISOLATED_DB:-0}" != "1" ] && [ -n "$OPERATOR_SOURCE_ROOT" ] && [ -f "$REPO_DIR/apps/operator/.env.local" ]; then
   OPERATOR_SOURCE_ENV_LINE="$OPERATOR_SOURCE_ENV_LINE PAPERCUSP_DEV_ENV_FILE=\"$REPO_DIR/apps/operator/.env.local\""
 fi
+# tauri-guarded resolves this home in its child shell. Resolve it here first so
+# the assertion parent inherits the same workspace bearer path as the runtime.
+# Preserve caller pins and the separate isolated-DB identity below.
+if [ "${ISOLATED_DB:-0}" != "1" ] && [ -z "${PAPERCUSP_HOME:-}" ]; then
+  PAPERCUSP_HOME="$(cd "$REPO_DIR" && node --import tsx --input-type=module -e \
+    'import { papercuspRoot } from "./packages/operator-core/lib/papercusp-root.ts"; process.stdout.write(papercuspRoot());')"
+  export PAPERCUSP_HOME
+fi
 # write_and_launch_tauri — (re)generate launch.sh for the CURRENT $DEV_PORT /
 # $PTY_PORT / $LOG and exec it, setting $TAURI_PID. Factored out so the
 # bind-time retry below (EI-18734124566158657) can call it again against a
