@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
-import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand } from './native-bootstrap-runtime';
+import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand, reloadNativeWorkbench } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
 
 const repo = resolve(import.meta.dirname, '../../../..');
@@ -103,19 +104,69 @@ describe('native bootstrap admission and lifecycle', () => {
       .rejects.toMatchObject({ killed: true, signal: 'SIGTERM' });
   });
 
+  function reloadFixture(states: Array<'old-document' | 'missing-router' | 'missing-workspace' | 'ready'>) {
+    const document = (routerReady: boolean, workspaceReady: boolean) => ({
+      window: routerReady ? { __TSR_ROUTER__: { navigate() {} } } : {},
+      location: { href: 'https://native.fixture.invalid/daos?private=not-for-diagnostics' },
+      document: { querySelector: () => workspaceReady ? {} : null },
+    });
+    let page = document(true, true);
+    const observed: boolean[] = [], calls: string[][] = [];
+    const failure = new Error('Native readiness deadline');
+    const native = async (...args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'eval') return String(runInNewContext(args[1], page));
+      if (args[0] === 'navigate') return '{"success":true}'; // The old document is still ready.
+      if (args[0] === 'wait') {
+        for (const state of states) {
+          if (state !== 'old-document') page = document(state !== 'missing-router', state !== 'missing-workspace');
+          const ready = Boolean(runInNewContext(args[2], page));
+          observed.push(ready);
+          if (ready) return 'true';
+        }
+        throw failure;
+      }
+      throw new Error('Unexpected native command');
+    };
+    return { native, observed, calls, failure };
+  }
+
+  it('waits for document replacement, router initialization and workspace render after native navigation acknowledges', async () => {
+    const fixture = reloadFixture(['old-document', 'missing-router', 'missing-workspace', 'ready']);
+    const diagnostics: object[] = [];
+    await reloadNativeWorkbench(fixture.native, diagnostic => diagnostics.push(diagnostic));
+    expect(fixture.observed).toEqual([false, false, false, true]);
+    expect(fixture.calls.map(call => call[0])).toEqual(['eval', 'navigate', 'wait']);
+    expect(fixture.calls[1]).toEqual(['navigate', 'https://native.fixture.invalid/daos?private=not-for-diagnostics', '--json']);
+    expect(fixture.calls[2].slice(3)).toEqual(['--timeout', '60000', '--interval', '500']);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it.each(['old-document', 'missing-router', 'missing-workspace'] as const)('refuses a reload stuck at %s and retains safe readiness evidence', async state => {
+    const fixture = reloadFixture([state]);
+    const diagnostics: object[] = [];
+    await expect(reloadNativeWorkbench(fixture.native, diagnostic => diagnostics.push(diagnostic))).rejects.toBe(fixture.failure);
+    expect(fixture.observed).toEqual([false]);
+    expect(diagnostics).toEqual([{ phase: 'reload-ready', state: {
+      documentReplaced: state !== 'old-document', routerReady: state !== 'missing-router', workspaceReady: state !== 'missing-workspace',
+    } }]);
+    expect(JSON.stringify(diagnostics)).not.toMatch(/private|native\.fixture|https:/);
+  });
+
   it('retains failed verifier assertion snapshots through scratch teardown without copying credentials', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'daohr-diagnostic-retention-'));
     const scratch = join(dir, 'private'), evidence = join(dir, 'evidence');
     mkdirSync(scratch); mkdirSync(evidence);
     const result = join(scratch, 'result.json'), log = join(evidence, 'native.log');
     const suffixes = ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json',
-      '.completion-response.json', '.control-failure.json', '.http-failure.json'];
+      '.completion-response.json', '.control-failure.json', '.http-failure.json', '.navigation-failure.json'];
     const snapshots = [
       ...suffixes.slice(0, 3).map((suffix, i) => ({ failure: suffix, step: i, text: 'Native candidate' })),
       { status: 409, ok: false, error: 'invalid_completion',
         completion: { check: 'envelope_schema', providerStatus: 'PENDING', invalidFields: ['completedAt'] } },
       { scope: 'onboarding', control: 'Wallet signature', controls: [], alerts: [] },
       { phase: 'sealed-document', errorCode: 'UND_ERR_SOCKET' },
+      { phase: 'reload-ready', state: { documentReplaced: true, routerReady: false, workspaceReady: false } },
     ];
     writeFileSync(join(scratch, 'native-config.json'), '{"privateKey":"secret"}');
     writeFileSync(join(scratch, 'candidate-provider.json'), '{"cookies":["secret"]}');

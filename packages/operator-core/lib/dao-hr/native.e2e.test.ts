@@ -22,7 +22,7 @@ import { getContractExecution } from './contracts-esign';
 import { DocumensoAdapter, DocumensoError } from './documenso';
 import type { DaoCapTable, DaoWorkspaceView } from '../dao-workspace-types';
 import type { EquityArtifacts } from '../equity/compile';
-import { nativeHttpPhase, runNativeCommand } from './native-bootstrap-runtime';
+import { nativeHttpPhase, runNativeCommand, reloadNativeWorkbench } from './native-bootstrap-runtime';
 
 describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.env.DAO_HR_NATIVE_CONFIG)('P012 actual native hiring journey', () => {
   it('creates, approves, signs, votes, accepts and admits one candidate, then reads People, org and cap table', async () => {
@@ -39,7 +39,8 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const native = (...args: string[]) => runNativeCommand(tool, [...args, '--pid', String(profile.tauriPID)], { encoding: 'utf8', env: privateEnv, timeout: 65_000 });
     const ev = async (code: string) => await native('eval', code);
     const value = async <T = any>(code: string): Promise<T> => JSON.parse(await ev('JSON.stringify(' + code + ')'));
-    const reload = async () => await native('navigate', await value<string>('location.href'), '--json');
+    const reload = () => reloadNativeWorkbench(native, diagnostic =>
+      writeFileSync(config.resultPath + '.navigation-failure.json', JSON.stringify(diagnostic), { mode: 0o600 }));
     const wait = async (code: string) => await native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
     const withControlDiagnostics = async (kind: string, label: string, action: () => Promise<string>) => {
       try { return await action(); }

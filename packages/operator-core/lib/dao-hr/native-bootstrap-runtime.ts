@@ -22,6 +22,29 @@ export async function runNativeCommand(command: string, args: string[], options:
   return stdout;
 }
 
+/** Native navigate acknowledges location assignment, before the new document boots. */
+export async function reloadNativeWorkbench(native: (...args: string[]) => Promise<string>,
+  retain: (diagnostic: { phase: string; state?: { documentReplaced: boolean; routerReady: boolean; workspaceReady: boolean }; captureUnavailable?: true }) => void): Promise<void> {
+  const marker = JSON.stringify(randomUUID());
+  const state = `({documentReplaced:window.__DAO_HR_RELOAD_MARKER__!==${marker},routerReady:typeof window.__TSR_ROUTER__?.navigate==='function',workspaceReady:!!document.querySelector('[data-testid=dao-workspace]')})`;
+  let phase = 'reload-mark';
+  try {
+    const url = JSON.parse(await native('eval', `JSON.stringify((window.__DAO_HR_RELOAD_MARKER__=${marker},location.href))`)) as string;
+    phase = 'reload-navigate';
+    await native('navigate', url, '--json');
+    phase = 'reload-ready';
+    // A ready router in the outgoing document must not satisfy this barrier.
+    await native('wait', '--eval', `(()=>{const s=${state};return s.documentReplaced&&s.routerReady&&s.workspaceReady})()`,
+      '--timeout', '60000', '--interval', '500');
+  } catch (error) {
+    let diagnostic: { state?: { documentReplaced: boolean; routerReady: boolean; workspaceReady: boolean }; captureUnavailable?: true };
+    try { diagnostic = { state: JSON.parse(await native('eval', 'JSON.stringify(' + state + ')')) }; }
+    catch { diagnostic = { captureUnavailable: true }; }
+    retain({ phase, ...diagnostic });
+    throw error;
+  }
+}
+
 /** Classify the whole HTTP operation, including body reads, without retaining URLs or secrets. */
 export async function nativeHttpPhase<T>(phase: 'wallet-rpc' | 'provider-completion-webhook' | 'sealed-document' | 'audit-certificate',
   action: () => Promise<T>, retain: (diagnostic: { phase: string; errorCode: string }) => void): Promise<T> {
@@ -41,7 +64,7 @@ export async function nativeHttpPhase<T>(phase: 'wallet-rpc' | 'provider-complet
 export function retainNativeDiagnostics(resultPath: string, logPath: string) {
   const retained: Array<{ suffix: string; status: 'retained' | 'skipped' | 'error'; path?: string; reason?: string }> = [];
   for (const suffix of ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json',
-    '.completion-response.json', '.control-failure.json', '.http-failure.json']) {
+    '.completion-response.json', '.control-failure.json', '.http-failure.json', '.navigation-failure.json']) {
     let input: number | undefined, output: number | undefined;
     try {
       input = openSync(resultPath + suffix, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
