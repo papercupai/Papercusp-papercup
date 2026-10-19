@@ -12,7 +12,7 @@
  * `adv:sessions_list` MCP tool (later).
  */
 
-import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { createDedicatedOrgPg, DbCallDeadlineError, getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
@@ -1946,6 +1946,51 @@ const NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS = 1_000;
 // queue wait. Give this verifier one explicit 7.5s attempt rather than making
 // a normal queue delay look like a failed session binding.
 const NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS = 7_500;
+const NATIVE_SESSION_VERIFY_DEDICATED_POOL_LABEL = 'native-session-verifier-fallback';
+const NATIVE_SESSION_VERIFY_DEDICATED_POOL_END_TIMEOUT_SEC = 5;
+
+/**
+ * The verifier must fail closed for query/authorization errors, but a measured
+ * shared-pool acquisition deadline is a transport failure. Retry that one
+ * bounded phase through a caller-owned, session-affine client so PgBouncer's
+ * transaction queue cannot make a valid native session look unbound.
+ */
+function isNativeSessionVerifierAcquireDeadline(
+  error: unknown,
+  pool: 'org-app' | 'org-admin',
+  phase: 'workspace' | 'global',
+): error is DbCallDeadlineError {
+  const label = error instanceof DbCallDeadlineError ? error.label : '';
+  const isAcquireLabel = phase === 'workspace'
+    ? label.startsWith('withWorkspace:acquire(')
+    : label.startsWith('boundedOrgTxn:begin(') || label.startsWith('boundedOrgTxn:setup-');
+  return error instanceof DbCallDeadlineError
+    && error.pool === pool
+    && isAcquireLabel;
+}
+
+async function runNativeSessionVerifierOnDedicatedPool<T>(
+  fn: (tx: ReturnType<typeof getOrgPg>['sql']) => Promise<T>,
+): Promise<T> {
+  const { sql } = createDedicatedOrgPg(NATIVE_SESSION_VERIFY_DEDICATED_POOL_LABEL, {
+    max: 1,
+    // A direct session avoids the shared PgBouncer transaction queue observed
+    // during the recurring verifier deadline failures.
+    sessionAffinity: true,
+  });
+  try {
+    return await boundedOrgTxn(fn, {
+      client: sql,
+      readOnly: true,
+      acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+      acquireRetries: 0,
+      statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+      lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+    });
+  } finally {
+    await sql.end({ timeout: NATIVE_SESSION_VERIFY_DEDICATED_POOL_END_TIMEOUT_SEC });
+  }
+}
 
 type OwnerNativeSessionClassification = {
   binding: OwnerNativeSessionBinding;
@@ -2035,32 +2080,47 @@ async function classifyOwnerNativeSessionUnshared(opts: {
       // A bound match inside the request's RLS scope is sufficient. Negative
       // results need the existing global read to preserve cross-workspace
       // unbound/foreign semantics exactly.
-      const scoped = await traceNamedQueryStage('native-session-verifier-workspace-transaction', () =>
-        withWorkspace(opts.workspaceId!, classifyRows, {
+      try {
+        const scoped = await traceNamedQueryStage('native-session-verifier-workspace-transaction', () =>
+          withWorkspace(opts.workspaceId!, classifyRows, {
+            readOnly: true,
+            acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+            acquireRetries: 0,
+            statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+            lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+          }));
+        if (scoped.binding === 'bound') return scoped;
+      } catch (error) {
+        if (!isNativeSessionVerifierAcquireDeadline(error, 'org-app', 'workspace')) throw error;
+        // A measured app-pool acquisition deadline is handled by the same
+        // isolated admin read below; query errors still fail closed.
+        return await traceNamedQueryStage('native-session-verifier-global-transaction', () =>
+          runNativeSessionVerifierOnDedicatedPool(classifyRows));
+      }
+    }
+
+    try {
+      return await traceNamedQueryStage('native-session-verifier-global-transaction', () =>
+        boundedOrgTxn(classifyRows, {
           readOnly: true,
           acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+          // postgres-js cannot cancel a begin that is still queued when the local
+          // acquisition deadline wins. This verifier runs before every MCP call, so
+          // retrying would add another pending org-admin acquisition per request.
+          // Do not retry that same queue; the catch below switches to the isolated
+          // direct client only after this bounded attempt fails.
           acquireRetries: 0,
+          // This verifier runs before every MCP tool call, so an overly short global
+          // override can turn normal org-admin pool queuing into an auth failure.
+          // Keep query and lock budgets narrow after a connection has been acquired.
           statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
           lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
         }));
-      if (scoped.binding === 'bound') return scoped;
+    } catch (error) {
+      if (!isNativeSessionVerifierAcquireDeadline(error, 'org-admin', 'global')) throw error;
+      return await traceNamedQueryStage('native-session-verifier-global-transaction', () =>
+        runNativeSessionVerifierOnDedicatedPool(classifyRows));
     }
-
-    return await traceNamedQueryStage('native-session-verifier-global-transaction', () =>
-      boundedOrgTxn(classifyRows, {
-        readOnly: true,
-        acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
-        // postgres-js cannot cancel a begin that is still queued when the local
-        // acquisition deadline wins. This verifier runs before every MCP call, so
-        // retrying would add another pending org-admin acquisition per request.
-        // Fail closed on the first measured timeout instead of amplifying that queue.
-        acquireRetries: 0,
-        // This verifier runs before every MCP tool call, so an overly short global
-        // override can turn normal org-admin pool queuing into an auth failure.
-        // Keep query and lock budgets narrow after a connection has been acquired.
-        statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
-        lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
-      }));
   } catch (error) {
     // Keep the original error and fail-closed behavior, but expose the last
     // verifier phase to the pre-dispatch telemetry seam without logging SQL or row data.

@@ -6,6 +6,10 @@ const {
   advSessionRowsMock,
   advSessionBeginMock,
   appSessionRowsMock,
+  dedicatedSessionRowsMock,
+  dedicatedSessionBeginMock,
+  dedicatedSessionEndMock,
+  dedicatedPoolCalls,
   workspaceCalls,
   acquireTimeouts,
   acquireRetries,
@@ -13,10 +17,17 @@ const {
   const sql = vi.fn(async () => [] as unknown[]);
   const begin = vi.fn(async (fn: (tx: typeof sql) => unknown) => fn(sql));
   const appSql = vi.fn(async () => [] as unknown[]);
+  const dedicatedSql = vi.fn(async () => [] as unknown[]);
+  const dedicatedBegin = vi.fn(async (fn: (tx: typeof dedicatedSql) => unknown) => fn(dedicatedSql));
+  const dedicatedEnd = vi.fn(async () => undefined);
   return {
     advSessionRowsMock: sql,
     advSessionBeginMock: begin,
     appSessionRowsMock: appSql,
+    dedicatedSessionRowsMock: dedicatedSql,
+    dedicatedSessionBeginMock: dedicatedBegin,
+    dedicatedSessionEndMock: dedicatedEnd,
+    dedicatedPoolCalls: [] as Array<{ label: string; options?: { max?: number; sessionAffinity?: boolean } }>,
     workspaceCalls: [] as Array<{
       workspaceId: string;
       options?: {
@@ -36,6 +47,16 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return {
     ...actual,
     getOrgPg: () => ({ sql: Object.assign(advSessionRowsMock, { begin: advSessionBeginMock }) }),
+    createDedicatedOrgPg: vi.fn((label: string, options?: { max?: number; sessionAffinity?: boolean }) => {
+      dedicatedPoolCalls.push({ label, options });
+      return {
+        sql: Object.assign(dedicatedSessionRowsMock, {
+          begin: dedicatedSessionBeginMock,
+          end: dedicatedSessionEndMock,
+        }),
+        url: 'postgres://dedicated-fallback',
+      };
+    }),
     withWorkspace: (async (
       workspaceId: string,
       fn: (tx: unknown) => Promise<unknown>,
@@ -92,6 +113,13 @@ beforeEach(() => {
   appSessionRowsMock.mockReset();
   appSessionRowsMock.mockResolvedValue([]);
   workspaceCalls.length = 0;
+  dedicatedSessionRowsMock.mockReset();
+  dedicatedSessionRowsMock.mockResolvedValue([]);
+  dedicatedSessionBeginMock.mockReset();
+  dedicatedSessionBeginMock.mockImplementation(async (fn: (tx: typeof dedicatedSessionRowsMock) => unknown) => fn(dedicatedSessionRowsMock));
+  dedicatedSessionEndMock.mockReset();
+  dedicatedSessionEndMock.mockResolvedValue(undefined);
+  dedicatedPoolCalls.length = 0;
   advSessionBeginMock.mockReset();
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
   acquireTimeouts.length = 0;
@@ -392,18 +420,42 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     ]);
   });
 
-  it('fails closed after one retryable acquisition timeout without retrying a queued begin', async () => {
+  it('retries a measured admin acquisition timeout through an isolated direct pool', async () => {
     const timeout = new DbCallDeadlineError('boundedOrgTxn:begin(admin)', 7_500, 7_500, 'org-admin');
     Object.defineProperty(timeout, 'retryable', { value: true });
+    advSessionBeginMock.mockRejectedValue(timeout);
+    dedicatedSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      return query.includes('FROM harness_shared.adv_sessions')
+        ? [{ id: 541, session_id: nativeId, active: true }]
+        : [];
+    });
+
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId })).resolves.toEqual({
+      binding: 'bound', boundSessionId: nativeId, advSessionId: 541,
+    });
+
+    expect(advSessionBeginMock).toHaveBeenCalledTimes(1);
+    expect(advSessionRowsMock).not.toHaveBeenCalled();
+    expect(dedicatedSessionBeginMock).toHaveBeenCalledTimes(1);
+    expect(dedicatedPoolCalls).toEqual([{
+      label: 'native-session-verifier-fallback',
+      options: { max: 1, sessionAffinity: true },
+    }]);
+    expect(dedicatedSessionEndMock).toHaveBeenCalledWith({ timeout: 5 });
+    expect(acquireRetries).toEqual([0, 0]);
+    expect(acquireTimeouts).toEqual([7_500, 7_500]);
+  });
+
+  it('still fails closed for a non-acquisition verifier error', async () => {
+    const timeout = new DbCallDeadlineError('boundedOrgTxn:query', 7_500, 7_500, 'org-admin');
     advSessionBeginMock.mockRejectedValue(timeout);
 
     await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId })).rejects.toBe(timeout);
     expect((timeout as DbCallDeadlineError & { nativeSessionVerificationPhase?: string }).nativeSessionVerificationPhase)
       .toBe('transaction_setup');
-
-    expect(advSessionBeginMock).toHaveBeenCalledTimes(1);
-    expect(advSessionRowsMock).not.toHaveBeenCalled();
-    expect(acquireRetries).toEqual([0]);
+    expect(dedicatedPoolCalls).toHaveLength(0);
   });
 
   it.each([
