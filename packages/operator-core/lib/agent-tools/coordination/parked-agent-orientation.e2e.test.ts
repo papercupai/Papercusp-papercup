@@ -52,7 +52,8 @@ describe.skipIf(!LIVE && inject('papercuspTestLayer') !== 'e2e')('LIVE: R-7 prod
       + ".map(x=>({title:x.title,status:x.status,priority:x.priority,id:x.id,sourceGeneration:x.sourceGeneration,ruleRevision:x.ruleRevision,"
       + "scope:{goalId:x.scope.goalId},action:x.action?{summary:x.action.summary,recoveryRef:x.action.recoveryRef}:undefined,clearsWhen:{summary:x.clearsWhen.summary}}))};"
       + "}finally{if(wait?.await_id)await tools.events.cancel({await_id:wait.await_id});"
-      + "if(listenerWatch)await tools.events.cancel({await_id:listenerWatch});"
+      // This is the disposable standing watch inspected in before/after above.
+      + "if(listenerWatch)await tools.events.cancel({await_id:listenerWatch,confirm_standing:true});"
       + "await tools.events.emit({event:declaration.event,summary:'Temporary R7 acceptance control settled after await cleanup.'});}";
     const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
       'code:run', '--port', parkedAuditOperatorRoute().port, '--client', owner!, '--workspace', workspace!, '--harness', 'papercusp',

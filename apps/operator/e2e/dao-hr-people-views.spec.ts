@@ -144,9 +144,13 @@ test('R8 cap table shows other holders and My equity filters only the selected v
   await expectSelection(page, 'my');
   await page.reload();
   const mine = page.getByRole('region', { name: 'My equity', exact: true });
-  await expect(mine.getByRole('table', { name: 'My equity positions' }).getByText('Morgan', { exact: true })).toBeVisible();
+  // RichGrid also has an aria-hidden print mirror. Assert the accessible row
+  // so hidden print cells cannot satisfy or duplicate the browser assertions.
+  const myPosition = mine.getByRole('table', { name: 'My equity positions' })
+    .getByRole('row').filter({ hasText: 'Morgan' });
+  await expect(myPosition.getByText('Morgan', { exact: true })).toBeVisible();
   await expect(mine.getByText('Alice', { exact: true })).toHaveCount(0);
-  await expect(mine.getByText('84.30%', { exact: true })).toBeVisible();
+  await expect(myPosition.getByText('84.30%', { exact: true })).toBeVisible();
   await expect(mine.getByRole('note')).toHaveText('test chain - non-binding');
   await page.getByRole('tab', { name: 'Cap table', exact: true }).click();
   await expectSelection(page, 'cap');
@@ -168,6 +172,7 @@ test('R8 unavailable selection and failed chain read stay explicit; refresh re-r
   await expect(page.getByText('No equity position is linked to your verified member wallet.')).toHaveCount(0);
   view = workspace();
   await page.getByRole('button', { name: 'Refresh equity', exact: true }).click();
-  await expect(page.getByRole('table', { name: 'My equity positions' }).getByText('8800', { exact: true })).toBeVisible();
+  await expect(page.getByRole('table', { name: 'My equity positions' })
+    .getByRole('row').filter({ hasText: 'Morgan' }).getByText('8800', { exact: true })).toBeVisible();
   await expect(page.getByText('Fixture chain reader unavailable', { exact: false })).toHaveCount(0);
 });
