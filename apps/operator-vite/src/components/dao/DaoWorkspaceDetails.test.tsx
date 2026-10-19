@@ -80,7 +80,7 @@ describe('DAO workspace record presentation', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Connect to this DAO' })).toBeTruthy());
     expect(screen.getByRole('form', { name: 'Open signed engagement' })).toBeTruthy();
     expect(screen.getByDisplayValue('offer')).toBeTruthy();
-    expect(screen.getByRole('form', { name: 'Bind onboarding wallet' })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('form', { name: 'Bind onboarding wallet' })).toBeTruthy());
     expect(fetcher.mock.calls.filter(([, init]) => init).map(([, init]) => JSON.parse(init.body))).toEqual([
       { action: 'wallet-challenge', walletAddress: '0x' + '11'.repeat(20), chainId: 1 },
       { action: 'wallet-verify', challengeId: 'challenge', signature: '0x' + '22'.repeat(65) },

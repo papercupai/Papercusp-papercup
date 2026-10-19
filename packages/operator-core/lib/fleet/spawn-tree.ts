@@ -97,6 +97,21 @@ export function spawnRouteGatewayModel(route: Pick<SpawnAccountRoute, 'launchedB
     : route.launchedModel;
 }
 
+/**
+ * Canonical model id for the gateway's observed first-request evidence.
+ *
+ * Claude may leave its client-side `[1m]` marker in startup telemetry even though
+ * the provider request body carries the bare Anthropic model id. Keep the raw
+ * observed value in `first_gateway_request`; normalize only for semantic
+ * comparison with the launch route and upstream evidence.
+ */
+export function spawnObservedGatewayModel(
+  request: Pick<SpawnFirstGatewayRequest, 'provider' | 'model'>,
+): string | null {
+  if (request.model === null || request.provider !== 'claude') return request.model;
+  return resolveGatewayModel(request.model).model;
+}
+
 export async function recordSpawnAccountRoute(sql: Db, spawnId: string, route: SpawnAccountRoute): Promise<void> {
   assertSpawnAccountRoute(spawnId, route);
   const rows = await sql`
@@ -131,7 +146,8 @@ export function verifySpawnFirstGatewayRequest(
   assertSpawnAccountRoute(spawnId, route);
   return !!request && request.ownerId === spawnId && !!request.requestId
     && request.outcome === 'ok' && request.finalStatus === 200
-    && request.model === spawnRouteGatewayModel(route) && request.effort === route.launchedEffort
+    && spawnObservedGatewayModel(request) === spawnRouteGatewayModel(route)
+    && request.effort === route.launchedEffort
     && request.provider === (route.launchedBackend === 'codex' ? 'codex' : 'claude')
     && !!request.servingAccountId && route.resolvedAccountIds.includes(request.servingAccountId);
 }

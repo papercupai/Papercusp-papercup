@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertSpawnAccountRoute, spawnRouteGatewayModel, verifySpawnFirstGatewayRequest,
+import { assertSpawnAccountRoute, spawnObservedGatewayModel, spawnRouteGatewayModel, verifySpawnFirstGatewayRequest,
   type SpawnAccountRoute, type SpawnFirstGatewayRequest } from './spawn-tree';
 
 const route: SpawnAccountRoute = {
@@ -34,9 +34,13 @@ describe('exact spawn/first gateway request correlation', () => {
       servingAccountId: 'claude-a',
     };
     expect(spawnRouteGatewayModel(claudeRoute)).toBe('claude-sonnet-5');
+    expect(spawnObservedGatewayModel(claudeRequest)).toBe('claude-sonnet-5');
     expect(verifySpawnFirstGatewayRequest('s-primary', claudeRoute, claudeRequest)).toBe(true);
     expect(verifySpawnFirstGatewayRequest('s-primary', claudeRoute,
-      { ...claudeRequest, model: 'claude-sonnet-5[1m]' })).toBe(false);
+      { ...claudeRequest, model: 'claude-sonnet-5[1m]' })).toBe(true);
+    expect(spawnObservedGatewayModel({ ...claudeRequest, model: 'claude-opus-5[1m]' })).toBe('claude-opus-5');
+    expect(verifySpawnFirstGatewayRequest('s-primary', claudeRoute,
+      { ...claudeRequest, model: 'claude-opus-5[1m]' })).toBe(false);
   });
   it.each([
     { ownerId: 's-foreign' }, { requestId: '' }, { provider: 'claude' },
