@@ -194,7 +194,7 @@ describe('WI-6554700010008930 — boot bind evidence survives retry and cleanup'
 
 describe('EI-26073173753563377 — desktop binary readiness polling is quiet and content-aware', () => {
   const readinessProbe = src.match(
-    /strip_ansi\(\) \{[\s\S]*?\n\}\ndesktop_binary_started\(\) \{[\s\S]*?\n\}/,
+    /strip_ansi\(\) \{[\s\S]*?\}\ndesktop_binary_started\(\) \{[\s\S]*?\n\}/,
   )?.[0];
 
   function probe(log: string | undefined) {
