@@ -1,11 +1,12 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase } from './native-bootstrap-runtime';
+import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
 
 const repo = resolve(import.meta.dirname, '../../../..');
@@ -55,6 +56,51 @@ describe('native bootstrap admission and lifecycle', () => {
     expect(await nativeHttpPhase('wallet-rpc', async () => 'transaction-hash', diagnostic => retained.push(diagnostic)))
       .toBe('transaction-hash');
     expect(retained).toHaveLength(1);
+  });
+
+  it.each(['blocking', 'async'] as const)('distinguishes idle socket reuse from origin loss across %s native commands', async mode => {
+    // The origin must run outside this event loop: native commands cannot pause
+    // its idle timeout. Return a connection id to prove that it stayed alive.
+    const server = spawn(process.execPath, ['-e', `
+      const server = require('node:http').createServer((req, res) => {
+        res.end(JSON.stringify({ connection: req.socket.connectionId }));
+      });
+      let connections = 0;
+      server.on('connection', socket => { socket.connectionId = ++connections; });
+      server.keepAliveTimeout = 5000;
+      server.keepAliveTimeoutBuffer = 0;
+      server.listen(0, '127.0.0.1', () => process.send({ port: server.address().port }));
+      process.on('disconnect', () => { server.closeAllConnections(); server.close(); });
+    `], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: { ...process.env, NODE_OPTIONS: '' } });
+    const stopped = once(server, 'exit');
+    try {
+      const [{ port }] = await once(server, 'message', { signal: AbortSignal.timeout(5000) }) as [{ port: number }];
+      const url = 'http://127.0.0.1:' + port;
+      const read = async () => (await fetch(url, { method: 'POST', body: '{}', signal: AbortSignal.timeout(5000) })).json();
+      const first = await read();
+      await delay(25); // Let fetch release the consumed response into its pool.
+      expect((await read()).connection, 'the control must actually reuse a warm connection').toBe(first.connection);
+      await delay(25);
+      const args = ['-e', 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5500)'];
+      const options = { env: { ...process.env, NODE_OPTIONS: '' }, timeout: 10_000 };
+      if (mode === 'blocking') {
+        execFileSync(process.execPath, args, options);
+        await expect(read()).rejects.toMatchObject({ cause: { code: 'UND_ERR_SOCKET' } });
+        // A fresh connection still succeeds: the origin did not exit.
+        expect((await read()).connection).toBeGreaterThan(first.connection);
+      } else {
+        await runNativeCommand(process.execPath, args, { ...options, encoding: 'utf8' });
+        expect((await read()).connection).toBeGreaterThan(first.connection);
+      }
+    } finally { server.kill(); await stopped; }
+  }, 15_000);
+
+  it('retains native command stdout, exit failures and deadlines without blocking its caller', async () => {
+    const options = { encoding: 'utf8' as const, env: { ...process.env, NODE_OPTIONS: '' }, timeout: 5000 };
+    expect(await runNativeCommand(process.execPath, ['-e', 'process.stdout.write("native-result")'], options)).toBe('native-result');
+    await expect(runNativeCommand(process.execPath, ['-e', 'process.exit(7)'], options)).rejects.toMatchObject({ code: 7 });
+    await expect(runNativeCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { ...options, timeout: 100 }))
+      .rejects.toMatchObject({ killed: true, signal: 'SIGTERM' });
   });
 
   it('retains failed verifier assertion snapshots through scratch teardown without copying credentials', async () => {

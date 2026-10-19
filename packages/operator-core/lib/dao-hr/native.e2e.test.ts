@@ -1,5 +1,4 @@
 /** Full product journey in the owned native desktop; only external identity, wallet and chain transports are fixtures. */
-import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
@@ -23,7 +22,7 @@ import { getContractExecution } from './contracts-esign';
 import { DocumensoAdapter, DocumensoError } from './documenso';
 import type { DaoCapTable, DaoWorkspaceView } from '../dao-workspace-types';
 import type { EquityArtifacts } from '../equity/compile';
-import { nativeHttpPhase } from './native-bootstrap-runtime';
+import { nativeHttpPhase, runNativeCommand } from './native-bootstrap-runtime';
 
 describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.env.DAO_HR_NATIVE_CONFIG)('P012 actual native hiring journey', () => {
   it('creates, approves, signs, votes, accepts and admits one candidate, then reads People, org and cap table', async () => {
@@ -37,72 +36,72 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const retainHttpFailure = (diagnostic: object) => writeFileSync(config.resultPath + '.http-failure.json', JSON.stringify(diagnostic), { mode: 0o600 });
     const browser = await chromium.launch({ headless: true });
     const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN || 'tauri-agent-tools';
-    const native = (...args: string[]) => execFileSync(tool, [...args, '--pid', String(profile.tauriPID)], { encoding: 'utf8', env: privateEnv, timeout: 65_000 });
-    const ev = (code: string) => native('eval', code);
-    const value = <T = any>(code: string): T => JSON.parse(ev('JSON.stringify(' + code + ')'));
-    const reload = () => native('navigate', value<string>('location.href'), '--json');
-    const wait = (code: string) => native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
-    const withControlDiagnostics = (kind: string, label: string, action: () => string) => {
-      try { return action(); }
+    const native = (...args: string[]) => runNativeCommand(tool, [...args, '--pid', String(profile.tauriPID)], { encoding: 'utf8', env: privateEnv, timeout: 65_000 });
+    const ev = async (code: string) => await native('eval', code);
+    const value = async <T = any>(code: string): Promise<T> => JSON.parse(await ev('JSON.stringify(' + code + ')'));
+    const reload = async () => await native('navigate', await value<string>('location.href'), '--json');
+    const wait = async (code: string) => await native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
+    const withControlDiagnostics = async (kind: string, label: string, action: () => Promise<string>) => {
+      try { return await action(); }
       catch (cause) {
         let dom: unknown;
-        try { dom = value(workbenchControlDiagnostics('[data-testid=dao-workspace]')); }
+        try { dom = await value(workbenchControlDiagnostics('[data-testid=dao-workspace]')); }
         catch (captureError) { dom = { captureError: String(captureError) }; }
         writeFileSync(config.resultPath + '.control-failure.json', JSON.stringify({ kind, label, error: String(cause), dom }, null, 2));
         throw cause;
       }
     };
-    const click = (text: string, scope = 'document') => withControlDiagnostics('button', text, () => {
-      wait(workbenchButtonReady(text, scope)); return ev(clickWorkbenchButton(text, scope));
+    const click = async (text: string, scope = 'document') => await withControlDiagnostics('button', text, async () => {
+      await wait(workbenchButtonReady(text, scope)); return await ev(clickWorkbenchButton(text, scope));
     });
-    const field = (label: string, input: string) => withControlDiagnostics('field', label, () => {
-      wait(workbenchTextFieldReady(label, '[data-testid=dao-workspace]'));
-      return ev(workbenchTextField(label, input, '[data-testid=dao-workspace]'));
+    const field = async (label: string, input: string) => await withControlDiagnostics('field', label, async () => {
+      await wait(workbenchTextFieldReady(label, '[data-testid=dao-workspace]'));
+      return await ev(workbenchTextField(label, input, '[data-testid=dao-workspace]'));
     });
-    const textHas = (text: string) => {
-      try { wait('document.body.innerText.includes(' + JSON.stringify(text) + ')'); }
+    const textHas = async (text: string) => {
+      try { await wait('document.body.innerText.includes(' + JSON.stringify(text) + ')'); }
       catch (cause) {
         writeFileSync(config.resultPath + '.text-failure.json', JSON.stringify({ expectedText: text,
-          ...value<object>('({url:location.href,text:document.body.innerText,alerts:[...document.querySelectorAll(\'[role=alert]\')].map(e=>e.textContent),disclosures:[...document.querySelectorAll(\'details\')].map(e=>({summary:e.querySelector(\'summary\')?.textContent,open:e.open}))})') }, null, 2));
+          ...await value<object>('({url:location.href,text:document.body.innerText,alerts:[...document.querySelectorAll(\'[role=alert]\')].map(e=>e.textContent),disclosures:[...document.querySelectorAll(\'details\')].map(e=>({summary:e.querySelector(\'summary\')?.textContent,open:e.open}))})') }, null, 2));
         throw cause;
       }
     };
-    const select = (label: string, option: string) => {
-      ev(openWorkbenchSelect(label, '[data-testid=dao-workspace]'));
-      wait('[...document.querySelectorAll(\'[role=option]\')].some(e=>e.textContent.trim()===' + JSON.stringify(option) + ')');
-      ev(chooseWorkbenchOption(option));
+    const select = async (label: string, option: string) => {
+      await ev(openWorkbenchSelect(label, '[data-testid=dao-workspace]'));
+      await wait('[...document.querySelectorAll(\'[role=option]\')].some(e=>e.textContent.trim()===' + JSON.stringify(option) + ')');
+      await ev(chooseWorkbenchOption(option));
     };
-    const navigate = (search: object) => {
-      ev("window.__TSR_ROUTER__.navigate({to:'/daos',search:" + JSON.stringify({ dao: slug, daoSection: 'members', ...search }) + "})");
-      wait("!!document.querySelector('[data-testid=dao-workspace]')");
+    const navigate = async (search: object) => {
+      await ev("window.__TSR_ROUTER__.navigate({to:'/daos',search:" + JSON.stringify({ dao: slug, daoSection: 'members', ...search }) + "})");
+      await wait("!!document.querySelector('[data-testid=dao-workspace]')");
     };
-    const response = (op: string) => {
+    const response = async (op: string) => {
       const expression = 'window.__DAO_HR_CAPTURE__?.responses[' + JSON.stringify(op) + ']';
-      try { wait('!!' + expression); }
+      try { await wait('!!' + expression); }
       catch (error) {
-        writeFileSync(config.resultPath + '.response-failure.json', JSON.stringify(value('({responses:window.__DAO_HR_CAPTURE__?.responses,alerts:[...document.querySelectorAll(\'[role=alert]\')].map(e=>e.textContent),text:document.body.innerText})')));
+        writeFileSync(config.resultPath + '.response-failure.json', JSON.stringify(await value('({responses:window.__DAO_HR_CAPTURE__?.responses,alerts:[...document.querySelectorAll(\'[role=alert]\')].map(e=>e.textContent),text:document.body.innerText})')));
         throw error;
       }
-      const result = value(expression);
+      const result = await value(expression);
       expect(result.status, 'Product response for ' + op).toBe(200);
       expect(result.body.ok, 'Product result for ' + op).toBe(true); return result.body;
     };
-    const captureResponses = () => ev(captureWorkbenchResponses());
+    const captureResponses = async () => await ev(captureWorkbenchResponses());
     const rpc = async (method: string, params: unknown[] = []) => nativeHttpPhase('wallet-rpc', async () => {
       const r = await fetch(config.rpc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
       const result = await r.json(); if (result.error) throw new Error('Test wallet RPC: ' + result.error.message); return result.result;
     }, retainHttpFailure);
     const equityAbi = (JSON.parse(readFileSync(new URL('../equity/artifacts.json', import.meta.url), 'utf8')) as EquityArtifacts).contracts.PapercuspEquityV2.abi;
-    const equitySnapshot = (title: 'Cap table' | 'My equity') => {
+    const equitySnapshot = async (title: 'Cap table' | 'My equity') => {
       const section = 'document.querySelector(' + JSON.stringify('section[aria-label="' + title + '"]') + ')';
-      wait('!!' + section + '?.querySelector(\'[role="table"]\')');
-      return value<{ marker: string; blockNumber: string; headings: string[]; rows: string[][] }>("(()=>{const section=" + section + ";const rows=[...section.querySelectorAll('[role=table] [role=row]')];return {marker:section.querySelector('[role=note]')?.innerText,blockNumber:section.innerText.match(/block (\\d+)/)?.[1],headings:[...rows[0].children].map(cell=>cell.innerText.trim()),rows:rows.slice(1).map(row=>[...row.firstElementChild.children].map(cell=>cell.innerText.trim()))}})()");
+      await wait('!!' + section + '?.querySelector(\'[role="table"]\')');
+      return await value<{ marker: string; blockNumber: string; headings: string[]; rows: string[][] }>("(()=>{const section=" + section + ";const rows=[...section.querySelectorAll('[role=table] [role=row]')];return {marker:section.querySelector('[role=note]')?.innerText,blockNumber:section.innerText.match(/block (\\d+)/)?.[1],headings:[...rows[0].children].map(cell=>cell.innerText.trim()),rows:rows.slice(1).map(row=>[...row.firstElementChild.children].map(cell=>cell.innerText.trim()))}})()");
     };
-    const workspaceDto = () => {
+    const workspaceDto = async () => {
       const url = '/api/discovery/pots?potId=' + encodeURIComponent(slug) + '&includeLocalViews=true';
-      ev("(()=>{window.__DAO_HR_WORKSPACE_DTO__=null;fetch(" + JSON.stringify(url) + ").then(async r=>{window.__DAO_HR_WORKSPACE_DTO__={status:r.status,body:await r.json()}}).catch(e=>{window.__DAO_HR_WORKSPACE_DTO__={error:String(e)}});return true})()");
-      wait('window.__DAO_HR_WORKSPACE_DTO__!==null');
-      const result = value<{ status: number; body: { workspace: DaoWorkspaceView } }>('window.__DAO_HR_WORKSPACE_DTO__');
+      await ev("(()=>{window.__DAO_HR_WORKSPACE_DTO__=null;fetch(" + JSON.stringify(url) + ").then(async r=>{window.__DAO_HR_WORKSPACE_DTO__={status:r.status,body:await r.json()}}).catch(e=>{window.__DAO_HR_WORKSPACE_DTO__={error:String(e)}});return true})()");
+      await wait('window.__DAO_HR_WORKSPACE_DTO__!==null');
+      const result = await value<{ status: number; body: { workspace: DaoWorkspaceView } }>('window.__DAO_HR_WORKSPACE_DTO__');
       expect(result.status).toBe(200);
       expect(result.body.workspace.directoryId).toBe(slug);
       expect(result.body.workspace.capTable?.status).toBe('ready');
@@ -116,24 +115,24 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const actor = (name: string) => { selectIdentityFixtureActor(fixturePath, name, privateEnv); };
     // The fixture rotates server credentials; it emits no browser auth event.
     // Re-read actor-scoped workspace permissions before navigating within the DAO.
-    const browserActor = (name: string) => { actor(name); reload(); };
+    const browserActor = async (name: string) => { actor(name); await reload(); };
     const bindFinanceWallet = async (account: string) => {
-      navigate({ daoSection: 'ownership' }); textHas('Your verified wallet:'); captureResponses();
-      field('Wallet address', account); field('Wallet chain ID', '1'); click('Request wallet signing challenge');
-      const challenge = response('wallet-challenge').value;
+      await navigate({ daoSection: 'ownership' }); await textHas('Your verified wallet:'); await captureResponses();
+      await field('Wallet address', account); await field('Wallet chain ID', '1'); await click('Request wallet signing challenge');
+      const challenge = (await response('wallet-challenge')).value;
       const signature = await rpc('personal_sign', [stringToHex(challenge.message), account]);
-      field('Wallet signature', signature); click('Verify wallet signature'); response('wallet-verify');
-      try { wait(workbenchVerifiedWallet(account, 1)); }
+      await field('Wallet signature', signature); await click('Verify wallet signature'); await response('wallet-verify');
+      try { await wait(workbenchVerifiedWallet(account, 1)); }
       catch (cause) {
-        writeFileSync(config.resultPath + '.wallet-render-failure.json', JSON.stringify(value('({body:document.body.innerText,responses:window.__DAO_HR_CAPTURE__?.responses})'), null, 2));
+        writeFileSync(config.resultPath + '.wallet-render-failure.json', JSON.stringify(await value('({body:document.body.innerText,responses:window.__DAO_HR_CAPTURE__?.responses})'), null, 2));
         throw cause;
       }
     };
     const prepareGovernor = async (name: string, args: unknown[]) => {
-      navigate({ daoSection: 'ownership' }); textHas('Equity deployment & holder records'); captureResponses();
-      select('Equity action', 'EquityGovernorV2 · ' + name);
-      field('Action arguments (JSON array)', JSON.stringify(args)); click('Prepare unsigned wallet transaction');
-      return signWallet(response('prepare-equity').unsignedTransaction);
+      await navigate({ daoSection: 'ownership' }); await textHas('Equity deployment & holder records'); await captureResponses();
+      await select('Equity action', 'EquityGovernorV2 · ' + name);
+      await field('Action arguments (JSON array)', JSON.stringify(args)); await click('Prepare unsigned wallet transaction');
+      return signWallet((await response('prepare-equity')).unsignedTransaction);
     };
     try {
       expect(/^verify-tauri-isolated-\d+$/.test(ws)).toBe(true);
@@ -169,20 +168,20 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       const signed = await authorHivePolicy({ workspaceId: ws, potHomeSlug: slug, policy: { membership: 'open',
         finance: { equity: { chainId: 1, equity: config.equity, governor: config.governor, timelock: config.timelock } } } });
       expect(signed.ok).toBe(true);
-      native('navigate', '/daos', '--json'); wait("!!document.querySelector('[data-testid=dao-workspace]')");
+      await native('navigate', '/daos', '--json'); await wait("!!document.querySelector('[data-testid=dao-workspace]')");
       await bindFinanceWallet(config.accounts[0]);
-      navigate({ peopleTab: 'hiring' }); textHas('Create a role');
-      ev(openWorkbenchDisclosure('Create a role', '[data-testid=dao-workspace]')); textHas('Create role'); captureResponses();
-      field('Role title', 'Native engineer'); field('Level', 'L3'); click('Create role'); response('role');
-      textHas('Native engineer'); click('Native engineer'); textHas('Add candidate');
-      select('Candidate', 'Native candidate'); click('Add candidate'); response('candidate');
-      field('Jurisdiction', 'US-DE'); field('Pay amount', '5000'); field('Shares override', '1000'); click('Create offer'); response('offer');
-      textHas('Native candidate'); click('Native candidate'); textHas('Another HR admin must approve your offer.');
-      expect(value("[...document.querySelectorAll('button')].find(b=>b.textContent==='Approve offer').disabled")).toBe(true);
-      const offerId = value("new URLSearchParams(location.search).get('hiringOffer')") as string; expect(offerId).toBeTruthy();
-      browserActor('approver'); textHas('Approve offer'); captureResponses(); click('Approve offer'); response('approve'); textHas('Generate contract');
-      select('Company countersigner', 'Native approver'); field('Start date', '2026-11-01'); click('Generate contract'); response('prepare');
-      textHas('Non-binding sample.'); click('Start signatures'); response('start');
+      await navigate({ peopleTab: 'hiring' }); await textHas('Create a role');
+      await ev(openWorkbenchDisclosure('Create a role', '[data-testid=dao-workspace]')); await textHas('Create role'); await captureResponses();
+      await field('Role title', 'Native engineer'); await field('Level', 'L3'); await click('Create role'); await response('role');
+      await textHas('Native engineer'); await click('Native engineer'); await textHas('Add candidate');
+      await select('Candidate', 'Native candidate'); await click('Add candidate'); await response('candidate');
+      await field('Jurisdiction', 'US-DE'); await field('Pay amount', '5000'); await field('Shares override', '1000'); await click('Create offer'); await response('offer');
+      await textHas('Native candidate'); await click('Native candidate'); await textHas('Another HR admin must approve your offer.');
+      expect(await value("[...document.querySelectorAll('button')].find(b=>b.textContent==='Approve offer').disabled")).toBe(true);
+      const offerId = await value("new URLSearchParams(location.search).get('hiringOffer')") as string; expect(offerId).toBeTruthy();
+      await browserActor('approver'); await textHas('Approve offer'); await captureResponses(); await click('Approve offer'); await response('approve'); await textHas('Generate contract');
+      await select('Company countersigner', 'Native approver'); await field('Start date', '2026-11-01'); await click('Generate contract'); await response('prepare');
+      await textHas('Non-binding sample.'); await click('Start signatures'); await response('start');
       const contract = await getContractExecution({ ...key, offerId }, { sql });
       expect(contract.can_bind).toBe(false);
       const candidateContext = await browser.newContext({ storageState: config.candidateSession });
@@ -216,40 +215,40 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
           body: JSON.stringify(completionEvent) });
         await assertCompletionResponse(completed, diagnostic => writeFileSync(config.resultPath + '.completion-response.json', JSON.stringify(diagnostic, null, 2)));
       }, retainHttpFailure);
-      reload(); textHas('Executed document hash:');
+      await reload(); await textHas('Executed document hash:');
       for (const kind of ['sealed', 'certificate']) {
         await nativeHttpPhase(kind === 'sealed' ? 'sealed-document' : 'audit-certificate', async () => {
           const artifact = await fetch(health.origin + '/api/pot/' + slug + '/contracts/' + offerId + '/document?kind=' + kind);
           expect(artifact.status).toBe(200); expect(Buffer.from(await artifact.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
         }, retainHttpFailure);
       }
-      browserActor('candidate'); navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); textHas('Request wallet challenge'); captureResponses();
-      field('Wallet address', config.accounts[1]); field('Wallet chain ID', '1'); click('Request wallet challenge');
-      const challenge = response('wallet-challenge').result;
-      field('Wallet signature', await rpc('personal_sign', [stringToHex(challenge.message), config.accounts[1]])); click('Verify wallet signature'); response('wallet-verify');
-      click('Verify my identity and bound wallet'); response('verify-identity');
-      browserActor('admin'); navigate({ peopleTab: 'hiring', hiringOffer: offerId }); textHas('Prepare hire vote'); captureResponses();
-      click('Prepare hire vote'); const prepared = response('prepare-hire').result, plan = prepared.plan;
+      await browserActor('candidate'); await navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); await textHas('Request wallet challenge'); await captureResponses();
+      await field('Wallet address', config.accounts[1]); await field('Wallet chain ID', '1'); await click('Request wallet challenge');
+      const challenge = (await response('wallet-challenge')).result;
+      await field('Wallet signature', await rpc('personal_sign', [stringToHex(challenge.message), config.accounts[1]])); await click('Verify wallet signature'); await response('wallet-verify');
+      await click('Verify my identity and bound wallet'); await response('verify-identity');
+      await browserActor('admin'); await navigate({ peopleTab: 'hiring', hiringOffer: offerId }); await textHas('Prepare hire vote'); await captureResponses();
+      await click('Prepare hire vote'); const prepared = (await response('prepare-hire')).result, plan = prepared.plan;
       const proposalHash = await signWallet(prepared.unsignedTransaction);
-      field('Transaction hash', proposalHash); click('Verify hire proposal transaction'); response('record-proposal');
+      await field('Transaction hash', proposalHash); await click('Verify hire proposal transaction'); await response('record-proposal');
       await rpc('evm_increaseTime', ['61']); await rpc('evm_mine');
       await prepareGovernor('castVote', [plan.proposalId, '1']);
       await rpc('evm_increaseTime', ['604801']); await rpc('evm_mine');
       await prepareGovernor('queue', [plan.targets, plan.values, plan.calldatas, plan.descriptionHash]);
       await rpc('evm_increaseTime', ['86401']); await rpc('evm_mine');
       const executionHash = await prepareGovernor('execute', [plan.targets, plan.values, plan.calldatas, plan.descriptionHash]);
-      navigate({ peopleTab: 'hiring', hiringOffer: offerId }); textHas('Verify hire execution transaction'); captureResponses();
-      field('Transaction hash', executionHash); click('Verify hire execution transaction'); response('record-execution');
-      browserActor('candidate'); navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); textHas('Prepare my terms acceptance'); captureResponses();
-      click('Prepare my terms acceptance'); const acceptanceHash = await signWallet(response('prepare-acceptance').result);
-      field('Transaction hash', acceptanceHash); click('Verify acceptance and admit me'); response('admit'); textHas('DAO membership admitted');
+      await navigate({ peopleTab: 'hiring', hiringOffer: offerId }); await textHas('Verify hire execution transaction'); await captureResponses();
+      await field('Transaction hash', executionHash); await click('Verify hire execution transaction'); await response('record-execution');
+      await browserActor('candidate'); await navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); await textHas('Prepare my terms acceptance'); await captureResponses();
+      await click('Prepare my terms acceptance'); const acceptanceHash = await signWallet((await response('prepare-acceptance')).result);
+      await field('Transaction hash', acceptanceHash); await click('Verify acceptance and admit me'); await response('admit'); await textHas('DAO membership admitted');
       const [member] = await sql`SELECT admitted_at FROM harness_shared.dao_hr_contracts WHERE contract_id=${contract.contract_id}`;
       expect(member?.admitted_at).toBeTruthy();
-      reload(); navigate({ peopleTab: 'directory' }); textHas('Native candidate'); click('Native candidate'); textHas('Native engineer');
-      expect(value("document.body.innerText.includes('5000')")).toBe(true);
-      browserActor('admin'); navigate({ peopleTab: 'org' }); textHas('Native candidate');
-      navigate({ peopleTab: 'cap' });
-      const cap = equitySnapshot('Cap table'), capDto = workspaceDto();
+      await reload(); await navigate({ peopleTab: 'directory' }); await textHas('Native candidate'); await click('Native candidate'); await textHas('Native engineer');
+      expect(await value("document.body.innerText.includes('5000')")).toBe(true);
+      await browserActor('admin'); await navigate({ peopleTab: 'org' }); await textHas('Native candidate');
+      await navigate({ peopleTab: 'cap' });
+      const cap = await equitySnapshot('Cap table'), capDto = await workspaceDto();
       expect(cap.marker).toBe('test chain - non-binding');
       expect(capDto.nonBinding).toBe(true);
       expect(cap.headings).toEqual(['Holder', 'Wallet', 'Shares owned', 'Grants committed', 'Grants earned', 'Grants claimed',
@@ -272,8 +271,8 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       }
       const candidatePosition = capDto.positions.find(position => position.wallet.toLowerCase() === config.accounts[1].toLowerCase())!;
       expect(candidatePosition).toMatchObject({ personId: 'PER-native-candidate', displayName: 'Native candidate', committed: '1000' });
-      browserActor('candidate'); navigate({ peopleTab: 'my' });
-      const mine = equitySnapshot('My equity'), myDto = workspaceDto();
+      await browserActor('candidate'); await navigate({ peopleTab: 'my' });
+      const mine = await equitySnapshot('My equity'), myDto = await workspaceDto();
       expect(mine.marker).toBe('test chain - non-binding');
       expect(myDto.positions.filter(position => position.isSelf).map(position => position.wallet.toLowerCase())).toEqual([config.accounts[1].toLowerCase()]);
       expect(mine.rows).toEqual(cap.rows.filter(row => row[1].toLowerCase() === config.accounts[1].toLowerCase()));

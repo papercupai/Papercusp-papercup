@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { spawn, type SpawnOptions } from 'node:child_process';
+import { execFile, spawn, type ExecFileOptionsWithStringEncoding, type SpawnOptions } from 'node:child_process';
+import { promisify } from 'node:util';
 import { closeSync, constants, fchmodSync, fstatSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { killSpawnedProcessTree } from '../../../../scripts/lib/batch-watchdog.mjs';
@@ -12,6 +13,14 @@ export const NATIVE_BOOTSTRAP_TEARDOWN_MS = 60_000;
 export const NATIVE_BOOTSTRAP_TIMEOUT_MS = 5 * 60_000
   + Object.values(NATIVE_VERIFIER_PHASE_BUDGETS).reduce((sum, value) => sum + value, 0)
   + NATIVE_BOOTSTRAP_TEARDOWN_MS;
+
+const execNativeFile = promisify(execFile);
+
+/** Let HTTP socket-close events and idle timers run while the desktop command waits. */
+export async function runNativeCommand(command: string, args: string[], options: ExecFileOptionsWithStringEncoding): Promise<string> {
+  const { stdout } = await execNativeFile(command, args, options);
+  return stdout;
+}
 
 /** Classify the whole HTTP operation, including body reads, without retaining URLs or secrets. */
 export async function nativeHttpPhase<T>(phase: 'wallet-rpc' | 'provider-completion-webhook' | 'sealed-document' | 'audit-certificate',
