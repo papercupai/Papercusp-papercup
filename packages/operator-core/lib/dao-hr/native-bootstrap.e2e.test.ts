@@ -134,7 +134,13 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       expect(code, 'Native boot/journey log: ' + logPath).toBe(0);
       const result = JSON.parse(readFileSync(join(directory, 'result.json'), 'utf8'));
       expect(result).toMatchObject({ hireExecuted: true, acceptanceVerified: true, memberAdmitted: true, nonBinding: true,
-        capTableVerified: true, myEquityVerified: true, nonBindingVisible: true });
+        capTableVerified: true, myEquityVerified: true, nonBindingVisible: true,
+        runtimeUnits: ['desktop-shell', 'documenso-sandbox', 'test-chain'], auditCertificateIdentityKind: 'provider-resource-path' });
+      expect(result.documensoEnvelopeId).toBeTruthy();
+      expect(result.auditCertificateId).toBe('/api/v2/envelope/' + encodeURIComponent(result.documensoEnvelopeId) + '/certificate/download');
+      expect(result.auditCertificateSha256).toMatch(/^0x[a-f0-9]{64}$/);
+      expect(result.documentHash.provider).toMatch(/^0x[a-f0-9]{64}$/);
+      expect(result.documentHash.stored).toBe(result.documentHash.provider);
       writeFileSync(logPath + '.result.json', JSON.stringify(result), { mode: 0o600 });
       console.log('DAO_HR_NATIVE_RESULT=' + JSON.stringify(result));
     } finally {

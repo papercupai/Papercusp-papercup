@@ -5,6 +5,7 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { DaoCapTable, DaoPerson, DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import PeopleViews from './PeopleViews';
 import { reportingForest } from './org-chart';
+import { workbenchEquitySnapshot } from '../../../../../../scripts/lib/dao-workbench-controls.mts';
 // The application provides RouteLink's progress/router context; this component
 // test exercises real nuqs state and renders the shared navigation seam as a link.
 vi.mock('@/app/_components/RouteLink', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
@@ -82,6 +83,31 @@ describe('SPEC-P-011 / A — cap table and my equity', () => {
         personId: null, displayName: 'My equity holder', isSelf: true },
     ] };
   const capView: DaoWorkspaceView = { ...view, capTable: { status: 'ready', value: snapshot } };
+  it.each(['Cap table', 'My equity'] as const)('reads semantic %s column labels despite RichGrid uppercase styling', title => {
+    render(<NuqsTestingAdapter searchParams={'?peopleTab=' + (title === 'Cap table' ? 'cap' : 'my')}>
+      <PeopleViews view={capView} />
+    </NuqsTestingAdapter>);
+    const section = screen.getByRole('region', { name: title });
+    const header = section.querySelector('[role=table] [role=row]')!.firstElementChild!;
+    expect(getComputedStyle(header).textTransform).toBe('uppercase');
+    // jsdom does not implement layout-dependent innerText. Model the browser's
+    // measured transformation using the real rendered cells and their styles.
+    for (const element of [section, ...section.querySelectorAll('*')]) {
+      Object.defineProperty(element, 'innerText', { configurable: true, get() {
+        const text = element.textContent ?? '';
+        return getComputedStyle(element).textTransform === 'uppercase' ? text.toUpperCase() : text;
+      } });
+    }
+    expect((header as HTMLElement).innerText).toBe('HOLDER');
+    const read = () => new Function('document', 'return ' + workbenchEquitySnapshot(title))(document);
+    expect(read()).toMatchObject({ marker: 'test chain - non-binding', blockNumber: '42',
+      headings: ['Holder', 'Wallet', 'Shares owned', 'Grants committed', 'Grants earned', 'Grants claimed',
+        'Grants unvested', 'Return entitlements', 'Returns unclaimed', '% owned', '% fully diluted'] });
+    expect(read().rows.map((row: string[]) => row[0])).toEqual(title === 'Cap table'
+      ? ['Alice equity holder', 'My equity holder'] : ['My equity holder']);
+    header.textContent = 'Unexpected holder';
+    expect(read().headings[0]).toBe('Unexpected holder'); // Still exposes a real label regression.
+  });
   it('calibrates the public DTO fixture against independent supply, grant and return oracles', () => {
     expect(new Set(snapshot.positions.map(row => row.wallet)).size).toBe(2);
     expect(snapshot.positions.reduce((total, row) => total + BigInt(row.shares), 0n)).toBe(10000n);

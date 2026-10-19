@@ -1,6 +1,7 @@
 /** Full product journey in the owned native desktop; only external identity, wallet and chain transports are fixtures. */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 import { chromium } from 'playwright-core';
 import { decodeFunctionResult, encodeFunctionData, stringToHex, type Address, type Hex } from 'viem';
@@ -8,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { assertCompletionResponse, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
-import { workbenchTextField, workbenchTextFieldReady, workbenchButtonReady, workbenchControlDiagnostics, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
+import { workbenchTextField, workbenchTextFieldReady, workbenchButtonReady, workbenchControlDiagnostics, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, workbenchEquitySnapshot, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import { upsertHiveMember } from '../hive-membership-store';
@@ -22,7 +23,7 @@ import { getContractExecution } from './contracts-esign';
 import { DocumensoAdapter, DocumensoError } from './documenso';
 import type { DaoCapTable, DaoWorkspaceView } from '../dao-workspace-types';
 import type { EquityArtifacts } from '../equity/compile';
-import { nativeHttpPhase, runNativeCommand, reloadNativeWorkbench } from './native-bootstrap-runtime';
+import { nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence } from './native-bootstrap-runtime';
 
 describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.env.DAO_HR_NATIVE_CONFIG)('P012 actual native hiring journey', () => {
   it('creates, approves, signs, votes, accepts and admits one candidate, then reads People, org and cap table', async () => {
@@ -96,7 +97,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const equitySnapshot = async (title: 'Cap table' | 'My equity') => {
       const section = 'document.querySelector(' + JSON.stringify('section[aria-label="' + title + '"]') + ')';
       await wait('!!' + section + '?.querySelector(\'[role="table"]\')');
-      return await value<{ marker: string; blockNumber: string; headings: string[]; rows: string[][] }>("(()=>{const section=" + section + ";const rows=[...section.querySelectorAll('[role=table] [role=row]')];return {marker:section.querySelector('[role=note]')?.innerText,blockNumber:section.innerText.match(/block (\\d+)/)?.[1],headings:[...rows[0].children].map(cell=>cell.innerText.trim()),rows:rows.slice(1).map(row=>[...row.firstElementChild.children].map(cell=>cell.innerText.trim()))}})()");
+      return await value<{ marker: string; blockNumber: string; headings: string[]; rows: string[][] }>(workbenchEquitySnapshot(title));
     };
     const workspaceDto = async () => {
       const url = '/api/discovery/pots?potId=' + encodeURIComponent(slug) + '&includeLocalViews=true';
@@ -197,12 +198,13 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       // Reconcile can observe the provider's COMPLETED status before its signed
       // document and certificate downloads are ready. Require the same strict
       // proof used by the webhook handler before delivering the event.
+      let providerProof: Awaited<ReturnType<DocumensoAdapter['completed']>> | undefined;
       await expect.poll(async () => {
         const status = await provider.reconcile({ contractId: contract.contract_id, envelopeId: contract.envelope_id!,
           signers: contract.signers, pdf: contract.source_pdf });
         if (status !== 'COMPLETED') return false;
         try {
-          await provider.completed(completionEvent, { contractId: contract.contract_id, envelopeId: contract.envelope_id!, signers: contract.signers });
+          providerProof = await provider.completed(completionEvent, { contractId: contract.contract_id, envelopeId: contract.envelope_id!, signers: contract.signers });
           return true;
         } catch (error) {
           if (error instanceof DocumensoError && error.code === 'invalid_completion') return false;
@@ -216,11 +218,21 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
           body: JSON.stringify(completionEvent) });
         await assertCompletionResponse(completed, diagnostic => writeFileSync(config.resultPath + '.completion-response.json', JSON.stringify(diagnostic, null, 2)));
       }, retainHttpFailure);
+      const executed = await getContractExecution({ ...key, offerId }, { sql });
+      expect(executed?.envelope_id).toBe(contract.envelope_id);
+      expect(providerProof).toBeDefined();
+      const contractEvidence = nativeContractEvidence({ envelopeId: executed!.envelope_id!,
+        storedDocumentHash: executed!.document_hash, storedDocument: executed!.sealed_pdf, storedCertificate: executed!.audit_certificate,
+        providerDocument: providerProof!.document, providerCertificate: providerProof!.certificate });
       await reload(); await textHas('Executed document hash:');
       for (const kind of ['sealed', 'certificate']) {
         await nativeHttpPhase(kind === 'sealed' ? 'sealed-document' : 'audit-certificate', async () => {
           const artifact = await fetch(health.origin + '/api/pot/' + slug + '/contracts/' + offerId + '/document?kind=' + kind);
-          expect(artifact.status).toBe(200); expect(Buffer.from(await artifact.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
+          expect(artifact.status).toBe(200);
+          const downloaded = Buffer.from(await artifact.arrayBuffer());
+          expect(downloaded.subarray(0, 5).toString()).toBe('%PDF-');
+          expect('0x' + createHash('sha256').update(downloaded).digest('hex')).toBe(
+            kind === 'sealed' ? contractEvidence.documentHash.provider : contractEvidence.auditCertificateSha256);
         }, retainHttpFailure);
       }
       await browserActor('candidate'); await navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); await textHas('Request wallet challenge'); await captureResponses();
@@ -279,6 +291,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       expect(mine.rows).toEqual(cap.rows.filter(row => row[1].toLowerCase() === config.accounts[1].toLowerCase()));
       expect(mine.rows).toHaveLength(1);
       const final = { sourceCommit: receipt.sourceCommit, workspaceId: ws, offerId, contractId: contract.contract_id,
+        ...contractEvidence, runtimeUnits: ['desktop-shell', 'documenso-sandbox', 'test-chain'],
         hireExecuted: true, acceptanceVerified: true, memberAdmitted: true, nonBinding: true, proposalHash, executionHash, acceptanceHash,
         capTableVerified: true, myEquityVerified: true, nonBindingVisible: true,
         equityObservation: { blockNumber: cap.blockNumber, balances, capRows: cap.rows, myRows: mine.rows, capDto, myDto } };

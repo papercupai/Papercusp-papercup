@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn, type ExecFileOptionsWithStringEncoding, type SpawnOptions } from 'node:child_process';
 import { promisify } from 'node:util';
 import { closeSync, constants, fchmodSync, fstatSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
@@ -15,6 +15,36 @@ export const NATIVE_BOOTSTRAP_TIMEOUT_MS = 5 * 60_000
   + NATIVE_BOOTSTRAP_TEARDOWN_MS;
 
 const execNativeFile = promisify(execFile);
+
+/** Bind the retained native evidence to independently downloaded provider artifacts. */
+export function nativeContractEvidence(input: {
+  envelopeId: string; storedDocumentHash: string | null; storedDocument: Uint8Array | null;
+  storedCertificate: Uint8Array | null; providerDocument: Uint8Array; providerCertificate: Uint8Array;
+}) {
+  assert.ok(input.envelopeId.trim(), 'Native evidence requires the Documenso envelope identity');
+  const digest = (bytes: Uint8Array | null) => {
+    assert.ok(bytes && bytes.length >= 8 && Buffer.from(bytes.subarray(0, 5)).toString() === '%PDF-',
+      'Native evidence requires a stored and provider PDF artifact');
+    return '0x' + createHash('sha256').update(bytes).digest('hex');
+  };
+  const providerHash = digest(input.providerDocument);
+  assert.equal(input.storedDocumentHash, providerHash, 'Stored document hash differs from Documenso PDF');
+  assert.equal(digest(input.storedDocument), providerHash, 'Stored document bytes differ from Documenso PDF');
+  const certificateHash = digest(input.storedCertificate);
+  // Certificates can be rendered again by the provider; retain both observed
+  // hashes without imposing document-byte identity on that separate artifact.
+  const providerCertificateHash = digest(input.providerCertificate);
+  return {
+    documensoEnvelopeId: input.envelopeId,
+    // The maintained Envelope API identifies its certificate by this resource
+    // path; it does not issue a separate certificate-id field.
+    auditCertificateId: '/api/v2/envelope/' + encodeURIComponent(input.envelopeId) + '/certificate/download',
+    auditCertificateIdentityKind: 'provider-resource-path' as const,
+    auditCertificateSha256: certificateHash,
+    providerAuditCertificateSha256: providerCertificateHash,
+    documentHash: { stored: input.storedDocumentHash, provider: providerHash },
+  };
+}
 
 /** Let HTTP socket-close events and idle timers run while the desktop command waits. */
 export async function runNativeCommand(command: string, args: string[], options: ExecFileOptionsWithStringEncoding): Promise<string> {

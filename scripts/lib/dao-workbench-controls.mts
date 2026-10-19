@@ -12,6 +12,12 @@ export function workbenchVerifiedWallet(address: string, chainId: number): strin
   return `[...document.querySelectorAll('p')].some(p=>p.textContent.trim().toLowerCase()===${JSON.stringify(text.toLowerCase())})`;
 }
 
+/** Compare column labels without RichGrid's presentation-only uppercase transform. */
+export function workbenchEquitySnapshot(title: 'Cap table' | 'My equity'): string {
+  const section = 'document.querySelector(' + JSON.stringify('section[aria-label="' + title + '"]') + ')';
+  return "(()=>{const section=" + section + ";const rows=[...section.querySelectorAll('[role=table] [role=row]')];return {marker:section.querySelector('[role=note]')?.innerText,blockNumber:section.innerText.match(/block (\\d+)/)?.[1],headings:[...rows[0].children].map(cell=>cell.textContent.trim()),rows:rows.slice(1).map(row=>[...row.firstElementChild.children].map(cell=>cell.innerText.trim()))}})()";
+}
+
 /** Action buttons must not resolve to a Select trigger showing the same text. */
 function workbenchButtonElement(label: string, scope: string): string {
   return `[...${scope}.querySelectorAll('button:not([role="combobox"])')].find(e=>e.textContent.trim()===${JSON.stringify(label)})`;

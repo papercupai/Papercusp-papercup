@@ -6,13 +6,56 @@ import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runInNewContext } from 'node:vm';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand, reloadNativeWorkbench } from './native-bootstrap-runtime';
+import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
 
 const repo = resolve(import.meta.dirname, '../../../..');
 
 describe('native bootstrap admission and lifecycle', () => {
+  const artifactFixture = () => {
+    const document = Buffer.from('%PDF-1.7\nsigned native contract');
+    const certificate = Buffer.from('%PDF-1.7\nDocumenso audit certificate');
+    return { envelopeId: 'envelope/fixture', storedDocumentHash: '0x' + createHash('sha256').update(document).digest('hex'),
+      storedDocument: document, storedCertificate: certificate, providerDocument: document, providerCertificate: certificate };
+  };
+
+  it('retains the provider certificate identity and independently matched document hashes', () => {
+    const fixture = artifactFixture();
+    expect(nativeContractEvidence(fixture)).toEqual({
+      documensoEnvelopeId: fixture.envelopeId,
+      auditCertificateId: '/api/v2/envelope/envelope%2Ffixture/certificate/download',
+      auditCertificateIdentityKind: 'provider-resource-path',
+      auditCertificateSha256: '0x' + createHash('sha256').update(fixture.providerCertificate).digest('hex'),
+      providerAuditCertificateSha256: '0x' + createHash('sha256').update(fixture.providerCertificate).digest('hex'),
+      documentHash: { stored: fixture.storedDocumentHash, provider: fixture.storedDocumentHash },
+    });
+  });
+
+  it('refuses a stored hash or PDF that differs from the independently fetched provider document', () => {
+    const fixture = artifactFixture();
+    expect(() => nativeContractEvidence({ ...fixture, storedDocumentHash: '0x' + '0'.repeat(64) }))
+      .toThrow('Stored document hash differs');
+    expect(() => nativeContractEvidence({ ...fixture, storedDocument: Buffer.from('%PDF-1.7\nanother signed contract') }))
+      .toThrow('Stored document bytes differ');
+  });
+
+  it('refuses absent or invalid provider certificates and missing provider identity', () => {
+    const fixture = artifactFixture();
+    expect(() => nativeContractEvidence({ ...fixture, envelopeId: ' ' })).toThrow('envelope identity');
+    expect(() => nativeContractEvidence({ ...fixture, storedCertificate: null })).toThrow('PDF artifact');
+    expect(() => nativeContractEvidence({ ...fixture, providerCertificate: Buffer.from('<html>not ready</html>') })).toThrow('PDF artifact');
+    expect(() => nativeContractEvidence({ ...fixture, storedCertificate: Buffer.from('<html>not stored</html>') })).toThrow('PDF artifact');
+  });
+
+  it('retains separate certificate hashes without requiring a provider re-render to be byte-identical', () => {
+    const fixture = artifactFixture();
+    const observed = nativeContractEvidence({ ...fixture, providerCertificate: Buffer.from('%PDF-1.7\nprovider re-rendered certificate') });
+    expect(observed.auditCertificateId).toContain('envelope%2Ffixture');
+    expect(observed.auditCertificateSha256).not.toBe(observed.providerAuditCertificateSha256);
+  });
+
   it('establishes one canonical group and preserves inherited attribution', () => {
     const env = nativeBootstrapEnvironment({ PAPERCUSP_WORKSPACE_ID: 'fixture' }, 'postgresql://fixture/ledger');
     expect(env.PAPERCUSP_TEST_RUN_GROUP).toMatch(/^dao-hr-native-[a-f0-9-]+$/);
