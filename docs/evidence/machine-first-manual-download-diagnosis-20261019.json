@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010017864",
+  "parentWorkItem": "WI-6554700010015411",
+  "scope": "Maintained download diagnostic controls and recovered private candidate; original served cancellation remains unexplained. No shipment or full R2 acceptance claim.",
+  "previousFailure": "docs/evidence/machine-first-configured-signup-failure-20261019.json",
+  "source": {
+    "root": "portal",
+    "rootResolution": "Registered canonical Portal checkout; candidate paths below are relative to its parent apps directory.",
+    "file": "e2e/portal-utility-welcome.spec.ts",
+    "sha256": "30ede7be08927746407ebd95d60f0b621cd1574432cb8131c89f5d6396c648c7",
+    "changes": [
+      "Maintained private HTTPS manual-retry cases use the real utility component, storage denial and blocked automatic anchor",
+      "Positive attachment and deliberately truncated attachment exercise completed and canceled download lifecycle evidence",
+      "Served receipt retains Page.downloadProgress, request failures, utility response status and terminal download result before success assertions",
+      "Canceled downloads attempt chrome://downloads diagnostic readback",
+      "Successful served manual retries retain archive byte count and SHA256"
+    ]
+  },
+  "measurements": {
+    "privateTlsAndFixtureArchive": "passed; certificate handling alone did not reproduce original failure",
+    "privateTlsAndConfiguredPublicArchive": {
+      "passed": 1,
+      "skipped": 0,
+      "bytes": 69542264,
+      "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+      "qualification": "Mounted component network experiment, not served production acceptance"
+    },
+    "maintainedTransportControls": {
+      "passed": 2,
+      "skipped": 0,
+      "negativeControl": "The server sends a partial attachment and closes the connection; the diagnostic records failure=canceled and Page.downloadProgress cancellation",
+      "canonicalReporterRerun": "EXIT0; 2 passed, 0 skipped",
+      "qualification": "Literal canceled is reproduced by an interrupted network transfer; it does not establish the original served cause"
+    }
+  },
+  "candidate": {
+    "runtimeRoot": ".machine-first-configured-candidate-20261019-0600",
+    "release": "oJ0h0_To5R7LOMBgrKJIn-20261019060105140-1246394-6cb54ba0",
+    "artifactRoot": ".machine-first-configured-candidate-20261019-0600/releases/oJ0h0_To5R7LOMBgrKJIn-20261019060105140-1246394-6cb54ba0",
+    "buildCommandExitCode": 1,
+    "compilationAndPublication": "completed; not promoted",
+    "terminalFailure": "Post-publication locks:release CLI could not reach staging3170, fell back to3070 and failed before releasing build leases",
+    "manualLeaseCleanup": {
+      "verified": true,
+      "tool": "locks:release",
+      "selector": "all_mine=true; coordination_domain=canonical Portal root",
+      "heldBefore": 489,
+      "ok": true,
+      "receiptRef": "papercusp://scratch/papercusp-workspace/locks:release/3946d9ec-2951-440c-8f08-4805267f04eb/result-door-1792389768843.md"
+    },
+    "verificationAt": "2026-10-19T06:02:32.122Z",
+    "sourceRootDigest": "3ac45b985ae5528675a456e78ac0a7075aec5b9843593109a430f7d01dfecfcc",
+    "sourceWholeDigest": "e4f08e8425abba45abafbd984ec22f078b820f244887cd9aa67a25cfa34975c9",
+    "currentRootMatches": true,
+    "currentWholeMatches": true,
+    "packagedPrebundles": "assertBuildProvenance passed",
+    "publicLinksRawFileDigest": "cb5b27e31187457549956ac1ecabb90361b84570868937dbcc78cd29cf3cf8ec",
+    "indexHeadStatus": 200,
+    "nativeBuildHandleDrained": true,
+    "browserRuntimeStarted": false
+  },
+  "instrumentedServedRun": {
+    "startedAt": "2026-10-19T06:12:16.914Z",
+    "release": "oJ0h0_To5R7LOMBgrKJIn-20261019060105140-1246394-6cb54ba0",
+    "candidateRecheckedAt": "2026-10-19T06:10:23.545Z",
+    "rootAndWholeMatchedBeforeRun": true,
+    "packagedPrebundlesPassed": true,
+    "exitCode": 1,
+    "passed": 0,
+    "failed": 1,
+    "skipped": 0,
+    "automaticDownload": {
+      "completed": true,
+      "bytes": 69542264,
+      "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+      "reloadAndKeyboardGuiPassed": true
+    },
+    "blockedManualDownload": {
+      "failure": "canceled",
+      "filename": "utility",
+      "urlPath": "/api/downloads/utility?target=linux-x86_64",
+      "progress": { "totalBytes": 0, "receivedBytes": 0, "state": "canceled" },
+      "archiveRedirectObserved": false,
+      "qualification": "Cancellation was observed at the Portal download URL before any archive bytes. The earlier truncated-body control reached the archive and received seven bytes. These are distinct observed paths; the original cause is still unconfirmed."
+    },
+    "accountCleanup": true,
+    "applicationChildrenExitedZero": true,
+    "privateHomeRemoved": true,
+    "isolatedRuntimeRemoved": true,
+    "privatePgDataRemoved": true,
+    "nativeHandleDrained": true
+  },
+  "diagnosticFollowup": {
+    "sourceFile": "e2e/portal-utility-welcome.spec.ts",
+    "currentSha256": "73c3759254c9ace8b16745ff4d08e0bf9d1a6020e3ea3ff5ed42834e56374d48",
+    "maintainedControls": { "passed": 3, "failed": 0, "skipped": 0, "exitCode": 0 },
+    "delayedRedirect": "A 250ms private HTTPS redirect passes; response delay alone does not reproduce the served cancellation.",
+    "detectorRootCause": "Chrome exposes lastReasonText, but the diagnostic read obsolete lastReason and silently omitted the reason. Confirmed against installed Chrome resources.pak Mojo schema resource20333.",
+    "detectorFix": "Read lastReasonText and require a nonempty reason in the maintained truncated-transfer control.",
+    "detectorVerification": "The interrupted-transfer control now retains lastReasonText='Failed - Network error'; normal and delayed transfers complete.",
+    "candidateCurrentness": "Subsequent diagnostic test edits change the source fingerprint. The0600 run remains bound to its executed bytes; do not treat0600 as exact-current full-source acceptance after these edits."
+  },
+  "rootCause": "Original served cancellation UNCONFIRMED; diagnostic field defect fixed and guarded. Do not claim the original issue repaired or classify it as a flake.",
+  "next": "Do not repeat the full configured served journey or rebuild merely for diagnostics. Isolate the immutable production download route/proxy in a maintained focused HTTPS experiment without provider-account admission; retain request arrival, redirect and corrected Chrome lastReasonText. Distinguish route/proxy behavior from browser certificate handling before any product fix or further full acceptance run.",
+  "rawArtifacts": [
+    { "path": "/tmp/machine-first-manual-transport-guard-20261019.json", "sha256": "b9f4c09c2896e5582284dc65af611627c98702b1979e4f09c9cc17772497de1b" },
+    { "path": "/tmp/machine-first-manual-transport-ledger-20261019.log", "sha256": "b61cb2445d19c21d1abcd4c7754b25464a45287510356c4eeb230773f9fcced8" },
+    { "path": "/tmp/machine-first-manual-publisher-20261019.json", "sha256": "be9df7978263aebfc5d04d2f79fe85059c77e8b4bdc36f01ddb48bf50f4cda6f" },
+    { "path": "/tmp/machine-first-configured-candidate-20261019-0600.log", "sha256": "4665cdd1589f82daa920e27057587c13a4d05273cdd4348e708bffcdde248d20" },
+    { "path": "/tmp/machine-first-configured-candidate-20261019-0600.json", "sha256": "f7ad7296693c7f795853e520d45a90e908809f0ccecf9b570af861d23469696d" },
+    { "path": "/tmp/machine-first-configured-served-20261019-0538-launcher-source.mjs", "sha256": "61c067a64289da628830a7d6f83c7c21e24ccb3e84f5052abc05291e95a246b2" },
+    { "path": "/tmp/machine-first-configured-served-20261019-0612-observed-acceptance.log", "sha256": "a26175f792b25e835516bad49eb4717c53c475ddebdf53c44aa6bbfc0e449cf9" },
+    { "path": "/tmp/machine-first-configured-served-20261019-0612-observed-browser.json", "sha256": "9ea16cdfc53467baee3dd86b868fef9248fefdcdb20cd6bc8f5997a7dc811f78" },
+    { "path": "/tmp/machine-first-configured-served-20261019-0612-observed-runtime.json", "sha256": "42903b56a2aba90ace91d25ad2dadd90dc8b000db4742470fc413b42b2bcb42e" },
+    { "path": "/tmp/machine-first-configured-served-20261019-0612-observed-launch.json", "sha256": "8b97950fb219cf284e27c7919c79743e7f2a0738ae11366611ef015de4712a22" },
+    { "path": "/tmp/machine-first-configured-served-20261019-0612-observed-launcher-source.mjs", "sha256": "16d46c8d9b98e1311a538234093a0c704a0acbcbce87255210f195f5f6a0371c" },
+    { "path": "/tmp/machine-first-configured-served-20261019-0612-observed-custody-preflight.json", "sha256": "d8e31b36106b47346017fa2e64cd67bf8242acc33b42f8716a0fd7c00e3793ce" },
+    { "path": "/tmp/machine-first-manual-delayed-controls-20261019.json", "sha256": "a11124ce132dd756faa529c0810d09d879c2bd2dcf75547b7f9e78b52865195c" },
+    { "path": "/tmp/machine-first-manual-reason-controls-20261019.json", "sha256": "8bfee5b81fdc217efefd998b2c68531a95e91d52e5a556df6853729fcab979b2" },
+    { "path": "/tmp/machine-first-manual-reason-controls-20261019.err", "sha256": "1364d0b8a9b95d5f8e8a3e24b0168780b1ab0b730d4e1a8ed23ddefedafc609b" }
+  ],
+  "authorization": "SELF/AUTO continues. Owner turn11, plan D-003 and current R7 authorize required compatible archive publication and verified shipment; additional blanket publication approval was retracted in post1191208. Preserve artifact-specific controls. No implementation fanout or peer/live-gate monitoring."
+}
