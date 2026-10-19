@@ -3181,8 +3181,31 @@ verify_assertion_input_integrity() {
 start_display_server() {
   start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" env "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" "PAPERCUSP_VERIFY_XVFB_DISPLAY=:$DISPLAY_NUM" "DISPLAY=:$DISPLAY_NUM" Xvfb ":$DISPLAY_NUM" -screen 0 "${XVFB_SCREEN_W}x${XVFB_SCREEN_H}x24" -nolisten tcp
   XVFB_PID="$VERIFY_STARTED_PROCESS_PID"
-  sleep 1
-  DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
+  # EI-26363783041689120: startup is asynchronous. One failed probe after a
+  # fixed sleep cannot distinguish initialization from a dead server. Observe
+  # readiness while our process lives, bound each probe, and retain the last
+  # response so an actual failure explains itself before teardown removes it.
+  local display_started=$SECONDS display_deadline=$((SECONDS + 15)) display_failure
+  while :; do
+    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+      display_failure="exited before readiness"
+      break
+    fi
+    if timeout --signal=TERM --kill-after=1s 2s env DISPLAY=":$DISPLAY_NUM" xdpyinfo >"$WORK/xdpyinfo.log" 2>&1; then
+      log "Xvfb :$DISPLAY_NUM ready after $((SECONDS - display_started))s (pid=$XVFB_PID)"
+      break
+    fi
+    if [ "$SECONDS" -ge "$display_deadline" ]; then
+      display_failure="readiness deadline exceeded"
+      break
+    fi
+    sleep 0.2
+  done
+  if [ -n "${display_failure:-}" ]; then
+    echo "FATAL: Xvfb :$DISPLAY_NUM $display_failure — see $WORK/xvfb.log and $WORK/xdpyinfo.log" >&2
+    tail -n 40 "$WORK/xvfb.log" "$WORK/xdpyinfo.log" >&2 2>/dev/null || true
+    exit 1
+  fi
   start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox
   OPENBOX_PID="$VERIFY_STARTED_PROCESS_PID"
 }

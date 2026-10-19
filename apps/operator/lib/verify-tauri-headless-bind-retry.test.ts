@@ -292,7 +292,7 @@ describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-
   });
 
   it('on a bind-time EADDRINUSE with attempts remaining: kills this attempt, releases the lock, re-picks, and CONTINUES (never exits)', () => {
-    const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+    const loop = src.match(/\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
     expect(loop).toBeTruthy();
 
     const retryBranch = loop!.match(
@@ -308,7 +308,7 @@ describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-
   });
 
   it('only surfaces fatal once the retry budget is exhausted, and says so', () => {
-    const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+    const loop = src.match(/\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
     expect(loop).toBeTruthy();
     // The FATAL branch (after the retry-budget guard) — must still exist and exit 1.
     expect(loop).toMatch(/FATAL: our operator sidecar could not bind :\$DEV_PORT \(EADDRINUSE\)/);
@@ -320,13 +320,13 @@ describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-
   });
 
   it('a clean bind (no EADDRINUSE) breaks the loop and proceeds without retrying', () => {
-    const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+    const loop = src.match(/\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
     expect(loop).toBeTruthy();
     expect(loop).toMatch(/if ! grep -qE "EADDRINUSE\.\*:\$DEV_PORT\\b" "\$LOG" 2>\/dev\/null; then\s*\n\s*break/);
   });
 
   it('non-port-race fatal exits (bridge timeout, tauri exited early) are unchanged — no retry for those', () => {
-    const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+    const loop = src.match(/\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
     expect(loop).toBeTruthy();
     expect(loop).toMatch(/tauri dev exited before the bridge came up/);
     expect(loop).toMatch(/bridge did not come up within \$\{TIMEOUT\}s/);
@@ -425,12 +425,12 @@ describe('EI-19446616147360269 — the bind-time re-pick is reachable without th
   });
 
   it('surfaces the lost port on the script\'s OWN stdout — a dead boot must not read as a slow one', () => {
-    const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+    const loop = src.match(/\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
     expect(loop).toMatch(/log "sidecar GAVE UP binding :\$DEV_PORT/);
   });
 
   it('still reports "bridge is up" only when the bridge actually came up', () => {
-    const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+    const loop = src.match(/\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
     // Guards the obvious regression: an unconditional "bridge is up" log after a
     // loop that can now exit without one.
     expect(loop).toMatch(/else\n\s*log "bridge is up after \$\{ELAPSED\}s"/);

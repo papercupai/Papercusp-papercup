@@ -42,9 +42,9 @@ const SCRIPT =
   process.env.PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
 
-/** Same outer boot-attempt loop extraction as verify-tauri-headless-bind-retry.test.ts. */
+/** Anchor on the counter so deadline preflight before it does not hide the loop. */
 function bootLoop(): string {
-  const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+  const loop = src.match(/\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
   expect(loop, 'the boot-attempt loop must still be findable').toBeTruthy();
   return loop!;
 }
@@ -60,8 +60,12 @@ describe('EI-21903832503219853 — verify-tauri-headless re-picks a fresh displa
     expect(pickFn, 'pick_display() must exist').toBeTruthy();
     expect(startFn, 'start_display_server() must exist').toBeTruthy();
     expect(pickFn).toMatch(/reserve_display "\$DISPLAY_NUM"/);
-    expect(startFn).toMatch(/XVFB_PID="\$\(start_verify_process/);
-    expect(startFn).toMatch(/OPENBOX_PID="\$\(start_verify_process/);
+    // Launch in the owning shell so process/cgroup bookkeeping survives;
+    // command substitution would run it in a subshell and lose that state.
+    expect(startFn).toMatch(/start_verify_process "\$\{VERIFY_SCOPE_BASE\}-xvfb"/);
+    expect(startFn).toContain('XVFB_PID="$VERIFY_STARTED_PROCESS_PID"');
+    expect(startFn).toMatch(/start_verify_process "\$\{VERIFY_SCOPE_BASE\}-openbox"/);
+    expect(startFn).toContain('OPENBOX_PID="$VERIFY_STARTED_PROCESS_PID"');
     // Each is called exactly once at the ORIGINAL (non-retry) call site — one
     // procedure, two call sites (the second being the retry branch below), not
     // a duplicated copy.

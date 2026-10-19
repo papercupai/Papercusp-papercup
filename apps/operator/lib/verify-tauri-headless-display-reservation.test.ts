@@ -9,17 +9,89 @@
  * before the final taken check and held until normal teardown or the
  * --boot-only keeper has released the display and its derived ports.
  *
- * This is intentionally a static wiring guard: exercising two full Tauri
- * boots would be too expensive and environment-dependent for the unit suite,
- * while the race-prevention properties are the ordering and lifetime
- * invariants checked below.
+ * Reservation ordering and lifetime have static wiring guards. Display
+ * readiness also exercises the production startup function with controlled
+ * process fixtures, without opening an X display or booting Tauri.
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
+const SCRIPT = process.env.PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
+
+// Exercise the actual startup function without opening an X display or booting
+// the desktop. Only the two external processes and the readiness endpoint are
+// fixtures; the production wait, process check, timeout and diagnostics execute.
+function displayStartup(mode: 'delayed' | 'dead' | 'hung') {
+  const root = mkdtempSync(join(tmpdir(), 'verifier-display-ready-'));
+  const fn = src.match(/start_display_server\(\) \{[\s\S]*?\n\}/)?.[0];
+  expect(fn).toBeTruthy();
+  writeFileSync(join(root, 'xdpyinfo'), `#!/usr/bin/env bash
+if [ "$DISPLAY_TEST_MODE" = hung ]; then exec sleep 60; fi
+[ -f "$WORK/ready" ] && exit 0
+echo 'fixture: server still initializing' >&2
+exit 1
+`);
+  chmodSync(join(root, 'xdpyinfo'), 0o755);
+  try {
+    const result = spawnSync('bash', ['-c', `
+set -uo pipefail
+children=()
+trap 'for child in "\${children[@]}"; do kill "$child" 2>/dev/null || true; done; wait' EXIT
+log() { printf '%s\\n' "$*"; }
+start_verify_process() {
+  if [[ "$1" = *-openbox ]]; then echo OPENBOX_STARTED; return; fi
+  if [ "$DISPLAY_TEST_MODE" = dead ]; then
+    echo 'fixture: fatal Xvfb startup' > "$2"
+    VERIFY_STARTED_PROCESS_PID=999999999
+    return
+  fi
+  sleep 60 > "$2" 2>&1 &
+  VERIFY_STARTED_PROCESS_PID=$!
+  children+=("$!")
+  if [ "$DISPLAY_TEST_MODE" = delayed ]; then
+    (sleep 1.2; touch "$WORK/ready") &
+    children+=("$!")
+  fi
+}
+${fn}
+start_display_server
+`], {
+      encoding: 'utf8', timeout: 25_000, killSignal: 'SIGTERM',
+      env: { ...process.env, PATH: root + ':' + process.env.PATH, WORK: root,
+        DISPLAY_TEST_MODE: mode, DISPLAY_NUM: '9999', VERIFY_SCOPE_BASE: 'fixture',
+        TAURI_LAUNCH_PROVENANCE: 'fixture', XVFB_SCREEN_W: '640', XVFB_SCREEN_H: '480' },
+    });
+    return { ...result, probe: (() => { try { return readFileSync(join(root, 'xdpyinfo.log'), 'utf8'); } catch { return ''; } })() };
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+describe('EI-26363783041689120 — verifier display startup observes readiness', () => {
+  it('waits for a live display that becomes ready after the former one-second cutoff', () => {
+    const result = displayStartup('delayed');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('OPENBOX_STARTED');
+  }, 30_000);
+
+  it('fails on an exited X server and includes its startup diagnostics', () => {
+    const result = displayStartup('dead');
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain('OPENBOX_STARTED');
+    expect(result.stderr).toContain('exited before readiness');
+    expect(result.stderr).toContain('fixture: fatal Xvfb startup');
+  }, 30_000);
+
+  it('bounds a hanging X readiness probe and never starts the window manager', () => {
+    const result = displayStartup('hung');
+    expect(result.error, 'the production bound must expire before the outer test watchdog').toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain('OPENBOX_STARTED');
+    expect(result.stderr).toContain('readiness deadline');
+  }, 30_000);
+});
 
 describe('EI-21617008171422271 — verify-tauri-headless atomically reserves displays', () => {
   it('uses a per-display flock and rechecks occupancy while holding it', () => {
