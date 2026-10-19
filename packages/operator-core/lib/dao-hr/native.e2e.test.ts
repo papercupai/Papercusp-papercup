@@ -112,6 +112,9 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       await confirmations(); return hash as string;
     };
     const actor = (name: string) => { selectIdentityFixtureActor(fixturePath, name, privateEnv); };
+    // The fixture rotates server credentials; it emits no browser auth event.
+    // Re-read actor-scoped workspace permissions before navigating within the DAO.
+    const browserActor = (name: string) => { actor(name); reload(); };
     const bindFinanceWallet = async (account: string) => {
       navigate({ daoSection: 'ownership' }); textHas('Your verified wallet:'); captureResponses();
       field('Wallet address', account); field('Wallet chain ID', '1'); click('Request wallet signing challenge');
@@ -175,7 +178,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       textHas('Native candidate'); click('Native candidate'); textHas('Another HR admin must approve your offer.');
       expect(value("[...document.querySelectorAll('button')].find(b=>b.textContent==='Approve offer').disabled")).toBe(true);
       const offerId = value("new URLSearchParams(location.search).get('hiringOffer')") as string; expect(offerId).toBeTruthy();
-      actor('approver'); reload(); textHas('Approve offer'); captureResponses(); click('Approve offer'); response('approve'); textHas('Generate contract');
+      browserActor('approver'); textHas('Approve offer'); captureResponses(); click('Approve offer'); response('approve'); textHas('Generate contract');
       select('Company countersigner', 'Native approver'); field('Start date', '2026-11-01'); click('Generate contract'); response('prepare');
       textHas('Non-binding sample.'); click('Start signatures'); response('start');
       const contract = await getContractExecution({ ...key, offerId }, { sql });
@@ -214,12 +217,12 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         const artifact = await fetch(health.origin + '/api/pot/' + slug + '/contracts/' + offerId + '/document?kind=' + kind);
         expect(artifact.status).toBe(200); expect(Buffer.from(await artifact.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
       }
-      actor('candidate'); navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); textHas('Request wallet challenge'); captureResponses();
+      browserActor('candidate'); navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); textHas('Request wallet challenge'); captureResponses();
       field('Wallet address', config.accounts[1]); field('Wallet chain ID', '1'); click('Request wallet challenge');
       const challenge = response('wallet-challenge').result;
       field('Wallet signature', await rpc('personal_sign', [stringToHex(challenge.message), config.accounts[1]])); click('Verify wallet signature'); response('wallet-verify');
       click('Verify my identity and bound wallet'); response('verify-identity');
-      actor('admin'); navigate({ peopleTab: 'hiring', hiringOffer: offerId }); textHas('Prepare hire vote'); captureResponses();
+      browserActor('admin'); navigate({ peopleTab: 'hiring', hiringOffer: offerId }); textHas('Prepare hire vote'); captureResponses();
       click('Prepare hire vote'); const prepared = response('prepare-hire').result, plan = prepared.plan;
       const proposalHash = await signWallet(prepared.unsignedTransaction);
       field('Transaction hash', proposalHash); click('Verify hire proposal transaction'); response('record-proposal');
@@ -231,14 +234,14 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       const executionHash = await prepareGovernor('execute', [plan.targets, plan.values, plan.calldatas, plan.descriptionHash]);
       navigate({ peopleTab: 'hiring', hiringOffer: offerId }); textHas('Verify hire execution transaction'); captureResponses();
       field('Transaction hash', executionHash); click('Verify hire execution transaction'); response('record-execution');
-      actor('candidate'); navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); textHas('Prepare my terms acceptance'); captureResponses();
+      browserActor('candidate'); navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); textHas('Prepare my terms acceptance'); captureResponses();
       click('Prepare my terms acceptance'); const acceptanceHash = await signWallet(response('prepare-acceptance').result);
       field('Transaction hash', acceptanceHash); click('Verify acceptance and admit me'); response('admit'); textHas('DAO membership admitted');
       const [member] = await sql`SELECT admitted_at FROM harness_shared.dao_hr_contracts WHERE contract_id=${contract.contract_id}`;
       expect(member?.admitted_at).toBeTruthy();
       reload(); navigate({ peopleTab: 'directory' }); textHas('Native candidate'); click('Native candidate'); textHas('Native engineer');
       expect(value("document.body.innerText.includes('5000')")).toBe(true);
-      actor('admin'); reload(); navigate({ peopleTab: 'org' }); textHas('Native candidate');
+      browserActor('admin'); navigate({ peopleTab: 'org' }); textHas('Native candidate');
       navigate({ peopleTab: 'cap' });
       const cap = equitySnapshot('Cap table'), capDto = workspaceDto();
       expect(cap.marker).toBe('test chain - non-binding');
@@ -263,7 +266,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       }
       const candidatePosition = capDto.positions.find(position => position.wallet.toLowerCase() === config.accounts[1].toLowerCase())!;
       expect(candidatePosition).toMatchObject({ personId: 'PER-native-candidate', displayName: 'Native candidate', committed: '1000' });
-      actor('candidate'); reload(); navigate({ peopleTab: 'my' });
+      browserActor('candidate'); navigate({ peopleTab: 'my' });
       const mine = equitySnapshot('My equity'), myDto = workspaceDto();
       expect(mine.marker).toBe('test chain - non-binding');
       expect(myDto.positions.filter(position => position.isSelf).map(position => position.wallet.toLowerCase())).toEqual([config.accounts[1].toLowerCase()]);
