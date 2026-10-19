@@ -101,8 +101,33 @@
     "detectorVerification": "The interrupted-transfer control now retains lastReasonText='Failed - Network error'; normal and delayed transfers complete.",
     "candidateCurrentness": "Subsequent diagnostic test edits change the source fingerprint. The0600 run remains bound to its executed bytes; do not treat0600 as exact-current full-source acceptance after these edits."
   },
-  "rootCause": "Original served cancellation UNCONFIRMED; diagnostic field defect fixed and guarded. Do not claim the original issue repaired or classify it as a flake.",
-  "next": "Do not repeat the full configured served journey or rebuild merely for diagnostics. Isolate the immutable production download route/proxy in a maintained focused HTTPS experiment without provider-account admission; retain request arrival, redirect and corrected Chrome lastReasonText. Distinguish route/proxy behavior from browser certificate handling before any product fix or further full acceptance run.",
+  "focusedRouteDiagnosis": {
+    "sourceFile": "portal/e2e/portal-utility-welcome.spec.ts",
+    "finalSourceSha256": "a1199982fdf359f83ef6ec6d9f2bef5422c0d3de5e8fc49edc2f782c43cb6bb9",
+    "immutableRelease": "oJ0h0_To5R7LOMBgrKJIn-20261019060105140-1246394-6cb54ba0",
+    "compiledRouteSha256": "14c41ca77a1a2e34bddd22905de661b3ecbaee4d6b9e335c1b3db5aff55f17ed",
+    "mechanism": "Maintained Playwright test loads the immutable compiled GET and existing front-door proxy. Optional standalone backend exercises the immutable server middleware; optional production document serves its actual HTML and static assets. Session identity is a fixture and the adapter forwards no other API to the standalone server.",
+    "matrix": [
+      { "mode": "compiled GET and TLS proxy, fresh browser", "certificatePins": [false, true], "passed": 2, "failed": 0, "skipped": 0 },
+      { "mode": "compiled GET and TLS proxy, after closing completed-download context", "certificatePins": [false, true], "passed": 2, "failed": 0, "skipped": 0 },
+      { "mode": "immutable standalone HTTP path and TLS proxy, after closing completed-download context", "certificatePins": [false, true], "passed": 2, "failed": 0, "skipped": 0 },
+      { "mode": "immutable production document, fixture session and standalone HTTP path, after closing completed-download context", "certificatePins": [false, true], "passed": 2, "failed": 0, "skipped": 0 }
+    ],
+    "observations": {
+      "manualRequestReachedProxyAndHandler": true,
+      "handlerRedirectStatus": 302,
+      "archiveBytes": 69542264,
+      "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+      "manualDownloadFailure": null,
+      "qualification": "These controlled paths did not reproduce the original zero-byte cancellation. They do not prove every TLS, real-session or acceptance-harness path correct. No product repair or flake classification follows."
+    },
+    "finalCurrentGuardRun": { "passed": 7, "failed": 0, "skipped": 0, "exitCode": 0, "scope": "Three local transport controls plus four compiled-route certificate/context cases; standalone and production-document runs above precede a type-only non-null assertion and comment correction." },
+    "typecheck": { "exitCode": 0, "logBytes": 0, "qualification": "Initial check identified one optional request.url typing error in the new adapter. Non-null assertion fixed it; final complete typecheck passed." },
+    "isolation": { "providerAccountsAdmitted": 0, "productionRebuilds": 0, "fullSignupJourneys": 0, "standaloneBoot": "Owned private database and hosted TEST configuration; no account creation or session admission. Adapter injects a non-credential cookie solely for the optimistic middleware presence gate.", "applicationChildrenExitCode": 0, "privateHomeRemoved": true, "privateRuntimeAndPgDataRemoved": true, "nativeHandlesDrained": true },
+    "remainingDifference": "Original configured real-session and acceptance-harness path remains unisolated. The fixture session bypasses hosted account validation and tutorial state; prior-context control does not reproduce the full earlier reload/GUI/defer sequence."
+  },
+  "rootCause": "Original served cancellation UNCONFIRMED; diagnostic field defect fixed and guarded. Controlled compiled-route, standalone-route and production-document experiments pass. Do not claim the original issue repaired or classify it as a flake.",
+  "next": "Preserve the passing matrix; do not rerun it only for reconstruction, repeat the full configured signup journey, rebuild merely for diagnosis, or admit provider accounts. Inspect the remaining real-session and acceptance-harness differences with evidence before the next bounded experiment. Capture request arrival, exact redirect and corrected Chrome lastReasonText on any reproducer. No product change is justified yet.",
   "rawArtifacts": [
     { "path": "/tmp/machine-first-manual-transport-guard-20261019.json", "sha256": "b9f4c09c2896e5582284dc65af611627c98702b1979e4f09c9cc17772497de1b" },
     { "path": "/tmp/machine-first-manual-transport-ledger-20261019.log", "sha256": "b61cb2445d19c21d1abcd4c7754b25464a45287510356c4eeb230773f9fcced8" },
@@ -118,7 +143,18 @@
     { "path": "/tmp/machine-first-configured-served-20261019-0612-observed-custody-preflight.json", "sha256": "d8e31b36106b47346017fa2e64cd67bf8242acc33b42f8716a0fd7c00e3793ce" },
     { "path": "/tmp/machine-first-manual-delayed-controls-20261019.json", "sha256": "a11124ce132dd756faa529c0810d09d879c2bd2dcf75547b7f9e78b52865195c" },
     { "path": "/tmp/machine-first-manual-reason-controls-20261019.json", "sha256": "8bfee5b81fdc217efefd998b2c68531a95e91d52e5a556df6853729fcab979b2" },
-    { "path": "/tmp/machine-first-manual-reason-controls-20261019.err", "sha256": "1364d0b8a9b95d5f8e8a3e24b0168780b1ab0b730d4e1a8ed23ddefedafc609b" }
+    { "path": "/tmp/machine-first-manual-reason-controls-20261019.err", "sha256": "1364d0b8a9b95d5f8e8a3e24b0168780b1ab0b730d4e1a8ed23ddefedafc609b" },
+    { "path": "/tmp/machine-first-immutable-route-https-20261019.json", "sha256": "25c50c183b6cdca327031fc9d03b0317ecebfa08f0f994300e50f16bf4022601" },
+    { "path": "/tmp/machine-first-immutable-route-context-20261019.json", "sha256": "9731e8131a4482af6a6bac4a0eece1f7e5238a053172ccf66b27538b92743acd" },
+    { "path": "/tmp/machine-first-immutable-standalone-route-20261019-browser.json", "sha256": "39007e217d1d01fa7f27ecc860cc6cf20e83d28a01157765f2cdc281c05be2b4" },
+    { "path": "/tmp/machine-first-immutable-document-route-20261019-browser.json", "sha256": "f5da53d2b4b2fcaf6a10ba81bfb16cf3a877b77b8dc9a5031d7ba85053ab0fa1" },
+    { "path": "/tmp/machine-first-immutable-standalone-route-20261019-runtime.json", "sha256": "f6d30a0d27ae7e424baa66c7816151769e8ae05941c3ecf3333dbd57ddea8529" },
+    { "path": "/tmp/machine-first-immutable-standalone-route-20261019-launcher-source.mjs", "sha256": "a0d07841d0563021cc9c785ea2908c81a02396c31d4f2a02aba8934fbe9dd93c" },
+    { "path": "/tmp/machine-first-immutable-document-route-20261019-runtime.json", "sha256": "3bdaf3d3f53b2c12d04c5fa0fff47c8b32136e7d02d746ffa2886e555e6a9b63" },
+    { "path": "/tmp/machine-first-immutable-document-route-20261019-launcher-source.mjs", "sha256": "294e894b20f9b611712dc933a31c7069be7ccc7db52aaa352e4a3835861eb52f" },
+    { "path": "/tmp/machine-first-route-guards-final-20261019.json", "sha256": "9b3a6c36bde63a77534ab39a242a2967a5cd5093d7df6f24ae57e89d16859ac8" },
+    { "path": "/tmp/machine-first-route-guards-final-20261019.err", "sha256": "6327afa3c7eba5f0d0c05e35fd6a7df21e58dba96dc95397d8368d090bae8535" },
+    { "path": "/tmp/machine-first-route-diagnostic-typecheck-final-20261019.log", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
   ],
   "authorization": "SELF/AUTO continues. Owner turn11, plan D-003 and current R7 authorize required compatible archive publication and verified shipment; additional blanket publication approval was retracted in post1191208. Preserve artifact-specific controls. No implementation fanout or peer/live-gate monitoring."
 }
