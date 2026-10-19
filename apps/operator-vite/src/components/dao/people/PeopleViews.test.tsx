@@ -43,7 +43,7 @@ describe('P-009 / P-010 fixture calibration — member DTOs and reporting relati
     // authorized wire DTO; real SQL/EVM tests verify who receives it.
     const authorized = { ...rows[0], pay: { amount: '50000.00', currency: 'USD', cadence: 'annual' as const } };
     render(<NuqsTestingAdapter searchParams="?peopleTab=profile&person=PER-alice">
-      <PeopleViews view={{ ...view, localHomeSlug: undefined, people: { status: 'ready', value: [authorized, rows[1]] } }} />
+      <PeopleViews view={{ ...view, localHomeSlug: null, people: { status: 'ready', value: [authorized, rows[1]] } }} />
     </NuqsTestingAdapter>);
     const profile = screen.getByRole('article', { name: 'Alice profile' });
     expect(within(profile).getByRole('heading', { name: 'Pay terms' })).toBeTruthy();
