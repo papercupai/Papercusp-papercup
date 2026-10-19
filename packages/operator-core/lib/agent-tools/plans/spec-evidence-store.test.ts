@@ -479,6 +479,47 @@ describe('completed isolated runtime certification', () => {
     });
   // EI-25420516419064831: the maintained browser driver wraps the whole
   // verifier, rather than writing a native journey manifest inside the test.
+  async function setupDirectVerifier(layer = 'e2e') {
+    const state = await setup();
+    const units = ['verify-tauri-headless:1234'];
+    const basis = { ...recipe, runtimeUnits: units, completedRuntime: { ...recipe.completedRuntime,
+      journeyHarness: 'verify-tauri-headless', journeyRunId: verifierRunId } };
+    state.row.details.currentMeasurement = basis;
+    state.execution.testLayer = layer;
+    state.execution.runtimeEnvironmentBefore.units = units;
+    state.execution.runtimeEnvironmentAfter.units = units;
+    state.receipt.testedInputs = state.receipt.files;
+    Object.assign(state.verifier, { startedAt: at(0), endedAt: at(50) });
+    await state.save();
+    return { ...state, basis };
+  }
+  it.each(['integration', 'e2e'])('certifies directly executed native Vitest %s proof after its verifier exits', async layer => {
+    const state = await setupDirectVerifier(layer);
+    expect((await read()).currentness).toMatchObject({ overall: 'current',
+      dimensions: { source: 'current', test: 'current', environment: 'current' } });
+    await measureAndPinRepoFilesEvidenceAtRoot(root, state.basis);
+    await rm(join(artifacts, 'verify-tauri-headless', verifierRunId), { recursive: true });
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+  });
+  it.each(['shared-runtime', 'different-run', 'unit-layer', 'skipped', 'dirty', 'deployed',
+    'missing-witness', 'unqualified-source', 'changed-source', 'incomplete-verifier', 'outside-lifecycle'])(
+    'refuses unsupported or incomplete directly executed verifier proof: %s', async failure => {
+      const state = await setupDirectVerifier();
+      if (failure === 'shared-runtime') state.basis.runtimeUnits = ['hono-host:3170'];
+      if (failure === 'different-run') state.basis.completedRuntime.journeyRunId = journeyRunId;
+      if (failure === 'unit-layer') state.execution.testLayer = 'unit';
+      if (failure === 'skipped') state.execution.skipped = 1;
+      if (failure === 'dirty') state.row.test_run_worktree_dirty = true;
+      if (failure === 'deployed') state.row.details.evidencePlane = 'deployed';
+      if (failure === 'missing-witness') delete (state.execution as any).runtimeEnvironmentBefore;
+      if (failure === 'unqualified-source') state.receipt.testedInputs = state.receipt.files.filter(file => file.dimension === 'test');
+      if (failure === 'changed-source') await writeFile(join(root, 'src/feature.ts'), 'changed source');
+      if (failure === 'incomplete-verifier') state.verifier.verdict = 'fail';
+      if (failure === 'outside-lifecycle') Object.assign(state.verifier, { endedAt: at(39) });
+      await state.save();
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
+
   async function setupOperatorE2e() {
     const state = await setup();
     const driverRoot = join(artifacts, 'operator-driver');

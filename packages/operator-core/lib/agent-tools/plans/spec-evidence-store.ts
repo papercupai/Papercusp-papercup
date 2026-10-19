@@ -3063,7 +3063,7 @@ function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMea
     ['verify-tauri-headless', selector.verifierRunId, 'result.json'],
     ['verify-tauri-headless', selector.verifierRunId, 'phases/prepare/verifier-source-receipt.json'],
     [selector.journeyHarness, selector.journeyRunId, 'result.json'],
-    ...(selector.journeyHarness === 'operator-e2e-isolated' ? [] : [
+    ...(['operator-e2e-isolated', 'verify-tauri-headless'].includes(selector.journeyHarness) ? [] : [
       [selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'] as const,
     ]),
   ] as const : [];
@@ -3205,6 +3205,14 @@ export async function measureCompletedTestRuntime(
 ): Promise<string | null> {
   const selector = recipe.completedRuntime;
   if (selector?.kind === 'isolated-integration') return measureCompletedIntegrationRuntime(row, recipe, currentFiles, scope, root);
+  const directVerifier = selector?.kind === 'verification-harness'
+    && selector.journeyHarness === 'verify-tauri-headless';
+  // The maintained verifier can execute a Vitest assertion directly. Its
+  // original native witness and its own source/lifecycle receipts are the
+  // journey; shared staging receipts cannot acquire that provenance later.
+  if (directVerifier && (selector.journeyRunId !== selector.verifierRunId
+    || recipe.runtimeUnits?.length !== 1
+    || !/^verify-tauri-headless:[1-9]\d*$/.test(recipe.runtimeUnits[0]))) return null;
   const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
   const witness = stableRecordedRuntimeEnvironment(
     execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
@@ -3221,7 +3229,9 @@ export async function measureCompletedTestRuntime(
       : selector.kind === 'verification-harness' ? ['vitest', 'playwright'].includes(row.test_run_framework ?? '')
       : row.test_run_framework === 'vitest')
     || row.test_run_worktree_dirty !== false
-    || !execution || execution.testLayer !== (selector.kind === 'llm-in-process' ? 'llm' : 'e2e')
+    || !execution || !(directVerifier
+      ? row.test_run_framework === 'vitest' && ['integration', 'e2e'].includes(execution.testLayer ?? '')
+      : execution.testLayer === (selector.kind === 'llm-in-process' ? 'llm' : 'e2e'))
     || execution.worktreeDirty
     || execution.collectionFailed || execution.failed !== 0 || execution.skipped !== 0 || execution.passed < 1
     || execution.workspaceId !== scope.workspaceId || !executionHarnessMatches
@@ -3271,6 +3281,7 @@ export async function measureCompletedTestRuntime(
   }
   try {
     const operatorE2e = selector.journeyHarness === 'operator-e2e-isolated';
+    const verifierSourceJourney = operatorE2e || directVerifier;
     const [verifier, receipt, journey, manifest] = await Promise.all(
       completedRuntimeArtifactRefs(selector).map(async ([harness, runId, file]) =>
         (await readCompletedRuntimeArtifact(harness, runId, file)).data));
@@ -3283,7 +3294,7 @@ export async function measureCompletedTestRuntime(
       || receipt?.schemaVersion !== 'verifier-source-v1' || receipt.sourceCommit !== execution.commitSha
       || !Array.isArray(receipt.files) || !Array.isArray(receipt.testedInputs)
       || !receipt.testedInputs.some((file: any) => file.path === execution.filePath)
-      || (!operatorE2e && (manifest?.result !== 'pass' || !Array.isArray(manifest.sourceFingerprints)
+      || (!verifierSourceJourney && (manifest?.result !== 'pass' || !Array.isArray(manifest.sourceFingerprints)
         || manifest.sourceFingerprints.length === 0))) return null;
     const phase = (name: string) => {
       const matches = verifier.phases.filter((entry: any) => entry.phase === name);
@@ -3299,7 +3310,10 @@ export async function measureCompletedTestRuntime(
       || !(instant(prepare.endedAt) <= instant(boot.startedAt)
         && instant(boot.endedAt) <= before && instant(assertions.startedAt) <= before
         && instant(assertions.endedAt) >= after)) return null;
-    if (operatorE2e) {
+    if (directVerifier) {
+      if (!(instant(verifier.startedAt) <= instant(prepare.startedAt)
+        && instant(assertions.endedAt) <= instant(verifier.endedAt))) return null;
+    } else if (operatorE2e) {
       // This driver wraps preparation, boot, assertions and teardown. Its
       // interval encloses the verifier, while the original paired observations
       // bracket the test inside that verifier's assertion phase.
@@ -3320,14 +3334,14 @@ export async function measureCompletedTestRuntime(
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
     const recordedFiles = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file]));
     const receiptFiles = new Map(receipt.files.map((file: any) => [file.path, file.sha256]));
-    const journeyFiles = new Map((operatorE2e ? receipt.testedInputs : manifest.sourceFingerprints)
+    const journeyFiles = new Map((verifierSourceJourney ? receipt.testedInputs : manifest.sourceFingerprints)
       .map((file: any) => [file.path, file.sha256]));
     const guidanceChanged: string[] = [];
     if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length) return null;
     for (const file of currentFiles) {
       const original = recordedFiles.get(`${file.dimension}:${file.path}`);
       if (!original || receiptFiles.get(file.path) !== original.sha256
-        || ((operatorE2e || file.dimension === 'source' && !file.path.startsWith('scripts/'))
+        || ((verifierSourceJourney || file.dimension === 'source' && !file.path.startsWith('scripts/'))
           && journeyFiles.get(file.path) !== original.sha256)) return null;
       if (file.sha256 !== original.sha256 && !(file.dimension === 'source'
         && selector.guidanceOnlySourcePaths?.includes(file.path)

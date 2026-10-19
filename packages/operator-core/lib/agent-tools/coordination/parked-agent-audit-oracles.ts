@@ -12,6 +12,26 @@ export interface FollowupState {
   hasCompletionEvidence: boolean;
 }
 
+/** Pair the authenticated request destination with the verifier's runtime witness. */
+export function parkedAuditOperatorRoute(env: NodeJS.ProcessEnv = process.env) {
+  const nativeKeys = ['VERIFY_TAURI_PID', 'VERIFY_TAURI_PORT', 'VERIFY_TAURI_DEV_URL',
+    'VERIFY_TAURI_SOURCE_REF', 'VERIFY_TAURI_SOURCE_RECEIPT', 'OPERATOR_SOURCE_ROOT'] as const;
+  if (!nativeKeys.some(key => env[key])) return { port: '3170', origin: 'http://127.0.0.1:3170' };
+  if (nativeKeys.some(key => !env[key]?.trim())
+    || !/^[1-9]\d*$/.test(env.VERIFY_TAURI_PID!)
+    || !/^[a-f0-9]{40,64}$/.test(env.VERIFY_TAURI_SOURCE_REF!)
+    || !/^[1-9]\d*$/.test(env.VERIFY_TAURI_PORT!)
+    || Number(env.VERIFY_TAURI_PORT) > 65535) throw new Error('parked-audit-native-route-invalid');
+  const port = env.VERIFY_TAURI_PORT!;
+  // mcp-call's --port route is loopback HTTP. Reject a disagreeing origin so
+  // the request cannot exercise staging while its receipt names a verifier.
+  const origin = `http://127.0.0.1:${port}`;
+  if (env.VERIFY_TAURI_DEV_URL !== origin && env.VERIFY_TAURI_DEV_URL !== origin + '/') {
+    throw new Error('parked-audit-native-route-invalid');
+  }
+  return { port, origin };
+}
+
 export function originalUnconfirmedPairs(rows: Array<{ ownerId: string; request: string; verification: string }>) {
   return rows.filter(row => row.verification === 'pickup-not-confirmed')
     .map(({ ownerId, request }) => ({ ownerId, request }));

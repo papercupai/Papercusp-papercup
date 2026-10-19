@@ -22,7 +22,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
 import { auditKnown, auditUnknown, auditWakeEvidence, createRosterAudit, pageRosterAudit, type AuditRecord, type RosterAuditSnapshot } from './tools/roster-audit';
-import { originalUnconfirmedPairs, pickupDispositionViolations, type PickupDisposition } from './parked-agent-audit-oracles';
+import { originalUnconfirmedPairs, parkedAuditOperatorRoute, pickupDispositionViolations, type PickupDisposition } from './parked-agent-audit-oracles';
 
 const SEARCH_QUERY = 'parked agent audit';
 const AUDIT_DOC = 'agent-insights/parked-agent-audit-roster-view';
@@ -172,7 +172,7 @@ async function authenticatedAuditCode<T>(script: string, inputs: object = {}, fr
   const env = { ...process.env }; delete env.PAPERCUSP_SCRATCH_ROOT;
   const result = await retryAuditRead(() => new Promise<{ stdout: string; stderr: string }>((resolveResult, reject) => {
     const child = spawn(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--json', '-',
-      '--port', '3170', '--client', process.env.PAPERCUSP_SID!, '--workspace', process.env.PAPERCUSP_WORKSPACE!,
+      '--port', parkedAuditOperatorRoute().port, '--client', process.env.PAPERCUSP_SID!, '--workspace', process.env.PAPERCUSP_WORKSPACE!,
       '--harness', '*'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     const timer = setTimeout(() => { child.kill('SIGTERM'); reject(new Error('authenticated audit read exceeded 90s')); }, 90_000);
@@ -264,7 +264,7 @@ describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-
     delete toolEnv.PAPERCUSP_SCRATCH_ROOT;
     const call = async (tool: string, args: object) => {
       const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
-        tool, '--port', '3170', '--client', process.env.PAPERCUSP_SID!,
+        tool, '--port', parkedAuditOperatorRoute().port, '--client', process.env.PAPERCUSP_SID!,
         '--workspace', process.env.PAPERCUSP_WORKSPACE!, JSON.stringify(args)],
       { env: toolEnv, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });
       return JSON.parse(result.stdout);
@@ -274,7 +274,7 @@ describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-
     const docs = await call('docs:search', { query: SEARCH_QUERY, harness: 'engineering', limit: 3,
       projection: { pick: ['hits[].slug', 'hits[].url', 'legs.degraded'] } });
     const errors = searchViolations({ tools, docs });
-    process.stdout.write(`PARKED_AUDIT_R8 ${JSON.stringify({ query: SEARCH_QUERY, route: 'http://127.0.0.1:3170',
+    process.stdout.write(`PARKED_AUDIT_R8 ${JSON.stringify({ query: SEARCH_QUERY, route: parkedAuditOperatorRoute().origin,
       toolRank: tools.hits?.findIndex((hit: { tool: string }) => hit.tool === 'coord:roster') + 1,
       docRank: docs.hits?.findIndex((hit: { slug: string }) => hit.slug === AUDIT_DOC) + 1, errors })}\n`);
     expect(errors).toEqual([]);
@@ -291,7 +291,7 @@ describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-
     const toolEnv = { ...process.env }; delete toolEnv.PAPERCUSP_SCRATCH_ROOT;
     const call = async (script: string) => {
       const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
-        'code:run', '--port', '3170', '--client', process.env.PAPERCUSP_SID!,
+        'code:run', '--port', parkedAuditOperatorRoute().port, '--client', process.env.PAPERCUSP_SID!,
         '--workspace', process.env.PAPERCUSP_WORKSPACE!, '--harness', 'papercusp',
         JSON.stringify({ script, timeoutSec: 45, projection: { pick: ['ok', 'summary', 'partial', 'childFailures'] } })],
       { env: toolEnv, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });

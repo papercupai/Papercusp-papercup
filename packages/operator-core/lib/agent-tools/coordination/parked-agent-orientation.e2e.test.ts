@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, inject, it } from 'vitest';
 import { formatAgentObligationLine, type AgentObligation } from '../../agent-obligations';
+import { parkedAuditOperatorRoute } from './parked-agent-audit-oracles';
 
 const LIVE = process.env.PAPERCUSP_PARKED_ORIENTATION_LIVE === '1';
 const PROFILE = 'packages/operator-core/test/parked-agent-audit.live-profile.json';
@@ -43,7 +44,7 @@ describe.skipIf(!LIVE && inject('papercuspTestLayer') !== 'e2e')('LIVE: R-7 prod
       + "scope:{goalId:x.scope.goalId},action:x.action?{summary:x.action.summary,recoveryRef:x.action.recoveryRef}:undefined,clearsWhen:{summary:x.clearsWhen.summary}}))};"
       + "}finally{if(wait?.await_id)await tools.events.cancel({await_id:wait.await_id});await tools.events.emit({event:declaration.event,summary:'Temporary R7 acceptance control settled after await cleanup.'});}";
     const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
-      'code:run', '--port', '3170', '--client', owner!, '--workspace', workspace!, '--harness', 'papercusp',
+      'code:run', '--port', parkedAuditOperatorRoute().port, '--client', owner!, '--workspace', workspace!, '--harness', 'papercusp',
       JSON.stringify({ script, timeoutSec: 45,
         projection: { pick: ['ok', 'summary', 'partial', 'childFailures', 'summaryNotice'] } })],
     { env, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });
@@ -67,7 +68,7 @@ describe.skipIf(!LIVE && inject('papercuspTestLayer') !== 'e2e')('LIVE: R-7 prod
     expect(real?.priority).toBe('normal');
     expect(formatAgentObligationLine(real!, 'action')).toContain(`[BLOCKED] Awaiting ${substantive}`);
     expect(observed.rows.map(row => formatAgentObligationLine(row, 'action')).join('\n')).not.toContain(listener);
-    process.stdout.write(`PARKED_AUDIT_R7 ${JSON.stringify({ owner, route: 'http://127.0.0.1:3170',
+    process.stdout.write(`PARKED_AUDIT_R7 ${JSON.stringify({ owner, route: parkedAuditOperatorRoute().origin,
       armedListener: true, realAwaitBlocked: true, errors: [] })}\n`);
   }, 120_000);
 });

@@ -5,6 +5,46 @@ import { prepareRuntimeReader } from '../vitest.e2e.config';
 import { unitExcludedVitestTest } from '../../../scripts/lib/related-tests.mjs';
 
 describe('operator e2e config loading', () => {
+  it('observes the owned native verifier on both reads without loading the shared runtime ledger', async () => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+      'packages/operator-core/test/parked-agent-audit.live-profile.json');
+    vi.stubEnv('PAPERCUSP_SID', 'test-session');
+    vi.stubEnv('PAPERCUSP_WORKSPACE', 'test-workspace');
+    vi.stubEnv('VERIFY_TAURI_PID', '1234');
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', 'a'.repeat(40));
+    const load = vi.fn(); const pg = vi.fn();
+    const read = vi.fn().mockReturnValueOnce({ fingerprint: 'before' }).mockReturnValueOnce(null);
+    const prepareNativeRuntimeReader = vi.fn(() => read);
+    try {
+      const reader = await prepareRuntimeReader(load, pg, async () => ({ prepareNativeRuntimeReader }));
+      expect(prepareNativeRuntimeReader).toHaveBeenCalledWith(resolve(import.meta.dirname, '../../..'), 'a'.repeat(40));
+      expect(await reader!()).toEqual({ fingerprint: 'before' });
+      expect(await reader!()).toBeNull();
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(load).not.toHaveBeenCalled();
+      expect(pg).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(['refused', 'unavailable'])('fails closed on %s native custody without a shared-runtime fallback', async (failure) => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+      'packages/operator-core/test/parked-agent-audit.live-profile.json');
+    vi.stubEnv('PAPERCUSP_SID', 'test-session');
+    vi.stubEnv('PAPERCUSP_WORKSPACE', 'test-workspace');
+    vi.stubEnv('VERIFY_TAURI_PORT', '23170');
+    const load = vi.fn(); const pg = vi.fn();
+    try {
+      await expect(prepareRuntimeReader(load, pg, async () => ({
+        prepareNativeRuntimeReader: () => {
+          if (failure === 'refused') throw new Error('native source custody refused');
+          return undefined;
+        },
+      }))).rejects.toThrow(failure === 'refused' ? 'native source custody refused' : 'live-profile-native-runtime-unavailable');
+      expect(load).not.toHaveBeenCalled();
+      expect(pg).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each(['PAPERCUSP_SID', 'PAPERCUSP_WORKSPACE'])(
     'refuses missing %s in the parked live profile before loading the live graph', async (name) => {
       vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',

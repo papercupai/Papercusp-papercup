@@ -15,6 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export async function prepareRuntimeReader(
   loadRuntime = () => tsImport('./lib/runtime-vintage.ts', import.meta.url),
   loadPg = async () => (await import('postgres')).default,
+  loadNativeRuntime = () => tsImport('./lib/testing-native-runtime.ts', import.meta.url),
 ) {
   if (!process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE) return undefined;
   const profile = JSON.parse(readFileSync(resolve(__dirname, '../..',
@@ -38,6 +39,16 @@ export async function prepareRuntimeReader(
   }
   const missing = [...new Set(required)].filter(name => !process.env[name]?.trim());
   if (missing.length) throw new Error('live-profile-required-env-missing:' + missing.join(','));
+  // A verifier owns a disposable native process, rather than the shared units
+  // named by the profile. Reuse the same source/kernel custody check as the
+  // Playwright reporter; an invalid native witness must never fall back to PG.
+  if (process.env.VERIFY_TAURI_PID || process.env.VERIFY_TAURI_PORT) {
+    const { prepareNativeRuntimeReader } = await loadNativeRuntime();
+    const read = prepareNativeRuntimeReader(resolve(__dirname, '../..'),
+      process.env.VERIFY_TAURI_SOURCE_REF ?? null);
+    if (!read) throw new Error('live-profile-native-runtime-unavailable');
+    return async () => read();
+  }
   // Module loading belongs to configuration preparation, outside the reporter's
   // bounded observation window. tsImport starts a fresh loader on each call.
   const { listRuntimeVintage, measureRuntimeVintageEnvironment } = await loadRuntime();
