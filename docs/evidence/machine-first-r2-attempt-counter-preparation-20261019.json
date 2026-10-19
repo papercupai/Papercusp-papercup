@@ -1,0 +1,315 @@
+{
+  "schemaVersion": 1,
+  "framework": "playwright",
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "rubricRevision": 11,
+  "scope": "Automatic-attempt detector preparation only; no new hosted acceptance or shipment claim",
+  "problem": "Retained hosted receipts count resolver requests and download events, but do not directly retain expected/actual automatic-attempt counts for every R2 row.",
+  "change": "Extend the maintained storage-reload anchor detector within portal/e2e/portal-utility-welcome.spec.ts. Record document and cumulative automatic-anchor counts before navigation, count blocked attempts before fault injection, exclude visible manual links and unrelated downloads, and retain detector checkout SHA separately from immutable served-source proof.",
+  "source": {
+    "harness": "portal",
+    "path": "e2e/portal-utility-welcome.spec.ts",
+    "sha256": "40f04f67cd1e1ff61c99caa79b4bd197bd473f1ca7ab2bbd8226004693a8da8f",
+    "detectorSectionSha256": "ce6159ffa6a1cb4bcb5feac9f81085dfc48542dae2ac6f81f89f05e8edf620a8",
+    "previousValidationSourceSha256": "489aa82aca163e135b5d4b9337d3e556fce8e8764959e5d6b2e75cc3df89bd82",
+    "previousAutoCommit": "5d4afbded0dcba9a182ddc435572b2657d835ca6",
+    "detectorByteEqualAcrossValidationRuns": true,
+    "qualification": "Two exact test-source identities are retained. Five focused cases ran before adding the negative-control case; the detector body is byte-identical across both runs. This is not complete Portal product/source/environment equivalence."
+  },
+  "validation": [
+    {
+      "report": {
+        "path": "/tmp/machine-first-r2-attempt-counter-20261019.json",
+        "sha256": "5732676756383659fc51ff54f79c5f953d2a8203b738678e97650cf7123d16a0"
+      },
+      "log": {
+        "path": "/tmp/machine-first-r2-attempt-counter-20261019.log",
+        "sha256": "ee04c1e4925f5a1e94bb8dc906d8150d2d3d1c04d612e77d861196d67526e58e"
+      },
+      "exitCode": 0,
+      "stats": {
+        "startTime": "2026-10-19T02:05:23.940Z",
+        "duration": 4966.951999999999,
+        "expected": 5,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "cases": [
+        {
+          "title": "denied storage preserves one automatic download across a full document reload",
+          "status": "expected",
+          "results": [
+            "passed"
+          ]
+        },
+        {
+          "title": "a browser-blocked automatic click leaves a working manual retry",
+          "status": "expected",
+          "results": [
+            "passed"
+          ]
+        },
+        {
+          "title": "publisher failure retains platform selection and GUI continuation",
+          "status": "expected",
+          "results": [
+            "passed"
+          ]
+        },
+        {
+          "title": "unknown Mac architecture does not receive a guessed archive",
+          "status": "expected",
+          "results": [
+            "passed"
+          ]
+        },
+        {
+          "title": "native Windows does not receive a guessed archive",
+          "status": "expected",
+          "results": [
+            "passed"
+          ]
+        }
+      ],
+      "counterReceipts": [
+        {
+          "metric": "Hidden utility download anchor click invocations, counted before optional browser-block injection; excludes manual links, resolver requests and download completion.",
+          "detectorSource": {
+            "path": "e2e/portal-utility-welcome.spec.ts",
+            "sha256": "489aa82aca163e135b5d4b9337d3e556fce8e8764959e5d6b2e75cc3df89bd82",
+            "qualification": "Detector checkout identity only; immutable Portal and archive source equivalence require separate proof."
+          },
+          "phases": [
+            {
+              "phase": "initial",
+              "expected": {
+                "inDocument": 1,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 1,
+                "total": 1
+              }
+            },
+            {
+              "phase": "welcome-reload",
+              "expected": {
+                "inDocument": 0,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 0,
+                "total": 1
+              }
+            },
+            {
+              "phase": "manual-retry",
+              "expected": {
+                "inDocument": 0,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 0,
+                "total": 1
+              }
+            },
+            {
+              "phase": "unrelated-hidden-download",
+              "expected": {
+                "inDocument": 0,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 0,
+                "total": 1
+              }
+            }
+          ]
+        },
+        {
+          "metric": "Hidden utility download anchor click invocations, counted before optional browser-block injection; excludes manual links, resolver requests and download completion.",
+          "detectorSource": {
+            "path": "e2e/portal-utility-welcome.spec.ts",
+            "sha256": "489aa82aca163e135b5d4b9337d3e556fce8e8764959e5d6b2e75cc3df89bd82",
+            "qualification": "Detector checkout identity only; immutable Portal and archive source equivalence require separate proof."
+          },
+          "phases": [
+            {
+              "phase": "blocked-automatic",
+              "expected": {
+                "inDocument": 1,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 1,
+                "total": 1
+              }
+            },
+            {
+              "phase": "manual-retry",
+              "expected": {
+                "inDocument": 1,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 1,
+                "total": 1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "report": {
+        "path": "/tmp/machine-first-r2-attempt-counter-negative-20261019.json",
+        "sha256": "6986f588ca3e68c8c9245fd1d3986ca3396e990abac3672a8f3be95a6ffcdab8"
+      },
+      "log": {
+        "path": "/tmp/machine-first-r2-attempt-counter-negative-20261019.log",
+        "sha256": "622950a44eea72a77b7166c37b059d932cee49352bec45d6da5fef746aabfc2d"
+      },
+      "exitCode": 0,
+      "stats": {
+        "startTime": "2026-10-19T02:06:45.707Z",
+        "duration": 3727.7100000000005,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "cases": [
+        {
+          "title": "automatic attempt detector rejects a deliberate duplicate after reload",
+          "status": "expected",
+          "results": [
+            "passed"
+          ]
+        }
+      ],
+      "counterReceipts": [
+        {
+          "scope": "Detector negative control only",
+          "metric": "Hidden utility download anchor click invocations, counted before optional browser-block injection; excludes manual links, resolver requests and download completion.",
+          "detectorSource": {
+            "path": "e2e/portal-utility-welcome.spec.ts",
+            "sha256": "40f04f67cd1e1ff61c99caa79b4bd197bd473f1ca7ab2bbd8226004693a8da8f",
+            "qualification": "Detector checkout identity only; immutable Portal and archive source equivalence require separate proof."
+          },
+          "phases": [
+            {
+              "phase": "initial",
+              "expected": {
+                "inDocument": 1,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 1,
+                "total": 1
+              }
+            },
+            {
+              "phase": "welcome-reload",
+              "expected": {
+                "inDocument": 0,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 0,
+                "total": 1
+              }
+            },
+            {
+              "phase": "deliberate-duplicate-negative-control",
+              "expected": {
+                "inDocument": 0,
+                "total": 1
+              },
+              "actual": {
+                "inDocument": 1,
+                "total": 2
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "preparedHostedPhases": [
+    {
+      "journey": "real AuthKit signup and callback",
+      "expected": [
+        "real-signup: document 1, total 1",
+        "consumed-callback-replay: document 0, total 1",
+        "welcome-reload: document 0, total 1",
+        "keyboard-continue: document 0, total 1"
+      ]
+    },
+    {
+      "journey": "real returning AuthKit signin",
+      "expected": [
+        "real-returning-signin: document 0, total 0",
+        "returning-gui-reload: document 0, total 0"
+      ]
+    },
+    {
+      "journey": "denied storage only",
+      "expected": [
+        "initial: document 1, total 1",
+        "welcome-reload and manual retry: document 0, total 1",
+        "keyboard-continue: document 0, total 1"
+      ]
+    },
+    {
+      "journey": "cookie-admitted served destination",
+      "expected": [
+        "published initial: document 1, total 1; destination reload: document 0, total 1",
+        "blocked initial and manual retry: document 1, total 1",
+        "unavailable manifest and unsupported Windows: document 0, total 0",
+        "Continue and ordinary GUI navigation: document 0, cumulative unchanged"
+      ]
+    }
+  ],
+  "retainedEvidenceUnchanged": [
+    {
+      "path": "docs/evidence/machine-first-r2-copy-review-20261019.json",
+      "sha256": "336001d4430c18309c5602ca734067f4973e52dd4133de91fa772f155d594974",
+      "bindingId": 58574
+    },
+    {
+      "path": "docs/evidence/machine-first-r2-served-supplement-20261019.json",
+      "sha256": "3d85a2ead98bace89d9d5f8dd80fb70b84b561d21b72b07531823f6cafcef5b0",
+      "bindingId": 58573
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019.json",
+      "sha256": "8589e76d7f47a68f9c7d2839ab869806fa64479795bf90fdc8362bfc48a0c1f9"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-ledger-20261019.json",
+      "sha256": "a165b89deac3a8fe7f9a3bd0bd163070c2716f3dffc21488cf2bd23bd9794302",
+      "bindingId": 58572
+    }
+  ],
+  "remainingUnverified": [
+    "Execute amended hosted cases only for the next necessary acceptance against a compatible archive that includes current launcher changes; do not rerun prior passing browsers merely to reconstruct evidence.",
+    "Full current Portal product/test/environment identity and immutable archive version/target/archiveSha256/sourceSha/psu+pui content inclusion remain open.",
+    "Latest observed archive 5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6 lacks current launcher changes; no public endpoint was probed this turn.",
+    "Real AuthKit and cookie-admitted destination receipts retain distinct scopes. Local detector checks do not discharge hosted signup.",
+    "Full R2, candidate acceptance, R1 manual acceptance, R7, publication approval and shipment remain open."
+  ],
+  "executionBoundary": {
+    "hostedReruns": 0,
+    "providerAccountsCreated": 0,
+    "protectedRuntimeRestarts": 0,
+    "peerAcceptanceRuns": 0,
+    "priorEvidenceFilesRewritten": 0,
+    "workItemChecksRetired": 0
+  },
+  "noAcceptanceClaim": true,
+  "verdict": "detector preparation verified by five positive/fallback cases and one deliberate-duplicate negative control; full R2 open"
+}

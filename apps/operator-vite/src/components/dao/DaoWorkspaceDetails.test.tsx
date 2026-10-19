@@ -55,20 +55,22 @@ describe('DAO workspace record presentation', () => {
         checklist: [{ key: 'contract', label: 'Contract', complete: true }, { key: 'membership', label: 'Membership', complete: false }],
       } }) });
     vi.stubGlobal('fetch', fetcher);
+    const onChanged = vi.fn();
     function Harness() {
       const [current, setCurrent] = useState(connected);
       return <NuqsTestingAdapter searchParams="?peopleTab=onboarding&onboardingOffer=offer">
-        <DaoWorkspaceDetails section="members" view={current} loading={false} error="" onChanged={() => setCurrent(notJoined)} />
+        <DaoWorkspaceDetails section="members" view={current} loading={false} error="" onChanged={() => { onChanged(); setCurrent(notJoined); }} />
       </NuqsTestingAdapter>;
     }
     render(<Harness />);
     const onboarding = await screen.findByRole('form', { name: 'Bind onboarding wallet' });
     fireEvent.change(screen.getByLabelText('Wallet address'), { target: { value: '0x' + '11'.repeat(20) } });
     fireEvent.submit(onboarding);
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Connect to this DAO' })).toBeTruthy());
-    expect(screen.getByRole('heading', { name: 'My signed engagement' })).toBeTruthy();
-    expect(screen.queryByLabelText('Wallet signature')).toBeNull();
-    expect((screen.getByLabelText('Signed offer reference') as HTMLInputElement).value).toBe('');
+    await waitFor(() => expect(screen.getByRole('form', { name: 'Verify onboarding wallet signature' })).toBeTruthy());
+    expect(screen.queryByRole('heading', { name: 'Connect to this DAO' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'My signed engagement' })).toBeNull();
+    expect(screen.getByLabelText('Wallet signature')).toBeTruthy();
+    expect(onChanged).not.toHaveBeenCalled();
     expect(fetcher.mock.calls.filter(([, init]) => init).map(([, init]) => JSON.parse(init.body))).toEqual([
       { action: 'wallet-challenge', walletAddress: '0x' + '11'.repeat(20), chainId: 1 },
     ]);

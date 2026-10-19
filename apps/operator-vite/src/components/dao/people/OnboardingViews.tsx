@@ -21,13 +21,13 @@ export default function OnboardingViews({ daoSlug, offerId, onChanged }: { daoSl
     finally { if (request === generation.current) setLoading(false); }
   }, [url]);
   useEffect(() => { setData(null); setTransaction(null); setHash(''); setChallenge(null); void load(); return () => { generation.current++; }; }, [load]);
-  async function action(payload: unknown, receive?: (value: any) => void) {
+  async function action(payload: unknown, receive?: (value: any) => void, notifyParent = true) {
     const request = generation.current; setBusy(true); setError('');
     try {
       const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }), value = await response.json();
       if (!response.ok || !value.ok) throw new Error(value.message || value.detail || 'The onboarding step was refused.');
       if (request !== generation.current) return;
-      receive?.(value.result); await load(); onChanged?.();
+      receive?.(value.result); await load(); if (notifyParent) onChanged?.();
     } catch (cause) { if (request === generation.current) setError(cause instanceof Error ? cause.message : 'The onboarding step was refused.'); }
     finally { setBusy(false); }
   }
@@ -57,7 +57,7 @@ export default function OnboardingViews({ daoSlug, offerId, onChanged }: { daoSl
   ];
   function requestChallenge(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const fields = new FormData(event.currentTarget); setChallenge(null);
-    void action({ action: 'wallet-challenge', walletAddress: fields.get('wallet'), chainId: Number(fields.get('chain')) }, setChallenge);
+    void action({ action: 'wallet-challenge', walletAddress: fields.get('wallet'), chainId: Number(fields.get('chain')) }, setChallenge, false);
   }
   function verifyWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const fields = new FormData(event.currentTarget);

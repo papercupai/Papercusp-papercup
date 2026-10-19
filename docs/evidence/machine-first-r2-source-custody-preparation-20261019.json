@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "framework": "operational",
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "rubricRevision": 11,
+  "scope": "Source-custody guard preparation only; no new hosted acceptance or shipment claim",
+  "reuse": {
+    "manifest": "portal/scripts/source-integrity.mjs#fingerprintReleaseSource",
+    "servedIdentity": "portal/e2e/served-artifact.ts#resolveServedRelease",
+    "custody": "Extend existing served-artifact helper and maintained served-artifact Vitest suite; no parallel provenance system."
+  },
+  "source": {
+    "harness": "portal",
+    "files": [
+      {
+        "path": "e2e/served-artifact.ts",
+        "sha256": "0ff1e5dc7ffeeec2429ffeb212a2b21851c0279a2001d87f0a6fc5145e81ebac"
+      },
+      {
+        "path": "tests/served-artifact.test.ts",
+        "sha256": "332477ddb5e8a1e0dc30a46013a3f3c3efdbdccb8b36b4c107e556b620fd5a73"
+      },
+      {
+        "path": "e2e/portal-utility-welcome.spec.ts",
+        "sha256": "4f17af6bcf10cc1fb95ee3da760c05bfd05f78640934cc4c4854e2d5ac1e213b"
+      },
+      {
+        "path": "scripts/source-integrity.mjs",
+        "sha256": "56772c7d7a198d6fa2fcf9ab02f88afc5a44e35388e3a7fa4b3fec54a44baad7"
+      }
+    ],
+    "priorDetectorTestSha256": "40f04f67cd1e1ff61c99caa79b4bd197bd473f1ca7ab2bbd8226004693a8da8f",
+    "detectorBodySha256": "ce6159ffa6a1cb4bcb5feac9f81085dfc48542dae2ac6f81f89f05e8edf620a8",
+    "detectorBodyByteEqualToPriorIndex": true,
+    "qualification": "Checkout identities for the new guard and tests; complete immutable served product and build environment equivalence remain unproven."
+  },
+  "guard": {
+    "entry": "portal/e2e/served-artifact.ts#assertUtilitySourceCustody",
+    "releaseJoin": "HTML-resolved build/release -> retained sourceRoot -> fingerprintReleaseSource.rootDigest == immutable release.sourceRootDigest",
+    "consumedFileJoin": "Each of ten named root-local product inputs must match its exact retained manifest digest and runner checkout bytes.",
+    "runnerIdentity": "Separate SHA256 values for journey, custody helper, hosted TEST-user helper, Playwright config and package lock.",
+    "linkedScope": "Root digest excludes historical out-of-root dependency content. Whole digest and linkedEntries are guard-time observations, not historical equivalence.",
+    "fullSourceEnvironmentEquivalence": false
+  },
+  "wiring": {
+    "calls": 4,
+    "journeys": [
+      "real AuthKit signup/callback",
+      "real AuthKit returning signin",
+      "cookie-admitted storage-denied destination",
+      "cookie-admitted served destination across four scenarios"
+    ],
+    "receiptField": "sourceCustody",
+    "providerPreflightUnchanged": true
+  },
+  "validation": {
+    "command": "./node_modules/.bin/vitest run tests/served-artifact.test.ts tests/source-integrity.test.ts",
+    "exitCode": 0,
+    "files": 2,
+    "passed": 51,
+    "skipped": 0,
+    "suites": [
+      {
+        "path": "tests/source-integrity.test.ts",
+        "passed": 14
+      },
+      {
+        "path": "tests/served-artifact.test.ts",
+        "passed": 37
+      }
+    ],
+    "newCustodyCases": 16,
+    "log": {
+      "path": "/tmp/machine-first-r2-source-custody-focused-20261019.log",
+      "sha256": "d7ce35a6eea2210b3ecbe595925769b2e4855319889c980b73ec2eb4d54b9be7"
+    },
+    "negativeControls": [
+      "missing/malformed root provenance",
+      "unlisted retained-root drift with unchanged build id",
+      "newer runner product bytes at each of ten consumed seams",
+      "missing consumed runner input",
+      "test-only mutation changes runner hash without asserting product drift",
+      "linked-only mutation changes whole digest without asserting historical linked equivalence"
+    ],
+    "collection": {
+      "command": "./node_modules/.bin/playwright test --config=playwright.config.ts e2e/portal-utility-welcome.spec.ts --list --grep 'served hosted (AuthKit|signup)'",
+      "exitCode": 0,
+      "collectedCases": 5,
+      "executedCases": 0,
+      "log": {
+        "path": "/tmp/machine-first-r2-source-custody-collection-20261019.log",
+        "sha256": "c253fc0ba04c5e4625d59cb112a3feb5d73060c4d32cf6abe0c41ab1e4306302"
+      }
+    }
+  },
+  "interruptedBroaderRun": {
+    "command": "npm run test:unit -- tests/served-artifact.test.ts tests/source-integrity.test.ts",
+    "cause": "test:unit already supplies tests and packages as positional filters; additional file filters do not narrow it.",
+    "exitCode": 143,
+    "terminatedByThisSession": true,
+    "usedAsPassingProof": false,
+    "log": {
+      "path": "/tmp/machine-first-r2-source-custody-20261019.log",
+      "sha256": "6897d8d99fe143108c8c7aa08e93e3e60db51823ede926de8d1fb61f45593690"
+    },
+    "correctedRoute": "Exact two-file maintained Vitest invocation above."
+  },
+  "retainedEvidenceUnchanged": [
+    {
+      "path": "docs/evidence/machine-first-r2-attempt-counter-preparation-20261019.json",
+      "sha256": "7662e3988471c9ce4ac57d45ab4bbec76ec4a49a2e679b2f5ffdd16be70cd4dd"
+    },
+    {
+      "path": "docs/evidence/machine-first-r2-copy-review-20261019.json",
+      "sha256": "336001d4430c18309c5602ca734067f4973e52dd4133de91fa772f155d594974"
+    },
+    {
+      "path": "docs/evidence/machine-first-r2-served-supplement-20261019.json",
+      "sha256": "3d85a2ead98bace89d9d5f8dd80fb70b84b561d21b72b07531823f6cafcef5b0"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019.json",
+      "sha256": "8589e76d7f47a68f9c7d2839ab869806fa64479795bf90fdc8362bfc48a0c1f9"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-ledger-20261019.json",
+      "sha256": "a165b89deac3a8fe7f9a3bd0bd163070c2716f3dffc21488cf2bd23bd9794302"
+    }
+  ],
+  "remainingUnverified": [
+    "Execute custody guard on the next necessary compatible-archive hosted journey, retaining immutable release/source/archive identities and attempt-counter phases.",
+    "Historical linked dependency, generated server prebundle and complete build/runtime environment equivalence remain open.",
+    "Last observed public archive 5f720 lacks current launcher changes; no endpoint or archive probed this turn.",
+    "Separate real AuthKit signup/callback and returning-signin evidence scopes remain; cookie-admitted served evidence cannot replace them.",
+    "Full R2, R1 manual acceptance, R7 release, publication approval and shipment remain open."
+  ],
+  "executionBoundary": {
+    "newHostedBrowserExecutions": 0,
+    "providerAccountsCreated": 0,
+    "protectedRuntimeRestarts": 0,
+    "archiveProbes": 0,
+    "priorEvidenceFilesRewritten": 0,
+    "checkpointChecksRetired": 0
+  },
+  "noAcceptanceClaim": true,
+  "verdict": "Source-custody preparation verified in maintained suites; full R2 open"
+}

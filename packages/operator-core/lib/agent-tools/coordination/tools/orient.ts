@@ -37,7 +37,7 @@ import type { CellReadEnv } from '../../../cell-read';
 import type { CellReader } from '../../../cell-registry';
 import { resolvePresenceFleet } from '../presence-fleet';
 import { resolveSelfRef } from '../self-marker';
-import { COORD_READ_ROLES } from '../roles';
+import { COORD_READ_ROLES, COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
 import { withBoundedTimeout } from '../../../bounded-timeout';
@@ -331,6 +331,11 @@ export interface OrientArgs {
    *  (coord:declare-intent) AND used as the memory:search recall query — the
    *  two halves of the bootstrap that need an intent, folded into the one call. */
   intent?: string;
+  /** Handler-only guard for callers whose role can read orient but cannot write
+   *  coord:declare-intent (for example the evidence-only judge). This is not a
+   *  wire argument; it prevents an expected role denial from becoming a
+   *  bounded-operation degradation log. */
+  skipIntentDeclaration?: boolean;
   /** Optional typed goal refs explicitly covered by the declaration. Generated
    *  goal slugs and WI-/EI- work-item refs are accepted; blank/bare numeric
    *  refs are rejected. */
@@ -967,6 +972,22 @@ export function orientRoleFolds(
 ): { paneContext: boolean; deepWork: boolean } {
   if (mode === 'monitor') return { paneContext: false, deepWork: false };
   return { paneContext: role === 'papercup', deepWork: role === 'papercup-deep' };
+}
+
+/**
+ * Whether the handler may dispatch orient's nested coord:declare-intent write.
+ * Read-only roles (currently the evidence-only judge) are allowed to call
+ * coord:orient but intentionally remain outside COORD_ROLES. Privileged
+ * transports carry the dispatcher bypass explicitly; an absent role is the
+ * in-process/test context where no role gate is present.
+ */
+export function orientIntentDeclarationAllowed(ctx: {
+  role?: string | null;
+  gateBypass?: { role?: boolean };
+  isSuperuser?: boolean;
+}): boolean {
+  if (ctx.isSuperuser === true || ctx.gateBypass?.role === true || ctx.role == null) return true;
+  return (COORD_ROLES as readonly string[]).includes(ctx.role);
 }
 
 /** P-016: the deepWork answer-before-parking advisory (exported for the tests +
@@ -2686,7 +2707,7 @@ export async function composeOrient(
   // ── coord:declare-intent — only when an intent is given (a WRITE; independently
   // capability-gated at re-dispatch, so a read-only caller gets intentDeclared:false
   // rather than an escalation). BEST-EFFORT.
-  if (args.intent) {
+  if (args.intent && !args.skipIntentDeclaration) {
     let declared: { claims?: unknown; taskBrief?: import('../../../code-intelligence/task-brief').TaskBrief } | undefined;
     // `coord:orient.planItems` is intentionally permissive because recovery callers
     // can carry WI-/EI-/F- work-item refs in the same lane-shaped field. The nested
@@ -2748,6 +2769,11 @@ export async function composeOrient(
         declareFailed: result.intentDeclared === false,
       });
     }
+  } else if (args.intent) {
+    // The caller can read orient but is not authorized to perform its nested
+    // coordination write. Preserve the documented best-effort signal without
+    // dispatching a call that can only produce role_not_allowed.
+    result.intentDeclared = false;
   }
 
   // EI-21589715378243224: publish the latest completed composition as well as the
@@ -4002,8 +4028,11 @@ export default defineTool({
           );
         }
       : undefined;
+    const composeArgs = orientIntentDeclarationAllowed(ctx)
+      ? args
+      : { ...args, skipIntentDeclaration: true };
     const result = await phaseTracker.track('composeOrient', () => composeOrient(
-      args,
+      composeArgs,
       // P-001 (orient-recall-quality-2026-07-12): the folded memory:search records
       // its recall telemetry under surface 'orient' (not generic 'search') so
       // orient's recall quality is measurable per-entry-point. Telemetry only.

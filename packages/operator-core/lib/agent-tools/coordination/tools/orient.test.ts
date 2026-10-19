@@ -8,6 +8,7 @@ import {
   composeSelectedOrientModes,
   orientModeContractsInContext,
   orientRoleFolds,
+  orientIntentDeclarationAllowed,
   assembleOrientOutput,
   ORIENT_AGGREGATE_TIMEOUT_MS,
   ORIENT_PREFLIGHT_LEG_TIMEOUT_MS,
@@ -5011,6 +5012,25 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       warnSpy.mockRestore();
     });
 
+    it('skips the nested write for a read-only caller instead of logging role_not_allowed', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'coord:declare-intent': () => {
+          throw new Error('coord:declare-intent should not run for a read-only caller');
+        },
+      });
+      const r = await composeOrient(
+        { intent: 'judge evidence wake', skipIntentDeclaration: true },
+        call,
+        'me',
+      );
+      expect(r.intentDeclared).toBe(false);
+      expect(calls.some((entry) => entry.name === 'coord:declare-intent')).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('orient:coord:declare-intent'));
+      warnSpy.mockRestore();
+    });
+
     it('the whole call still resolves promptly even when EVERY newly-bounded core leg hangs at once (the reported memory-pressure shape)', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { call } = fakeCall({
@@ -5102,6 +5122,14 @@ describe('P-016 role-specific pane folds (papercup paneContext / papercup-deep d
         deepWork: false,
       });
     }
+  });
+
+  it('allows nested intent writes only for roles that can dispatch coord:declare-intent', () => {
+    expect(orientIntentDeclarationAllowed({ role: 'judge' })).toBe(false);
+    expect(orientIntentDeclarationAllowed({ role: 'operator' })).toBe(true);
+    expect(orientIntentDeclarationAllowed({ role: 'su', isSuperuser: true })).toBe(true);
+    expect(orientIntentDeclarationAllowed({ role: 'judge', gateBypass: { role: true } })).toBe(true);
+    expect(orientIntentDeclarationAllowed({})).toBe(true);
   });
 
   it('folds an injected paneContext render into the result (the fast pane walks in with the pot picture)', async () => {
