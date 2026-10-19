@@ -50,7 +50,7 @@ export function auditExecutableStep(input: {
     : input.auto !== true ? 'Registered AUTO authority was not established.'
     : input.planLinked && input.planLane !== 'clear' ? 'Current plan lane and owner-decision evidence was unavailable; dependency clearance alone is insufficient.'
     : null;
-  return reason ? auditUnknown(source, input.observedAt, reason)
+  return reason ? auditUnknown<boolean>(source, input.observedAt, reason)
     : { ...auditKnown(true, source, input.observedAt), reason: 'The assigned current step has registered AUTO authority and no measured work dependency or recorded hold. This is evidence, not a new grant of authority.' };
 }
 

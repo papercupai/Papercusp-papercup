@@ -42,6 +42,14 @@ import { resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { resolveAgentIdentity } from '../identity';
 import { PRESENCE_TIER_CAPS, shapeCoordPresence } from './presence-shape';
 import { decodeAuditCursor, RosterAuditError } from './roster-audit';
+import { withBoundedTimeout } from '../../../bounded-timeout';
+
+/**
+ * Keep a full audit below the MCP transport deadline.  Audit assembly is a
+ * read-only census, so a stalled source must produce a typed retryable error
+ * instead of holding the request until the transport returns -32001.
+ */
+export const ROSTER_AUDIT_DEADLINE_MS = 45_000;
 
 /**
  * Explicit liveness is a deliberately cheap row shape, but it is still
@@ -265,10 +273,23 @@ export default defineTool({
         const resolved = await resolvePresenceScope(c, { scope: args.scope, hive: args.pot, workspace: args.workspace, targetedOwner: !!args.owner });
         const scopeKey = { workspaceId: resolved.wsId ?? resolveConcreteWorkspaceId(args.workspace, c.workspaceId), scope: resolved.scope === 'hive' ? 'hive' as const : 'workspace' as const, potId: resolved.potId ?? null, owner: args.owner ?? null, readerId: resolveSelfRef(ctx)?.ownerId ?? null };
         const harness = resolved.potId ?? c.harnessSlug ?? 'papercusp';
+        const auditDeadlineAt = Date.now() + ROSTER_AUDIT_DEADLINE_MS;
+        const boundedAuditStep = async <T>(phase: string, work: () => Promise<T>, fallback: T) => {
+          const remainingMs = auditDeadlineAt - Date.now();
+          if (remainingMs <= 0) return { value: fallback, degraded: true as const, reason: 'timeout' as const, elapsedMs: ROSTER_AUDIT_DEADLINE_MS };
+          return withBoundedTimeout(work, {
+            fallback,
+            timeoutMs: remainingMs,
+            label: `coord:roster:audit:${phase}`,
+            warn: false,
+          });
+        };
         const auditId = args.auditId ?? (args.cursor ? decodeAuditCursor(args.cursor).auditId : undefined);
         let snapshot;
         if (auditId) {
-          snapshot = await loadRosterAudit(harness, auditId, scopeKey);
+          const loaded = await boundedAuditStep('load', () => loadRosterAudit(harness, auditId, scopeKey), null);
+          if (loaded.degraded) throw new RosterAuditError('audit_timeout', 'Frozen audit read exceeded the 45-second request budget; retry with the same auditId.');
+          snapshot = loaded.value;
           if (!snapshot) throw new RosterAuditError('audit_not_found', 'Frozen audit is absent in this scope; a continuation never silently starts a different census.');
           if (args.auditDirectiveId !== undefined && snapshot.provenance.directiveId !== args.auditDirectiveId) {
             throw new RosterAuditError('audit_provenance_mismatch', 'Directive differs from the frozen audit.');
@@ -289,10 +310,13 @@ export default defineTool({
               'The roster writer did not measure a valid parked population; no complete census was frozen.');
           }
           const agents = presence.active.filter(row => row.sessionState === 'parked');
-          snapshot = await buildRosterAudit({ harness, scope: scopeKey, asOf: presence.as_of,
+          const built = await boundedAuditStep('build', () => buildRosterAudit({ harness, scope: scopeKey, asOf: presence.as_of,
             agents: agents as unknown as Array<Record<string, unknown>>, expectedPopulation,
-            directiveId: args.auditDirectiveId, viewer: resolveViewer(ctx as never) });
-          await saveRosterAudit(harness, snapshot);
+            directiveId: args.auditDirectiveId, viewer: resolveViewer(ctx as never) }), null);
+          if (built.degraded || !built.value) throw new RosterAuditError('audit_timeout', 'Audit census assembly exceeded the 45-second request budget; no snapshot was persisted. Retry the audit.');
+          snapshot = built.value;
+          const saved = await boundedAuditStep('save', () => saveRosterAudit(harness, snapshot), undefined);
+          if (saved.degraded) throw new RosterAuditError('audit_timeout', 'Audit snapshot persistence exceeded the 45-second request budget; retry the audit with the returned auditId if available.');
         }
         return { content: [{ type: 'text' as const, text: JSON.stringify(pageRosterAuditResponse(snapshot, scopeKey, args.cursor, args.pageSize)) }] };
       } catch (error) {

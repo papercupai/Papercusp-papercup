@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../../context-doors';
 import { RESULT_DOOR_TOKENS } from '../../../result-door';
 import { assemblePresenceSnapshot, type PresenceSnapshot } from '../presence-snapshot';
-import rosterTool, { EXPLICIT_LIVENESS_ROW_CAP } from './roster';
+import rosterTool, { EXPLICIT_LIVENESS_ROW_CAP, ROSTER_AUDIT_DEADLINE_MS } from './roster';
 import { createRosterAudit, auditKnown } from './roster-audit';
 import { resolveSelfRef } from '../self-marker';
 
@@ -253,6 +253,19 @@ describe('coord:roster', () => {
       expect(auditStore.build).not.toHaveBeenCalled();
       const invalid = await call({ view: 'audit', states: ['parked'] });
       expect(invalid.output).toMatchObject({ error: 'unsupported_filter' });
+    });
+    it('returns a typed timeout before a stalled census reaches the MCP deadline', async () => {
+      vi.useFakeTimers();
+      try {
+        auditStore.build.mockImplementation(() => new Promise(() => {}));
+        const pending = call({ view: 'audit', scope: 'workspace' }, { workspaceId: 'test-ws' });
+        await vi.advanceTimersByTimeAsync(ROSTER_AUDIT_DEADLINE_MS + 1);
+        const result = await pending;
+        expect(result.output).toMatchObject({ ok: false, error: 'audit_timeout' });
+        expect(auditStore.save).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
