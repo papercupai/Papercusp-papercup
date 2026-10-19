@@ -30,6 +30,7 @@ import orientTool from './orient';
 import * as pipelineHealth from '../pipeline-health';
 // Production boot registers compound folds before serving coord:orient.
 import '../../fleet/assignments';
+import './whoami';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const OWNER = `su-orient-obligations-${RUN}`;
@@ -71,6 +72,14 @@ beforeAll(async () => {
     sql: fx.admin,
   });
   expect(mode.ok).toBe(true);
+  // Production boot loads the fleet reader before steady-state orientation.
+  // Include its real import/store preparation alongside waitingOn above.
+  const planFleetStarted = performance.now();
+  await expect(obligationReader.defaultAgentObligationReaderDeps().planFleet(WS, GOAL))
+    .resolves.toMatchObject({ status: 'known', applicablePlanCount: 0 });
+  console.info('ORIENT_OBLIGATIONS_PREFLIGHT ' + JSON.stringify({
+    planFleetPrepared: true, elapsedMs: performance.now() - planFleetStarted,
+  }));
 }, 150_000);
 
 afterAll(async () => {
@@ -463,9 +472,11 @@ describe('complete agenda recovery through coord:orient', () => {
       }
       await fx.admin`UPDATE harness_shared.goals SET properties = jsonb_set(COALESCE(properties, '{}'::jsonb), '{worklist}',
         ${fx.admin.json({ value: refs })}::jsonb, true) WHERE workspace_id = ${WS} AND id = ${GOAL}`;
-      await fx.admin`INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, status, item_kind, goal_id)
+      await fx.admin`INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, status, item_kind, goal_id, payload)
         SELECT ${WS}, 'papercusp', ${key} || '-WI-' || n, 'Representative goal queue item ' || n,
-          (ARRAY['open','blocked','done','needs-human'])[1 + (n % 4)], 'task', ${GOAL}
+          (ARRAY['open','blocked','done','needs-human'])[1 + (n % 4)], 'task', ${GOAL},
+          CASE WHEN n % 4 = 1 THEN jsonb_build_object(
+            'blockedReason', 'Representative fixture prerequisite', 'blockedAt', now()) ELSE '{}'::jsonb END
         FROM generate_series(1, 128) n`;
       // Populate the same canonical persisted observations production reads.
       // The actual gate must independently reject these uncontracted seed plans.

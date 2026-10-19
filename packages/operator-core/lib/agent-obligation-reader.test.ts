@@ -224,6 +224,18 @@ describe('shared agent obligation reader', () => {
     warn.mockRestore();
   });
 
+  it.each(['paused', 'achieved', 'killed'])('does not revive placement for a %s goal when its fleet read is unknown', async (status) => {
+    const stopped = portfolio(); stopped.goal.status = status;
+    const planFleet = vi.fn(async (): Promise<GoalPlanFleetObservation> =>
+      ({ status: 'unknown', alert: null, applicablePlanCount: null }));
+    const read = await readAgentObligationAgenda({ workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      planSlugs: [], deps: deps({ goalPortfolio: async () => stopped, planFleet }) });
+    expect(read.agenda.evaluations.find((row) => row.ruleId === 'goal-plan-placement')).toMatchObject({
+      status: 'not-applicable',
+    });
+    expect(read.agenda.primary).toEqual([]);
+  });
+
   it.each([null, 'unrecognized'])('does not turn lifecycle %s into a reporting duty', async (status) => {
     const unknown = portfolio();
     unknown.goal.status = status;

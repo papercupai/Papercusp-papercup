@@ -2,8 +2,10 @@
 // Pure preflight for a file-backed verifier assertion. Read its declared
 // assignments; never source the assertion before the owned Tauri rig exists.
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { basename, dirname, posix, resolve as resolvePath } from 'node:path';
+import { closeSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import { basename, dirname, join, posix, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const [assertionPath, manifestPath] = process.argv.slice(2);
@@ -11,6 +13,56 @@ const fail = (reason) => {
   console.error(`VERIFY_TAURI_ASSERTION_ENV_INVALID ${reason}`);
   process.exit(2);
 };
+
+// A healthy native bridge does not prove its operator accepts the assertion's
+// bearer. Retain the actual server/caller paths before teardown can erase the
+// evidence; never read or persist credential contents in this diagnostic.
+if (assertionPath === '--runtime-mcp') {
+  const [pidText, portText, evidencePath] = process.argv.slice(3);
+  const report = { schemaVersion: 'verifier-mcp-auth-v1', ok: false,
+    observedAt: new Date().toISOString(), serverPid: Number(pidText), port: Number(portText) };
+  try {
+    if (!/^[1-9][0-9]*$/.test(pidText ?? '') || !/^[1-9][0-9]*$/.test(portText ?? '')
+      || Number(portText) > 65535 || !evidencePath) throw new Error('invalid-runtime-identity');
+    const serverEnv = Object.fromEntries(readFileSync(`/proc/${pidText}/environ`, 'utf8')
+      .split('\0').filter(row => row.includes('='))
+      .map(row => [row.slice(0, row.indexOf('=')), row.slice(row.indexOf('=') + 1)]));
+    if (serverEnv.OPERATOR_DEV_PORT !== portText) throw new Error('runtime-port-mismatch');
+    const root = process.env.PAPERCUSP_REPO_DIR ?? fileURLToPath(new URL('../..', import.meta.url));
+    const mcpPath = resolvePath(root, 'scripts/mcp-call.mjs');
+    const { superuserTokenPaths, resolveMcpWorkspace } = await import(mcpPath);
+    const file = path => {
+      try { const s = statSync(path); return { path, present: s.isFile(), dev: s.dev, ino: s.ino }; }
+      catch (error) { return { path, present: false, errorCode: error.code ?? 'unavailable' }; }
+    };
+    report.server = file(join(serverEnv.PAPERCUSP_HOME?.trim()
+      || join(serverEnv.HOME || homedir(), '.papercusp'), 'superuser-token'));
+    report.caller = superuserTokenPaths().map(file);
+    const owner = process.env.PAPERCUSP_SID;
+    const workspace = resolveMcpWorkspace({});
+    if (!owner) throw new Error('caller-identity-missing');
+    const call = spawnSync(process.execPath, [mcpPath, 'coord:whoami', '--port', portText,
+      '--client', owner, '--workspace', workspace], {
+      encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024,
+    });
+    report.call = { exitStatus: call.status, signal: call.signal,
+      invalidBearer: /superuser_invalid_bearer/.test(call.stderr ?? ''),
+      ...(call.error ? { errorCode: call.error.code ?? 'unavailable' } : {}) };
+    if (call.status !== 0) throw new Error('authenticated-runtime-read-failed');
+    const receipt = JSON.parse(call.stdout);
+    if (receipt.ownerId !== owner || receipt.workspaceId !== workspace) throw new Error('authenticated-runtime-identity-mismatch');
+    report.ok = true;
+  } catch (error) {
+    const reasons = new Set(['invalid-runtime-identity', 'runtime-port-mismatch', 'caller-identity-missing',
+      'authenticated-runtime-read-failed', 'authenticated-runtime-identity-mismatch']);
+    report.error = reasons.has(error.message) ? error.message : 'runtime-auth-unavailable';
+  }
+  if (!evidencePath) fail('runtime MCP diagnostic path is required');
+  writeFileSync(evidencePath, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
+  if (!report.ok) fail(`authenticated runtime precondition failed; evidence=${evidencePath}`);
+  console.log(`VERIFY_TAURI_RUNTIME_MCP_OK evidence=${evidencePath}`);
+  process.exit(0);
+}
 
 // File-backed assertions can declare inherited prerequisites without sourcing
 // shell code or embedding credentials in an immutable diagnostic manifest.

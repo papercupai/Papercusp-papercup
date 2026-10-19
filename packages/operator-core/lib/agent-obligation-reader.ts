@@ -563,9 +563,11 @@ export async function readAgentObligationAgenda(input: {
       launch: stableLaunch(launch.value),
       fleet: fleet.value,
     });
-    const placementFailure =
-      scopeReadFailure || portfolio.degraded || launch.degraded || fleet.degraded || fleet.value.status === 'unknown';
-    const progress = placementFailure ? null : await boundedRead('goal-placement-progress',
+    // A canonical stop makes placement inapplicable even if an independent
+    // fleet or launch read is unavailable. Keep those reads concurrent above.
+    const placementFailure = scopeReadFailure || portfolio.degraded ||
+      (!planningStopped && (launch.degraded || fleet.degraded || fleet.value.status === 'unknown'));
+    const progress = placementFailure || planningStopped ? null : await boundedRead('goal-placement-progress',
       deps.goalPlacementProgress(input.workspaceId, input.ownerId, goalId,
         (portfolio.value?.worklist ?? []).map((plan) => plan.ref)), {}, sourceTimeoutMs);
     if (progress?.degraded) degradedSources.push(readFailure('goal placement progress', progress));

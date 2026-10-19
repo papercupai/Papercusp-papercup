@@ -5182,6 +5182,19 @@ if [ "$ISOLATED_DB" = "1" ]; then
   export PAPERCUSP_VERIFY_TAURI_ISOLATED=1
 fi
 
+# A live profile needs an authenticated operator, in addition to a healthy
+# bridge. Run after exporting the assertion identity and retain both actual
+# credential paths on failure; no credential is changed or copied here.
+if [ -n "${PAPERCUSP_APP_OPERATION_LIVE_PROFILE:-}" ]; then
+  AUTH_SIDECAR_PID="$(find_pid_by_env "$OPERATOR_HOST_PROCESS_RE" "OPERATOR_DEV_PORT=$DEV_PORT" || true)"
+  [ -n "$AUTH_SIDECAR_PID" ] || {
+    echo 'FATAL: cannot identify the owned operator for live-profile authentication preflight' >&2
+    exit 1
+  }
+  node "$REPO_DIR/scripts/lib/verify-tauri-assertion-env.mjs" --runtime-mcp \
+    "$AUTH_SIDECAR_PID" "$DEV_PORT" "${VH_PHASE_DIR:-$WORK}/runtime-mcp-auth.json" || exit $?
+fi
+
 preflight_verifier_task_deadline assert || exit $?
 verifier_begin_phase assert
 # Assertions write diagnostics outside the disposable operator source. Export
