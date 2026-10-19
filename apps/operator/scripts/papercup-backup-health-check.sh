@@ -954,10 +954,15 @@ These are partial, non-restorable transactions, not backup artifacts. They consu
 # result. New outcome tokens are pinned by the vocabulary test in
 # apps/operator/scripts/__tests__/papercup-backup-health-check.test.ts.
 optional_artifact_latest_hook_degraded() { # <artifact>
-  local art="$1" hook="${1%/*}/hook.log" latest=""
+  local art="$1" hook="${1%/*}/hook.log" latest="" outcome=""
   [ -f "$hook" ] || return 1
   latest="$(grep -aE 'hook done \(' "$hook" 2>/dev/null | tail -n 1)"
-  [[ "$latest" == *'hook done (degraded)'* ]] || return 1
+  # Extract the complete terminal token before classifying it. Matching a
+  # `degraded` prefix would misread the typed admission deferral
+  # `degraded: host-backup-in-progress` as a failed dump.
+  outcome="${latest##*hook done (}"
+  outcome="${outcome%)}"
+  [ "$outcome" = degraded ] || return 1
   [ "$(mtime_s "$hook")" -gt "$(mtime_s "$art")" ] 2>/dev/null
 }
 
