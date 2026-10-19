@@ -74,5 +74,16 @@ describe('DAO workspace record presentation', () => {
     expect(fetcher.mock.calls.filter(([, init]) => init).map(([, init]) => JSON.parse(init.body))).toEqual([
       { action: 'wallet-challenge', walletAddress: '0x' + '11'.repeat(20), chainId: 1 },
     ]);
+
+    fireEvent.change(screen.getByLabelText('Wallet signature'), { target: { value: '0x' + '22'.repeat(65) } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Verify onboarding wallet signature' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Connect to this DAO' })).toBeTruthy());
+    expect(screen.getByRole('form', { name: 'Open signed engagement' })).toBeTruthy();
+    expect(screen.getByDisplayValue('offer')).toBeTruthy();
+    expect(screen.getByRole('form', { name: 'Bind onboarding wallet' })).toBeTruthy();
+    expect(fetcher.mock.calls.filter(([, init]) => init).map(([, init]) => JSON.parse(init.body))).toEqual([
+      { action: 'wallet-challenge', walletAddress: '0x' + '11'.repeat(20), chainId: 1 },
+      { action: 'wallet-verify', challengeId: 'challenge', signature: '0x' + '22'.repeat(65) },
+    ]);
   });
 });
