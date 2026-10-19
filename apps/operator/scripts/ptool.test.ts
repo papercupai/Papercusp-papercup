@@ -42,6 +42,7 @@ import {
   canDispatchOnFallbackOperator,
   resolvePtoolRecoveryTool,
   isReadOnlyPtoolRecoveryRequest,
+  shouldAttemptManagedReadRecovery,
   canDispatchPtoolOnFallback,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
@@ -581,6 +582,32 @@ describe('ptool operator routing', () => {
     expect(canDispatchPtoolOnFallback(
       'tools:invoke', { name: 'work_items:complete' }, catalog[0], catalog, true,
     )).toBe(false);
+  });
+
+  it('tries the current managed candidate when the legacy catalog mislabels a read', () => {
+    expect(shouldAttemptManagedReadRecovery({
+      toolName: 'loop:status',
+      tool: { name: 'loop:status', annotations: { readOnlyHint: false } },
+      initialGeneration: undefined,
+      recoveryIndex: 1,
+      operatorUrl: 'http://127.0.0.1:9071',
+      operatorCandidates: ['http://127.0.0.1:9071', 'http://127.0.0.1:9171'],
+    })).toBe(true);
+    expect(shouldAttemptManagedReadRecovery({
+      toolName: 'loop:status',
+      tool: { name: 'loop:status', annotations: { readOnlyHint: false } },
+      initialGeneration: 'serving-generation-v1:current',
+      recoveryIndex: 1,
+      operatorUrl: 'http://127.0.0.1:9071',
+      operatorCandidates: ['http://127.0.0.1:9071', 'http://127.0.0.1:9171'],
+    })).toBe(false);
+    expect(shouldAttemptManagedReadRecovery({
+      toolName: 'loop:status',
+      tool: null,
+      recoveryIndex: 1,
+      operatorUrl: 'http://127.0.0.1:9071',
+      operatorCandidates: ['http://127.0.0.1:9071', 'http://127.0.0.1:9171'],
+    })).toBe(false);
   });
 
   it('does not infer a staging recovery route when the launcher supplied a target hint', () => {

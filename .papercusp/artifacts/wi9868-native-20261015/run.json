@@ -1,9 +1,0 @@
-{
-  "phase": "native",
-  "pid": 671944,
-  "at": 1792089838.8137248,
-  "sourceRef": "a9a08d8758ba00cde995b65219e711925349e7ef",
-  "sourceRoot": "/tmp/pcv/papercusp-lint-as-committed-a9a08d8758-ejgDzT",
-  "sidecar": "/tmp/pcv/papercusp-lint-as-committed-a9a08d8758-ejgDzT/papercusp-desktop/src-tauri/sidecar",
-  "nativeLog": "native-3.log"
-}

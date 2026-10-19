@@ -339,6 +339,31 @@ export function isReadOnlyPtoolRecoveryRequest(toolName, callArgs, tools = []) {
 }
 
 /**
+ * Decide whether a launcher-managed same-host read recovery should be tried
+ * when the initial catalog is legacy. The legacy catalog's annotations are
+ * not authoritative: it can mark a read-only tool as writable while omitting
+ * the serving-generation marker. The recovery candidate must still prove the
+ * read-only annotation and current generation before dispatch (the caller
+ * performs that check after listing the candidate).
+ * @param {{toolName?: string, tool?: ToolCatalogEntry | null,
+ *   initialGeneration?: unknown, recoveryIndex?: number,
+ *   operatorUrl?: string, operatorCandidates?: string[]}} options
+ */
+export function shouldAttemptManagedReadRecovery({
+  toolName,
+  tool,
+  initialGeneration,
+  recoveryIndex,
+  operatorUrl,
+  operatorCandidates,
+} = {}) {
+  if (toolName === 'tools:find' || !tool) return false;
+  if (typeof initialGeneration === 'string' && initialGeneration.trim()) return false;
+  if (!Number.isInteger(recoveryIndex) || recoveryIndex <= 0) return false;
+  return operatorCandidates?.[recoveryIndex] !== operatorUrl;
+}
+
+/**
  * Apply the fallback safety gate to a direct call or to a nested
  * `tools:invoke` call. The outer wrapper is intentionally generic, so its
  * annotation alone must not reject a nested target already proven read-only.
@@ -4646,13 +4671,14 @@ async function main() {
           : -1;
         const initialTool = resolvePtoolRecoveryTool(args.tool, inputArgs, tools);
         const initialGeneration = initialTool?._meta?.['papercusp/servingGeneration'];
-        if (
-          args.tool !== 'tools:find' &&
-          isReadOnlyPtoolRecoveryRequest(args.tool, inputArgs, tools) &&
-          !(typeof initialGeneration === 'string' && initialGeneration.trim()) &&
-          recoveryIndex > 0 &&
-          operatorCandidates[recoveryIndex] !== operatorUrl
-        ) {
+        if (shouldAttemptManagedReadRecovery({
+          toolName: args.tool,
+          tool: initialTool,
+          initialGeneration,
+          recoveryIndex,
+          operatorUrl,
+          operatorCandidates,
+        })) {
           const savedState = {
             operatorUrl,
             operatorCandidates: [...operatorCandidates],

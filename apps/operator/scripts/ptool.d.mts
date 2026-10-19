@@ -58,6 +58,25 @@ export function resolvePtoolRecoveryTool(toolName: string | null | undefined, ca
  */
 export function isReadOnlyPtoolRecoveryRequest(toolName: string | null | undefined, callArgs: unknown, tools?: ToolCatalogEntry[]): boolean;
 /**
+ * Decide whether a launcher-managed same-host read recovery should be tried
+ * when the initial catalog is legacy. The legacy catalog's annotations are
+ * not authoritative: it can mark a read-only tool as writable while omitting
+ * the serving-generation marker. The recovery candidate must still prove the
+ * read-only annotation and current generation before dispatch (the caller
+ * performs that check after listing the candidate).
+ * @param {{toolName?: string, tool?: ToolCatalogEntry | null,
+ *   initialGeneration?: unknown, recoveryIndex?: number,
+ *   operatorUrl?: string, operatorCandidates?: string[]}} options
+ */
+export function shouldAttemptManagedReadRecovery({ toolName, tool, initialGeneration, recoveryIndex, operatorUrl, operatorCandidates, }?: {
+    toolName?: string;
+    tool?: ToolCatalogEntry | null;
+    initialGeneration?: unknown;
+    recoveryIndex?: number;
+    operatorUrl?: string;
+    operatorCandidates?: string[];
+}): boolean;
+/**
  * Apply the fallback safety gate to a direct call or to a nested
  * `tools:invoke` call. The outer wrapper is intentionally generic, so its
  * annotation alone must not reject a nested target already proven read-only.
