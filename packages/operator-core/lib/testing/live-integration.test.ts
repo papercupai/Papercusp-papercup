@@ -4,7 +4,7 @@
  * flow against synthetic errors/timers.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { isLiveTransient, liveTest, probeLive } from './live-integration';
+import { isLiveTransient, liveTest, probeLive, retryRejectedLiveRead } from './live-integration';
 
 describe('isLiveTransient', () => {
   it('classifies AbortError / TimeoutError as transient', () => {
@@ -90,5 +90,49 @@ describe('probeLive', () => {
       30,
     );
     expect(ok).toBe(false);
+  });
+});
+
+describe('retryRejectedLiveRead', () => {
+  const refused = () => Object.assign(new Error('CLI refused before dispatch'), {
+    code: 1,
+    stderr: 'MCP_ERROR: ' + JSON.stringify({ code: -32000,
+      data: { retryable: true, reason: 'loop_pressure_critical' } }),
+  });
+
+  it('preserves the measured result after explicit pre-dispatch refusals', async () => {
+    let attempts = 0; const waits: number[] = [];
+    expect(await retryRejectedLiveRead(async () => {
+      if (++attempts < 3) throw refused();
+      return { digest: 'recorded', pages: 163 };
+    }, async ms => { waits.push(ms); })).toEqual({ digest: 'recorded', pages: 163 });
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([1000, 2000]);
+  });
+
+  it('bounds persistent refusals and propagates the final failure', async () => {
+    let attempts = 0; const waits: number[] = [];
+    await expect(retryRejectedLiveRead(async () => {
+      attempts++; throw refused();
+    }, async ms => { waits.push(ms); })).rejects.toThrow('CLI refused before dispatch');
+    expect(attempts).toBe(6);
+    expect(waits).toEqual([1000, 2000, 4000, 8000, 10_000]);
+  });
+
+  it('never retries semantic failures, unknown outcomes, or unproven refusal text', async () => {
+    const failures = [new Error('expected report digest to match'), new Error('ECONNRESET'),
+      new Error('loop_pressure_critical'), Object.assign(refused(), { code: 5 }),
+      Object.assign(refused(), { stderr: 'MCP_ERROR: unreadable' }),
+      Object.assign(refused(), { stderr: 'MCP_ERROR: ' + JSON.stringify({ code: -32000,
+        data: { retryable: false, reason: 'loop_pressure_critical' } }) })];
+    for (const failure of failures) {
+      let attempts = 0;
+      const wait = vi.fn(async () => {});
+      await expect(retryRejectedLiveRead(async () => {
+        attempts++; throw failure;
+      }, wait)).rejects.toBe(failure);
+      expect(attempts).toBe(1);
+      expect(wait).not.toHaveBeenCalled();
+    }
   });
 });

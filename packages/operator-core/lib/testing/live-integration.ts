@@ -35,6 +35,34 @@ export function isLiveTransient(e: unknown): boolean {
   );
 }
 
+/** Retry only a CLI-confirmed refusal before dispatch; never replay an unknown outcome. */
+export async function retryRejectedLiveRead<T>(
+  read: () => Promise<T>,
+  wait: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await read();
+    } catch (error) {
+      const failure = error as { code?: unknown; stderr?: unknown } | null;
+      const line = typeof failure?.stderr === 'string'
+        ? failure.stderr.split('\n').findLast(line => line.startsWith('MCP_ERROR: '))
+        : undefined;
+      let refused = false;
+      if (failure?.code === 1 && line) {
+        try {
+          const response = JSON.parse(line.slice('MCP_ERROR: '.length));
+          refused = response?.code === -32000 && response?.data?.retryable === true &&
+            response?.data?.reason === 'loop_pressure_critical';
+        } catch { /* An unreadable result cannot establish that dispatch never happened. */ }
+      }
+      if (!refused || attempt === 5) throw error;
+      process.stdout.write(`LIVE_READ_ADMISSION_RETRY attempt=${attempt + 1}\n`);
+      await wait(Math.min(1000 * 2 ** attempt, 10_000));
+    }
+  }
+}
+
 /** The subset of Vitest's `TestContext` this module needs. */
 export interface SkippableTestContext {
   skip: (note?: string) => never;

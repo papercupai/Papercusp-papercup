@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { retryRejectedLiveRead } from '../../../testing/live-integration';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { createRosterAudit, auditKnown, pageRosterAudit, type AuditScope } from './roster-audit';
 import { auditRequestProvenance, buildRosterAudit, loadRosterAudit, saveRosterAudit } from './roster-audit-store';
@@ -26,7 +28,7 @@ vi.mock('../../../workspace-registry', async importOriginal => ({
 vi.mock('../log', () => ({ coordScopeReady: async () => {}, coordWorkspaceId: () => fixture.workspaceId }));
 
 describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 current correction lineage', () => {
-  it('compares public 2026-10-17 edition/count records with the canonical visible report bodies', () => {
+  it('compares public 2026-10-17 edition/count records with the canonical visible report bodies', async () => {
     expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)
       .toBe('packages/operator-core/test/parked-agent-audit.live-profile.json');
     expect(process.env.PAPERCUSP_SID).toBeTruthy();
@@ -34,11 +36,12 @@ describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 cur
     const auditId = '45250822471a901a36bec955ae89fc2f8ab107058c6b9c93864b2fa8bfd8ef12';
     const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../..');
     const env = { ...process.env }; delete env.PAPERCUSP_SCRATCH_ROOT;
-    const run = (script: string) => {
-      const value = JSON.parse(execFileSync(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--port', '3170',
+    const run = async (script: string) => {
+      const response = await retryRejectedLiveRead(() => promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--port', '3170',
         '--client', process.env.PAPERCUSP_SID!, '--workspace', process.env.PAPERCUSP_WORKSPACE!, '--harness', '*',
         JSON.stringify({ script, timeoutSec: 30, projection: { pick: ['ok', 'summary', 'summaryNotice', 'partial', 'childFailures', 'error'] } })],
       { env, encoding: 'utf8', timeout: 60_000, maxBuffer: 2 * 1024 * 1024 }));
+      const value = JSON.parse(response.stdout);
       expect(value.ok, value.error).toBe(true); expect(value.partial).not.toBe(true);
       expect(value.childFailures ?? []).toEqual([]); expect(value.summaryNotice?.truncated).not.toBe(true);
       return value.summary;
@@ -55,7 +58,7 @@ describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 cur
     const quotes: Array<{ edition: string; part: number; quote: string }> = [];
     let cursor: string | null = null; let expectedCount: number | undefined; let done = false; let pages = 0;
     while (!done && pages < 200) {
-      const page = run("const p=await tools.coord.roster({view:'audit',scope:'workspace',auditId:" + JSON.stringify(auditId)
+      const page = await run("const p=await tools.coord.roster({view:'audit',scope:'workspace',auditId:" + JSON.stringify(auditId)
         + ",cursor:" + (cursor === null ? 'undefined' : JSON.stringify(cursor)) + ",pageSize:1});const r=p.records[0];return {auditId:p.auditId,nextCursor:p.nextCursor,count:p.previous.correctionCount,kind:r?.kind,header:r?.fields.correction?.value,quote:r?.fields.reportedCountContext?.value};");
       expect(page.auditId).toBe(auditId); expectedCount = page.count;
       if (page.header) headers.push(page.header);
@@ -68,7 +71,7 @@ describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 cur
     expect(headers.some(h => h.ref === 'report:rpt_7a449b1b-64f6-4097-b3bd-5b5ec00d6eab')).toBe(true);
     let correctedInstanceSeen = false;
     for (const header of headers) {
-      const report = run("const r=await tools.reports.get({id:" + JSON.stringify(header.ref.slice(7))
+      const report = await run("const r=await tools.reports.get({id:" + JSON.stringify(header.ref.slice(7))
         + "});const p=r.results[0].report;if(!p?.body_md)throw Error('canonical visible report unavailable');"
         + "const quotes=p.body_md.split(/\\n\\s*\\n/).filter(p=>/\\d/.test(p)).flatMap(p=>p.match(/[\\s\\S]{1,1000}/g)??[]);"
         + "return {supersedes:p.supersedes_report_id,publishedAt:p.published_at,quoteDigest:(" + digest.toString()
