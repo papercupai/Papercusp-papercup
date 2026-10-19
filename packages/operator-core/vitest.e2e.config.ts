@@ -17,13 +17,32 @@ export async function prepareRuntimeReader(
   loadPg = async () => (await import('postgres')).default,
 ) {
   if (!process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE) return undefined;
+  const profile = JSON.parse(readFileSync(resolve(__dirname, '../..',
+    process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE), 'utf8'));
+  // Validate inputs before importing the live graph or collecting any tests.
+  // A ledger workspace alone does not authorize an authenticated app read.
+  const names = (value: unknown): string[] => {
+    if (!Array.isArray(value) || value.some(name => typeof name !== 'string'
+      || !/^[A-Z][A-Z0-9_]*$/.test(name))) throw new Error('live-profile-invalid-required-env');
+    return value;
+  };
+  const required = names(profile.requiredEnv ?? []);
+  const conditional: unknown = profile.requiredEnvWhen ?? [];
+  if (!Array.isArray(conditional)) throw new Error('live-profile-invalid-required-env-when');
+  for (const rule of conditional) {
+    if (!rule || typeof rule !== 'object' || typeof rule.equals !== 'string')
+      throw new Error('live-profile-invalid-required-env-when');
+    const [flag] = names([rule.env]);
+    const selected = names(rule.requiredEnv);
+    if (process.env[flag] === rule.equals) required.push(...selected);
+  }
+  const missing = [...new Set(required)].filter(name => !process.env[name]?.trim());
+  if (missing.length) throw new Error('live-profile-required-env-missing:' + missing.join(','));
   // Module loading belongs to configuration preparation, outside the reporter's
   // bounded observation window. tsImport starts a fresh loader on each call.
   const { listRuntimeVintage, measureRuntimeVintageEnvironment } = await loadRuntime();
   const pg = await loadPg();
   return async () => {
-    const profile = JSON.parse(readFileSync(resolve(__dirname, '../..',
-      process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE!), 'utf8'));
     const units: unknown = profile.runtimeUnits;
     if (!Array.isArray(units) || units.length === 0 || units.length > 32
       || units.some(unit => typeof unit !== 'string' || !unit.trim() || unit.length > 120)

@@ -1,3 +1,11 @@
 {
-  "runtimeUnits": ["postgres:5432", "hono-host:3170"]
+  "runtimeUnits": ["postgres:5432", "hono-host:3170"],
+  "requiredEnv": ["PAPERCUSP_SID", "PAPERCUSP_WORKSPACE"],
+  "requiredEnvWhen": [
+    {
+      "env": "PAPERCUSP_PARKED_CURRENT_LIVE",
+      "equals": "1",
+      "requiredEnv": ["PAPERCUSP_PARKED_AUDIT_OWNER"]
+    }
+  ]
 }

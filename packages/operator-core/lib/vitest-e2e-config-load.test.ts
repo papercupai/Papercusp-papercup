@@ -5,6 +5,58 @@ import { prepareRuntimeReader } from '../vitest.e2e.config';
 import { unitExcludedVitestTest } from '../../../scripts/lib/related-tests.mjs';
 
 describe('operator e2e config loading', () => {
+  it.each(['PAPERCUSP_SID', 'PAPERCUSP_WORKSPACE'])(
+    'refuses missing %s in the parked live profile before loading the live graph', async (name) => {
+      vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+        'packages/operator-core/test/parked-agent-audit.live-profile.json');
+      vi.stubEnv('PAPERCUSP_SID', 'test-session');
+      vi.stubEnv('PAPERCUSP_WORKSPACE', 'test-workspace');
+      vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'ledger-workspace');
+      vi.stubEnv(name, '  ');
+      const load = vi.fn();
+      const pg = vi.fn();
+      try {
+        await expect(prepareRuntimeReader(load, pg)).rejects.toThrow('live-profile-required-env-missing:' + name);
+        expect(load).not.toHaveBeenCalled();
+        expect(pg).not.toHaveBeenCalled();
+      } finally { vi.unstubAllEnvs(); }
+    },
+  );
+
+  it.each(['integration', 'e2e'])('refuses incomplete parked profile inputs while loading the %s config', async (layer) => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+      'packages/operator-core/test/parked-agent-audit.live-profile.json');
+    vi.stubEnv('PAPERCUSP_SID', 'test-session');
+    vi.stubEnv('PAPERCUSP_WORKSPACE', '');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(loadConfigFromFile(
+        { command: 'serve', mode: 'test' }, resolve(import.meta.dirname, `../vitest.${layer}.config.ts`),
+      )).rejects.toThrow('live-profile-required-env-missing:PAPERCUSP_WORKSPACE');
+      expect(consoleError).toHaveBeenCalled();
+    } finally { consoleError.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
+  it.each(['0', '1'])('requires an owner only for the enabled bounded-current route (flag=%s)', async (flag) => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+      'packages/operator-core/test/parked-agent-audit.live-profile.json');
+    vi.stubEnv('PAPERCUSP_SID', 'test-session');
+    vi.stubEnv('PAPERCUSP_WORKSPACE', 'test-workspace');
+    vi.stubEnv('PAPERCUSP_PARKED_CURRENT_LIVE', flag);
+    vi.stubEnv('PAPERCUSP_PARKED_AUDIT_OWNER', '');
+    const load = vi.fn(async () => ({}));
+    const pg = vi.fn();
+    try {
+      if (flag === '1') {
+        await expect(prepareRuntimeReader(load, pg)).rejects.toThrow('live-profile-required-env-missing:PAPERCUSP_PARKED_AUDIT_OWNER');
+        expect(load).not.toHaveBeenCalled();
+      } else {
+        expect(await prepareRuntimeReader(load, pg)).toBeTypeOf('function');
+        expect(load).toHaveBeenCalledOnce();
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each(['integration', 'e2e'])('uses the selected live-profile runtime reader in the %s layer', async (layer) => {
     vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
       'docs/evidence/gateway-admission-congestion-only-2026-10-13/live-runtime-profile.json');
