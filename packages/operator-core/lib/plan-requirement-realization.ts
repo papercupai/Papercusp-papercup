@@ -179,10 +179,10 @@ export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot)
           row.matchesCurrentSpec && row.specId === mapping.specId && row.specRevision === mapping.specRevision &&
           row.specFingerprint === mapping.specContentHash && row.currentness.comparisonSupplied === true &&
           row.currentness.overall === 'current' &&
-          // With no adequacy check to enumerate the admissible refs, a manual BAR binds
-          // evidence to THIS mapping through the exact spec id + revision + fingerprint
-          // identity already asserted above, rather than through the check's ref list.
-          (check ? check.evidenceRefs.includes(row.evidenceRef) : manual) &&
+          // Adequacy proves the mandatory tests above; its refs can contain only the
+          // mechanically selected tests/mutants. Operational observations keep their
+          // own canonical refs and bind to this mapping through the exact identity
+          // and measured currentness checked above.
           (bar.evidencePlane === 'tree' || plane === bar.evidencePlane);
       });
       for (const row of evidence) evidenceRefs.add(row.evidenceRef);

@@ -1,0 +1,1322 @@
+{
+  "schemaVersion": "native-p042-p018-window-review-v1",
+  "workItem": "WI-6554700010015356",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "review": "2026-10-19T01:40Z scheduled review",
+  "scope": "Read-only deployed DBOS hourly receipt assessment. No new test run, source change, final gate, shipment, or benefit verdict.",
+  "acceptance": "Inherited gitnexus-deterministic-integration-2026-10-05#P-018: snapshot age below selector ceiling across 48h of hourly routine fires, plus a real gate selector log. P-042 carries the requirement.",
+  "writerBinding": {
+    "source": "packages/operator-core/lib/agent-tools/routines/routine-last-fire.ts",
+    "join": "operation_outputs.workflow_uuid = workflow_status.workflow_uuid",
+    "workflowName": "routineFire",
+    "routineId": "rt_papercusp_gitnexus_reindex",
+    "functionName": "system:gitnexus-reindex",
+    "serializer": "Superjson json property, otherwise plain JSON",
+    "readingSource": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts:3030",
+    "units": "checkedAt and ageMs are milliseconds; selectorCeilingMs is 86400000 ms."
+  },
+  "sql": "WITH bound AS (SELECT o.workflow_uuid,o.completed_at_epoch_ms,o.error, CASE WHEN o.output IS NULL THEN NULL ELSE COALESCE(o.output::jsonb->'json',o.output::jsonb) END AS result FROM dbos.operation_outputs o JOIN dbos.workflow_status w ON w.workflow_uuid=o.workflow_uuid WHERE o.function_name='system:gitnexus-reindex' AND w.name='routineFire' AND (w.inputs::jsonb->'json'->>0)='rt_papercusp_gitnexus_reindex' AND o.completed_at_epoch_ms >= extract(epoch from timestamp with time zone '2026-10-17T01:35:00Z')*1000 AND o.completed_at_epoch_ms<=extract(epoch from now())*1000) SELECT workflow_uuid,completed_at_epoch_ms,error,result->>'softError' AS soft_error,result->'diagnostics' AS diagnostics FROM bound ORDER BY completed_at_epoch_ms",
+  "positiveControlSql": "SELECT 1 AS present FROM harness_shared.routines WHERE id='rt_papercusp_gitnexus_reindex' AND install_slug='papercusp' AND target_role='system:gitnexus-reindex' LIMIT 1",
+  "summary": {
+    "rows": 49,
+    "truncated": false,
+    "positiveControl": {
+      "rows": [
+        {
+          "present": 1
+        }
+      ],
+      "rowCount": 1,
+      "truncated": false,
+      "fields": [
+        "present"
+      ],
+      "status": "passed"
+    },
+    "issues": [],
+    "gaps": [
+      {
+        "before": "sched-.routinesTick-2026-10-17T08:35:00.000Z-51",
+        "after": "sched-.routinesTick-2026-10-17T09:37:00.000Z-43",
+        "gapMs": 3720000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-17T09:37:00.000Z-43",
+        "after": "sched-.routinesTick-2026-10-17T10:35:00.000Z-33",
+        "gapMs": 3480000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-17T21:35:00.000Z-35",
+        "after": "sched-.routinesTick-2026-10-17T22:35:30.000Z-95",
+        "gapMs": 3630000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-17T22:35:30.000Z-95",
+        "after": "sched-.routinesTick-2026-10-17T23:35:00.000Z-51",
+        "gapMs": 3570000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-17T23:35:00.000Z-51",
+        "after": "sched-.routinesTick-2026-10-18T00:35:30.000Z-49",
+        "gapMs": 3630000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T00:35:30.000Z-49",
+        "after": "sched-.routinesTick-2026-10-18T01:35:00.000Z-61",
+        "gapMs": 3570000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T01:35:00.000Z-61",
+        "after": "sched-.routinesTick-2026-10-18T02:35:30.000Z-35",
+        "gapMs": 3630000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T02:35:30.000Z-35",
+        "after": "sched-.routinesTick-2026-10-18T03:35:00.000Z-25",
+        "gapMs": 3570000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T03:35:00.000Z-25",
+        "after": "sched-.routinesTick-2026-10-18T04:35:30.000Z-25",
+        "gapMs": 3630000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T04:35:30.000Z-25",
+        "after": "sched-.routinesTick-2026-10-18T05:38:00.000Z-59",
+        "gapMs": 3750000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T05:38:00.000Z-59",
+        "after": "sched-.routinesTick-2026-10-18T06:35:00.000Z-21",
+        "gapMs": 3420000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T07:35:00.000Z-45",
+        "after": "sched-.routinesTick-2026-10-18T08:35:30.000Z-17",
+        "gapMs": 3630000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T08:35:30.000Z-17",
+        "after": "sched-.routinesTick-2026-10-18T09:35:00.000Z-17",
+        "gapMs": 3570000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T10:35:00.000Z-23",
+        "after": "sched-.routinesTick-2026-10-18T11:36:00.000Z-79",
+        "gapMs": 3660000
+      },
+      {
+        "before": "sched-.routinesTick-2026-10-18T11:36:00.000Z-79",
+        "after": "sched-.routinesTick-2026-10-18T12:35:00.000Z-27",
+        "gapMs": 3540000
+      }
+    ],
+    "firstObserved": "2026-10-17T01:35:19.365Z",
+    "lastObserved": "2026-10-19T01:35:08.001Z",
+    "observedSpanMs": 172788636,
+    "requiredSpanMs": 172800000,
+    "shortfallMs": 11364,
+    "scheduledSpanMs": 172800000,
+    "maxAgeMs": 71997354,
+    "ceilings": [
+      86400000
+    ],
+    "producerRuns": [
+      {
+        "workflowId": "sched-.routinesTick-2026-10-17T13:35:00.000Z-19",
+        "exit": 0,
+        "status": "fresh",
+        "generatedAt": "2026-10-17T13:35:05.613Z",
+        "ageMs": 184195
+      },
+      {
+        "workflowId": "sched-.routinesTick-2026-10-18T09:35:00.000Z-17",
+        "exit": 0,
+        "status": "fresh",
+        "generatedAt": "2026-10-18T09:35:08.346Z",
+        "ageMs": 178860
+      }
+    ],
+    "hourlyBucketCount": 49,
+    "missingHourlyBuckets": [],
+    "verdict": "not-yet-qualified",
+    "reason": "All 49 measured readings are fresh and under the recorded ceiling, with every hourly bucket represented. The first-to-last observation span is 11.364 seconds short of 48 elapsed hours; the real gate selector log remains a separate unqualified requirement."
+  },
+  "rawRead": {
+    "advisory": "⚠ tenant scope: harness_shared.routines (keyed by workspace_id) — multi-tenant, but this filtered query has no workspace_id predicate — a bare slug/id filter can silently match ANOTHER tenant's rows and read as stale/diverged state. Add: workspace_id = 'papercusp-workspace'. (agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).",
+    "mode": "query",
+    "rowCount": 49,
+    "truncated": false,
+    "fields": [
+      "workflow_uuid",
+      "completed_at_epoch_ms",
+      "error",
+      "soft_error",
+      "diagnostics"
+    ],
+    "elapsedMs": 1390,
+    "rows": [
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T01:35:00.000Z-33",
+        "completed_at_epoch_ms": "1792200921635",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 32407157,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792200919365,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T02:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792204507477",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 35993699,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792204506342,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T03:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792208145787",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 39631732,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792208144132,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T04:35:00.000Z-21",
+        "completed_at_epoch_ms": "1792211712392",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 43197873,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792211710498,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T05:35:00.000Z-19",
+        "completed_at_epoch_ms": "1792215312162",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 46798107,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792215310605,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T06:35:00.000Z-29",
+        "completed_at_epoch_ms": "1792218911047",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 50396324,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792218908432,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T07:35:00.000Z-41",
+        "completed_at_epoch_ms": "1792222532769",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 54017350,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792222529914,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T08:35:00.000Z-51",
+        "completed_at_epoch_ms": "1792226143599",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 57626093,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792226139296,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T09:37:00.000Z-43",
+        "completed_at_epoch_ms": "1792229866232",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 61350174,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792229862664,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T10:35:00.000Z-33",
+        "completed_at_epoch_ms": "1792233320162",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 64806169,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792233319313,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T11:35:00.000Z-45",
+        "completed_at_epoch_ms": "1792236906952",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 68393326,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792236905430,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T12:35:00.000Z-19",
+        "completed_at_epoch_ms": "1792240512376",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 71997354,
+            "edges": 80524,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792240510017,
+            "generatedAt": "2026-10-16T16:35:11.574Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T13:35:00.000Z-19",
+        "completed_at_epoch_ms": "1792244291951",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 184195,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792244290841,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": true,
+            "producerExit": 0,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T14:35:00.000Z-19",
+        "completed_at_epoch_ms": "1792247712421",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 3604687,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792247711358,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T15:35:00.000Z-19",
+        "completed_at_epoch_ms": "1792251311939",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 7200121,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792251306885,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T16:35:00.000Z-35",
+        "completed_at_epoch_ms": "1792254934754",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 10826329,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792254932493,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T17:35:00.000Z-49",
+        "completed_at_epoch_ms": "1792258515739",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 14407633,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792258513903,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T18:35:00.000Z-29",
+        "completed_at_epoch_ms": "1792262109991",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 18001380,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792262107968,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T19:35:00.000Z-33",
+        "completed_at_epoch_ms": "1792265712864",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 21603796,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792265709957,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T20:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792269319375",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 25211107,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792269317623,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T21:35:00.000Z-35",
+        "completed_at_epoch_ms": "1792272916696",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 28808031,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792272914435,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T22:35:30.000Z-95",
+        "completed_at_epoch_ms": "1792276584721",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 32472297,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792276580110,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-17T23:35:00.000Z-51",
+        "completed_at_epoch_ms": "1792280131546",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 36019937,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792280126060,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T00:35:30.000Z-49",
+        "completed_at_epoch_ms": "1792283747440",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 39634880,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792283741497,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T01:35:00.000Z-61",
+        "completed_at_epoch_ms": "1792287316265",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 43207378,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792287314483,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T02:35:30.000Z-35",
+        "completed_at_epoch_ms": "1792290979673",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 46857545,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792290968005,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T03:35:00.000Z-25",
+        "completed_at_epoch_ms": "1792294531496",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 50417197,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792294524833,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T04:35:30.000Z-25",
+        "completed_at_epoch_ms": "1792298159041",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 54045897,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792298153159,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T05:38:00.000Z-59",
+        "completed_at_epoch_ms": "1792301936045",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 57823452,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792301931539,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T06:35:00.000Z-21",
+        "completed_at_epoch_ms": "1792305330489",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 61211789,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792305324111,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T07:35:00.000Z-45",
+        "completed_at_epoch_ms": "1792308936609",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 64822896,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792308932862,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T08:35:30.000Z-17",
+        "completed_at_epoch_ms": "1792312545000",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 68434875,
+            "edges": 80789,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792312541622,
+            "generatedAt": "2026-10-17T13:35:05.613Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T09:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792316294203",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 178860,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792316288401,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": true,
+            "producerExit": 0,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T10:35:00.000Z-23",
+        "completed_at_epoch_ms": "1792319713868",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 3602416,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792319712129,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T11:36:00.000Z-79",
+        "completed_at_epoch_ms": "1792323392485",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 7280999,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792323390476,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T12:35:00.000Z-27",
+        "completed_at_epoch_ms": "1792326921766",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 10809716,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792326919562,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T13:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792330511607",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 14400662,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792330510119,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T14:35:00.000Z-29",
+        "completed_at_epoch_ms": "1792334126911",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 18013774,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792334123821,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T15:35:00.000Z-21",
+        "completed_at_epoch_ms": "1792337720740",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 21608028,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792337717983,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T16:35:00.000Z-23",
+        "completed_at_epoch_ms": "1792341310046",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 25198630,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792341307746,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T17:35:00.000Z-49",
+        "completed_at_epoch_ms": "1792344913949",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 28801627,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792344910603,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T18:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792348509984",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 32400322,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792348509160,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T19:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792352115421",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 36003726,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792352113268,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T20:35:00.000Z-29",
+        "completed_at_epoch_ms": "1792355717183",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 39604272,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792355714588,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T21:35:00.000Z-25",
+        "completed_at_epoch_ms": "1792359305651",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 43195179,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792359304658,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T22:35:00.000Z-23",
+        "completed_at_epoch_ms": "1792362908466",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 46796784,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792362906524,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-18T23:35:00.000Z-27",
+        "completed_at_epoch_ms": "1792366513303",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 50400685,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792366510244,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-19T00:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792370113650",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 54002275,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792370112327,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      },
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-19T01:35:00.000Z-17",
+        "completed_at_epoch_ms": "1792373709580",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 57598918,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792373708001,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      }
+    ],
+    "positiveControl": {
+      "rows": [
+        {
+          "present": 1
+        }
+      ],
+      "rowCount": 1,
+      "truncated": false,
+      "fields": [
+        "present"
+      ],
+      "status": "passed"
+    }
+  },
+  "sourceQualification": {
+    "artifact": "docs/evidence/native-p042-p018-receipts-2026-10-17.json",
+    "artifactSha256": "12b9bb44eddd9c2fa1eb532f8d44d5a85118a706ab789c9c354f762511b17a01",
+    "action": {
+      "currentSha256": "5e15ddfb0a5c4483b916751f22dac9d1022da5d8cd2463af173f68e0c24c446b",
+      "priorCapturedSha256": "4ada214f4dfdf03f22ad1d703ea253a53e565773f3f0c2778ce1c7584d357d50",
+      "matches": false
+    },
+    "tests": {
+      "snapshotOnlyMatches": true,
+      "dependencySnapshotMatches": true
+    },
+    "interpretation": "Prior local action test proof is historical because the action hash changed. Current writer fields/units were read; deployed receipts are evaluated on their own recorded observations. No full execution-graph qualification."
+  },
+  "limits": [
+    "All 49 samples are fresh and below 86400000ms, no errors/soft errors/unavailable readings, no missing hourly buckets.",
+    "Scheduled ticks span 48h; actual first-to-last observation span is 172788636ms, 11364ms short of 48 elapsed hours. Conservative elapsed-time acceptance remains not-yet-qualified until one subsequent hourly reading.",
+    "Final real gate selector log and distribution shipment remain separate and unqualified. Do not monitor a peer-owned live gate.",
+    "P-040/P-041 owner-scope and P-025 mutation-scope questions remain unchanged."
+  ],
+  "next": "One bounded review after the next expected hourly receipt, at/after 2026-10-19T02:40Z. Reuse existing DBOS query and this saved source, no test/mutation replay or recurring monitor."
+}

@@ -631,6 +631,57 @@ describe('withFsMutex', () => {
     }
   });
 
+  it('stops retrying a slow abandoned-lock reclaim after the deadline and reports its failed phases', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-slow-reclaim-'));
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const lockDir = join(dir, 'slow-reclaim.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      startedAt: new Date().toISOString(),
+    }));
+    let ownerReads = 0;
+    let timeoutInfo: {
+      waitedMs: number;
+      timeoutMs: number;
+      admissionSubphaseTimingsMs?: Record<string, number>;
+    } | undefined;
+    const io = {
+      readFile: async (path: string, encoding: 'utf8') => {
+        if (path === join(lockDir, 'owner.json')) {
+          ownerReads += 1;
+          if (ownerReads === 1) await new Promise((resolve) => setTimeout(resolve, 35));
+        }
+        return readFile(path, encoding);
+      },
+    };
+    const startedAt = performance.now();
+    try {
+      await expect(withFsMutex('slow-reclaim', async () => 'must not acquire', {
+        timeoutMs: 5,
+        retryMs: 1,
+        io,
+        onTimedOut: (info) => { timeoutInfo = info; },
+      })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+
+      expect(ownerReads).toBe(1);
+      expect(performance.now() - startedAt).toBeLessThan(200);
+      expect(timeoutInfo?.waitedMs).toBeGreaterThanOrEqual(30);
+      expect(timeoutInfo?.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'abandoned-lock-reclaim': expect.any(Number),
+        'abandoned-lock.owner-read': expect.any(Number),
+      }));
+      expect(timeoutInfo?.admissionSubphaseTimingsMs?.['abandoned-lock.owner-read']).toBeGreaterThanOrEqual(20);
+      expect((await lstat(lockDir)).isDirectory()).toBe(true);
+    } finally {
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not publish tentative reader markers while a writer has reserved admission', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-reservation-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

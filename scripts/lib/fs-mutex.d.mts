@@ -91,7 +91,7 @@ export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
  * Continuous readers can exhaust the same timeout without blocking newcomers.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutex<T>(name: string, fn: (context?: {
@@ -110,6 +110,11 @@ export function withFsMutex<T>(name: string, fn: (context?: {
     waitingNoticeIntervalMs?: number;
     onAcquired?: (info: {
         waitedMs: number;
+        admissionSubphaseTimingsMs?: Record<string, number>;
+    }) => void;
+    onTimedOut?: (info: {
+        waitedMs: number;
+        timeoutMs: number;
         admissionSubphaseTimingsMs?: Record<string, number>;
     }) => void;
     intent?: Record<string, string | number | boolean>;

@@ -18,6 +18,40 @@ const rows: DaoPerson[] = [
 ];
 const view: DaoWorkspaceView = { directoryId: 'dao', localHomeSlug: 'dao', status: 'connected', people: { status: 'ready', value: rows } };
 
+describe('P-009 / P-010 fixture calibration — member DTOs and reporting relations', () => {
+  it('calibrates the complete directory fixture against independently stated member and profile facts', () => {
+    expect(rows.map(row => [row.memberId, row.personId, row.displayName, row.bindingStatus, row.devices]))
+      .toEqual([[1, 'PER-alice', 'Alice', 'bound', 1], [2, null, 'Bob', 'bound', 2]]);
+    expect(rows[0].profile).toEqual({ title: 'Engineer', team: 'Product', managerPersonId: null,
+      level: 'L3', startDate: '2026-10-01', engagementType: 'contractor', jurisdiction: 'US', status: 'active' });
+    expect(rows[1].profile).toBeNull();
+    expect(rows.every(row => !('pay' in row))).toBe(true);
+    expect(rows[0].equity).toEqual({ status: 'ready', value: {
+      wallet: '0x1111111111111111111111111111111111111111', chainId: 1,
+      shares: '1200', issuedShares: '10000', ownershipPercent: '12.00',
+    } });
+    expect(rows[1].equity.status).toBe('error');
+    render(<NuqsTestingAdapter><PeopleViews view={view} /></NuqsTestingAdapter>);
+    const directory = screen.getByRole('table', { name: 'People directory' });
+    expect(within(directory).getByRole('button', { name: 'Alice' })).toBeTruthy();
+    expect(within(directory).getByRole('button', { name: 'Bob' })).toBeTruthy();
+  });
+
+  it('renders server-authorized pay while preserving the public equity fields', () => {
+    // The server chooses visibility. This component test supplies the explicit
+    // authorized wire DTO; real SQL/EVM tests verify who receives it.
+    const authorized = { ...rows[0], pay: { amount: '50000.00', currency: 'USD', cadence: 'annual' as const } };
+    render(<NuqsTestingAdapter searchParams="?peopleTab=profile&person=PER-alice">
+      <PeopleViews view={{ ...view, localHomeSlug: undefined, people: { status: 'ready', value: [authorized, rows[1]] } }} />
+    </NuqsTestingAdapter>);
+    const profile = screen.getByRole('article', { name: 'Alice profile' });
+    expect(within(profile).getByRole('heading', { name: 'Pay terms' })).toBeTruthy();
+    expect(within(profile).getByText('50000.00 USD · annual')).toBeTruthy();
+    expect(within(profile).getByText('1200')).toBeTruthy();
+    expect(within(profile).getByText('12.00%')).toBeTruthy();
+  });
+});
+
 describe('SPEC-P-009 — current members including unprofiled members', () => {
   it('renders each current member and opens the selected profile', async () => {
     render(<NuqsTestingAdapter><PeopleViews view={view} /></NuqsTestingAdapter>);
@@ -127,6 +161,12 @@ describe('SPEC-P-011 / A — cap table and my equity', () => {
 describe('SPEC-P-010 — reporting lines from work profiles', () => {
   const managed = { ...rows[0], profile: { ...rows[0].profile!, managerPersonId: 'PER-manager' } };
   const manager = { ...rows[1], personId: 'PER-manager' };
+  it('calibrates the reporting fixture from literal person identities before deriving the forest', () => {
+    expect([managed.memberId, managed.personId, managed.profile.managerPersonId]).toEqual([1, 'PER-alice', 'PER-manager']);
+    expect([manager.memberId, manager.personId, manager.profile]).toEqual([2, 'PER-manager', null]);
+    expect(managed.profile.managerPersonId).toBe(manager.personId);
+    expect(new Set([managed.memberId, manager.memberId]).size).toBe(2);
+  });
   it('places a person below their named manager and keeps org/profile selection in the URL', async () => {
     const update = vi.fn();
     render(<NuqsTestingAdapter searchParams="?peopleTab=org" onUrlUpdate={update}>

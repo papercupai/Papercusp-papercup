@@ -669,7 +669,7 @@ async function reclaimAbandonedLock(
  * Fail-open: no ordering information ⇒ the caller falls back to racing for the
  * lock directly, so a broken/unreadable queue can never deadlock acquisition.
  */
-async function oldestTicketDir(ticketsDir, staleMs, io = {}) {
+async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase) {
   let entries;
   try {
     entries = await readdir(ticketsDir, { withFileTypes: true });
@@ -682,7 +682,7 @@ async function oldestTicketDir(ticketsDir, staleMs, io = {}) {
     .sort();
   for (const ticketName of ticketNames) {
     const ticketDir = join(ticketsDir, ticketName);
-    if (await reclaimAbandonedLock(ticketDir, staleMs, io)) continue;
+    if (await reclaimAbandonedLock(ticketDir, staleMs, io, measureSubphase)) continue;
     try {
       // Another waiter may have cleaned this candidate after our directory
       // snapshot. Skip that vanished entry and continue through the ordered
@@ -781,7 +781,7 @@ async function waitForReaders(
  * Continuous readers can exhaust the same timeout without blocking newcomers.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -793,7 +793,10 @@ export async function withFsMutex(name, fn, opts = {}) {
 
   const io = opts.io ?? {};
   const writeFileIo = io.writeFile ?? writeFile;
-  const admissionSubphaseTimingsMs = typeof opts.onAcquired === "function" ? {} : undefined;
+  const admissionSubphaseTimingsMs =
+    typeof opts.onAcquired === "function" || typeof opts.onTimedOut === "function"
+      ? {}
+      : undefined;
   const measureAdmissionSubphase = admissionSubphaseTimingsMs
     ? async (name, operation) => {
       const phaseStartedAt = performance.now();
@@ -874,6 +877,54 @@ export async function withFsMutex(name, fn, opts = {}) {
     Number(opts.waitingNoticeIntervalMs) > 0
       ? Number(opts.waitingNoticeIntervalMs)
       : 0;
+  let lastObservedOwner = "(not observed)";
+  let timeoutReported = false;
+  const reportTimedOut = (error, waitedMs = Date.now() - startedAt) => {
+    if (timeoutReported) return error;
+    timeoutReported = true;
+    const subphaseTimings = admissionSubphaseTimingsMs
+      ? { ...admissionSubphaseTimingsMs }
+      : undefined;
+    if (error && typeof error === "object") {
+      Object.assign(error, {
+        code: error.code ?? "ETIMEDOUT",
+        waitedMs,
+        timeoutMs,
+        ...(subphaseTimings ? { admissionSubphaseTimingsMs: subphaseTimings } : {}),
+      });
+    }
+    try {
+      opts.onTimedOut?.({
+        waitedMs,
+        timeoutMs,
+        ...(subphaseTimings ? { admissionSubphaseTimingsMs: subphaseTimings } : {}),
+      });
+    } catch {
+      // Diagnostic callbacks must never replace the admission timeout.
+    }
+    return error;
+  };
+  const throwIfAdmissionTimedOut = () => {
+    const waitedMs = Date.now() - startedAt;
+    if (waitedMs < timeoutMs) return;
+    const error = new Error(
+      "Timed out after " + timeoutMs + "ms waiting for fs-mutex \"" + name +
+      "\" (" + lockDir + "); holder (last observed): " + lastObservedOwner,
+    );
+    throw reportTimedOut(error, waitedMs);
+  };
+  const sleepWithinAdmissionBudget = async () => {
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) {
+      throwIfAdmissionTimedOut();
+      return;
+    }
+    await measureAdmissionSubphase(
+      "backoff-sleep",
+      () => sleep(Math.min(retryMs, remainingMs)),
+    );
+    throwIfAdmissionTimedOut();
+  };
   const announceWaiting = async (elapsedMs) => {
     if (!opts.onWaiting) return;
     const due =
@@ -883,27 +934,24 @@ export async function withFsMutex(name, fn, opts = {}) {
     if (!due) return;
     announcedWaiting = true;
     lastWaitingNoticeMs = elapsedMs;
-    opts.onWaiting({ owner: await readOwner(lockDir, io), elapsedMs });
+    lastObservedOwner = await readOwner(lockDir, io);
+    opts.onWaiting({ owner: lastObservedOwner, elapsedMs });
   };
   try {
     for (;;) {
       if (ticketRegistered) {
         const oldest = await measureAdmissionSubphase(
           "ticket-scan",
-          () => oldestTicketDir(ticketsDir, staleMs, io),
+          () => oldestTicketDir(ticketsDir, staleMs, io, measureAdmissionSubphase),
         );
+        throwIfAdmissionTimedOut();
         if (oldest != null && oldest !== myTicketDir) {
           // Someone else registered first — don't even attempt the mkdir race this
           // cycle; let them go before us.
           const elapsed = Date.now() - startedAt;
           await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
-          if (elapsed > timeoutMs) {
-            const currentOwner = await readOwner(lockDir, io);
-            throw new Error(
-              `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
-            );
-          }
-          await measureAdmissionSubphase("backoff-sleep", () => sleep(retryMs));
+          throwIfAdmissionTimedOut();
+          await sleepWithinAdmissionBudget();
           continue;
         }
       }
@@ -917,6 +965,7 @@ export async function withFsMutex(name, fn, opts = {}) {
           timeoutMs, staleMs, retryMs, startedAt,
           onWaiting: opts.onWaiting, waitingNoticeIntervalMs, io,
         }));
+        throwIfAdmissionTimedOut();
       }
       try {
         await measureAdmissionSubphase("writer-lock-mkdir", () => mkdir(lockDir));
@@ -937,17 +986,17 @@ export async function withFsMutex(name, fn, opts = {}) {
 
         const elapsed = Date.now() - startedAt;
         await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
-        if (await measureAdmissionSubphase(
+        throwIfAdmissionTimedOut();
+        const reclaimed = await measureAdmissionSubphase(
           "abandoned-lock-reclaim",
           () => reclaimAbandonedLock(lockDir, staleMs, io, measureAdmissionSubphase),
-        )) continue;
-        if (elapsed > timeoutMs) {
-          const currentOwner = await readOwner(lockDir, io);
-          throw new Error(
-            `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
-          );
-        }
-        await measureAdmissionSubphase("backoff-sleep", () => sleep(retryMs));
+        );
+        // Reclamation can itself take longer than the admission budget. Re-check
+        // its completion time before retrying or sleeping so one slow reclaim
+        // cannot start another unbounded reclaim cycle.
+        throwIfAdmissionTimedOut();
+        if (reclaimed) continue;
+        await sleepWithinAdmissionBudget();
       }
     }
   } finally {
@@ -964,15 +1013,28 @@ export async function withFsMutex(name, fn, opts = {}) {
   }
 
   try {
-    await measureAdmissionSubphase("reader-drain", () => waitForReaders(readersDir, {
-      timeoutMs,
-      staleMs,
-      retryMs,
-      startedAt,
-      onWaiting: opts.onWaiting,
-      waitingNoticeIntervalMs,
-      io,
-    }));
+    try {
+      await measureAdmissionSubphase("reader-drain", () => waitForReaders(readersDir, {
+        timeoutMs,
+        staleMs,
+        retryMs,
+        startedAt,
+        onWaiting: opts.onWaiting,
+        waitingNoticeIntervalMs,
+        io,
+      }));
+      throwIfAdmissionTimedOut();
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        typeof error.message === "string" &&
+        error.message.startsWith("Timed out after ")
+      ) {
+        reportTimedOut(error);
+      }
+      throw error;
+    }
     // WI-1490656: report how long admission actually QUEUED. A caller that re-acquires
     // the same lock across many short sub-invocations (one affected-tests shard after
     // another) otherwise has no way to bound its TOTAL queue time — each call's

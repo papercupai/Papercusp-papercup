@@ -1206,6 +1206,7 @@ function repairSuCodexHomeIdentityImpl(
   advSessionId?: string | number,
   mcpUrl?: string,
   ownerSidIo?: CodexHomeOwnerSidIo,
+  headless = process.env.PAPERCUSP_PSU_HEADLESS === '1',
 ): { repaired: boolean; hooksInstalled: boolean; reason?: 'no-home' } {
   if (!existsSync(codexHome)) return { repaired: false, hooksInstalled: false, reason: 'no-home' };
 
@@ -1357,7 +1358,6 @@ function repairSuCodexHomeIdentityImpl(
   })();
   const ownerQuestionGuardMatches = (() => {
     if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', 'ask-gate-mirror.sh'))) return true;
-    const headless = process.env.PAPERCUSP_PSU_HEADLESS === '1';
     try {
       const parsed = JSON.parse(hooksText) as { hooks?: { PreToolUse?: Array<{ hooks?: Array<{ command?: string }> }> } };
       const guards = parsed.hooks?.PreToolUse?.flatMap((g) => g.hooks ?? [])
@@ -1389,6 +1389,7 @@ function repairSuCodexHomeIdentityImpl(
     objectiveSid: sid,
     injectSid: sid,
     mcpUrl,
+    headless,
     mcpUsesSuperuserToken: true,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: sid, hooksConfigured: hooksInstalled });
@@ -1880,6 +1881,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
     opts.sessionKey,
     mcpUrlWithClient(opts.mcpUrl, opts.sid),
     ownerSidIo,
+    opts.headless,
   );
   const agentsPath = join(codexHome, 'AGENTS.md');
   const carryBasePath = join(codexHome, '.papercusp-carry-base-AGENTS.md');

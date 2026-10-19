@@ -2125,6 +2125,7 @@ describe('deferred scratch quota recovery', () => {
     }, {
       intent: { subsystem: 'scratch-quota', operation: 'write', workspaceId },
     });
+    const timings: ScratchWriteTimings[] = [];
     try {
       await holderStarted;
       const startedAt = performance.now();
@@ -2132,11 +2133,23 @@ describe('deferred scratch quota recovery', () => {
         workspaceId,
         filePath: join(scratchRootForWorkspace(workspaceId), 'mutex-timeout', 'spill'),
         bytes: 1,
+        captureSubphaseTimings: true,
         mutexTimeoutMs: 40,
+        onTiming: (row) => timings.push(row),
       }, async () => {
         throw new Error('payload writer must not run after admission timeout');
       })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
       expect(performance.now() - startedAt).toBeLessThan(1_000);
+      const settled = timings.find((row) => !row.progress);
+      expect(settled).toMatchObject({
+        fsMutexAdmissionMs: expect.any(Number),
+        quotaWaitMs: expect.any(Number),
+      });
+      expect(settled?.fsMutexAdmissionMs).toBeGreaterThanOrEqual(40);
+      expect(settled?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'fs-mutex-admission.abandoned-lock-reclaim': expect.any(Number),
+        'fs-mutex-admission.abandoned-lock.owner-read': expect.any(Number),
+      }));
     } finally {
       releaseHolder();
       await Promise.allSettled([holder]);

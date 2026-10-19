@@ -2693,6 +2693,35 @@ describe('writeCodexLockHooks — launch-prose edit-time signal', () => {
 });
 
 describe('managed Codex headless owner questions', () => {
+  it.each([
+    { headless: true, ambient: undefined },
+    { headless: true, ambient: '0' },
+    { headless: false, ambient: '1' },
+  ])('repairs hooks using explicit headless=$headless with operator ambient=$ambient', async ({ headless, ambient }) => {
+    const dir = await installFakeHooks();
+    writeFileSync(join(dir, 'ask-gate-mirror.sh'), '#!/usr/bin/env bash\n');
+    const { writeSuCodexHome, ensureSuCodexHomeConfigAsync } = await loadMod();
+    const opts = { sessionKey: 'explicit-headless-repair', mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P', sid: 'su-explicit-headless-repair', headless };
+    const priorHeadless = process.env.PAPERCUSP_PSU_HEADLESS;
+    try {
+      if (ambient === undefined) delete process.env.PAPERCUSP_PSU_HEADLESS;
+      else process.env.PAPERCUSP_PSU_HEADLESS = ambient;
+      const out = writeSuCodexHome(opts);
+      const hooksPath = join(out.codexHome, 'hooks.json');
+      const initialHooks = readFileSync(hooksPath, 'utf8');
+      await ensureSuCodexHomeConfigAsync(opts);
+      expect(readFileSync(hooksPath, 'utf8')).toBe(initialHooks);
+      const guards = JSON.parse(initialHooks).hooks.PreToolUse.flatMap((group: { hooks: { command: string }[] }) => group.hooks)
+        .filter((hook: { command: string }) => hook.command.includes('ask-gate-mirror.sh'));
+      expect(guards).toHaveLength(headless ? 1 : 0);
+      expect((await ensureSuCodexHomeConfigAsync(opts)).identityRepaired).toBe(false);
+    } finally {
+      if (priorHeadless === undefined) delete process.env.PAPERCUSP_PSU_HEADLESS;
+      else process.env.PAPERCUSP_PSU_HEADLESS = priorHeadless;
+    }
+  });
+
   it('repairs a missing question guard on a same-owner headless resume and removes it for a visible resume', async () => {
     const dir = await installFakeHooks();
     writeFileSync(join(dir, 'ask-gate-mirror.sh'), '#!/usr/bin/env bash\n');

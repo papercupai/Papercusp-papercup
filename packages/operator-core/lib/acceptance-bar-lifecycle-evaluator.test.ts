@@ -315,6 +315,27 @@ describe('operational realization from the canonical BAR snapshot', () => {
     ]);
   });
 
+  it.each(['operational', 'check'] as const)(
+    'retains the canonical %s observation ref when mechanical adequacy names separate tests', (kind) => {
+      const s = proven();
+      const bar = s.bars[0]!;
+      bar.check = { kind: 'tests', files: ['unit.test.ts', 'public.e2e.test.ts'] };
+      bar.requiredTestLayers = ['unit', 'e2e'];
+      bar.proof.adequacy!.checks[0]!.evidenceRefs = [
+        'unit.test.ts', 'public.e2e.test.ts', 'test-run 42 caught mutant unit.test.ts',
+      ];
+      const row = bar.proof.history![0]!;
+      row.evidenceKind = kind;
+      row.evidenceRef = 'test-run 43 operational check retained-public-census';
+      row.testRunId = 43;
+      row.currentness.provenance = 'server-measured';
+      expect(deriveNonCodeItemProofs(s)).toEqual([
+        { planItemId: 'P-001', barKeys: ['R-1'],
+          evidenceRefs: ['test-run 43 operational check retained-public-census'] },
+      ]);
+    },
+  );
+
   it.each(['live', 'deployed'] as const)('realizes nested %s plane proof and rejects a mismatched plane', (plane) => {
     const s = proven();
     const bar = s.bars[0]!;
@@ -349,6 +370,13 @@ describe('operational realization from the canonical BAR snapshot', () => {
   ];
   it.each(gaps)('refuses %s', (_name, change) => {
     const s = proven();
+    change(s);
+    expect(deriveNonCodeItemProofs(s)).toEqual([]);
+  });
+
+  it.each(gaps)('keeps separate operational refs fail-closed with %s', (_name, change) => {
+    const s = proven();
+    s.bars[0]!.proof.adequacy!.checks[0]!.evidenceRefs = ['named-public.e2e.test.ts'];
     change(s);
     expect(deriveNonCodeItemProofs(s)).toEqual([]);
   });

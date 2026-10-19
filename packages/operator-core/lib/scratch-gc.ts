@@ -153,6 +153,12 @@ function withScratchWorkspaceMutex<T>(
   }) => void,
   requestTraceId?: string,
   mutexTimeoutMs?: number,
+  onTimedOut?: (info: {
+    waitedMs: number;
+    localWaitMs: number;
+    fsMutexAdmissionMs: number;
+    admissionSubphaseTimingsMs?: Record<string, number>;
+  }) => void,
 ): Promise<T> {
   const mutexName = scratchWorkspaceMutexName(workspaceId);
   const intent = {
@@ -175,6 +181,16 @@ function withScratchWorkspaceMutex<T>(
           const filesystemWaitMs = Math.max(0, performance.now() - filesystemAdmissionStartedAt);
           onAcquired({
             waitedMs: filesystemWaitMs,
+            localWaitMs: 0,
+            fsMutexAdmissionMs: info.waitedMs,
+            admissionSubphaseTimingsMs: info.admissionSubphaseTimingsMs,
+          });
+        }
+        : undefined,
+      onTimedOut: onTimedOut
+        ? (info) => {
+          onTimedOut({
+            waitedMs: Math.max(0, performance.now() - filesystemAdmissionStartedAt),
             localWaitMs: 0,
             fsMutexAdmissionMs: info.waitedMs,
             admissionSubphaseTimingsMs: info.admissionSubphaseTimingsMs,
@@ -1542,7 +1558,7 @@ export interface ScratchWriteTimings {
   markerProbeMs?: number;
   /** Time queued behind this process's scratch mutex before filesystem mutex admission. */
   localMutexWaitMs?: number;
-  /** fs-mutex setup, queueing, and reader-drain time through its admission callback. */
+  /** fs-mutex setup, queueing, and reader-drain time through successful or timed-out admission. */
   fsMutexAdmissionMs?: number;
   /** Per-await details; these overlap their enclosing phase totals. Keys use bounded phase.subphase names. */
   awaitSubphaseTimingsMs?: Record<string, number>;
@@ -1873,6 +1889,24 @@ export async function writeWithScratchQuota(
     mutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);
     emitLockWaitProgress();
   } : undefined;
+  const recordMutexWait = (info: {
+    waitedMs: number;
+    localWaitMs: number;
+    fsMutexAdmissionMs: number;
+    admissionSubphaseTimingsMs?: Record<string, number>;
+  }) => {
+    if (opts.captureSubphaseTimings) {
+      timings.localMutexWaitMs = info.localWaitMs;
+      timings.fsMutexAdmissionMs = info.fsMutexAdmissionMs;
+      const subphases = timings.awaitSubphaseTimingsMs ??= {};
+      for (const [name, elapsedMs] of Object.entries(info.admissionSubphaseTimingsMs ?? {})) {
+        const key = `fs-mutex-admission.${name}`;
+        subphases[key] = (subphases[key] ?? 0) + elapsedMs;
+      }
+    }
+    if (refreshWaitOwner) timings.refreshWaitMs += info.waitedMs;
+    else timings.quotaWaitMs += info.waitedMs;
+  };
   const observeAwait: ScratchWriteAwaitObserver = async (phase, subphase, operation) => {
     const start = performance.now();
     const timingField: 'quotaStateReadMs' | 'quotaStatePublishMs' | 'markerProbeMs' | undefined = phase === 'quota-state-read'
@@ -2040,19 +2074,7 @@ export async function writeWithScratchQuota(
           throw error;
         }
         return sharedStateStale;
-      }, onMutexWaiting, ({ waitedMs, localWaitMs, fsMutexAdmissionMs, admissionSubphaseTimingsMs }) => {
-        if (opts.captureSubphaseTimings) {
-          timings.localMutexWaitMs = localWaitMs;
-          timings.fsMutexAdmissionMs = fsMutexAdmissionMs;
-          const subphases = timings.awaitSubphaseTimingsMs ??= {};
-          for (const [name, elapsedMs] of Object.entries(admissionSubphaseTimingsMs ?? {})) {
-            const key = `fs-mutex-admission.${name}`;
-            subphases[key] = (subphases[key] ?? 0) + elapsedMs;
-          }
-        }
-        if (refreshWaitOwner) timings.refreshWaitMs += waitedMs;
-        else timings.quotaWaitMs += waitedMs;
-      }, opts.requestTraceId, opts.mutexTimeoutMs);
+      }, onMutexWaiting, recordMutexWait, opts.requestTraceId, opts.mutexTimeoutMs, recordMutexWait);
       if (outcome === SCRATCH_USAGE_REFRESH_REQUIRED) {
         await timed('refreshWaitMs', () => refreshScratchUsage(opts.workspaceId));
         continue;

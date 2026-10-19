@@ -1,0 +1,274 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "planRevision": 35,
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "specFingerprint": "b33d2e02514d78afb2bb4da54d564100384a7f2961a27c53319ceca2b994d390",
+  "scope": "Additive reconciliation of the completed 2026-10-19 immutable Portal hosted signup-destination observation with the existing twelve-row R2 case table. This records saved proof without rerunning a browser, changing historical rows, or claiming full R2 acceptance.",
+  "historicalTable": {
+    "path": "docs/evidence/machine-first-r2-case-table-20261018-v3.json",
+    "sha256": "91ebefbd9f2db888846e89a3eff2faff34e286ad3ff0b9fcc748bb60dfbdc398",
+    "bindingId": 58341,
+    "unchanged": true
+  },
+  "unitPrerequisiteSupplement": {
+    "path": "docs/evidence/machine-first-r2-prerequisite-supplement-20261018.json",
+    "sha256": "294dbb5d72776b7fcb9f83953116cf26dc559680c92b78deec6adf1ebb7b4c79",
+    "bindingId": 58363,
+    "unchanged": true,
+    "qualification": "Retains its point-in-time unit-currentness readback. This supplement neither reruns those suites nor refreshes their currentness."
+  },
+  "servedObservation": {
+    "path": "docs/evidence/machine-first-p002-hosted-signup-20261019.json",
+    "sha256": "8589e76d7f47a68f9c7d2839ab869806fa64479795bf90fdc8362bfc48a0c1f9",
+    "normalizedPath": "docs/evidence/machine-first-p002-hosted-signup-ledger-20261019.json",
+    "normalizedSha256": "a165b89deac3a8fe7f9a3bd0bd163070c2716f3dffc21488cf2bd23bd9794302",
+    "committedEvidenceHead": "266ded6087a03354942ca4a1dbad333d79e2286a",
+    "originalPortalTestRunId": 21388103,
+    "normalizedParentTestRunId": 21388213,
+    "bindingId": 58572,
+    "observedAt": "2026-10-19T01:06:11.708Z",
+    "origin": "https://127.0.0.1:46855",
+    "accountSessionState": "Maintained kit-created TEST account, cookie-admitted to a private hosted tenant. Each scenario records tenantMatches=true. This does not execute the external AuthKit signup form or callback.",
+    "release": "EuGuX2xXqsxzomgod14T-20261019002159896-733094-c6a5054b",
+    "portalCommit": "5118d631446a3206ff2321c66ee18da211c1defe",
+    "sourceRootDigest": "eab7efca5a40e1054d3240a88ad12d56890e2de78557f8c4f14457145fd5d5b5",
+    "testPath": "e2e/portal-utility-welcome.spec.ts",
+    "testSha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d",
+    "testTitle": "served hosted signup utility: published download, reload, fallback and keyboard Continue",
+    "executedBrowserCases": 1,
+    "guiScenarios": 4,
+    "normalizedAssertions": 7,
+    "skipped": 0,
+    "unexpected": 0,
+    "countBoundary": "The normalized ledger stores seven assertions about one executed browser case containing four scenarios. It is not seven browser executions.",
+    "provenanceBoundary": "The observed immutable Portal root and exact test are pinned. Consumed hostedAuth and web server prebundles were reproduced byte-equal. Complete historical linked-file equivalence and present-day source/test currentness are not established.",
+    "bindingReadback": {
+      "spec": "current",
+      "testRun": "current",
+      "source": "unknown",
+      "test": "unknown",
+      "overall": "unknown",
+      "partialEvidence": true,
+      "noAcceptanceClaim": true
+    }
+  },
+  "casePopulation": [
+    "successful-real-new-account-signup",
+    "callback-replay-and-welcome-reload",
+    "real-returning-provider-signin",
+    "denied-storage",
+    "denied-storage-only-full-document-reload",
+    "denied-storage-only-after-fix-immutable-release",
+    "blocked-automatic-download",
+    "unavailable-published-manifest",
+    "keyboard-continue",
+    "unsupported-native-windows",
+    "commercial-server-choice-and-D004-data-control-boundary",
+    "compatible-archive-identity-and-current-launcher-inclusion"
+  ],
+  "reconciliation": [
+    {
+      "key": "successful-real-new-account-signup",
+      "status": "separate-historical-real-AuthKit-proof-preserved",
+      "evidenceRef": "docs/evidence/machine-first-authkit-signup-20261017.json",
+      "qualification": "No new provider signup observation. The served destination receipt may not replace this row or establish its current source equivalence."
+    },
+    {
+      "key": "callback-replay-and-welcome-reload",
+      "status": "separate-historical-real-callback-proof-preserved",
+      "evidenceRef": "docs/evidence/machine-first-authkit-signup-20261017.json",
+      "supplementaryDestinationObservation": {
+        "receiptPointer": "/receipt/cases/0",
+        "scenario": "published",
+        "callbackReloadDownloadCount": 1,
+        "qualification": "The field name denotes destination reload inside the cookie-admitted case. It is not a real AuthKit callback or callback-code replay."
+      }
+    },
+    {
+      "key": "real-returning-provider-signin",
+      "status": "separate-historical-real-AuthKit-proof-preserved",
+      "evidenceRef": "docs/evidence/machine-first-authkit-returning-20261017.json",
+      "qualification": "The served receipt's returningSignInDownloadCount values describe navigation inside its admitted case. They are not a real returning provider signin and do not refresh this row."
+    },
+    {
+      "key": "denied-storage",
+      "status": "passed-in-latest-immutable-combined-fault-observation",
+      "expected": {
+        "storage": "denied",
+        "automaticClick": "blocked",
+        "manualRetryCompletes": true,
+        "continueReachesGUI": true
+      },
+      "actual": {
+        "receiptPointer": "/receipt/cases/1",
+        "scenario": "blocked-storage-denied",
+        "tenantMatches": true,
+        "resolverRequests": 1,
+        "automaticAttemptCount": "not separately retained",
+        "manualRetry": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "completed": true
+        },
+        "utilityContinueUrl": "https://127.0.0.1:46855/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "continueUrl": "https://127.0.0.1:46855/?app=home"
+      },
+      "screenshotRefs": [
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-blocked-storage-denied.png",
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-blocked-storage-denied-gui.png"
+      ],
+      "qualification": "Intentional denied-storage and blocked-anchor fault injections. This combined case does not establish storage-denied-only full-document reload suppression. Screenshot hashes remain in the immutable served receipt."
+    },
+    {
+      "key": "denied-storage-only-full-document-reload",
+      "status": "historical-counterexample-and-owned-fix-preserved",
+      "evidenceRef": "docs/evidence/machine-first-storage-denied-before-20261017.json",
+      "qualification": "No new storage-only reload execution. Preserve the counterexample and distinct after-fix receipt; the latest combined fault scenario is not a substitute."
+    },
+    {
+      "key": "denied-storage-only-after-fix-immutable-release",
+      "status": "separate-historical-after-fix-proof-preserved",
+      "evidenceRef": "docs/evidence/machine-first-storage-denied-after-20261018.json",
+      "qualification": "Its original release/source bounds remain unchanged. No present-day source equivalence or real provider signup is inferred."
+    },
+    {
+      "key": "blocked-automatic-download",
+      "status": "passed-in-latest-immutable-combined-fault-observation",
+      "expected": {
+        "manualRetryCompletes": true,
+        "continueReachesGUI": true
+      },
+      "actual": {
+        "receiptPointer": "/receipt/cases/1",
+        "scenario": "blocked-storage-denied",
+        "manualRetryCompleted": true,
+        "guiRendered": true,
+        "automaticAttemptCount": "not separately retained"
+      },
+      "screenshotRefs": [
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-blocked-storage-denied.png",
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-blocked-storage-denied-gui.png"
+      ],
+      "qualification": "Same executed scenario as denied-storage, not another test run. Resolver request count is not an automatic-anchor-attempt count or a browser download-completion signal."
+    },
+    {
+      "key": "unavailable-published-manifest",
+      "status": "passed-in-latest-immutable-injected-publisher-failure-observation",
+      "expected": {
+        "publisherFailure": 503,
+        "continueReachesGUI": true
+      },
+      "actual": {
+        "receiptPointer": "/receipt/cases/2",
+        "scenario": "unavailable",
+        "tenantMatches": true,
+        "resolverRequests": 1,
+        "failureInjection": "same-origin publisher route 503",
+        "returningSignInDownloadCount": 0,
+        "utilityContinueUrl": "https://127.0.0.1:46855/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "continueUrl": "https://127.0.0.1:46855/?app=home"
+      },
+      "screenshotRefs": [
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-unavailable.png",
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-unavailable-gui.png"
+      ],
+      "qualification": "An intentional same-origin 503 models manifest unavailability; this is not an observed external publisher outage."
+    },
+    {
+      "key": "keyboard-continue",
+      "status": "passed-in-latest-immutable-served-case",
+      "expected": {
+        "keyboardContinue": true,
+        "guiRendered": true
+      },
+      "actual": {
+        "receiptPointer": "/receipt/cases/0",
+        "scenario": "published",
+        "namedExecutedCase": "served hosted signup utility: published download, reload, fallback and keyboard Continue",
+        "utilityContinueUrl": "https://127.0.0.1:46855/?app=home&firstRun=deferred",
+        "productGuideChoice": "skipped through the existing guide control",
+        "guiRendered": true,
+        "continueUrl": "https://127.0.0.1:46855/?app=home"
+      },
+      "screenshotRefs": [
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-published.png",
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-published-gui.png"
+      ],
+      "qualification": "The utility Continue and separate existing product-guide control are distinct steps; rendering the final GUI does not imply the guide was accepted."
+    },
+    {
+      "key": "unsupported-native-windows",
+      "status": "passed-in-latest-immutable-platform-fallback-observation",
+      "expected": {
+        "utilityResolverRequests": 0,
+        "continueReachesGUI": true
+      },
+      "actual": {
+        "receiptPointer": "/receipt/cases/3",
+        "scenario": "windows",
+        "tenantMatches": true,
+        "requestedUrls": [],
+        "returningSignInDownloadCount": 0,
+        "utilityContinueUrl": "https://127.0.0.1:46855/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "continueUrl": "https://127.0.0.1:46855/?app=home"
+      },
+      "screenshotRefs": [
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-windows.png",
+        "docs/evidence/machine-first-p002-hosted-signup-20261019-windows-gui.png"
+      ],
+      "qualification": "Browser platform fallback only. No native Windows or WSL execution, exhaustive unsupported-architecture coverage, or real returning provider signin is claimed."
+    },
+    {
+      "key": "commercial-server-choice-and-D004-data-control-boundary",
+      "status": "historical-manual-copy-row-preserved-no-new-complete-manual-row",
+      "evidenceRef": "docs/evidence/machine-first-authkit-signup-20261017.json",
+      "qualification": "The executed served case remains the automated copy detector. This receipt does not retain the complete rendered copy as expected/actual text, so this supplement does not refresh the full D-004 manual boundary row or infer copy from a screenshot filename."
+    },
+    {
+      "key": "compatible-archive-identity-and-current-launcher-inclusion",
+      "status": "failed-current-launcher-inclusion-on-latest-observed-bytes",
+      "expected": {
+        "includesCurrentPlanLauncherChanges": true
+      },
+      "actual": {
+        "receiptPointer": "/receipt/cases/0/download",
+        "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+        "bytes": 69542264,
+        "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+        "sameBytesAsRetained20261017Archive": true,
+        "inclusionOfCurrentLauncherChanges": false
+      },
+      "evidenceRef": "docs/evidence/machine-first-signup-archive-audit-20261017.json",
+      "qualification": "The browser download hash equals the previously inspected archive. This is bounded to the recorded download time, not a fresh claim about the current public endpoint. Complete manifest version/target/sourceSha and contents remain on the separate archive audit."
+    }
+  ],
+  "remainingUnverified": [
+    "Complete R2 manual current-build table: real AuthKit signup/callback, returning signin, separate storage-only reload and full manual copy boundary retain earlier source/release bounds.",
+    "Expected/actual automatic-attempt counts are not separately retained in every latest served scenario; resolver requests and download events cannot fill that gap.",
+    "Present-day source/test/environment equivalence for the opaque browser bindings remains unknown; spec and ledger currentness alone do not establish it.",
+    "Latest observed downloaded archive lacks this plan's launcher changes. Required current compatible artifact acceptance and Avi publication approval remain open.",
+    "Current installed-candidate acceptance, R1 architecture/two-GUI/two-window acceptance, R7 final promotion/deployment and shipment remain open."
+  ],
+  "cleanupBoundary": {
+    "accountCleanup": true,
+    "allOwnedProcessesStopped": true,
+    "runtimeRemoved": true,
+    "privatePgDataRemoved": true,
+    "hostedHelperShutdown": "SIGABRT observed after browser pass during cleanup; cause unestablished, graceful shutdown not claimed. Existing assigned WI-6554700010013376 carries the observation."
+  },
+  "executionBoundary": {
+    "newTestExecutions": 0,
+    "browserRerun": false,
+    "runtimeStarted": false,
+    "runtimeRestarted": false,
+    "peerAcceptanceDuplicated": false,
+    "historicalEvidenceRewritten": false
+  },
+  "noAcceptanceClaim": true,
+  "verdict": "latest-served-destination-proof-reconciled; full-R2-and-shipment-open"
+}

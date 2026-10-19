@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "planRevision": 35,
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "specFingerprint": "b33d2e02514d78afb2bb4da54d564100384a7f2961a27c53319ceca2b994d390",
+  "key": "commercial-server-choice-and-D004-data-control-boundary",
+  "scope": "Additive manual copy review of the retained published-scenario screenshot from the completed 2026-10-19 immutable Portal browser run. This supplies expected/actual copy for that observation, without changing earlier evidence or asserting full R2 acceptance.",
+  "governingDecision": {
+    "ref": "machine-first-access-and-signup-utility-download-2026-10-15#D-004",
+    "title": "Truthful signup download copy and derived verification provenance",
+    "readAtPlanRevision": 35,
+    "contract": "Distinguish a download request from a saved archive; retain manual retry and Continue; explain local, managed and BYOC hosting with the requested flat-monthly-rate wording. Data-control wording must not claim external model/provider traffic stays on the machine."
+  },
+  "observation": {
+    "receiptPath": "docs/evidence/machine-first-p002-hosted-signup-20261019.json",
+    "receiptSha256": "8589e76d7f47a68f9c7d2839ab869806fa64479795bf90fdc8362bfc48a0c1f9",
+    "receiptPointer": "/receipt/cases/0",
+    "scenario": "published",
+    "origin": "https://127.0.0.1:46855",
+    "entryPath": "/?utilityWelcome=1",
+    "browserRunStartedAt": "2026-10-19T01:05:18.911Z",
+    "receiptCompletedAt": "2026-10-19T01:06:11.708Z",
+    "screenshot": {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019-published.png",
+      "sha256": "0b2048f01f0ff0fafd55fc975edf2a0eea0bf019f0ec96a40fa14dc4fa66a2aa",
+      "inspection": "Viewed the retained image directly. The full utility dialog, its two explanatory paragraphs, request status, retry, Continue and platform note are visible and readable. The product guide is visible behind the dialog.",
+      "capturePoint": "The pinned executed test captures this screenshot after the published scenario's full-document reload and before keyboard Continue."
+    },
+    "accountSessionState": {
+      "authenticated": true,
+      "admission": "Maintained isolated kit-created TEST account, cookie-admitted to the private hosted tenant",
+      "tenantMatches": true,
+      "workspaceId": "not retained in this receipt",
+      "externalAuthKitSignupOrCallbackExecuted": false
+    },
+    "release": "EuGuX2xXqsxzomgod14T-20261019002159896-733094-c6a5054b",
+    "portalCommit": "5118d631446a3206ff2321c66ee18da211c1defe",
+    "sourceRootDigest": "eab7efca5a40e1054d3240a88ad12d56890e2de78557f8c4f14457145fd5d5b5",
+    "destination": "/?app=home&firstRun=deferred",
+    "finalGui": {
+      "rendered": true,
+      "productGuideChoice": "skipped through the existing guide control",
+      "urlPath": "/?app=home",
+      "qualification": "The utility Continue and subsequent product-guide choice are separate recorded steps."
+    }
+  },
+  "expected": {
+    "terminalBackends": [
+      "Claude Code",
+      "Codex",
+      "OMP"
+    ],
+    "terminalPurpose": "psu wraps the named backends with context, memory, documentation, Papercusp tools and prompts to steer a coordinated agent factory",
+    "local": "Run the local server to keep agents and data on the person's machine",
+    "managed": "Papercusp handles the cloud account and billing for a flat monthly rate",
+    "BYOC": "Use the person's cloud account while Papercusp provisions machines and the person retains data control",
+    "dataControlBoundary": "Hosting and retained data control do not assert that external model/provider requests stay on the machine",
+    "downloadBoundary": "Say the download was requested, without implying completion from the automatic request alone",
+    "controls": [
+      "Download psu + pui again",
+      "Continue to GUI"
+    ]
+  },
+  "actual": {
+    "renderedCopyTranscription": "Your Papercusp utility\n\nThe psu + pui utility download was requested. You can download it again below if needed.\n\nThe next page takes you to the GUI, but you may prefer to drive your agents from psu. It wraps Claude Code, Codex and OMP with your context, memory, documentation, Papercusp tools and prompts so you can steer a coordinated agent factory.\n\nYou can run the local server to keep agents and data on your machine, use managed cloud where Papercusp handles the cloud account and billing for a flat monthly rate, or bring your own cloud account while Papercusp provisions the machines and you retain control of your data.\n\nDownload psu + pui again\nContinue to GUI\n\nWindows uses the Linux package through WSL2. On macOS, choose Apple Silicon or Intel on the download page.",
+    "transcriptionMethod": "Manual visual transcription of the retained screenshot, with line wrapping normalized; compared with the pinned welcome component's literal text. This is not a newly captured DOM innerText value.",
+    "terminalBackendsAndPurposePresent": true,
+    "localManagedAndBYOCChoicesPresent": true,
+    "flatMonthlyRatePresent": true,
+    "retryAndContinueVisible": true,
+    "downloadRequestWordingPresent": true,
+    "downloadCompletionClaimedByCopy": false,
+    "manualDataControlReview": "The displayed text describes hosting and retained data control. It does not say external model/provider traffic stays on the machine. An explicit provider-traffic caveat is absent; D-004 requires avoiding the false claim, and this review does not measure network traffic or establish data residency.",
+    "copyVerdict": "pass within the recorded immutable release and screenshot"
+  },
+  "maintainedDetector": {
+    "path": "harness:portal/e2e/portal-utility-welcome.spec.ts",
+    "pinnedCommit": "5118d631446a3206ff2321c66ee18da211c1defe",
+    "sha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d",
+    "title": "served hosted signup utility: published download, reload, fallback and keyboard Continue",
+    "detectorLines": {
+      "caseStart": 602,
+      "commercialAndServerCopyAssertions": [
+        652,
+        653,
+        654
+      ],
+      "requestedDownloadStatus": 658,
+      "screenshotCapture": 687,
+      "keyboardContinue": [
+        688,
+        689,
+        690,
+        691
+      ]
+    },
+    "originalPortalTestRunId": 21388103,
+    "normalizedParentTestRunId": 21388213,
+    "executedBrowserCases": 1,
+    "guiScenarios": 4,
+    "skipped": 0,
+    "unexpected": 0,
+    "qualification": "This is the existing automated served-copy detector. The full D-004 meaning review above is manual. One executed case contains four scenarios; the review does not add another browser execution."
+  },
+  "boundedCurrentFileComparison": {
+    "method": "Compared git show at the pinned Portal commit with the canonical Portal files during this review; exact bytes and SHA256 matched for these two files only.",
+    "files": [
+      {
+        "path": "harness:portal/e2e/portal-utility-welcome.spec.ts",
+        "pinnedSha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d",
+        "currentSha256": "82d25e7ff901d5cf022943b022d8ac4db9f9ee2400ce59525ae06b2746a8da9d",
+        "byteEqual": true
+      },
+      {
+        "path": "harness:portal/packages/ui/src/utility-welcome.tsx",
+        "pinnedSha256": "53368b916c4069fc619fb1c28ee7f5aef435bf3ee350c0cac61d0ccf8792bd64",
+        "currentSha256": "53368b916c4069fc619fb1c28ee7f5aef435bf3ee350c0cac61d0ccf8792bd64",
+        "byteEqual": true
+      }
+    ],
+    "qualification": "Two-file equality is not a measurement of the complete Portal source, linked operator dependency set, runtime environment or opaque binding currentness."
+  },
+  "preservedEvidence": [
+    {
+      "path": "docs/evidence/machine-first-r2-case-table-20261018-v3.json",
+      "sha256": "91ebefbd9f2db888846e89a3eff2faff34e286ad3ff0b9fcc748bb60dfbdc398",
+      "bindingId": 58341
+    },
+    {
+      "path": "docs/evidence/machine-first-r2-served-supplement-20261019.json",
+      "sha256": "3d85a2ead98bace89d9d5f8dd80fb70b84b561d21b72b07531823f6cafcef5b0",
+      "bindingId": 58573
+    }
+  ],
+  "remainingUnverified": [
+    "Full R2 current-source and environment equivalence, and the separate historical real AuthKit signup/callback and returning-signin receipt bounds.",
+    "Expected/actual automatic-attempt counts are not separately retained in every served scenario; request counts and download counts cannot substitute for them.",
+    "Latest observed downloaded archive5f720 lacks the plan's current launcher changes; compatible current artifact acceptance and Avi publication approval remain open.",
+    "Current installed-candidate acceptance, R1 architecture/two-GUI/two-window acceptance, R7 promotion/deployment and shipment."
+  ],
+  "executionBoundary": {
+    "newTestExecutions": 0,
+    "browserRerun": false,
+    "runtimeStartedOrRestarted": false,
+    "historicalEvidenceRewritten": false,
+    "peerAcceptanceDuplicated": false
+  },
+  "noAcceptanceClaim": true,
+  "verdict": "retained-screenshot full manual copy row recorded; full R2 and shipment open"
+}

@@ -36,7 +36,7 @@ import {
   suStackDocuments,
 } from '@papercusp/orchestrator/blueprint';
 import { renderSuPlaybook } from './papercusp-files';
-import { formatScoreTable, measureSuRender, scoreAgainstBaseline } from './su-render-baseline';
+import { formatScoreTable, measureSuRender, scoreAgainstBaseline, sha256 } from './su-render-baseline';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(HERE, '__fixtures__', 'su-render-baseline');
@@ -99,6 +99,64 @@ type Variant = (typeof VARIANTS)[number];
 /** The first line of every tile that belongs to a posture — the craft that must NOT leak. */
 const postureAnchors = (p: Posture) =>
   SU_TILES.filter((t) => t.part === 'fleet-posture' && t.posture === p).map((t) => t.anchor);
+
+describe('P-019 — host-managed workflow after the real Codex render splices', () => {
+  for (const referenceMode of ['inline', 'on-demand'] as const) {
+    it(`${referenceMode}: delegates preamble ledger mechanics and retains authority and investigation`, async () => {
+      const variants = [];
+      for (const controlled of [false, true]) {
+        const source = composeSuStackSource({
+          harnessDir,
+          ...(controlled ? { workItemWorkflow: 'host-managed' as const } : {}),
+        });
+        const { text } = await renderSuPlaybook({
+          referenceMode,
+          agent: 'codex',
+          profile: 'engineer',
+          baseSource: join(harnessDir, 'blueprints/base/prompts/su.md'),
+          baseText: source.text,
+          overlayDir: join(repoRoot, 'apps/operator/prompts'),
+          projectGuideSource: '',
+          tier: 'full',
+        });
+        const agentManaged = [
+          'file a work item for it and CLAIM it',
+          'Record what you\nfound and did on the work item / plan',
+        ];
+        const hostManaged = ['The host records the findings', 'Report the stall and its evidence to the host'];
+        const retained = [
+          'File locking is ENFORCED', 'Identity text is never an input to authority',
+          'Root cause named', 'Verified —', 'check its concrete progress',
+          'investigate and fix it',
+        ];
+        for (const needle of agentManaged) expect(text.includes(needle), needle).toBe(!controlled);
+        for (const needle of hostManaged) expect(text.includes(needle), needle).toBe(controlled);
+        for (const needle of retained) expect(text.includes(needle), needle).toBe(true);
+        const seal = '<!-- PAPERCUSP-KERNEL:SEAL -->';
+        expect(text.split(seal)).toHaveLength(2);
+        expect(text.indexOf('# Agent base preamble')).toBeGreaterThan(text.indexOf(seal));
+        variants.push({ controlled, sourceSha256: sha256(source.text), promptSha256: sha256(text),
+          matches: [...agentManaged, ...hostManaged, ...retained].map(needle => ({ needle, present: text.includes(needle) })) });
+        dump(`p019-${referenceMode}-${controlled ? 'controlled' : 'ordinary'}.md`, text);
+      }
+      const inputs = [
+        ...SU_PART_DOCUMENTS.map(doc => join(harnessDir, doc.path)),
+        join(harnessDir, 'blueprints/base/prompts/su.md'),
+        join(harnessDir, 'blueprints/base/prompts/agent-base-preamble.md'),
+        join(repoRoot, 'libs/papercusp/packages/orchestrator/src/blueprint/su-stack.ts'),
+        join(repoRoot, 'libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts'),
+        join(HERE, 'papercusp-files.ts'),
+        join(HERE, 'su-posture-render.test.ts'),
+        join(repoRoot, 'apps/operator/prompts/papercusp-su.codex.md'),
+      ];
+      dump(`p019-${referenceMode}-receipt.json`, JSON.stringify({
+        scope: 'Current local composeSuStackSource + renderSuPlaybook; no project guide, native launch or provider acceptance',
+        generatedAt: new Date().toISOString(), referenceMode, variants,
+        files: inputs.map(path => ({ path, sha256: sha256(read(path)) })),
+      }, null, 2));
+    });
+  }
+});
 
 describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned fixture)', () => {
   const baseText = read(INPUTS.base);
