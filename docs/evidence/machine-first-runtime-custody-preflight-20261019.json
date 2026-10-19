@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010017857",
+  "parentWorkItem": "WI-6554700010015411",
+  "scope": "Failed current-source hosted destination browser attempt and owned runtime cleanup; no acceptance or shipment claim",
+  "candidate": "__HqRHLUhb35DBGTIhNRL-20261019042708149-1834218-38d0aafb",
+  "sourceRootDigest": "0d3f5de661d3d9d9f763a6c55eb972196be811bcc4be0af3225f6ea7e9ec39d2",
+  "sourceWholeDigest": "e2c9398b216615cdd6881f9f7516030943d6f8a93f8e55d2c3bc2e9f46d6f777",
+  "preflight": { "rootMatches": true, "wholeMatches": true, "packagedPrebundles": "pass" },
+  "browser": {
+    "title": "served hosted signup utility: published download, reload, fallback and keyboard Continue",
+    "startedAt": "2026-10-19T04:35:23.530Z",
+    "expected": 0,
+    "unexpected": 1,
+    "skipped": 0,
+    "exitCode": 1,
+    "failure": "portal_serving_environment_listener_mismatch",
+    "completedScenarioRows": 0,
+    "accountCleanup": true
+  },
+  "diagnosis": {
+    "measuredImmediateCause": "The explicit selector named standalone-entry.mjs, whose child server.js owns the HTTP listener.",
+    "confirmedSourceConstraint": "Next start-server.js assigns process.title; a Node mechanism read confirmed that assignment replaces /proc command-line script arguments with the title alone.",
+    "detectorGap": "Maintained custody tests cover a direct Node listener with preserved command-line arguments, not the production launcher/Next topology.",
+    "durableFixStatus": "not implemented: first regression patch refused by peer build lock; nothing in the patch was written"
+  },
+  "cleanup": {
+    "directOwnedPidsGone": [2148833, 2149025, 2183054],
+    "privateRuntimeRemoved": true,
+    "privateDatabaseRemoved": true,
+    "verifiedBy": "Final runtime receipt and with-test-pg cleanup complete event; direct /proc existence checks"
+  },
+  "artifacts": [
+    { "path": "/tmp/machine-first-author-served-v1-20261019.log", "sha256": "35509a7fd8593f039eb3b7ec5ff72dedda6728d8bf44d7407538ab89c5dcdfaf" },
+    { "path": "/tmp/machine-first-author-served-v1-20261019-browser.json", "sha256": "2469ec26b9dc59e1a1502a0079e3cb0056d3bfd2e966f124e0392b9e45ae6ced" },
+    { "path": "/tmp/machine-first-author-served-v1-20261019-runtime.json", "sha256": "0374fee8cd1b71025f534749cc005e3a45fe54d6830918095c5f19c8e2135dcb" },
+    { "path": "/tmp/machine-first-author-served-v1-20261019-launcher-receipt.json", "sha256": "bf9f3989009aecaf81e444975023701ba6f77663530ec4570e77ecc6dfbb1ba8" },
+    { "path": "/tmp/machine-first-author-served-v1-20261019-launcher-source.mjs", "sha256": "78ed7abf90edfb5fa5e4b6317b6c3af47bf0cb4758b8415f10aac76711ec5eec" }
+  ],
+  "lockWait": {
+    "ticketId": "5f794054-ce66-4182-947c-87bb06a5fff4",
+    "awaitId": 333501,
+    "holder": "su-loopback",
+    "coordinationDomainHomeRelative": ".papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "coordinationDomainResolution": "Resolve coordinationDomainHomeRelative against the current user's home directory; the absolute machine-specific path is intentionally omitted.",
+    "paths": ["scripts/source-integrity.mjs", "tests/served-artifact.test.ts", "e2e/served-artifact.ts", "e2e/portal-utility-welcome.spec.ts"],
+    "wakeOnGrant": true
+  },
+  "remaining": ["Durable custody fix and conventional regression", "Passing current-source hosted destination browser receipt", "Compatible public archive containing current launcher", "R1 two-GUI/two-target/two-window agent-continuity acceptance", "Final shipped-artifact R7 and Avi publication approval"]
+}
