@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "native-p042-p018-elapsed48h-review-v1",
+  "workItem": "WI-6554700010015356",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "reviewedAtUtc": "2026-10-19 02:42:13 UTC",
+  "scope": "One bounded read-only deployed hourly receipt review after await333117 timeout. No tests, mutation replay, production source change, LIVE_GATE_OPS, or shipment verification.",
+  "baseEvidence": {
+    "path": "docs/evidence/native-p042-p018-window-review-2026-10-19.json",
+    "sha256": "98640c7dfd5f4e207dd53a45df99185f9b768ee0a7ca799567a6069ff2493c8c",
+    "rows": 49,
+    "integrity": "Exact SHA256 verified before aggregation; all saved detailed receipts were included."
+  },
+  "writerBinding": {
+    "source": "packages/operator-core/lib/agent-tools/routines/routine-last-fire.ts",
+    "join": "operation_outputs.workflow_uuid = workflow_status.workflow_uuid",
+    "workflowName": "routineFire",
+    "routineId": "rt_papercusp_gitnexus_reindex",
+    "functionName": "system:gitnexus-reindex",
+    "serializer": "Superjson json property, otherwise plain JSON",
+    "readingSource": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts:3030",
+    "units": "checkedAt and ageMs are milliseconds; selectorCeilingMs is 86400000 ms."
+  },
+  "incrementalQuery": {
+    "sql": "WITH bound AS (SELECT o.workflow_uuid,o.completed_at_epoch_ms,o.error, CASE WHEN o.output IS NULL THEN NULL ELSE COALESCE(o.output::jsonb->'json',o.output::jsonb) END AS result FROM dbos.operation_outputs o JOIN dbos.workflow_status w ON w.workflow_uuid=o.workflow_uuid WHERE o.function_name='system:gitnexus-reindex' AND w.name='routineFire' AND (w.inputs::jsonb->'json'->>0)='rt_papercusp_gitnexus_reindex' AND o.completed_at_epoch_ms > 1792373709580 AND o.completed_at_epoch_ms<=extract(epoch from now())*1000) SELECT workflow_uuid,completed_at_epoch_ms,error,result->>'softError' AS soft_error,result->'diagnostics' AS diagnostics FROM bound ORDER BY completed_at_epoch_ms",
+    "positiveControlSql": "SELECT 1 AS present FROM harness_shared.routines WHERE workspace_id='papercusp-workspace' AND id='rt_papercusp_gitnexus_reindex' AND install_slug='papercusp' AND target_role='system:gitnexus-reindex' LIMIT 1",
+    "maxRows": 10,
+    "timeoutMs": 15000,
+    "allowUnscoped": false
+  },
+  "incrementalRead": {
+    "mode": "query",
+    "rowCount": 1,
+    "truncated": false,
+    "fields": [
+      "workflow_uuid",
+      "completed_at_epoch_ms",
+      "error",
+      "soft_error",
+      "diagnostics"
+    ],
+    "elapsedMs": 25,
+    "rows": [
+      {
+        "workflow_uuid": "sched-.routinesTick-2026-10-19T02:35:00.000Z-21",
+        "completed_at_epoch_ms": "1792377308593",
+        "error": null,
+        "soft_error": null,
+        "diagnostics": {
+          "analyzeEnabled": false,
+          "maintenanceMode": "first-party-snapshot",
+          "snapshotBackend": "first-party-imports",
+          "dependencySnapshot": {
+            "ageMs": 61198267,
+            "edges": 81408,
+            "reason": null,
+            "status": "fresh",
+            "backend": "first-party-imports",
+            "checkedAt": 1792377307649,
+            "generatedAt": "2026-10-18T09:35:08.346Z",
+            "producerRan": false,
+            "producerExit": null,
+            "selectorCeilingMs": 86400000
+          }
+        }
+      }
+    ],
+    "positiveControl": {
+      "rows": [
+        {
+          "present": 1
+        }
+      ],
+      "rowCount": 1,
+      "truncated": false,
+      "fields": [
+        "present"
+      ],
+      "status": "passed"
+    }
+  },
+  "summary": {
+    "rows": 50,
+    "baseRows": 49,
+    "incrementalRows": 1,
+    "truncated": false,
+    "issues": [],
+    "firstObserved": "2026-10-17T01:35:19.365Z",
+    "lastObserved": "2026-10-19T02:35:07.649Z",
+    "observedSpanMs": 176388284,
+    "requiredSpanMs": 172800000,
+    "excessSpanMs": 3588284,
+    "maxAgeMs": 71997354,
+    "ceilings": [
+      86400000
+    ],
+    "hourlyBucketCount": 50,
+    "missingHourlyBuckets": [],
+    "backendValues": [
+      "first-party-imports"
+    ],
+    "verdict": "qualified-observed-hourly-window",
+    "fullP018Acceptance": "not-qualified-real-gate-selector-log-outstanding"
+  },
+  "qualification": "Recorded hourly freshness observations now exceed 48 elapsed hours, with every intervening hourly bucket represented and every recorded reading fresh/below its selector ceiling. This qualifies only that observed window, not complete P-018 or P-042 acceptance.",
+  "limits": [
+    "Real gate selector log remains unqualified.",
+    "Final distribution and shipment remain unqualified.",
+    "Recorded observations do not establish continuous between-fire freshness or complete execution-graph/source-test qualification.",
+    "Prior local action-test proof remains historical; no tests were rerun for this review.",
+    "Avi's P-040/P-041 acceptance-scope and P-025 mutation-scope questions remain pending. No elapsed-time approval was inferred."
+  ],
+  "next": "Publish/read back this one review, checkpoint the measured result, and settle. No recurring loop or additional review timer."
+}

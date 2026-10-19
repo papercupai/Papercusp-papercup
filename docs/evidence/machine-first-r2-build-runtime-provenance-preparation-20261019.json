@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "framework": "operational",
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "rubricRevision": 11,
+  "scope": "Build/runtime provenance preparation in maintained source suites; no new hosted or release acceptance",
+  "reuse": {
+    "sourceIntegrity": "portal/scripts/source-integrity.mjs",
+    "builder": "portal/scripts/build-standalone.mjs#bundleCommonJsRuntime",
+    "publisher": "portal/scripts/copy-standalone.mjs -> publishStandaloneRuntime -> .papercusp-release.json",
+    "receipt": "portal/e2e/served-artifact.ts#assertUtilitySourceCustody",
+    "fixtureSelector": "PORTAL_UTILITY_SERVED_RUNTIME extends the existing served utility journey selectors with JSON {pid,origin}; no standalone monitoring or provenance service."
+  },
+  "source": {
+    "harness": "portal",
+    "checkoutHeadAtRetention": "cd9189cc1beee7cf0982306036cdab1cb50eedd7",
+    "dirtySourceScope": true,
+    "files": [
+      {
+        "path": "scripts/source-integrity.mjs",
+        "sha256": "f7be22c9854e0922eaf4c4aebf2d8ef981e0bf4880d2a4be30f8e7220e667b4c"
+      },
+      {
+        "path": "scripts/build-standalone.mjs",
+        "sha256": "6ce7b876778ef8bd375d9c0c26d541d5d983f9f2881f3cf1276e3bb0d8dc4080"
+      },
+      {
+        "path": "scripts/copy-standalone.mjs",
+        "sha256": "d5da0a6e5f07e0dac0f93d28502aa0bfb4e78ab6fd13e9b59a5edfcd7cc55454"
+      },
+      {
+        "path": "scripts/standalone-runtime.mjs",
+        "sha256": "3716ac647081ab9424e8f33ff8071d886f38c7cc06ec9bf4bc2863da220a43ae"
+      },
+      {
+        "path": "scripts/standalone-runtime.d.mts",
+        "sha256": "fb7f595052299b39de96d428bbee91b4f55dfda31dcbd039f39337ec7a604160"
+      },
+      {
+        "path": "e2e/served-artifact.ts",
+        "sha256": "a57a6b5ce5a81decab37978c3ee7ce7852a34e687544eb30bdbcd5c589a4ad52"
+      },
+      {
+        "path": "e2e/portal-utility-welcome.spec.ts",
+        "sha256": "ff68fcd665f1532dba58418b3823c6f0e99006dd373ddbf2dd5b5918a23d8b6e"
+      },
+      {
+        "path": "tests/source-integrity.test.ts",
+        "sha256": "7cbae4fa148412008ce1f2c5f708dcb7a42ab460644e33a90af51c762951ae8f"
+      },
+      {
+        "path": "tests/served-artifact.test.ts",
+        "sha256": "684fadd121a8bfb2ba3cb1a9c3d2067b337cabf319a14b9ab03494a6b4b73353"
+      },
+      {
+        "path": "tests/build-standalone.test.ts",
+        "sha256": "3f160a104fd4d1810e584d9a9b31be86d143206fb2cd8546a387ed301e0f2b39"
+      },
+      {
+        "path": "tests/standalone-runtime.test.ts",
+        "sha256": "f866bc784ec6a7458346d7cee32c7a6a1e6ed35b204905384b58c3dd93ec59df"
+      }
+    ],
+    "qualification": "File hashes were retained under the manual edit claims. The recorded HEAD is retention-time context; this is a working-source verification, not an immutable shipped build."
+  },
+  "implementation": {
+    "sharedCompilerOptions": "Production builder and served prebundle rebuilder use the same serverRuntimeSpecs/serverRuntimeArgs.",
+    "immutableBuildJoin": "Build snapshots Node executable/runtime, esbuild/Next files, lockfile and hashed selected settings before compilation; refuses detected environment drift before copy. Copy supplies the record to publication; publisher validates both copied package/bundle hashes and source-root identity before making the release visible.",
+    "servedJoin": "Captured HTML identity -> exact immutable release metadata -> retained root custody and copied prebundle hashes -> actual esbuild stdout byte equality for the two consumed cones.",
+    "runtimeJoin": "An optional explicit local Linux {pid,origin} selector must execute an entry within the chosen immutable release and own the requested listener. The guard measures executable/entry hashes, PID/startTicks and hashed selected initial settings; it rechecks process identity/cwd/argv/executable link. The runner PID cannot substitute.",
+    "environmentScope": "Selected initial process settings from /proc are separate from runner settings, and exclude credentials and later in-process overrides. Missing selector remains explicitly unmeasured; unsupported platforms are refused when a selector is supplied.",
+    "wiring": "All four existing hosted utility receipt paths use the build custody and optional runtime selector.",
+    "fullSourceEnvironmentEquivalence": false
+  },
+  "validation": {
+    "distinctMaintainedTests": 115,
+    "skipped": 0,
+    "combined": {
+      "command": "./node_modules/.bin/vitest run tests/source-integrity.test.ts tests/served-artifact.test.ts tests/build-standalone.test.ts tests/standalone-runtime.test.ts",
+      "exitCode": 0,
+      "files": 4,
+      "passed": 115,
+      "skipped": 0,
+      "suites": [
+        {
+          "path": "tests/source-integrity.test.ts",
+          "passed": 20
+        },
+        {
+          "path": "tests/served-artifact.test.ts",
+          "passed": 45
+        },
+        {
+          "path": "tests/build-standalone.test.ts",
+          "passed": 29
+        },
+        {
+          "path": "tests/standalone-runtime.test.ts",
+          "passed": 21
+        }
+      ],
+      "log": {
+        "path": "/tmp/machine-first-r2-build-runtime-provenance-final-20261019.log",
+        "sha256": "64a9e4625455b8a232d83d4b7a556c628af355581b1917fc5874a5540f8448ce"
+      }
+    },
+    "finalCustody": {
+      "command": "./node_modules/.bin/vitest run tests/source-integrity.test.ts tests/served-artifact.test.ts",
+      "exitCode": 0,
+      "passed": 65,
+      "skipped": 0,
+      "qualification": "After the final qualification-text edit; this overlaps the combined test population and is not 65 additional tests.",
+      "log": {
+        "path": "/tmp/machine-first-r2-build-runtime-provenance-custody-final-20261019.log",
+        "sha256": "05521dc44368dacad12d044e61e44ef39d0ce2b875a6ea25220a2649e34a55f8"
+      }
+    },
+    "typecheck": {
+      "command": "npm run typecheck",
+      "exitCode": 0,
+      "errors": 0,
+      "log": {
+        "path": "/tmp/machine-first-r2-build-runtime-provenance-typecheck-final-20261019.log",
+        "sha256": "f27328bd3b98874552baa7a19573aa27d7b6308da4f6e1de81252aee8a0a7028"
+      }
+    },
+    "collection": {
+      "command": "./node_modules/.bin/playwright test --config=playwright.config.ts e2e/portal-utility-welcome.spec.ts --list --grep 'served hosted (AuthKit|signup)'",
+      "exitCode": 0,
+      "collected": 5,
+      "executed": 0,
+      "log": {
+        "path": "/tmp/machine-first-r2-build-runtime-provenance-collection-20261019.log",
+        "sha256": "6de35ec3b980499a82aa459e210bf487b5241357954591c65ccc91b4feafe895"
+      }
+    },
+    "negativeControls": [
+      "Changed copied bundle or package manifest",
+      "Missing/source-mismatched provenance",
+      "Changed/incomplete environment record",
+      "Toolchain drift during compilation prevents publication",
+      "Changed linked cone breaks regenerated output equality",
+      "Runner PID or wrong listener refuses runtime provenance",
+      "Missing legacy build provenance is not synthesized from the runner",
+      "Credentials and raw environment values never appear in measurements",
+      "Publication refusal preserves the previous current pointer"
+    ],
+    "localFixtureCleanup": "Maintained served-artifact afterEach awaits owned Node fixture exits before deleting their release directories."
+  },
+  "intermediateFailures": [
+    {
+      "log": {
+        "path": "/tmp/machine-first-r2-build-runtime-provenance-unit-20261019.log",
+        "sha256": "59e14146c88bcd8c5a821d0f9e5e9b3f9a24ed366b4b5e7c33f3bde966fda310"
+      },
+      "failure": "One runtime refusal test returned ENOENT while trying to resolve a runner Node flag as an entry before checking its cwd.",
+      "correction": "Check immutable-release cwd and reject flag-shaped entry arguments before resolving a script path.",
+      "finalResult": "Corrected case passes in combined and final focused suites."
+    },
+    {
+      "log": {
+        "path": "/tmp/machine-first-r2-build-runtime-provenance-typecheck-20261019.log",
+        "sha256": "ed6b511b4aea91e203daee073f55215b4dfab0d38793bd30f574c53d2c27d2eb"
+      },
+      "failure": "Typecheck reported two missing buildProvenance option diagnostics.",
+      "correction": "Extended the existing standalone-runtime.d.mts publisher options declaration.",
+      "finalResult": "Official typecheck clean."
+    }
+  ],
+  "detectorPreservation": {
+    "attemptCounterHelper": {
+      "definition": "async function observeUtilityAttempts through its closing column-zero brace, excluding trailing newline",
+      "sha256": "a958d4d4b4389bb70ff6fb4f8ccd6be9dce687088fa7d0dce15fa714d45522bf",
+      "byteEqualToIndex": true
+    },
+    "priorDetectorProof": "Unchanged source-custody preparation document retains its separate detector-body definition and digest; no saved proof was reconstructed by rerunning it."
+  },
+  "retainedEvidenceUnchanged": [
+    {
+      "path": "docs/evidence/machine-first-r2-source-custody-preparation-20261019.json",
+      "sha256": "14cfb5b1b3a9283a93b55dab1a894659e4f46d688c80b9830338dae15f716bf7"
+    },
+    {
+      "path": "docs/evidence/machine-first-r2-attempt-counter-preparation-20261019.json",
+      "sha256": "7662e3988471c9ce4ac57d45ab4bbec76ec4a49a2e679b2f5ffdd16be70cd4dd"
+    },
+    {
+      "path": "docs/evidence/machine-first-r2-copy-review-20261019.json",
+      "sha256": "336001d4430c18309c5602ca734067f4973e52dd4133de91fa772f155d594974"
+    },
+    {
+      "path": "docs/evidence/machine-first-r2-served-supplement-20261019.json",
+      "sha256": "3d85a2ead98bace89d9d5f8dd80fb70b84b561d21b72b07531823f6cafcef5b0"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-20261019.json",
+      "sha256": "8589e76d7f47a68f9c7d2839ab869806fa64479795bf90fdc8362bfc48a0c1f9"
+    },
+    {
+      "path": "docs/evidence/machine-first-p002-hosted-signup-ledger-20261019.json",
+      "sha256": "a165b89deac3a8fe7f9a3bd0bd163070c2716f3dffc21488cf2bd23bd9794302"
+    }
+  ],
+  "remainingUnverified": [
+    "Fresh immutable Portal build must contain the new buildProvenance metadata; existing immutable releases are never backfilled.",
+    "Execute the next necessary compatible-archive journey with an explicit actual local serving child/listener selector and retain exact archive/build/source/runtime identities and attempt phases.",
+    "Full historical linked-file and complete environment equivalence remain unproved by these bounded measurements.",
+    "Last retained public archive observation is 5f720 without current launcher changes; no new archive freshness claim.",
+    "Real AuthKit signup/callback and returning signin remain distinct from cookie-admitted destination receipts.",
+    "Full R2, R1 manual acceptance, R7 final release, publication approval and shipment remain open."
+  ],
+  "executionBoundary": {
+    "hostedBrowserExecutions": 0,
+    "providerAccountsCreated": 0,
+    "productionBuilds": 0,
+    "protectedRuntimeRestarts": 0,
+    "archiveProbes": 0,
+    "earlierEvidenceFilesRewritten": 0,
+    "checkpointChecksRetired": 0
+  },
+  "noAcceptanceClaim": true,
+  "verdict": "Build and local runtime provenance preparation verified; full R2 remains open"
+}
