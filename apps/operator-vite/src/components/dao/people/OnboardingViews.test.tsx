@@ -11,7 +11,7 @@ const view = (complete: string[] = []) => ({ offerId:'offer',state:'signed',bind
 beforeEach(() => { fetcher.mockReset(); wallet.mockReset(); vi.stubGlobal('fetch', fetcher); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (window as any).ethereum; delete (window as any).__DAO_HR_CAPTURE__; });
 describe('Candidate onboarding journey', () => {
-  it('can capture the challenge before its form renders and retains it after the parent refresh', async () => {
+  it('captures the challenge before its form renders and retains it without notifying the parent', async () => {
     let release!: () => void, releaseRefresh!: () => void;
     const received = new Promise<void>(resolve => { release = resolve; });
     const refreshed = new Promise<void>(resolve => { releaseRefresh = resolve; });
@@ -21,7 +21,7 @@ describe('Candidate onboarding journey', () => {
       ok: true, status: 200, clone: () => Response.json(result),
       json: async () => { await received; return result; },
     } : { ok: true, json: async () => { if (++reads > 1) await refreshed; return { ok: true, onboarding: view(['contract']) }; } });
-    const changed = vi.fn(() => root.rerender(<section data-testid="dao-workspace"><OnboardingViews daoSlug="dao" offerId="offer" onChanged={changed} /></section>));
+    const changed = vi.fn();
     const root = render(<section data-testid="dao-workspace"><OnboardingViews daoSlug="dao" offerId="offer" onChanged={changed} /></section>);
     const form = await screen.findByRole('form', { name: 'Bind onboarding wallet' });
     window.eval(captureWorkbenchResponses());
@@ -43,13 +43,17 @@ describe('Candidate onboarding journey', () => {
     expect(pending.fields).toContainEqual(expect.objectContaining({ label: 'Wallet signature', tag: 'INPUT' }));
     expect(pending.buttons).toContainEqual({ text: 'Verify wallet signature', disabled: true });
     await act(async () => { releaseRefresh(); });
-    await waitFor(() => expect(changed).toHaveBeenCalledOnce());
+    await waitFor(() => expect(buttonReady()).toBe(true));
+    expect(screen.queryByText('Refreshing onboarding…')).toBeNull();
+    expect(reads).toBe(2);
+    expect(changed).not.toHaveBeenCalled();
     expect(ready()).toBe(true);
     expect(buttonReady()).toBe(true);
     const signature = screen.getByLabelText('Wallet signature') as HTMLInputElement;
     act(() => { window.eval(workbenchTextField('Wallet signature', '0x' + '33'.repeat(65), '[data-testid=dao-workspace]')); });
     expect(signature.value).toBe('0x' + '33'.repeat(65));
     expect(JSON.stringify(window.eval(workbenchControlDiagnostics('[data-testid=dao-workspace]')))).not.toContain(signature.value);
+    root.rerender(<section data-testid="dao-workspace"><OnboardingViews daoSlug="dao" offerId="offer" onChanged={changed} /></section>);
     expect(screen.getByLabelText('Wallet signature')).toBe(signature);
     expect((screen.getByRole('button', { name: 'Verify wallet signature' }) as HTMLButtonElement).disabled).toBe(false);
   });
