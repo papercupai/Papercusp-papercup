@@ -3312,6 +3312,18 @@ export function evaluateSpecTestAdequacy(input: {
       `The clause ${clauseIdentity(clause)} declares no required test layer; layer reachability is not evaluated. ${clauseDeclarationProbe(clause, input.harness)}`,
       evidence.filter((row) => row.evidenceKind !== 'mutation'),
     );
+  } else if (input.codeDeliverable === false) {
+    // plan-verification-profiles P-004 (R-10): a test layer names WHERE a code test runs, and a
+    // non-code deliverable has no code to test, so layer reachability cannot apply to it. Only an
+    // explicit resolver verdict exempts; an unread deliverable stays code. The evidence-plane,
+    // scenario and evidence-kind parts below still apply, as does a declared `tests` check.
+    layerRating = boundCorrectLayerPart(
+      'not-applicable',
+      `The clause ${clauseIdentity(clause)} belongs to plan item ${clause.planItemId}, which resolves to a non-code ` +
+        `deliverable, so its required test layer(s) (${clause.requiredTestLayers.join(', ')}) describe no code test ` +
+        `and layer reachability is not evaluated. ${clauseDeclarationProbe(clause, input.harness)}`,
+      evidence.filter((row) => row.evidenceKind !== 'mutation'),
+    );
   } else {
     const legacyOperationalRequired = clause.requiredTestLayers.find((layer) =>
       ['behavioral', 'manual-provenance'].includes(normalizedLayer(layer)));

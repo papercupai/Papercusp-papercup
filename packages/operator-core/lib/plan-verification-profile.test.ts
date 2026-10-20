@@ -173,6 +173,23 @@ describe('the routed exemption predicates', () => {
     expect(unfinishedItemsAreAuditedNonCode([{ itemId: 'P-003' }], audits)).toBe(false);
     expect(unfinishedItemsAreAuditedNonCode([], audits)).toBe(false);
   });
+
+  // P-004 (D-006, D-009): grader recruitment reads the resolver. A not-code verdict recorded
+  // before the item was DECLARED code no longer opens the tail, under either profile; and the
+  // general profile alone admits nothing without the explicit verdict (the narrow-rule promise).
+  it('unfinishedItemsAreAuditedNonCode keeps a declared code deliverable out of the recruitment tail', () => {
+    const audits = [{ entry: { itemId: 'P-001', verdict: 'not-code' } }];
+    for (const verificationProfile of ['coding', 'general'] as const) {
+      expect(unfinishedItemsAreAuditedNonCode([{ itemId: 'P-001', deliverable: 'code' }], audits, { verificationProfile }))
+        .toBe(false);
+      expect(unfinishedItemsAreAuditedNonCode([{ itemId: 'P-001', deliverable: 'doc' }], audits, { verificationProfile }))
+        .toBe(true);
+      expect(unfinishedItemsAreAuditedNonCode([{ itemId: 'P-001', deliverable: null }], audits, { verificationProfile }))
+        .toBe(true);
+    }
+    expect(unfinishedItemsAreAuditedNonCode([{ itemId: 'P-002', deliverable: 'doc' }], audits, { verificationProfile: 'general' }))
+      .toBe(false);
+  });
 });
 
 describe('describeVerificationProfile (P-004: every refusal names the profile)', () => {

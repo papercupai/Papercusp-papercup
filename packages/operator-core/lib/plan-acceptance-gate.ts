@@ -1079,7 +1079,11 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     const unfinished = items.filter((i) => (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status));
     if (unfinished.length > 0) {
       const recruitmentTail =
-        opts.gradingRecruitment && unfinishedItemsAreAuditedNonCode(unfinished, await getEffectiveItemAudits(planSlug));
+        opts.gradingRecruitment && unfinishedItemsAreAuditedNonCode(
+          unfinished, await getEffectiveItemAudits(planSlug),
+          // P-004: resolve each verdict under the plan's stamped profile and declared deliverable.
+          { verificationProfile: planVerification.verificationProfile },
+        );
       if (recruitmentTail) {
         for (const item of unfinished) gradingRecruitmentTail.add(item.itemId);
       }

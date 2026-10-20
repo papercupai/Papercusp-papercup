@@ -164,14 +164,24 @@ export function executableProofExemption(input: {
  * Exemption 5: whether every unfinished item is explicitly classified as non-code by
  * the effective completion audit. This is a narrow lifecycle rule. Widening it by
  * accident would recruit graders while real implementation work is still open.
+ *
+ * P-004 (D-006, D-009): the verdict is read through the resolver, so the declarations in
+ * force NOW decide. A `not-code` verdict on an item whose DECLARED deliverable is `code`
+ * (an audit recorded before the declaration) resolves to code and keeps the item out of the
+ * tail. The profile alone never admits an item: it still needs the explicit verdict.
  */
 export function unfinishedItemsAreAuditedNonCode(
-  unfinished: readonly { itemId: string }[],
+  unfinished: readonly { itemId: string; deliverable?: string | null }[],
   effectiveAudits: readonly { entry: { itemId: string; verdict: string } }[],
+  plan: VerificationPlanInput = {},
 ): boolean {
   if (unfinished.length === 0) return false;
   const verdictByItem = new Map(effectiveAudits.map(({ entry }) => [entry.itemId, entry.verdict]));
-  return unfinished.every((item) => isNonCodeAuditVerdict(verdictByItem.get(item.itemId)));
+  return unfinished.every((item) => {
+    const auditVerdict = verdictByItem.get(item.itemId);
+    return isNonCodeAuditVerdict(auditVerdict) &&
+      !resolveVerification(plan, { deliverable: item.deliverable ?? null, auditVerdict }).codeDeliverable;
+  });
 }
 
 // ---------------------------------------------------------------------------

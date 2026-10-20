@@ -9,7 +9,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { SelectionVia } from '@papercusp/ranked-selection';
-import { isNonAutomatedBehaviorClass } from './plan-verification-profile';
+import { isNonAutomatedBehaviorClass, resolveVerification } from './plan-verification-profile';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   classifyRubricEvidenceCurrentness,
@@ -176,6 +176,11 @@ export interface AcceptanceBarSubjectPlanSource {
   contentHash: string | null;
   /** Read with the plan identity; omitted from the public snapshot. */
   content?: string;
+  /**
+   * The plan's STAMPED verification profile (plan-verification-profiles P-004). Null or absent
+   * resolves to coding, so an unread profile never relaxes a BAR's proof floor.
+   */
+  verificationProfile?: string | null;
   adoptionEpoch: number | null;
   cohort: AcceptanceBarCohort | null;
   barSetHash: string | null;
@@ -195,6 +200,11 @@ export interface AcceptanceBarSubjectPlanSource {
 export interface AcceptanceBarPlanItemSource {
   itemId: string;
   status: string;
+  /**
+   * The item's DECLARED deliverable kind (plan-verification-profiles P-004). Null or absent
+   * means undeclared: the plan's stamped profile supplies the default.
+   */
+  deliverable?: string | null;
 }
 
 export interface AcceptanceBarWorkContractSource {
@@ -1086,6 +1096,17 @@ export function projectAcceptanceBarContractSnapshot(
   }
 
   const itemStatus = new Map(input.planItems.rows.map((item) => [item.itemId, item.status]));
+  // plan-verification-profiles P-004 (D-009): whether a clause's plan item is a CODE deliverable,
+  // resolved from the plan's stamped profile and the item's declared deliverable by the same
+  // resolver the completion gate uses. An item with no plan_items row resolves to code, and so
+  // does an unread profile, so a missing read never relaxes the executable-proof floor.
+  const itemDeliverable = new Map(input.planItems.rows.map((item) => [item.itemId, item.deliverable ?? null]));
+  const codeDeliverableFor = (planItemId: string): boolean =>
+    !itemDeliverable.has(planItemId) ||
+    resolveVerification(
+      { verificationProfile: plan?.verificationProfile ?? null },
+      { deliverable: itemDeliverable.get(planItemId) ?? null },
+    ).codeDeliverable;
   const grading = authoritativeGrading(input, rubric);
   const rubricRevision = rubric?.revision ?? null;
   const rubricCriteriaHash = rubric?.criteriaHash ?? null;
@@ -1211,7 +1232,9 @@ export function projectAcceptanceBarContractSnapshot(
       const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers: clauseTestLayers },
         // Selection precedes freshness: a newer stale/unknown registered attempt
         // must not vanish and leave a passing counterexample to stand in for it.
-        evidence, classRef, harness: plan.harnessSlug, sourceBarTestRequirements });
+        evidence, classRef, harness: plan.harnessSlug, sourceBarTestRequirements,
+        // P-004: grade a non-code deliverable's clause on the same floor as its completion.
+        codeDeliverable: codeDeliverableFor(clause.planItemId) });
       return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
         wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
     });
@@ -1813,10 +1836,11 @@ async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string 
       acceptance_bar_seeded_at: Date | string | null;
       acceptance_bar_seeded_by: string | null;
       acceptance_bar_verified_revision: number | string | null;
+      verification_profile: string | null;
     }>
   >`
     SELECT workspace_id, harness_slug, plan_slug, status, version, content_hash, content,
-           acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_set_hash,
+           verification_profile, acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_set_hash,
            acceptance_bar_rubric_slug, acceptance_bar_rubric_revision,
            acceptance_bar_seeded_at, acceptance_bar_seeded_by, acceptance_bar_verified_revision
       FROM harness_shared.harness_plans
@@ -1834,6 +1858,7 @@ async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string 
       revision: Number(row.version),
       contentHash: row.content_hash,
       content: row.content,
+      verificationProfile: row.verification_profile,
       adoptionEpoch: row.acceptance_bar_epoch == null ? null : Number(row.acceptance_bar_epoch),
       cohort: row.acceptance_bar_cohort,
       barSetHash: row.acceptance_bar_set_hash,
@@ -1861,8 +1886,8 @@ async function defaultReadPlanItems(
   plan: AcceptanceBarSubjectPlanSource,
 ): Promise<BoundedAcceptanceBarRows<AcceptanceBarPlanItemSource>> {
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ item_id: string; status: string }>>`
-    SELECT item_id, status
+  const rows = await sql<Array<{ item_id: string; status: string; deliverable: string | null }>>`
+    SELECT item_id, status, deliverable
       FROM harness_shared.plan_items
      WHERE workspace_id = ${plan.workspaceId}
        AND harness_slug = ${plan.harnessSlug}
@@ -1870,7 +1895,7 @@ async function defaultReadPlanItems(
      ORDER BY seq
      LIMIT ${ACCEPTANCE_BAR_SNAPSHOT_PLAN_ITEM_LIMIT + 1}`;
   return bounded(
-    rows.map((row) => ({ itemId: row.item_id, status: row.status })),
+    rows.map((row) => ({ itemId: row.item_id, status: row.status, deliverable: row.deliverable })),
     ACCEPTANCE_BAR_SNAPSHOT_PLAN_ITEM_LIMIT,
   );
 }

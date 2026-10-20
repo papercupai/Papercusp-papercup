@@ -2327,3 +2327,75 @@ describe('bar_snapshot_proof_inadequate repair text (P-002)', () => {
     expect(action).toContain('fromTestRun');
   });
 });
+
+// plan-verification-profiles-2026-10-17 P-004 (R-10, D-009): the ship snapshot grades a BAR clause
+// on the SAME deliverable verdict the completion gate uses. A general plan's requirement BAR
+// declares a test layer (a requirement block may omit one only with an explicitly manual check),
+// so without the resolver every such BAR asked a non-code deliverable for a code test.
+describe('ship-side adequacy reads the deliverable resolver (plan-verification-profiles P-004)', () => {
+  function layeredManualFixture(plan: { verificationProfile?: string | null }, item: { deliverable?: string | null } | null) {
+    const input = fixture(1);
+    const rubric = input.rubrics.rows[0]!;
+    const bar = rubric.criteria[0]!;
+    bar.requiredTestLayers = ['integration'];
+    bar.barHash = computeAcceptanceBarHash(bar);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    Object.assign(input.planRows.rows[0]!, { barSetHash, ...plan });
+    const clause = input.clauses.rows[0]!;
+    clause.requiredTestLayers = ['integration'];
+    Object.assign(clause.sourceBar!, { barHash: bar.barHash, barSetHash });
+    if (item === null) input.planItems.rows = [];
+    else Object.assign(input.planItems.rows[0]!, item);
+    // What non-code work honestly binds: a current manual row on the BAR's plane, no test run.
+    const row = input.evidence.rows[0]!;
+    Object.assign(row, {
+      evidenceKind: 'manual',
+      evidenceRef: 'work-item:WI-1',
+      testRunId: null,
+      details: {
+        evidencePlane: 'tree',
+        adequacy: {
+          fixtureCalibrated: true, fixtureFree: true, falsifiable: true, pathReachable: true, oracleIndependent: true,
+          collected: true, skipped: false, executed: true, outcome: 'passed', targeted: row.specId,
+        },
+      },
+      currentness: { ...row.currentness, overall: 'current', comparisonSupplied: true,
+        dimensions: { ...row.currentness.dimensions, source: 'current' }, unknownReasons: [] },
+    });
+    return input;
+  }
+
+  it('passes a general plan item BAR on manual evidence despite its declared test layer', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(layeredManualFixture({ verificationProfile: 'general' }, { deliverable: null }));
+    const adequacy = snapshot.bars[0]!.proof.adequacy;
+    expect(adequacy?.state, JSON.stringify(adequacy).slice(0, 1500)).toBe('pass');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).not.toContain('bar_snapshot_proof_inadequate');
+  });
+
+  it('passes a declared non-code deliverable inside a coding plan the same way', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(layeredManualFixture({ verificationProfile: 'coding' }, { deliverable: 'doc' }));
+    expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+  });
+
+  // NEGATIVE CONTROLS: the same BAR and evidence for a code deliverable still owes a code test,
+  // so the passes above come from the resolver, not from a weaker snapshot.
+  it('control: a coding plan item BAR on the same evidence is refused as inadequate', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(layeredManualFixture({ verificationProfile: 'coding' }, { deliverable: null }));
+    expect(snapshot.bars[0]!.proof.adequacy?.state).not.toBe('pass');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
+  });
+
+  it('control: a declared code deliverable inside a general plan keeps the code floor', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(layeredManualFixture({ verificationProfile: 'general' }, { deliverable: 'code' }));
+    expect(snapshot.bars[0]!.proof.adequacy?.state).not.toBe('pass');
+  });
+
+  // D-005 fail-safe: an unread profile, or a clause whose plan item has no row, stays code.
+  it('treats an unread profile or a missing plan item row as code', () => {
+    for (const [plan, item] of [[{}, { deliverable: null }], [{ verificationProfile: 'general' }, null]] as const) {
+      const snapshot = projectAcceptanceBarContractSnapshot(layeredManualFixture(plan, item));
+      expect(snapshot.bars[0]!.proof.adequacy?.state, JSON.stringify({ plan, item })).not.toBe('pass');
+    }
+  });
+});
