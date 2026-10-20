@@ -54,6 +54,11 @@ const CATALOG_COMMENT_SITES = [
   // Incident figures in these two stay, dated as "N tools at the time", which the pattern skips.
   '../../../../apps/operator/scripts/psu-launcher.mjs',
   '../../../../apps/operator/scripts/psu-pty-host.mjs',
+  // WI-6554700010016923, docs: projections of PG-canonical docs (change them via docs:author).
+  '../../../../apps/operator-docs/src/content/docs/agent-insights/disallowed-tools-cannot-withhold-an-mcp-tool.mdx',
+  '../../../../apps/operator-docs/src/content/docs/agent-insights/provenance-on-measurement-returns-already-ships.mdx',
+  '../../../../apps/operator-docs/src/content/docs/agent-insights/toolsearch-cannot-select-colon-form-tool-names.mdx',
+  '../../../../apps/operator-docs/src/content/docs/system/tool-packs.mdx',
 ] as const;
 
 /** "~550-tool", "~ 550 tools", "(~550 tools)", or a bare "550-tool catalog/registry/surface". */

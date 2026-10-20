@@ -41,8 +41,8 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const native = (...args: string[]) => runNativeCommand(tool, [...args, '--pid', String(profile.tauriPID)], { encoding: 'utf8', env: privateEnv, timeout: 65_000 });
     const ev = async (code: string) => await native('eval', code);
     const value = async <T = any>(code: string): Promise<T> => JSON.parse(await ev('JSON.stringify(' + code + ')'));
-    const reload = () => reloadNativeWorkbench(native, diagnostic =>
-      writeFileSync(config.resultPath + '.navigation-failure.json', JSON.stringify(diagnostic), { mode: 0o600 }));
+    const reload = (targetPath?: string) => reloadNativeWorkbench(native, diagnostic =>
+      writeFileSync(config.resultPath + '.navigation-failure.json', JSON.stringify(diagnostic), { mode: 0o600 }), targetPath);
     const wait = async (code: string) => await native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
     const withControlDiagnostics = async (kind: string, label: string, action: () => Promise<string>) => {
       try { return await action(); }
@@ -173,10 +173,9 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       const signed = await authorHivePolicy({ workspaceId: ws, potHomeSlug: slug, policy: { membership: 'open',
         finance: { equity: { chainId: 1, equity: config.equity, governor: config.governor, timelock: config.timelock } } } });
       expect(signed.ok).toBe(true);
-      // A previous calibrated leg may finish as the candidate. Read the new
-      // admin scope before navigating to this leg's freshly registered DAO.
-      await reload();
-      await native('navigate', '/daos', '--json'); await wait("!!document.querySelector('[data-testid=dao-workspace]')");
+      // The first leg may start at home; later legs may retain another DAO.
+      // Load this DAO with the new admin scope before waiting for its workspace.
+      await reload('/daos?dao=' + encodeURIComponent(slug) + '&daoSection=members');
       await bindFinanceWallet(config.accounts[0]);
       await navigate({ peopleTab: 'hiring' }); await textHas('Create a role');
       await ev(openWorkbenchDisclosure('Create a role', '[data-testid=dao-workspace]')); await textHas('Create role'); await captureResponses();

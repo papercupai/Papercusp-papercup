@@ -78,7 +78,7 @@ export function planClosureSubjectKey(subject: PlanClosureSubject): string {
  */
 export function isCanonicalClosureGateCall(opts: PlanAcceptanceGateOpts): boolean {
   return !opts.force && !opts.gradingRecruitment && !opts.pendingDeliveryBarKeys?.length
-    && !(opts.current && opts.current.length > 0);
+    && !(opts.current && opts.current.length > 0) && !opts.reevaluateShipped;
 }
 
 interface FingerprintRow {

@@ -1,0 +1,974 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "papercusp.com hero maps — live deployment and full site suite (plan papercusp-com-cupboard-diagram-2026-10-17, P-006)",
+ "framework": "node",
+ "command": [
+  "~/papercupai-workspace/papercusp/scripts/pc-heavy.sh",
+  "--",
+  "bash",
+  "-c",
+  "cd /tmp/su81314-cupdiag-at-5d64bf8da7 && npx vitest run --reporter=json --outputFile=/tmp/su81314-cupdiag-vitest-5d64bf8da7.json"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-10-20T05:37:27.718Z",
+ "finishedAt": "2026-10-20T05:38:31.021Z",
+ "summary": "Production Cloudflare Pages deployment 77920a31-3ca1-425c-aa72-7e6431e79f38 (wrangler source 5d64bf8 = site commit 5d64bf8da70272d61c2aef9b6c4456fccf990d3e); its live pages are byte-identical to the build of site commit 5d64bf8da70272d61c2aef9b6c4456fccf990d3e, the deployed tree (first commit from the recorded source forward whose build reproduces every live map page). Full site suite on a git-archive copy-out of the deployed tree: {\"files\":14,\"tests\":165,\"passed\":165,\"failed\":0,\"skipped\":0}. Live, through the committed instrument tools/map-live-probe.mjs: /cupboard/ 3/3 (23 audio), /architecture/ 3/3 (33 audio). Deployed HTML byte-identical to the build at that commit: /cupboard/=true, /architecture/=true. 174/174 assertions pass.",
+ "assertions": [
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references measured a real page (positive control: ids, refs and the §06 anchors exist)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references measured a real page (positive control: ids, refs and the §06 anchors exist)\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §03 item provenance names the owner verdicts, the unresolved reasons and the enforcement ratchet",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §03 item provenance names the owner verdicts, the unresolved reasons and the enforcement ratchet\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §03 recurring plans name the three fire targets, the arm-time refusals and disarm",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §03 recurring plans name the three fire targets, the arm-time refusals and disarm\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §03 ship refusals recruit a grader discovery-first, and the parties figure says the seeded rubric is amended",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §03 ship refusals recruit a grader discovery-first, and the parties figure says the seeded rubric is amended\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §04 scopes claim-time freshness to get_next bugs and changes, names both owner-ask defaults and the claim cap",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §04 scopes claim-time freshness to get_next bugs and changes, names both owner-ask defaults and the claim cap\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §05 scopes the leftover-lock release to a carry-respawn and names derived-file regeneration and fail-open",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §05 scopes the leftover-lock release to a carry-respawn and names derived-file regeneration and fail-open\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §05 names the consult archive-hit verdict and the exhausted-walk reason",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §05 names the consult archive-hit verdict and the exhausted-walk reason\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §05 delivery names the ladder exclusions and marker, loose replies and every quiet deadline resolution",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §05 delivery names the ladder exclusions and marker, loose replies and every quiet deadline resolution\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §06 states gate scoping, near-miss keys, fromMsg, no-turn wakes, watch pairing and verified waits",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §06 states gate scoping, near-miss keys, fromMsg, no-turn wakes, watch pairing and verified waits\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references figure and hero-map labels fit the boxes on screen with them",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references figure and hero-map labels fit the boxes on screen with them\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §09 states the tool-catalog size as a measured floor, not the stale ~550",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §09 states the tool-catalog size as a measured floor, not the stale ~550\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references narration spells the same tool-count floor and scheduler rank as the page",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references narration spells the same tool-count floor and scheduler rank as the page\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §13 checkpoint example uses only fields the released build accepts",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §13 checkpoint example uses only fields the released build accepts\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §08 mid-turn recall scopes the 350-char budget to memory and names the corpus budget + admission gate",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §08 mid-turn recall scopes the 350-char budget to memory and names the corpus budget + admission gate\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §01 boot migration states the per-attempt lock bound, its retries, the backup rendezvous and the guard chain",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §01 boot migration states the per-attempt lock bound, its retries, the backup rendezvous and the guard chain\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §06 events states the cascade bounds, the declaration expiry and the lost-wake conviction rules",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §06 events states the cascade bounds, the declaration expiry and the lost-wake conviction rules\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §07 modes and operations state the goal/judge exclusion, goal-scoped retirement and the operation trust rules",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §07 modes and operations state the goal/judge exclusion, goal-scoped retirement and the operation trust rules\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §10 self-improvement loop states the two-pass capture caps, the probation exits and the dispatch throttle",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §10 self-improvement loop states the two-pass capture caps, the probation exits and the dispatch throttle\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §12 safety states the probe exit codes and re-aim audit, the completion refusals and the checked force sign-off",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §12 safety states the probe exit codes and re-aim audit, the completion refusals and the checked force sign-off\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references §11 names all nine gate-ownership states and when a hold counts as live",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references §11 names all nine gate-ownership states and when a hold counts as live\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references the audit catches each defect class (falsifiability self-test)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references the audit catches each defect class (falsifiability self-test)\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references every id is unique",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references every id is unique\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references every in-page link resolves to an element",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references every in-page link resolves to an element\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references every url(#id) reference in an SVG resolves to an element",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references every url(#id) reference in an SVG resolves to an element\""
+  },
+  {
+   "id": "site-test: tests/architecture-anchors.test.js > /architecture anchors and SVG references no two report probes share a key, so a later probe cannot silently replace an earlier guard",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/architecture-anchors.test.js test=\"/architecture anchors and SVG references no two report probes share a key, so a later probe cannot silently replace an earlier guard\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at … #37cb8956a6",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1597 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1175,\"height\":807}\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at … #5d90ae715b",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=858 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1440,\"height\":900}\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at … #e9a318b835",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=798 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1280,\"height\":720}\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at … #4429edf910",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=734 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1024,\"height\":768}\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at … #d4dffddc27",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=765 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":768,\"height\":1024}\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at … #67536b7b9d",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=701 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":390,\"height\":844}\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — shared engine splices the one shared engine in, exactly once, and leaves no placeholder behind",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — shared engine splices the one shared engine in, exactly once, and leaves no placeholder behind\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — shared engine configures the engine for this page: site-wide mute, its own auto-tour key, reading mode",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — shared engine configures the engine for this page: site-wide mute, its own auto-tour key, reading mode\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — shared engine gives every tour stop its own narration segment, timed from the sprite manifest",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — shared engine gives every tour stop its own narration segment, timed from the sprite manifest\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — per-box narration + universal mute versions every narration URL by the audio bytes it ships (no stale clip under max-age=300)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — per-box narration + universal mute versions every narration URL by the audio bytes it ships (no stale clip under max-age=300)\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — per-box narration + universal mute ships every narration file the map config points at into out/",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=17 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — per-box narration + universal mute ships every narration file the map config points at into out/\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — per-box narration + universal mute ships a narration clip for every clickable block",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=415 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — per-box narration + universal mute ships a narration clip for every clickable block\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — per-box narration + universal mute plays a block's own clip on click, and the 🔊 toggle mutes every block persistently",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2622 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — per-box narration + universal mute plays a block's own clip on click, and the 🔊 toggle mutes every block persistently\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — level-of-detail crossfade never stacks two legible layers in one place at { width: 1175, height: 807 }",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=20954 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — level-of-detail crossfade never stacks two legible layers in one place at { width: 1175, height: 807 }\""
+  },
+  {
+   "id": "site-test: tests/architecture-map.test.js > architecture hero map — level-of-detail crossfade never stacks two legible layers in one place at { width: 390, height: 844 }",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=19300 file=papercusp-public-site/tests/architecture-map.test.js test=\"architecture hero map — level-of-detail crossfade never stacks two legible layers in one place at { width: 390, height: 844 }\""
+  },
+  {
+   "id": "site-test: tests/architecture-responsive.test.js > architecture article at supported viewport widths never scrolls the page sideways at 320px — code + figures scroll in place",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1519 file=papercusp-public-site/tests/architecture-responsive.test.js test=\"architecture article at supported viewport widths never scrolls the page sideways at 320px — code + figures scroll in place\""
+  },
+  {
+   "id": "site-test: tests/architecture-responsive.test.js > architecture article at supported viewport widths never scrolls the page sideways at 390px — code + figures scroll in place",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=782 file=papercusp-public-site/tests/architecture-responsive.test.js test=\"architecture article at supported viewport widths never scrolls the page sideways at 390px — code + figures scroll in place\""
+  },
+  {
+   "id": "site-test: tests/architecture-responsive.test.js > architecture article at supported viewport widths never scrolls the page sideways at 768px — code + figures scroll in place",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=802 file=papercusp-public-site/tests/architecture-responsive.test.js test=\"architecture article at supported viewport widths never scrolls the page sideways at 768px — code + figures scroll in place\""
+  },
+  {
+   "id": "site-test: tests/architecture-responsive.test.js > architecture article at supported viewport widths never scrolls the page sideways at 1440px — code + figures scroll in place",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=718 file=papercusp-public-site/tests/architecture-responsive.test.js test=\"architecture article at supported viewport widths never scrolls the page sideways at 1440px — code + figures scroll in place\""
+  },
+  {
+   "id": "site-test: tests/build-atomic.test.js > build.py publishes out/ atomically writes every output through write_atomic, never a truncating write_text()",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/build-atomic.test.js test=\"build.py publishes out/ atomically writes every output through write_atomic, never a truncating write_text()\""
+  },
+  {
+   "id": "site-test: tests/build-atomic.test.js > build.py publishes out/ atomically never exposes a partial page to a reader while builds run concurrently",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=434 file=papercusp-public-site/tests/build-atomic.test.js test=\"build.py publishes out/ atomically never exposes a partial page to a reader while builds run concurrently\""
+  },
+  {
+   "id": "site-test: tests/business-content.test.js > public business information in the built homepage keeps result, pricing, team and Azure content visible and reachable",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/business-content.test.js test=\"public business information in the built homepage keeps result, pricing, team and Azure content visible and reachable\""
+  },
+  {
+   "id": "site-test: tests/business-content.test.js > public business information in the built homepage labels the product stage and distinguishes internal validation from customer results",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/business-content.test.js test=\"public business information in the built homepage labels the product stage and distinguishes internal validation from customer results\""
+  },
+  {
+   "id": "site-test: tests/business-content.test.js > public business information in the built homepage discloses quote-only subscriptions and separate usage instead of inventing rates",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/business-content.test.js test=\"public business information in the built homepage discloses quote-only subscriptions and separate usage instead of inventing rates\""
+  },
+  {
+   "id": "site-test: tests/business-content.test.js > public business information in the built homepage uses the existing public founder profile and portrait",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/business-content.test.js test=\"public business information in the built homepage uses the existing public founder profile and portrait\""
+  },
+  {
+   "id": "site-test: tests/business-content.test.js > public business information in the built homepage labels Azure services and scaling as plans without credit or approval claims",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/business-content.test.js test=\"public business information in the built homepage labels Azure services and scaling as plans without credit or approval claims\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — faithful deployment the built page carries the twelve kinds and coming-soon markers the probe looks for",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=3 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — faithful deployment the built page carries the twelve kinds and coming-soon markers the probe looks for\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — faithful deployment passes all nine assertions when production serves the built page",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=8 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — faithful deployment passes all nine assertions when production serves the built page\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught bare path answers 200 instead of redirecting",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=5 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught bare path answers 200 instead of redirecting\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught /cupboard/ is missing",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=3 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught /cupboard/ is missing\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught a kind card is dropped",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=5 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught a kind card is dropped\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught no production deployment is listed",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught no production deployment is listed\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught the deployment was built from different bytes",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=5 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught the deployment was built from different bytes\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught the tested build differs from what is served",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught the tested build differs from what is served\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught a coming-soon marker is lost",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught a coming-soon marker is lost\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught the home page loses its link",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=3 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught the home page loses its link\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboard live probe — each planted defect is caught /architecture loses its link",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboard live probe — each planted defect is caught /architecture loses its link\""
+  },
+  {
+   "id": "site-test: tests/cupboard-live-probe.test.js > cupboardLiveAssertions — pure evaluation reads a missing deployment-url body as a mismatch, not a match",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/cupboard-live-probe.test.js test=\"cupboardLiveAssertions — pure evaluation reads a missing deployment-url body as a mismatch, not a match\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — build output splices the shared engine in and leaves no placeholder behind",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — build output splices the shared engine in and leaves no placeholder behind\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — build output runs byte-identical shared engine code on /cupboard and /architecture",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=5 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — build output runs byte-identical shared engine code on /cupboard and /architecture\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — build output links every map block to an existing section of the article",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — build output links every map block to an existing section of the article\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — build output versions every narration URL by the audio bytes it ships (no stale clip under max-age=300)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — build output versions every narration URL by the audio bytes it ships (no stale clip under max-age=300)\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — build output gives every tour stop its own narration segment, timed from the built sprite",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — build output gives every tour stop its own narration segment, timed from the built sprite\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — build output ships every narration file the map config points at into out/",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=9 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — build output ships every narration file the map config points at into out/\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — build output shares the site-wide mute choice, and keeps its own auto-tour key",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — build output shares the site-wide mute choice, and keeps its own auto-tour key\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — per-block narration ships a clip for every clickable block, and the narration spec names exactly those blocks",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=923 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — per-block narration ships a clip for every clickable block, and the narration spec names exactly those blocks\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — per-block narration dives into a block and plays its own clip on click; the 🔊 toggle mutes persistently",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2061 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — per-block narration dives into a block and plays its own clip on click; the 🔊 toggle mutes persistently\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1175,\"height\":807}",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=379 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1175,\"height\":807}\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1440,\"height\":900}",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=464 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1440,\"height\":900}\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1280,\"height\":720}",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=416 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1280,\"height\":720}\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1024,\"height\":768}",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=434 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":1024,\"height\":768}\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":768,\"height\":1024}",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=400 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":768,\"height\":1024}\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":390,\"height\":844}",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=399 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — overlay chrome never covers a block at the default view keeps every block clear of the controls and the hint at {\"width\":390,\"height\":844}\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — level-of-detail crossfade never stacks two legible layers in one place at { width: 1175, height: 807 }",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1656 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — level-of-detail crossfade never stacks two legible layers in one place at { width: 1175, height: 807 }\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — level-of-detail crossfade never stacks two legible layers in one place at { width: 390, height: 844 }",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1442 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — level-of-detail crossfade never stacks two legible layers in one place at { width: 390, height: 844 }\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — D-002: nothing not-live reads as available keeps not-live wording inside [data-soon] in the map, and labels every [data-soon] \"coming soon\"",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=163 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — D-002: nothing not-live reads as available keeps not-live wording inside [data-soon] in the map, and labels every [data-soon] \"coming soon\"\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — D-002: nothing not-live reads as available never has the narrator describe a not-live feature without saying \"coming soon\"",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — D-002: nothing not-live reads as available never has the narrator describe a not-live feature without saying \"coming soon\"\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — D-002: nothing not-live reads as available ships the narration text the spec says (the clips were rebuilt after the last wording change)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — D-002: nothing not-live reads as available ships the narration text the spec says (the clips were rebuilt after the last wording change)\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — no sideways scroll fits the page width at 320px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=199 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — no sideways scroll fits the page width at 320px\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — no sideways scroll fits the page width at 390px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=200 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — no sideways scroll fits the page width at 390px\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — no sideways scroll fits the page width at 768px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=200 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — no sideways scroll fits the page width at 768px\""
+  },
+  {
+   "id": "site-test: tests/cupboard-map.test.js > cupboard hero map — no sideways scroll fits the page width at 1440px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=266 file=papercusp-public-site/tests/cupboard-map.test.js test=\"cupboard hero map — no sideways scroll fits the page width at 1440px\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > build emits out/cupboard/index.html with its canonical URL and hero",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/cupboard-page.test.js test=\"build emits out/cupboard/index.html with its canonical URL and hero\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > build reuses the site stylesheet verbatim, so tokens cannot drift from the home page",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/cupboard-page.test.js test=\"build reuses the site stylesheet verbatim, so tokens cannot drift from the home page\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-1 — the page teaches making and sharing carries the shared site header and footer",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1014 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-1 — the page teaches making and sharing carries the shared site header and footer\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-1 — the page teaches making and sharing has one card per kind, each saying how to make it locally and how to share it",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=239 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-1 — the page teaches making and sharing has one card per kind, each saying how to make it locally and how to share it\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-1 — the page teaches making and sharing has a sharing section covering publish, review, versions and delisting",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=244 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-1 — the page teaches making and sharing has a sharing section covering publish, review, versions and delisting\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-1 — the page teaches making and sharing the Rules card carries a working guard example, its fields, where it lives, how it is checked and how to turn it on",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=233 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-1 — the page teaches making and sharing the Rules card carries a working guard example, its fields, where it lives, how it is checked and how to turn it on\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-1 — the page teaches making and sharing the Events card says defining your own event type is not available yet and names the install route",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=235 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-1 — the page teaches making and sharing the Events card says defining your own event type is not available yet and names the install route\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-1 — the page teaches making and sharing the Sharing section walks through publishing a rule: folder layout, push, publish call, install",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=272 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-1 — the page teaches making and sharing the Sharing section walks through publishing a rule: folder layout, push, publish call, install\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-1 — the page teaches making and sharing every in-page anchor and every site link resolves",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=270 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-1 — the page teaches making and sharing every in-page anchor and every site link resolves\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-2 — nothing that is not live is presented as live every [data-soon] element shows a visible \"coming soon\" badge",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=909 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-2 — nothing that is not live is presented as live every [data-soon] element shows a visible \"coming soon\" badge\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-2 — nothing that is not live is presented as live each not-live feature is labelled where the page talks about it",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=278 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-2 — nothing that is not live is presented as live each not-live feature is labelled where the page talks about it\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-2 — nothing that is not live is presented as live no text outside [data-soon] describes a not-live feature",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=185 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-2 — nothing that is not live is presented as live no text outside [data-soon] describes a not-live feature\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-2 — nothing that is not live is presented as live rules and events never say an agent can author them today",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=234 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-2 — nothing that is not live is presented as live rules and events never say an agent can author them today\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-3 — reachable and holds its layout the home page and /architecture link to /cupboard",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-3 — reachable and holds its layout the home page and /architecture link to /cupboard\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-3 — reachable and holds its layout renders without overflow or page errors at 320px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=220 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-3 — reachable and holds its layout renders without overflow or page errors at 320px\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-3 — reachable and holds its layout renders without overflow or page errors at 390px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=210 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-3 — reachable and holds its layout renders without overflow or page errors at 390px\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-3 — reachable and holds its layout renders without overflow or page errors at 768px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=168 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-3 — reachable and holds its layout renders without overflow or page errors at 768px\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-3 — reachable and holds its layout renders without overflow or page errors at 1024px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=204 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-3 — reachable and holds its layout renders without overflow or page errors at 1024px\""
+  },
+  {
+   "id": "site-test: tests/cupboard-page.test.js > R-3 — reachable and holds its layout renders without overflow or page errors at 1440px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=160 file=papercusp-public-site/tests/cupboard-page.test.js test=\"R-3 — reachable and holds its layout renders without overflow or page errors at 1440px\""
+  },
+  {
+   "id": "site-test: tests/harness.test.js > test harness builds out/ once vitest.config.js wires tests/global-setup.js as globalSetup",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/harness.test.js test=\"test harness builds out/ once vitest.config.js wires tests/global-setup.js as globalSetup\""
+  },
+  {
+   "id": "site-test: tests/harness.test.js > test harness builds out/ once no test file other than build-atomic runs build.py itself",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/harness.test.js test=\"test harness builds out/ once no test file other than build-atomic runs build.py itself\""
+  },
+  {
+   "id": "site-test: tests/harness.test.js > test harness builds out/ once the detector catches the pattern it guards against",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/harness.test.js test=\"test harness builds out/ once the detector catches the pattern it guards against\""
+  },
+  {
+   "id": "site-test: tests/harness.test.js > browser teardown gets the same hook budget as setup vitest.config.js sets hookTimeout to at least 30s while any test launches Chromium",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=220 file=papercusp-public-site/tests/harness.test.js test=\"browser teardown gets the same hook budget as setup vitest.config.js sets hookTimeout to at least 30s while any test launches Chromium\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > edge counter /api/hit — the unique-visitor dedup a brand-new distinct_id bumps hits AND uniques (should be a new unique)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=70 file=papercusp-public-site/tests/hit.test.js test=\"edge counter /api/hit — the unique-visitor dedup a brand-new distinct_id bumps hits AND uniques (should be a new unique)\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > edge counter /api/hit — the unique-visitor dedup the SAME distinct_id twice in a day = two hits but ONE unique (returning visitor)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/hit.test.js test=\"edge counter /api/hit — the unique-visitor dedup the SAME distinct_id twice in a day = two hits but ONE unique (returning visitor)\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > edge counter /api/hit — the unique-visitor dedup three DISTINCT ids = three uniques (three different visitors)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/hit.test.js test=\"edge counter /api/hit — the unique-visitor dedup three DISTINCT ids = three uniques (three different visitors)\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > edge counter /api/hit — the unique-visitor dedup a hit with NO distinct_id counts as a pageview but not a unique",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/hit.test.js test=\"edge counter /api/hit — the unique-visitor dedup a hit with NO distinct_id counts as a pageview but not a unique\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > edge counter /api/hit — the unique-visitor dedup records the Cloudflare country when present",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/hit.test.js test=\"edge counter /api/hit — the unique-visitor dedup records the Cloudflare country when present\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > edge counter /api/hit — the unique-visitor dedup never 500s when the KV binding is missing (best-effort beacon)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/hit.test.js test=\"edge counter /api/hit — the unique-visitor dedup never 500s when the KV binding is missing (best-effort beacon)\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > edge counter /api/hit — the unique-visitor dedup onRequestGet delegates to the same counter path",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/hit.test.js test=\"edge counter /api/hit — the unique-visitor dedup onRequestGet delegates to the same counter path\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > normalizePath — bounds the KV key space lowercases + strips query/hash + trailing slash",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/hit.test.js test=\"normalizePath — bounds the KV key space lowercases + strips query/hash + trailing slash\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > normalizePath — bounds the KV key space collapses a hostile/unknown path to /other",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/hit.test.js test=\"normalizePath — bounds the KV key space collapses a hostile/unknown path to /other\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > normalizePath — bounds the KV key space keeps the root as /",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/hit.test.js test=\"normalizePath — bounds the KV key space keeps the root as /\""
+  },
+  {
+   "id": "site-test: tests/hit.test.js > normalizePath — bounds the KV key space truncates an over-long path to /other",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/hit.test.js test=\"normalizePath — bounds the KV key space truncates an over-long path to /other\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — derivation from the built pages /cupboard/: finds the hero map, its config, and one clip per block plus the tour",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=12 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — derivation from the built pages /cupboard/: finds the hero map, its config, and one clip per block plus the tour\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — derivation from the built pages /cupboard/: every narration URL it derives is a file the build ships in out/",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=3 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — derivation from the built pages /cupboard/: every narration URL it derives is a file the build ships in out/\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — derivation from the built pages /architecture/: finds the hero map, its config, and one clip per block plus the tour",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=6 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — derivation from the built pages /architecture/: finds the hero map, its config, and one clip per block plus the tour\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — derivation from the built pages /architecture/: every narration URL it derives is a file the build ships in out/",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=6 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — derivation from the built pages /architecture/: every narration URL it derives is a file the build ships in out/\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — derivation from the built pages slugs a block title the way the narration builder names its clip",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — derivation from the built pages slugs a block title the way the narration builder names its clip\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment passes every assertion on both pages when the deployment serves the build",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=12 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment passes every assertion on both pages when the deployment serves the build\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /cupboard/: fails the hero-map assertion when the page is not 200",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=3 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /cupboard/: fails the hero-map assertion when the page is not 200\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /cupboard/: fails the hero-map assertion when the map container is gone",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=3 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /cupboard/: fails the hero-map assertion when the map container is gone\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /cupboard/: fails the config assertion when the mapcfg is missing",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=3 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /cupboard/: fails the config assertion when the mapcfg is missing\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /cupboard/: fails the narration assertion when one clip is 404",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /cupboard/: fails the narration assertion when one clip is 404\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /cupboard/: fails the narration assertion when the tour is served as HTML",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /cupboard/: fails the narration assertion when the tour is served as HTML\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /cupboard/: fails the narration assertion when a named file was never checked",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=3 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /cupboard/: fails the narration assertion when a named file was never checked\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /architecture/: fails the hero-map assertion when the page is not 200",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=13 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /architecture/: fails the hero-map assertion when the page is not 200\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /architecture/: fails the hero-map assertion when the map container is gone",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=8 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /architecture/: fails the hero-map assertion when the map container is gone\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /architecture/: fails the config assertion when the mapcfg is missing",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=9 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /architecture/: fails the config assertion when the mapcfg is missing\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /architecture/: fails the narration assertion when one clip is 404",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=15 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /architecture/: fails the narration assertion when one clip is 404\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /architecture/: fails the narration assertion when the tour is served as HTML",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=12 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /architecture/: fails the narration assertion when the tour is served as HTML\""
+  },
+  {
+   "id": "site-test: tests/map-live-probe.test.js > map live probe — assertions against a fake deployment /architecture/: fails the narration assertion when a named file was never checked",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=6 file=papercusp-public-site/tests/map-live-probe.test.js test=\"map live probe — assertions against a fake deployment /architecture/: fails the narration assertion when a named file was never checked\""
+  },
+  {
+   "id": "site-test: tests/responsive.test.js > rendered homepage at supported viewport widths keeps content and quote access usable at 320px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1598 file=papercusp-public-site/tests/responsive.test.js test=\"rendered homepage at supported viewport widths keeps content and quote access usable at 320px\""
+  },
+  {
+   "id": "site-test: tests/responsive.test.js > rendered homepage at supported viewport widths keeps content and quote access usable at 390px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=790 file=papercusp-public-site/tests/responsive.test.js test=\"rendered homepage at supported viewport widths keeps content and quote access usable at 390px\""
+  },
+  {
+   "id": "site-test: tests/responsive.test.js > rendered homepage at supported viewport widths keeps content and quote access usable at 768px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=761 file=papercusp-public-site/tests/responsive.test.js test=\"rendered homepage at supported viewport widths keeps content and quote access usable at 768px\""
+  },
+  {
+   "id": "site-test: tests/responsive.test.js > rendered homepage at supported viewport widths keeps content and quote access usable at 1024px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=745 file=papercusp-public-site/tests/responsive.test.js test=\"rendered homepage at supported viewport widths keeps content and quote access usable at 1024px\""
+  },
+  {
+   "id": "site-test: tests/responsive.test.js > rendered homepage at supported viewport widths keeps content and quote access usable at 1440px",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=868 file=papercusp-public-site/tests/responsive.test.js test=\"rendered homepage at supported viewport widths keeps content and quote access usable at 1440px\""
+  },
+  {
+   "id": "site-test: tests/site-nav.test.js > build gives every page the home page menu, with absolute targets and the current page marked",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2018 file=papercusp-public-site/tests/site-nav.test.js test=\"build gives every page the home page menu, with absolute targets and the current page marked\""
+  },
+  {
+   "id": "site-test: tests/site-nav.test.js > build every menu target exists on the page it points at",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/site-nav.test.js test=\"build every menu target exists on the page it points at\""
+  },
+  {
+   "id": "site-test: tests/site-nav.test.js > build no page source hand-writes the menu; each one carries the slot build.py fills",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=4 file=papercusp-public-site/tests/site-nav.test.js test=\"build no page source hand-writes the menu; each one carries the slot build.py fills\""
+  },
+  {
+   "id": "site-test: tests/site-nav.test.js > clicking menu items on the home page, every in-page item scrolls its section below the header, which stays on top",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=991 file=papercusp-public-site/tests/site-nav.test.js test=\"clicking menu items on the home page, every in-page item scrolls its section below the header, which stays on top\""
+  },
+  {
+   "id": "site-test: tests/site-nav.test.js > clicking menu items on /architecture, every item keeps the same menu after the click",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=5633 file=papercusp-public-site/tests/site-nav.test.js test=\"clicking menu items on /architecture, every item keeps the same menu after the click\""
+  },
+  {
+   "id": "site-test: tests/site-nav.test.js > clicking menu items on /cupboard, every item keeps the same menu after the click",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2868 file=papercusp-public-site/tests/site-nav.test.js test=\"clicking menu items on /cupboard, every item keeps the same menu after the click\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeEdgeSummary — matched-window edge stats sums hits + uniques across the active days",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/stats.test.js test=\"computeEdgeSummary — matched-window edge stats sums hits + uniques across the active days\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeEdgeSummary — matched-window edge stats restricts PostHog pageviews to the edge counter active-day span (matched window)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/stats.test.js test=\"computeEdgeSummary — matched-window edge stats restricts PostHog pageviews to the edge counter active-day span (matched window)\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeEdgeSummary — matched-window edge stats returns blockedPct null when edge is below matched PostHog (never a negative rate)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/stats.test.js test=\"computeEdgeSummary — matched-window edge stats returns blockedPct null when edge is below matched PostHog (never a negative rate)\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeEdgeSummary — matched-window edge stats handles an empty edge counter (no active days)",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/stats.test.js test=\"computeEdgeSummary — matched-window edge stats handles an empty edge counter (no active days)\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeEdgeSummary — matched-window edge stats tolerates a null/absent dailyRows argument",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/stats.test.js test=\"computeEdgeSummary — matched-window edge stats tolerates a null/absent dailyRows argument\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block carries the headline totals through",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block carries the headline totals through\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block computes take rate from DISTINCT downloaders, not click count",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block computes take rate from DISTINCT downloaders, not click count\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block ranks artifacts with both click and people counts",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block ranks artifacts with both click and people counts\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block derives bounce rate and rounds session length",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block derives bounce rate and rounds session length\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block pulls the interaction counts out of the single grouped event query",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block pulls the interaction counts out of the single grouped event query\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block maps every breakdown to {label,count} rows",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block maps every breakdown to {label,count} rows\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block reports live:false — not a wall of zeros — before the page has any visits",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block reports live:false — not a wall of zeros — before the page has any visits\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block never divides by zero when a denominator is absent",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block never divides by zero when a denominator is absent\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block degrades one failed query to an empty panel, not a broken block",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block degrades one failed query to an empty panel, not a broken block\""
+  },
+  {
+   "id": "site-test: tests/stats.test.js > computeReleasesSummary — releases page (beta) block tolerates a completely absent argument",
+   "passed": true,
+   "evidence": "vitest status=passed durationMs=0 file=papercusp-public-site/tests/stats.test.js test=\"computeReleasesSummary — releases page (beta) block tolerates a completely absent argument\""
+  },
+  {
+   "id": "site suite green on the deployed tree (R-5 method: the gating full-suite run)",
+   "passed": true,
+   "evidence": "vitest exit=0 {\"files\":14,\"tests\":165,\"passed\":165,\"failed\":0,\"skipped\":0} on git-archive copy-out of 5d64bf8da70272d61c2aef9b6c4456fccf990d3e (the deployed tree)"
+  },
+  {
+   "id": "live: /cupboard/ serves the hero map",
+   "passed": true,
+   "evidence": "GET https://papercusp-com.pages.dev/cupboard/ status=200 heroMap=true blocks=22"
+  },
+  {
+   "id": "live: /cupboard/ carries its map config (audio + tour)",
+   "passed": true,
+   "evidence": "audio.base=/cup-audio/ audio.v=7dcbcb5e9a tour.src=/cup-tour.mp3?v=6b04882295"
+  },
+  {
+   "id": "live: every narration file /cupboard/ names answers 200 audio/mpeg",
+   "passed": true,
+   "evidence": "23 checked of 23 named; failing: none"
+  },
+  {
+   "id": "live: /architecture/ serves the hero map",
+   "passed": true,
+   "evidence": "GET https://papercusp-com.pages.dev/architecture/ status=200 heroMap=true blocks=32"
+  },
+  {
+   "id": "live: /architecture/ carries its map config (audio + tour)",
+   "passed": true,
+   "evidence": "audio.base=/arch-audio/ audio.v=979560067a tour.src=/arch-tour.mp3?v=73013ff66d"
+  },
+  {
+   "id": "live: every narration file /architecture/ names answers 200 audio/mpeg",
+   "passed": true,
+   "evidence": "33 checked of 33 named; failing: none"
+  },
+  {
+   "id": "live: /cupboard/ bytes identical to out/cupboard/index.html built at the deployed commit",
+   "passed": true,
+   "evidence": "status=200 live sha256 7e421ce19bb7 built sha256 7e421ce19bb7 (162185/162185 bytes)"
+  },
+  {
+   "id": "live: /architecture/ bytes identical to out/architecture/index.html built at the deployed commit",
+   "passed": true,
+   "evidence": "status=200 live sha256 0db09fdb5742 built sha256 0db09fdb5742 (542628/542628 bytes)"
+  }
+ ],
+ "sourceHashes": {
+  "papercusp-public-site/src/cupboard.html": "13f2a5ac23a67d812a3c64af8100e8d3392454d040878879f9704cb5da10b2bd",
+  "papercusp-public-site/src/architecture.html": "d5f3eb21fbb75b1218fd5492290f3f14811443306274cfbb10cc1fc19e4450f2",
+  "papercusp-public-site/src/map-engine.js": "d514c42aa2328a3699d391e42fed32e135cbdc7200d78ec1a3be4e91f1e1cf46",
+  "papercusp-public-site/src/map-engine.css": "f72c553992440473ea3d709d87cd1ce1997129ed07b6188fd722d6d6eaa6286a",
+  "papercusp-public-site/build.py": "38568c9c628f99f017a884ac5b6842edae2b7285452cbeee66e3529be1f9bbf5",
+  "papercusp-public-site/tools/cupboard-narration.json": "154f422b9db2758bba64b4eda1107ed735b0e3ed382efbd212815a77ed979ed3",
+  "papercusp-public-site/tools/map-live-probe.mjs": "eb51159726ac89c5825e40e23e0e0799eb8a54a17f3b67ad71edae6e1f22831f",
+  "papercusp-public-site/tests/map-live-probe.test.js": "9e4d6ca3f6f8426998dfd981ea39745aac242ad436a0af3b165542ae32366df5",
+  "papercusp-public-site/tests/cupboard-map.test.js": "93aa3668f3d25c85a1d4b5542b7ddbc0c06fc85bf03b8a9b889c0a42fbb0f6c1",
+  "papercusp-public-site/tests/architecture-map.test.js": "bfbc6c035f3cd9d6db213f89e4637bf6e77d62ddaadf8570495cf3645d7a6d68"
+ },
+ "siteRepo": "papercusp-public-site",
+ "siteCommit": "5d64bf8da70272d61c2aef9b6c4456fccf990d3e",
+ "siteTreeClean": true,
+ "siteDirtyPaths": [],
+ "cloneHead": "5d64bf8da70272d61c2aef9b6c4456fccf990d3e",
+ "testedTree": "git archive copy-out of site commit 5d64bf8da70272d61c2aef9b6c4456fccf990d3e",
+ "deployedTree": {
+  "commit": "5d64bf8da70272d61c2aef9b6c4456fccf990d3e",
+  "method": "first commit in wrangler source..clone HEAD whose python3 build.py output reproduces every live map page byte for byte",
+  "candidates": [
+   {
+    "commit": "5d64bf8da70272d61c2aef9b6c4456fccf990d3e",
+    "pagesMatched": [
+     true,
+     true
+    ]
+   }
+  ]
+ },
+ "deployment": {
+  "id": "77920a31-3ca1-425c-aa72-7e6431e79f38",
+  "environment": "Production",
+  "branch": "main",
+  "source": "5d64bf8",
+  "sourceCommit": "5d64bf8da70272d61c2aef9b6c4456fccf990d3e",
+  "url": "https://77920a31.papercusp-com.pages.dev",
+  "status": "37 minutes ago"
+ },
+ "live": {
+  "origin": "https://papercusp-com.pages.dev",
+  "pages": [
+   {
+    "path": "/cupboard/",
+    "pageBytes": 161811,
+    "audioChecked": 23
+   },
+   {
+    "path": "/architecture/",
+    "pageBytes": 540018,
+    "audioChecked": 33
+   }
+  ],
+  "allPassed": true
+ },
+ "identity": [
+  {
+   "path": "/cupboard/",
+   "status": 200,
+   "liveSha256": "7e421ce19bb7852480f0a675fcd8e1101c28f39e971dd7b5014e0d52d962bc10",
+   "builtSha256": "7e421ce19bb7852480f0a675fcd8e1101c28f39e971dd7b5014e0d52d962bc10",
+   "same": true
+  },
+  {
+   "path": "/architecture/",
+   "status": 200,
+   "liveSha256": "0db09fdb5742b69969aefc23c2a57b59cdb305119bfeb9578310b1f344999a9a",
+   "builtSha256": "0db09fdb5742b69969aefc23c2a57b59cdb305119bfeb9578310b1f344999a9a",
+   "same": true
+  }
+ ],
+ "instrument": {
+  "repo": "papercusp-public-site",
+  "path": "tools/map-live-probe.mjs",
+  "test": "tests/map-live-probe.test.js",
+  "commit": "5d64bf8da70272d61c2aef9b6c4456fccf990d3e",
+  "sha256": "eb51159726ac89c5825e40e23e0e0799eb8a54a17f3b67ad71edae6e1f22831f"
+ },
+ "vitestExit": 0,
+ "scope": "Static site build + the current production Cloudflare Pages deployment of papercusp.com /cupboard/ and /architecture/. Read-only against production.",
+ "notExercised": [
+  "Visual design review by a human",
+  "Audio content quality (only presence, status and content-type are checked)"
+ ]
+}

@@ -3,38 +3,112 @@
   "kind": "operational-test-evidence",
   "name": "P-003 / R-1 live judge-wearer probe on the :3170 current build (identity-system-everything-migration-2026-10-18)",
   "framework": "operational",
-  "command": ["bash", "docs/evidence/p003-judge-wearer-live-2026-10-20/run.sh"],
+  "command": [
+    "bash",
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/run.sh"
+  ],
   "exitCode": 0,
-  "startedAt": "2026-10-20T05:18:50Z",
-  "finishedAt": "2026-10-20T05:19:06Z",
+  "startedAt": "2026-10-20T05:37:24Z",
+  "finishedAt": "2026-10-20T05:37:41Z",
   "plan": "identity-system-everything-migration-2026-10-18",
   "planItem": "P-003",
   "workItemId": "WI-6554700010017314",
-  "specIds": ["AUTO-BAR-R-1-P-003@3", "SPEC-P-003@1"],
+  "specIds": [
+    "AUTO-BAR-R-1-P-003@3",
+    "SPEC-P-003@1"
+  ],
   "evidencePlane": "live",
-  "summary": "Two judges were launched through the live :3170 role door (POST /api/agent-mcp/console/bootstrap-role, role judge) on build 3b9df0b66b, whose six P-003 source blobs equal HEAD. One wore a grant-bearing (governed) stack, domain:blueprint-operation-worker (adv_sessions 47811); the other wore a grant-free (ungoverned) stack, ideation:su.mode-ideate (adv_sessions 47812). Each signed judge MCP grant was then exercised at dispatch after the real first-turn path (turn-start-memory, then coord:orient), and the session was ended. All 17 assertions passed and run.sh exited 0. Both judges rendered their worn layer into the prompt. The governed launch recorded role judge with the exact stack and the artifact grants. The ungoverned launch recorded no identity record, by the bootstrap-role.ts contract (it records only grant-bearing artifacts). Neither grant carried superuser, and neither tool list exposed su-only tools. Dispatch refused capability:bash and processes:kill in both runs. The ungoverned judge was refused by the judge role envelope (missing_capability, principal system:judge) and could read plans:get. The governed judge was granted nothing: the papercusp pot (.papercusp/blueprint.yaml fleet.workerRoles) declares capability ceilings for su, operator and researcher but none for judge, so readIdentityGrantPolicy refuses and the grant kernel fails closed with policy-unavailable on every call, the read included. That is no more than its role and pot ceiling.",
+  "summary": "Two judges were launched through the live :3170 role door (POST /api/agent-mcp/console/bootstrap-role, role judge) on build a665ba3594, whose six P-003 source blobs equal HEAD. One wore a grant-bearing (governed) stack, domain:blueprint-operation-worker (adv_sessions 47818); the other wore a grant-free (ungoverned) stack, ideation:su.mode-ideate (adv_sessions 47819). Each signed judge MCP grant was then exercised at dispatch after the real first-turn path (turn-start-memory, then coord:orient), and the session was ended. 17 of 17 assertions passed and run.sh exited 0. Both judges rendered their worn layer into the prompt. The governed launch recorded role judge with the exact stack and the artifact grants. The ungoverned launch recorded no identity record, by the bootstrap-role.ts contract (it records only grant-bearing artifacts). Neither grant carried superuser, and neither tool list exposed su-only tools. Dispatch refused capability:bash and processes:kill in both runs. The ungoverned judge was refused by the judge role envelope (missing_capability, principal system:judge) and could read plans:get. The governed judge was granted nothing: the papercusp pot (.papercusp/blueprint.yaml fleet.workerRoles) declares capability ceilings for su, operator and researcher but none for judge, so readIdentityGrantPolicy refuses and the grant kernel fails closed with policy-unavailable on every call, the read included. That is no more than its role and pot ceiling.",
   "assertions": [
-    { "id": "governed:served-build-carries-p003-source", "passed": true, "evidence": ":3170 /api/health build 3b9df0b66bb5d7bba7e52780fad7fc43c362a792; 6/6 P-003 source blobs equal HEAD" },
-    { "id": "governed:role-door-accepts-judge-with-stack", "passed": true, "evidence": "HTTP 200 status=ok error=none (stack domain:blueprint-operation-worker)" },
-    { "id": "governed:judge-prompt-renders-worn-layer", "passed": true, "evidence": "launch-context session-47811.md (51936 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint" },
-    { "id": "governed:governed-launch-record-names-judge-and-stack", "passed": true, "evidence": "adv_sessions 47811: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, specificationRevision 07eb7742684e…" },
-    { "id": "governed:grant-is-judge-scoped", "passed": true, "evidence": "signed MCP URL role=judge, superuser param absent" },
-    { "id": "governed:judge-tool-list-excludes-su-tools", "passed": true, "evidence": "tools/list returned 29 tools; none of capability:bash, processes:kill, capability:grant_role, dev:restart, work_items:create listed" },
-    { "id": "governed:dispatch-refuses-outside-judge-ceiling", "passed": true, "evidence": "capability:bash and processes:kill refused: authorization_denied, Kernel preflight, Identity capability (unresolved): policy-unavailable" },
-    { "id": "governed:governed-judge-without-pot-ceiling-is-granted-nothing", "passed": true, "evidence": "pot .papercusp/blueprint.yaml declares worker-role ceilings for [su, operator, researcher] and none for judge; capability:bash, processes:kill and plans:get all refused with policy-unavailable after the activation was applied (desired -> applied 07eb7742684e)" },
-    { "id": "ungoverned:served-build-carries-p003-source", "passed": true, "evidence": ":3170 /api/health build 3b9df0b66bb5d7bba7e52780fad7fc43c362a792; 6/6 P-003 source blobs equal HEAD" },
-    { "id": "ungoverned:role-door-accepts-judge-with-stack", "passed": true, "evidence": "HTTP 200 status=ok error=none (stack ideation:su.mode-ideate)" },
-    { "id": "ungoverned:judge-prompt-renders-worn-layer", "passed": true, "evidence": "launch-context session-47812.md (59051 chars) contains the worn layer text \"## IDEATE mode — the owner's switch\"; launch role=judge, compositionSource=blueprint" },
-    { "id": "ungoverned:ungoverned-launch-writes-no-identity-record", "passed": true, "evidence": "adv_sessions 47812: role=judge, launch_spec.role=null, launch_spec.stack=null, artifact grants present=false (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)" },
-    { "id": "ungoverned:grant-is-judge-scoped", "passed": true, "evidence": "signed MCP URL role=judge, superuser param absent" },
-    { "id": "ungoverned:judge-tool-list-excludes-su-tools", "passed": true, "evidence": "tools/list returned 31 tools; none of capability:bash, processes:kill, capability:grant_role, dev:restart, work_items:create listed" },
-    { "id": "ungoverned:dispatch-refuses-outside-judge-ceiling", "passed": true, "evidence": "capability:bash and processes:kill refused: handler_error missing_capability, Principal system:judge lacks capability" },
-    { "id": "ungoverned:ungoverned-dispatch-refuses-by-judge-envelope", "passed": true, "evidence": "capability:bash: judge missing_capability=true | processes:kill: judge missing_capability=true" },
-    { "id": "ungoverned:dispatch-allows-read-inside-judge-ceiling", "passed": true, "evidence": "plans:get through the judge grant: ok, 7584 chars, names the plan slug, no policy-unavailable" }
+    {
+      "id": "governed:served-build-carries-p003-source",
+      "passed": true,
+      "evidence": "http://127.0.0.1:3170 /api/health build a665ba35948d4b19f6162d60fafb7874404204f4; 6/6 P-003 source blobs equal HEAD"
+    },
+    {
+      "id": "governed:role-door-accepts-judge-with-stack",
+      "passed": true,
+      "evidence": "HTTP 200 status=ok error=none"
+    },
+    {
+      "id": "governed:judge-prompt-renders-worn-layer",
+      "passed": true,
+      "evidence": "/home/builduser/.papercusp/launch-context/session-47818.md (52052 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
+    },
+    {
+      "id": "governed:governed-launch-record-names-judge-and-stack",
+      "passed": true,
+      "evidence": "adv_sessions 47818: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-3511d86e-0b62-434c-b9da-c728caf374fc"
+    },
+    {
+      "id": "governed:grant-is-judge-scoped",
+      "passed": true,
+      "evidence": "signed MCP URL role=judge, superuser param absent"
+    },
+    {
+      "id": "governed:judge-tool-list-excludes-su-tools",
+      "passed": true,
+      "evidence": "tools/list via the signed judge URL returned 29 tools; su-only/outside-ceiling tools listed: none (checked capability:bash,processes:kill,capability:grant_role,dev:restart,work_items:create)"
+    },
+    {
+      "id": "governed:dispatch-refuses-outside-judge-ceiling",
+      "passed": true,
+      "evidence": "capability:bash: refused ({\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unava) | processes:kill: refused ({\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unava)"
+    },
+    {
+      "id": "governed:governed-judge-without-pot-ceiling-is-granted-nothing",
+      "passed": true,
+      "evidence": "pot .papercusp/blueprint.yaml declares worker-role ceilings for [su, operator, researcher] and none for judge; capability:bash policy-unavailable=true, processes:kill policy-unavailable=true; plans:get through the judge grant: isError, 432 chars, names the plan slug=false, policy-unavailable=true"
+    },
+    {
+      "id": "ungoverned:served-build-carries-p003-source",
+      "passed": true,
+      "evidence": "http://127.0.0.1:3170 /api/health build a665ba35948d4b19f6162d60fafb7874404204f4; 6/6 P-003 source blobs equal HEAD"
+    },
+    {
+      "id": "ungoverned:role-door-accepts-judge-with-stack",
+      "passed": true,
+      "evidence": "HTTP 200 status=ok error=none"
+    },
+    {
+      "id": "ungoverned:judge-prompt-renders-worn-layer",
+      "passed": true,
+      "evidence": "/home/builduser/.papercusp/launch-context/session-47819.md (59161 chars) contains the worn layer text \"## IDEATE mode — the owner's switch\"; launch role=judge, compositionSource=blueprint"
+    },
+    {
+      "id": "ungoverned:ungoverned-launch-writes-no-identity-record",
+      "passed": true,
+      "evidence": "adv_sessions 47819: role=judge, launch_spec.role=null, launch_spec.stack=null, artifact grants present=false, owner=role-08241d6d-4bd9-4194-a54e-a8c6fa9549ca (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)"
+    },
+    {
+      "id": "ungoverned:grant-is-judge-scoped",
+      "passed": true,
+      "evidence": "signed MCP URL role=judge, superuser param absent"
+    },
+    {
+      "id": "ungoverned:judge-tool-list-excludes-su-tools",
+      "passed": true,
+      "evidence": "tools/list via the signed judge URL returned 31 tools; su-only/outside-ceiling tools listed: none (checked capability:bash,processes:kill,capability:grant_role,dev:restart,work_items:create)"
+    },
+    {
+      "id": "ungoverned:dispatch-refuses-outside-judge-ceiling",
+      "passed": true,
+      "evidence": "capability:bash: refused ({\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"handler_error: missing_capability: Principal \\\"system:judge\\\" lacks capability \\\"capability:bash\\\" (tool: capabilit) | processes:kill: refused ({\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"handler_error: missing_capability: Principal \\\"system:judge\\\" lacks capability \\\"processes:kill\\\" (tool: processes:)"
+    },
+    {
+      "id": "ungoverned:ungoverned-dispatch-refuses-by-judge-envelope",
+      "passed": true,
+      "evidence": "capability:bash: judge missing_capability=true | processes:kill: judge missing_capability=true"
+    },
+    {
+      "id": "ungoverned:dispatch-allows-read-inside-judge-ceiling",
+      "passed": true,
+      "evidence": "plans:get through the judge grant: ok, 7584 chars, names the plan slug=true, policy-unavailable=false"
+    }
   ],
   "environment": {
     "operator": "http://127.0.0.1:3170",
-    "servedBuild": "3b9df0b66bb5d7bba7e52780fad7fc43c362a792",
+    "servedBuild": "a665ba35948d4b19f6162d60fafb7874404204f4",
     "mcpOrigin": "http://127.0.0.1:9171",
     "workspace": "papercusp-workspace",
     "harness": "papercusp",
@@ -51,14 +125,15 @@
   "artifacts": {
     "docs/evidence/p003-judge-wearer-live-2026-10-20/run.sh": "sha256:72086b5c157cfd07fe2540a4d735e72cf09013a5b1204b46e367646e711e6191",
     "docs/evidence/p003-judge-wearer-live-2026-10-20/stage1-launch.mjs": "sha256:6b7e5307e5c9649a259eee5e5b2cde36914360abb69b83c4faf2d3411e640305",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/stage2-exercise.mjs": "sha256:9b98f81ff3f333cd29b8403b56b9d8831f481acaab08ad7c557f0c96ac44557f",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/governed-report.json": "sha256:f7cacfd193315a9c57005b86b9889284625a75878c45f5a721041117f6aa3b71",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/ungoverned-report.json": "sha256:16e863fc8d0eeba19ee3f7de1c9b05e73b57154bbccb5929b136ec9830bd68e3"
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/stage2-exercise.mjs": "sha256:a599d1fc2e98d37e77c59a86cbc8b3aeb151e8e15f727a1337cba85e8209025d",
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/governed-report.json": "sha256:7d4323322cd85cbece0a6a2b1b120b86884c5ca2a999aab0e27d7fa809565312",
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/ungoverned-report.json": "sha256:0336a1d6e76cf95d5a4d617d1d34609932b7f793da4662b38ed4ce9e865bc1e2"
   },
   "limitations": [
     "The governed judge could not exercise any tool, the in-ceiling read included, because the papercusp pot declares no capability ceiling for the judge role. That satisfies 'granted no more than its role and pot ceiling' but does not show a governed judge receiving a non-empty grant. Declaring a judge ceiling is an administrator pot-policy decision outside P-003, and this run did not make it.",
-    "PROBE_GOVERNED is the probe operator's declared expectation for each stack, matching the bootstrap-role.ts recording contract. An earlier probe on the same build (2026-10-20T05:06Z, adv_sessions 47796) first showed that domain:blueprint-operation-worker compiles to a grant-bearing artifact.",
+    "PROBE_GOVERNED is the probe operator's declared expectation for each stack, matching the bootstrap-role.ts recording contract. An earlier probe on build 3b9df0b66b (2026-10-20T05:06Z, adv_sessions 47796) first showed that domain:blueprint-operation-worker compiles to a grant-bearing artifact.",
     "Earlier iterations of this probe (2026-10-20T04:58Z-05:08Z, adv_sessions 47785-47797, scratch reports live-judge-probe-1..10) exited 1. Each failed only on an assertion this version replaces: one expected a launch record for the grant-free stack, which the code records by design only for grant-bearing artifacts; the other expected a positive read for the governed judge, which is refused by design without a pot judge ceiling. Two earlier stale-artifact denials (47786/47789) came from the probe skipping the first-turn hook. Its turn-start call is now part of stage 2.",
-    "Wearer-authority role selection for host-run identity work (async reactions and the turn-start sink) is covered by the integration tests bound beside this artifact, not by this live run."
+    "Wearer-authority role selection for host-run identity work (async reactions and the turn-start sink) is covered by the integration tests bound beside this artifact, not by this live run.",
+    "An identical run at 2026-10-20T05:18:50Z-05:19:06Z on build 3b9df0b66b (adv_sessions 47811/47812) also passed all 17 assertions, but its stage-2 reports carried absolute home-directory paths that the commit content guard (identity-leak) refuses. stage2-exercise.mjs now writes its report through scripts/lib/identity-leak-patterns.mjs serializeIdentitySafeJson, and this artifact records the re-run with that writer; no assertion logic changed."
   ]
 }

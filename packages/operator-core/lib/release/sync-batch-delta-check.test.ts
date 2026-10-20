@@ -14,6 +14,7 @@ import {
   conditionKeyForRed,
   evaluateRadius,
   grownWindowCommitCap,
+  UNDETERMINED_STREAK_LIMIT,
   parseAffectedProbe,
   parseFailingFilesLine,
   parseSyncBatches,
@@ -817,6 +818,78 @@ describe('runSyncBatchDeltaCheck — P-011 typecheck-first and budget-exhaustion
     expect(res.reason).toBe('affected-run-missing-terminal-break-set');
     expect(state.cursor?.sha).toBe(START);
     expect(state.cursor?.windowCommitCap).toBeUndefined();
+  });
+
+  // WI-6554700010017999: an unattributable red (exit 1, empty break set) re-ran one
+  // package-lock.json window for two days. The streak is bounded per window.
+  const undeterminedEmpty: Awaited<ReturnType<SyncBatchDeltaDeps['runAffected']>> = {
+    ok: false,
+    failing: [],
+    diagnostic: { outcome: 'nonzero-exit', durationMs: 103_000, exitCode: 1 },
+  };
+
+  it('a window that stays undetermined is halved after UNDETERMINED_STREAK_LIMIT tries, then its single commit is skipped', async () => {
+    const affectedSizes: number[] = [];
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runAffected: async (paths) => {
+          affectedSizes.push(paths.length);
+          return undeterminedEmpty;
+        },
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    expect(UNDETERMINED_STREAK_LIMIT).toBe(3);
+
+    for (let i = 1; i < UNDETERMINED_STREAK_LIMIT; i++) {
+      const held = await runSyncBatchDeltaCheck(deps);
+      expect(held.reason).toBe('affected-run-empty-terminal-break-set');
+      expect(state.cursor?.sha).toBe(START);
+      expect(state.cursor?.undeterminedStreak).toEqual({ windowHead: C4, count: i });
+    }
+    const halved = await runSyncBatchDeltaCheck(deps);
+    expect(halved.reason).toBe('affected-run-undetermined-repeatedly: window halved from 4 to 2 commit(s)');
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.windowCommitCap).toBe(2);
+    expect(state.cursor?.undeterminedStreak).toBeUndefined();
+
+    // The smaller windows get their own tries: 2 commits, then 1 commit.
+    for (let i = 0; i < UNDETERMINED_STREAK_LIMIT; i++) await runSyncBatchDeltaCheck(deps);
+    expect(state.cursor?.windowCommitCap).toBe(1);
+    for (let i = 1; i < UNDETERMINED_STREAK_LIMIT; i++) await runSyncBatchDeltaCheck(deps);
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.undeterminedStreak).toEqual({ windowHead: C1, count: UNDETERMINED_STREAK_LIMIT - 1 });
+
+    const skipped = await runSyncBatchDeltaCheck(deps);
+    expect(skipped.status).toBe('undetermined');
+    expect(state.cursor?.sha).toBe(C1);
+    expect(state.cursor?.undeterminedStreak).toBeUndefined();
+    expect(state.cursor?.lastSkipReason).toContain('undetermined: commit 111111111111 explicitly skipped');
+    expect(state.cursor?.lastSkipReason).toContain('3 times in a row');
+    // An explicit skip is not a judged slot.
+    expect(state.cursor?.coverage?.ticks.at(-1)).toMatchObject({ evaluated: false, status: 'undetermined' });
+    expect(affectedSizes).toEqual([4, 4, 4, 2, 2, 2, 1, 1, 1]);
+  });
+
+  it('a measured run on the window clears the undetermined streak instead of carrying it', async () => {
+    let affectedResult = undeterminedEmpty;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C1,
+        listBatches: async () => [makeBatch({ sha: C1, paths: [TYPE_ERROR_FILE] })],
+        runAffected: async () => affectedResult,
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.cursor?.undeterminedStreak).toEqual({ windowHead: C1, count: 1 });
+    affectedResult = { ok: true, failing: [] };
+    const green = await runSyncBatchDeltaCheck(deps);
+    expect(green.status).toBe('green');
+    expect(state.cursor?.sha).toBe(C1);
+    expect(state.cursor?.undeterminedStreak).toBeUndefined();
   });
 
   it('a held typecheck red re-runs the typecheck leg and refreshes the same filing', async () => {

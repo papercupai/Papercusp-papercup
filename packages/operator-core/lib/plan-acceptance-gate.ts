@@ -457,6 +457,15 @@ export interface PlanAcceptanceGateOpts {
    * resolver's per-plan hot read. Only the ship door (`plans:set-plan-status`) sets it.
    */
   collectAllBlockers?: boolean;
+  /**
+   * Census-only (plan-verification-profiles-2026-10-17 P-002, R-6): run the full pre-ship gate
+   * for a plan that is ALREADY shipped instead of returning the `already-shipped` skip, so a
+   * before/after census can compare RE-EVALUATED ship verdicts. Without it every shipped plan
+   * reads satisfied and the census measures nothing. Never set on the ship write or a UI read:
+   * post-ship the rubric family reads missing by design (see the skip's comment). A call with
+   * it set is not canonical, so it records no closure observation.
+   */
+  reevaluateShipped?: boolean;
   /** Read whether a pending meta-scorecard's owner is paused before dispatch can settle it. */
   readGradingAuditDispatchSuppression?: (targetOwnerId?: string | null) => Promise<GradingAuditDispatchSuppression | null>;
 }
@@ -828,7 +837,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     // plan to shipped". The write path is unaffected: set-plan-status evaluates this
     // gate only while the plan is NOT yet shipped (shouldEvaluateAcceptanceGate), so
     // the early exit cannot weaken a real ship — it only stops the read from lying.
-    if (row?.status === 'shipped') {
+    if (row?.status === 'shipped' && !opts.reevaluateShipped) {
       const retired = await getRetiredAcceptanceRubricsForPlan(planSlug, {
         ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
       });

@@ -1,0 +1,105 @@
+{
+  "startedAt": "2026-10-20T05:37:25.237Z",
+  "stage1": ".papercusp/scratch/p-identity/p003-live-run/governed-stage1.json",
+  "stack": [
+    "domain:blueprint-operation-worker"
+  ],
+  "governedDeclared": true,
+  "sessionId": 47818,
+  "assertions": [
+    {
+      "id": "served-build-carries-p003-source",
+      "passed": true,
+      "evidence": "http://127.0.0.1:3170 /api/health build a665ba35948d4b19f6162d60fafb7874404204f4; 6/6 P-003 source blobs equal HEAD"
+    },
+    {
+      "id": "role-door-accepts-judge-with-stack",
+      "passed": true,
+      "evidence": "HTTP 200 status=ok error=none"
+    },
+    {
+      "id": "judge-prompt-renders-worn-layer",
+      "passed": true,
+      "evidence": "/home/builduser/.papercusp/launch-context/session-47818.md (52052 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
+    },
+    {
+      "id": "governed-launch-record-names-judge-and-stack",
+      "passed": true,
+      "evidence": "adv_sessions 47818: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-3511d86e-0b62-434c-b9da-c728caf374fc"
+    },
+    {
+      "id": "grant-is-judge-scoped",
+      "passed": true,
+      "evidence": "signed MCP URL role=judge, superuser param absent"
+    },
+    {
+      "id": "judge-tool-list-excludes-su-tools",
+      "passed": true,
+      "evidence": "tools/list via the signed judge URL returned 29 tools; su-only/outside-ceiling tools listed: none (checked capability:bash,processes:kill,capability:grant_role,dev:restart,work_items:create)"
+    },
+    {
+      "id": "dispatch-refuses-outside-judge-ceiling",
+      "passed": true,
+      "evidence": "capability:bash: refused ({\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unava) | processes:kill: refused ({\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unava)"
+    },
+    {
+      "id": "governed-judge-without-pot-ceiling-is-granted-nothing",
+      "passed": true,
+      "evidence": "pot .papercusp/blueprint.yaml declares worker-role ceilings for [su, operator, researcher] and none for judge; capability:bash policy-unavailable=true, processes:kill policy-unavailable=true; plans:get through the judge grant: isError, 432 chars, names the plan slug=false, policy-unavailable=true"
+    }
+  ],
+  "launchRecord": {
+    "owner": "role-3511d86e-0b62-434c-b9da-c728caf374fc",
+    "role": "judge",
+    "specRole": "judge",
+    "stack": [
+      "domain:blueprint-operation-worker"
+    ],
+    "specRev": "ab8f1ba3971117db359b323dc09295d6bef18a10f3e337dd9a2c8f47d979cb38",
+    "hasGrants": true
+  },
+  "potJudgeCeiling": null,
+  "potRolesWithCeiling": [
+    "su",
+    "operator",
+    "researcher"
+  ],
+  "grantUrl": {
+    "origin": "http://127.0.0.1:9171",
+    "role": "judge",
+    "superuser": null,
+    "tools": "coord:orient,coord:declare-intent,coord:inbox,coord:send,coord:glance,coord:dispatch,plans:new,plans:get,plans:set-status,plans:items,plans:set-now,work_items:list,work_items:create,work_items:claim,work_items:claim_next,work_items:get,work_items:complete,work_items:release,work_items:set_state,work_items:comment,work_items:update,scheduler:get_next,docs:search,memory:search,memory:remember,improvements:capture,code:run,recipes:search,dev:pg_query,facts:assert,facts:list,facts:retract,work_items:checkpoint,loop:arm,loop:checkpoint,loop:status,loop:end,checkpoint:await,events:await,events:catalog,events:cancel,events:status,session:request-compaction,fleet:launch-on-plan,search:fulltext,plans:add-decision,work_items:claimable,mode:set,tools:find,tools:invoke"
+  },
+  "activationBefore": "desired applied=none",
+  "turnStart": {
+    "http": 200,
+    "body": "{\"ok\":true,\"text\":\"⟦CTRL:transition⟧ {\\\"state\\\":{\\\"modes\\\":[],\\\"activation\\\":{\\\"schemaVersion\\\":1,\\\"attribution\\\":{\\\"actorId\\\":\\\"role-3511d86e-0b62-434c-b9da-c728caf374fc\\\",\\\"principalId\\\":\\\"role-3511d86e-0b62-434c-b9da-c728caf374fc\\\",\\\"sessionId\\\":\\\"role-3511d86e-0b62-434c-b9da-c728caf374fc\\\"},\\\"desired\\\":{\\\"specificationRevision\\\":\\\"ab8f1ba3971117db359b323dc09295d6bef18a10f3e337dd9a2c8f47d979cb3"
+  },
+  "activationAfterTurnStart": "applied applied=ab8f1ba39711",
+  "orient": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unavailable (tools:invoke) — lifts when: the identity policy for this pot and role can be read again, or a ceiling policy is published for it. Usually transient infrastructure: retry shortly; if it persists, escalate; who: host/owner\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":3}",
+  "activationAfter": "applied applied=ab8f1ba39711",
+  "toolsListed": 29,
+  "refusals": [
+    {
+      "name": "capability:bash",
+      "refused": true,
+      "policyUnavailable": true,
+      "judgeMissingCapability": false,
+      "text": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unavailable (tools:invoke) — lifts when: the identity policy for this pot and role can be read again, or a ceiling policy is published for it. Usually transient infrastructure: retry shortly; if it persists, escalate; who: host/owner\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":10}"
+    },
+    {
+      "name": "processes:kill",
+      "refused": true,
+      "policyUnavailable": true,
+      "judgeMissingCapability": false,
+      "text": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unavailable (tools:invoke) — lifts when: the identity policy for this pot and role can be read again, or a ceiling policy is published for it. Usually transient infrastructure: retry shortly; if it persists, escalate; who: host/owner\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":11}"
+    }
+  ],
+  "allowedRead": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unavailable (tools:invoke) — lifts when: the identity policy for this pot and role can be read again, or a ceiling policy is published for it. Usually transient infrastructure: retry shortly; if it persists, escalate; who: host/owner\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":20}",
+  "sessionEnded": {
+    "http": 200,
+    "body": "{\"ok\":true,\"ended\":true,\"endAttemptKey\":\"p003-live-probe-end-47818\"}"
+  },
+  "finishedAt": "2026-10-20T05:37:29.074Z",
+  "exitCode": 0
+}

@@ -237,6 +237,12 @@ export interface SyncDeltaCursor {
    *  cursor sat on one window for 24h, 0 of ~291 ticks evaluated). Each measured run
    *  doubles it; it is dropped once it is back at the static cap. */
   windowCommitCap?: number;
+  /** Consecutive undetermined affected runs (non-zero exit, no file named, budget NOT
+   *  exhausted) on the window ending at `windowHead` (WI-6554700010017999). Without a
+   *  bound, one deterministic unattributable red re-ran the same one-commit window
+   *  forever: the cursor sat on a package-lock.json commit for two days, 0 of 291
+   *  slots judged. Any other window resets it. */
+  undeterminedStreak?: { windowHead: string; count: number };
   /** P-012 (green-main-cycle-time-2026-10-08): the newest commit whose batch check PASSED — both
    *  legs ran green over its window and no red is held open. The gate's fresh cut freezes here
    *  (known-good-freeze.ts) instead of at the bare tip. Carried unchanged by every run that does
@@ -1409,6 +1415,9 @@ export type SyncBatchDeltaStatus =
   | 'radius-too-wide'
   /** A single commit exhausted a leg's time budget: explicitly skipped, cursor advanced. */
   | 'leg-timeout'
+  /** A single commit's affected run stayed undetermined (non-zero exit, no file named)
+   *  UNDETERMINED_STREAK_LIMIT times in a row: explicitly skipped, cursor advanced. */
+  | 'undetermined'
   | 'nothing-selected'
   | 'green'
   | 'red';
@@ -1610,7 +1619,7 @@ async function recordOversizedCommit(
   stillOpen: OpenRed[],
   filed: SyncBatchDeltaFiling[],
   opts: {
-    status?: 'radius-too-wide' | 'leg-timeout';
+    status?: 'radius-too-wide' | 'leg-timeout' | 'undetermined';
     cursorPatch?: Partial<SyncDeltaCursor>;
     unconfirmed?: string[];
     diagnostic?: string;
@@ -1642,6 +1651,10 @@ async function recordOversizedCommit(
     cursor: next,
   };
 }
+
+/** How many consecutive undetermined affected runs one window gets before it is shrunk
+ *  (or, at one commit, explicitly skipped). Three tries absorb a transient failure. */
+export const UNDETERMINED_STREAK_LIMIT = 3;
 
 /** Outcomes that mean the leg ran out of its BUDGET (time or output), as opposed to
  *  crashing or exiting without a verdict. These are the ones a smaller window can fix. */
@@ -2038,8 +2051,40 @@ async function runSyncBatchDeltaTick(
       const breakSet = affected.failing === null ? 'missing-terminal-break-set' : 'empty-terminal-break-set';
       const diagnostic = describeDiagnostic(affected.diagnostic);
       if (isBudgetExhaustion(affected.diagnostic)) return shrinkWindowOnBudgetExhaustion('affected-tests', diagnostic);
-      deps.log(`[sync-batch-delta] affected run undetermined (${breakSet}); ${diagnostic}; cursor held`);
-      const held = await holdCursor();
+      // Bound the re-runs (WI-6554700010017999): a transient failure gets
+      // UNDETERMINED_STREAK_LIMIT tries on the same window; a deterministic one then
+      // shrinks the window and finally skips the single commit, like a budget timeout.
+      const windowHead = prefix.commits[prefix.commits.length - 1]!.sha;
+      const prior = cursor.undeterminedStreak;
+      const count = prior?.windowHead === windowHead ? prior.count + 1 : 1;
+      if (count >= UNDETERMINED_STREAK_LIMIT) {
+        const why = `affected run undetermined (${breakSet}) ${count} times in a row on this window (${diagnostic})`;
+        if (prefix.commits.length === 1) {
+          return recordOversizedCommit(
+            deps,
+            cursor,
+            prefix.commits[0]!,
+            why,
+            union.paths.length,
+            probe.workspaces,
+            stillOpen,
+            filed,
+            { status: 'undetermined', cursorPatch: { windowCommitCap: 1, undeterminedStreak: undefined }, unconfirmed, diagnostic },
+          );
+        }
+        const halved = Math.max(1, Math.floor(prefix.commits.length / 2));
+        const reason = `affected-run-undetermined-repeatedly: window halved from ${prefix.commits.length} to ${halved} commit(s)`;
+        const held = await holdCursor({
+          windowCommitCap: halved,
+          undeterminedStreak: undefined,
+          lastSkipReason: reason,
+          lastSkipMs: deps.now(),
+        });
+        deps.log(`[sync-batch-delta] ${reason}; ${why}; cursor held`);
+        return { ...emptyResult('skipped', reason), ...commonResult(), diagnostic, cursor: held };
+      }
+      deps.log(`[sync-batch-delta] affected run undetermined (${breakSet}, ${count}/${UNDETERMINED_STREAK_LIMIT}); ${diagnostic}; cursor held`);
+      const held = await holdCursor({ undeterminedStreak: { windowHead, count } });
       return { ...emptyResult('skipped', `affected-run-${breakSet}`), ...commonResult(), diagnostic, cursor: held };
     }
     // ── 7. confirm, attribute, file ──────────────────────────────────────────

@@ -228,6 +228,37 @@ describe('native bootstrap admission and lifecycle', () => {
     expect(JSON.stringify(diagnostics)).not.toMatch(/private|native\.fixture|https:/);
   });
 
+  it.each(['/', '/daos?dao=workbench-native-mutant'])('reloads %s into the fresh calibrated DAO before waiting for its workspace', async initialPath => {
+    const origin = 'https://native.fixture.invalid';
+    const target = '/daos?dao=workbench-native-baseline&daoSection=members';
+    const document = (href: string, workspaceReady: boolean) => ({
+      window: { __TSR_ROUTER__: { navigate() {} } },
+      location: { href },
+      document: { querySelector: () => workspaceReady ? {} : null },
+    });
+    let page = document(origin + initialPath, initialPath.startsWith('/daos'));
+    let destination = '';
+    const observed: boolean[] = [];
+    const diagnostics: object[] = [];
+    const native = async (...args: string[]) => {
+      if (args[0] === 'eval') return String(runInNewContext(args[1], page));
+      if (args[0] === 'navigate') { destination = args[1]; return '{"success":true}'; }
+      if (args[0] === 'wait') {
+        observed.push(Boolean(runInNewContext(args[2], page)));
+        page = document(destination, new URL(destination).searchParams.get('dao') === 'workbench-native-baseline');
+        const ready = Boolean(runInNewContext(args[2], page));
+        observed.push(ready);
+        if (ready) return 'true';
+        throw new Error('The selected page has no fresh DAO workspace');
+      }
+      throw new Error('Unexpected native command');
+    };
+    await reloadNativeWorkbench(native, diagnostic => diagnostics.push(diagnostic), target);
+    expect(destination).toBe(origin + target);
+    expect(observed).toEqual([false, true]);
+    expect(diagnostics).toEqual([]);
+  });
+
   it('reports a successful completion receipt without failing the console policy', () => {
     const dir = mkdtempSync(join(tmpdir(), 'daohr-completion-retention-'));
     const result = join(dir, 'result.json'), log = join(dir, 'native.log');

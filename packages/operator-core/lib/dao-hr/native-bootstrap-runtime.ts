@@ -87,14 +87,15 @@ export async function runNativeCommand(command: string, args: string[], options:
 
 /** Native navigate acknowledges location assignment, before the new document boots. */
 export async function reloadNativeWorkbench(native: (...args: string[]) => Promise<string>,
-  retain: (diagnostic: { phase: string; state?: { documentReplaced: boolean; routerReady: boolean; workspaceReady: boolean }; captureUnavailable?: true }) => void): Promise<void> {
+  retain: (diagnostic: { phase: string; state?: { documentReplaced: boolean; routerReady: boolean; workspaceReady: boolean }; captureUnavailable?: true }) => void,
+  targetPath?: string): Promise<void> {
   const marker = JSON.stringify(randomUUID());
   const state = `({documentReplaced:window.__DAO_HR_RELOAD_MARKER__!==${marker},routerReady:typeof window.__TSR_ROUTER__?.navigate==='function',workspaceReady:!!document.querySelector('[data-testid=dao-workspace]')})`;
   let phase = 'reload-mark';
   try {
     const url = JSON.parse(await native('eval', `JSON.stringify((window.__DAO_HR_RELOAD_MARKER__=${marker},location.href))`)) as string;
     phase = 'reload-navigate';
-    await native('navigate', url, '--json');
+    await native('navigate', targetPath === undefined ? url : new URL(targetPath, url).href, '--json');
     phase = 'reload-ready';
     // A ready router in the outgoing document must not satisfy this barrier.
     await native('wait', '--eval', `(()=>{const s=${state};return s.documentReplaced&&s.routerReady&&s.workspaceReady})()`,

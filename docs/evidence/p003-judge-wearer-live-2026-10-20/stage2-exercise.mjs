@@ -16,6 +16,9 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
+// The report is committed evidence: serialize it through the distribution guard's redactor so
+// machine paths (launch-context prompt files under the home directory) never reach the tree.
+import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 
 const [stage1Path, OUT] = process.argv.slice(2);
 if (!stage1Path || !OUT) throw new Error('usage: stage2-exercise.mjs <stage1-report.json> <report.json>');
@@ -140,6 +143,6 @@ try {
 }
 report.finishedAt = new Date().toISOString();
 report.exitCode = report.fatal || report.assertions.some((a) => !a.passed) ? 1 : 0;
-writeFileSync(OUT, JSON.stringify(report, null, 1));
+writeFileSync(OUT, serializeIdentitySafeJson(report));
 console.log(JSON.stringify({ exitCode: report.exitCode, assertions: report.assertions.map((a) => `${a.passed ? 'PASS' : 'FAIL'} ${a.id}: ${a.evidence.slice(0, 220)}`), fatal: report.fatal ?? null, sessionEnded: report.sessionEnded }, null, 1));
 process.exitCode = report.exitCode;
