@@ -88,4 +88,14 @@ describe('Hiring product projection and trusted actor', () => {
     expect(unavailable.chainError).toContain('unavailable');
     await expect(readHiringView({ ...key, policy }, { ...deps(), viewerGithubId: async () => 999 })).rejects.toMatchObject({ code: 'not_admin' });
   });
+  it('projects current-DAO signer eligibility while preserving the workspace candidate directory', async () => {
+    await db.adminSql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,title,payload)
+      VALUES (${key.workspaceId},'papercusp','PER-foreign-admin','person','PER-reviewer','{}'::jsonb)`;
+    await grantDaoHrAdmin({ ...key, daoSlug: 'another-dao', personId: 'PER-foreign-admin', bootstrapOperator: 'fixture' }, { sql: db.adminSql });
+    const view = await readHiringView({ ...key, policy: null }, deps());
+    expect(view.people.find(p => p.personId === 'PER-reviewer')).toMatchObject({ isHrAdmin: true });
+    expect(view.people.find(p => p.personId === 'PER-foreign-admin')).toMatchObject({ displayName: 'PER-reviewer', isHrAdmin: false });
+    expect(view.people.find(p => p.personId === 'PER-candidate')).toMatchObject({ isHrAdmin: false });
+    expect(view.people.filter(p => p.isHrAdmin).map(p => p.personId).sort()).toEqual(['PER-author','PER-reviewer','PER-reviewer2']);
+  });
 });

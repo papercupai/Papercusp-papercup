@@ -256,6 +256,23 @@ export function summarizePlanVerification(
 }
 
 /**
+ * P-004: the one phrase every profile-aware refusal uses to name the plan's profile and
+ * how it was set, so a reader can tell a declared general plan from an inferred coding one.
+ */
+export function describeVerificationProfile(plan: {
+  verificationProfile?: string | null;
+  verificationProfileSource?: string | null;
+}): string {
+  if (!isVerificationProfile(plan.verificationProfile)) {
+    return `Verification profile '${INFERRED_PLAN_PROFILE}' (unstamped, inferred)`;
+  }
+  const source = (PROFILE_SOURCES as readonly string[]).includes(plan.verificationProfileSource ?? '')
+    ? plan.verificationProfileSource
+    : 'stamped';
+  return `Verification profile '${plan.verificationProfile}' (${source})`;
+}
+
+/**
  * Resolve the verification modules for one plan item. A declared deliverable wins.
  * Otherwise today's non-code signals decide, and otherwise the profile default does.
  * A declared value outside the known vocabulary is ignored, so it can neither throw

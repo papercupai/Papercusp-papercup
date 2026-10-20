@@ -6,10 +6,12 @@ import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
 import { chooseWorkbenchOption, openWorkbenchDisclosure, openWorkbenchSelect, workbenchTextField, clickWorkbenchButton } from '../../../../../../scripts/lib/dao-workbench-controls.mts';
 import HiringViews from './HiringViews';
 import ContractSigningViews from './ContractSigningViews';
+import { Select } from '@/app/harness/Select';
 
 const scope = '[data-testid=dao-workspace]';
-const people = [{ personId: 'PER-admin', displayName: 'Native admin' },
-  { personId: 'PER-approver', displayName: 'Native approver' }, { personId: 'PER-candidate', displayName: 'Native candidate' }];
+const people = [{ personId: 'PER-admin', displayName: 'Native admin', isHrAdmin: true },
+  { personId: 'PER-approver', displayName: 'Native approver', isHrAdmin: true },
+  { personId: 'PER-candidate', displayName: 'Native candidate', isHrAdmin: false }];
 const hiring: HiringView = { actorPersonId: 'PER-admin', nonBinding: true, people, roles: [], offers: [], chain: null, chainError: null, history: [] };
 const offer: HiringView['offers'][number] = { workspaceId: 'ws', daoSlug: 'dao', offerId: 'offer', roleId: 'role',
   personId: 'PER-candidate', authoredBy: 'PER-admin', approvalsRequired: 1, approvedBy: ['PER-approver'], state: 'approved', preview: null,
@@ -25,6 +27,26 @@ async function select(label: string, option: string) {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('Native hiring controls with the real shared primitives', () => {
+  it('selects the exact person when two portaled options have the same display name', async () => {
+    const changed = vi.fn();
+    render(<section data-testid="dao-workspace"><Select ariaLabel="Candidate" value="" onChange={changed}
+      options={[{ value: 'PER-baseline', label: 'Native candidate' }, { value: 'PER-copy', label: 'Native candidate' }]} /></section>);
+    evaluate(openWorkbenchSelect('Candidate', scope));
+    await waitFor(() => expect(screen.getAllByRole('option', { name: 'Native candidate' })).toHaveLength(2));
+    evaluate(chooseWorkbenchOption('Native candidate', 'PER-copy'));
+    expect(changed).toHaveBeenCalledExactlyOnceWith('PER-copy');
+  });
+
+  it('refuses an ambiguous display name instead of silently selecting an earlier person', async () => {
+    const changed = vi.fn();
+    render(<section data-testid="dao-workspace"><Select ariaLabel="Candidate" value="" onChange={changed}
+      options={[{ value: 'PER-baseline', label: 'Native candidate' }, { value: 'PER-copy', label: 'Native candidate' }]} /></section>);
+    evaluate(openWorkbenchSelect('Candidate', scope));
+    await waitFor(() => expect(screen.getAllByRole('option', { name: 'Native candidate' })).toHaveLength(2));
+    expect(() => window.eval(chooseWorkbenchOption('Native candidate'))).toThrow('Ambiguous option');
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it('opens role creation before filling and submitting the rendered form, without closing it on a repeated open', async () => {
     const fetcher = vi.fn(async () => Response.json({ ok: true, hiring }));
     vi.stubGlobal('fetch', fetcher);

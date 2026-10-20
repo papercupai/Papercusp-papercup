@@ -528,7 +528,9 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
       skipped: 'flag-off',
       forcedPast: {
         reason: 'release recovery',
-        checks: ['audit_coverage_stale', 'audit_citations_unresolved'],
+        // P-004 (D-009): the item's only code citation no longer resolves, so it also has no
+        // resolving code evidence, and force records that third waived check too.
+        checks: ['audit_coverage_stale', 'audit_citations_unresolved', 'code_deliverable_unverified'],
       },
     });
   });

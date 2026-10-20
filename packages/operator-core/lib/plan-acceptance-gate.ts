@@ -86,7 +86,12 @@ import {
   type ExemptMapping,
   type NonCodeItemProof,
 } from './plan-requirement-realization';
-import { isReasonedNonCodeAudit, unfinishedItemsAreAuditedNonCode } from './plan-verification-profile';
+import {
+  describeVerificationProfile,
+  isReasonedNonCodeAudit,
+  resolveVerification,
+  unfinishedItemsAreAuditedNonCode,
+} from './plan-verification-profile';
 import { describeNonCodeDeliverableCodeEvidence, readNonCodeDeliverableShipEvidence } from './plan-verification-escape';
 import { genericCitationStaleReason, isGenericCitationKind, resolveGenericCitation } from './plan-audits-generic-citations';
 import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
@@ -137,6 +142,9 @@ export type PlanAcceptanceGateCode =
   | 'acceptance_unaudited'
   | 'audit_coverage_stale'
   | 'audit_citations_unresolved'
+  // plan-verification-profiles-2026-10-17 P-004 (R-11, D-009) — a code deliverable, in either
+  // profile, whose effective audit carries no code/test citation that resolves against the tree.
+  | 'code_deliverable_unverified'
   // design-to-code-coverage-seam-2026-09-02 P-014 — the activation↔completion JOIN.
   // The two audits were both present and never compared, so a requirement could be
   // recorded `covered` while its plan item was audited with no verifying citation.
@@ -823,6 +831,11 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // spec-coverage census needs to scope its clause read (P-008).
   let planHarnessSlug: string | null = null;
   let planContent: string | null = null;
+  // P-004 (D-009): the stamped profile the code-deliverable ship check resolves items under.
+  let planVerification: { verificationProfile: string | null; verificationProfileSource: string | null } = {
+    verificationProfile: null,
+    verificationProfileSource: null,
+  };
   let nonCodeItemProofs: NonCodeItemProof[] = [];
   try {
     const { sql } = getOrgPg();
@@ -837,10 +850,13 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         acceptance_bar_epoch: number | string | null;
         acceptance_bar_verified_revision?: number | string | null;
         owner_author_pubkey?: string | null;
+        verification_profile?: string | null;
+        verification_profile_source?: string | null;
       }[]
     >`
         SELECT plan_slug, harness_slug, template, template_slug, content, status, acceptance_bar_epoch,
-               acceptance_bar_verified_revision, owner_author_pubkey
+               acceptance_bar_verified_revision, owner_author_pubkey,
+               verification_profile, verification_profile_source
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
@@ -863,6 +879,10 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     }
     planHarnessSlug = row?.harness_slug ?? null;
     planContent = row?.content ?? null;
+    planVerification = {
+      verificationProfile: row?.verification_profile ?? null,
+      verificationProfileSource: row?.verification_profile_source ?? null,
+    };
     if (row?.template === RUBRIC_TEMPLATE_NAME) return { satisfied: true, skipped: 'rubric-template-plan' };
     if (row?.template_slug) return { satisfied: true, skipped: 'template-instance' };
     // EI-22078741539479611: a plan that is ALREADY shipped is past this gate. Every
@@ -1114,6 +1134,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const effectiveByItem = new Map(effectiveAudits.map((entry) => [entry.entry.itemId, entry]));
       const stale: string[] = [];
       const broken: string[] = [];
+      const codeUnverified: string[] = [];
       const hasRepoFileCitations = effectiveAudits.some(({ entry }) =>
         entry.citations.some(isRepoFileCitation),
       );
@@ -1189,6 +1210,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           if (staleReason) reasons.push(staleReason);
         }
 
+        // P-004 (R-11, D-009): whether this entry carries a code/test citation that RESOLVES
+        // against the tree. Set below, only after a citation passes resolution.
+        let hasResolvingCodeCitation = false;
         if (citationContext) {
           for (const citation of entry.citations) {
             // D-008: only code/test citations constitute verification. A path-backed doc
@@ -1206,6 +1230,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
             // already reported as `broken` and has no deployment position to ask about.
             if (isVerifyingCitation(citation) && citation.path?.trim()) {
               citedEvidencePaths.add(citation.path.trim());
+              hasResolvingCodeCitation = true;
             }
 
             const rel = citation.path?.trim() ?? '';
@@ -1229,6 +1254,19 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         }
 
         if (reasons.length > 0) stale.push(`${item.itemId}: ${reasons.join('; ')}`);
+
+        // P-004 (R-11, D-009): resolve under the declarations in force NOW (plan profile,
+        // declared deliverable, effective verdict), the same rule as the R-15 ship check.
+        const verification = resolveVerification(
+          { verificationProfile: planVerification.verificationProfile },
+          { deliverable: item.deliverable ?? null, auditVerdict: entry.verdict },
+        );
+        if (verification.codeDeliverable && !hasResolvingCodeCitation) {
+          codeUnverified.push(
+            `${item.itemId} (deliverable 'code' from ${verification.deliverableSource}; audit #${auditSeq} ` +
+            `verdict '${entry.verdict}')`,
+          );
+        }
       }
 
       // Keep the advertised refusal order: coverage/text/blob drift first, broken
@@ -1342,6 +1380,32 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
                 `so the record stops claiming otherwise. Unfulfilled requirements are not waived by force; ` +
                 `a follow-on task or disclosure is not fulfillment of the original promise.`,
             })) return collectedRefusal();
+        }
+      }
+
+      // P-004 (R-11, SPEC-P-004, D-009): a code deliverable keeps the code module's
+      // code-truth check in EITHER profile. Evidence, not the verdict, decides, so the
+      // completion audit's "verdicts record" rule holds. After the realization join, so its
+      // more specific requirement refusal leads in first-failure mode. Force-waivable like
+      // its code-truth siblings: a code item in a general plan gets what a coding plan gives it.
+      if (codeUnverified.length > 0) {
+        if (force) {
+          forcedChecks.push('code_deliverable_unverified');
+        } else if (refuse({
+            satisfied: false,
+            code: 'code_deliverable_unverified',
+            message:
+              `plan '${planSlug}' cannot be marked shipped: ${codeUnverified.length} code deliverable(s) have no ` +
+              `code/test citation that resolves against the tree — ${codeUnverified.slice(0, 5).join('; ')}` +
+              `${codeUnverified.length > 5 ? ` (+${codeUnverified.length - 5} more)` : ''}. ` +
+              `${describeVerificationProfile(planVerification)}; failing verification module 'code' ` +
+              `(check 'code-truth-audit'). A code deliverable keeps full code verification in any profile: ` +
+              `re-run plans:audit for the listed item(s) citing the code/test files that implement them. If an ` +
+              `item's deliverable is genuinely not source, audit it 'not-code' with a note (undeclared deliverable ` +
+              `only), or lower its declared deliverable with a recorded plan Decision and a fresh activation audit. ` +
+              `To ship anyway, pass force:{ reason }.`,
+          })) {
+          return collectedRefusal();
         }
       }
     }
@@ -2210,8 +2274,8 @@ export function planAcceptanceRepairAction(
   if (verdict.code === 'acceptance_rubric_missing') {
     return { kind: 'contract-repair', nextVerb: diagnostic, repairVerb: 'rubrics:propose', instruction };
   }
-  if (['acceptance_unaudited', 'audit_coverage_stale', 'audit_citations_unresolved', 'requirement_unrealized']
-    .includes(verdict.code ?? '')) {
+  if (['acceptance_unaudited', 'audit_coverage_stale', 'audit_citations_unresolved', 'code_deliverable_unverified',
+    'requirement_unrealized'].includes(verdict.code ?? '')) {
     return { kind: 'evidence-repair', nextVerb: diagnostic, repairVerb: 'plans:audit', instruction };
   }
   return { kind: 'diagnostic', nextVerb: diagnostic, instruction };

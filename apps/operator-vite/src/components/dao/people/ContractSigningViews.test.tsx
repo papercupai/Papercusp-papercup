@@ -11,7 +11,8 @@ const offer:HiringView['offers'][number]={workspaceId:'ws',daoSlug:'dao',offerId
 const templates=[{templateKey:'employment',documentKind:'employment-agreement',engagementType:'employee',jurisdiction:'US-DE',title:'Employment agreement',latestVersion:3},{templateKey:'equity',documentKind:'equity-grant-agreement',engagementType:'employee',jurisdiction:'US-DE',title:'Equity agreement',latestVersion:2},
   {templateKey:'wrong',documentKind:'employment-agreement',engagementType:'contractor',jurisdiction:'UK',title:'Unrelated agreement',latestVersion:1}];
 const fetcher=vi.fn(),changed=vi.fn();
-const show=()=>render(<ContractSigningViews daoSlug="dao" offer={offer} people={[{personId:'PER-candidate',displayName:'Candidate'},{personId:'PER-company',displayName:'Company signer'}]} onChanged={changed}/>);
+const people:HiringView['people']=[{personId:'PER-candidate',displayName:'Candidate',isHrAdmin:false},{personId:'PER-company',displayName:'Company signer',isHrAdmin:true}];
+const show=(rows=people)=>render(<ContractSigningViews daoSlug="dao" offer={offer} people={rows} onChanged={changed}/>);
 describe('Contract signing Workbench',()=>{
   beforeEach(()=>{fetcher.mockReset().mockImplementation(async()=>Response.json({ok:true,templates,execution:null}));changed.mockReset();vi.stubGlobal('fetch',fetcher);});
   afterEach(()=>{cleanup();vi.unstubAllGlobals();});
@@ -33,6 +34,20 @@ describe('Contract signing Workbench',()=>{
     expect(screen.getByText(/Non-binding sample/)).toBeTruthy();expect(screen.queryByText('Binding contract; hire proposal executed.')).toBeNull();
     expect((screen.getByRole('link',{name:'Download sealed contract'})as HTMLAnchorElement).getAttribute('href')).toBe('/api/pot/dao/contracts/offer/document?kind=sealed');
     expect(screen.getByRole('link',{name:'Download signing audit certificate'})).toBeTruthy();
+  });
+  it('offers only current DAO HR admins and invalidates a selected signer removed by a refresh',async()=>{
+    const rows=[...people,{personId:'PER-foreign',displayName:'Other DAO admin',isHrAdmin:false},
+      {personId:'PER-unknown',displayName:'Unverified eligibility'} as HiringView['people'][number]];
+    const view=show(rows);
+    const form=await screen.findByRole('form',{name:'Generate contract'});
+    expect(screen.queryByRole('option',{name:'Other DAO admin'})).toBeNull();
+    expect(screen.queryByRole('option',{name:'Unverified eligibility'})).toBeNull();
+    fireEvent.change(screen.getByLabelText('Company countersigner'),{target:{value:'PER-company'}});
+    expect((screen.getByRole('button',{name:'Generate contract'})as HTMLButtonElement).disabled).toBe(false);
+    view.rerender(<ContractSigningViews daoSlug="dao" offer={offer} people={rows.map(p=>({...p,isHrAdmin:false}))} onChanged={changed}/>);
+    expect((screen.getByRole('button',{name:'Generate contract'})as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.submit(form);
+    expect(fetcher.mock.calls.filter(c=>c[1]?.method==='POST')).toEqual([]);
   });
   it('describes an eligible signed contract as conditional until execution',async()=>{
     fetcher.mockResolvedValue(Response.json({ok:true,templates,execution:{contractId:'contract',state:'signed',bindingEligible:true,documentHash:null,completedAt:null,signingLinks:null}}));

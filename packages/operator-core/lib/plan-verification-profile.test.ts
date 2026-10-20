@@ -13,6 +13,7 @@ import {
   VERIFICATION_MODULES,
   VERIFICATION_MODULE_CHECKS,
   VERIFICATION_PROFILES,
+  describeVerificationProfile,
   executableProofExemption,
   isNonAutomatedBehaviorClass,
   isNonCodeAuditVerdict,
@@ -159,5 +160,29 @@ describe('the routed exemption predicates', () => {
     expect(unfinishedItemsAreAuditedNonCode([{ itemId: 'P-001' }, { itemId: 'P-002' }], audits)).toBe(false);
     expect(unfinishedItemsAreAuditedNonCode([{ itemId: 'P-003' }], audits)).toBe(false);
     expect(unfinishedItemsAreAuditedNonCode([], audits)).toBe(false);
+  });
+});
+
+describe('describeVerificationProfile (P-004: every refusal names the profile)', () => {
+  it('names a stamped profile with its recorded source', () => {
+    expect(describeVerificationProfile({ verificationProfile: 'general', verificationProfileSource: 'declared' }))
+      .toBe("Verification profile 'general' (declared)");
+    expect(describeVerificationProfile({ verificationProfile: 'coding', verificationProfileSource: 'harness-default' }))
+      .toBe("Verification profile 'coding' (harness-default)");
+    expect(describeVerificationProfile({ verificationProfile: 'coding', verificationProfileSource: 'backfill' }))
+      .toBe("Verification profile 'coding' (backfill)");
+  });
+
+  it('says "stamped" when the profile is valid but its source is not a known one', () => {
+    expect(describeVerificationProfile({ verificationProfile: 'general', verificationProfileSource: null }))
+      .toBe("Verification profile 'general' (stamped)");
+    expect(describeVerificationProfile({ verificationProfile: 'general', verificationProfileSource: 'bogus' }))
+      .toBe("Verification profile 'general' (stamped)");
+  });
+
+  it('names the inferred coding profile for an unstamped or invalid profile', () => {
+    expect(describeVerificationProfile({})).toBe("Verification profile 'coding' (unstamped, inferred)");
+    expect(describeVerificationProfile({ verificationProfile: 'weird', verificationProfileSource: 'declared' }))
+      .toBe("Verification profile 'coding' (unstamped, inferred)");
   });
 });
