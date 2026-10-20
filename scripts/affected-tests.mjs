@@ -45,7 +45,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { readFile as readFileAsync } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, matchesGlob, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadavg, availableParallelism, tmpdir, homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -132,6 +132,16 @@ import {
   restoreCandidateCheckpointForReuse,
 } from "./lib/targeted-task-reuse.mjs";
 import { exactRadiusAdmission } from "./lib/exact-radius-admission.mjs";
+import {
+  crossRootTestPatterns,
+  isUnderDir,
+  isVitestConfigPath,
+  propagationSeeds,
+  reachableElsewhere,
+  stemSearchPattern,
+  testFileStem,
+  testFilesNeedingReachability,
+} from "./lib/test-only-propagation.mjs";
 import {
   decideRetry,
   deriveRetryBudget,
@@ -5098,8 +5108,94 @@ async function graphSuggestionsFor(changed) {
   return { ...report, source: resolved.source };
 }
 
+// WI-6554700010018047 case (b), green-main-ratchet-convergence-2026-10-17#D-030 #4: a
+// workspace whose only changed paths are unreachable Vitest test files stays affected but
+// does not SEED the reverse-dependency walk — a test file is a leaf no dependent's suite can
+// observe. scripts/lib/test-only-propagation.mjs lists every case that still seeds. Any
+// search failure falls back to the full walk (every changed test file counts as reachable).
+const TEST_REFERENCE_PATHSPECS = [
+  "*.ts", "*.tsx", "*.mts", "*.cts", "*.js", "*.jsx", "*.mjs", "*.cjs", ":!.papercusp/",
+];
+
+/** Tracked lines that may reference one of these test-file stems; null = search failed. */
+function testReferenceLines(stems) {
+  if (stems.length === 0) return [];
+  const args = ["grep", "-I", "--recurse-submodules", "-z", "-E"];
+  for (const stem of stems) args.push("-e", stemSearchPattern(stem));
+  args.push("--", ...TEST_REFERENCE_PATHSPECS);
+  const r = spawnSync("git", args, {
+    cwd: ROOT,
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  if (r.error) return null;
+  if (r.status === 1) return [];
+  if (r.status !== 0) return null;
+  const lines = [];
+  for (const raw of r.stdout.split("\n")) {
+    const nul = raw.indexOf("\0");
+    if (nul > 0) lines.push({ path: raw.slice(0, nul), line: raw.slice(nul + 1) });
+  }
+  return lines;
+}
+
+/** Every tracked Vitest config with its source; null when they cannot all be read. */
+function trackedVitestConfigs() {
+  const r = spawnSync("git", ["ls-files", "--recurse-submodules", "-z"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  if (r.error || r.status !== 0) return null;
+  try {
+    return r.stdout
+      .split("\0")
+      .filter(isVitestConfigPath)
+      .map((path) => ({ path, text: readFileSync(join(ROOT, path), "utf8") }));
+  } catch {
+    return null;
+  }
+}
+
+function testOnlyPropagationSeeds({ directlyChanged, ownedChangedPaths, alwaysPropagate }) {
+  const workspaceDirs = new Map([...wsByName].map(([name, meta]) => [name, meta.dir]));
+  const testFiles = testFilesNeedingReachability({ ownedChangedPaths, workspaceDirs, alwaysPropagate });
+  if (testFiles.length === 0) return new Set(directlyChanged);
+  const dirs = [...wsByDir.keys()];
+  let reachable;
+  try {
+    const configs = trackedVitestConfigs();
+    const lines = configs === null
+      ? null
+      : testReferenceLines([...new Set(testFiles.map((t) => testFileStem(t.file)))]);
+    reachable = reachableElsewhere({
+      testFiles,
+      lines,
+      crossRootPatterns: configs === null ? [] : crossRootTestPatterns(configs),
+      matchesGlob,
+      inWorkspace: (p) => dirs.some((dir) => isUnderDir(dir, p)),
+    });
+    if (lines === null) errSync("TEST_ONLY_PROPAGATION search=failed — every changed test file treated as reachable");
+  } catch (err) {
+    errSync(`TEST_ONLY_PROPAGATION search=error(${(err && err.message) || err}) — full reverse-dependency walk`);
+    return new Set(directlyChanged);
+  }
+  const { seeds, held } = propagationSeeds({ directlyChanged, ownedChangedPaths, alwaysPropagate, reachable });
+  for (const h of held) {
+    errSync(
+      `TEST_ONLY_PROPAGATION held=${h.workspace} testFiles=${h.testFiles.length} — affected itself; its dependents are not selected by these unreachable test files`,
+    );
+  }
+  return seeds;
+}
+
 async function resolveAffected(changed) {
   const directlyChanged = new Set();
+  /** workspace name -> changed paths inside that workspace's own directory */
+  const ownedChangedPaths = new Map();
+  const routeSelected = new Set();
   for (const file of changed) {
     let matchedAWorkspace = false;
     for (const ws of wsByDir.values()) {
@@ -5112,6 +5208,8 @@ async function resolveAffected(changed) {
         file.startsWith(`${ws.dir}/`)
       ) {
         directlyChanged.add(ws.name);
+        if (!ownedChangedPaths.has(ws.name)) ownedChangedPaths.set(ws.name, []);
+        ownedChangedPaths.get(ws.name).push(file);
         matchedAWorkspace = true;
       }
     }
@@ -5121,7 +5219,10 @@ async function resolveAffected(changed) {
     if (matchedAWorkspace) continue;
     for (const route of NON_WORKSPACE_PATH_ROUTES) {
       if (!file.startsWith(route.prefix)) continue;
-      if (wsByName.has(route.workspace)) directlyChanged.add(route.workspace);
+      if (wsByName.has(route.workspace)) {
+        directlyChanged.add(route.workspace);
+        routeSelected.add(route.workspace);
+      }
     }
   }
 
@@ -5142,9 +5243,16 @@ async function resolveAffected(changed) {
     errSync(`GRAPH_DEPENDENCY_PATH ${JSON.stringify(path)}`);
   if (graphReport.pathsTruncated) errSync('GRAPH_DEPENDENCY_PATHS truncated=true selection=preserved');
 
-  // Walk reverse-deps transitively
+  // Walk reverse-deps transitively — from the seeds only. Every directly changed workspace
+  // stays affected; one whose only changes are unreachable test files does not pull its
+  // dependents in (WI-6554700010018047 case b).
+  const seeds = testOnlyPropagationSeeds({
+    directlyChanged,
+    ownedChangedPaths,
+    alwaysPropagate: new Set([...routeSelected, ...(merged.added ?? [])]),
+  });
   const affected = new Set(directlyChanged);
-  const queue = [...directlyChanged];
+  const queue = [...seeds];
   while (queue.length) {
     const name = queue.shift();
     const dependents = reverseDeps.get(name);

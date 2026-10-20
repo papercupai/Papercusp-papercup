@@ -46,6 +46,8 @@ import '../audit';
 import '../../rubrics/propose';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { evaluatePlanAcceptanceGate } from '../../../plan-acceptance-gate';
+import { defaultReadPlanItems, readAcceptanceBarContractSnapshot } from '../../../acceptance-bar-contract-snapshot';
+import { resolveVerification } from '../../../plan-verification-profile';
 import { hashPlanContent } from '../content-hash';
 import { runWithWorkspace } from '../../../workspace-als';
 import { getRubric, ensureFirstPartyRubricsSeeded, __resetRubricSeedStateForTests } from '../../../rubrics';
@@ -294,6 +296,64 @@ describe('R-10: a general plan ships on generic evidence alone', () => {
     const res = await ship(slug);
     expect(res.ok, brief(res)).not.toBe(true);
     expect(await storedStatus(slug)).not.toBe('shipped');
+  });
+});
+
+/**
+ * R-10 for a plan WITH requirements (D-010). A requirement BAR carries a test layer, so the ship
+ * snapshot grades each BAR clause through the deliverable resolver, fed by the plan's stamped
+ * profile and each item's declared deliverable. The projection is pinned in
+ * acceptance-bar-contract-snapshot.test.ts; this case pins the half a unit test cannot see: the
+ * SQL that reads both values out of real Postgres.
+ */
+describe('R-10 with requirements: the ship snapshot reads profile and deliverables from Postgres', () => {
+  async function makeDeclaredPlan(slug: string, profile: 'coding' | 'general'): Promise<void> {
+    const created = await call('plans:new', { slug, title: `Genship ${slug}`, verificationProfile: profile, force: true });
+    expect(created?.ok, brief(created)).toBe(true);
+    const added = await call('plans:add-item', {
+      slug,
+      phase: 'Phase 1',
+      importance: 'normal',
+      items: [
+        { text: 'Write the onboarding runbook' },
+        { text: 'Publish the vendor comparison memo', deliverable: 'doc' },
+        { text: 'Ship the account import script', deliverable: 'code' },
+      ],
+    });
+    expect(added?.ok, brief(added)).toBe(true);
+  }
+
+  async function codeDeliverableByItem(slug: string): Promise<{ profile: string | null; code: Record<string, boolean> }> {
+    const snapshot = await runWithWorkspace(WS, () => readAcceptanceBarContractSnapshot(slug, {}, { harnessSlug: HARNESS }));
+    expect(snapshot.plan, `snapshot must read plan ${slug}`).toBeTruthy();
+    const items = await runWithWorkspace(WS, () => defaultReadPlanItems(snapshot.plan!));
+    expect(items.rows.map((row) => row.itemId)).toEqual(['P-001', 'P-002', 'P-003']);
+    const code: Record<string, boolean> = {};
+    for (const row of items.rows) {
+      code[row.itemId] = resolveVerification(
+        { verificationProfile: snapshot.plan!.verificationProfile ?? null },
+        { deliverable: row.deliverable ?? null },
+      ).codeDeliverable;
+    }
+    return { profile: snapshot.plan!.verificationProfile ?? null, code };
+  }
+
+  it('resolves an undeclared item in a general plan as non-code and keeps a declared code item code', async () => {
+    const slug = 'zzz-genship-general-reqs-2026-10-20';
+    await makeDeclaredPlan(slug, 'general');
+    const { profile, code } = await codeDeliverableByItem(slug);
+    expect(profile).toBe('general');
+    expect(code).toEqual({ 'P-001': false, 'P-002': false, 'P-003': true });
+  });
+
+  // CONTROL: the same items under the coding profile. Only the stamped profile differs, so the
+  // undeclared item flipping to code proves the read profile (not a constant) drives the verdict.
+  it('control: the same items under the coding profile resolve the undeclared item as code', async () => {
+    const slug = 'zzz-genship-coding-reqs-2026-10-20';
+    await makeDeclaredPlan(slug, 'coding');
+    const { profile, code } = await codeDeliverableByItem(slug);
+    expect(profile).toBe('coding');
+    expect(code).toEqual({ 'P-001': true, 'P-002': false, 'P-003': true });
   });
 });
 

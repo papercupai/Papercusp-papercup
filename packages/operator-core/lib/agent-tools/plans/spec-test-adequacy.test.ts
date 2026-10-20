@@ -6121,6 +6121,90 @@ describe('non-code clauses can reach an all-pass verdict (EI-23793489732627099)'
   });
 });
 
+// plan-verification-profiles-2026-10-17 P-004 (R-10, D-009). A requirement BAR declares at least
+// one test layer unless its check is explicitly manual, so a general plan's clause usually carries
+// one. The resolver's non-code verdict must then lift BOTH the executable-proof floor AND layer
+// reachability: a test layer names where a CODE test runs, and a non-code deliverable has none.
+describe('a non-code deliverable is graded without code-test layers (plan-verification-profiles P-004)', () => {
+  // requiredEvidence names no fixture: the default clause's 'integration fixture' declares fixture
+  // use, which (correctly) makes fixture calibration applicable whatever the deliverable is.
+  const layered = clause({
+    behaviorClass: 'happy-path', requiredTestLayers: ['integration'], requiredEvidence: ['reviewed runbook'],
+  });
+  function manualRow(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
+    return evidence({
+      evidenceKind: 'manual',
+      evidenceRef: 'work-item:WI-10002010',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      fingerprints: {
+        sourceFingerprint: 'git:abc', testFingerprint: null, fixtureFingerprint: null,
+        rubricFingerprint: null, environmentFingerprint: null,
+      },
+      // No fixtureFree attestation: binder-authored fixture absence is never trusted, and honest
+      // non-code evidence binds no fixture-dependent proof, so fixture calibration is n/a on its own.
+      details: {
+        adequacy: {
+          fixtureCalibrated: true, falsifiable: true, pathReachable: true,
+          oracleIndependent: true, collected: true, skipped: false, executed: true, outcome: 'passed', targeted: true,
+        },
+      },
+      ...over,
+    });
+  }
+
+  it('passes a layered clause on manual evidence when the resolver says non-code', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: layered, evidence: [manualRow()], classRef: 'plan-class-feature-ship', codeDeliverable: false,
+    });
+    expect(result.requiredProofFloor).toBe('none');
+    expect(result.ratings['correct-layer'].rating).toBe('not-applicable');
+    expect(result.ratings['correct-layer'].evidence).toContain('non-code deliverable');
+    expect(result.wouldBlock).toEqual([]);
+    expect(result.verdict).toBe('pass');
+  });
+
+  // NEGATIVE CONTROL: the same clause and evidence for a code deliverable still owes a test of
+  // the declared layer, so the case above is the resolver's doing and not a weaker evaluator.
+  it('control: the same clause and evidence for a code deliverable does not pass', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: layered, evidence: [manualRow()], classRef: 'plan-class-feature-ship', codeDeliverable: true,
+    });
+    expect(result.requiredProofFloor).not.toBe('none');
+    expect(result.ratings['correct-layer'].rating).not.toBe('not-applicable');
+    expect(result.verdict).not.toBe('pass');
+  });
+
+  // D-005 fail-safe: an unread deliverable (null/absent) is code, never an exemption.
+  it('treats an unread deliverable as code', () => {
+    for (const codeDeliverable of [null, undefined]) {
+      const result = evaluateSpecTestAdequacy({
+        clause: layered, evidence: [manualRow()], classRef: 'plan-class-feature-ship', codeDeliverable,
+      });
+      expect(result.ratings['correct-layer'].rating, String(codeDeliverable)).not.toBe('not-applicable');
+      expect(result.verdict, String(codeDeliverable)).not.toBe('pass');
+    }
+  });
+
+  // The layer exemption must not grade away adverse evidence elsewhere: a falsifiable=false
+  // report still blocks a non-code deliverable, exactly as it does for a non-code task kind.
+  it('still blocks adverse evidence on a non-code deliverable', () => {
+    const contradicted = manualRow({
+      details: {
+        adequacy: {
+          fixtureCalibrated: true, falsifiable: false, pathReachable: true, oracleIndependent: true,
+          collected: true, skipped: false, executed: true, outcome: 'passed', targeted: true,
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: layered, evidence: [contradicted], classRef: 'plan-class-feature-ship', codeDeliverable: false,
+    });
+    expect(result.ratings.falsifiability.rating).toBe('fail');
+    expect(result.verdict).toBe('fail');
+  });
+});
+
 // EI-23499682118230306 recurrence guard — the SAME drift class as EI-13292, one pair up.
 // `ADEQUACY_CRITERIA` (what the evaluator RATES) and rubrics/spec-test-adequacy/rubric.json
 // (what the rubric DECLARES) are two copies of one list, and they silently diverged: the

@@ -27,6 +27,7 @@ import {
   type PlanClassRubricRef,
 } from './spec-test-adequacy';
 import { resolveSourceBarTestRequirements, type SourceBarRubricCache } from './source-bar-test-requirements';
+import { clauseDeliverableKey, readClauseCodeDeliverables } from '../../plan-verification-escape';
 import { getBuildInfo, type BuildInfo } from '../../build-info';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 import { getWorkItem } from '../../work-items';
@@ -532,11 +533,18 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
       }))
     : evidence;
   const sourceBarTestRequirements = await resolveSourceBarTestRequirements(clause.sourceBar);
+  // P-004 (D-010): replay on the deliverable verdict the live grade uses. The current verdict
+  // stands in for the audit-time one; lowering it after activation is refused (P-005, D-008).
+  const codeDeliverables = args.harness
+    ? await readClauseCodeDeliverables({ harnessSlug: args.harness, workspaceId, clauses: [clause] })
+      .catch(() => new Map<string, boolean>())
+    : new Map<string, boolean>();
   const evaluated = evaluateSpecTestAdequacy({
     clause,
     evidence: historicalEvidence,
     classRef: input.args.classRef,
     harness: args.harness,
+    codeDeliverable: codeDeliverables.get(clauseDeliverableKey(clause.planSlug, clause.planItemId)),
     sourceBarTestRequirements,
     current,
     rerunSelection: {
@@ -1236,6 +1244,13 @@ export default defineTool({
     }
     const now = args.now ? new Date(args.now) : new Date();
     const sourceBarRubricCache: SourceBarRubricCache = new Map();
+    // plan-verification-profiles P-004 (D-010): grade each clause on the floor its work-item
+    // completion uses, resolved from the plan's stamped profile and the item's declared
+    // deliverable. A failed read leaves every clause absent, and absent is code (D-005 fails
+    // safe), so this can only lower a floor on a positive non-code resolution.
+    const codeDeliverables = harnessSlug
+      ? await readClauseCodeDeliverables({ harnessSlug, clauses: eligible }).catch(() => new Map<string, boolean>())
+      : new Map<string, boolean>();
     const rows = await timePhase('evaluation', () => Promise.all(eligible.map(async (clause) => {
       const sourceBarTestRequirements = await resolveSourceBarTestRequirements(
         clause.sourceBar,
@@ -1260,6 +1275,7 @@ export default defineTool({
         disclosedGapEvidence: clauseDisclosedGapEvidence,
         classRef,
         harness: harnessSlug,
+        codeDeliverable: codeDeliverables.get(clauseDeliverableKey(clause.planSlug, clause.planItemId)),
         sourceBarTestRequirements,
         current: (() => {
           const merged = new Map<string, EvidenceCurrentInput>();

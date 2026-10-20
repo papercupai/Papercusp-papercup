@@ -6,8 +6,16 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../');
 const GENERIC_ROOT = join(REPO_ROOT, 'libs/generic');
 const VITEST_CONFIG_RE = /^vitest\.config\.[^/]+$/;
-const RECORDED_LAYER_RE =
-  /\bpapercuspTestLayer\s*:\s*['"](?:unit|integration|e2e|llm|browser)['"]/;
+const LAYER_VALUE = String.raw`['"](?:unit|integration|e2e|llm|browser)['"]`;
+// Two explicit forms record a layer: a hand-rolled `provide: { papercuspTestLayer: '<layer>' }`,
+// or the shared helper `defineVitestConfig({ layer: '<layer>' })`, which provides it for you
+// (WI-6554700010018003 moved 13 of these packages onto the helper).
+const RECORDED_LAYER_RE = new RegExp(String.raw`\bpapercuspTestLayer\s*:\s*` + LAYER_VALUE);
+const HELPER_LAYER_RE = new RegExp(
+  String.raw`\bdefineVitestConfig\s*\(\s*\{[^]*?\blayer\s*:\s*` + LAYER_VALUE,
+);
+const HELPER_SOURCE = join(REPO_ROOT, 'libs/test-config/src/vitest-config.ts');
+const HELPER_PROVIDES_LAYER_RE = /\bprovide\s*:\s*\{\s*papercuspTestLayer\s*:\s*layer\s*\}/;
 const CLASS_FIX_PACKAGES = [
   'audio-dsp', 'bench-metrics', 'cache', 'control-mutation', 'debounce-coalesce',
   'dependency-order', 'desktop-ipc', 'embedded-pg-discovery', 'facets', 'image-blankness',
@@ -50,10 +58,20 @@ describe('config-less generic Vitest enrollment', () => {
       const packageDir = join(GENERIC_ROOT, name);
       const configPath = join(packageDir, 'vitest.config.ts');
       if (!existsSync(configPath)) return ['libs/generic/' + name + '/vitest.config.ts (missing)'];
-      return RECORDED_LAYER_RE.test(readFileSync(configPath, 'utf8'))
+      const source = readFileSync(configPath, 'utf8');
+      return RECORDED_LAYER_RE.test(source) || HELPER_LAYER_RE.test(source)
         ? []
         : ['libs/generic/' + name + '/vitest.config.ts'];
     });
     expect(unenrolled).toEqual([]);
+  });
+
+  it('accepts the helper form only while defineVitestConfig still provides the layer it is given', () => {
+    // The helper form is explicit only because the helper forwards `layer` as the recorded
+    // papercuspTestLayer; if that forwarding goes, the accepted configs stop recording a layer.
+    expect(HELPER_PROVIDES_LAYER_RE.test(readFileSync(HELPER_SOURCE, 'utf8'))).toBe(true);
+    expect(HELPER_LAYER_RE.test("defineVitestConfig({ include: ['x'], layer: 'unit' })")).toBe(true);
+    expect(HELPER_LAYER_RE.test("defineVitestConfig({ layer: 'bogus' })")).toBe(false);
+    expect(HELPER_LAYER_RE.test("defineConfig({ test: { layer: 'unit' } })")).toBe(false);
   });
 });

@@ -56,8 +56,20 @@ vi.mock('../../scorecards', async (original) => ({
   ...(await original<typeof import('../../scorecards')>()),
   readScorecardEvidence: scorecardMocks.readEvidence,
 }));
+// plan-verification-profiles P-004: the deliverable read is Postgres; every case here is a unit
+// case, so it answers "nothing read" (every clause stays code) unless a case says otherwise.
+const deliverableMocks = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('../../plan-verification-escape', async (original) => ({
+  ...(await original<typeof import('../../plan-verification-escape')>()),
+  readClauseCodeDeliverables: deliverableMocks.read,
+}));
+beforeEach(() => {
+  deliverableMocks.read.mockReset();
+  deliverableMocks.read.mockResolvedValue(new Map());
+});
 
 import tool from './evaluate-spec-test-adequacy';
+import { clauseDeliverableKey } from '../../plan-verification-escape';
 import { replaySpecTestAdequacyForHistoricalAudit } from './evaluate-spec-test-adequacy';
 import { evaluateSpecTestAdequacy } from './spec-test-adequacy';
 import { readScorecardEvidence } from '../../scorecards';
@@ -1418,6 +1430,28 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(summary.rows[0].draggingBindingIds['correct-layer']).toContain(37231);
     expect(full.rows[0].ratings['correct-layer'].evidence.length).toBeGreaterThan(1200);
     expect(summary.rows[0].wouldBlock).toEqual(full.rows[0].wouldBlock);
+  });
+
+  // plan-verification-profiles P-004 (D-010): the scorecard path grades a clause on the same
+  // deliverable verdict as the completion gate, so a non-code item owes no code test layer.
+  it('grades the layer part on the clause plan item deliverable verdict', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const base = { harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship', specIds: ['SPEC-001'], detail: 'full' };
+    const key = clauseDeliverableKey('plan-a', 'P-001');
+    const nonCodeText = 'resolves to a non-code deliverable';
+
+    deliverableMocks.read.mockResolvedValue(new Map([[key, false]]));
+    const nonCode = await call(base);
+    expect(deliverableMocks.read).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }));
+    expect(nonCode.rows[0].ratings['correct-layer'].evidence).toContain(nonCodeText);
+
+    // CONTROL: the same clause and evidence on a code deliverable, and on an unread one (absent
+    // from the map, D-005 fail-safe), keep the layer requirement.
+    for (const verdicts of [new Map([[key, true]]), new Map<string, boolean>()]) {
+      deliverableMocks.read.mockResolvedValue(verdicts);
+      const code = await call(base);
+      expect(code.rows[0].ratings['correct-layer'].evidence, String(verdicts.size)).not.toContain(nonCodeText);
+    }
   });
 
   it('preserves exact work-item, evidence-ref, and plan-item selectors in the emitted rerun recipe', async () => {

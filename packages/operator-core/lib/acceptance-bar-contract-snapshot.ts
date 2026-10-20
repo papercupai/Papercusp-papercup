@@ -1882,7 +1882,12 @@ async function defaultReadRubrics(planSlug: string, scope?: { harnessSlug: strin
   return bounded(rows, ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT);
 }
 
-async function defaultReadPlanItems(
+/**
+ * The ship snapshot's plan-item read, including each item's DECLARED deliverable
+ * (plan-verification-profiles P-004). Exported so an integration test can pin the SQL that
+ * feeds the deliverable resolver against real Postgres.
+ */
+export async function defaultReadPlanItems(
   plan: AcceptanceBarSubjectPlanSource,
 ): Promise<BoundedAcceptanceBarRows<AcceptanceBarPlanItemSource>> {
   const { sql } = getOrgPg();

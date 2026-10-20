@@ -108,6 +108,10 @@
     // `gen:declarations` reported "emitted 44 declaration file(s)" and exit 0 while
     // emitting nothing for it.
     "scripts/lib/load-suspect.mjs",
+    // WI-6554700010018047 case (b) — which directly changed workspaces seed the
+    // reverse-dependency walk when only test files changed. Imported directly by
+    // affected-tests-test-only-propagation.test.ts.
+    "scripts/lib/test-only-propagation.mjs",
     // file-level-test-selection-2026-08-17 — the static reverse-import index behind
     // `--related`. Registered for the FIRST reason this list exists: it is imported
     // directly by related-tests-selection.test.ts, which is what makes the selection

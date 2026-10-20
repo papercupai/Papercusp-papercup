@@ -117,6 +117,7 @@ import { subscribeTopic } from '../coordination/topics';
 import { subscribeEventKey } from '../coordination/event-subscriptions';
 import { resolveProducerHealthCertificate, resolveProgressLeaseCertificate } from './producer-health';
 import { compileJsonSchema } from '../../json-schema-validation';
+import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof watch.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -594,5 +595,26 @@ describe('WI-10005697: standing pattern watch dedupe', () => {
 
     expect(findMatchingActiveStandingWatch).not.toHaveBeenCalled();
     expect(registerAwait).toHaveBeenCalledTimes(2);
+  });
+});
+
+// WI-6554700010017215 (papercusp.com /architecture audit, iter 108): the timeout_sec
+// description kept saying "default 4h" for months after await-timeout-fallback-defaults-2026-07-03
+// moved the one-shot default to 30min. It is now derived from the constant; this pins the derivation.
+describe('timeout_sec description tracks the real one-shot default', () => {
+  it('states AWAIT_DEFAULT_TIMEOUT_SEC in minutes on every published branch, with no hour-valued default', () => {
+    const published = toArgsJsonSchema('watch:create', watch.args as never) as {
+      anyOf?: Array<{ properties?: Record<string, { description?: string }> }>;
+      oneOf?: Array<{ properties?: Record<string, { description?: string }> }>;
+    };
+    const branches = published.anyOf ?? published.oneOf ?? [];
+    const descriptions = branches
+      .map((branch) => branch.properties?.timeout_sec?.description)
+      .filter((d): d is string => typeof d === 'string');
+    expect(descriptions.length).toBeGreaterThan(0);
+    for (const d of descriptions) {
+      expect(d).toContain(`default ${AWAIT_DEFAULT_TIMEOUT_SEC / 60}min for a one-shot`);
+      expect(d).not.toMatch(/default \d+h\b/);
+    }
   });
 });

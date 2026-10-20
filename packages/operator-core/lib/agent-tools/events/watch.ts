@@ -143,7 +143,7 @@ const watchSharedShape = {
     .positive()
     .max(MAX_TIMEOUT_SEC)
     .optional()
-    .describe('Deadline. wake:true → see on_timeout (default 4h for a one-shot). wake:false → auto-drops the subscription (TTL).'),
+    .describe(`Deadline. wake:true → see on_timeout (default ${DEFAULT_TIMEOUT_SEC / 60}min for a one-shot). wake:false → auto-drops the subscription (TTL).`),
   on_timeout: z
     .enum(['wake', 'expire'])
     .optional()
