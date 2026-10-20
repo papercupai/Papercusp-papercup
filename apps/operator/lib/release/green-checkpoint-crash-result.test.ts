@@ -771,12 +771,15 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
 describe('EI-26520203347017584: an integration-checkout input defect is advised as a CHECKOUT repair, not a store repair', () => {
   const CANDIDATE = '2df9d19e197c0ff10d18f9ad1a05fe584f790d05';
   const SUBMODULE_SHA = '9f3c2b1a0e8d7c6b5a49382716f5e4d3c2b1a090';
+  // The gate's real selector invocation (shape copied from the drill pot's gate_health detail,
+  // paths shortened): the candidate's inputs are read from the `--integration` checkout.
+  const CHECKOUT = '/clones/papercusp-pr-drill-20261014';
   const SELECTOR_PREFIX =
-    'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo ' +
-    '--select-inputs-from /repo-checkpoint exited 74: NPM_INSTALL_SAFE guarding reader\n';
+    `bash /op/apps/operator/bin/release/dependency-generation.sh --integration ${CHECKOUT} ` +
+    `--ensure-ref ${CANDIDATE} --retain-as checkpoint-candidate exited 74: NPM_INSTALL_SAFE guarding reader\n`;
   const UNAVAILABLE_SUBMODULE_DETAIL =
-    `/node /repo/scripts/npm-install-safe.mjs --repo-root /repo --exec-under-lock -- ${SELECTOR_PREFIX}` +
-    `[dependency-generation] submodule papercusp-desktop is not initialized in /repo-checkpoint; initializing it for ${SUBMODULE_SHA}\n` +
+    `/node /op/scripts/npm-install-safe.mjs --repo-root ${CHECKOUT} --exec-under-lock -- ${SELECTOR_PREFIX}` +
+    `[dependency-generation] submodule papercusp-desktop is not initialized in ${CHECKOUT}; initializing it for ${SUBMODULE_SHA}\n` +
     `[dependency-generation] FATAL: exact dependency-input ref ${CANDIDATE} requires unavailable submodule ` +
     `papercusp-desktop@${SUBMODULE_SHA} (hydrating the integration checkout from the submodule's own remote ` +
     'did not produce that commit; this is an integration-checkout defect, not a generation-store one)';
@@ -818,7 +821,7 @@ describe('EI-26520203347017584: an integration-checkout input defect is advised 
     const { advice } = classify(UNAVAILABLE_SUBMODULE_DETAIL);
     // Names the defective input, so the summary alone tells the operator where to look.
     expect(advice).toContain(`papercusp-desktop@${SUBMODULE_SHA}`);
-    expect(advice).toContain('/repo-checkpoint');
+    expect(advice).toContain(CHECKOUT);
     expect(advice).toMatch(/repair the integration checkout/i);
     // Still a refusal: no verdict, nothing to triage.
     expect(advice).toMatch(/NO code verdict was rendered/);
@@ -852,10 +855,16 @@ describe('EI-26520203347017584: an integration-checkout input defect is advised 
       `[dependency-generation] FATAL: dependency-input ref is not a commit: ${CANDIDATE}`,
       CANDIDATE,
     ],
+    [
+      'gate --ensure-ref missing from the checkout',
+      `[dependency-generation] FATAL: --ensure-ref is not a commit: ${CANDIDATE}`,
+      CANDIDATE,
+    ],
   ])('the sibling input-side refusal is a checkout defect too: %s', (_label, fatal, named) => {
     const { result, advice } = classify(`${SELECTOR_PREFIX}${fatal}`);
     expect(result.reason).toBe('integration-checkout-defective');
     expect(result.green).toBeNull();
+    expect(advice).toContain(CHECKOUT);
     expect(advice).toContain(named);
     expect(advice).toMatch(/repair the integration checkout/i);
     expect(advice).not.toMatch(/generation store must be repaired or republished/i);
@@ -902,6 +911,9 @@ describe('EI-26520203347017584: an integration-checkout input defect is advised 
       'requires unavailable submodule $submodule_path@$submodule_object',
       'has no gitlink for submodule $submodule_path',
       'FATAL: dependency-input ref is not a commit: $ref',
+      'FATAL: --fingerprint-ref is not a commit: $fingerprint_ref',
+      'FATAL: --predict-ref is not a commit: $predict_ref',
+      'FATAL: --ensure-ref is not a commit: $ensure_ref',
     ]) {
       const at = lines.findIndex((line) => line.includes(fragment));
       expect(at, `dependency-generation.sh no longer emits: ${fragment}`).toBeGreaterThan(-1);
