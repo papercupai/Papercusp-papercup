@@ -3991,6 +3991,9 @@ export function classifyGateStallStatus(
   // P-006: same class, same reasoning — the sibling exit-74 condition where the selected
   // generation exists but is unusable. Both must be mapped here or they hit the 'red' default.
   if (status === 'dependency-generation-unusable') return 'no-verdict';
+  // EI-26520203347017584: the input-side exit-74 sibling (the integration checkout cannot produce
+  // a dependency input). Refused before any test ran, standing until the checkout is repaired.
+  if (status === 'integration-checkout-defective') return 'no-verdict';
   /**
    * WI-42207 — 'candidate-fossil' is a WITHHELD verdict, so it is 'no-verdict', never a red.
    *

@@ -1742,6 +1742,14 @@ export interface CheckpointResult {
      *  producer to publish a fingerprint, this one needs the generation store repaired. Failing
      *  closed is correct — a torn generation must never be judged against. */
     | "dependency-generation-unusable"
+    /** EI-26520203347017584: the third exit-74 cause, and NOT a store problem. The selector
+     *  refused while reading the candidate's inputs out of the INTEGRATION CHECKOUT, before any
+     *  generation was consulted: a pinned submodule the checkout cannot produce, a submodule with
+     *  no gitlink at the candidate, or a candidate ref the checkout does not hold. Same no-verdict,
+     *  STANDING class as its two siblings; separated because the remedy is to repair that
+     *  checkout, and advising a store repair (as this used to) sends the operator to the wrong
+     *  subsystem. */
+    | "integration-checkout-defective"
     /** EI-21436432400491183: the candidate was already fossil-old when this red suite result
      *  was ready to publish. No code verdict is rendered; the next run must judge a fresher tip. */
     | "candidate-fossil";
@@ -2485,6 +2493,64 @@ export function buildSelfWatchdogCheckpointResult(opts: {
   };
 }
 
+/** EI-26520203347017584: what an input-side exit-74 refusal says is wrong with the checkout. */
+interface IntegrationCheckoutDefect {
+  /** The integration checkout the selector read (`--integration <path>`), when the detail names it. */
+  checkout: string | null;
+  /** What the checkout cannot produce, naming the submodule or the ref. */
+  defect: string;
+  /** The concrete repair, naming the same submodule or ref. */
+  remedy: string;
+}
+
+/**
+ * EI-26520203347017584: recognise dependency-generation.sh's INPUT-side exit-74 refusals and
+ * say which input the integration checkout could not produce. Returns null for every other
+ * detail, including the store-side 74s, which keep their own reasons.
+ *
+ * Every pattern is a FATAL the selector emits while it reads the candidate's lockfiles and
+ * patches out of `--integration <path>`; green-checkpoint-crash-result.test.ts pins each one to
+ * the script so a reworded FATAL fails there.
+ */
+function describeIntegrationCheckoutDefect(detail: string): IntegrationCheckoutDefect | null {
+  const checkout = /dependency-generation\.sh\b[^\n]*?--integration (\S+)/.exec(detail)?.[1] ?? null;
+
+  const unavailable = /requires unavailable submodule (\S+)@([0-9a-f]{7,64})/.exec(detail);
+  if (unavailable) {
+    const [, submodule, sha] = unavailable;
+    return {
+      checkout,
+      defect: `it cannot produce submodule ${submodule}@${sha}, which the candidate pins (the selector already tried to initialize or fetch it from the submodule's own remote)`,
+      remedy:
+        `initialize ${submodule} in that checkout and make sure its remote serves ${sha}, ` +
+        `e.g. git submodule update --init -- ${submodule}`,
+    };
+  }
+
+  const noGitlink = /has no gitlink for submodule (\S+)/.exec(detail);
+  if (noGitlink) {
+    const [, submodule] = noGitlink;
+    return {
+      checkout,
+      defect: `the candidate's .gitmodules declares submodule ${submodule} but its tree has no gitlink for it`,
+      remedy: `restore the ${submodule} gitlink or remove its .gitmodules entry so the two agree`,
+    };
+  }
+
+  const notACommit =
+    /(?:dependency-input ref|--(?:fingerprint|predict|ensure)-ref) is not a commit: (\S+)/.exec(detail);
+  if (notACommit) {
+    const [, ref] = notACommit;
+    return {
+      checkout,
+      defect: `it does not hold the candidate ref ${ref} as a commit`,
+      remedy: `fetch ${ref} into that checkout`,
+    };
+  }
+
+  return null;
+}
+
 /**
  * WI-40916 / EI-212278 / WI-41252 — distinguish measured pre-suite
  * infrastructure refusals from an unknown checkpoint crash.
@@ -2541,6 +2607,16 @@ export function buildTerminalFailureCheckpointResult(opts: {
   const dependencyPrewarmMissing =
     dependencyGenerationUnusable &&
     detail.includes("no prewarmed dependency generation for input fingerprint");
+  // EI-26520203347017584: exit 74 also covers the INPUT side. The selector reads the candidate's
+  // lockfiles and patches out of the integration checkout (recursing into every submodule) before
+  // it consults any generation, and refuses with 74 when that checkout cannot produce an input.
+  // The code cannot separate these from the store-side 74s, so the selector's own FATAL wording
+  // is the discriminator here, exactly as for the missing prewarm above. The three phrases are
+  // pinned to dependency-generation.sh by green-checkpoint-crash-result.test.ts, so a reworded
+  // FATAL fails that test instead of sliding back onto the store-repair advice.
+  const integrationCheckoutDefect = dependencyGenerationUnusable
+    ? describeIntegrationCheckoutDefect(detail)
+    : null;
 
   // WI-10004849: dependency-generation.sh reserves exit 76 (could not take the materialization
   // flock in time — another copy holds it) and exit 77 (free space minus the tree would drop the
@@ -2608,6 +2684,29 @@ export function buildTerminalFailureCheckpointResult(opts: {
         "nothing about the candidate, and its files must not be triaged. This does NOT clear on " +
         "its own: it stays broken until the dependency-generation producer publishes that " +
         `fingerprint (WI-41491). ${detail}`,
+    };
+  }
+
+  if (integrationCheckoutDefect) {
+    // The integration checkout cannot produce one of the candidate's dependency inputs. The
+    // generation store was never consulted, so it must not be blamed: the operator has to repair
+    // the checkout. It does NOT self-heal: the selector already tried to hydrate a missing
+    // submodule from its own remote before refusing, and the next run reads the same checkout.
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "integration-checkout-defective",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint could not START: the integration checkout" +
+        `${integrationCheckoutDefect.checkout ? ` ${integrationCheckoutDefect.checkout}` : ""} is ` +
+        `defective — ${integrationCheckoutDefect.defect} — so the dependency selector refused ` +
+        "(exit 74) while reading the candidate's inputs, before any dependency generation was " +
+        "consulted. NO code verdict was rendered — this says nothing about the candidate, and its " +
+        "files must not be triaged. The generation store is not at fault. This does NOT clear on " +
+        `its own: repair the integration checkout (${integrationCheckoutDefect.remedy}). ${detail}`,
     };
   }
 

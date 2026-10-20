@@ -156,6 +156,8 @@ const GATE_OUTCOME_CLASS_BY_STATUS: Record<string, GateOutcomeClass> = {
   // P-006/P-007 exit-74 prerequisite outages: refused before any test ran.
   'dependency-prewarm-missing': 'no-verdict',
   'dependency-generation-unusable': 'no-verdict',
+  // EI-26520203347017584: exit-74 input-side refusal — the integration checkout is defective.
+  'integration-checkout-defective': 'no-verdict',
   // WI-42207: a WITHHELD verdict (candidate older than the fossil cap at verdict time) —
   // the suite's opinion was discarded, so nothing was established about the code.
   'candidate-fossil': 'no-verdict',

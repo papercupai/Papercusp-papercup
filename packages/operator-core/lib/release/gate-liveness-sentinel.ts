@@ -71,6 +71,7 @@ const REFUSED_STATUSES = new Set([
   'skipped-memory-budget',
   'disk-headroom',
   'dependency-prewarm-missing',
+  'integration-checkout-defective', // EI-26520203347017584: refused before the suite, never a crash
   'skipped-runner-liveness-unknown',
 ]);
 
