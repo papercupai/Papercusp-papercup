@@ -91,14 +91,18 @@ describe('evaluateConversationActivationGate — item provenance (R-4)', () => {
     });
   });
 
-  it('does not enforce a legacy (unenforced) audit, and does not read the plan for it', async () => {
+  it('does not enforce a legacy (unenforced) audit, and reads the plan only for its status', async () => {
     const { tx, calls } = txFor({
       activation: { sourceRanges: [], mappings: [], itemProvenanceCheck: { enforced: false, items: { 'P-001': 'unresolved' }, unresolved: ['P-001'] } },
       content: plan(['- **P-001** `todo` A.', '- **P-002** `todo` B.']),
     });
 
     await expect(evaluateConversationActivationGate(tx as never, SCOPE)).resolves.toEqual({ satisfied: true, auditSeq: 2 });
-    expect(calls.filter((text) => text.includes('harness_plans'))).toHaveLength(0);
+    // The provenance check reads nothing for an unenforced audit. The one read is the
+    // declaration gate's stored-status lookup, which runs for every audit row
+    // (plan-reuse-and-library-declarations-2026-10-20 D-013 #1, EI-26528805324626265);
+    // this fixture is active, so the declaration sections are not required.
+    expect(calls.filter((text) => text.includes('harness_plans'))).toHaveLength(1);
   });
 
   it('does not enforce an audit recorded before item provenance existed', async () => {

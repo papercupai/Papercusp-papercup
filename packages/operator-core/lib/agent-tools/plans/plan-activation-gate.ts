@@ -171,39 +171,16 @@ export async function evaluateConversationActivationGate(
       }
     }
     // plan-reuse-and-library-declarations-2026-10-20 D-013 #1: the door is the boundary,
-    // not the audit row. An audit that was gated on the reuse and libraries sections
-    // stays valid only while the CURRENT content still carries them, so a section
-    // removed (or broken) after the audit refuses here. Audits recorded before that gate
-    // have no declarationsCheck and keep passing, as legacy provenance audits do.
-    if (declarationsCheckEnforced(row.activation)) {
-      const stored =
-        (
-          await tx<Array<{ content: string }>>`
-            SELECT content
-              FROM harness_shared.harness_plans
-             WHERE workspace_id = ${scope.workspaceId}
-               AND harness_slug = ${scope.harnessSlug}
-               AND plan_slug = ${scope.planSlug}
-             LIMIT 1`
-        )[0]?.content ?? '';
-      // The STORED status decides whether the gate applies, so a single write that both
-      // enters active and removes a section is still judged as leaving draft/ready.
-      const status = stored ? parsePlan(stored, { filePath: `${scope.planSlug}.md` }).frontmatter.status : null;
-      const declarations = evaluateActivationDeclarations(scope.pendingContent ?? stored, status);
-      if (!declarations.ok) {
-        return {
-          satisfied: false,
-          code: 'plan_declarations_invalid',
-          auditSeq: Number(row.audit_seq),
-          declarationBlockers: declarations.blockers,
-          message:
-            `Plan '${scope.planSlug}' passed activation audit #${row.audit_seq} with its declaration sections, but the ` +
-            `current content no longer does: ${declarations.blockers
-              .map((blocker) => `"## ${blocker.section}" is ${blocker.status} (${blocker.detail})`)
-              .join('; ')}. Restore each section's JSON block, or set its notApplicable to a one-line reason.`,
-        };
-      }
-    }
+    // not the audit row. Every draft or ready plan needs both declaration sections on its
+    // CURRENT content, whatever its latest audit recorded: a section removed (or broken)
+    // after a gated audit refuses here, and so does a plan whose audit predates the gate
+    // (D-004 #1 retrofits by plan status; only active/shipped plans are exempt).
+    // EI-26528805324626265: this check used to run only for gated audit rows.
+    const declarationRefusal = await declarationsRefusal(tx, scope, {
+      auditSeq: Number(row.audit_seq),
+      gatedAudit: declarationsCheckEnforced(row.activation),
+    });
+    if (declarationRefusal) return declarationRefusal;
     return { satisfied: true, auditSeq: Number(row.audit_seq) };
   }
 
@@ -224,6 +201,14 @@ export async function evaluateConversationActivationGate(
     ? parsePlan(planRows[0].content, { filePath: `${scope.planSlug}.md` }).frontmatter.status
     : null;
   if (isActivationPlanStatus(storedStatus)) {
+    // The missing AUDIT is grandfathered; the declaration sections are a separate
+    // requirement that a READY plan still owes before it starts (D-004 #1).
+    const declarationRefusal = await declarationsRefusal(tx, scope, {
+      auditSeq: null,
+      gatedAudit: false,
+      storedContent: planRows[0]?.content ?? '',
+    });
+    if (declarationRefusal) return declarationRefusal;
     const message =
       `Plan '${scope.planSlug}' is already ${storedStatus} with no activation audit, so it is grandfathered ` +
       'instead of being retroactively blocked. Record plans:audit { phase:\'activation\' } on its next material plan edit.';
@@ -235,6 +220,55 @@ export async function evaluateConversationActivationGate(
         code: 'conversation_audit_required',
         message: conversationAuditRequiredMessage(scope.planSlug),
       };
+}
+
+/**
+ * The declaration-section verdict for a lifecycle door (D-013 #1, D-004 #1). The STORED
+ * status decides whether the gate applies, so a single write that both enters active
+ * and removes a section is still judged as leaving draft/ready; the body judged is the
+ * pending write when there is one, else the stored content. Returns null when the
+ * sections are valid or the plan's status is exempt.
+ */
+async function declarationsRefusal(
+  tx: Tx,
+  scope: { workspaceId: string; harnessSlug: string; planSlug: string; pendingContent?: string | null },
+  audit: { auditSeq: number | null; gatedAudit: boolean; storedContent?: string },
+): Promise<ConversationActivationGateVerdict | null> {
+  const stored =
+    audit.storedContent ??
+    (
+      await tx<Array<{ content: string }>>`
+        SELECT content
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND plan_slug = ${scope.planSlug}
+         LIMIT 1`
+    )[0]?.content ??
+    '';
+  const status = stored ? parsePlan(stored, { filePath: `${scope.planSlug}.md` }).frontmatter.status : null;
+  const declarations = evaluateActivationDeclarations(scope.pendingContent ?? stored, status);
+  if (declarations.ok) return null;
+  const blockerText = declarations.blockers
+    .map((blocker) => `"## ${blocker.section}" is ${blocker.status} (${blocker.detail})`)
+    .join('; ');
+  const lead = audit.gatedAudit
+    ? `Plan '${scope.planSlug}' passed activation audit #${audit.auditSeq} with its declaration sections, but the ` +
+      'current content no longer does'
+    : `Plan '${scope.planSlug}' is ${status ?? 'missing a status'} and must carry both declaration sections before ` +
+      `it starts (${audit.auditSeq === null ? 'it has no activation audit' : `activation audit #${audit.auditSeq} predates the declaration gate`})`;
+  return {
+    satisfied: false,
+    code: 'plan_declarations_invalid',
+    ...(audit.auditSeq === null ? {} : { auditSeq: audit.auditSeq }),
+    declarationBlockers: declarations.blockers,
+    message:
+      `${lead}: ${blockerText}. ` +
+      (audit.gatedAudit
+        ? "Restore each section's JSON block, or set its notApplicable to a one-line reason."
+        : 'Add each section with its fenced JSON block (plans:new scaffolds both), or set its notApplicable to a ' +
+          'one-line reason, then retry.'),
+  };
 }
 
 export type ActivationGateRefusalCode = NonNullable<ConversationActivationGateVerdict['code']>;

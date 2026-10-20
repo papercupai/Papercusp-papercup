@@ -250,6 +250,56 @@ describe('bundled /api/health build identity', () => {
  * silently downgraded the evidence while every test stayed green — and the
  * failure direction is the bad one (a confident false "it is live").
  */
+describe('WI-6554700010018173: the one-time git fallback survives a slow host', () => {
+  const timeoutError = () => Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
+
+  it('retries a timed-out rev-parse once instead of caching null for the process lifetime', async () => {
+    const { resolveGitShortSha } = await import('./build-info');
+    const calls: Array<{ args: string[]; timeout: number }> = [];
+    const sha = resolveGitShortSha('/repo', (args, opts) => {
+      calls.push({ args, timeout: opts.timeout });
+      if (calls.length === 1) throw timeoutError();
+      return 'be6d6f91c2\n';
+    });
+    expect(sha).toBe('be6d6f91c2');
+    expect(calls).toHaveLength(2);
+    expect(calls[0].args).toEqual(['rev-parse', '--short', 'HEAD']);
+  });
+
+  it('gives up (null) after the bounded attempts all time out', async () => {
+    const { resolveGitShortSha } = await import('./build-info');
+    let n = 0;
+    const sha = resolveGitShortSha('/repo', () => {
+      n++;
+      throw timeoutError();
+    });
+    expect(sha).toBeNull();
+    expect(n).toBe(2);
+  });
+
+  it('does not retry a definitive failure (not a checkout, no git binary)', async () => {
+    const { resolveGitShortSha } = await import('./build-info');
+    let n = 0;
+    const sha = resolveGitShortSha('/not-a-repo', () => {
+      n++;
+      throw Object.assign(new Error('fatal: not a git repository'), { status: 128 });
+    });
+    expect(sha).toBeNull();
+    expect(n).toBe(1);
+  });
+
+  it('budgets each attempt well above the 2s that timed out under fleet load', async () => {
+    const { resolveGitShortSha, GIT_SHA_ATTEMPT_TIMEOUT_MS } = await import('./build-info');
+    let seen = 0;
+    resolveGitShortSha('/repo', (_args, opts) => {
+      seen = opts.timeout;
+      return 'abc1234\n';
+    });
+    expect(seen).toBe(GIT_SHA_ATTEMPT_TIMEOUT_MS);
+    expect(GIT_SHA_ATTEMPT_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+  });
+});
+
 describe('WI-2141731: the boot-warm invariant that makes health.sha a loaded-code identity', () => {
   it('resolves the sha ONCE and caches it — never re-reads the checkout per request', async () => {
     const { getBuildInfo, _resetBuildInfoForTest } = await import('./build-info');

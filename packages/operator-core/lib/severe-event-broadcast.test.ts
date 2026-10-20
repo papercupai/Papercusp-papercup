@@ -393,11 +393,20 @@ describe('broadcastSevereEvent — one-shot contract (WI-6554700010011878)', () 
     expect(M.sendMessage).toHaveBeenCalledOnce();
   });
 
-  it('never reads or suppresses an alarm that did not declare oneShot (level emitters keep their heartbeat)', async () => {
+  it('suppresses a repeated level-triggered alarm with an empty-audience heartbeat', async () => {
     M.readLatestConditionEnvelope.mockResolvedValue(openAlarm(summary));
-    await broadcastSevereEvent({ summary, conditionKey: key });
-    expect(M.readLatestConditionEnvelope).not.toHaveBeenCalled();
+    await broadcastSevereEvent({
+      summary,
+      conditionKey: key,
+      route: { ownerSelector: 'su-owner-1', reason: 'owns scout grading' },
+    });
+    expect(M.readLatestConditionEnvelope).toHaveBeenCalledWith(key);
     expect(M.sendMessage).toHaveBeenCalledOnce();
+    const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(opts).toMatchObject({ to: [], summary, category: 'severe-event' });
+    expect(opts.extra).toMatchObject({ condition_key: key, condition_heartbeat: true });
+    expect((opts.extra as Record<string, unknown>).one_shot).toBeUndefined();
+    expect(M.wakeRecipients).not.toHaveBeenCalled();
   });
 
   it('fails OPEN: a read failure still broadcasts', async () => {

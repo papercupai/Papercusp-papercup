@@ -234,6 +234,15 @@ describe('runForeground', () => {
     expect(r.output.trim()).toBe('0');
   });
 
+  it('treats an rg no-match consumed by tail as a successful empty probe', async () => {
+    const command = "printf '%s\\n' present | rg -F missing | tail -n 20";
+    const r = await runForeground({ command, cwd: STATE, stateDir: STATE }, never, 10_000);
+
+    expect(r.status).toBe('completed');
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toBe('');
+  });
+
   it('treats an empty numeric-parent ps probe as a successful empty enumeration', async () => {
     const command = "ps --ppid 2147483647 -o pid= | awk '{print $1}'";
     const r = await runForeground({ command, cwd: STATE, stateDir: STATE }, never, 10_000);
@@ -254,16 +263,28 @@ describe('runForeground', () => {
     expect(r.exitCode).toBe(1);
   });
 
-  it('normalizes only the documented rg count shape', () => {
-    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt | wc -l', 'failed', 1)).toEqual({
+  it('normalizes only read-only rg pipelines with an empty-safe consumer', () => {
+    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt | wc -l', 'failed', 1, '0\n')).toEqual({
       status: 'completed',
       exitCode: 0,
     });
-    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt', 'failed', 1)).toEqual({
+    expect(normalizeExpectedRgNoMatchResult('journalctl -u svc | rg -F missing | tail -n 20', 'failed', 1, '')).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt', 'failed', 1, '')).toEqual({
       status: 'failed',
       exitCode: 1,
     });
-    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt | wc -l && echo done', 'failed', 1)).toEqual({
+    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt | tail -n 20 && echo done', 'failed', 1, '')).toEqual({
+      status: 'failed',
+      exitCode: 1,
+    });
+    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt | wc -l && echo done', 'failed', 1, '0\n')).toEqual({
+      status: 'failed',
+      exitCode: 1,
+    });
+    expect(normalizeExpectedRgNoMatchResult('journalctl -u svc | rg -F missing | tail -n 20', 'failed', 1, 'journalctl: permission denied')).toEqual({
       status: 'failed',
       exitCode: 1,
     });

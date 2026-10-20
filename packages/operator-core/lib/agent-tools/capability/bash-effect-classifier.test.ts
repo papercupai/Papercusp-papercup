@@ -172,6 +172,11 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     expect(classifyCapabilityBashEffect({ command })).toBe('read');
   });
 
+  it('classifies an rg-to-tail no-match diagnostic as read-only', () => {
+    const command = 'journalctl -u svc --since=today --no-pager | rg -F absent | tail -n 20';
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+  });
+
   it('classifies only numeric-parent ps --ppid field probes as read-only', () => {
     expect(classifyCapabilityBashEffect({ command: "ps --ppid 12345 -o pid=,cmd= | awk '{print $1}'" })).toBe('read');
     expect(classifyCapabilityBashEffect({ command: 'ps --ppid 12345 -o pid=' })).toBe('read');

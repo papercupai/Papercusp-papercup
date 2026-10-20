@@ -965,6 +965,11 @@ const post = defineTool({
       compositionSource: spec.compositionSource,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
+        // Keep host-local stores on the selected workspace. The launcher and
+        // the child UserPromptSubmit hook both use this value for the
+        // turn-provenance ledger, even when the launcher was started from a
+        // different active workspace.
+        PAPERCUSP_HOME: papercuspPathForWorkspace(workspace),
         ...(modelSource ? { PAPERCUSP_MODEL_SOURCE: modelSource } : {}),
         PAPERCUSP_ROLE: role,
         // deriveAgentRole reads this durable fine-grained key on the role's

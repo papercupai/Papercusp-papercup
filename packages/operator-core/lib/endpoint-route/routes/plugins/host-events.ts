@@ -1,9 +1,16 @@
 /**
  * GET /api/plugins/host/events — SSE event stream for iframe plugin surfaces.
  * Ported from app/api/plugins/host/events/route.ts. `auth: 'public'`.
+ *
+ * Each connection subscribes to the plugin-event fan-out for one event `name` in one
+ * `install` (events/plugin-event-fanout.ts, WI-39801). A plugin event fired in that
+ * install, or with no install scope, arrives as an SSE `message` whose data is the
+ * event payload as JSON — the shape PluginIframe.tsx forwards to the iframe.
+ * Only plugin-fired events travel this stream, never internal system events.
  */
 import { sseResponse } from '@papercusp/sse';
 import { defineTool } from '@papercusp/agent-mcp';
+import { subscribePluginEvents } from '../../../events/plugin-event-fanout';
 
 export default defineTool({
   method: 'GET',
@@ -21,20 +28,17 @@ export default defineTool({
       return new Response('plugin, install, name query params required', { status: 400 });
     }
 
-    // The HookBus this stream used to bridge (`state.bus.registerAction`) was
-    // retired with the plugin-host rework — plugin events now feed the
-    // event-reaction matcher via emitSystemEvent (plugin-system-hive-port
-    // P-006/D-003) — and HostState carries no bus. No iframe-facing fan-out
-    // exists on the new path yet, so this stream carries heartbeats only: the
-    // EventSource contract PluginIframe.tsx expects stays intact (before this
-    // change the setup crashed on the missing bus and the connection errored
-    // anyway, so no events are lost that were previously delivered). Re-wiring
-    // iframe event delivery onto the reaction engine is tracked as a work item.
     return sseResponse({
       signal: req.signal,
       heartbeatMs: 30_000,
       initialHeartbeat: true,
-      setup: () => {},
+      setup: (sink) => {
+        const unsubscribe = subscribePluginEvents({ name, installSlug }, (payload) => {
+          if (sink.closed) return;
+          sink.eventRaw('message', JSON.stringify(payload));
+        });
+        sink.onClose(unsubscribe);
+      },
     });
   },
 });

@@ -7,7 +7,7 @@
  * Same tagged-template `tx` stub as plan-activation-gate-item-provenance.test.ts: each
  * test states exactly what the audit recorded and what the stored plan holds.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   activationGateRefusalValue,
   evaluateConversationActivationGate,
@@ -113,11 +113,80 @@ describe('evaluateConversationActivationGate — declarations re-check (R-3, D-0
     await expect(evaluateConversationActivationGate(tx as never, SCOPE)).resolves.toEqual({ satisfied: true, auditSeq: 3 });
   });
 
-  it('keeps passing a legacy audit recorded before the gate, without reading the plan', async () => {
-    const { tx, calls } = txFor({ activation: { sourceRanges: [], mappings: [] }, content: plan('ready', '') });
+  // EI-26528805324626265: an audit recorded before the gate no longer waves a draft or
+  // ready plan through. The door judges the plan's status and current content, not the
+  // audit row's age (D-013 #1; D-004 #1 retrofits by status).
+  const legacyAudit = { sourceRanges: [], mappings: [] };
+
+  it('R-3: refuses a ready plan with no sections even when its audit predates the gate', async () => {
+    const { tx, calls } = txFor({ activation: legacyAudit, auditSeq: 4, content: plan('ready', '') });
+
+    const verdict = await evaluateConversationActivationGate(tx as never, SCOPE);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'plan_declarations_invalid', auditSeq: 4 });
+    expect(verdict.declarationBlockers?.map((blocker) => blocker.section)).toEqual([
+      'Existing infrastructure reused',
+      'Third-party libraries',
+    ]);
+    expect(verdict.message).toContain('activation audit #4 predates the declaration gate');
+    expect(verdict.message).not.toContain('passed activation audit');
+    expect(calls.filter((text) => text.includes('harness_plans'))).toHaveLength(1);
+  });
+
+  it('R-3: refuses a draft plan with no sections when its audit predates the gate', async () => {
+    const { tx } = txFor({ activation: legacyAudit, content: plan('draft', REUSE) });
+
+    await expect(evaluateConversationActivationGate(tx as never, SCOPE)).resolves.toMatchObject({
+      satisfied: false,
+      code: 'plan_declarations_invalid',
+      declarationBlockers: [{ section: 'Third-party libraries', status: 'missing' }],
+    });
+  });
+
+  it('passes a legacy-audited ready plan whose current content carries both sections', async () => {
+    const { tx } = txFor({ activation: legacyAudit, content: plan('ready', REUSE + LIBRARIES) });
 
     await expect(evaluateConversationActivationGate(tx as never, SCOPE)).resolves.toEqual({ satisfied: true, auditSeq: 3 });
-    expect(calls.filter((text) => text.includes('harness_plans'))).toHaveLength(0);
+  });
+
+  it('does not retrofit an active plan whose audit predates the gate', async () => {
+    const { tx } = txFor({ activation: legacyAudit, content: plan('active', '') });
+
+    await expect(evaluateConversationActivationGate(tx as never, SCOPE)).resolves.toEqual({ satisfied: true, auditSeq: 3 });
+  });
+
+  it('R-3: a ready plan with no activation audit is grandfathered for the audit, not for the sections', async () => {
+    const { tx } = txFor({ content: plan('ready', '') });
+
+    const verdict = await evaluateConversationActivationGate(tx as never, SCOPE);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'plan_declarations_invalid' });
+    expect(verdict).not.toHaveProperty('auditSeq');
+    expect(verdict.message).toContain('it has no activation audit');
+  });
+
+  it('keeps grandfathering an active plan with no activation audit', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { tx } = txFor({ content: plan('active', '') });
+
+    await expect(evaluateConversationActivationGate(tx as never, SCOPE)).resolves.toMatchObject({
+      satisfied: true,
+      grandfathered: true,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('grandfathered'));
+    warn.mockRestore();
+  });
+
+  it('a ready plan with no audit but both sections keeps the audit grandfathering', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { tx } = txFor({ content: plan('ready', REUSE + LIBRARIES) });
+
+    await expect(evaluateConversationActivationGate(tx as never, SCOPE)).resolves.toMatchObject({
+      satisfied: true,
+      grandfathered: true,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('grandfathered'));
+    warn.mockRestore();
   });
 
   it('reads a declarationsCheck stored as a JSON string', async () => {

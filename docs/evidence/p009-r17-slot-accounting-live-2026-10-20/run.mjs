@@ -49,7 +49,7 @@ const assertions = [
 const ok = assertions.every((a) => a.passed);
 
 const evidence = {
-  schemaVersion: '1',
+  schemaVersion: 1,
   kind: 'operational-test-evidence',
   name: 'P-009 / R-17 live sync-batch slot accounting on the operator database (green-main-ratchet-convergence-2026-10-17, rubric rev 12)',
   framework: 'operational',

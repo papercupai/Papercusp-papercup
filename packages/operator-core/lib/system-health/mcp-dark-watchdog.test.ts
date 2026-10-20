@@ -37,7 +37,12 @@ type MockLiveHost = {
 };
 const listLiveHostsMock = vi.fn<() => MockLiveHost[]>(() => []);
 const mcpReconnectViaPtyMock = vi.fn(async () => 'sent' as const);
-const injectIntoHostMock = vi.fn(async (_sock: string, _message: { mode: string; data: string; ownerId: string }) => true);
+const injectIntoHostMock = vi.fn(
+  async (
+    _sock: string,
+    _message: { mode: string; data: string; ownerId: string; systemPromptAddendum?: string },
+  ) => true,
+);
 vi.mock('../events/await/psu-pty-discovery', () => ({
   listLiveHosts: (...args: unknown[]) => listLiveHostsMock(...(args as [])),
   listLiveHostsAsync: async (...args: unknown[]) => listLiveHostsMock(...(args as [])),
@@ -486,6 +491,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
               owner_id,
               assistant_turn_count: turns?.assistantTurnsSinceLastAgentCall ?? 0,
               last_assistant_turn_ms: turns?.lastAssistantTurnMs ?? null,
+              last_agent_call_ms: null,
             };
           }),
         );
@@ -564,6 +570,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       const out = await checkInteractiveMcpDark(tag, {
         jitterMaxMs: 0,
         sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+        buildHeadlessRecoverySpec: async () => ({ firstPrompt: null, systemPromptAddendum: 'deterministic carry' }),
       });
 
       expect(out.healSent).toEqual(expect.arrayContaining([headedOwner, headlessOwner]));
@@ -572,7 +579,11 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       expect(injectIntoHostMock).toHaveBeenCalledTimes(1);
       const [sock, message] = injectIntoHostMock.mock.calls[0];
       expect(sock).toBe('/tmp/headless-dark.sock');
-      expect(message).toMatchObject({ mode: 'carry-respawn', ownerId: headlessOwner });
+      expect(message).toMatchObject({
+        mode: 'carry-respawn',
+        ownerId: headlessOwner,
+        systemPromptAddendum: 'deterministic carry',
+      });
       const parsed = parseEnvelope(message.data);
       expect(parsed?.origin).toBe('watchdog');
       expect(parsed?.payload).toContain(`headless session ${headlessOwner}`);
@@ -588,6 +599,47 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       if (previousProvenanceDir == null) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
       else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = previousProvenanceDir;
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not alarm or carry-respawn a fresh headless session with no MCP calls', async () => {
+    const owner = 'su-fresh-headless-no-mcp';
+    const buildHeadlessRecoverySpec = vi.fn(async () => ({ firstPrompt: null, systemPromptAddendum: 'carry' }));
+    const { tag } = fakeSql({
+      openPhases: [],
+      // No coord_presence row means the session has not proven it ever used
+      // Papercusp MCP; a fresh/no-call host is not dark-from-birth evidence.
+      presenceByOwner: {},
+      agentInvocationByOwner: { [owner]: false },
+      toolFreeTurnsByOwner: {
+        [owner]: { assistantTurnsSinceLastAgentCall: 0, lastAssistantTurnMs: null },
+      },
+    });
+    listLiveHostsMock.mockReturnValue([
+      {
+        ownerId: owner,
+        startedAt: INOW - 1 * M,
+        lastActivityAt: INOW - 1 * M,
+        bridgeTty: false,
+        caps: ['carry-respawn'],
+        sock: '/tmp/fresh-headless-no-mcp.sock',
+      },
+    ]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+    try {
+      const out = await checkInteractiveMcpDark(tag, {
+        jitterMaxMs: 0,
+        sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+        buildHeadlessRecoverySpec,
+      });
+
+      expect(out.darkOwners).toEqual([]);
+      expect(out.healSent).toEqual([]);
+      expect(buildHeadlessRecoverySpec).not.toHaveBeenCalled();
+      expect(injectIntoHostMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
     }
   });
 

@@ -92,6 +92,11 @@ const resolutionMany = (m: number, keys: string[], summary = `RECOVERED (${keys.
   resolves_condition: keys[0],
   condition_key: keys[0],
 });
+const heartbeat = (m: number, key: string, summary = `alarm ${key}`) => ({
+  ...alarm(m, key, summary),
+  to: [],
+  condition_heartbeat: true,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -320,6 +325,62 @@ describe("computeConditionStates (pure)", () => {
     ]);
     expect(s!.one_shot).toBe(false);
     expect(s!.last_seen).toBe(at(5));
+  });
+
+  it("condition_heartbeat refreshes last_seen without becoming a second alarm or replacing alarm metadata", () => {
+    const emitter = {
+      pid: 4242,
+      startedAt: "2026-07-01T09:00:00.000Z",
+      uptimeSec: 60,
+      cwd: "/repo",
+      host: "host-a",
+      processIdentity: "linux:boot:4242",
+    };
+    const [s] = computeConditionStates([
+      {
+        ...alarm(1, "level-triggered:k", "original summary"),
+        body: "original evidence",
+        one_shot: true,
+        emitter,
+      },
+      {
+        ...heartbeat(5, "level-triggered:k", "heartbeat summary"),
+        body: "heartbeat marker",
+        one_shot: false,
+        emitter: { ...emitter, pid: 9999 },
+      },
+    ]);
+
+    expect(s).toMatchObject({
+      condition_key: "level-triggered:k",
+      open: true,
+      alarm_count: 1,
+      first_seen: at(1),
+      open_since: at(1),
+      last_seen: at(5),
+      latest_summary: "original summary",
+      latest_body: "original evidence",
+      latest_emitter: emitter,
+      one_shot: true,
+    });
+  });
+
+  it("ignores an orphan heartbeat and does not re-open a condition after recovery", () => {
+    expect(computeConditionStates([heartbeat(1, "orphan:k")])).toEqual([]);
+
+    const [s] = computeConditionStates([
+      alarm(1, "closed:k"),
+      resolution(3, "closed:k"),
+      heartbeat(5, "closed:k"),
+    ]);
+    expect(s).toMatchObject({
+      condition_key: "closed:k",
+      open: false,
+      alarm_count: 1,
+      last_seen: at(5),
+      latest_summary: "alarm closed:k",
+      resolved_at: at(3),
+    });
   });
 
   // ── P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27) ──────────

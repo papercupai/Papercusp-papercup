@@ -92,14 +92,15 @@ async function readCurrentOperationEffectClaim(claim: OperationEffectClaim): Pro
   const { readActiveOperationWorkerClaimBinding, operationWorkerEffectWhereSql } =
     await import('../blueprint/operation-worker-binding');
   const read = await readActiveOperationWorkerClaimBinding(claim.workspaceId, claim.ownerId);
-  if (read.status !== 'bound' || String(read.receipt.sessionId) !== claim.advSessionId ||
+  if (read.status !== 'bound' || read.binding.harnessSlug !== claim.harnessSlug ||
+      String(read.receipt.sessionId) !== claim.advSessionId ||
       !isDeepStrictEqual(read.receipt.acceptedOperation, claim.acceptedOperation)) return false;
   const { sql } = getOrgPg();
   const rows = await sql<Array<{ ok: number }>>`
     SELECT 1 AS ok FROM harness_shared.work_items AS wi
      WHERE wi.workspace_id = ${claim.workspaceId}
        AND wi.feature_id = ${claim.workItemId}
-       AND wi.harness_slug = ${claim.harnessSlug}
+       AND wi.harness_slug = ${read.binding.storageHarnessSlug}
        AND ${operationWorkerEffectWhereSql(sql, read, {
          payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug', holder: 'wi.taken_by',
        })}

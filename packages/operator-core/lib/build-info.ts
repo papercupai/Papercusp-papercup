@@ -105,19 +105,46 @@ export function resolveBuildInfo(opts: {
   return { sha: sha || null, version };
 }
 
-function defaultGitSha(): string | null {
-  try {
-    const root = fileURLToPath(new URL('../', import.meta.url));
-    const out = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
-      cwd: root,
-      encoding: 'utf8',
-      timeout: 2000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return out.trim() || null;
-  } catch {
-    return null;
+/**
+ * Per-attempt budget for the one-time `git rev-parse --short HEAD` fallback.
+ *
+ * WI-6554700010018173: this read happens ONCE per process (the boot-warm
+ * invariant below, WI-2141731) and its result is cached for the process
+ * lifetime, so a timeout is not a slow request — it is a permanent `sha: null`.
+ * The old 2s budget timed out under ordinary fleet load on this host. A late
+ * retry is not an acceptable repair: by then the checkout may have advanced past
+ * the code this process loaded, so the retry would report the wrong identity.
+ * The budget is spent at boot instead, and a timed-out attempt is retried once.
+ */
+export const GIT_SHA_ATTEMPT_TIMEOUT_MS = 10_000;
+const GIT_SHA_ATTEMPTS = 2;
+
+type GitExec = (args: string[], opts: { cwd: string; timeout: number }) => string;
+
+function isTimeout(err: unknown): boolean {
+  const e = err as { code?: unknown; signal?: unknown } | null;
+  return e?.code === 'ETIMEDOUT' || e?.signal === 'SIGTERM';
+}
+
+/** Resolve the short HEAD sha of `cwd`, retrying only a timed-out attempt. */
+export function resolveGitShortSha(
+  cwd: string,
+  exec: GitExec = (args, opts) =>
+    execFileSync('git', args, { ...opts, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+): string | null {
+  for (let attempt = 1; attempt <= GIT_SHA_ATTEMPTS; attempt++) {
+    try {
+      return exec(['rev-parse', '--short', 'HEAD'], { cwd, timeout: GIT_SHA_ATTEMPT_TIMEOUT_MS }).trim() || null;
+    } catch (err) {
+      // Not a git checkout, no git binary, etc. are definitive: retrying cannot help.
+      if (!isTimeout(err)) return null;
+    }
   }
+  return null;
+}
+
+function defaultGitSha(): string | null {
+  return resolveGitShortSha(fileURLToPath(new URL('../', import.meta.url)));
 }
 
 let cached: BuildInfo | null = null;

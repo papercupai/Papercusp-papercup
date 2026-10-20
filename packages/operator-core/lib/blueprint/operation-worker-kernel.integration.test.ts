@@ -10,6 +10,10 @@ vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: io.sql }),
 }));
+vi.mock('../pot-membership', async (original) => ({
+  ...(await original<typeof import('../pot-membership')>()),
+  workItemStorageSlug: async (harness: string) => harness === 'sales-app' ? 'sales' : harness,
+}));
 vi.mock('../capability-envelope/identity-grants-port', async (original) => {
   const actual = await original<typeof import('../capability-envelope/identity-grants-port')>();
   return {
@@ -67,7 +71,10 @@ beforeAll(async () => {
 afterAll(async () => db?.cleanup(), 300_000);
 
 describe('accepted operation worker at the real PostgreSQL identity receipt', () => {
-  it('permits one tool, denies an identity-permitted tool through direct and nested dispatch, and observes revocation', async () => {
+  it.each(['sales', 'sales-app'])('permits only current claimed effects for launch harness %s, including a pot member stored at its home', async (launchHarness) => {
+    await db.sql`DELETE FROM harness_shared.work_items`;
+    await db.sql`DELETE FROM harness_shared.session_briefs`;
+    await db.sql`DELETE FROM harness_shared.adv_sessions`;
     const provider: ResolvedCapabilityProviderInput = {
       kind: 'capability-provider', ref: CLASS, providerPackage: 'mail-provider',
       providerVersion: '1.0.0', conformanceRunId: 'run-a', registryRevision: 'registry-a',
@@ -79,13 +86,13 @@ describe('accepted operation worker at the real PostgreSQL identity receipt', ()
       prompt: { role: 'worker', text: 'Execute the accepted operation.' }, inputClosure: [provider],
     });
     const revision = { specificationRevision: artifact.specificationRevision, stateRevision: 'state-a' };
-    const pin = { kind: 'blueprint-operation', harnessSlug: 'sales', operationId: 'send',
+    const pin = { kind: 'blueprint-operation', harnessSlug: launchHarness, operationId: 'send',
       specificationRevision: 'a'.repeat(64), operationVersion: '1.0.0', input: {} };
     const acceptedOperation = { kind: 'blueprint-operation-worker', workItemId: 'WI-1',
       operationId: 'send', specificationRevision: 'a'.repeat(64), pin,
       identity: { ref: 'operation-worker-fixture', revision: '1.0.0', contentHash: 'b'.repeat(64) },
       requiredTools: ['mail:send'] };
-    const launchSpec = { workspaceId: WS, harnessSlug: 'sales', role: 'worker', ...revision,
+    const launchSpec = { workspaceId: WS, harnessSlug: launchHarness, role: 'worker', ...revision,
       specificationArtifact: artifact, acceptedOperation };
     const activation = { schemaVersion: 1,
       attribution: { actorId: OWNER, principalId: OWNER, sessionId: OWNER },

@@ -15,7 +15,9 @@ import {
 
 const HARNESS = 'zzz-activation-audit-gate';
 const SLUG = 'activation-gate-plan';
-const DRAFT = `---
+/** A draft without the reuse and libraries sections, which every draft/ready plan now owes
+ *  at a lifecycle door (plan-reuse-and-library-declarations-2026-10-20 D-004 #1, D-013 #1). */
+const DRAFT_WITHOUT_DECLARATIONS = `---
 title: Activation gate
 slug: ${SLUG}
 status: draft
@@ -29,6 +31,14 @@ updated: 2026-08-24
 
 - **P-001** \`todo\` prove the gate
 `;
+
+/** Both declaration sections, each opted out with a reason. */
+const DECLARATION_SECTIONS =
+  '\n## Existing infrastructure reused\n\n```reuse\n' +
+  '{"searched":[],"reused":[],"newSurfaces":[],"notApplicable":"Test fixture; no code surface."}\n```\n' +
+  '\n## Third-party libraries\n\n```libraries\n{"needs":[],"notApplicable":"Test fixture; no library need."}\n```\n';
+
+const DRAFT = DRAFT_WITHOUT_DECLARATIONS + DECLARATION_SECTIONS;
 
 let fx: PlanPgFixture;
 
@@ -126,6 +136,22 @@ const COSMETIC_CHANGE_TAXONOMY = [
 
 describe('conversation activation audit gate', () => {
   it('grandfathers an already-ready plan with no audit, but not a stored draft', async () => {
+    // The missing AUDIT is grandfathered; the declaration sections are not
+    // (plan-reuse-and-library-declarations-2026-10-20 D-004 #1, EI-26528805324626265).
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, flipReady(DRAFT_WITHOUT_DECLARATIONS));
+    await expect(
+      evaluateConversationActivationGate(fx.admin as never, {
+        workspaceId: fx.workspaceId,
+        harnessSlug: HARNESS,
+        planSlug: SLUG,
+      }),
+    ).resolves.toMatchObject({
+      satisfied: false,
+      code: 'plan_declarations_invalid',
+      message: expect.stringContaining('it has no activation audit'),
+    });
+
+    await cleanupPlans(fx.admin, fx.workspaceId, HARNESS);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, flipReady(DRAFT));
     await expect(

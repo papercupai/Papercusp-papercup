@@ -59,6 +59,7 @@ import {
   isReadOnlyHeadPipeline,
   isReadOnlyPsPpidPipeline,
   isReadOnlyRgCountPipeline,
+  isReadOnlyRgEmptyConsumerPipeline,
 } from './bash-effect';
 import { onTaskKillRequested } from '../../task-manager/kill-notify';
 import { warmScopeProbe } from '../../task-manager/managed-spawn';
@@ -2228,11 +2229,18 @@ export function normalizeExpectedRgNoMatchResult(
   command: string,
   status: BashStatus,
   exitCode: number | null,
+  output: string,
 ): { status: BashStatus; exitCode: number | null } {
-  if (status === 'failed' && exitCode === 1 && isReadOnlyRgCountPipeline(command)) {
+  if (status !== 'failed' || exitCode !== 1 || !isReadOnlyRgEmptyConsumerPipeline(command)) {
+    return { status, exitCode };
+  }
+  const expectedOutput = isReadOnlyRgCountPipeline(command) ? '0' : '';
+  if (output.trim() !== expectedOutput) {
+    return { status, exitCode };
+  }
+  {
     return { status: 'completed', exitCode: 0 };
   }
-  return { status, exitCode };
 }
 
 /**
@@ -2630,6 +2638,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
         opts.command,
         ppidNormalized.status,
         ppidNormalized.exitCode,
+        buffer,
       );
       finish(normalized.status, normalized.exitCode);
     });
@@ -3023,6 +3032,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
         opts.command,
         ppidNormalized.status,
         ppidNormalized.exitCode,
+        job.buffer,
       );
       job.status = normalized.status;
       job.exitCode = normalized.exitCode;

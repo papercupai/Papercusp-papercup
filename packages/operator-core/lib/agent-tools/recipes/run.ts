@@ -83,6 +83,14 @@ interface RunItem {
   bindings?: RecipeBindingSet;
 }
 
+/**
+ * storage:usage has its own 30s aggregate read budget. Give recipes that call it
+ * ten seconds for orchestration and result delivery overhead; the generic recipe
+ * default (30s) otherwise races the child tool's own deadline and leaves its
+ * result detached. This remains below the shared 45s foreground ceiling.
+ */
+const STORAGE_USAGE_RECIPE_TIMEOUT_MS = 40_000;
+
 const authorityContextSchema = z.object({
   workspace: z.string().min(1).optional(),
   fleet: z.string().min(1).optional(),
@@ -404,6 +412,11 @@ export default defineTool({
           }
         }
         const dryRun = it.dryRun ?? false;
+        const timeoutMs = it.timeoutSec !== undefined
+          ? it.timeoutSec * 1000
+          : recipe.toolsUsed.includes('storage:usage')
+            ? STORAGE_USAGE_RECIPE_TIMEOUT_MS
+            : undefined;
         const result = await runToolOrchestration(recipe.script, {
           // EI-20066912585022608: a recipe script consumes tool results as JS VALUES,
           // exactly like the code:run script it was captured FROM — so it has to be
@@ -416,7 +429,7 @@ export default defineTool({
           tools: all,
           allowed,
           dryRun,
-          timeoutMs: it.timeoutSec ? it.timeoutSec * 1000 : undefined,
+          timeoutMs,
           wrapDispatch: bindCurrentCallerDispatch,
           inputs: contract.value.bindings.inputs,
         });

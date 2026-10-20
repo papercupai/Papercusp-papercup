@@ -147,6 +147,13 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // so this does not expose owner-only reports authored by another agent.
     'reports:read',
     'intel:read',
+    // EI-26483627873002128: a grader must re-observe a live/deployed bar itself, and
+    // capability:fetch is the only route. Read-only by construction: boundary-profile.ts
+    // resolves judge to the 'confined' tier whatever its superuser flags
+    // (EVIDENCE_ONLY_ROLES), and confined fetch allows only GET/HEAD/OPTIONS, refuses
+    // credential headers and private/loopback addresses (fetch-policy.ts). No bash,
+    // fs-write or git rides along.
+    'capability:net',
   ],
   // The SENTINEL — the fleet WATCHER (unify-launch-mechanics-2026-06-09 D-004,
   // split out of the overloaded "operator"). READ-MOSTLY: it observes fleet

@@ -194,6 +194,36 @@ describe('POST /api/harness/pots/from-repo — error→status map (Gap 7)', () =
 });
 
 // ── Gap 8: POST /harness/pots status map ────────────────────────────────────
+// ── WI-6554700010018316 fix 2: a retired slug is refused, never silently renamed ──
+// The registry read folds `papercup` → `papercusp`, so a registration under the
+// retired name scaffolded `harness_papercup` while every reader saw `papercusp`,
+// whose schema (and `agent_chats` view) was never created.
+describe('retired slug refusal (WI-6554700010018316 fix 2)', () => {
+  const registerRoute = (
+    routes as Array<{ path: string; method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>
+  ).find((x) => x.path === '/harness/projects' && x.method === 'POST');
+  if (!registerRoute) throw new Error('no POST route for /harness/projects');
+
+  it.each(['papercup', 'papercup-hive'])(
+    'POST /harness/projects refuses retired slug %s before reading or writing the registry',
+    async (slug) => {
+      const { status, body } = await post(registerRoute, { slug, path: '/srv/papercusp/workspaces/papercup' });
+      expect(status).toBe(400);
+      expect(body).toMatchObject({ code: 'retired_slug', canonicalSlug: 'papercusp' });
+      expect(String(body?.error)).toContain(`'${slug}'`);
+      expect(loadHarnessRegistry).not.toHaveBeenCalled();
+      expect(mutateHarnessRegistry).not.toHaveBeenCalled();
+    },
+  );
+
+  it('POST /harness/pots refuses a retired slug without creating a hive', async () => {
+    const { status, body } = await post(createHiveRoute, { slug: 'papercup' });
+    expect(status).toBe(400);
+    expect(body).toMatchObject({ code: 'retired_slug', canonicalSlug: 'papercusp' });
+    expect(createHiveHarness).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/harness/pots — createHive error→status map (Gap 8)', () => {
   it('declares the loopback auth tier', () => {
     expect(createHiveRoute.auth).toBe('loopback');

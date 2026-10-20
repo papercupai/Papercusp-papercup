@@ -156,6 +156,7 @@ import '../coordination/tools/conditions';
 import '../work_items/get';
 // Output-schema preflight regression uses the live optional `gate` field contract.
 import '../release/trace';
+import '../storage/usage';
 
 const findTool = (name: string) => {
   const t = listAllProjectedTools().find((x) => x.expose.mcp?.name === name);
@@ -564,6 +565,37 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
     // code:run is excluded (no recursive code-mode nesting).
     expect(allowed.has('code:run')).toBe(false);
+  });
+
+  it('gives storage:usage recipes enough time for the child read and preserves an explicit timeout', async () => {
+    getRecipeMock.mockResolvedValue({
+      id: 'storage-read',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 'storage read',
+      description: 'read storage categories',
+      script: 'return tools.storage.usage({});',
+      authorRole: 'operator',
+      toolsUsed: ['storage:usage'],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
+    });
+
+    await findTool('recipes:run').fn({ id: 'storage-read' }, mkCtx('operator'));
+    let [, options] = runOrchestrationMock.mock.calls.at(-1) as unknown as [
+      string,
+      { timeoutMs?: number },
+    ];
+    expect(options.timeoutMs).toBe(40_000);
+
+    await findTool('recipes:run').fn({ id: 'storage-read', timeoutSec: 20 }, mkCtx('operator'));
+    [, options] = runOrchestrationMock.mock.calls.at(-1) as unknown as [
+      string,
+      { timeoutMs?: number },
+    ];
+    expect(options.timeoutMs).toBe(20_000);
   });
 
   it('preflights typed bindings and passes only validated safe inputs into the VM', async () => {

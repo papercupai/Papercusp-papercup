@@ -27,6 +27,39 @@ const material = { status: 'published' as const, itemCount: 1, sourceCount: 1, u
 
 export const MORNING_AI_QUALITY_CASES: QualityCase[] = [
   {
+    id: 'papercusp-opportunity-existing-seam',
+    description: 'A new interoperability release supports a concrete Papercusp experiment at an existing seam, rather than a generic recommendation.',
+    pages: [{ id: 'release', url: `${primary}/releases/v2.1.0`, status: 200,
+      body: 'Bridge v2.1.0. Event/publication2026-10-08. Adds protocol revision negotiation. No deployment or performance evidence.' }],
+    priorSeriesBody: '2026-10-07 edition covered Bridge v2.0.0.',
+    expected: material,
+    assertions: [
+      { kind: 'text_contains', pattern: /Papercusp opportunities/i },
+      { kind: 'text_contains', pattern: /existing MCP seam/i },
+      { kind: 'text_contains', pattern: /test protocol negotiation/i },
+      { kind: 'text_contains', pattern: /confidence.*release notes/i },
+      { kind: 'text_contains', pattern: /production fit.*unverified/i },
+      { kind: 'text_contains', pattern: `${primary}/releases/v2.1.0` },
+    ],
+    positiveBody: `Worth testing — Bridge v2.1.0 adds protocol revision negotiation. Event/publication2026-10-08. [Release](${primary}/releases/v2.1.0).\n\n## Papercusp opportunities\n\nUse the existing MCP seam to test protocol negotiation before upgrading. Confidence: release notes support the feature; production fit remains unverified.`,
+    negativeBody: `Worth testing — Bridge v2.1.0 adds protocol revision negotiation. Event/publication2026-10-08. [Release](${primary}/releases/v2.1.0). Papercusp should adopt exciting new AI ideas.`,
+  },
+  {
+    id: 'quiet-day-papercusp-opportunities',
+    description: 'A fully covered quiet day explicitly records that it produced no actionable Papercusp idea.',
+    pages: [{ id: 'release', url: `${primary}/releases/v2.0.0`, status: 200,
+      body: 'Bridge v2.0.0 remains unchanged. No new release or evidence today.' }],
+    priorSeriesBody: '2026-10-07 edition covered Bridge v2.0.0.',
+    expected: { ...quiet, sourceCount: 1 },
+    assertions: [
+      { kind: 'text_contains', pattern: /Papercusp opportunities/i },
+      { kind: 'text_contains', pattern: /no actionable Papercusp idea/i },
+      { kind: 'text_excludes', pattern: /upgrade immediately/i },
+    ],
+    positiveBody: 'No material updates. Full coverage.\n\n## Papercusp opportunities\n\nNo actionable Papercusp idea was found from today’s unchanged sources.',
+    negativeBody: 'No material updates. Full coverage. Upgrade immediately to yesterday’s version.',
+  },
+  {
     id: 'duplicate-paper-and-url',
     description: 'A tracking URL and a mirror identify the same paper already covered yesterday.',
     pages: [

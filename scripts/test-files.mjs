@@ -3266,7 +3266,12 @@ export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = pro
 export function privateIntegrationVerifierInputs(root, files, env = process.env, execArgv = process.execArgv) {
   if (!`${env.NODE_OPTIONS ?? ''} ${execArgv.join(' ')}`.includes('committed-source-loader.mjs')
     || existsSync(join(root, '.verifier-source.json'))) return null;
-  const selected = files.map(file => relative(root, resolve(root, file)));
+  // `test:file` accepts package-relative paths from the repository root (for example
+  // `lib/foo.integration.test.ts` resolves to `packages/operator-core/lib/foo...`).
+  // The frozen verifier runs from a repository-root archive, so preserve the router's
+  // resolved repository-relative path instead of treating the caller's shorthand as root
+  // relative. This also keeps the source census aligned with the command sent to the child.
+  const selected = files.map(file => relative(root, resolveRequestedTestFile(file, root)));
   if (selected.some(file => !file || isAbsolute(file) || file === '..' || file.startsWith(`..${sep}`)))
     throw new Error('private verification test inputs must belong to the selected repository');
   const privateProof = selected.some(file => {
@@ -3459,7 +3464,7 @@ export async function main(
   }
   if (!dry) {
     try {
-      const inputs = privateIntegrationVerifierInputs(repoRoot, testFiles);
+      const inputs = privateIntegrationVerifierInputs(repoRoot, routes.map(route => route.absolute));
       if (inputs) {
         const privatePg = await preflightPrivateIntegrationPgImpl();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
@@ -3468,7 +3473,7 @@ export async function main(
           throw new Error('private verification requires a measured source commit');
         const receiptDir = mkdtempSync(join(tmpdir(), 'private-proof-source-'));
         const receiptPath = join(receiptDir, 'verifier-source.json');
-        const sourceArgs = new Map(testFiles.map(file => [file, relative(repoRoot, resolve(repoRoot, file))]));
+        const sourceArgs = new Map(testFiles.map((file, index) => [file, relative(repoRoot, routes[index].absolute)]));
         console.error(`TEST_FILE_VERIFIER_SOURCE ref=${ref} receipt=${receiptPath}`);
         try {
           return await runPrivateVerifierImpl({ repo: repoRoot, ref, receiptPath, inputs,

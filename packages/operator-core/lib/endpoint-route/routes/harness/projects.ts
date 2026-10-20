@@ -191,6 +191,16 @@ const create = defineTool({
     const body = (await req.json()) as Record<string, unknown>;
     const slug = String(body.slug ?? '').trim();
     if (!slug) return Response.json({ error: 'slug required' }, { status: 400 });
+    // WI-6554700010018316: a retired slug is renamed on every registry read, which
+    // would orphan the schema scaffolded below. Refuse it before any side effect.
+    const { retiredSlugRefusal } = await import('../../../harness/registration-path');
+    const retired = retiredSlugRefusal(slug);
+    if (retired) {
+      return Response.json(
+        { error: retired.error, code: retired.code, canonicalSlug: retired.canonicalSlug },
+        { status: retired.status },
+      );
+    }
 
     const reg = await loadHarnessRegistry();
     if (reg.projects.some((p) => p.slug === slug)) {
@@ -303,8 +313,15 @@ const create = defineTool({
       } catch { /* best-effort — registration proceeds without API coords */ }
     } else if (rawPath) {
       path = resolve(rawPath);
-      if (!existsSync(path)) {
-        return Response.json({ error: 'path does not exist' }, { status: 400 });
+      // existsSync conflates "missing" with "the operator cannot stat it" (a 0700
+      // home on a hosted workspace) — report them apart (WI-6554700010018316).
+      const { checkRegistrationPath } = await import('../../../harness/registration-path');
+      const verdict = checkRegistrationPath(path);
+      if (!verdict.ok) {
+        return Response.json(
+          { error: verdict.error, code: verdict.code, ...(verdict.hint ? { hint: verdict.hint } : {}) },
+          { status: verdict.status },
+        );
       }
     } else {
       return Response.json(
@@ -470,6 +487,17 @@ const createHive = defineTool({
     const slug = String(body.slug ?? '').trim();
     if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
       return Response.json({ error: 'a valid lowercase slug is required', code: 'invalid_slug' }, { status: 400 });
+    }
+    {
+      // WI-6554700010018316: same retired-slug refusal as POST /harness/projects.
+      const { retiredSlugRefusal } = await import('../../../harness/registration-path');
+      const retired = retiredSlugRefusal(slug);
+      if (retired) {
+        return Response.json(
+          { error: retired.error, code: retired.code, canonicalSlug: retired.canonicalSlug },
+          { status: retired.status },
+        );
+      }
     }
     // domain-generic-hive P-006: the picker's domain headings (work hive,
     // Comb-blueprint) pick a NON-default kind:'hive' blueprint. Absent ⇒

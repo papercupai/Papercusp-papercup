@@ -183,7 +183,11 @@ async function deliverRoute(route: SevereEventRoute, summary: string, body: stri
 }
 
 /**
- * WI-6554700010011878: ONE-SHOT is a contract, and this chokepoint enforces it.
+ * WI-6554700010011878 / EI-26479741876796670: condition repeats are decided at
+ * this chokepoint, so every severe-event producer gets the same transition
+ * semantics. One-shot alarms stay silent for the whole episode. Level-triggered
+ * alarms still refresh the durable condition timestamp, but the refresh is an
+ * empty-audience heartbeat and therefore never burns an agent inbox entry.
  *
  * `oneShot` (WI-6228) means the emitter "alarms once per episode and stays silent until
  * recovery". Nothing held emitters to that. Measured 2026-10-14: 42,378 of the 56,193
@@ -194,12 +198,12 @@ async function deliverRoute(route: SevereEventRoute, summary: string, body: stri
  * one-shot conditions dropped from coord:conditions on the descending one). It also re-sent
  * every routed directed message and wake on each tick.
  *
- * A repeat is a oneShot alarm whose key's NEWEST envelope is an alarm (not a resolution)
+ * A repeat is a condition alarm whose key's NEWEST envelope is an alarm (not a resolution)
  * with the SAME summary. Everything else passes through: the first alarm, an alarm after any
- * resolution (a new episode), a changed summary (new information), and every alarm that did
- * not declare oneShot. Pure, so the decision is pinned without a database.
+ * resolution (a new episode), and a changed summary (new information). The decision is pure,
+ * so the durable condition log remains the source of truth across processes and restarts.
  */
-export function isRepeatOfOpenOneShotAlarm(
+export function isRepeatOfOpenConditionAlarm(
   latest: Record<string, unknown> | null,
   conditionKey: string,
   summary: string,
@@ -212,33 +216,74 @@ export function isRepeatOfOpenOneShotAlarm(
   return latest['condition_key'] === conditionKey && latest['summary'] === summary;
 }
 
+/** Backward-compatible name for callers/tests that pin the one-shot contract. */
+export function isRepeatOfOpenOneShotAlarm(
+  latest: Record<string, unknown> | null,
+  conditionKey: string,
+  summary: string,
+): boolean {
+  return isRepeatOfOpenConditionAlarm(latest, conditionKey, summary);
+}
+
 /** Fail-OPEN: a read failure broadcasts, because a lost alarm costs more than a duplicate. */
-async function suppressOneShotRepeat(ev: SevereEventBroadcast): Promise<boolean> {
-  if (!ev.oneShot || !ev.conditionKey) return false;
+async function readOpenConditionRepeat(ev: SevereEventBroadcast): Promise<boolean> {
+  if (!ev.conditionKey) return false;
   try {
     const { readLatestConditionEnvelope } = await import('./agent-tools/coordination/tools/conditions');
-    return isRepeatOfOpenOneShotAlarm(await readLatestConditionEnvelope(ev.conditionKey), ev.conditionKey, ev.summary);
+    return isRepeatOfOpenConditionAlarm(
+      await readLatestConditionEnvelope(ev.conditionKey),
+      ev.conditionKey,
+      ev.summary,
+    );
   } catch (e) {
-    console.warn(`[severe-event-broadcast] one-shot repeat check failed, broadcasting (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    console.warn(`[severe-event-broadcast] condition repeat check failed, broadcasting (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
 }
 
 /**
+ * Refresh a level-triggered condition without delivering another agent-facing
+ * message. `coord:conditions` folds this marker into `last_seen`, while the
+ * empty recipient list keeps it out of every inbox. One-shot emitters do not
+ * need this marker: their silence is itself part of the one-shot contract.
+ */
+async function recordConditionHeartbeat(
+  ev: SevereEventBroadcast,
+  emitter: ReturnType<typeof severeEventEmitter>,
+  body: string,
+): Promise<void> {
+  if (!ev.conditionKey || ev.oneShot) return;
+  await sendMessage(SEVERE_EVENT_IDENTITY, {
+    to: [],
+    summary: ev.summary,
+    body,
+    category: ev.category ?? 'severe-event',
+    extra: {
+      emitter,
+      condition_key: ev.conditionKey,
+      condition_heartbeat: true,
+    },
+  });
+}
+
+/**
  * Broadcast a SEVERE pipeline event to every running agent, inject-only (no wake). Seen on the
- * recipient's next turn so someone claims it. Never throws. A oneShot alarm that repeats its
- * still-open key's summary is not re-sent (WI-6554700010011878); it returns true because the
- * alarm is still in effect.
+ * recipient's next turn so someone claims it. Never throws. A repeated condition summary is
+ * not re-sent. One-shot alarms stay silent; level-triggered alarms append a durable, empty-
+ * audience heartbeat so `coord:conditions.last_seen` remains fresh.
  */
 export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<boolean> {
   try {
-    if (await suppressOneShotRepeat(ev)) return true;
-    // No `wake` option ⇒ plain inject (the owner-requested wake=false): lands in every agent's
-    // inbox for their next turn, no forced re-invoke storm.
     // WI-7309: emitter identity is stamped UNCONDITIONALLY — an alarm whose emitter is
     // unknown is an alarm nobody can attribute, and attribution is the expensive part.
     const emitter = severeEventEmitter();
     const body = `${ev.body ?? ''}${renderSevereEventEmitter(emitter)}`;
+    if (await readOpenConditionRepeat(ev)) {
+      await recordConditionHeartbeat(ev, emitter, body);
+      return true;
+    }
+    // No `wake` option ⇒ plain inject (the owner-requested wake=false): lands in every agent's
+    // inbox for their next turn, no forced re-invoke storm.
     await sendMessage(SEVERE_EVENT_IDENTITY, {
       to: ['*'],
       summary: ev.summary,

@@ -56,7 +56,7 @@ export interface ConditionState {
    *  has been *continuously* open (EI-10653 — the staleness alarm reported a
    *  freshly-reopened flap as "OPEN for 1967m" by anchoring on first_seen). */
   open_since: string | null;
-  /** ts of the LATEST alarm. */
+  /** ts of the LATEST alarm or condition heartbeat. */
   last_seen: string;
   /** total alarm broadcasts for this key (re-alarms after flapping included). */
   alarm_count: number;
@@ -102,6 +102,10 @@ export function computeConditionStates(
   envelopes: readonly Record<string, unknown>[],
 ): ConditionState[] {
   const byKey = new Map<string, ConditionState>();
+  // `last_seen` includes liveness heartbeats, but openness must still be decided
+  // from the latest real alarm. Keeping that timestamp separately prevents a
+  // late or out-of-order heartbeat from re-opening a condition after recovery.
+  const latestAlarmByKey = new Map<string, string>();
   const emitterOf = (envelope: Record<string, unknown>): SevereEventEmitter | undefined => {
     const direct = asSevereEventEmitter(envelope["emitter"]);
     if (direct) return direct;
@@ -113,6 +117,11 @@ export function computeConditionStates(
   for (const e of envelopes) {
     const ts = typeof e["ts"] === "string" ? (e["ts"] as string) : null;
     if (!ts) continue;
+    const extra = e["extra"];
+    const conditionHeartbeat =
+      e["condition_heartbeat"] === true ||
+      (extra && typeof extra === "object" && !Array.isArray(extra) &&
+        (extra as Record<string, unknown>)["condition_heartbeat"] === true);
     // EI-14072: a resolution can name ONE key (`resolves_condition`, singular —
     // broadcastSevereEventResolved) or SEVERAL at once (`resolves_conditions`,
     // plural array — broadcastSevereEventResolvedMany, EI-9030b's batched
@@ -168,6 +177,14 @@ export function computeConditionStates(
     const key = e["condition_key"];
     if (typeof key !== "string" || !key) continue;
     const prev = byKey.get(key);
+    if (conditionHeartbeat) {
+      // Heartbeats are durable freshness markers emitted for a repeated, still-open
+      // alarm. They must not count as another alarm or replace the alarm's evidence,
+      // summary, emitter, episode start, or one-shot declaration. An orphan marker
+      // cannot establish a condition by itself, so ignore it until its alarm is seen.
+      if (prev && prev.alarm_count > 0 && ts >= prev.last_seen) prev.last_seen = ts;
+      continue;
+    }
     if (!prev) {
       byKey.set(key, {
         condition_key: key,
@@ -187,8 +204,11 @@ export function computeConditionStates(
         resolved_at: null,
         resolved_summary: null,
       });
+      latestAlarmByKey.set(key, ts);
     } else {
       prev.alarm_count += 1;
+      const latestAlarm = latestAlarmByKey.get(key);
+      if (!latestAlarm || ts > latestAlarm) latestAlarmByKey.set(key, ts);
       // Re-open a resolved (closed) key: this alarm starts a new episode. While
       // an episode is already open, keep its original start.
       if (prev.open_since === null) prev.open_since = ts;
@@ -213,7 +233,8 @@ export function computeConditionStates(
   }
   const out = [...byKey.values()];
   for (const s of out) {
-    s.open = s.alarm_count > 0 && (!s.resolved_at || s.last_seen > s.resolved_at);
+    const latestAlarm = latestAlarmByKey.get(s.condition_key);
+    s.open = s.alarm_count > 0 && !!latestAlarm && (!s.resolved_at || latestAlarm > s.resolved_at);
     // Keep open_since consistent with the finalized open flag: a resolved
     // condition carries no current episode; an open one always has a start
     // (defensively fall back to last_seen if out-of-order folding left it null).

@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { firePluginLifecycle } from '../../plugin-host-runtime';
-import { emitSystemEvent } from '../../events/engine';
+import { emitPluginEvent } from '../../events/plugin-event-fanout';
 import { loadHarnessRegistry } from '../../harness-registry';
 
 export default defineTool({
@@ -50,11 +50,7 @@ export default defineTool({
   ]),
   async handler(args) {
     if (args.mode === 'event') {
-      const payload = args.payload;
-      emitSystemEvent({
-        tool: args.event,
-        args: (payload && typeof payload === 'object' ? payload : payload === undefined ? {} : { value: payload }) as Record<string, unknown>,
-      });
+      emitPluginEvent({ name: args.event, payload: args.payload });
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, fired: args.event }) }] };
     }
     const project = (await loadHarnessRegistry()).projects.find((p) => p.slug === args.slug) ?? null;

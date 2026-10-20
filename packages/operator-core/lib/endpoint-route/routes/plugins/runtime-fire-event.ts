@@ -41,12 +41,8 @@ export default defineTool({
       if (!event) {
         return Response.json({ error: 'event (string) or lifecycle (string) required' }, { status: 400 });
       }
-      const { emitSystemEvent } = await import('../../../events/engine');
-      const payload = body?.payload;
-      emitSystemEvent({
-        tool: event,
-        args: (payload && typeof payload === 'object' ? payload : payload === undefined ? {} : { value: payload }) as Record<string, unknown>,
-      });
+      const { emitPluginEvent } = await import('../../../events/plugin-event-fanout');
+      emitPluginEvent({ name: event, payload: body?.payload });
       return Response.json({ ok: true });
     } catch (e: any) {
       return Response.json({ error: e?.message ?? String(e) }, { status: 500 });

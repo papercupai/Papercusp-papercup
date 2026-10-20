@@ -1,0 +1,49 @@
+{
+  "plan": "event-wait-settlement-2026-10-20",
+  "clause": "AUTO-BAR-R-3-P-002@3",
+  "instrument": "docs/evidence/ews-p002-r3-settlement-lookup-live-2026-10-20.mts",
+  "measuredAt": "2026-10-20T19:35:12.951Z",
+  "key": "work-item:done:WI-r3-live-explain-absent",
+  "thresholdMs": 10,
+  "workItemsRows": 405710,
+  "externalBlockers": {
+    "verdict": "pass",
+    "executionMs": 0.659,
+    "sharedHitBlocks": 145,
+    "sharedReadBlocks": 0,
+    "seqScanOnWorkItems": false,
+    "indexes": [
+      "work_items_external_blockers_gin_idx"
+    ],
+    "nodes": [
+      "LockRows",
+      "Bitmap Heap Scan[work_items]",
+      "Bitmap Index Scan(work_items_external_blockers_gin_idx)"
+    ],
+    "statement": "SELECT workspace_id, feature_id, item_kind, status, payload, harness_slug, taken_by FROM harness_shared.work_items WHERE ( (payload -> 'externalBlockers') @> jsonb_build_array( jsonb_build_object('ref', $1::text, 'status', 'active') ) AND jsonb_path_exists( payload -> 'externalBlockers', '$[*] ? (@.ref == $ref && @.status == \"active\" && (@.kind == \"event\" || @.kind == \"gate\"))', jsonb_build_object('ref', $2::text) ) ) FOR UPDATE",
+    "params": [
+      "work-item:done:WI-r3-live-explain-absent",
+      "work-item:done:WI-r3-live-explain-absent"
+    ]
+  },
+  "durableParks": {
+    "verdict": "pass",
+    "executionMs": 0.031,
+    "sharedHitBlocks": 2,
+    "sharedReadBlocks": 0,
+    "seqScanOnWorkItems": false,
+    "indexes": [
+      "work_items_claim_hold_release_trigger_idx"
+    ],
+    "nodes": [
+      "LockRows",
+      "Index Scan(work_items_claim_hold_release_trigger_idx)[work_items]"
+    ],
+    "statement": "SELECT workspace_id, harness_slug, feature_id, item_kind, status AS state, taken_by, payload FROM harness_shared.work_items WHERE ( payload ? 'claim_hold_release' AND (payload -> 'claim_hold_release') ->> 'trigger' = $1 AND payload ->> '_claimHold' = 'true' AND NULLIF(payload ->> 'claim_hold_by', '') IS NOT NULL AND (taken_by IS NULL OR btrim(taken_by) = '') ) FOR UPDATE",
+    "params": [
+      "work-item:done:WI-r3-live-explain-absent"
+    ]
+  },
+  "verdict": "pass",
+  "baseline": "Before migration 1539 (measured 2026-10-20, 404,825 rows): externalBlockers 89.7 ms / 25,429 buffers; durableParks parallel seq scan 676.6 ms / 930,107 buffers (event-wait-ref-index.integration.test.ts header)."
+}

@@ -688,35 +688,44 @@ export function isReadOnlyHeadPipeline(command: string): boolean {
 }
 
 /**
- * A read-only ripgrep count pipeline has a meaningful zero result when rg finds
- * no matches. With pipefail enabled, rg's conventional exit code 1 otherwise
- * makes the whole pipeline look failed even though the downstream wc consumed
- * the valid zero-count stream. Keep this predicate narrow: a bare rg no-match,
- * a pipeline without a count consumer, or any shell syntax outside the small
- * classifier remains a real failure.
+ * A read-only ripgrep pipeline has a meaningful empty result when rg finds no
+ * matches. With pipefail enabled, rg's conventional exit code 1 otherwise makes
+ * the whole pipeline look failed even though a downstream consumer (for example
+ * `wc -l` or `tail`) consumed the valid empty stream. Keep this predicate narrow:
+ * a bare rg no-match, a pipeline without a safe consumer, or any shell syntax
+ * outside the small classifier remains a real failure.
  */
-export function isReadOnlyRgCountPipeline(command: string): boolean {
+export function isReadOnlyRgEmptyConsumerPipeline(command: string): boolean {
   if (/[;&<>\n\r]/.test(command) || command.includes('||')) return false;
   const segments = splitClassifiableShell(command);
   if (!segments || segments.length < 2) return false;
 
   const final = segments.at(-1);
-  if (
-    !final ||
-    commandBase(final[0] ?? '') !== 'wc' ||
-    final.length !== 2 ||
-    !['-l', '--lines'].includes(final[1] ?? '')
-  ) {
-    return false;
-  }
+  if (!final) return false;
+  const finalBase = commandBase(final[0] ?? '');
+  const isCountConsumer = finalBase === 'wc' && final.length === 2 && ['-l', '--lines'].includes(final[1] ?? '');
+  const isEmptySafeConsumer = isCountConsumer || finalBase === 'head' || finalBase === 'tail';
+  if (!isEmptySafeConsumer) return false;
 
   const rgIndexes = segments
     .map((segment, index) => (commandBase(segment[0] ?? '') === 'rg' ? index : -1))
     .filter((index) => index >= 0);
   if (rgIndexes.length === 0) return false;
 
-  const hasDownstreamCount = rgIndexes.some((rgIndex) =>
-    segments.slice(rgIndex + 1).some((segment) => commandBase(segment[0] ?? '') === 'wc'),
+  const hasDownstreamConsumer = rgIndexes.some((rgIndex) =>
+    segments.slice(rgIndex + 1).some((segment) => {
+      const base = commandBase(segment[0] ?? '');
+      return base === 'wc' || base === 'head' || base === 'tail';
+    }),
   );
-  return hasDownstreamCount && classifyCapabilityBashEffect({ command }) === 'read';
+  return hasDownstreamConsumer && segments.every((segment) => classifiesSimpleRead(segment));
+}
+
+export function isReadOnlyRgCountPipeline(command: string): boolean {
+  const segments = splitClassifiableShell(command);
+  const final = segments?.at(-1);
+  return isReadOnlyRgEmptyConsumerPipeline(command) &&
+    commandBase(final?.[0] ?? '') === 'wc' &&
+    final?.length === 2 &&
+    ['-l', '--lines'].includes(final[1] ?? '');
 }

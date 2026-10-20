@@ -215,6 +215,7 @@ export const HOSTED_LOGIN_CHOICE: ":login";
  * `channel_kind_unknown`; only a host older than both says nothing at all.
  */
 export const HOSTED_PSU_READY_TIMEOUT_MS: 15000;
+export const HOSTED_VIEWER_NOTICE: string;
 /**
  * How long psu waits for a running workspace's machine to re-establish its
  * link to Papercusp cloud before giving up. The machine's connector reconnects

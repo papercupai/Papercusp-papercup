@@ -46,12 +46,14 @@ import { failOpenExclusionSql, type AdmissionFailOpenExclusion } from './work-it
 /** Ceiling on the rows one fail-open run READS for re-screening; deliberately not the
  *  throttle. The wall budget below is the binding limit (WI-6554700010018182). */
 export const DEFAULT_DEDUP_RESCREEN_BATCH_SIZE = 200;
-/** Screens in flight at once inside the wall budget. Measured live 2026-10-20 17:15Z: one
- *  screen at a time took ~2s each, so the 45s budget re-screened 21 rows per 30-minute run
- *  (attempted=21, budgetExhausted=true) and a 278-row degraded backlog drained in ~6h.
- *  Raising the row cap alone moved that from 20 to 21. A screen is three guard queries
- *  plus an embed call, mostly waiting on I/O, so overlapping a few multiplies throughput
- *  without widening the budget. Kept small because each screen runs three PG legs at once. */
+/** Screens in flight at once inside the wall budget (WI-6554700010018182). Serial, the
+ *  45s budget re-screened 16-48 rows per 30-minute run depending on load (~1-2s a screen),
+ *  so a degraded backlog drained over hours. Measured live 2026-10-20 with 3 in flight:
+ *  0.43 and 0.88 resolved rows per screen-second vs a serial median of 0.52, and the queue
+ *  emptied inside the budget from the second run on. It does NOT scale linearly: wall time
+ *  per screen rose with overlap, so the screens share a bottleneck (PG + embedder). Each
+ *  leg also has its own resolve-null budget (lexical 1.5s, semantic 2.5s), so overlap that
+ *  slows a leg turns it 'unavailable' and the row retries after the cooldown. Kept small. */
 export const DEFAULT_DEDUP_RESCREEN_CONCURRENCY = 3;
 /** Wall budget for the whole re-screen pass, so the must-never-starve admit step that
  *  follows is never delayed by a slow embedder or a loaded database. */

@@ -22,7 +22,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "test": "vitest run --passWithNoTests",
+    "test": "node ../../scripts/workspace-test.mjs --passWithNoTests",
     "test:lane-pure": "PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs",
     "test:lane-stateful": "PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",

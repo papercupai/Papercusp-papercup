@@ -1629,13 +1629,22 @@ export async function claimAgentReview(
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<ClaimAgentReviewResult> {
   let workItem = await deps.getWorkItem(input.id, input.harnessSlug);
-  if (!workItem || workItem.harness !== input.harnessSlug) {
+  if (!workItem) {
     return { claimed: false, workItem: null, reason: 'not-found' };
   }
+
+  // EI-26300262181842808: issue-family EI ids are workspace-unique, so getWorkItem
+  // may resolve the canonical row from another harness even when the caller supplied
+  // an ambient portal harness. Use the row's harness for all write-side admission and
+  // healing; treating the resolved row's different harness as "not found" stranded
+  // valid directed reviews behind a misleading scope mismatch.
+  let resolvedHarness = workItem.harness ?? input.harnessSlug;
+  workItem = await healOwnNodeRemoteOrigin(workItem, deps, { harnessSlug: resolvedHarness });
+  resolvedHarness = workItem.harness ?? resolvedHarness;
+
   if (workItem.state !== 'open') {
     return { claimed: false, workItem: null, reason: 'not-open' };
   }
-  workItem = await healOwnNodeRemoteOrigin(workItem, deps, { harnessSlug: input.harnessSlug });
   const eligibility = agentReviewEligibility(workItem);
   if (!eligibility.eligible) {
     return { claimed: false, workItem: null, reason: eligibility.reason };
@@ -1654,7 +1663,7 @@ export async function claimAgentReview(
   const agentReviewAdmission = mintAgentReviewClaimAdmission({
     itemId: workItem.id,
     reviewer: input.reviewer,
-    harnessSlug: input.harnessSlug,
+    harnessSlug: resolvedHarness,
     review: current,
     source: workItem,
     parties,
@@ -1664,12 +1673,12 @@ export async function claimAgentReview(
   }
 
   const claimed = await deps.claimWorkItem(workItem.id, input.reviewer, {
-    ...(workItem.harness ? { harness: workItem.harness } : {}),
+    ...(resolvedHarness ? { harness: resolvedHarness } : {}),
     agentReviewAdmission,
   });
   if (!claimed) {
     const latest = await deps.getWorkItem(input.id, input.harnessSlug);
-    if (!latest || latest.harness !== input.harnessSlug) {
+    if (!latest) {
       return { claimed: false, workItem: null, reason: 'not-found' };
     }
     if (latest.state !== 'open') {

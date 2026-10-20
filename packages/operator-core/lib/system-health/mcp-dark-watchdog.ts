@@ -45,6 +45,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { agentToolInvocationPredicate } from '../agent-tools/sessions/automatic-tool-names';
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
+import type { RespawnLaunchSpec } from '../carry-respawn';
 
 /** Supervisor beat is ~60s; fresh within 3× ⇒ the process is alive. */
 const DEFAULT_SUPERVISOR_FRESH_MS = 3 * 60_000; // 3 min
@@ -357,6 +358,11 @@ const DEFAULT_LOOP_STALE_FLOOR_MS = 20 * 60_000;
  *  Papercusp tools are demonstrably flowing NOW (2026-07-14 false-heal fix —
  *  recovery is never inferred from ¬dark). */
 const RECOVERED_FRESH_MS = 5 * 60_000;
+/** Conservative carry budget when the live served model window is unavailable. */
+const FALLBACK_HEADLESS_RECOVERY_WINDOW_TOKENS = 200_000;
+
+type HeadlessRecoverySpec = Pick<RespawnLaunchSpec, 'firstPrompt' | 'systemPromptAddendum'>;
+type BuildHeadlessRecoverySpec = (ownerId: string) => Promise<HeadlessRecoverySpec | null>;
 
 export interface InteractiveDarkSnapshot {
   ownerId: string;
@@ -702,6 +708,58 @@ export function interactiveDarkRecoveryInstructions(
   );
 }
 
+/**
+ * Assemble the same deterministic carry used by every other context boundary.
+ * The watchdog is an external cut, so it must mark the boundary as forced and
+ * never claim the session flushed its own state. Resolve the live transcript so
+ * a headless judge's original kickoff remains available even when it has not
+ * made a successful MCP call yet.
+ */
+async function buildCanonicalHeadlessRecoverySpec(ownerId: string): Promise<HeadlessRecoverySpec | null> {
+  try {
+    const [{ buildOwnerRespawnLaunchSpec }, { estimateContextWindowForOwner, resolveSessionRefReconciled }] =
+      await Promise.all([import('../carry-respawn'), import('../compaction-usage')]);
+    const { activeWorkspaceId } = await import('../workspace-registry');
+
+    const measuredWindow = await estimateContextWindowForOwner(ownerId).catch(() => null);
+    const effectiveWindowTokens =
+      typeof measuredWindow === 'number' && Number.isFinite(measuredWindow) && measuredWindow > 0
+        ? measuredWindow
+        : FALLBACK_HEADLESS_RECOVERY_WINDOW_TOKENS;
+
+    const ref = await resolveSessionRefReconciled(ownerId).catch(() => null);
+    let transcriptPath: string | null = null;
+    let transcriptSourceKind: 'claude' | 'codex' = 'claude';
+    if (ref?.agent === 'codex') {
+      const { resolveSelfSession } = await import('../search/self-session');
+      const self = await resolveSelfSession(ownerId).catch(() => null);
+      if (self?.sourceKind === 'codex') {
+        transcriptPath = self.filePath;
+        transcriptSourceKind = 'codex';
+      }
+    } else if (ref?.agent !== 'omp') {
+      const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
+      transcriptPath =
+        (ref?.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
+        newestTranscriptUnderOwner(ownerId);
+    }
+
+    return await buildOwnerRespawnLaunchSpec(ownerId, {
+      effectiveWindowTokens,
+      buildOpts: {
+        workspaceId: activeWorkspaceId(),
+        transcriptPath,
+        transcriptSourceKind,
+        boundaryDeliberate: false,
+        boundarySelfRequested: false,
+      },
+    });
+  } catch {
+    // A failed carry build must never turn a dark recovery into a blind recycle.
+    return null;
+  }
+}
+
 const interactiveHealState = new Map<string, OwnerHealState>();
 const interactiveHealBudget: InteractiveHealBudgetState = {
   attemptsMs: [],
@@ -745,6 +803,8 @@ export async function checkInteractiveMcpDark(
     sharedWindowMs?: number;
     jitterMaxMs?: number;
     sharedBudget?: InteractiveHealBudgetState;
+    /** Test seam for the canonical headless carry assembly. */
+    buildHeadlessRecoverySpec?: BuildHeadlessRecoverySpec;
   } = {},
 ): Promise<InteractiveMcpDarkResult> {
   const out: InteractiveMcpDarkResult = {
@@ -778,6 +838,7 @@ export async function checkInteractiveMcpDark(
               owner_id: string;
               assistant_turn_count: string | number | null;
               last_assistant_turn_ms: string | number | null;
+              last_agent_call_ms: string | number | null;
             }[]
           >`
       WITH live_hosts AS (
@@ -798,7 +859,8 @@ export async function checkInteractiveMcpDark(
       )
       SELECT h.owner_id,
              turns.assistant_turn_count,
-             turns.last_assistant_turn_ms
+             turns.last_assistant_turn_ms,
+             extract(epoch from a.invoked_at) * 1000 AS last_agent_call_ms
         FROM live_hosts h
         LEFT JOIN last_agent a ON a.owner_id = h.owner_id
         CROSS JOIN LATERAL (
@@ -864,6 +926,7 @@ export async function checkInteractiveMcpDark(
           {
             count: r.assistant_turn_count == null ? 0 : Number(r.assistant_turn_count),
             lastTurnMs: r.last_assistant_turn_ms == null ? null : Number(r.last_assistant_turn_ms),
+            lastAgentMs: r.last_agent_call_ms == null ? null : Number(r.last_agent_call_ms),
           },
         ]),
       );
@@ -898,7 +961,19 @@ export async function checkInteractiveMcpDark(
           dark: recovered ? false : verdict.dark,
           recovered,
           reason: verdict.reason,
-          staleMins: mins(now - (presenceMs ?? h.startedAt ?? now)),
+          // The shared presence beat may be refreshed by hooks while the client
+          // has made no agent-origin call. For the tool-less-turn alarm, report
+          // silence from the last agent call (or host start), not that fresh
+          // hook beat; otherwise a real ~60m gap is rendered as "~0m".
+          staleMins: mins(
+            Math.max(
+              0,
+              now -
+                (toolFreeTurns
+                  ? (toolFreeTurns.lastAgentMs ?? h.startedAt ?? presenceMs ?? now)
+                  : (presenceMs ?? h.startedAt ?? now)),
+            ),
+          ),
         });
       }
       out.darkOwners = [...verdictByOwner.entries()].filter(([, v]) => v.dark).map(([o]) => o);
@@ -933,6 +1008,7 @@ export async function checkInteractiveMcpDark(
             out,
             now,
             host: hostByOwner.get(step.ownerId),
+            buildHeadlessRecoverySpec: opts.buildHeadlessRecoverySpec ?? buildCanonicalHeadlessRecoverySpec,
           });
         } catch (e) {
           // One owner's failure must not abort the rest of the pass (live incident
@@ -1001,9 +1077,10 @@ async function runInteractiveHealStep(
     out: InteractiveMcpDarkResult;
     now: number;
     host: PsuPtyHost | undefined;
+    buildHeadlessRecoverySpec: BuildHeadlessRecoverySpec;
   },
 ): Promise<void> {
-  const { sql, discovery, out, now, host } = ctx;
+  const { sql, discovery, out, now, host, buildHeadlessRecoverySpec } = ctx;
   if (step.action === 'defer-budget') {
     out.budgetDeferred.push(step.ownerId);
     console.warn(
@@ -1043,20 +1120,35 @@ async function runInteractiveHealStep(
       // Never let config repair block the heal it is trying to enable.
     }
     const headless = discovery.sessionClassForHost(host) === 'claude-headless';
-    let sent: 'sent' | 'no-host' | 'no-cap' | 'send-failed';
+    let sent: 'sent' | 'no-host' | 'no-cap' | 'send-failed' | 'carry-build-failed';
     if (headless) {
       if (!host) {
         sent = 'no-host';
       } else if (!discovery.hostSupports(host, 'carry-respawn')) {
         sent = 'no-cap';
       } else {
-        const carry = await taggedHeadlessMcpRecoveryWakeText(step.ownerId, v?.staleMins ?? 0);
-        const accepted = await discovery.injectIntoHost(host.sock, {
-          mode: 'carry-respawn',
-          data: carry,
-          ownerId: step.ownerId,
-        });
-        sent = accepted ? 'sent' : 'send-failed';
+        let spec: HeadlessRecoverySpec | null = null;
+        try {
+          spec = await buildHeadlessRecoverySpec(step.ownerId);
+        } catch {
+          spec = null;
+        }
+        if (!spec) {
+          sent = 'carry-build-failed';
+        } else {
+          // An unresolved owner request is already the canonical first prompt;
+          // when there is none, use the watchdog-tagged recovery instruction so
+          // the successor wakes without inventing an owner directive.
+          const carry =
+            spec.firstPrompt ?? (await taggedHeadlessMcpRecoveryWakeText(step.ownerId, v?.staleMins ?? 0));
+          const accepted = await discovery.injectIntoHost(host.sock, {
+            mode: 'carry-respawn',
+            data: carry,
+            systemPromptAddendum: spec.systemPromptAddendum,
+            ownerId: step.ownerId,
+          });
+          sent = accepted ? 'sent' : 'send-failed';
+        }
       }
     } else {
       sent = await discovery.mcpReconnectViaPty(step.ownerId);

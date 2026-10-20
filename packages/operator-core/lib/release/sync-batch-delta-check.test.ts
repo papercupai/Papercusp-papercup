@@ -654,6 +654,31 @@ describe('runSyncBatchDeltaCheck — reds, confirmation, filing', () => {
     expect(state.cursor?.openReds?.[0]?.path).toBe(failingFile.file);
   });
 
+  it('attributes a red to a commit NEWER than a capped judged prefix (the legs ran on the whole tree)', async () => {
+    // WI-6554700010018334: a learned cap of 1 judged only the oldest commit, but the legs ran
+    // on the shared tree at HEAD. The break was in a newer commit, so a prefix-only search
+    // either found nothing or (via radius) blamed the innocent oldest commit.
+    const innocentOldest = makeBatch({ sha: SHA_C, agent: 'su-innocent', paths: ['packages/foo/src/unrelated.ts'] });
+    const culprit = makeBatch({ sha: SHA_B, agent: 'su-culprit', paths: ['packages/foo/src/a.test.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        listBatches: async () => [culprit, innocentOldest], // newest first
+        runAffected: async () => ({ ok: false, failing: [failingFile] }),
+        confirmOne: async () => false,
+      },
+      { sha: SHA_A, updatedAtMs: 1, windowCommitCap: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('red');
+    expect(state.filed).toHaveLength(1);
+    expect(res.filed[0]?.introducedBy).toBe(culprit.sha);
+    const body = state.filed[0]!.body;
+    expect(body).toContain(`Introducing batch: ${culprit.sha}`);
+    expect(body).toContain('the batch touched this exact file');
+    expect(body).not.toContain('NOT ATTRIBUTED');
+    expect(body).toContain('test radius taken from the oldest 1; the tested tree contains all 2');
+  });
+
   it('a red the single-file re-run does NOT reproduce is reported unconfirmed, never filed', async () => {
     const { deps, state } = makeDeps(
       {

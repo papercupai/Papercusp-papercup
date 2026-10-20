@@ -1321,8 +1321,12 @@ export interface RedFinding {
 export function buildRedFinding(input: {
   failing: FailingFile;
   attribution: Attribution;
-  /** The whole window this run judged, newest first. */
+  /** Every commit searched for the introducer, newest first: the whole listed window,
+   *  because the legs ran on the shared tree that contains all of it. */
   batches: readonly SyncBatch[];
+  /** How many of the OLDEST `batches` the legs' radius was derived from this tick, when
+   *  fewer than all of them (a capped prefix). Absent ⇒ the radius covered every batch. */
+  judgedCount?: number;
   leg: 'affected-tests' | 'lint-tsc';
   slaMinutes?: number;
   /** Prior open-red record, when this is a REFRESH rather than a first filing. */
@@ -1342,7 +1346,10 @@ export function buildRedFinding(input: {
   const windowLine =
     !oldest || !newest
       ? 'Window: (re-verification of an already-open red; no new commits judged this tick)'
-      : `Window: ${batches.length} commit(s), ${oldest.sha.slice(0, 12)}..${newest.sha.slice(0, 12)}`;
+      : `Window: ${batches.length} commit(s), ${oldest.sha.slice(0, 12)}..${newest.sha.slice(0, 12)}` +
+        (input.judgedCount !== undefined && input.judgedCount < batches.length
+          ? ` (test radius taken from the oldest ${input.judgedCount}; the tested tree contains all ${batches.length}, so all were searched for the introducer)`
+          : '');
 
   const attributionBlock = batch
     ? [
@@ -2297,8 +2304,12 @@ async function runSyncBatchDeltaTick(
         }
       }
 
+      // Search EVERY listed commit, not only the judged prefix: the legs ran on the shared
+      // tree at HEAD, so the break can sit in a commit newer than the prefix. With a learned
+      // cap of 1 the prefix-only search judged f3f72052 alone, reported "NOT ATTRIBUTED" for a
+      // red introduced by the later 383428fac0, and routed it to nobody (WI-6554700010018334).
       const attribution = await attributeIntroducingBatch({
-        batches: selectedBatches,
+        batches,
         failing: cand.failing,
         probeBatch: async (paths) => {
           if (probeBudget <= 0) return null;
@@ -2326,7 +2337,8 @@ async function runSyncBatchDeltaTick(
       const finding = buildRedFinding({
         failing: cand.failing,
         attribution,
-        batches: selectedBatches,
+        batches,
+        judgedCount: selectedBatches.length,
         leg: cand.leg,
         author,
       });

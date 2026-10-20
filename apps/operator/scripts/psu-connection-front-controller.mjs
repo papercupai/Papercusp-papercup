@@ -819,9 +819,30 @@ export function defaultOpenHostedTerminal({
       cols: stdout.columns || 120,
       rows: stdout.rows || 32,
     });
+    // An observer seat receives output but its keys are never sent. Say so once
+    // per stay in that seat, or typing into it looks like a hung shell
+    // (WI-6554700010018316: a reconnect with the same label while a dead client
+    // still held the controller seat).
+    let viewerNoticed = false;
+    const noteRole = (next, why = "attached") => {
+      const was = role;
+      role = next;
+      if (role === "observer" && !viewerNoticed) {
+        viewerNoticed = true;
+        notice(
+          why === "taken"
+            ? "psu: another viewer took control of this shell; output stays live here"
+            : HOSTED_VIEWER_NOTICE,
+        );
+      } else if (role === "controller") {
+        if (was === "observer") notice("psu: you have control of this shell again");
+        viewerNoticed = false;
+      }
+    };
     const onInput = (chunk) => {
       if (role === "controller")
         send({ type: "pty.input", data: Buffer.from(chunk).toString("base64") });
+      else if (role === "observer" && !viewerNoticed) noteRole("observer");
     };
     const onResize = () => {
       if (role === "controller") send({ type: "pty.resize", ...size() });
@@ -869,19 +890,15 @@ export function defaultOpenHostedTerminal({
             giveUpOnKind("degraded");
             return;
           }
-          role = message.role;
+          noteRole(message.role);
           if (!expectKind) bound = true;
           return;
         case "session.role":
-          role = message.role;
-          if (role === "observer")
-            notice(
-              "psu: another viewer took control of this shell; output stays live here",
-            );
+          noteRole(message.role, "taken");
           return;
         case "pty.ready":
           clearTimeout(readyTimer);
-          role = message.role;
+          noteRole(message.role);
           bound = true;
           ready = true;
           resumed = message.resumed === true;
@@ -1091,6 +1108,10 @@ const HOSTED_CLOSE_HOST_CLOSED = 4000;
  * `channel_kind_unknown`; only a host older than both says nothing at all.
  */
 export const HOSTED_PSU_READY_TIMEOUT_MS = 15_000;
+
+export const HOSTED_VIEWER_NOTICE =
+  "psu: read-only viewer: another client holds this shell's keyboard, so your keys are not sent. " +
+  "Close that client, or reconnect with a new --label for a separate shell.";
 
 const HOSTED_ERROR_GUIDANCE = {
   cli_token_required: "psu is not signed in",

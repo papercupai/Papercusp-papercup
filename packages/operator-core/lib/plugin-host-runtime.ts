@@ -1218,11 +1218,11 @@ async function initializeWasmPlugin(
       const topic = `${namespace}.${event}`;
       let payload: unknown = payloadJson;
       try { payload = payloadJson ? JSON.parse(payloadJson) : null; } catch { /* keep raw */ }
-      void trackDetached(import('./events/engine'))
-        .then((m) => m.emitSystemEvent({
-          tool: topic,
-          args: (payload && typeof payload === 'object' ? payload : { value: payload }) as Record<string, unknown>,
-          harnessSlug: ctx.installSlug,
+      void trackDetached(import('./events/plugin-event-fanout'))
+        .then((m) => m.emitPluginEvent({
+          name: topic,
+          payload,
+          installSlug: ctx.installSlug,
         }))
         .catch((e) => ctx.log(`wasm event emit failed for ${topic}: ${e instanceof Error ? e.message : e}`));
     },

@@ -663,6 +663,31 @@ describe('claimAgentReview directed pickup', () => {
     );
   });
 
+  it('uses the resolved row harness when an issue id crosses an ambient harness boundary', async () => {
+    const canonicalHarness = 'papercusp-pr-drill-20261014-pot';
+    const h = harness({ ...pending('EI-REVIEW-CANONICAL'), harness: canonicalHarness });
+
+    await expect(claimAgentReview({
+      id: 'EI-REVIEW-CANONICAL',
+      reviewer: 'su-reviewer',
+      // The caller may be operating from the portal harness while the EI row's
+      // canonical harness is resolved workspace-wide by getWorkItem.
+      harnessSlug: 'papercusp',
+    }, h.deps)).resolves.toMatchObject({
+      claimed: true,
+      workItem: { id: 'EI-REVIEW-CANONICAL', harness: canonicalHarness, assignee: 'su-reviewer' },
+    });
+
+    expect(h.claimWorkItem).toHaveBeenCalledWith(
+      'EI-REVIEW-CANONICAL',
+      'su-reviewer',
+      expect.objectContaining({
+        harness: canonicalHarness,
+        agentReviewAdmission: expect.objectContaining({ harnessSlug: canonicalHarness }),
+      }),
+    );
+  });
+
   it('claims an own-node pending row stranded at origin=remote instead of refusing it remote-owned (WI-10006314)', async () => {
     const h = harness({ ...pending('WI-7'), origin: 'remote' });
     h.state.ownNodeAuthored = true;
