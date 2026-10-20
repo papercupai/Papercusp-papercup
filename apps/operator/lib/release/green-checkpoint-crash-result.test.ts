@@ -18,6 +18,8 @@ import {
   gateAbortLever,
   isRecordedInconclusiveStatus,
 } from '@papercusp/operator-core/lib/release/gate-abort-status';
+import { classifyGateOutcomeStatus } from '@papercusp/operator-core/lib/release/gate-fire-ledger';
+import { readFileSync } from 'node:fs';
 
 describe('EI-21462448110688084: process-level fatal errors await terminal finalization', () => {
   it('adapts producer results to the durable verdict vocabulary without mutating the marker result', () => {
@@ -750,6 +752,161 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
     expect(unusable.reason).toBe('dependency-generation-unusable');
     expect(unusable.summary).toMatch(/repaired or republished/i);
     expect(unusable.summary).toMatch(/failing closed is correct/i);
+  });
+});
+
+/**
+ * EI-26520203347017584 (Asana 1219723974934266). The drill pot's gate refused 24 runs in a row
+ * with exit 74 and every summary said "the generation store must be repaired or republished".
+ * The store was fine. The pot's integration checkout had never initialized its
+ * papercusp-desktop submodule, so the selector could not build the candidate's input manifest.
+ *
+ * Exit 74 covers two families with different remedies. The store-side refusals say a published
+ * generation is missing or unusable. The input-side refusals fire while the selector reads the
+ * candidate's inputs out of the integration checkout, before any generation is consulted. The
+ * exit code cannot separate them, so the selector's own FATAL wording is the discriminator. The
+ * last test in this block pins that wording to the real script, so a reworded FATAL fails here
+ * instead of quietly sliding back onto the store-repair advice.
+ */
+describe('EI-26520203347017584: an integration-checkout input defect is advised as a CHECKOUT repair, not a store repair', () => {
+  const CANDIDATE = '2df9d19e197c0ff10d18f9ad1a05fe584f790d05';
+  const SUBMODULE_SHA = '9f3c2b1a0e8d7c6b5a49382716f5e4d3c2b1a090';
+  const SELECTOR_PREFIX =
+    'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo ' +
+    '--select-inputs-from /repo-checkpoint exited 74: NPM_INSTALL_SAFE guarding reader\n';
+  const UNAVAILABLE_SUBMODULE_DETAIL =
+    `/node /repo/scripts/npm-install-safe.mjs --repo-root /repo --exec-under-lock -- ${SELECTOR_PREFIX}` +
+    `[dependency-generation] submodule papercusp-desktop is not initialized in /repo-checkpoint; initializing it for ${SUBMODULE_SHA}\n` +
+    `[dependency-generation] FATAL: exact dependency-input ref ${CANDIDATE} requires unavailable submodule ` +
+    `papercusp-desktop@${SUBMODULE_SHA} (hydrating the integration checkout from the submodule's own remote ` +
+    'did not produce that commit; this is an integration-checkout defect, not a generation-store one)';
+
+  /**
+   * The verdict's OWN words, without the raw detail the builder appends at the end. The echoed
+   * FATAL already says "integration-checkout defect", so an advice assertion run over the whole
+   * summary could pass on the log line alone. The builder appends `error.stack` verbatim, so
+   * stripping exactly that suffix leaves only what the classifier wrote.
+   */
+  function classify(message: string) {
+    const error = new Error(message);
+    const result = buildTerminalFailureCheckpointResult({
+      candidate: CANDIDATE,
+      error,
+      runId: 'run-checkout-74',
+    });
+    const summary = result.summary ?? '';
+    const suffix = ` ${error.stack ?? error.message}`;
+    expect(summary.endsWith(suffix), 'the raw selector detail must stay attached as evidence').toBe(true);
+    return { result, advice: summary.slice(0, summary.length - suffix.length) };
+  }
+
+  it('classifies the unavailable-submodule refusal as its own typed reason, still a no-verdict refusal', () => {
+    const { result } = classify(UNAVAILABLE_SUBMODULE_DETAIL);
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate: CANDIDATE,
+      from: null,
+      green: null,
+      reason: 'integration-checkout-defective',
+      runId: 'run-checkout-74',
+    });
+    // A measured, named cause: not the anonymous crash bucket.
+    expect(result.crashed).toBeUndefined();
+  });
+
+  it('⭐ THE DEFECT: names the unavailable submodule and advises repairing the checkout, never the store', () => {
+    const { advice } = classify(UNAVAILABLE_SUBMODULE_DETAIL);
+    // Names the defective input, so the summary alone tells the operator where to look.
+    expect(advice).toContain(`papercusp-desktop@${SUBMODULE_SHA}`);
+    expect(advice).toContain('/repo-checkpoint');
+    expect(advice).toMatch(/repair the integration checkout/i);
+    // Still a refusal: no verdict, nothing to triage.
+    expect(advice).toMatch(/NO code verdict was rendered/);
+    expect(advice).toMatch(/must not be triaged/i);
+    // The reported harm: advice that sent the operator to the generation store.
+    expect(advice).not.toMatch(/generation store must be repaired or republished/i);
+    expect(advice).not.toMatch(/dependency generation it selected is unusable/i);
+  });
+
+  it('stays a counted, STANDING no-verdict: never a red, never silenced, never "just re-fire"', () => {
+    const { result } = classify(UNAVAILABLE_SUBMODULE_DETAIL);
+    expect(isRecordedInconclusiveStatus(result.reason)).toBe(true);
+    // The checkout stays broken until someone repairs it; the next run refuses identically.
+    expect(classifyGateAbort(result.reason)).toBe('standing-condition');
+    expect(gateAbortLever(result.reason)).not.toMatch(/nothing is blocking a re-fire/i);
+    // classifyGateStallStatus defaults to 'red'; an unmapped reason would fabricate a code red.
+    expect(classifyGateStallStatus(result.reason, false)).toBe('no-verdict');
+    expect(classifyGateStallStatus(result.reason, true)).toBe('reset');
+    // The fire ledger must not read it as a verdict either.
+    expect(classifyGateOutcomeStatus(result.reason)).toBe('no-verdict');
+  });
+
+  it.each([
+    [
+      'submodule with no gitlink at the candidate',
+      `[dependency-generation] FATAL: exact dependency-input ref ${CANDIDATE} has no gitlink for submodule papercusp-desktop`,
+      'papercusp-desktop',
+    ],
+    [
+      'candidate ref missing from the checkout',
+      `[dependency-generation] FATAL: dependency-input ref is not a commit: ${CANDIDATE}`,
+      CANDIDATE,
+    ],
+  ])('the sibling input-side refusal is a checkout defect too: %s', (_label, fatal, named) => {
+    const { result, advice } = classify(`${SELECTOR_PREFIX}${fatal}`);
+    expect(result.reason).toBe('integration-checkout-defective');
+    expect(result.green).toBeNull();
+    expect(advice).toContain(named);
+    expect(advice).toMatch(/repair the integration checkout/i);
+    expect(advice).not.toMatch(/generation store must be repaired or republished/i);
+  });
+
+  it('CONTROL: the store-side exit-74 refusals keep their store remedies', () => {
+    for (const fatal of [
+      'prewarmed dependency generation gen-1 has no immutable token',
+      'prewarmed dependency generation gen-1 was replaced after validation',
+      'dependency generation gen-1 is missing or invalid',
+      'dependency generation gen-1 disappeared before it could be leased',
+    ]) {
+      const { result, advice } = classify(`${SELECTOR_PREFIX}[dependency-generation] FATAL: ${fatal}`);
+      expect(result.reason, fatal).toBe('dependency-generation-unusable');
+      expect(advice, fatal).toMatch(/generation store must be repaired or republished/i);
+    }
+    const { result: missing } = classify(
+      `${SELECTOR_PREFIX}[dependency-generation] FATAL: no prewarmed dependency generation for input fingerprint b0ea5991`,
+    );
+    expect(missing.reason).toBe('dependency-prewarm-missing');
+  });
+
+  it('CONTROL: the checkout wording alone, without the selector exit-74 contract, stays a generic crash', () => {
+    const { result } = classify(
+      `some-other-tool exited 74: FATAL: exact dependency-input ref ${CANDIDATE} requires unavailable submodule ` +
+        `papercusp-desktop@${SUBMODULE_SHA}`,
+    );
+    expect(result.reason).toBe('error');
+    expect(result.crashed).toBe(true);
+  });
+
+  /**
+   * PIN (derived-truth ladder rung 2): the classifier matches the selector's FATAL wording, so
+   * that wording is a contract. Read the real script and require each input-side FATAL to still
+   * exist and still exit 74.
+   */
+  it('PIN: every input-side FATAL the classifier matches still exists in dependency-generation.sh and exits 74', () => {
+    const script = readFileSync(
+      new URL('../../bin/release/dependency-generation.sh', import.meta.url),
+      'utf8',
+    );
+    const lines = script.split('\n');
+    for (const fragment of [
+      'requires unavailable submodule $submodule_path@$submodule_object',
+      'has no gitlink for submodule $submodule_path',
+      'FATAL: dependency-input ref is not a commit: $ref',
+    ]) {
+      const at = lines.findIndex((line) => line.includes(fragment));
+      expect(at, `dependency-generation.sh no longer emits: ${fragment}`).toBeGreaterThan(-1);
+      expect(lines.slice(at, at + 3).join('\n'), fragment).toMatch(/return 74\b/);
+    }
   });
 });
 
