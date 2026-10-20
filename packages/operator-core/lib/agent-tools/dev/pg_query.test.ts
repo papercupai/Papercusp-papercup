@@ -1159,6 +1159,51 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('explains the mixed timestamp units in work_items after a 42883 division error', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('operator does not exist: timestamp with time zone / numeric'), {
+        code: '42883',
+        hint: 'No operator matches the given name and argument types.',
+      }),
+    );
+    const res = await pgQueryTool.handler(
+      {
+        sql:
+          "SELECT feature_id, to_timestamp(taken_at/1000.0) AS taken_at, " +
+          "to_timestamp(updated_ts/1000.0) AS updated_ts " +
+          "FROM harness_shared.work_items WHERE harness_slug = 'papercusp' LIMIT 1",
+        allowUnscoped: true,
+      } as never,
+      {} as never,
+    );
+    const payload = payloadOf(res as never);
+
+    expect(payload).toMatchObject({
+      code: '42883',
+      hint: expect.stringContaining('work_items.taken_at'),
+    });
+    expect(String(payload.hint)).toContain('already a `timestamp with time zone`');
+    expect(String(payload.hint)).toContain('to_timestamp(updated_ts / 1000.0)');
+    expect(String(payload.hint)).not.toContain('No operator matches');
+  });
+
+  it('does not apply the work_items timestamp correction to another relation', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('operator does not exist: timestamp with time zone / numeric'), {
+        code: '42883',
+        hint: 'No operator matches the given name and argument types.',
+      }),
+    );
+    const res = await pgQueryTool.handler(
+      {
+        sql: 'SELECT taken_at / 1000.0 FROM harness_shared.other_table',
+        allowUnscoped: true,
+      } as never,
+      {} as never,
+    );
+    expect(String(payloadOf(res as never).hint)).toBe('No operator matches the given name and argument types.');
+  });
+
   it('returns DBOS interval-join scan guidance when a narrow-looking history join times out', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),

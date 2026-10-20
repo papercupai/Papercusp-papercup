@@ -22,16 +22,27 @@
  * locally now call the predicates below. The boundary guard
  * (`plan-verification-profile-boundary.test.ts`) refuses new local copies.
  *
- * Keep this module a LEAF with type-only imports, so any gate can import it
- * without creating a runtime import cycle.
+ * Keep this module a LEAF: type-only imports from operator-core, so any gate can
+ * import it without creating a runtime import cycle. The profile and deliverable
+ * vocabulary is owned by `@papercusp/plan-parser` (the item keyword is plan text,
+ * P-002); that generic lib imports nothing from operator-core.
  */
 import type { AdequacyCriterion } from './agent-tools/plans/spec-test-adequacy';
+import {
+  isDeliverableKind,
+  isVerificationProfile,
+  type DeliverableKind,
+  type VerificationProfile,
+} from '@papercusp/plan-parser';
 
-export const VERIFICATION_PROFILES = ['coding', 'general'] as const;
-export type VerificationProfile = (typeof VERIFICATION_PROFILES)[number];
-
-export const DELIVERABLE_KINDS = ['code', 'doc', 'decision', 'research', 'operation', 'artifact'] as const;
-export type DeliverableKind = (typeof DELIVERABLE_KINDS)[number];
+export {
+  DELIVERABLE_KINDS,
+  VERIFICATION_PROFILES,
+  isDeliverableKind,
+  isVerificationProfile,
+  type DeliverableKind,
+  type VerificationProfile,
+} from '@papercusp/plan-parser';
 
 export const VERIFICATION_MODULES = ['generic-core', 'code', 'design-evidence', 'packaged-artifact'] as const;
 export type VerificationModule = (typeof VERIFICATION_MODULES)[number];
@@ -70,14 +81,6 @@ export const PROFILE_DEFAULT_DELIVERABLE: Readonly<Record<VerificationProfile, D
 
 /** P-001: no plan declares a profile yet, and today's gates verify every plan as coding. */
 export const INFERRED_PLAN_PROFILE: VerificationProfile = 'coding';
-
-export function isVerificationProfile(value: unknown): value is VerificationProfile {
-  return typeof value === 'string' && (VERIFICATION_PROFILES as readonly string[]).includes(value);
-}
-
-export function isDeliverableKind(value: unknown): value is DeliverableKind {
-  return typeof value === 'string' && (DELIVERABLE_KINDS as readonly string[]).includes(value);
-}
 
 // ---------------------------------------------------------------------------
 // Today's non-code signals: the six exemptions, routed here.
@@ -210,6 +213,46 @@ export function modulesFor(
   if (codeDeliverable) modules.push('code');
   for (const module of DOMAIN_MODULES) if (domainModules.includes(module)) modules.push(module);
   return modules;
+}
+
+/** What plans:get shows: the checklist a plan will be held to (P-002, R-4). */
+export interface PlanVerificationSummary {
+  profile: VerificationProfile;
+  /** How the stamped profile was set; `unstamped` = no stamp yet, so the profile is inferred. */
+  profileSource: 'declared' | 'harness-default' | 'backfill' | 'unstamped';
+  defaultDeliverable: DeliverableKind;
+  /** Modules every item without an override is held to. */
+  defaultModules: readonly VerificationModule[];
+  /** Items that declare their own deliverable kind. */
+  overrides: Array<{ id: string; deliverable: DeliverableKind; modules: readonly VerificationModule[] }>;
+}
+
+const PROFILE_SOURCES = ['declared', 'harness-default', 'backfill'] as const;
+
+export function summarizePlanVerification(
+  plan: { verificationProfile?: string | null; verificationProfileSource?: string | null },
+  items: ReadonlyArray<{ id: string; deliverable?: string | null }>,
+): PlanVerificationSummary {
+  const stamped = isVerificationProfile(plan.verificationProfile);
+  const profile = stamped ? (plan.verificationProfile as VerificationProfile) : INFERRED_PLAN_PROFILE;
+  const source = plan.verificationProfileSource;
+  const profileSource =
+    stamped && (PROFILE_SOURCES as readonly string[]).includes(source ?? '')
+      ? (source as PlanVerificationSummary['profileSource'])
+      : 'unstamped';
+  const defaultDeliverable = PROFILE_DEFAULT_DELIVERABLE[profile];
+  const overrides: PlanVerificationSummary['overrides'] = [];
+  for (const item of items) {
+    if (!isDeliverableKind(item.deliverable)) continue;
+    overrides.push({ id: item.id, deliverable: item.deliverable, modules: modulesFor(item.deliverable === 'code') });
+  }
+  return {
+    profile,
+    profileSource,
+    defaultDeliverable,
+    defaultModules: modulesFor(defaultDeliverable === 'code'),
+    overrides,
+  };
 }
 
 /**

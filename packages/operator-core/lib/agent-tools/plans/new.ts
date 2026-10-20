@@ -19,6 +19,8 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
+import { VERIFICATION_PROFILES } from '@papercusp/plan-parser';
+import { resolveNewPlanVerificationProfile, stampNewPlanVerificationProfile } from './plan-verification-profile-stamp';
 import { domainFailureMessage } from './plan-activation-gate';
 import { listPlanIndexRows, resolvePlanScope } from './source';
 import { withWorkspace } from '@papercusp/db-org';
@@ -122,6 +124,12 @@ export const argsSchema = z
       .optional()
       .describe(
         "OPTIONAL — typed property DECLARATIONS (P-023): name → { datatype, default?, editable_by: 'owner'|'agent'|'both' }. Each datatype must resolve in datatype_registry; defaults are validated against the datatype's payload_schema. VALUES are written later, only via plans:set-property.",
+      ),
+    verificationProfile: z
+      .enum(VERIFICATION_PROFILES)
+      .optional()
+      .describe(
+        "OPTIONAL — 'coding' | 'general': the default deliverable kind for the plan's items. Omit for the harness default (a code harness ⇒ coding, otherwise general).",
       ),
     force: stringTolerantBool
       .optional()
@@ -659,6 +667,22 @@ export default defineTool({
       await resolveGoalContext(authorityScope.workspaceId, creatorOwnerId);
     }
 
+    // plan-verification-profiles-2026-10-17 P-002 (R-4/R-5): resolve the profile before the lock
+    // (the harness default reads the registry), then stamp it inside the creating transaction.
+    const verificationStamp = await resolveNewPlanVerificationProfile({
+      declared: args.verificationProfile,
+      harnessSlug,
+      workspaceId:
+        args.verificationProfile || !harnessSlug
+          ? ''
+          : (
+              await resolvePlanScope({
+                harnessSlug,
+                ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+              })
+            ).workspaceId,
+    });
+
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       slug,
@@ -675,6 +699,9 @@ export default defineTool({
         ...(harnessSlug ? { harnessSlug } : {}),
         ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
         afterWrite: rev.afterWrite,
+        inTransaction: async (tx, _body, scope, written) => {
+          if (written.ok) await stampNewPlanVerificationProfile(tx, scope, slug, verificationStamp);
+        },
       },
       async (current): Promise<{ newBody: string | null; value: NewPlanValue }> => {
         if (current !== null) {
@@ -790,6 +817,7 @@ export default defineTool({
             slug: value.slug,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            verificationProfile: verificationStamp,
             ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
             ...parseSummary,
             // R-9: a supplied body without product shaping still lands; the

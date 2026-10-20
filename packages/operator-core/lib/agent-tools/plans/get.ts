@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { readPlanBySlug, resolvePlanScope } from './source';
+import { summarizePlanVerification } from '../../plan-verification-profile';
 import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
 import { harnessMismatchForMiss, recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
@@ -1287,6 +1288,11 @@ export default defineTool({
               // WI-40139 / D-005: permanent, bounded proof that this plan has
               // ever been shipped through an explicit code-truth waiver.
               forcedPast: row.forcedPast,
+              // plan-verification-profiles P-002 (R-4): the checklist this plan is held to.
+              verification: summarizePlanVerification(
+                row,
+                resolved.items.map((it) => ({ id: it.id, deliverable: (it as { deliverable?: string | null }).deliverable })),
+              ),
               sectionIndex: sections.map((s) => ({
                 heading: s.heading,
                 level: s.level,

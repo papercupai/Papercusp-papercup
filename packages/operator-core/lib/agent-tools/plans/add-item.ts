@@ -26,6 +26,7 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
+import { DELIVERABLE_KINDS, type DeliverableKind } from '@papercusp/plan-parser';
 import {
   findTerminalPlanChildMutations,
   parsePlan,
@@ -93,6 +94,10 @@ const BLOCKED_BY = z
   .array(z.string().regex(/^P-\d{3,}$/))
   .describe('Item IDs that must complete before this one can effectively start.');
 
+const DELIVERABLE = z
+  .enum(DELIVERABLE_KINDS)
+  .describe("What the item delivers; overrides the plan profile's default kind. Omit to inherit it.");
+
 /**
  * tool-contract-repair-2026-09-05 P-006. `title` and `body` are the names a
  * caller reaches for when adding an item — the plan's own author hit this while
@@ -142,6 +147,7 @@ const itemSpec = z.object({
   body: TEXT_ALIAS,
   blockedBy: BLOCKED_BY.optional(),
   importance: IMPORTANCE.optional().describe('per-item importance (else the batch `importance`)'),
+  deliverable: DELIVERABLE.optional(),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
 });
@@ -158,6 +164,7 @@ export const argsSchema = z
     body: TEXT_ALIAS,
     blockedBy: BLOCKED_BY.optional(),
     importance: IMPORTANCE.optional(),
+    deliverable: DELIVERABLE.optional(),
     items: z
       .array(itemSpec)
       .min(1)
@@ -239,6 +246,7 @@ interface NewItem {
   text: string;
   importance: Importance;
   blockedBy?: string[];
+  deliverable?: DeliverableKind;
   harness?: string;
   rationale?: string;
 }
@@ -302,11 +310,15 @@ export function buildItemLine(
   text: string,
   blockedBy: string[],
   importance: Importance = 'normal',
+  deliverable?: DeliverableKind,
 ): string {
   const bbSuffix = blockedBy.length > 0 ? ` blocked-by: ${blockedBy.join(', ')}` : '';
   // Emit the importance keyword only when it departs from the parser
   // default (`normal`) — keeps routine lines clean, mirrors blocked-by.
   const impSuffix = importance !== 'normal' ? ` importance: ${importance}` : '';
+  // plan-verification-profiles P-002: an item-level deliverable override; omitted = the plan
+  // profile's default kind.
+  const delSuffix = deliverable ? ` deliverable: ${deliverable}` : '';
   // Grammar guard (WI-3447): an item is ONE physical line — ITEM_LINE_RE's
   // `(.*)$` does not span newlines. A newline in `text` (e.g. a multi-line
   // paste) would split the line, truncating the item and orphaning the rest as
@@ -315,7 +327,7 @@ export function buildItemLine(
   // is unaffected (no newline → no-op).
   const singleLineText = text.trim().replace(/\s*[\r\n]+\s*/g, ' ');
   // Single-line form — preserves the ASCII-canonical examples in the spec.
-  return `- **${itemId}** \`todo\` ${singleLineText}${bbSuffix}${impSuffix}`;
+  return `- **${itemId}** \`todo\` ${singleLineText}${bbSuffix}${impSuffix}${delSuffix}`;
 }
 
 /**
@@ -457,7 +469,7 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
           },
         };
       }
-      const itemLine = buildItemLine(itemId, it.text, it.blockedBy ?? [], it.importance);
+      const itemLine = buildItemLine(itemId, it.text, it.blockedBy ?? [], it.importance, it.deliverable);
       const { newBody, createdPhase } = appendItemToBody(current, it.phase, itemLine);
       const final = bumpUpdatedDate(newBody);
       writtenBody = final;
@@ -552,6 +564,7 @@ export default defineTool({
           text: itemTextOrUndefined(it) as string,
           importance: (it.importance ?? args.importance) as Importance,
           blockedBy: it.blockedBy ?? args.blockedBy,
+          deliverable: it.deliverable ?? args.deliverable,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
         }))
@@ -562,6 +575,7 @@ export default defineTool({
             text: itemTextOrUndefined(args) as string,
             importance: args.importance as Importance,
             blockedBy: args.blockedBy,
+            deliverable: args.deliverable,
             harness: args.harness,
             rationale: args.rationale,
           },

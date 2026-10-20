@@ -7,6 +7,8 @@
  * (mode → 'durable', onlyOnSuccess → true, source → 'unknown').
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
@@ -78,5 +80,16 @@ describe('events:graph projection', () => {
     const out = await call({ on: 'coord:handoff' });
     expect(out.rules.map((r: { id: string }) => r.id)).toEqual(['r1', 'r2']);
     expect(out.ruleCount).toBe(2);
+  });
+
+  // WI-6554700010017990: the guidance said "there is no runtime add-a-rule tool" for days after
+  // rules:create/test/enable landed (agent-tools/rules/lifecycle.ts), steering agents away from the
+  // real authoring path. Pin the guidance to the tool's existence so the two cannot drift apart again.
+  it('notWhen names rules:create while that tool is defined, and never denies runtime rule authoring', () => {
+    const lifecycle = readFileSync(fileURLToPath(new URL('../rules/lifecycle.ts', import.meta.url)), 'utf8');
+    const notWhen = (graph as unknown as { guidance: { notWhen: string } }).guidance.notWhen;
+    expect(lifecycle).toMatch(/name: 'rules:create'/);
+    expect(notWhen).toContain('rules:create');
+    expect(notWhen).not.toMatch(/no runtime "add a rule" tool/);
   });
 });

@@ -134,6 +134,47 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
     expect(decisions[0].affects).toEqual(['target-plan', 'second-plan']);
   });
 
+  it('mirrors the declared deliverable kind into plan_items.deliverable (migration 1536)', async () => {
+    // plan-verification-profiles-2026-10-17 P-002 / R-4: the item-line keyword is the source;
+    // the column is the queryable mirror the resolver reads. Undeclared and unknown words
+    // stay NULL ("infer it"), and the derived jsonb carries the key only when declared.
+    const deliverables = async () =>
+      (await admin`
+        SELECT item_id, deliverable FROM harness_shared.plan_items
+         WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+         ORDER BY seq
+      `).map((r) => [r.item_id as string, (r.deliverable as string | null) ?? null]);
+
+    await write(
+      body({
+        items: [
+          '- **P-001** `todo` Write the runbook deliverable: doc',
+          '- **P-002** `todo` Ship the migration',
+          '- **P-003** `todo` Typo kind deliverable: docs',
+          '- **P-004** `todo` Decide retention deliverable: decision',
+        ],
+      }),
+    );
+    expect(await deliverables()).toEqual([
+      ['P-001', 'doc'],
+      ['P-002', null],
+      ['P-003', null],
+      ['P-004', 'decision'],
+    ]);
+
+    const [plan] = await admin`
+      SELECT items FROM harness_shared.harness_plans
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    const jsonbItems = plan!.items as Array<Record<string, unknown>>;
+    expect(jsonbItems.find((i) => i.id === 'P-001')?.deliverable).toBe('doc');
+    expect('deliverable' in (jsonbItems.find((i) => i.id === 'P-002') ?? {})).toBe(false);
+
+    // Removing the keyword clears the mirror: the rewrite is delete-then-insert.
+    await write(body({ items: ['- **P-001** `todo` Write the runbook'] }));
+    expect(await deliverables()).toEqual([['P-001', null]]);
+  });
+
   it('an edit REPLACES the rows rather than accumulating them', async () => {
     await write(
       body({

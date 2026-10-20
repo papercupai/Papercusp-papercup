@@ -12031,7 +12031,7 @@
       ],
       "guidance": {
         "when": "You want to see the declarative \"when X, fire Y\" wiring — what reactions exist, what triggers them, and (recent:true) what has actually fired lately with its cause-chain. Pass `on` to see only the rules that fire on a given tool.",
-        "notWhen": "To register a rule, use the events registry API in code (registerReactionRule) or a tool's `emits` field — there is no runtime \"add a rule\" tool by design (rules are curated code). For the live worker activity stream use `activity:recent`."
+        "notWhen": "To author a rule at runtime use rules:create → rules:test → rules:enable (test-gated local rules); built-in rules live in code (registerReactionRule or a tool's `emits` field). For the live worker activity stream use `activity:recent`."
       }
     },
     {

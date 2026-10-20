@@ -609,6 +609,39 @@ function jsonOperatorTypeHint(
 }
 
 /**
+ * EI-25161229983856567: `harness_shared.work_items.taken_at` is a
+ * timestamptz, while `created_ts` and `updated_ts` are BIGINT epoch-ms.
+ * Callers commonly apply the epoch conversion to every timestamp-looking
+ * column, so PostgreSQL reports the unhelpful generic 42883 division error.
+ * Restrict this correction to the observed work_items/taken_at shape; other
+ * timestamp mismatches need their relation's own schema evidence.
+ */
+function workItemsTimestampTypeHint(
+  sql: string,
+  info: { code?: string; message: string; detail?: string },
+): string | undefined {
+  if (info.code !== '42883') return undefined;
+  const errorText = `${info.message} ${info.detail ?? ''}`;
+  if (!/operator\s+does\s+not\s+exist:\s*timestamp\s+with\s+time\s+zone\s*\/\s*(?:numeric|double\s+precision|real|integer|bigint)/i.test(errorText)) {
+    return undefined;
+  }
+
+  const strippedSql = stripSqlLiteralsAndComments(sql);
+  if (!/\b(?:from|join)\s+(?:only\s+)?(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?work_items\b/i.test(strippedSql)) {
+    return undefined;
+  }
+  if (!/\btaken_at\b\s*\//i.test(strippedSql)) return undefined;
+
+  return (
+    '`harness_shared.work_items.taken_at` is already a `timestamp with time zone`; use it directly and do not divide it or pass it to `to_timestamp()`. ' +
+    '`created_ts` and `updated_ts` are BIGINT epoch milliseconds, so render those with ' +
+    '`to_timestamp(created_ts / 1000.0)` / `to_timestamp(updated_ts / 1000.0)`. ' +
+    'Verify the live types with `dev:pg_query { describe: "harness_shared.work_items" }` before retrying. ' +
+    '(EI-25161229983856567).'
+  );
+}
+
+/**
  * EI-22801631303104511: the operator role is intentionally not granted
  * `pg_read_all_settings`, so PostgreSQL rejects the otherwise read-only
  * `current_setting('data_directory')` probe. Keep this classifier tied to both
@@ -1294,6 +1327,13 @@ export default defineTool({
       // shape; replace it with the operand-specific correction so the caller
       // gets a usable next query in the first response.
       if (jsonOperatorCorrection) payload.hint = jsonOperatorCorrection;
+      const workItemsTimestampCorrection = workItemsTimestampTypeHint(sql, info);
+      // Keep the more specific work_items correction when a query carries the
+      // generic PostgreSQL cast hint; a JSON operator correction remains the
+      // narrower expression-level diagnosis when both shapes are present.
+      if (workItemsTimestampCorrection && !jsonOperatorCorrection) {
+        payload.hint = workItemsTimestampCorrection;
+      }
       // The SAME sql-derived advisories the success payload composes, in the
       // same order — a query's SHAPE is no less true for having failed to run.
       // Placed AFTER the precise correction (PG's own hint names the column)

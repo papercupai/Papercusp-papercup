@@ -36,3 +36,22 @@ describe('buildItemLine — newline guard (WI-3447)', () => {
     expect(items[0]?.blockedBy).toEqual(['P-001']);
   });
 });
+
+describe('buildItemLine — deliverable override (plan-verification-profiles P-002)', () => {
+  it('omits the keyword when no deliverable is declared', () => {
+    expect(buildItemLine('P-005', 'inherit the profile default', [], 'normal')).toBe(
+      '- **P-005** `todo` inherit the profile default',
+    );
+  });
+
+  it('appends `deliverable: <kind>` and the parser reads it back', () => {
+    const line = buildItemLine('P-006', 'write the runbook', ['P-001'], 'high', 'doc');
+    expect(line).toBe('- **P-006** `todo` write the runbook blocked-by: P-001 importance: high deliverable: doc');
+    const items = parsePlan('## Phase 1\n\n' + line).items;
+    expect(items.length).toBe(1);
+    expect(items[0]?.deliverable).toBe('doc');
+    expect(items[0]?.importance).toBe('high');
+    expect(items[0]?.blockedBy).toEqual(['P-001']);
+    expect(items[0]?.text).toBe('write the runbook');
+  });
+});

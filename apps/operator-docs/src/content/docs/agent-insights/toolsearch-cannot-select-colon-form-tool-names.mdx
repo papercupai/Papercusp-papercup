@@ -6,19 +6,19 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Claude's ToolSearch cannot select a papercusp colon-form tool name — use tools:find / tools:invoke instead"
 description: "Every papercusp doc/prompt/contract writes tool names in colon form (server:verb, e.g. rubrics:search, curation:state-of-pot) — that IS the tool's real cross-client name. Claude's own ToolSearch only resolves the client-mangled mcp__<server>__<verb> form (colon replaced by underscore), so a fresh session following documented tool names hits a hard no-match wall on both select and keyword search. The escape hatch (tools:find, then tools:invoke) already exists and always works — this was a discoverability gap, not a missing capability."
+type: Insight
 discovered: 2026-07-10
-tags: [tools, toolsearch, tools-find, tools-invoke, mcp, claude, tool-discovery, grade-mode]
+tags: ["tools", "toolsearch", "tools-find", "tools-invoke", "mcp", "claude", "tool-discovery", "grade-mode"]
 status: active
 documents:
-  - apps/operator/prompts/papercusp-su.claude.md
-  - packages/operator-core/lib/agent-tools/tools/find.ts
-  - packages/operator-core/lib/agent-tools/tools/invoke.ts
-  - libs/generic/tooldef/src/tool-projection.ts
-  - packages/operator-core/lib/agent-tools/session/carry-drill.ts
-  - packages/operator-core/lib/agent-tools/session/carry-drill.test.ts
+  - "apps/operator/prompts/papercusp-su.claude.md"
+  - "packages/operator-core/lib/agent-tools/tools/find.ts"
+  - "packages/operator-core/lib/agent-tools/tools/invoke.ts"
+  - "libs/generic/tooldef/src/tool-projection.ts"
+  - "packages/operator-core/lib/agent-tools/session/carry-drill.ts"
+  - "packages/operator-core/lib/agent-tools/session/carry-drill.test.ts"
 plans:
-  - grade-iter2-mode-batteries-2026-07-09
-type: Insight
+  - "grade-iter2-mode-batteries-2026-07-09"
 generated:
   by: agent
   at: 2026-07-10
@@ -62,7 +62,7 @@ INPUT SHAPE for that mechanism — not a defect in the tool, and not something
 papercusp can fix by patching ToolSearch (it isn't papercusp's code).
 
 The keyword-search miss is a second, independent symptom: ToolSearch's own
-lexical/semantic ranking over ~550 catalog entries did not surface the right
+lexical/semantic ranking over the full tool catalog did not surface the right
 tool for a reasonable-looking natural-language query. That ranking quality is
 also entirely client-side and outside papercusp's reach.
 

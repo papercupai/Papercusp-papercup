@@ -277,6 +277,10 @@ export interface PlanRow {
   /** Bounded projection of the append-only acceptance-waiver log. The markdown
    *  content remains canonical; this is the cheap permanent read marker. */
   forcedPast: ForcedPastSummary | null;
+  /** mig 1536 (plan-verification-profiles P-002): the stamped profile (coding | general) and how
+   *  it was set (declared | harness-default | backfill). Null when unstamped or not selected. */
+  verificationProfile?: string | null;
+  verificationProfileSource?: string | null;
   // Scheduled/recurring plans (scheduled-recurring-plans-2026-06-16, mig 299).
   /** Authored recurrence set + policy; NULL ⇒ not scheduled (D-004). */
   schedule: PlanSchedule | null;
@@ -343,6 +347,9 @@ interface PlanDbRow {
   now_note?: unknown;
   promote_policy: unknown;
   forced_past?: unknown;
+  /** mig 1536 (plan-verification-profiles P-002). OPTIONAL: only the full-row read selects it. */
+  verification_profile?: string | null;
+  verification_profile_source?: string | null;
   schedule: unknown;
   schedule_active: boolean;
   scheduled_at: string | null;
@@ -400,6 +407,8 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     forcedPast:
       (r.forced_past as ForcedPastSummary | null | undefined) ??
       summarizeForcedPast(r.content),
+    verificationProfile: r.verification_profile ?? null,
+    verificationProfileSource: r.verification_profile_source ?? null,
     schedule: (r.schedule as PlanSchedule | null) ?? null,
     scheduleActive: r.schedule_active ?? false,
     scheduledAt: r.scheduled_at,
@@ -710,7 +719,8 @@ export async function getPlanRow(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next, now_note, promote_policy,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data, input_schema, output_schema, forced_past
+               template, template_data, input_schema, output_schema, forced_past,
+               verification_profile, verification_profile_source
                ${opts.prefetchAcceptance ? tx`, (
                  SELECT plan_slug FROM (${activeAcceptanceRubricsQuery(tx, { workspaceId, planSlugs: [slug] })}) AS active_rubric
                  LIMIT 1

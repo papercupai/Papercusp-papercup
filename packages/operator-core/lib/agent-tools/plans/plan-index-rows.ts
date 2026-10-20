@@ -17,6 +17,7 @@
  * advisory lock — the delete+insert must be atomic with the harness_plans
  * upsert or a concurrent reader can observe a plan with no items.
  */
+import { isDeliverableKind } from '@papercusp/plan-parser';
 import type { PlanIndexDecision, PlanIndexItem } from './source';
 import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './plan-lock-key';
 
@@ -75,6 +76,9 @@ export async function writePlanIndexRows(
     importance: typeof it.importance === 'string' ? it.importance : null,
     phase: typeof it.phase === 'string' ? it.phase : null,
     ownerGateMarker: typeof it.ownerGateMarker === 'string' ? it.ownerGateMarker : null,
+    // Migration 1536 CHECKs the column; an unknown word (a federated row from a
+    // newer vocabulary) degrades to "undeclared" instead of aborting the write.
+    deliverable: isDeliverableKind(it.deliverable) ? it.deliverable : null,
     blockedBy: asStringArray(it.blockedBy),
     decisionRefs: asStringArray(it.decisionRefs),
   }));
@@ -122,15 +126,16 @@ export async function writePlanIndexRows(
     await tx`
       INSERT INTO harness_shared.plan_items (
         workspace_id, harness_slug, plan_slug,
-        item_id, seq, item_text, status, importance, phase, owner_gate_marker, blocked_by, decision_refs
+        item_id, seq, item_text, status, importance, phase, owner_gate_marker, deliverable,
+        blocked_by, decision_refs
       )
       SELECT ${workspaceId}, ${harnessSlug}, ${planSlug},
              e.id, e.seq, e."itemText", e.status, e.importance, e.phase,
-             e."ownerGateMarker",
+             e."ownerGateMarker", e.deliverable,
              COALESCE(e."blockedBy", '{}'), COALESCE(e."decisionRefs", '{}')
         FROM jsonb_to_recordset(${JSON.stringify(items)}::text::jsonb) AS e(
                id text, seq integer, "itemText" text, status text,
-               importance text, phase text, "ownerGateMarker" text,
+               importance text, phase text, "ownerGateMarker" text, deliverable text,
                "blockedBy" text[], "decisionRefs" text[]
              )
     `;
