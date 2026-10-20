@@ -391,14 +391,42 @@ export type AdmissionBypassReason = (typeof ADMISSION_CREATE_BYPASSES)[number]['
  * DERIVED from the cadence above rather than restated. The old string said only "wait for
  * admitted/unreviewed", which is why the reporter could not tell "not yet" from "never".
  */
-export function admissionPendingExplanation(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES): string {
-  return (
+export function admissionPendingExplanation(
+  tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES,
+  /**
+   * WI-6554700010018098: `dedupCandidates` = this row carries file-time duplicate candidates.
+   * The fail-open runner never admits such a row (work-queue-exclusion-alarm-duplicates-
+   * 2026-10-16 P-002), so its wait has NO fixed bound and the generic sentence's ceiling would
+   * be a false promise. Omitted = the row-agnostic sentence, which names both exceptions.
+   */
+  opts: { dedupCandidates?: boolean } = {},
+): string {
+  const preamble =
     'duplicate screening is pending for this WORK-ITEM CLAIM. It does not block opening an agent or ' +
     'fleet process; launch and queue admission are separate capabilities. A launched agent still needs ' +
-    'claimable or validly pre-assigned work. The durable promoter owns admission, and this floor CLEARS ON ITS ' +
+    'claimable or validly pre-assigned work. ';
+  if (opts.dedupCandidates) {
+    return (
+      preamble +
+      'This row carries DUPLICATE CANDIDATES found when it was filed, so only the promoter\'s model ' +
+      `review can admit it (as distinct) or merge it into its twin. The promoter runs on a ${tickMinutes}-minute ` +
+      'tick but reviews only a few rows per tick, candidate rows first, so this wait has NO fixed bound; ' +
+      'the independent fail-open runner deliberately never admits a row with unresolved candidates. ' +
+      'It still CLEARS ON ITS OWN, and it is not a permanent refusal — but do not wait on it: check ' +
+      'whether a named candidate is the same problem and work that row instead, or use a create-time ' +
+      'admission route for genuinely distinct work.'
+    );
+  }
+  return (
+    preamble +
+    'The durable promoter owns admission, and this floor CLEARS ON ITS ' +
     `OWN: the promoter runs on a ${tickMinutes}-minute tick, and an independent fail-open runner ` +
-    `admits anything still pending after ${ADMISSION_FAIL_OPEN_TICKS} ticks ` +
-    `(${ADMISSION_FAIL_OPEN_TICKS * tickMinutes} min) as 'unreviewed'. It is a WAIT, not a permanent ` +
+    `admits a row still pending after ${ADMISSION_FAIL_OPEN_TICKS} ticks ` +
+    `(${ADMISSION_FAIL_OPEN_TICKS * tickMinutes} min) as 'unreviewed' once its duplicate screen is clean. ` +
+    'Two exceptions: a row whose file-time screen could not run is re-screened by that runner (one attempt ' +
+    `per row every ${ADMISSION_FAIL_OPEN_TICKS} ticks) and admitted when the re-screen comes back clean; a ` +
+    'row with duplicate candidates waits for the promoter\'s model review, which has no fixed bound. ' +
+    'It is a WAIT, not a permanent ' +
     'refusal — but a just-created item is typically unclaimable for most of a tick, which outlives ' +
     'many short-lived agents, so waiting is often the wrong move.'
   );

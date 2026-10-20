@@ -8,7 +8,8 @@
  * the ship refuses with `code_deliverable_unverified`.
  *
  * R-12: independent grading stays mandatory for general plans (D-002). A general plan that has an
- * acceptance rubric but no non-implementer grade is refused with `acceptance_ungraded`.
+ * acceptance rubric but no grade is refused with `acceptance_ungraded`; one whose only grade comes
+ * from inside its own implementer population is refused with `self_graded_only`.
  *
  * Scope, stated plainly. The R-10 ship cases switch the acceptance-RUBRIC family off through its
  * env override, the same way plan-acceptance-gate-independent-evidence.integration.test.ts does.
@@ -44,6 +45,7 @@ import '../set-status';
 import '../set-plan-status';
 import '../audit';
 import '../../rubrics/propose';
+import { emitScorecard } from '../../scorecards/emit';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { evaluatePlanAcceptanceGate } from '../../../plan-acceptance-gate';
 import { defaultReadPlanItems, readAcceptanceBarContractSnapshot } from '../../../acceptance-bar-contract-snapshot';
@@ -130,19 +132,23 @@ async function makePlan(slug: string, profile: 'coding' | 'general'): Promise<vo
  * Record an activation audit over the plan's current content, seeded as a row the way the
  * sibling escape test does. Items on a draft plan cannot start until one exists.
  */
-async function auditActivation(slug: string): Promise<void> {
+async function auditActivation(slug: string, createdBy = 'su-test'): Promise<void> {
   const [row] = await admin<{ content: string }[]>`
     SELECT content FROM harness_shared.harness_plans
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
   expect(row, `plan ${slug} must exist`).toBeTruthy();
-  auditSeq += 1;
+  // The real plans:audit also numbers this plan's audits, so take the next free number.
+  const [{ next }] = await admin<{ next: number }[]>`
+    SELECT COALESCE(MAX(audit_seq), 0)::int + 1 AS next FROM harness_shared.plan_audits
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
+  auditSeq = Math.max(auditSeq + 1, next);
   await admin`
     INSERT INTO harness_shared.plan_audits
       (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
        activation, audited_plan_revision_id, audited_plan_revision_seq,
        audited_plan_content_hash, items, findings)
     VALUES
-      (${WS}, ${HARNESS}, ${slug}, ${auditSeq}, 'su-test', 'activation',
+      (${WS}, ${HARNESS}, ${slug}, ${auditSeq}, ${createdBy}, 'activation',
        ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
        ${auditSeq}, ${auditSeq}, ${hashPlanContent(row!.content)}, '[]'::jsonb, '[]'::jsonb)`;
 }
@@ -389,6 +395,65 @@ describe('R-12: independent grading stays mandatory for general plans', () => {
     const codes = await blockerCodes(slug);
     expect(codes, brief(codes)).toContain('acceptance_ungraded');
     // A general plan carries no code deliverable, so nothing code-only joins the refusal.
+    expect(codes.filter((code) => !PROFILE_INDEPENDENT.test(code)), brief(codes)).toEqual([]);
+
+    const res = await ship(slug);
+    expect(res.ok, brief(res)).not.toBe(true);
+    expect(await storedStatus(slug)).not.toBe('shipped');
+  });
+
+  // The other half of R-12: a grading by someone inside the plan's own implementer population
+  // does not count. scorecards:emit refuses a grader who is ALREADY in that population
+  // (grader_in_implementer_lineage), so the way a general plan reaches this state for real is a
+  // grader who filed an independent card and later shaped the plan. The gate re-reads the
+  // population at ship time, so that card stops counting and the refusal is self_graded_only.
+  it('refuses a general plan graded only by its own implementer with self_graded_only', async () => {
+    delete process.env[RUBRIC_GATE_ENV]; // the shipped default: the rubric family is ON
+    const slug = 'zzz-genship-general-selfgraded-2026-10-20';
+    const rubricRef = `acceptance-${slug}`;
+    const grader = 'su-genship-grader';
+    await makePlan(slug, 'general');
+    await finishItems(slug);
+    await auditGenericOnly(slug);
+    const proposed = first(await call('rubrics:propose', {
+      rubricRef,
+      kind: 'acceptance',
+      subjectPlan: slug,
+      classRef: 'plan-class-general',
+      characteristic: 'plan-verification-profiles',
+      title: `Acceptance for ${slug}`,
+      criteria: [],
+    }, { withHarness: false }));
+    expect((proposed as { error?: unknown }).error ?? null, brief(proposed)).toBeNull();
+    const stored = await runWithWorkspace(WS, () => getRubric(rubricRef));
+    expect(stored, `rubric ${rubricRef}: ${brief(proposed)}`).toMatchObject({ kind: 'acceptance', classRef: 'plan-class-general' });
+    // A class-only rubric stores no criteria of its own; it is graded on the class's criteria.
+    const cls = await runWithWorkspace(WS, () => getRubric('plan-class-general'));
+    const keys = [...new Set([...(cls?.criteria ?? []), ...(stored?.criteria ?? [])].map((criterion) => criterion.key))];
+    expect(keys.length, 'plan-class-general must carry the criteria a general plan is graded on').toBeGreaterThan(0);
+
+    // A complete grading through the real scorecard writer, by an agent outside the lineage.
+    const ratings = Object.fromEntries(keys.map((key) => [key, {
+      rating: 'pass',
+      evidence: `fixture: ${grader} checked ${key} against the plan's cited external snapshot`,
+    }]));
+    const emitted = await runWithWorkspace(WS, () => emitScorecard(
+      { rubricRef, subject: { kind: 'plan', ref: slug }, ratings } as never,
+      { createdBy: grader, workspaceId: WS },
+    ));
+    expect((emitted as { ok?: unknown }).ok, brief(emitted)).toBe(true);
+
+    // CONTROL: while the grader is outside the implementer population its card is the
+    // independent grading, so neither grading refusal fires.
+    const before = await blockerCodes(slug);
+    expect(before, brief(before)).not.toContain('acceptance_ungraded');
+    expect(before, brief(before)).not.toContain('self_graded_only');
+
+    // The grader then records an activation audit on the plan, which makes it a plan implementer.
+    await auditActivation(slug, grader);
+
+    const codes = await blockerCodes(slug);
+    expect(codes, brief(codes)).toContain('self_graded_only');
     expect(codes.filter((code) => !PROFILE_INDEPENDENT.test(code)), brief(codes)).toEqual([]);
 
     const res = await ship(slug);

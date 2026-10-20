@@ -1,4 +1,11 @@
-import { EVENT_CATALOG, deriveSubjectScope, familyAdmitsKey, familyKeyPrefix, keyMatchesCatalog } from './events/await/catalog';
+import {
+  EVENT_CATALOG,
+  familyAdmitsKey,
+  familyKeyPrefix,
+  keyMatchesCatalog,
+  subjectScopeOf,
+  type EventCatalogEntry,
+} from './events/await/catalog';
 import { findRootAnchor, loadNode } from './events/await/compose-store';
 import { inspectEventKey } from './events/await/store';
 import type { PredicateWatchRow } from './events/await/predicate-watch';
@@ -186,14 +193,62 @@ function latestAnnouncementState(
  * Optional parameters remain unverified because the family does not require a subject.
  */
 export function eventHasSpecificCondition(eventKey: string, producerDeclared = false): boolean {
-  const key = eventKey.trim();
-  if (!key || /[*<>]/.test(key)) return false;
+  const key = concreteEventKey(eventKey);
+  if (!key) return false;
   const families = EVENT_CATALOG.filter((entry) => familyAdmitsKey(entry, key));
   if (families.length === 0) return producerDeclared;
-  return families.some((entry) =>
-    key !== familyKeyPrefix(entry) &&
-    (entry.subjectScope ?? deriveSubjectScope(entry)) === 'id',
-  );
+  return families.some((entry) => bindsConcreteSubject(entry, key));
+}
+
+/**
+ * event-wait-settlement-2026-10-20 P-001 — may ONE fire of `eventKey` release work that
+ * waits on it? This is the predicate every releasing path uses: the blocker re-check
+ * sweep and durable-park settlement/stamping, via
+ * `readEventConditionReachability({ requireSpecificCondition })`, and the durable-park
+ * audit directly.
+ *
+ * Stricter than {@link eventHasSpecificCondition}, which only asks whether the key
+ * names a concrete subject. `work-item:status:WI-1` names one, yet its fire says only
+ * that WI-1 changed — the state a waiter wanted may already have reversed. So a
+ * catalogued key certifies its condition only when EVERY family admitting it binds a
+ * concrete subject AND is classified a completion family (`fireProves: 'condition'`,
+ * events/await/catalog.ts). Unclassified is never proof. A key no family admits is
+ * proof only when its producer declared it (an announcement or a live predicate watch
+ * binds exactly one condition) — unchanged from the subject check.
+ */
+export function fireCertifiesCondition(eventKey: string, producerDeclared = false): boolean {
+  const key = concreteEventKey(eventKey);
+  if (!key) return false;
+  const families = EVENT_CATALOG.filter((entry) => familyAdmitsKey(entry, key));
+  if (families.length === 0) return producerDeclared;
+  // One change-notification reading of the same key is enough doubt to keep work parked.
+  return families.every((entry) => bindsConcreteSubject(entry, key) && entry.fireProves === 'condition');
+}
+
+function concreteEventKey(eventKey: string): string | null {
+  const key = eventKey.trim();
+  return !key || /[*<>]/.test(key) ? null : key;
+}
+
+/**
+ * Optional parameters stay unverified: the bare prefix of an id family binds nothing.
+ * Neither does an empty segment — familyAdmitsKey admits `work-item:done:` (one tail
+ * segment, as its arity bound requires), but that segment names no subject.
+ */
+function bindsConcreteSubject(entry: EventCatalogEntry, key: string): boolean {
+  const prefix = familyKeyPrefix(entry);
+  if (key === prefix || subjectScopeOf(entry) !== 'id') return false;
+  return key.slice(prefix.length + 1).split(':').every((segment) => segment.trim() !== '');
+}
+
+/** Why `requireSpecificCondition` refused a key — the evidence a holder acts on. */
+function uncertifiedTriggerEvidence(eventKey: string, producerDeclared: boolean): string {
+  if (eventHasSpecificCondition(eventKey, producerDeclared)) {
+    return `trigger "${eventKey}" is a change notification: a fire says its subject changed, not that it reached ` +
+      'the specific release condition; park on a completion key for the same subject (e.g. work-item:done:<id>)';
+  }
+  return `trigger "${eventKey}" may wake a consumer but cannot establish the specific release condition; ` +
+    'subject-bound evidence is required';
 }
 
 /** Resolve one event/gate key from the existing event ledger and emitter catalog. */
@@ -205,7 +260,10 @@ export async function readEventConditionReachability(
     loadComposedRoot?: ComposedRootLoader;
     loadComposedRootAnchor?: ComposedRootAnchorLoader;
     loadPredicateWatch?: PredicateWatchLoader;
-    /** A durable park needs condition evidence, not merely an emitter that can wake it. */
+    /**
+     * A release needs condition evidence, not merely an emitter that can wake it: the key
+     * must pass {@link fireCertifiesCondition}, so a change notification is never proof.
+     */
     requireSpecificCondition?: boolean;
   } = {},
 ): Promise<ExternalConditionReachability> {
@@ -224,13 +282,11 @@ export async function readEventConditionReachability(
     // An active predicate watch is a declared producer of one specific condition
     // (tool, path, op, operand), so it binds the condition the way an announcement does.
     const predicateWatchLive = await hasActivePredicateWatch(eventKey, loadPredicateWatch);
-    if (
-      opts.requireSpecificCondition &&
-      !eventHasSpecificCondition(eventKey, Boolean(currentAnnouncement) || predicateWatchLive)
-    ) {
+    const producerDeclared = Boolean(currentAnnouncement) || predicateWatchLive;
+    if (opts.requireSpecificCondition && !fireCertifiesCondition(eventKey, producerDeclared)) {
       return {
         ...classifyExternalConditionReachability({ registration: 'unmeasured' }, now.toISOString()),
-        evidence: `trigger "${eventKey}" may wake a consumer but cannot establish the specific release condition; subject-bound evidence is required`,
+        evidence: uncertifiedTriggerEvidence(eventKey, producerDeclared),
       };
     }
     // Expiry stamps firedAt too, but it is not a successful condition fire.

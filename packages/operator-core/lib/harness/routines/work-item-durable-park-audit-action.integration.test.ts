@@ -57,7 +57,9 @@ try {
   for (const id of ids) {
     const lease = id === 'WI-lease' ? { held_open_by: 'independent-reviewer', held_open_reason: 'review pending', held_open_at: '2020-01-01T00:00:00Z' } : {};
     await sql.unsafe('INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts, payload) VALUES ($1,$2,$3,$4,$3,$5,0,0,$6::jsonb)', [ws, harness, id, 'bug', 'open', JSON.stringify(lease)]);
-    const trigger = 'work-item:unblocked:' + id;
+    // A completion key: a change notification (work-item:unblocked) can no longer certify a
+    // condition (event-wait-settlement-2026-10-20 P-001), so its fire would not read as met.
+    const trigger = 'work-item:done:' + id + '-dependency';
     const releaseContract = await buildDurableParkReleaseContract({ condition: 'typed dependency is resolved', owner: 'condition-owner', trigger }, 'condition-owner');
     await setWorkItemClaimHold(id, true, { harness, parkedBy: 'departed-parker', reason: 'until typed dependency resolves', releaseContract });
   }
@@ -72,7 +74,7 @@ try {
   assert.equal(before.detail.outcome.uniqueRowsChanged, 0);
 
   for (const id of ids.filter(id => id !== 'WI-pending')) {
-    await recordKeyFire({ eventKey: 'work-item:unblocked:' + id, firedBy: 'real-fixture-producer' });
+    await recordKeyFire({ eventKey: 'work-item:done:' + id + '-dependency', firedBy: 'real-fixture-producer' });
   }
   await invoke({ runId: 'production-after' });
   const after = await readRun('production-after');
@@ -91,7 +93,7 @@ try {
   const controlSnapshot = await readItems();
   const decisions = matrix.rows.filter(row => row.id !== 'WI-pending').map(row => ({
     id: row.id, expectedParkFingerprint: row.parkFingerprint, reasonCode: 'condition-satisfied',
-    evidence: 'private event_key_fires confirms work-item:unblocked:' + row.id,
+    evidence: 'private event_key_fires confirms work-item:done:' + row.id + '-dependency',
   }));
   await invoke({ mode: 'reconcile', runId: 'production-reconcile', actor: 'fixture-operator', decisions });
   const reconciled = await readRun('production-reconcile');

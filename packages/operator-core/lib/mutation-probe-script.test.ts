@@ -165,7 +165,8 @@ describe('mutation-probe.sh — TypeScript mutant syntax', () => {
   it.each(['ts', 'mts', 'cts'])('checks a valid .%s mutant before scoring its assertion failure', extension => {
     const typedSubject = join(dir, `subject.${extension}`);
     const marker = join(dir, 'guard-phases');
-    const original = 'const ANSWER: number = 1;\n';
+    // An execution-based checker would throw; only parsing may qualify this mutant.
+    const original = 'throw new Error("syntax checking must not execute the subject");\nconst ANSWER: number = 1;\n';
     writeFileSync(typedSubject, original);
     const guard = `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> "${marker}"; grep -q 'ANSWER: number = 1' {}`;
     const { code, out } = runProbeIO(['--file', typedSubject, '--mutate', 's/= 1/= 2/', '--test', guard]);

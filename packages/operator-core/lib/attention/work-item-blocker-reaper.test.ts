@@ -123,9 +123,18 @@ describe('sweepWorkItemBlockerDefaults', () => {
   it.each([
     { kind: 'gate' as const, ref: 'plan:acceptance:grading-plan', clearsBlocker: false, announced: false },
     { kind: 'event' as const, ref: 'release:deployed:abc123', clearsBlocker: false, announced: false },
-    { kind: 'event' as const, ref: 'work-item:unblocked:WI-ready', clearsBlocker: true, announced: false },
+    // event-wait-settlement-2026-10-20 R-1: a fired CHANGE notification about one subject
+    // names that subject but proves nothing about the condition — the blocker stays.
+    { kind: 'event' as const, ref: 'work-item:status:WI-ready', clearsBlocker: false, announced: false },
+    { kind: 'event' as const, ref: 'work-item:claimed:WI-ready', clearsBlocker: false, announced: false },
+    { kind: 'event' as const, ref: 'work-item:blocked:WI-ready', clearsBlocker: false, announced: false },
+    { kind: 'event' as const, ref: 'work-item:unblocked:WI-ready', clearsBlocker: false, announced: false },
+    // ...and stays even when its producer declared it: a declaration binds no new meaning.
+    { kind: 'event' as const, ref: 'work-item:status:WI-ready', clearsBlocker: false, announced: true },
+    // A completion family on the same subject is the proof the change keys are not.
+    { kind: 'event' as const, ref: 'work-item:done:WI-ready', clearsBlocker: true, announced: false },
     { kind: 'gate' as const, ref: 'reaper:declared-ready', clearsBlocker: true, announced: true },
-  ])('production resolver clears $ref only when the fire proves its condition', async ({ kind, ref, clearsBlocker, announced }) => {
+  ])('production resolver clears $ref (announced=$announced) only when the fire proves its condition', async ({ kind, ref, clearsBlocker, announced }) => {
     const firedAt = '2026-09-30T12:00:00.000Z';
     // Element-level casts to the REAL row types (overlap-checked: a renamed/removed field
     // fails to compile) — the outer value then type-checks against inspectEventKey's

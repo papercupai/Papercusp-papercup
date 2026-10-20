@@ -16,6 +16,11 @@
  *   referenced HTML must only `<script src=>` and `<link href=>` to
  *   same-origin paths (relative or starting with `/`), unless the
  *   external host is in declared `http:fetch:*` caps.
+ * - lintToolCapabilityParity:  every top-level `tools:<ns>:<verb>`
+ *   capability of a plugin that declares static `tools[]` must be claimed
+ *   by one of those tools. An unclaimed one advertises a tool nobody can
+ *   call (WI-6554700010012944: firecrawl-bridge advertised `crawl` with
+ *   no tool or handler).
  */
 
 export interface LintFinding {
@@ -29,6 +34,7 @@ export interface ManifestForLint {
   name: string;
   capabilities?: string[];
   actions?: Array<{ name: string; capabilities?: string[] }>;
+  tools?: Array<{ name: string; capabilities?: string[] }>;
   runtime?: { kind?: 'js' | 'wasm' | 'daemon'; wasmPath?: string };
   ui?: Array<{ type?: 'react' | 'iframe'; iframeEntry?: string; slug: string }>;
 }
@@ -139,6 +145,33 @@ export function lintIframeSameOrigin(
   return out;
 }
 
+/**
+ * A plugin that declares static `tools[]` must not advertise a
+ * `tools:<ns>:<verb>` capability that none of those tools claims. The
+ * advertised capability is what discovery shows agents and installers, so an
+ * unclaimed one promises a tool that cannot be dispatched.
+ *
+ * A manifest with NO static tools is skipped: plugins such as gitnexus-bridge
+ * build their tool set at runtime (`getDynamicTools`) and can only declare the
+ * capabilities up front.
+ */
+export function lintToolCapabilityParity(m: ManifestForLint): LintFinding[] {
+  const tools = m.tools ?? [];
+  if (tools.length === 0) return [];
+  const claimed = new Set(tools.flatMap((t) => t.capabilities ?? []));
+  const out: LintFinding[] = [];
+  for (const cap of m.capabilities ?? []) {
+    if (!cap.startsWith('tools:') || claimed.has(cap)) continue;
+    out.push({
+      level: 'error',
+      rule: 'tool-cap-without-tool',
+      message: `capability '${cap}' advertises a tool, but no entry in tools[] claims it. Add the tool (with a runtime handler) or drop the capability.`,
+      where: `${m.name}.capabilities`,
+    });
+  }
+  return out;
+}
+
 export async function lintManifest(
   m: ManifestForLint,
   resolvers: {
@@ -148,6 +181,7 @@ export async function lintManifest(
 ): Promise<LintFinding[]> {
   const out: LintFinding[] = [];
   out.push(...lintBareWildcardCaps(m));
+  out.push(...lintToolCapabilityParity(m));
   if (resolvers.wasmDts) {
     out.push(...(await lintWasmActionsAgainstWit(m, resolvers.wasmDts)));
   }

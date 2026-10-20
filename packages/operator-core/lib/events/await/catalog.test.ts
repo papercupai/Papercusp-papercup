@@ -17,7 +17,10 @@ import {
   findRequiredParamPrefixMatch,
   findZeroParamSuffixMismatch,
   findCatalogNearMiss,
+  findFireProofClassificationGaps,
+  subjectScopeOf,
   type EventCatalogEntry,
+  type FireProof,
 } from './catalog';
 import { buildAnnouncedKey } from './announce-key';
 
@@ -48,6 +51,80 @@ describe('events catalog — registry integrity', () => {
     const verbs = sugaredFamilies().map((e) => e.sugar!);
     expect(new Set(verbs).size).toBe(verbs.length);
     for (const v of verbs) expect(v).toMatch(/^[a-z][a-z-]*:[a-z][a-z-]*$/);
+  });
+});
+
+/**
+ * event-wait-settlement-2026-10-20 P-001 / R-2 — what a fire PROVES, per id-scoped family.
+ *
+ * `fireProves` decides whether a fire may RELEASE parked work (fireCertifiesCondition), and
+ * it is curated, so this table is its pin. Adding an id-scoped family, dropping one, or
+ * re-classifying one fails here until the table is updated on purpose — in the same diff a
+ * reviewer can read. `condition` = completion (the fire certifies the named final state);
+ * `change` = notification/hint/alarm (the state may already have reversed).
+ */
+const ID_SCOPED_FIRE_PROOF: Record<string, FireProof> = {
+  'repair-admitted': 'change',
+  lock: 'condition',
+  'plan-run': 'condition',
+  'task-terminal': 'condition',
+  'wake-not-picked-up': 'change',
+  'work-item': 'change',
+  'work-item-done': 'condition',
+  'work-item-settled': 'condition',
+  'work-item-unblocked': 'change',
+  'work-item-blocked': 'change',
+  'work-item-claimed': 'change',
+  'plan-item': 'condition',
+  'claim-released': 'change',
+  'scorecard-grading-audit': 'condition',
+  'goal-drain-dead': 'change',
+  'goal-plan-placement-changed': 'change',
+  'goal-plan-fleet-missing': 'change',
+  'goal-plan-fleet-unclaimed': 'change',
+  'goal-edit-claim': 'change',
+  'coord-receipt': 'condition',
+  'work-item-duplicate-settled': 'condition',
+  'work-item-tool-failure-reporter': 'change',
+  'escalation-resolved': 'condition',
+  'conversation-answered': 'condition',
+  'consult-reply': 'change',
+  'handoff-accepted': 'condition',
+  'report-published': 'condition',
+};
+
+describe('events catalog — fireProves classification (event-wait-settlement-2026-10-20 P-001)', () => {
+  it('lists every id-scoped family with its classification, and nothing else', () => {
+    const actual = Object.fromEntries(
+      EVENT_CATALOG.filter((e) => !e.announcedShape && subjectScopeOf(e) === 'id').map((e) => [e.family, e.fireProves]),
+    );
+    expect(actual).toEqual(ID_SCOPED_FIRE_PROOF);
+  });
+
+  it('the builtin registry has no unclassified id-scoped family and no misplaced classification', () => {
+    expect(findFireProofClassificationGaps()).toEqual([]);
+  });
+
+  it('reports an id-scoped family that ships without a classification', () => {
+    const unclassified: EventCatalogEntry = {
+      family: 'test-new-completion', keyTemplate: 'test:new:<id>',
+      params: [{ name: 'id', required: true, describe: 'subject' }],
+      describe: 'test', emitter: 'test', exists: true,
+    };
+    expect(findFireProofClassificationGaps([unclassified])).toEqual([
+      { family: 'test-new-completion', keyTemplate: 'test:new:<id>', problem: 'unclassified' },
+    ]);
+    expect(findFireProofClassificationGaps([{ ...unclassified, fireProves: 'condition' }])).toEqual([]);
+  });
+
+  it('reports a classification on a family that binds no subject', () => {
+    const global: EventCatalogEntry = {
+      family: 'test-global', keyTemplate: 'test:global', params: [],
+      describe: 'test', emitter: 'test', exists: true, fireProves: 'condition',
+    };
+    expect(findFireProofClassificationGaps([global])).toEqual([
+      { family: 'test-global', keyTemplate: 'test:global', problem: 'not-id-scoped' },
+    ]);
   });
 });
 

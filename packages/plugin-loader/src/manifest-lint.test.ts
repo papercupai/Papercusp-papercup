@@ -12,6 +12,7 @@ import {
   lintWasmActionsAgainstWit,
   lintIframeSameOrigin,
   lintManifest,
+  lintToolCapabilityParity,
   type ManifestForLint,
 } from './manifest-lint';
 
@@ -126,7 +127,62 @@ describe('lintIframeSameOrigin', () => {
   });
 });
 
+describe('lintToolCapabilityParity', () => {
+  it('errors on a tools: capability that no declared tool claims (WI-6554700010012944 shape)', () => {
+    const r = lintToolCapabilityParity({
+      name: 'firecrawl-like',
+      capabilities: ['tools:fc:scrape', 'tools:fc:crawl', 'http:fetch:api.example.com'],
+      tools: [{ name: 'scrape', capabilities: ['tools:fc:scrape', 'http:fetch:api.example.com'] }],
+    });
+    expect(r).toEqual([
+      expect.objectContaining({ level: 'error', rule: 'tool-cap-without-tool', where: 'firecrawl-like.capabilities' }),
+    ]);
+    expect(r[0]!.message).toContain("'tools:fc:crawl'");
+  });
+
+  it('accepts a manifest whose every tools: capability is claimed by a tool', () => {
+    expect(
+      lintToolCapabilityParity({
+        name: 'p',
+        capabilities: ['tools:fc:scrape', 'tools:fc:crawl', 'secrets:read:KEY'],
+        tools: [
+          { name: 'scrape', capabilities: ['tools:fc:scrape'] },
+          { name: 'crawl', capabilities: ['tools:fc:crawl', 'secrets:read:KEY'] },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it('skips a dynamic-tools plugin that declares capabilities but no static tools', () => {
+    expect(
+      lintToolCapabilityParity({ name: 'gitnexus-like', capabilities: ['tools:gx:query', 'tools:gx:context'] }),
+    ).toEqual([]);
+    expect(
+      lintToolCapabilityParity({ name: 'gitnexus-like', capabilities: ['tools:gx:query'], tools: [] }),
+    ).toEqual([]);
+  });
+
+  it('ignores non-tools capabilities that no tool claims', () => {
+    expect(
+      lintToolCapabilityParity({
+        name: 'p',
+        capabilities: ['tools:fc:scrape', 'events:listen:x', 'http:fetch:api.example.com'],
+        tools: [{ name: 'scrape', capabilities: ['tools:fc:scrape'] }],
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe('lintManifest (compound)', () => {
+  it('includes tool-capability parity findings', async () => {
+    const r = await lintManifest({
+      name: 'p',
+      capabilities: ['tools:p:a', 'tools:p:b'],
+      tools: [{ name: 'a', capabilities: ['tools:p:a'] }],
+    });
+    expect(r.map((f) => f.rule)).toEqual(['tool-cap-without-tool']);
+  });
+
   it('aggregates findings from all 3 linters', async () => {
     const r = await lintManifest(
       {

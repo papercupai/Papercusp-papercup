@@ -13717,6 +13717,14 @@ impl App {
             }
             return Action::None;
         }
+        // A server question can arrive while a picker/palette is already open.
+        // Blocking cards own input above every ordinary modal, matching
+        // PUBLIC_RELEASE_UX.md. Retain the modal state for the server's close.
+        // Ctrl-C keeps its existing global interrupt/exit route.
+        let ctrl_c_global = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
+        if self.operator_input_active() && self.card_state.has_card() && !ctrl_c_global {
+            return self.card_key(code);
+        }
         // The install-lifecycle panel is modal while open (P-011 / D-016).
         if self.lifecycle.is_some() {
             return self.lifecycle_key(code);
@@ -13852,15 +13860,6 @@ impl App {
             if let Some(action) = self.session_browser_key(code, mods) {
                 return action;
             }
-        }
-        // Inline card modal (sentinel-tui-shared-backend-and-cards Phase 2a):
-        // when an open `chat:ask_choice` card is focused on the operator surface,
-        // it's a BLOCKING prompt (the brain's tool call is awaiting) — capture
-        // navigation/answer keys here, before the composer/tab keys see them.
-        // Ctrl-C still quits (the universal escape hatch).
-        let ctrl_c_global = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
-        if self.operator_input_active() && self.card_state.has_card() && !ctrl_c_global {
-            return self.card_key(code);
         }
         // P-034 fleet launcher is fully modal: its form owns editing,
         // preflight, suggested-count, and explicit confirmation keys.

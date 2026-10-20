@@ -399,6 +399,33 @@ describe('deriveBindingFromTestRun', () => {
     });
   });
 
+  it('refuses a mutant subject outside the harness checkout with its declared error variant', () => {
+    const mutation = {
+      schemaVersion: 1,
+      probeInvocationId: 'probe-00000002',
+      mode: 'copy-out',
+      subjectPath: path.resolve(root, '..', 'outside.ts'),
+      mutateExpression: 's/number/string/',
+      againstCommit: null,
+      subjectBeforeSha256: 'a'.repeat(64),
+      subjectAfterSha256: 'b'.repeat(64),
+      mutantDiff: '-number\\n+string',
+      mutantDiffTruncated: false,
+      testCommandSha256: 'c'.repeat(64),
+      leg: 'mutant',
+      testFileSha256: 'd'.repeat(64),
+    };
+    const mutant = run({
+      status: 'fail',
+      source: 'mutation-probe',
+      execution_details: { mutationPhase: 'mutant', mutation, failed: 1, collectionFailed: false },
+    });
+
+    const refused = deriveBindingFromTestRun(input(), mutant, root, 'run');
+    expect(refused).toMatchObject({ ok: false, error: 'mutation_subject_outside_root', testRunId: 42 });
+    expect(!refused.ok && refused.message).toContain('outside this harness checkout');
+  });
+
   it('keeps the caller judgment (targeted, layer) and fills only the observable facts', () => {
     const out = deriveBindingFromTestRun(
       input({ details: { adequacy: { targeted: true, testLayer: 'unit', executed: true }, note: 'x' } }),

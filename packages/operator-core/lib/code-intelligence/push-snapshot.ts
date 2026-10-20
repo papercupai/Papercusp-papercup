@@ -245,7 +245,13 @@ export async function queryPushSnapshot(query: {
     const inScope = (path: string) => paths.some(scope => scope === '.' || path === scope || path.startsWith(scope.replace(/\/$/, '') + '/'));
     let candidates: readonly SnapshotSymbol[];
     let cursorPath: string | undefined;
-    if (query.op === 'definition') {
+    if (query.op === 'definition' && query.file === undefined && query.name) {
+      // P-040 (native-code-intelligence-ecosystem-and-dream-2026-10-09): a name-only
+      // definition lookup (lsp:query workspace_symbols) is served from the snapshot when
+      // exactly one in-scope declaration carries the name or a captured alias. An
+      // ambiguous, absent or out-of-scope name returns null so the compiler answers.
+      candidates = (snapshot.symbols.get(query.name) ?? []).filter(symbol => inScope(symbol.path));
+    } else if (query.op === 'definition') {
       if (!query.file || !Number.isSafeInteger(query.line1) || query.line1! < 1
         || !Number.isSafeInteger(query.character) || query.character! < 0) return null;
       cursorPath = isAbsolute(query.file) ? relative(root, query.file) : query.file;
@@ -294,7 +300,7 @@ export async function queryPushSnapshot(query: {
       freshness: { health: 'healthy', indexedAt: snapshot.generatedAt, indexedCommit: snapshot.commit, staleVsDisk: null },
       coverage, latencyMs: Date.now() - started, error: null,
       evidence: { schemaVersion: 1,
-        sourceScope: { repositoryId, identityKind: 'local-root', paths: query.op === 'definition' ? [cursorPath!] : paths,
+        sourceScope: { repositoryId, identityKind: 'local-root', paths: query.op === 'definition' ? [cursorPath ?? symbol.path] : paths,
           sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'), supportingFiles: sources },
         graphScope: coverage,
         languageCapabilities: [...new Set(sources.filter(source => source.language !== 'json').map(source => source.language))]

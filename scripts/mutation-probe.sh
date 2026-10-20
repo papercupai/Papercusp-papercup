@@ -3273,9 +3273,30 @@ verify_mutation_bytes "$TARGET"
 MUTANT_PARSE="unchecked"
 MUTANT_PARSE_ERR="$SCRATCH/mutant-parse.err"
 case "$FILE" in
-  # The workspace pins Node >=25, whose syntax checker strips TypeScript
-  # without executing it. Typed subjects need the same parse proof as JS.
-  *.mjs|*.cjs|*.js|*.mts|*.cts|*.ts)
+  *.mts|*.cts|*.ts)
+    if ! command -v node >/dev/null 2>&1; then
+      MUTANT_PARSE="unchecked-no-node"
+    # Node's --check does not strip types, even on Node 25. Parse and
+    # transform with its built-in TypeScript parser, then check the emitted
+    # JavaScript. Neither stage imports or executes the subject.
+    elif node - "$TARGET" >"$SCRATCH/mutant-parse.js" 2>"$MUTANT_PARSE_ERR" <<'NODE'
+const { readFileSync } = require('node:fs');
+const { stripTypeScriptTypes } = require('node:module');
+process.stdout.write(stripTypeScriptTypes(readFileSync(process.argv[2], 'utf8'), { mode: 'transform' }));
+NODE
+    then
+      parse_input_type=module
+      case "$FILE" in *.cts) parse_input_type=commonjs ;; esac
+      if node --input-type="$parse_input_type" --check <"$SCRATCH/mutant-parse.js" 2>"$MUTANT_PARSE_ERR"; then
+        MUTANT_PARSE="ok"
+      else
+        MUTANT_PARSE="broken"
+      fi
+    else
+      MUTANT_PARSE="broken"
+    fi
+    ;;
+  *.mjs|*.cjs|*.js)
     if ! command -v node >/dev/null 2>&1; then
       MUTANT_PARSE="unchecked-no-node"
     elif node --check "$TARGET" >/dev/null 2>"$MUTANT_PARSE_ERR"; then

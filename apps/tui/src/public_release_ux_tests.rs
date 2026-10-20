@@ -31,6 +31,20 @@ fn composing() -> App {
     app
 }
 
+fn receive_question(app: &mut App) {
+    app.agent_chat_id = Some("r14-chat".into());
+    app.card_state.apply_snapshot(
+        crate::card_view::SnapshotEnvelope::from_json(&json!({
+            "runId": "r14-run", "version": 1, "workspaceId": "r14-workspace",
+            "snapshot": {"openCards": [{"correlationId":"r14-question", "prompt":"Keep or change?",
+                "presentation":{"kind":"radio","options":[
+                    {"id":"keep","label":"Keep"},{"id":"change","label":"Change"}
+                ]}}]}
+        }).to_string())
+        .unwrap(),
+    );
+}
+
 #[test]
 fn r14_p002_registry_reuse_and_required_screen_states_remain_explicit() {
     let contract = include_str!("../PUBLIC_RELEASE_UX.md");
@@ -158,7 +172,7 @@ fn r14_p002_context_round_trip_preserves_draft_in_compact_and_wide_frames() {
         let mut app = composing();
         app.update(Event::Resize(width, height));
         let draft = app.chat_input.clone();
-        assert!(render(&app, width, height).contains("未送信"));
+        assert!(render(&app, width, height).contains("second line"));
         assert_eq!(
             press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL),
             Action::FetchContextProjection
@@ -173,7 +187,7 @@ fn r14_p002_context_round_trip_preserves_draft_in_compact_and_wide_frames() {
         assert_eq!(app.tab, Tab::Operator);
         assert!(app.chat_composing);
         assert_eq!(app.chat_input, draft);
-        assert!(render(&app, width, height).contains("未送信"));
+        assert!(render(&app, width, height).contains("second line"));
         assert!(!app.should_quit);
     }
 }
@@ -181,17 +195,7 @@ fn r14_p002_context_round_trip_preserves_draft_in_compact_and_wide_frames() {
 #[test]
 fn r14_p002_blocking_question_owns_answer_keys_before_composer_and_navigation() {
     let mut app = composing();
-    app.agent_chat_id = Some("r14-chat".into());
-    app.card_state.apply_snapshot(
-        serde_json::from_value(json!({
-            "runId": "r14-run", "version": 1, "workspaceId": "r14-workspace",
-            "openCards": [{"correlationId":"r14-question", "prompt":"Keep or change?",
-                "presentation":{"kind":"radio","options":[
-                    {"id":"keep","label":"Keep"},{"id":"change","label":"Change"}
-                ]}}]
-        }))
-        .unwrap(),
-    );
+    receive_question(&mut app);
     let draft = app.chat_input.clone();
     assert!(render(&app, 80, 24).contains("Keep or change?"));
     let action = press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
@@ -202,6 +206,72 @@ fn r14_p002_blocking_question_owns_answer_keys_before_composer_and_navigation() 
     assert_eq!(app.tab, Tab::Operator);
     assert_eq!(app.chat_input, draft);
     assert!(!app.should_quit);
+}
+
+#[test]
+fn r14_p002_late_question_preempts_and_restores_existing_modals() {
+    for modal in ["attachment picker", "palette", "session switcher"] {
+        let mut app = composing();
+        let project = tempfile::tempdir().unwrap();
+        app.project_root = project.path().to_path_buf();
+        match modal {
+            "attachment picker" => {
+                app.open_file_picker();
+            }
+            "palette" => {
+                app.palette_open = true;
+            }
+            _ => {
+                press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+            }
+        }
+        let draft = app.chat_input.clone();
+        receive_question(&mut app);
+        let mut question_only = composing();
+        question_only.project_root = project.path().to_path_buf();
+        receive_question(&mut question_only);
+        let frame = render(&app, 80, 24);
+        assert!(frame.contains("Keep or change?"));
+        assert_eq!(
+            frame,
+            render(&question_only, 80, 24),
+            "{modal} covered the question"
+        );
+        let action = press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+        assert!(
+            matches!(action, Action::CardRespond {
+            correlation_id, workspace_id, payload: Some(payload), ..
+        } if correlation_id == "r14-question" && workspace_id.as_deref() == Some("r14-workspace")
+            && payload == json!({"picks":["change"]})),
+            "{modal} stole the question's answer"
+        );
+        assert_eq!(app.chat_input, draft);
+        assert_eq!(app.tab, Tab::Operator);
+        assert!(!app.should_quit);
+        // The authoritative close releases question focus, revealing the same
+        // modal. The answer digit must never have edited its query or draft.
+        app.card_state
+            .apply_snapshot(crate::card_view::SnapshotEnvelope {
+                run_id: "r14-run".into(),
+                workspace_id: Some("r14-workspace".into()),
+                version: 2,
+                cards: vec![],
+            });
+        match modal {
+            "attachment picker" => assert_eq!(app.open_file_picker.as_ref().unwrap().query, ""),
+            "palette" => {
+                assert!(app.palette_open);
+                assert_eq!(app.palette_input, "");
+            }
+            _ => assert_eq!(app.session_switcher.as_ref().unwrap().query, ""),
+        }
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(
+            app.open_file_picker.is_none() && !app.palette_open && app.session_switcher.is_none()
+        );
+        assert_eq!(app.chat_input, draft);
+        assert!(app.chat_composing);
+    }
 }
 
 #[test]
@@ -217,6 +287,6 @@ fn r14_p002_too_small_frame_holds_hidden_input_until_resize() {
     assert_eq!(app.chat_input, draft);
     assert!(!app.should_quit);
     app.update(Event::Resize(80, 24));
-    assert!(render(&app, 80, 24).contains("未送信"));
+    assert!(render(&app, 80, 24).contains("second line"));
     assert_eq!(app.chat_input, draft);
 }

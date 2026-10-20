@@ -61,6 +61,14 @@ export async function lspFacade(
       file: args.file, line1: args.line1, character: args.character, limit: args.limit });
     if (snapshot) return snapshot;
   }
+  // P-040: name-only definition lookups are the dominant raw-grep intent; answer a
+  // unique snapshot declaration in-process (sub-second) before waking the compiler.
+  // The `file` anchor selects a compiler project and is deliberately not a filter here.
+  if (op === 'workspace_symbols' && args.name && (!args.language || args.language === 'typescript')) {
+    const snapshot = await queryPushSnapshot({ op: 'definition', root: rootPath, workspaceId: caller.workspaceId,
+      name: args.name, limit: args.limit });
+    if (snapshot) return snapshot;
+  }
   return scoped(await queryLspDaemon({
     op, args: { ...args, rootPath },
     workspaceId: caller.workspaceId ?? activeWorkspaceId(), actorId: caller.actorId,

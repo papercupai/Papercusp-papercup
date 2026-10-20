@@ -4394,9 +4394,12 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
       'dependency_generation_acquire_copy_lock fixture || exit $?',
       'trap dependency_generation_release_copy_lock EXIT',
       // Real writes in the holder remain measurable; only the waiter loses /proc visibility.
-      'cp() { for i in $(seq 1 80); do printf "%04096d" 0 >> "$2"; sleep 0.1; done; }',
+      // WI-6554700010018107: the real call is `cp -a "$src" "$dest"`, so the fake writes to its
+      // LAST argument. Writing to "$2" appended to the source path `ignored` in the test's cwd
+      // (apps/operator), which git-sync committed and the delta check then re-ran.
+      'cp() { local dest="${!#}"; for i in $(seq 1 80); do printf "%04096d" 0 >> "$dest"; sleep 0.1; done; }',
       'dependency_generation_copy_with_progress ignored "$WORK"',
-    ].join('\n')], { stdio: ['ignore', 'ignore', 'pipe'], detached: true, env: {
+    ].join('\n')], { cwd: root, stdio: ['ignore', 'ignore', 'pipe'], detached: true, env: {
       ...process.env, LIB: SCRIPT, WORK: join(root, 'copied-bytes'),
       DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock, DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1',
     } });
@@ -4419,6 +4422,9 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     expect(result?.status, `${result?.stderr}\nholder:\n${holderOutput}`).toBe(0);
     expect(result?.stdout).toContain('ACQUIRED');
     expect(result?.stderr).toMatch(/copy lock progress: .* advances=[1-9]/);
+    // The holder's writes land in the copy destination, never beside the source in the cwd.
+    expect(statSync(join(root, 'copied-bytes')).size).toBeGreaterThan(0);
+    expect(existsSync(join(root, 'ignored'))).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('does not turn a repeated holder progress record into progress without process visibility', async () => {

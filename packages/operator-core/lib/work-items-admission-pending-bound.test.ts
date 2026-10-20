@@ -57,6 +57,32 @@ describe('admission-pending states a bound, derived from the promoter cadence', 
     expect(live).toMatch(/outlives|wrong move/);
   });
 
+  /**
+   * WI-6554700010018098: the fail-open runner never admits a row carrying duplicate candidates
+   * (work-queue-exclusion-alarm-duplicates-2026-10-16 P-002), so quoting its ceiling to such a
+   * row was a false guarantee — rows sat pending 9-21h under a "60 min" promise. Candidate rows
+   * get their own explanation, with NO fail-open ceiling in it; the row-agnostic sentence names
+   * both exceptions instead of promising the ceiling unconditionally.
+   */
+  it('a candidate-carrying row is told the wait has no fixed bound, never the fail-open ceiling', () => {
+    const candidate = admissionPendingExplanation(undefined, { dedupCandidates: true });
+    expect(candidate).toContain('DUPLICATE CANDIDATES');
+    expect(candidate).toContain('NO fixed bound');
+    expect(candidate).not.toContain(`${ADMISSION_FAIL_OPEN_TICKS * DEFAULT_PROMOTER_TICK_MINUTES} min`);
+    expect(candidate).not.toMatch(/admits (anything|a row) still pending/);
+
+    const generic = admissionPendingExplanation();
+    expect(generic).not.toContain('admits anything still pending');
+    expect(generic).toContain('re-screened');
+    expect(generic).toContain('no fixed bound');
+
+    // And the claim floor routes on the row: a candidate row gets that text and NO retry bound.
+    const floorSource = fs.readFileSync(new URL('./work-items.ts', import.meta.url), 'utf8');
+    expect(floorSource).toContain("((wi.payload -> 'dedupCandidates') IS NOT NULL)");
+    expect(floorSource).toContain('admissionPendingExplanation(undefined, { dedupCandidates: true })');
+    expect(floorSource).toMatch(/retry: r\?\.admission_has_dedup_candidates\s+\? undefined/);
+  });
+
   it('the two second-bounds agree with the constants they are derived from', () => {
     expect(admissionPromoterTickSec()).toBe(DEFAULT_PROMOTER_TICK_MINUTES * 60);
     expect(admissionFailOpenSec()).toBe(ADMISSION_FAIL_OPEN_TICKS * DEFAULT_PROMOTER_TICK_MINUTES * 60);

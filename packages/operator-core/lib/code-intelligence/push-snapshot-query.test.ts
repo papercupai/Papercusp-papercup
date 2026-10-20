@@ -84,6 +84,28 @@ describe('source-corroborated snapshot queries', () => {
       expect(await query({ op: 'definition', file: 'app/use.ts', line1, character })).toBeNull();
   });
 
+  it('resolves a unique name-only definition without a cursor and falls through otherwise (P-040)', async () => {
+    await load();
+    for (const name of ['target', 'forwarded']) {
+      expect(await query({ op: 'definition', name })).toMatchObject({
+        backend: 'first-party-snapshot', intent: 'definition', error: null, query: name,
+        sites: [{ path: 'lib/target.ts', line1: 1, name: 'target', detail: 'function target()' }],
+        evidence: { sourceScope: { paths: ['lib/target.ts'] } },
+      });
+    }
+    expect(await query({ op: 'definition', name: 'target', paths: ['lib'] })).not.toBeNull();
+    // Absent and out-of-scope names never become a negative answer.
+    expect(await query({ op: 'definition', name: 'missing' })).toBeNull();
+    expect(await query({ op: 'definition', name: 'target', paths: ['app'] })).toBeNull();
+    // Declaration drift still falls through to the compiler.
+    await writeFile(join(state.root, 'lib/target.ts'), files['lib/target.ts'] + '// changed\n');
+    expect(await query({ op: 'definition', name: 'target' })).toBeNull();
+    await writeFile(join(state.root, 'lib/target.ts'), files['lib/target.ts']);
+    vi.resetModules(); module = await import('./push-snapshot');
+    await load([...symbols, { ...symbols[0]!, id: 'homonym' }]);
+    expect(await query({ op: 'definition', name: 'target' })).toBeNull();
+  });
+
   it('falls through when forwarding, declaration or caller bytes drift', async () => {
     await load();
     for (const path of ['lib/barrel.ts', 'lib/target.ts', 'app/use.ts'] as const) {

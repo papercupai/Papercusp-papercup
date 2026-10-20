@@ -1,6 +1,56 @@
 import { describe, expect, it, vi } from 'vitest';
-import { classifyExternalConditionReachability, readEventConditionReachability } from './external-condition-reachability';
+import {
+  classifyExternalConditionReachability,
+  eventHasSpecificCondition,
+  fireCertifiesCondition,
+  readEventConditionReachability,
+} from './external-condition-reachability';
+import { EVENT_CATALOG, buildKey, subjectScopeOf, type EventCatalogEntry } from './events/await/catalog';
 import type { ComposedNodeRow } from './events/await/compose-store';
+
+/** A concrete key for a family: every param filled, so it is never the bare prefix. */
+function concreteKeyFor(entry: EventCatalogEntry): string {
+  return buildKey(entry.family, Object.fromEntries(entry.params.map((p) => [p.name, `x-${p.name}`])));
+}
+
+describe('fireCertifiesCondition (event-wait-settlement-2026-10-20 P-001)', () => {
+  const idFamilies = EVENT_CATALOG.filter((e) => !e.announcedShape && subjectScopeOf(e) === 'id');
+
+  it('certifies a concrete key of every completion family', () => {
+    const completion = idFamilies.filter((e) => e.fireProves === 'condition');
+    expect(completion.length).toBeGreaterThan(0);
+    for (const e of completion) expect(fireCertifiesCondition(concreteKeyFor(e)), e.family).toBe(true);
+  });
+
+  it('never certifies a concrete key of a change-notification family, even when declared', () => {
+    const change = idFamilies.filter((e) => e.fireProves === 'change');
+    expect(change.length).toBeGreaterThan(0);
+    for (const e of change) {
+      const key = concreteKeyFor(e);
+      expect(eventHasSpecificCondition(key), `${e.family} names a subject`).toBe(true);
+      expect(fireCertifiesCondition(key), e.family).toBe(false);
+      expect(fireCertifiesCondition(key, true), `${e.family} declared`).toBe(false);
+    }
+  });
+
+  it.each([
+    'work-item:done', 'work-item:done:', 'work-item:done: ', 'plan-item:done:my-plan:', 'plan-item:done::P-001',
+    'work-item:done:*', 'work-item:done:<id>', '  ', 'release:deployed', 'work-item:claimable',
+  ])(
+    'never certifies a bare prefix, empty subject, wildcard, placeholder, blank or broad key: %j',
+    (key) => {
+      expect(fireCertifiesCondition(key)).toBe(false);
+      expect(fireCertifiesCondition(key, true)).toBe(false);
+      // The subject check shares the empty-subject rule, so neither predicate is fooled.
+      expect(eventHasSpecificCondition(key, true)).toBe(false);
+    },
+  );
+
+  it('treats a non-catalogue key as proof only when its producer declared it', () => {
+    expect(fireCertifiesCondition('fleet:test:gate')).toBe(false);
+    expect(fireCertifiesCondition('fleet:test:gate', true)).toBe(true);
+  });
+});
 
 const NOW = '2026-08-27T12:00:00.000Z';
 
@@ -97,13 +147,29 @@ describe('external condition reachability', () => {
     expect(condition.evidence).toContain('specific release condition');
   });
 
-  it('accepts an exact required subject key without requiring an announcement', async () => {
-    const reachability = await readEventConditionReachability('work-item:unblocked:WI-specific', {
+  it('accepts an exact completion-family subject key without requiring an announcement', async () => {
+    const reachability = await readEventConditionReachability('work-item:done:WI-specific', {
       requireSpecificCondition: true,
       inspect: async () => ({ announcements: [], waiters: [], deliveries: [], composedRoot: null,
         fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never }),
     });
     expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
+  });
+
+  // event-wait-settlement-2026-10-20 R-1: a change notification names its subject, so it
+  // passed the old subject-only check; a fire of it still proves nothing about the condition.
+  it.each([
+    'work-item:status:WI-specific', 'work-item:claimed:WI-specific', 'work-item:blocked:WI-specific',
+    'work-item:unblocked:WI-specific', 'claim:released:WI-specific',
+  ])('keeps a fired change notification unverified for a specific condition: %s', async (trigger) => {
+    const inspect = async () => ({ announcements: [], waiters: [], deliveries: [], composedRoot: null,
+      fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never });
+    expect(eventHasSpecificCondition(trigger)).toBe(true);
+    expect((await readEventConditionReachability(trigger, { inspect })).basis).toBe('fired');
+    const condition = await readEventConditionReachability(trigger, { inspect, requireSpecificCondition: true });
+    expect(condition).toMatchObject({ verdict: 'unknown', basis: 'unmeasured', authoritative: false });
+    expect(condition.evidence).toContain('change notification');
+    expect(condition.evidence).toContain('specific release condition');
   });
 
   it('does not reuse a historical fire latch for a fresh announcement generation', async () => {

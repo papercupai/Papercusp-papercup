@@ -405,6 +405,12 @@ fn draw_frame(f: &mut Frame, app: &App) {
 /// two cannot drift: a state whose keys `on_key` captures must have a paint in
 /// BOTH, and one list is the only way that stays true.
 fn draw_overlays(f: &mut Frame, app: &App) {
+    // The body owns the blocking card. A late question must remain visible
+    // above a previously opened modal, just as it owns input in on_key. Keep
+    // those overlays intact so the authoritative close restores the surface.
+    if app.operator_input_active() && app.card_state.has_card() {
+        return;
+    }
     // An open change card sits above the body and BELOW the toast: `y` on the
     // card acknowledges through that same toast, and a copy the reader cannot
     // see confirmed is the one thing this surface must not do. It is likewise

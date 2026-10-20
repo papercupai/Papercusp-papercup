@@ -348,6 +348,7 @@ export type TestRunBindingError =
   | 'mutation_causal_controls_invalid'
   | 'mutation_causal_controls_unlinked'
   | 'mutation_reaim_unjustified'
+  | 'mutation_subject_outside_root'
   | 'test_run_as_committed_content_mismatch'
   | 'test_run_as_committed_probe_failed'
   | 'test_run_measurement_start_missing'

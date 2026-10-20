@@ -213,7 +213,35 @@ export interface EventCatalogEntry {
    * which knows the difference because a typo was never declared.
    */
   announcedShape?: boolean;
+  /**
+   * event-wait-settlement-2026-10-20 P-001 — what ONE fire of a concrete key PROVES
+   * about its subject. Read by {@link fireCertifiesCondition} (external-condition-
+   * reachability.ts), which decides whether a fire may RELEASE work waiting on the key:
+   * the blocker re-check sweep, durable-park settlement and the park-time stamp.
+   *
+   * - `'condition'` — a COMPLETION family: the fire certifies that the subject reached
+   *   the final condition the family names (`work-item:done`, `lock:grant`,
+   *   `task:terminal` …). Work parked on that exact key may be released by the fire.
+   * - `'change'` — a CHANGE NOTIFICATION, hint or alarm: the subject moved, and the
+   *   state the waiter cares about may already have reversed (`work-item:status`,
+   *   `work-item:claimed`, `claim:released` …). The fire is a wake, never a release.
+   *
+   * CURATED, rung 4 of the derived-truth ladder: whether a fire means "done" or "go
+   * look" is the emitter's MEANING, which no template shape (rung 1), build-time pin of
+   * prose (rung 2) or runtime ledger (rung 3) can tell apart — a `work-item:status:<id>`
+   * and a `work-item:done:<id>` fire look identical on the wire. So it is pinned
+   * instead: {@link findFireProofClassificationGaps} must be empty for the builtin
+   * registry, and the catalogue test lists every id-scoped family with its value, so a
+   * new id-scoped family cannot ship unclassified or be silently re-classified.
+   *
+   * Omitted ⇒ unclassified ⇒ never proof (fail-closed). Only id-scoped families carry
+   * it: a global or scope key binds no subject, so its fire is never proof anyway.
+   */
+  fireProves?: FireProof;
 }
+
+/** What a fire of a concrete key proves — see {@link EventCatalogEntry.fireProves}. */
+export type FireProof = 'condition' | 'change';
 
 /** The effective scope for an entry: an explicit override, else the derivation. */
 export function subjectScopeOf(entry: EventCatalogEntry): SubjectScope | 'unknown' {
@@ -391,6 +419,9 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'repair-admitted',
     keyTemplate: 'gate:repair-admitted:<candidate>',
+    // Keyed per candidate, so EVERY admission onto it fires the same key; it asks for a
+    // re-judge and certifies neither that a particular repair landed nor that it passed.
+    fireProves: 'change',
     params: [{ name: 'candidate', required: true, describe: 'immutable frozen candidate sha' }],
     describe:
       'A confirmed release:repair-queue admission persisted a new repairHead and requested an immediate re-judge.',
@@ -402,6 +433,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'lock',
     keyTemplate: 'lock:grant:<ticket>',
+    fireProves: 'condition',
     params: [{ name: 'ticket', required: true, describe: 'the lock ticket you are queued on' }],
     describe: 'A queued lock was GRANTED to you.',
     emitter: 'lock-grant-bridge (locks:*)',
@@ -411,6 +443,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'plan-run',
     keyTemplate: 'plan-run:finished:<runId>',
+    fireProves: 'condition',
     params: [{ name: 'runId', required: true, describe: 'the plan-run id you are waiting on' }],
     describe: 'A plan run finished.',
     emitter: 'plans:turn (packages/operator-core/lib/agent-tools/plans/turn.ts)',
@@ -420,6 +453,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'task-terminal',
     keyTemplate: 'task:terminal:<taskId>',
+    fireProves: 'condition',
     params: [{ name: 'taskId', required: true, describe: 'durable task-ledger id' }],
     describe:
       'A managed task entered its first authoritative terminal ledger state. Payload distinguishes exited, killed, timed_out, stranded, and ended_unobserved and carries the observed exit tuple.',
@@ -443,6 +477,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'wake-not-picked-up',
     keyTemplate: 'wake:not-picked-up:<subscriberId>',
+    fireProves: 'change',
     params: [{ name: 'subscriberId', required: true, describe: 'the coord ownerId the wake was delivered to' }],
     describe:
       "One or more wake deliveries to this subscriber started no turn within the pickup window (PAPERCUSP_WAKE_PICKUP_WINDOW_SEC, default 600s): no turn-only MCP call and no host turn-start after delivery. Payload names the delivery ids, channels, and any delivery re-queued once for host recovery (auth/quota blocked, unbound successor). A delivered wake is NOT a pickup — await this instead of trusting status='delivered'.",
@@ -454,6 +489,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'work-item',
     keyTemplate: 'work-item:status:<id>',
+    fireProves: 'change',
     params: [{ name: 'id', required: true, describe: 'the work-item id, e.g. WI-1234' }],
     describe:
       "ANY status transition of a work item (todo/wip/blocked/done/…) — wake on every change of WI-X. Use only for a DIFFERENT assignee's item: events:await refuses your own current work item before registration because it cannot unblock itself.",
@@ -465,6 +501,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'work-item-done',
     keyTemplate: 'work-item:done:<id>',
+    fireProves: 'condition',
     params: [{ name: 'id', required: true, describe: 'the work-item id' }],
     describe:
       "A work item entered a terminal state (feature→passed/deprecated, issue→resolved/closed). This compatibility signal does NOT prove declared code files were committed; use work-item:settled:<id> for delivery-sensitive waits. Use only for a DIFFERENT assignee's item: events:await refuses your own current work item before registration because it cannot unblock itself.",
@@ -474,6 +511,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'work-item-settled',
     keyTemplate: 'work-item:settled:<id>',
+    fireProves: 'condition',
     params: [{ name: 'id', required: true, describe: 'the code work-item id' }],
     describe:
       'A terminal code work item was durably upgraded from proposed to committed after every declared file matched the exact git-sync commit. Partial commits, stale generations, and replays do not fire this key.',
@@ -484,6 +522,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'work-item-unblocked',
     keyTemplate: 'work-item:unblocked:<id>',
+    // The item can re-block the moment after; the fire says its blockers changed.
+    fireProves: 'change',
     params: [{ name: 'id', required: true, describe: 'the work-item id' }],
     describe: "A work item's LAST live blocker just cleared.",
     emitter: 'work-items-events',
@@ -492,6 +532,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'work-item-blocked',
     keyTemplate: 'work-item:blocked:<id>',
+    fireProves: 'change',
     params: [{ name: 'id', required: true, describe: 'the work-item id' }],
     describe: 'A work item transitioned INTO blocked.',
     emitter: 'work-items-events',
@@ -500,6 +541,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'work-item-claimed',
     keyTemplate: 'work-item:claimed:<id>',
+    fireProves: 'change',
     params: [{ name: 'id', required: true, describe: 'the work-item id' }],
     describe: 'An agent claimed a work item.',
     emitter: 'work-items-events',
@@ -652,6 +694,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'plan-item',
     keyTemplate: 'plan-item:done:<slug>:<id>',
+    fireProves: 'condition',
     params: [
       { name: 'slug', required: true, describe: 'the plan slug' },
       { name: 'id', required: true, describe: 'the plan item id, e.g. P-014' },
@@ -665,6 +708,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'claim-released',
     keyTemplate: 'claim:released:<id>',
+    // The freed item can be re-claimed in the same second; re-read before acting.
+    fireProves: 'change',
     params: [{ name: 'id', required: true, describe: 'the work-item / plan-item id whose claim to watch' }],
     describe: 'A claim was released (pick up orphaned/handed-back work the moment it frees).',
     emitter: 'releaseWorkItem → work-items-events (both work_items:release AND the stale-claim reaper)',
@@ -690,6 +735,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'scorecard-grading-audit',
     keyTemplate: 'scorecard:grading-audit:<id>',
+    fireProves: 'condition',
     params: [{ name: 'id', required: true, describe: 'the AUDITED scorecard id (not the audit card), e.g. EI-123' }],
     describe:
       "A scorecard's grading-integrity audit SETTLED (pending → passed|failed, or an explicit superseding correction). Payload carries `state` and `auditIssueId`, so you can branch on the verdict without re-reading. The audited card is terminal from the moment it was filed, so work-item:status:<id> never fires for this — park here after filing a vetting attestation or spec-adequacy card instead of re-polling scorecards:get.",
@@ -882,6 +928,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'goal-drain-dead',
     keyTemplate: 'goal:drain-dead:<goalId>',
+    fireProves: 'change',
     params: [{ name: 'goalId', required: true, describe: 'the goal whose drain fleet you hold' }],
     describe:
       "The drain fleet DECLARED for this goal is gone — it was declared but has no live holders, so nothing is draining the goal any more. ⚠ Fires ONLY for a fleet that was actually declared and then died: a goal that never declared one (reason `no-drain-fleet-declared`) is reported but deliberately does NOT emit, because a waiter parked here is asking to hear its fleet died, not to be nagged about paperwork. For an OUTCOME goal the watchdog never relaunches — standing a fleet back up is the goal holder's authority; for a STANDING goal it re-establishes the fleet itself after a dead grace, within a rate budget (WI-2140699), and still fires this key.",
@@ -893,6 +940,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'goal-plan-placement-changed',
     keyTemplate: 'goal:plan-placement:<goalId>',
+    fireProves: 'change',
     params: [{ name: 'goalId', required: true, describe: 'the active goal id' }],
     describe:
       'The canonical goal plan-placement classifier found an actionable placement state. This is a wake hint only; re-read the shared obligation agenda before launching or repairing anything. Fires on every sweep (10 min) while a drain-fleet or plan-fleet verdict stands; a plan-fleet firing carries the same evidence payload as its leg-specific key (goal:plan-fleet-missing / goal:plan-fleet-unclaimed).',
@@ -904,6 +952,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'goal-plan-fleet-missing',
     keyTemplate: 'goal:plan-fleet-missing:<goalId>',
+    fireProves: 'change',
     params: [{ name: 'goalId', required: true, describe: 'the active goal id you hold' }],
     describe:
       "A live-held goal has a STARTED plan with open items and no LIVE fleet whose claim spec targets it — nothing will ever claim that plan's work (leg A of the plan-fleet obligation). Payload: { goalId, reason, planSlug, harnessSlug, openItemCount, openItemIds, targetingFleets[{ fleetSlug, liveness, claimSpecRef, liveClaimCount, liveClaimItemIds }], liveHolders }. Re-fires every sweep (10 min) while it stands; the holder is also messaged + woken once per new escalation. Unknown cohort/fleet state suppresses rather than fires.",
@@ -915,6 +964,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'goal-plan-fleet-unclaimed',
     keyTemplate: 'goal:plan-fleet-unclaimed:<goalId>',
+    fireProves: 'change',
     params: [{ name: 'goalId', required: true, describe: 'the active goal id you hold' }],
     describe:
       "A live-held goal has a STARTED plan whose claim-spec-targeting fleet is LIVE but holds ZERO live claims on the plan's open items — a spec-scope or pickup failure, not a missing fleet (leg B of the plan-fleet obligation; launching another fleet will not help). Same payload and cadence as goal:plan-fleet-missing. Only one leg speaks per goal per sweep: a goal with both failures on different plans reports leg A.",
@@ -926,6 +976,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'goal-edit-claim',
     keyTemplate: 'goal:edit-claim:<goalId>',
+    fireProves: 'change',
     params: [{ name: 'goalId', required: true, describe: 'the goal whose run you are grading or holding' }],
     describe:
       'A goal-mode owner of this goal CLAIMED AN EDIT (an edit_attribution_ledger row — the deterministic never-implements instrument). Monotonic-downward: one edit falsifies the criterion permanently, so a grader parked here re-evaluates at the moment of violation instead of discovering it a sample late (the measured gap was 28 minutes). Payload carries agentId + the claimed files. The watchdog also wakes the subject and every grade-mode session in the workspace directly — park here when you want the event in YOUR await chain (e.g. a GRADE loop).',
@@ -996,6 +1047,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'coord-receipt',
     keyTemplate: 'coord:receipt:<msgId>',
+    // A receipt is the message's terminal delivery outcome; the payload says which.
+    fireProves: 'condition',
     params: [
       { name: 'msgId', required: true, describe: 'the coord msg_id whose federated delivery receipt to wait on' },
     ],
@@ -1008,6 +1061,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'work-item-duplicate-settled',
     keyTemplate: 'work-item:duplicate-settled:<id>',
+    fireProves: 'condition',
     params: [{ name: 'id', required: true, describe: 'the CANONICAL work-item id (the one your item duplicates)' }],
     describe:
       "The canonical item that YOUR item duplicates has settled — targeted at each duplicate-holder's assignee, not a subscriber fan-out.",
@@ -1020,6 +1074,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     // work-item:status:<id>, which a durable park refuses as non-specific.
     family: 'work-item-tool-failure-reporter',
     keyTemplate: 'work-item:tool-failure-reporter:<id>',
+    fireProves: 'change',
     params: [{ name: 'id', required: true, describe: 'the tool-failure signature row id' }],
     describe:
       'A tool-failure signature row gained a reporter it had never had (a different agent hit the same failure). Park a release-churned or probation report here instead of re-claiming it; the same reporter repeating never fires.',
@@ -1041,6 +1096,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'escalation-resolved',
     keyTemplate: 'escalation:resolved:<msgId>',
+    fireProves: 'condition',
     params: [{ name: 'msgId', required: true, describe: 'the escalation / spawn-request msg_id you raised' }],
     describe:
       'An escalation you raised was RESOLVED (or a spawn request was approved) — wake instead of re-polling for the verdict.',
@@ -1052,6 +1108,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'conversation-answered',
     keyTemplate: 'conversation:answered:<conversationId>',
+    fireProves: 'condition',
     params: [
       { name: 'conversationId', required: true, describe: 'the conversation id you are waiting on an answer for' },
     ],
@@ -1067,6 +1124,9 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     // the park key returned by consult:get_feedback.
     family: 'consult-reply',
     keyTemplate: 'consult:reply:<conversationId>',
+    // Fires on every reply as well as the terminal close/decline/expiry, so a fire
+    // can precede the outcome the requester is waiting for.
+    fireProves: 'change',
     params: [
       { name: 'conversationId', required: true, describe: 'the consult conversation id whose requester should wake' },
     ],
@@ -1079,6 +1139,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'handoff-accepted',
     keyTemplate: 'handoff:accepted:<acceptMsgId>',
+    fireProves: 'condition',
     params: [{ name: 'acceptMsgId', required: true, describe: 'the accept msg_id the handoff returned' }],
     describe: 'A work handoff you offered was ACCEPTED by the receiver.',
     emitter: 'coord:handoff (packages/operator-core/lib/agent-tools/coordination/tools/handoff.ts)',
@@ -1205,6 +1266,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'report-published',
     keyTemplate: 'report:published:<reportId>',
+    fireProves: 'condition',
     params: [{ name: 'reportId', required: true, describe: 'the published report id' }],
     describe:
       'A report was published — a new report row committed, or a new version superseding an earlier one in its lineage. The payload carries lineage_id, supersedes_report_id, kind, visibility, subject, origin and the report UI path.',
@@ -1627,6 +1689,36 @@ export function findRedundantSubjectScopeOverrides(
   return entries
     .filter((e) => e.subjectScope !== undefined && e.subjectScope === deriveSubjectScope(e))
     .map((e) => ({ family: e.family, declared: e.subjectScope as SubjectScope, derived: deriveSubjectScope(e) }));
+}
+
+/**
+ * event-wait-settlement-2026-10-20 P-001 — families whose {@link EventCatalogEntry.fireProves}
+ * classification is missing or misplaced.
+ *
+ * - `unclassified`: an id-scoped family with no `fireProves`. Its fires would silently
+ *   never release work (fail-closed), so a completion family shipped this way strands
+ *   every blocker parked on it — the build must say so instead.
+ * - `not-id-scoped`: a global/scope/unknown family that declares one. Such a key binds
+ *   no subject, so {@link fireCertifiesCondition} ignores the value; declaring it would
+ *   read as a capability the family does not have.
+ *
+ * Runtime-minted announced shapes are skipped: they are documentation rows, never
+ * matched (see {@link EventCatalogEntry.announcedShape}). Pinned empty by test.
+ */
+export function findFireProofClassificationGaps(
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): Array<{ family: string; keyTemplate: string; problem: 'unclassified' | 'not-id-scoped' }> {
+  const gaps: Array<{ family: string; keyTemplate: string; problem: 'unclassified' | 'not-id-scoped' }> = [];
+  for (const e of entries) {
+    if (e.announcedShape) continue;
+    const idScoped = subjectScopeOf(e) === 'id';
+    if (idScoped && e.fireProves === undefined) {
+      gaps.push({ family: e.family, keyTemplate: e.keyTemplate, problem: 'unclassified' });
+    } else if (!idScoped && e.fireProves !== undefined) {
+      gaps.push({ family: e.family, keyTemplate: e.keyTemplate, problem: 'not-id-scoped' });
+    }
+  }
+  return gaps;
 }
 
 /**
