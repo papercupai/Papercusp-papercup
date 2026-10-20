@@ -11,7 +11,7 @@
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { buildPluginRuntime } from '../../../plugin-host';
-import type { Capability, Plugin } from '@papercusp/plugin-sdk';
+import type { Capability, Plugin, PluginManifest } from '@papercusp/plugin-sdk';
 import { papercuspRoot } from '../../../papercusp-root';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -30,15 +30,7 @@ export function isSafeSegment(s: string): boolean {
   return SAFE_SEGMENT_RE.test(s) && !s.includes('..') && !s.includes('/') && !s.includes('\\');
 }
 
-interface ManifestShape {
-  name: string;
-  version: string;
-  capabilities?: string[];
-  papercusp?: string;
-  description?: string;
-}
-
-async function readManifestForPlugin(slug: string, pluginName: string): Promise<ManifestShape | null> {
+async function readManifestForPlugin(slug: string, pluginName: string): Promise<PluginManifest | null> {
   const candidates = [
     join(papercuspRoot(), 'harnesses', slug, 'plugins', pluginName, 'papercusp.json'),
     join(papercuspRoot(), 'global-plugins', pluginName, 'papercusp.json'),
@@ -47,7 +39,7 @@ async function readManifestForPlugin(slug: string, pluginName: string): Promise<
   for (const path of candidates) {
     try {
       const raw = await fs.readFile(path, 'utf8');
-      const parsed = JSON.parse(raw) as ManifestShape;
+      const parsed = JSON.parse(raw) as PluginManifest;
       if (parsed?.name && parsed?.version) return parsed;
     } catch { /* try next */ }
   }

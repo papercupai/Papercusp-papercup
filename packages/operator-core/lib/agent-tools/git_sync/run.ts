@@ -303,6 +303,11 @@ export default defineTool({
               await_tool: 'events:await',
             }
         : undefined;
+    const releaseEventResource = outcome?.status === 'skipped'
+      ? outcome.blockedOn === 'git-sync'
+        ? `git-sync:${slug}`
+        : outcome.blockedOn ?? ''
+      : '';
     // A timeout means the fire was accepted but its promise is still running in the
     // background. Keep that state explicitly non-terminal and hand the caller the
     // existing commit event + durable routine fields that settle/prove it, rather than
@@ -341,9 +346,24 @@ export default defineTool({
               //
               ...(outcome.reason === 'held_exclusive' || outcome.reason === 'exclusive_pending'
                 ? {
+                    // The bare `git-sync` lock is the workspace-wide restart
+                    // barrier, shared by every harness. This continuation is
+                    // for this install's sweep, so use its release as a retry
+                    // hint; other harnesses may still hold the shared barrier.
                     completion_event: {
-                      key: resourceReleasedEventKey(outcome.blockedOn ?? ''),
+                      key: resourceReleasedEventKey(releaseEventResource),
                       payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
+                      // Resource event keys are shared across workspaces.
+                      // Scope both the install resource and workspace so a
+                      // different tenant cannot wake this continuation.
+                      payload_filter: {
+                        all: [
+                          {
+                            resource: { equals: releaseEventResource },
+                          },
+                          { workspaceId: { equals: workspaceId } },
+                        ],
+                      },
                     },
                     await_tool: 'events:await',
                   }
@@ -351,6 +371,16 @@ export default defineTool({
                     completion_event: {
                       key: GIT_SYNC_LOCK_RETRY_EVENT,
                       payload_fields: ['installSlug', 'workspaceId', 'resource', 'reason', 'holders'],
+                      // The retry key is also global; scope the hint to this
+                      // install and workspace so unrelated tenants cannot wake
+                      // this continuation.
+                      payload_filter: {
+                        all: [
+                          { installSlug: { equals: slug } },
+                          { workspaceId: { equals: workspaceId } },
+                          { resource: { equals: outcome.blockedOn ?? '' } },
+                        ],
+                      },
                     },
                     await_tool: 'events:await',
                   }),
@@ -400,8 +430,8 @@ export default defineTool({
                     : 'a peer or pending exclusive request blocks'
                 } ` +
                 `${outcome.blockedOn ?? 'the git-sync resource'} ` +
-                `(${outcome.reason}). Wait for the exact resource release event in ` +
-                'continuation.completion_event, then retry git-sync:run. Your changes are ' +
+                `(${outcome.reason}). Wait for the caller-scoped resource release event in ` +
+                'continuation.completion_event, then retry git-sync:run. For the workspace-wide barrier, this is a per-install retry hint and does not prove every shared holder has drained. Your changes are ' +
                 'not lost; continuation.progress_ref retains live holder state.'
               : `git-sync completed with status skipped (${outcome.reason}); await ${GIT_SYNC_LOCK_RETRY_EVENT} ` +
                 'for the next lock-retry signal and inspect continuation.progress_ref for live holder state.'

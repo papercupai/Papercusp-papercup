@@ -785,6 +785,75 @@ describe('rerouteUnackedEscalationsOnce (EI-7024)', () => {
     );
   });
 
+  // EI-26354731733540396: the escalation summary is caller prose and can name
+  // an older conversation. The flat conversationId stamp is the machine link
+  // and must drive the reroute headline plus its structured/wake payloads.
+  it('uses the canonical linked conversation id instead of a stale id in caller prose', async () => {
+    const send = vi.fn(async (_identity, opts) => ({ msg_id: opts.msgId }));
+    const wake = vi.fn(async () => ({ woken: 1 }));
+    const staleConversationId = 'conv-stale-summary';
+    const canonicalConversationId = 'conv-canonical-link';
+    const summary = `publisher gate for ${staleConversationId}`;
+    const result = await rerouteUnackedEscalationsOnce({
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      workspaceId: 'ws-a',
+      listEscalationsFn: vi.fn(async () => [
+        rerouteRow({ summary, conversationId: ` ${canonicalConversationId} ` }),
+      ]) as typeof listMock,
+      readResponseMarkersFn: vi.fn(async () => new Set<string>()),
+      listPresenceFn: vi.fn(async () => [
+        {
+          ownerId: 'su-author',
+          agentRole: 'su',
+          currentPlanSlug: 'plan-a',
+          potSlug: 'pot-a',
+          heartbeatAt: iso(0),
+          stale: false,
+          host: '',
+          pid: null,
+          source: 'omp-hook-session',
+        },
+        {
+          ownerId: 'su-driver',
+          agentRole: 'su',
+          currentPlanSlug: 'plan-a',
+          potSlug: 'pot-a',
+          heartbeatAt: iso(0),
+          stale: false,
+          host: '',
+          pid: null,
+          source: 'omp-hook-session',
+        },
+      ]) as never,
+      resolveSessionStatesFn: vi.fn(
+        async () =>
+          new Map([
+            ['su-author', { sessionState: 'parked' }],
+            ['su-driver', { sessionState: 'live' }],
+          ]),
+      ) as never,
+      fetchPresenceFleetFn: vi.fn(async () => new Map()) as never,
+      getFleetFn: vi.fn(async () => null) as never,
+      sendMessageFn: send as never,
+      wakeRecipientsFn: wake as never,
+    });
+
+    expect(result).toMatchObject({ scanned: 1, selected: 1, rerouted: 1, failed: 0 });
+    const notice = send.mock.calls[0]![1];
+    expect(notice.summary).toContain(`linked conversation ${canonicalConversationId}`);
+    expect(notice.summary).not.toContain(staleConversationId);
+    expect(notice.body).toContain(`Canonical linked conversation: ${canonicalConversationId}`);
+    expect(notice.body).toContain(`Original escalation summary (verbatim): ${summary}`);
+    expect(notice.extra).toMatchObject({ conversationId: canonicalConversationId });
+    expect(wake).toHaveBeenCalledWith(
+      ['su-driver'],
+      expect.objectContaining({
+        payload: expect.objectContaining({ conversationId: canonicalConversationId }),
+      }),
+    );
+  });
+
   // EI-21451978219397190: the pause must not manufacture the wakes that break it.
   it('sends and wakes NOTHING when the only driver is stood down, and reports it as standdownSuppressed', async () => {
     const runWith = async (standdown: string[]) => {

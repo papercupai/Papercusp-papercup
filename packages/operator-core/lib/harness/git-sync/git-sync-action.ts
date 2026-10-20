@@ -242,6 +242,7 @@ import {
   decideContentQuarantineNotice,
   decideGitSyncEscalation,
   effectivePublishRefusal,
+  nextZeroAttributionTicks,
   oversizedKey,
   selectContentNoticeRecipients,
   type ContentQuarantineNotice,
@@ -273,6 +274,7 @@ import {
   type ScopedOversized,
   type ScopedContentError,
   type StrandedSubmodule,
+  type AttributionTally,
 } from './run-git-sync';
 import {
   createLockDomainIdentity,
@@ -291,7 +293,7 @@ import {
   snapshotGitSyncLockHolders,
   type GitSyncLockHolderSnapshot,
 } from './git-sync-events';
-import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
+import { parsePapercuspTrailers, recordCommitAttribution } from '../../edit-attribution';
 import { pinModuleState } from '@papercusp/module-singleton';
 import {
   boundLeaseRefresh,
@@ -1847,6 +1849,9 @@ async function readEscalationCounters(
   contentSignature: string | null;
   /** EI-21906459740652039: consecutive ticks the cumulative-limit guard has peeled. */
   cumulativePeelTicks: number;
+  /** WI-6554700010018198: consecutive ticks on which agents had dirty work in some repo
+   *  and none of it got an attributed commit. */
+  zeroAttributionTicks: number;
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
   prevPublishBlockedAtCommit: string | null;
   /** WI-6554700010009238: `last_yield.at` and `last_synced_at` (epoch ms) from earlier fires. */
@@ -1862,6 +1867,7 @@ async function readEscalationCounters(
       ct: number;
       cs: string | null;
       cpt: number;
+      zat: number;
       pubrefused: string | null;
       pubblocked: string | null;
       pubat: string | number | null;
@@ -1879,6 +1885,7 @@ async function readEscalationCounters(
            coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct,
            metadata->>'last_content_error_signature' AS cs,
            coalesce((metadata->>'consecutive_cumulative_peel_ticks')::int, 0) AS cpt,
+           coalesce((metadata->>'consecutive_zero_attribution_ticks')::int, 0) AS zat,
            metadata->'own_head_publish'->>'refused' AS pubrefused,
            metadata->'own_head_publish'->>'blockedAtCommit' AS pubblocked,
            metadata->'own_head_publish'->>'at' AS pubat,
@@ -1902,6 +1909,7 @@ async function readEscalationCounters(
     contentTicks: rows[0]?.ct ?? 0,
     contentSignature: rows[0]?.cs ?? null,
     cumulativePeelTicks: rows[0]?.cpt ?? 0,
+    zeroAttributionTicks: rows[0]?.zat ?? 0,
     publishRefusal: effectivePublishRefusal(
       refused
         ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null, atMs: epochMsOrNull(rows[0]?.pubat) }
@@ -2538,6 +2546,8 @@ interface GitSyncHistoryEntry {
     quarantined: string[];
     quarantined_count: number;
   };
+  /** WI-6554700010018198: per-repo attributed-phase tallies; absent when none ran. */
+  attribution?: AttributionTally[];
 }
 
 const GIT_SYNC_HISTORY_LIMIT = 30;
@@ -2661,6 +2671,8 @@ async function recordOutcome(
   /** EI-21906459740652039: consecutive ticks the cumulative-limit guard has peeled,
    *  persisted so the next tick can tell a CHRONIC peel from a one-off one. */
   consecutiveCumulativePeelTicks: number,
+  /** WI-6554700010018198: see nextZeroAttributionTicks. */
+  consecutiveZeroAttributionTicks: number,
 ): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
@@ -2752,6 +2764,10 @@ async function recordOutcome(
       // `last_oversized` alone cannot answer "has this been peeled every tick for hours?",
       // which is the condition that ran 13h unnoticed.
       consecutive_cumulative_peel_ticks: consecutiveCumulativePeelTicks,
+      // WI-6554700010018198: durable per-repo attribution evidence, kept to the last
+      // MEASURED tick (journald rotated the only record of the 85h outage in <12h).
+      consecutive_zero_attribution_ticks: consecutiveZeroAttributionTicks,
+      ...(outcome.attribution ? { last_attribution: { at: localSyncRecordedAt, repos: outcome.attribution } } : {}),
       last_publish_blocked_at: publishBlockedAtCommit,
       // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
       consecutive_content_error_ticks: consecutiveContentErrorTicks,
@@ -2790,6 +2806,7 @@ async function recordOutcome(
           .map((c) => `${c.scope}:${c.file}`),
         quarantined_count: outcome.contentErrors.length,
       },
+      ...(outcome.attribution ? { attribution: outcome.attribution } : {}),
     },
   );
 }
@@ -3340,56 +3357,28 @@ async function recordSyncedCommitAttribution(slug: string, workspaceId: string):
     const repoRoot = await projectDirForSlug(slug, workspaceId);
     if (!repoRoot) return;
     const { runGit } = await import('../docs/git-runner');
-
-    const logRes = await runGit(['log', '-n', '50', '--format=%H'], repoRoot);
-    if (logRes.code !== 0) return;
-    const shas = logRes.stdout
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (shas.length === 0) return;
-
-    // Which of these are already recorded? (idempotent re-run across ticks.)
+    const { buildCommitAttributionRows } = await import('./commit-attribution-rows');
     const { sql } = getOrgPg();
-    const existing = await sql<{ commit_sha: string }[]>`
-      SELECT DISTINCT commit_sha FROM harness_shared.git_sync_commit_attribution
-       WHERE commit_sha = ANY(${shas})`;
-    const seen = new Set(existing.map((r) => r.commit_sha));
-
-    const rows: CommitAttributionRow[] = [];
-    for (const sha of shas) {
-      if (seen.has(sha)) continue;
-      const body = (await runGit(['show', '-s', '--format=%B', sha], repoRoot)).stdout;
-      const t = parsePapercuspTrailers(body);
-      // Only OUR attributed git-sync commits carry these — skip everything else.
-      if (!t.agent && t.workItems.length === 0) continue;
-      const filesRes = await runGit(['show', '--name-only', '--format=', sha], repoRoot);
-      const files = filesRes.stdout
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      for (const file of files) {
-        const base = {
-          workspaceId,
-          harnessSlug: slug,
-          repo: 'superproject',
-          commitSha: sha,
-          file,
-          agentId: t.agent,
-          sessionId: t.sessionId,
-          planSlug: t.planSlug,
-        };
-        if (t.workItems.length === 0) {
-          rows.push(base);
-        } else {
-          // one row per (file × work-item) — honest multiplicity (D-003).
-          for (const wi of t.workItems) rows.push({ ...base, workItemId: wi });
-        }
-      }
-    }
+    // WI-6554700010018199: repo + commit time are derived from git inside the builder.
+    const rows = await buildCommitAttributionRows({
+      workspaceId,
+      harnessSlug: slug,
+      repoRoot,
+      runGit,
+      // Which of these are already recorded? (idempotent re-run across ticks.)
+      recordedShas: async (shas) => {
+        const existing = await sql<{ commit_sha: string }[]>`
+          SELECT DISTINCT commit_sha FROM harness_shared.git_sync_commit_attribution
+           WHERE commit_sha = ANY(${shas})`;
+        return new Set(existing.map((r) => r.commit_sha));
+      },
+    });
     await recordCommitAttribution(rows);
-  } catch {
-    // best-effort: commit attribution must never affect git-sync.
+  } catch (error) {
+    // best-effort: commit attribution must never affect git-sync — but leave a trace.
+    console.warn(
+      `[git-sync] ${slug}: commit attribution recording failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -4482,6 +4471,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const cumulativePeelTicks = outcome.oversized.some((f) => f.exclusionReason === 'cumulative-limit')
     ? prev.cumulativePeelTicks + 1
     : 0;
+  // WI-6554700010018198: the 85h zero-attribution outage was invisible because no tick
+  // counted it. Held (not reset) on ticks that measured nothing — see the helper.
+  const zeroAttributionTicks = nextZeroAttributionTicks(prev.zeroAttributionTicks, outcome.attribution);
 
   // EI-22154166487566939: the local-sync guard above is stopped in its own finally
   // (~2773-2777) before this point, so the record step + all 7 post-legs legs below
@@ -4557,6 +4549,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           prevSignatureContentTicks,
           prevOversizedKeys: prev.oversizedKeys,
           cumulativePeelTicks,
+          zeroAttributionTicks,
           // EI-21230011589307899: surface a frozen own-head publish. Read from the
           // previous tick's publish leg — see readEscalationCounters.
           publishRefusal: prev.publishRefusal,
@@ -8143,6 +8136,8 @@ async function recordAndEscalateTick(a: {
    *  guard peeled — persisted here and read back by the NEXT tick, so a CHRONIC peel
    *  the edge-triggered oversized broadcast structurally cannot see gets re-announced. */
   cumulativePeelTicks: number;
+  /** WI-6554700010018198: consecutive zero-attribution ticks including this one. */
+  zeroAttributionTicks: number;
   /** EI-21230011589307899: the previous tick's own-head-publish refusal (or null when
    *  publishing cleanly), and the freeze point seen one tick before that. */
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
@@ -8172,6 +8167,7 @@ async function recordAndEscalateTick(a: {
     a.pushMode,
     a.publishRefusal?.blockedAtCommit ?? null,
     a.cumulativePeelTicks,
+    a.zeroAttributionTicks,
   );
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
@@ -8387,6 +8383,8 @@ async function recordAndEscalateTick(a: {
     maxCommitTotalBytes: a.maxCommitTotalBytes,
     prevOversizedKeys: a.prevOversizedKeys,
     chronicCumulativeTicks: a.cumulativePeelTicks,
+    zeroAttributionTicks: a.zeroAttributionTicks,
+    attribution: a.outcome.attribution,
     publishRefusal: a.publishRefusal,
     prevPublishBlockedAtCommit: a.prevPublishBlockedAtCommit,
   });

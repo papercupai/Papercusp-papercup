@@ -547,6 +547,8 @@ let counterRows: Array<{
   et: number;
   lo: string[] | null;
   ct?: number;
+  /** consecutive_zero_attribution_ticks (WI-6554700010018198). */
+  zat?: number;
   cs?: string | null;
   lastyield?: string | null;
   lastsynced?: string | null;
@@ -1175,6 +1177,33 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
     await action(ctx);
     expect(routinePatches()[0]).toMatchObject({ last_status: 'synced', reaped_count: 0 });
+  });
+
+  it('WI-6554700010018198: a zero-attribution tick persists the counter and the per-repo tally', async () => {
+    const repos = [
+      { scope: 'superproject', agentGroupCount: 2, agentCommitCount: 0, failedGroups: 2, error: '2 of 2 group(s) failed' },
+      { scope: 'libs/papercusp', agentGroupCount: 1, agentCommitCount: 1, failedGroups: 0, error: null },
+    ];
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, attribution: repos });
+
+    await action(ctx);
+
+    const patch = routinePatches()[0];
+    // counterRows is empty, so the previous count reads as 0; one zero repo makes it 1.
+    expect(patch).toMatchObject({ consecutive_zero_attribution_ticks: 1, last_attribution: { repos } });
+    // `at` is the tick's local record time, epoch ms (same clock as last_synced_at).
+    expect((patch?.last_attribution as { at?: unknown }).at).toEqual(expect.any(Number));
+  });
+
+  it('WI-6554700010018198: an unmeasured tick holds the counter and writes no last_attribution', async () => {
+    counterRows = [{ et: 0, lo: [], zat: 4 }];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    const patch = routinePatches()[0];
+    expect(patch).toMatchObject({ consecutive_zero_attribution_ticks: 4 });
+    expect(patch).not.toHaveProperty('last_attribution');
   });
 
   it('EI-21647996938145436: records the loaded process/build identity with every outcome', async () => {

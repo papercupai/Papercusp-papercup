@@ -37,7 +37,9 @@ const h = vi.hoisted(() => ({
     settleVerifiedAwaitTimeout: vi.fn(async (_input: SettleVerifiedAwaitTimeoutInput): Promise<AwaitRow | null> => null),
     fireTimedOutAwaits: vi.fn(async (): Promise<unknown[]> => []),
     expireLapsedAwaits: vi.fn(async () => 0),
-    stampAnnouncementsFired: vi.fn(async () => {}),
+    stampAnnouncementsFired: vi.fn(async (): Promise<number> => 0),
+    // event-wait-settlement-2026-10-20 P-004: the unannounced proving-fire settlement.
+    settleProvingFire: vi.fn(async (): Promise<number> => 0),
     recordKeyFire: vi.fn(async (): Promise<Awaited<ReturnType<typeof import('./store').recordKeyFire>> | undefined> => undefined),
     reconcileFiredWakeDeliveries: vi.fn(async () => 0),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
@@ -679,6 +681,7 @@ describe('emitAwaitedEvent — EI-13705: unconditional per-key fire latch', () =
     h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
     h.store.recordKeyFire.mockResolvedValueOnce({
       announcementPending: false,
+      provingWaiterPending: false,
       eventSubscribers: [
         { subscriber_id: 'su-sub', delivery_mode: 'full' },
         { subscriber_id: 'su-muted', delivery_mode: 'muted' },
@@ -702,6 +705,71 @@ describe('emitAwaitedEvent — EI-13705: unconditional per-key fire latch', () =
     h.store.recordKeyFire.mockRejectedValueOnce(new Error('db down'));
     const r = await emitAwaitedEvent({ key: 'k' });
     expect(r.ok).toBe(true);
+  });
+});
+
+describe('emitAwaitedEvent — event-wait-settlement-2026-10-20 P-004: settle on every proving fire', () => {
+  /** Every store function this emit called. The store mock is the engine's whole
+   *  database surface, so this list IS the emit's database round trips. */
+  function storeCallsOf(): string[] {
+    return Object.entries(h.store)
+      .filter(([, fn]) => ((fn as { mock?: { calls: unknown[] } }).mock?.calls.length ?? 0) > 0)
+      .map(([name]) => name)
+      .sort();
+  }
+
+  it('AUTO-BAR-R-6-P-004: an unannounced proving fire the latch found a waiter for is settled', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({ announcementPending: false, provingWaiterPending: true });
+    await emitAwaitedEvent({ key: 'release:deployed:abc123', source: 'release-gate' });
+    expect(h.store.stampAnnouncementsFired).not.toHaveBeenCalled();
+    expect(h.store.settleProvingFire).toHaveBeenCalledTimes(1);
+    expect(h.store.settleProvingFire).toHaveBeenCalledWith('release:deployed:abc123', { firedBy: 'release-gate' });
+  });
+
+  it('AUTO-BAR-R-21-P-004: an emit nobody waits on makes no database call beyond the fire latch and the await claim', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({ announcementPending: false, provingWaiterPending: false });
+    await emitAwaitedEvent({ key: 'work-item:done:WI-nobody-waits' });
+    expect(storeCallsOf()).toEqual(['fireAwaitsForKey', 'recordKeyFire']);
+    expect(h.store.recordKeyFire).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not settle twice when the announcement latch already settled this fire', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({ announcementPending: true, provingWaiterPending: true });
+    h.store.stampAnnouncementsFired.mockResolvedValueOnce(1);
+    await emitAwaitedEvent({ key: 'work-item:done:WI-announced' });
+    expect(h.store.stampAnnouncementsFired).toHaveBeenCalledTimes(1);
+    expect(h.store.settleProvingFire).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['latched nothing (a concurrent emit fired the gate first)', () => h.store.stampAnnouncementsFired.mockResolvedValueOnce(0)],
+    ['threw', () => h.store.stampAnnouncementsFired.mockRejectedValueOnce(new Error('lock timeout'))],
+  ])('still settles the proving waiters when the announcement stamp %s', async (_label, arrange) => {
+    h.store.recordKeyFire.mockResolvedValueOnce({ announcementPending: true, provingWaiterPending: true });
+    arrange();
+    const r = await emitAwaitedEvent({ key: 'work-item:done:WI-raced' });
+    expect(r.ok).toBe(true);
+    expect(h.store.settleProvingFire).toHaveBeenCalledWith('work-item:done:WI-raced', { firedBy: null });
+  });
+
+  it('an unknown latch result still settles, leaving the proving check to settleProvingFire', async () => {
+    h.store.recordKeyFire.mockRejectedValueOnce(new Error('db down'));
+    await emitAwaitedEvent({ key: 'work-item:done:WI-latch-down' });
+    expect(h.store.settleProvingFire).toHaveBeenCalledTimes(1);
+  });
+
+  it('AUTO-BAR-R-8-P-004: a settlement error never fails the emit, and the fire is still recorded and delivered', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({ announcementPending: false, provingWaiterPending: true });
+    h.store.settleProvingFire.mockRejectedValueOnce(new Error('settlement exploded'));
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 9, subscriberId: 'su-w', policy: 'wake' })]);
+    const r = await emitAwaitedEvent({ key: 'release:deployed:abc123', source: 'release-gate' });
+    expect(r.ok).toBe(true);
+    expect(h.store.recordKeyFire).toHaveBeenCalledTimes(1);
+    expect(h.store.settleProvingFire).toHaveBeenCalledTimes(1);
+    // The emit carried on past the throw: the woken waiter's delivery is still queued.
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(expect.objectContaining({
+      awaits: [expect.objectContaining({ id: 9 })],
+    }));
   });
 });
 

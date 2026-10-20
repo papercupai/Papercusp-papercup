@@ -1974,6 +1974,109 @@ export function isDaemonRuntime(rt: Pick<PluginRuntime, 'kind'> | undefined): bo
 }
 
 /**
+ * A dashboard tab as declared in papercusp.json — the data form. The runtime
+ * `DashboardTab` adds the React component. The JSON schema leaves the items
+ * open, so only `id` is required here.
+ */
+export interface ManifestDashboardTab {
+  id: string;
+  label?: string;
+  icon?: string;
+  componentId?: string;
+  componentRoot?: string;
+  iframeUrl?: string;
+  /** Plugin config key whose value is the iframe URL (resolved per install). */
+  iframeUrlConfigKey?: string;
+  /** Built-in tab ids this tab replaces. */
+  replaces?: string[];
+  iframeAppendProjectFolder?: boolean;
+  [k: string]: unknown;
+}
+
+/** A sidebar item as declared in papercusp.json (data form of `SidebarItem`). */
+export interface ManifestSidebarItem {
+  id: string;
+  label?: string;
+  href?: string;
+  icon?: string;
+  badge?: { source: 'static' | 'fetch'; value?: string | number; url?: string };
+  [k: string]: unknown;
+}
+
+/**
+ * The papercusp.json manifest: the single TypeScript authority for its shape.
+ * Every top-level property of papercusp-plugin.schema.json (which has
+ * `additionalProperties: false`) appears here exactly once, and
+ * manifest-type.test.ts fails when the two disagree in either direction.
+ *
+ * The plugin loader validates a manifest against the schema before using it.
+ * Readers that skip validation (catalog listings) get this type for an
+ * unvalidated object, so they must treat values defensively.
+ */
+export interface PluginManifest {
+  /** JSON Schema reference for editor autocomplete. */
+  $schema?: string;
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  license?: string;
+  homepage?: string;
+  kind?: Plugin['kind'];
+  dependencies?: ManifestDependencies;
+  provides?: ManifestProvides;
+  provider?: import('./provider').ProviderDescriptor;
+  triggerPack?: PluginTriggerPack;
+  /** Semver range against the runtime version. */
+  papercusp?: string;
+  /** Semver range against the plugin wire protocol version. */
+  protocol?: string;
+  capabilities?: string[];
+  tools?: ToolDefinition[];
+  actions?: ActionDefinition[];
+  roles?: Array<Record<string, unknown>>;
+  dashboardTabs?: ManifestDashboardTab[];
+  sidebarItems?: ManifestSidebarItem[];
+  ui?: UiSurfaceManifestEntry[];
+  runtime?: PluginRuntime;
+  apiRoutes?: unknown;
+  routines?: Array<Record<string, unknown>>;
+  reactions?: PluginReactionRule[];
+  models?: Record<string, unknown>;
+  configSchema?: Record<string, unknown>;
+  uiSchema?: Record<string, unknown>;
+  schema?: Record<string, unknown>;
+  plugins?: Array<Record<string, unknown>>;
+  configFiles?: Array<Record<string, unknown>>;
+  requiresTemplateKinds?: string[];
+  forkedFrom?: Record<string, unknown>;
+  publishedAt?: string;
+  publishedBy?: string;
+  tierMap?: Record<string, unknown>;
+  icon?: string;
+  /** Build-pipeline only; never set in a plugin's own manifest. */
+  bundled?: boolean;
+  snapshot?: Record<string, unknown>;
+  hidden?: boolean;
+  hiddenReason?: string;
+  distribution?: PluginDistribution;
+  publisher?: string;
+  /** Deprecated v1 form of `versionPin`. */
+  pluginVersionPinned?: unknown;
+  versionPin?: Record<string, unknown>;
+  hotReload?: Record<string, unknown>;
+  kvQuota?: Record<string, unknown>;
+  provision?: PluginProvision;
+  oauth?: PluginOAuthRequirement[];
+  main?: string;
+  config?: Record<string, unknown>;
+  _legacyExtras?: Record<string, unknown>;
+  requires?: string[];
+  recommends?: string[];
+  defaultConfig?: Record<string, unknown>;
+}
+
+/**
  * Cross-field validation of a manifest's event declarations (D-003, P-005) —
  * the semantic layer above the JSON schema's shape check. Pure; returns one
  * human-readable issue string per problem (empty array = clean). Enforces the

@@ -12,7 +12,7 @@ import {
   listPluginsIn,
   HARNESSES_DIR,
   GLOBAL_PLUGINS_DIR,
-  type PluginManifest,
+  type ListedPluginManifest,
 } from '../../../plugin-catalog';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -32,7 +32,7 @@ export default defineTool({
     sources.push({ dir: GLOBAL_PLUGINS_DIR(), source: 'global' });
 
     const seen = new Set<string>();
-    const items: Array<PluginManifest & { source: string; path: string }> = [];
+    const items: ListedPluginManifest[] = [];
     for (const s of sources) {
       for (const p of await listPluginsIn(s.dir, s.source)) {
         if (seen.has(p.name)) continue;

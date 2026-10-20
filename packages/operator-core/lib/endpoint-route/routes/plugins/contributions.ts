@@ -6,37 +6,35 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { papercuspRoot } from '../../../papercusp-root';
+import type {
+  ManifestDashboardTab,
+  ManifestSidebarItem,
+  PluginManifest,
+  UiSurfaceManifestEntry,
+} from '@papercusp/plugin-sdk';
+import { GLOBAL_PLUGINS_DIR, HARNESSES_DIR, listPluginsIn, resolveProjectPath } from '../../../plugin-catalog';
 import { defineTool } from '@papercusp/agent-mcp';
 
-function HARNESSES_DIR() { return join(papercuspRoot(), 'harnesses'); }
-function GLOBAL_PLUGINS_DIR() { return join(papercuspRoot(), 'global-plugins'); }
+/** The default a plugin's configSchema declares for `key`, if any. */
+function configSchemaDefault(manifest: PluginManifest, key: string): unknown {
+  const properties = (manifest.configSchema as { properties?: Record<string, { default?: unknown } | undefined> } | undefined)
+    ?.properties;
+  return properties?.[key]?.default;
+}
 
-interface DashboardTabManifest {
-  id: string; label: string; icon?: string;
-  componentId?: string; componentRoot?: string;
-  iframeUrl?: string; iframeUrlConfigKey?: string;
-  replaces?: string[];
-  iframeAppendProjectFolder?: boolean;
-  embedMode?: 'iframe' | 'inline-dock';
-}
-interface SidebarItemManifest {
-  id: string; label: string; href: string; icon?: string;
-  badge?: { source: 'static' | 'fetch'; value?: string | number; url?: string };
-}
-interface UiContributionManifest {
-  slug: string; label: string; icon?: string;
-  componentId?: string; componentRoot?: string;
-}
-interface PluginManifest {
-  name: string; version: string;
-  description?: string; author?: string;
-  componentRoot?: string;
-  dashboardTabs?: DashboardTabManifest[];
-  sidebarItems?: SidebarItemManifest[];
-  ui?: UiContributionManifest;
-  configSchema?: { properties?: Record<string, { default?: unknown }> };
-  [k: string]: unknown;
+/**
+ * One route per `ui` surface entry. The schema declares `ui` as an ARRAY of
+ * surfaces; this route used to read it as a single object and spread the array
+ * into one route (EI-21114087507786980).
+ */
+export function uiRoutesFor(
+  manifest: Pick<PluginManifest, 'name' | 'ui'>,
+  pluginRoot: string | undefined,
+): Array<UiSurfaceManifestEntry & { componentRoot?: string; pluginName: string }> {
+  const entries = Array.isArray(manifest.ui) ? manifest.ui : [];
+  return entries
+    .filter((entry): entry is UiSurfaceManifestEntry => !!entry && typeof entry === 'object' && typeof entry.slug === 'string')
+    .map((entry) => ({ componentRoot: pluginRoot, ...entry, pluginName: manifest.name }));
 }
 
 async function readJson<T>(path: string): Promise<T | null> {
@@ -60,34 +58,9 @@ async function readJson<T>(path: string): Promise<T | null> {
   }
 }
 
-async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'global'): Promise<Array<PluginManifest & { source: string; path: string }>> {
-  const out: Array<PluginManifest & { source: string; path: string }> = [];
-  if (!existsSync(parent)) return out;
-  const entries = await fs.readdir(parent, { withFileTypes: true }).catch(() => []);
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    let isDirOrLinkToDir = e.isDirectory();
-    if (!isDirOrLinkToDir && e.isSymbolicLink()) {
-      const stat = await fs.stat(join(parent, e.name)).catch(() => null);
-      isDirOrLinkToDir = stat?.isDirectory() ?? false;
-    }
-    if (!isDirOrLinkToDir) continue;
-    const dir = join(parent, e.name);
-    const m = await readJson<PluginManifest>(join(dir, 'papercusp.json'));
-    if (!m?.name || !m?.version) continue;
-    out.push({ ...m, source, path: dir });
-  }
-  return out;
-}
-
-async function resolveProjectPath(slug: string): Promise<string | null> {
-  const { loadHarnessRegistry } = await import('../../../harness-registry');
-  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
-}
-
 async function resolveIframeUrl(
   manifest: PluginManifest,
-  tab: DashboardTabManifest,
+  tab: ManifestDashboardTab,
   harnessConfig: Record<string, unknown> | null,
   harnessSlug: string,
 ): Promise<string | null> {
@@ -95,7 +68,7 @@ async function resolveIframeUrl(
   if (tab.iframeUrlConfigKey) {
     const k = tab.iframeUrlConfigKey;
     const fromConfig = harnessConfig?.[k];
-    const fromDefault = manifest.configSchema?.properties?.[k]?.default;
+    const fromDefault = configSchemaDefault(manifest, k);
     if (typeof fromConfig === 'string' && fromConfig.length > 0) url = fromConfig;
     else if (typeof fromDefault === 'string' && fromDefault.length > 0) url = fromDefault;
   }
@@ -148,9 +121,9 @@ export default defineTool({
     const enabledSet = new Set<string>(enabledFile ? Object.keys(enabledFile.enabled) : []);
 
     const seen = new Set<string>();
-    type Tab = DashboardTabManifest & { pluginName: string };
-    type Item = SidebarItemManifest & { pluginName: string };
-    type Route = UiContributionManifest & { pluginName: string };
+    type Tab = ManifestDashboardTab & { pluginName: string };
+    type Item = ManifestSidebarItem & { pluginName: string };
+    type Route = ReturnType<typeof uiRoutesFor>[number];
     const dashboardTabs: Tab[] = [];
     const sidebarItems: Item[] = [];
     const routes: Route[] = [];
@@ -198,7 +171,7 @@ export default defineTool({
             pluginName: p.name,
             id: tab.id,
             fullType: `plugin:${p.name}:${tab.id}`,
-            title: tab.label,
+            title: tab.label ?? tab.id,
             icon: tab.icon,
             type: finalSrc ? 'iframe' : 'react',
             componentRoot: tab.componentRoot ?? pluginRoot,
@@ -224,7 +197,7 @@ export default defineTool({
         for (const panel of declared) {
           let resolvedSrc = panel.src ?? panel.iframeUrl;
           if (!resolvedSrc && panel.iframeUrlConfigKey) {
-            const synthTab: DashboardTabManifest = {
+            const synthTab: ManifestDashboardTab = {
               id: panel.id,
               label: panel.title,
               iframeUrlConfigKey: panel.iframeUrlConfigKey,
@@ -249,13 +222,7 @@ export default defineTool({
         for (const item of p.sidebarItems ?? []) {
           sidebarItems.push({ ...item, pluginName: p.name });
         }
-        if (p.ui) {
-          routes.push({
-            componentRoot: p.ui.componentRoot ?? pluginRoot,
-            ...p.ui,
-            pluginName: p.name,
-          });
-        }
+        routes.push(...uiRoutesFor(p, pluginRoot));
       }
     }
 

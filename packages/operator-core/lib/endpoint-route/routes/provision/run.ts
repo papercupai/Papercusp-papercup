@@ -20,6 +20,7 @@ import { dbosProvisionActive } from '../../../dbos/dbos-flags';
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { PluginManifest } from '@papercusp/plugin-sdk';
 
 function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
@@ -32,20 +33,8 @@ interface Body {
   consentConfirmed?: boolean;
 }
 
-interface PluginManifest {
-  name?: string;
-  version?: string;
-  publisher?: string;
-  provision?: {
-    setup?: { path: string; timeoutSec?: number };
-    teardown?: { path: string; timeoutSec?: number };
-    verify?: { path: string; timeoutSec?: number };
-    cloudProvider?: { id: string; region?: string; regions?: string[] };
-    allowedHosts?: string[];
-    skipReprovisionOnPatch?: boolean;
-    auditLogCapMb?: number;
-  };
-}
+/** The manifest fields this route reads; plugin-sdk owns the shape (EI-21114087507786980). */
+type ProvisionManifestFields = Partial<Pick<PluginManifest, 'name' | 'version' | 'publisher' | 'provision'>>;
 
 async function readJson<T>(path: string): Promise<T | null> {
   try {
@@ -81,7 +70,7 @@ export default defineTool({
     }
 
     const pluginDir = join(GLOBAL_PLUGINS_DIR(), plugin);
-    const manifest = await readJson<PluginManifest>(join(pluginDir, 'papercusp.json'));
+    const manifest = await readJson<ProvisionManifestFields>(join(pluginDir, 'papercusp.json'));
     if (!manifest) {
       return Response.json(
         { ok: false, error: `plugin "${plugin}" not installed` },

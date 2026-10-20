@@ -25,7 +25,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { getOrgPg, _resetForTests } from '@papercusp/db-org';
@@ -288,18 +288,43 @@ afterAll(async () => {
 const OWNED_FIXTURE_MODE = 'PAPERCUSP_TESTING_RUN_OWNED_FIXTURE';
 const OWNED_FIXTURE_READY = 'PAPERCUSP_TESTING_RUN_OWNED_READY_PATH';
 const OWNED_FIXTURE_NAME = 'testing:run owned database fixture';
+interface OwnedFixtureReady {
+  dbName: string;
+  suiteDbName: string;
+  appBackendPid: number;
+  adminBackendPid: number;
+  pid: number;
+  runId: string;
+  selectedPath: string;
+}
 it.skipIf(!['normal', 'forced'].includes(process.env[OWNED_FIXTURE_MODE] ?? ''))(OWNED_FIXTURE_NAME, async () => {
   const fixture = await createOrgTestDb();
-  const [row] = await fixture.adminSql<{ name: string }[]>`SELECT current_database() AS name`;
-  expect(row?.name).toBe(fixture.dbName);
-  await writeFile(process.env[OWNED_FIXTURE_READY]!, JSON.stringify({ dbName: fixture.dbName,
-    pid: process.pid, runId: process.env.PAPERCUSP_TEST_RUN_GROUP, selectedPath: 'packages/operator-core/lib/agent-tools/testing/__tests__/run.integration.test.ts' }));
-  if (process.env[OWNED_FIXTURE_MODE] === 'forced') {
-    // Parent cancellation must kill this worker and clean both this database and
-    // the suite's beforeAll database; neither finally nor afterAll can do it.
-    await new Promise<void>(() => {});
-  } else {
-    expect(await fixture.cleanupWithResult()).toBe('dropped');
+  try {
+    const [app, admin] = await Promise.all([
+      fixture.appSql<{ name: string; role: string; pid: number }[]>`
+        SELECT current_database() AS name, current_user AS role, pg_backend_pid() AS pid`,
+      fixture.adminSql<{ name: string; role: string; pid: number }[]>`
+        SELECT current_database() AS name, current_user AS role, pg_backend_pid() AS pid`,
+    ]);
+    expect(app[0]).toMatchObject({ name: fixture.dbName, role: 'harness_app' });
+    expect(admin[0]).toMatchObject({ name: fixture.dbName, role: 'harness_admin' });
+    const readyPath = process.env[OWNED_FIXTURE_READY]!;
+    await writeFile(`${readyPath}.pending`, JSON.stringify({ dbName: fixture.dbName,
+      suiteDbName: org!.dbName, appBackendPid: app[0]!.pid, adminBackendPid: admin[0]!.pid,
+      pid: process.pid, runId: process.env.PAPERCUSP_TEST_RUN_GROUP,
+      selectedPath: 'packages/operator-core/lib/agent-tools/testing/__tests__/run.integration.test.ts' }));
+    // Publish a complete receipt before the parent's existence/read handshake.
+    await rename(`${readyPath}.pending`, readyPath);
+    if (process.env[OWNED_FIXTURE_MODE] === 'forced') {
+      // Parent cancellation must kill this worker and clean both this database and
+      // the suite's beforeAll database; neither finally nor afterAll can do it.
+      await new Promise<void>(() => {});
+    } else {
+      expect(await fixture.cleanupWithResult()).toBe('dropped');
+    }
+  } finally {
+    // Assertion failures in the normal child must also release its independent fixture.
+    await fixture.cleanup();
   }
 }, 180_000);
 
@@ -326,11 +351,29 @@ describe('real owned org fixture cleanup through the maintained runner', () => {
           if (!existsSync(readyPath)) throw new Error(`owned fixture did not reach readiness: ${JSON.stringify(result)}`);
         }),
       ]);
-      const ready = JSON.parse(await readFile(readyPath, 'utf8'));
-      expect(ready).toMatchObject({ runId, selectedPath, dbName: expect.stringMatching(/^org_/) });
+      const ready = JSON.parse(await readFile(readyPath, 'utf8')) as OwnedFixtureReady;
+      expect(ready).toMatchObject({ runId, selectedPath, dbName: expect.stringMatching(/^org_/),
+        suiteDbName: expect.stringMatching(/^org_/), pid: expect.any(Number),
+        appBackendPid: expect.any(Number), adminBackendPid: expect.any(Number) });
+      const ownedDbNames = [ready.dbName, ready.suiteDbName];
+      expect(new Set(ownedDbNames).size).toBe(2);
+      expect(ownedDbNames).not.toContain(org!.dbName);
+      expect(ready.appBackendPid).not.toBe(ready.adminBackendPid);
       if (mode === 'forced') {
-        expect(await org!.adminSql`SELECT datname FROM pg_database WHERE datname = ${ready.dbName}`)
-          .toHaveLength(1);
+        // Positive controls: the worker and both real client sessions must exist
+        // before abort, so an empty post-run census cannot pass vacuously.
+        expect(await pidsTaggedWithRun(runId)).toContain(ready.pid);
+        const databases = await org!.adminSql<{ datname: string }[]>`
+          SELECT datname FROM pg_database WHERE datname IN (${ready.dbName}, ${ready.suiteDbName})`;
+        expect(databases.map(row => row.datname).sort()).toEqual([...ownedDbNames].sort());
+        const sessions = await org!.adminSql<{ pid: number; usename: string; datname: string }[]>`
+          SELECT pid, usename, datname FROM pg_stat_activity
+          WHERE pid IN (${ready.appBackendPid}, ${ready.adminBackendPid})`;
+        expect(sessions).toHaveLength(2);
+        expect(sessions).toEqual(expect.arrayContaining([
+          { pid: ready.appBackendPid, usename: 'harness_app', datname: ready.dbName },
+          { pid: ready.adminBackendPid, usename: 'harness_admin', datname: ready.dbName },
+        ]));
         controller.abort(new Error('owned-fixture forced cancellation control'));
       }
       const result = await runPromise;
@@ -338,10 +381,15 @@ describe('real owned org fixture cleanup through the maintained runner', () => {
         ? { ok: true, passed: 1, failed: 0 } : { ok: false, error: 'aborted' });
       expect(result).not.toHaveProperty('detachedRunId');
       expect(result.cleanup, JSON.stringify(result)).toMatchObject({ complete: true, errors: [] });
-      expect(result.cleanup!.databases).toContainEqual({ name: ready.dbName, outcome: 'dropped' });
+      for (const name of ownedDbNames) {
+        expect(result.cleanup!.databases).toContainEqual({ name, outcome: 'dropped' });
+        const registration = JSON.parse(await readFile(join(result.artifacts!.ownedDatabases, `${name}.json`), 'utf8'));
+        expect(registration).toMatchObject({ runId, name, outcome: 'dropped' });
+      }
       for (const database of result.cleanup!.databases) {
         expect(database.outcome).toBe('dropped');
         expect(await org!.adminSql`SELECT datname FROM pg_database WHERE datname = ${database.name}`).toHaveLength(0);
+        expect(await org!.adminSql`SELECT pid FROM pg_stat_activity WHERE datname = ${database.name}`).toHaveLength(0);
       }
       expect(await pidsTaggedWithRun(runId)).toEqual([]);
       const manifest = JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'));
@@ -349,12 +397,23 @@ describe('real owned org fixture cleanup through the maintained runner', () => {
         deadline: { taskDeadlineAtMs, cleanupReserveMs: 30_000 }, cleanup: { complete: true } });
       const receipts = (await readFile(join(result.artifacts!.ownedDatabases, 'cleanup.jsonl'), 'utf8'))
         .trim().split('\n').map(line => JSON.parse(line));
-      expect(receipts).toContainEqual(expect.objectContaining({ runId, name: ready.dbName, stage: 'registered' }));
-      expect(receipts).toContainEqual(expect.objectContaining({ runId, name: ready.dbName,
-        stage: 'database-drop-result', outcome: 'dropped' }));
-      expect(receipts).toContainEqual(expect.objectContaining({ runId, stage: 'complete', complete: true }));
-      if (mode === 'normal') expect(receipts).toContainEqual(expect.objectContaining({
-        runId, name: ready.dbName, stage: 'clients-stopped' }));
+      for (const name of ownedDbNames) {
+        expect(receipts).toContainEqual(expect.objectContaining({ runId, name, stage: 'registered', outcome: 'owned' }));
+        expect(receipts).toContainEqual(expect.objectContaining({ runId, name,
+          stage: 'database-drop-result', outcome: 'dropped' }));
+        if (mode === 'forced') expect(receipts).toContainEqual(expect.objectContaining({
+          runId, name, stage: 'database-drop', priorOutcome: 'owned' }));
+      }
+      expect(receipts).toContainEqual(expect.objectContaining({ runId, name: '*',
+        stage: 'complete', complete: true, errors: [] }));
+      if (mode === 'normal') {
+        expect(receipts).toContainEqual(expect.objectContaining({ runId, name: ready.dbName,
+          stage: 'clients-stopped', clients: [
+            { role: 'app', status: 'fulfilled' }, { role: 'admin', status: 'fulfilled' },
+          ] }));
+        expect(receipts).toContainEqual(expect.objectContaining({ runId, name: ready.dbName,
+          stage: 'complete', outcome: 'dropped' }));
+      }
       const router = JSON.parse(await readFile(join(result.artifacts!.directory, 'router.json'), 'utf8'));
       expect(router).toMatchObject({ childState: 'closed', aborted: mode === 'forced' });
       expect(router.outputLogPaths.length).toBeGreaterThan(0);
@@ -363,11 +422,14 @@ describe('real owned org fixture cleanup through the maintained runner', () => {
       expect(ledger).toMatchObject({ runGroup: runId, status: 'reference-only; presence and verdict require ledger readback' });
     } finally {
       controller.abort(new Error('owned-fixture regression teardown'));
-      await runPromise;
-      if (savedMode === undefined) delete process.env[OWNED_FIXTURE_MODE];
-      else process.env[OWNED_FIXTURE_MODE] = savedMode;
-      if (savedReady === undefined) delete process.env[OWNED_FIXTURE_READY];
-      else process.env[OWNED_FIXTURE_READY] = savedReady;
+      try {
+        await runPromise;
+      } finally {
+        if (savedMode === undefined) delete process.env[OWNED_FIXTURE_MODE];
+        else process.env[OWNED_FIXTURE_MODE] = savedMode;
+        if (savedReady === undefined) delete process.env[OWNED_FIXTURE_READY];
+        else process.env[OWNED_FIXTURE_READY] = savedReady;
+      }
     }
   }, 240_000);
 });
@@ -1207,11 +1269,17 @@ describe('testing:run (integration)', () => {
       scopeUnit: 'pc-testtask1234.scope',
       confined: true,
     }));
-    const killScopeUnitFn = vi.fn(async (scopeUnit: string) => ({
-      ok: true as const,
-      scopeUnit,
-      action: 'kill',
-    }));
+    const teardownSteps: string[] = [];
+    const undoTeardown = vi.fn();
+    const markManagedTeardownFn = vi.fn((marked: Pick<ChildProcess, 'kill'>) => {
+      expect(marked).toBe(child);
+      teardownSteps.push('mark');
+      return undoTeardown;
+    });
+    const killScopeUnitFn = vi.fn(async (scopeUnit: string) => {
+      teardownSteps.push('kill');
+      return { ok: true as const, scopeUnit, action: 'kill' };
+    });
     const killProcessGroupFn = vi.fn();
     const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-managed-output-'));
     selectorRoots.push(outputDir);
@@ -1228,7 +1296,7 @@ describe('testing:run (integration)', () => {
         workspaceId: 'papercusp-workspace',
         outputPath,
       },
-      { managedSpawnFn, killScopeUnitFn, killProcessGroupFn },
+      { managedSpawnFn, killScopeUnitFn, killProcessGroupFn, markManagedTeardownFn },
     );
 
     expect(managedSpawnFn).toHaveBeenCalledWith(
@@ -1254,6 +1322,9 @@ describe('testing:run (integration)', () => {
     running.terminate();
     running.terminate();
     await vi.waitFor(() => expect(killScopeUnitFn).toHaveBeenCalledTimes(1));
+    expect(markManagedTeardownFn).toHaveBeenCalledTimes(1);
+    expect(teardownSteps).toEqual(['mark', 'kill']);
+    expect(undoTeardown).not.toHaveBeenCalled();
     expect(killScopeUnitFn).toHaveBeenCalledWith('pc-testtask1234.scope', {
       signal: 'SIGTERM',
       escalateAfterMs: 5_000,
@@ -1263,6 +1334,36 @@ describe('testing:run (integration)', () => {
     expect(killProcessGroupFn).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
   });
+
+  it.each(['refused', 'thrown', 'already-gone'] as const)(
+    'handles %s final scope control without hiding a refused teardown', async outcome => {
+      const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
+      const managedSpawnFn = vi.fn(async () => ({
+        child, taskId: 'teardown-refusal', scopeUnit: 'pc-teardown-refusal.scope', confined: true,
+      }));
+      const undoTeardown = vi.fn();
+      const markManagedTeardownFn = vi.fn(() => undoTeardown);
+      const killScopeUnitFn = vi.fn(async (scopeUnit: string, options?: { signal?: NodeJS.Signals }) => {
+        if (options?.signal === 'SIGKILL' && outcome === 'thrown') throw new Error('scope control unavailable');
+        return { ok: false as const, scopeUnit, action: 'kill',
+          error: options?.signal === 'SIGKILL' && outcome === 'already-gone'
+            ? 'already_gone' as const : 'command_failed' as const };
+      });
+      const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-teardown-refusal-'));
+      selectorRoots.push(outputDir);
+      const running = await launchManagedTestProcess({
+        command: process.execPath, args: [], cwd: REPO_ROOT, env: {}, timeoutMs: 60_000,
+        runGroup: 'teardown-refusal', workspaceId: 'papercusp-workspace',
+        outputPath: join(outputDir, 'router.log'),
+      }, { managedSpawnFn, killScopeUnitFn, markManagedTeardownFn });
+      running.terminate();
+      running.terminate();
+      await vi.waitFor(() => expect(killScopeUnitFn).toHaveBeenCalledTimes(2));
+      expect(markManagedTeardownFn).toHaveBeenCalledTimes(1);
+      if (outcome === 'already-gone') expect(undoTeardown).not.toHaveBeenCalled();
+      else await vi.waitFor(() => expect(undoTeardown).toHaveBeenCalledTimes(1));
+    },
+  );
 
   it('releases the host request while preserving only a confined runner during shutdown', () => {
     expect(preserveConfinedTestOnHostShutdown(true, { confined: true })).toBe(true);

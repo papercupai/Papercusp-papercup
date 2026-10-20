@@ -6,15 +6,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspRoot } from '../../../papercusp-root';
 import { defineTool } from '@papercusp/agent-mcp';
-
-interface PluginManifest {
-  name: string;
-  version: string;
-  description?: string;
-  icon?: string;
-  capabilities?: string[];
-  [k: string]: unknown;
-}
+import type { PluginManifest } from '@papercusp/plugin-sdk';
 
 async function readJson<T>(path: string): Promise<T | null> {
   try { return JSON.parse(await fs.readFile(path, 'utf8')) as T; } catch { return null; }

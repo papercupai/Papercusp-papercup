@@ -271,6 +271,7 @@ describe('announced settlement runs the shared follow-up (event-wait-settlement-
   const WS_DEFAULT = 'default';
   let db: FreshPgDb;
   let store: typeof import('./events/await/store');
+  let engine: typeof import('./events/await/engine');
 
   /** A complete stored event blocker record (readExternalBlockers drops incomplete ones). */
   const eventBlocker = (ref: string) => ({
@@ -316,6 +317,9 @@ describe('announced settlement runs the shared follow-up (event-wait-settlement-
         id text PRIMARY KEY, ts bigint, actor text, action text, subject text,
         details jsonb, workspace_id text)`).simple();
     store = await import('./events/await/store');
+    // P-004 drives the real emit; no wake pump runs against this bare database.
+    engine = await import('./events/await/engine');
+    engine.setAutoPumpEnabledForTests(false);
   }, 180_000);
   afterAll(async () => {
     await db?.cleanup();
@@ -396,6 +400,28 @@ describe('announced settlement runs the shared follow-up (event-wait-settlement-
     const [, opts] = sentMessage();
     expect(opts.to).toEqual(['su-p003-issue-holder']);
     expect(h.wakeRecipients).toHaveBeenCalledWith(['su-p003-issue-holder'], expect.anything());
+  });
+
+  // event-wait-settlement-2026-10-20 P-004: the same follow-up on an UNANNOUNCED proving fire,
+  // through the real emit — the latch statement finds the waiter, then settlement runs.
+  it('AUTO-BAR-R-4-P-004: one unannounced emit of a proving key returns the parked feature to open and wakes its holder', async () => {
+    const key = 'release:deployed:9c1e7f00';
+    await seed({ id: 'WI-p004-feature', kind: 'feature', status: 'blocked', takenBy: 'su-p004-holder',
+      payload: { externalBlockers: [eventBlocker(key)] } });
+    expect(await store.findAnnouncementsForKey(key)).toEqual([]);
+
+    const emitted = await engine.emitAwaitedEvent({ key, source: 'release-gate' });
+
+    expect(emitted.ok).toBe(true);
+    const after = await rowOf('WI-p004-feature');
+    expect(after.status).toBe('open');
+    expect(after.blockers).toEqual([expect.objectContaining({
+      ref: key, status: 'cleared', clearedBy: 'release-gate', evidence: `event "${key}" fired`,
+    })]);
+    const [, opts] = sentMessage();
+    expect(opts.to).toEqual(['su-p004-holder']);
+    expect(opts.body).toContain('No active blocker remains on WI-p004-feature.');
+    expect(h.wakeRecipients).toHaveBeenCalledWith(['su-p004-holder'], expect.objectContaining({ workspaceId: WS_DEFAULT }));
   });
 
   it('a fire that waits on nothing sends nothing', async () => {

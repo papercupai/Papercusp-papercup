@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "1",
+  "kind": "operational-test-evidence",
+  "name": "P-009 / R-17 live sync-batch slot accounting on the operator database (green-main-ratchet-convergence-2026-10-17, rubric rev 12)",
+  "framework": "operational",
+  "command": [
+    "node",
+    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/run.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-20T19:05:24.717Z",
+  "finishedAt": "2026-10-20T19:05:25.559Z",
+  "plan": "green-main-ratchet-convergence-2026-10-17",
+  "planItem": "P-009",
+  "workItemId": "WI-6554700010016943",
+  "specIds": [
+    "AUTO-BAR-R-17-P-009@5"
+  ],
+  "evidencePlane": "live",
+  "summary": "The R-17 probe (rubric rev 12 check, docs/evidence/p009-r17-slot-accounting-live-2026-10-20/probe.sql) read harness_shared.routines coverage records for sync-batch-delta-check and sync-batch-lint-guards plus their coverage-low alarm work-items, and returned 2|291|0.044673539518900345|0|0|1. The committed oracle judged it PASS: both routines present, every slot accounted, the slot floor met, and low coverage carrying a fresh open alarm. All four negative controls failed as required. Coverage itself is about 4.5% of slots judged; the 95% target was rescoped out by owner choice (#D-036) and is not claimed here.",
+  "assertions": [
+    {
+      "id": "live:both-routines-present",
+      "passed": true,
+      "evidence": "routines=2 (expected 2); row 2|291|0.044673539518900345|0|0|1"
+    },
+    {
+      "id": "live:slot-floor",
+      "passed": true,
+      "evidence": "min_slots=291 (floor 276); row 2|291|0.044673539518900345|0|0|1"
+    },
+    {
+      "id": "live:every-slot-accounted",
+      "passed": true,
+      "evidence": "unaccounted_slots=0; row 2|291|0.044673539518900345|0|0|1"
+    },
+    {
+      "id": "live:low-coverage-has-fresh-alarm",
+      "passed": true,
+      "evidence": "low_without_current_alarm=0 (min_ratio=0.044673539518900345, target 0.95); row 2|291|0.044673539518900345|0|0|1"
+    },
+    {
+      "id": "live:probe-verdict-agrees",
+      "passed": true,
+      "evidence": "probe accounted=1, oracle recomputation=1; row 2|291|0.044673539518900345|0|0|1"
+    },
+    {
+      "id": "control-noalarm:fails",
+      "passed": true,
+      "evidence": "alarm_open forced false: low coverage without an alarm must fail; row 2|291|0.044673539518900345|0|1|0; oracle passed=false; failing assertions: low-coverage-has-fresh-alarm"
+    },
+    {
+      "id": "control-stale:fails",
+      "passed": true,
+      "evidence": "alarm freshness window moved into the future: a stale alarm must not count (H2); row 2|291|0.044673539518900345|0|1|0; oracle passed=false; failing assertions: low-coverage-has-fresh-alarm"
+    },
+    {
+      "id": "control-terminal:fails",
+      "passed": true,
+      "evidence": "only terminal alarm rows match: a closed alarm must not count; row 2|291|0.044673539518900345|0|1|0; oracle passed=false; failing assertions: low-coverage-has-fresh-alarm"
+    },
+    {
+      "id": "control-floor:fails",
+      "passed": true,
+      "evidence": "slot floor raised to 300 above the live 24h count: the probe must stop reporting accounted; row 2|291|0.044673539518900345|0|0|0; oracle passed=false; failing assertions: probe-verdict-agrees"
+    }
+  ],
+  "environment": {
+    "database": "papercusp (native PG :5432)",
+    "workspace": "papercusp-workspace",
+    "reader": "sudo -n -u postgres psql -At",
+    "launchedBy": "su-807ee9d7-200a-4664-808d-c6000c52e818"
+  },
+  "sourceBlobs": {
+    "packages/operator-core/lib/release/sync-batch-delta-check.ts": "fe3be1742d2c21db14e3b4c7f2b7688613cb966e",
+    "packages/operator-core/lib/release/sync-batch-lint-guards.ts": "9844d8fe554d838fb991ad9ebb62b43902bc4e0c",
+    "scripts/lib/sync-batch-coverage-accounting-oracle.mjs": "979839d4441b1b58ad1a99a676f84d3289b7b0a1"
+  },
+  "artifacts": {
+    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/run.mjs": "sha256:caf64f3903c6e25737369d77723af9d0ab921e8df5ff8384de4876054cce96a5",
+    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/probe.sql": "sha256:01e2bf3ad66c9df3237a94aade3f02c0ce89ab01f49587eff45d40118e7e2f1b",
+    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/control-noalarm.sql": "sha256:d0d4f329d09ba9096a4103240c6f249616cb7087eefcacdc7c8300ae9039cef0",
+    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/control-stale.sql": "sha256:3fee0c6243e696e2e7ac55846e29f52881a2dc233afecd247717ea0c927a4c80",
+    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/control-terminal.sql": "sha256:d4c5e63389ca6a20d66fe70b05c360d4d0f4904fc20a53649e86c6f7c2d0d5b7",
+    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/control-floor.sql": "sha256:fb485c841bc3dee866d2d74c88dfeeed965cc41884cbc577e16320da6f10b9e4"
+  },
+  "limitations": [
+    "This is one live reading of a rolling 24h window, not a continuous 24h observation; the routine keeps recording, so a later reading can differ.",
+    "The probe judges the recorded slot causes, not whether each recorded cause is true; cause correctness is covered by the tree evidence bound to AUTO-BAR-R-8-P-009 and SPEC-P-009."
+  ],
+  "instrument": {
+    "path": "scripts/lib/sync-batch-coverage-accounting-oracle.mjs",
+    "testPath": "scripts/lib/sync-batch-coverage-accounting-oracle.test.ts",
+    "role": "Every pass/fail decision on the probe rows is taken by this committed oracle; run.mjs only executes the SQL and records output."
+  }
+}

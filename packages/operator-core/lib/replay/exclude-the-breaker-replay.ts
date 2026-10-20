@@ -26,7 +26,7 @@
  *    widening.
  */
 import { posix } from 'node:path';
-import type { EditAttributionRow } from './hunk-exact-admission';
+import type { EditAttributionRow } from '../release/hunk-exact-admission';
 
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;

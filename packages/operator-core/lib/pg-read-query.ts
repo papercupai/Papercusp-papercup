@@ -3250,26 +3250,18 @@ export function buildDbosHistoricalIntervalJoinAdvisory(rawSql: string): string 
  * bounded to a caller while still running until statement_timeout.
  *
  * This is intentionally a pure, conservative shape check. It does not try to
- * infer a query's selectivity or invent a new JSON index. An explicit SQL
- * LIMIT is treated as a caller-provided scan bound; all other JSON-text
- * pattern predicates are surfaced so the dev:pg_query handler can refuse them
- * by default and require an explicit bypass for deliberate forensic scans.
+ * infer a query's selectivity or invent a new JSON index. SQL LIMIT/FETCH
+ * clauses cap rows returned after the WHERE expression is evaluated; they do
+ * not guarantee a scan bound when the predicate still requires serialising
+ * every JSONB row. Surface every JSON-text pattern predicate so the
+ * dev:pg_query handler can refuse it by default and require an explicit
+ * bypass for deliberate forensic scans.
  */
 export function buildJsonTextSearchAdvisory(rawSql: string): string | null {
   const tables = extractReferencedTables(rawSql);
   if (!tables.some((t) => bareTableName(t) === 'tool_invocations')) return null;
 
   const body = stripSqlLiteralsAndComments(rawSql);
-  // A SQL LIMIT gives PostgreSQL an opportunity to stop after finding enough
-  // rows. LIMIT ALL is not a bound and remains unsafe. FETCH FIRST/NEXT is the
-  // equivalent SQL spelling and is treated the same way.
-  if (
-    (/\blimit\b/i.test(body) && !/\blimit\s+all\b/i.test(body)) ||
-    /\bfetch\s+(?:first|next)\b/i.test(body)
-  ) {
-    return null;
-  }
-
   const matchedColumns: string[] = [];
   for (const column of ['args_json', 'metadata_json']) {
     const qualifiedColumn = String.raw`(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?\b${column}\b`;

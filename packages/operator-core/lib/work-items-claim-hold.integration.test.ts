@@ -46,7 +46,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { runWorkItemDurableParkAudit } from './work-items-durable-park-audit';
 import { buildDurableParkReleaseContract } from './durable-park-release-contract';
 import { readEventConditionReachability } from './external-condition-reachability';
-import { recordKeyFire, registerAnnouncement } from './events/await/store';
+import { recordKeyFire, registerAnnouncement, settleProvingFire } from './events/await/store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, activeWs: 'default' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -135,7 +135,9 @@ afterEach(() => {
 });
 
 describe('setWorkItemClaimHold (WI-2797)', () => {
-  it.each(['work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+  // `release:deployed:abc123` left this list with event-wait-settlement-2026-10-20 D-005: the
+  // per-sha deploy key names one deploy and proves it landed, so it is not a broad wake.
+  it.each(['work-item:claimable', 'release:deployed',
     'coord:inbox-wake:park-owner', 'fleet:item-completed:test',
     // event-wait-settlement-2026-10-20 P-001: subject-bound CHANGE notifications are wakes too.
     'work-item:status:WI-owner-grade-dependency', 'work-item:unblocked:WI-owner-grade-dependency'])
@@ -183,6 +185,32 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
     const renewed = await audit('new-generation');
     expect(renewed.durableParks[0]?.releaseLiveness.status).toBe('tracked');
     expect(await readPayload(id)).toEqual(original);
+  });
+
+  // event-wait-settlement-2026-10-20 P-004: before it, a durable park released only when its
+  // trigger had been ANNOUNCED; an unannounced completion fire left it parked indefinitely.
+  it('AUTO-BAR-R-18-P-004: an unannounced proving fire releases the durable park the writer made', async () => {
+    const id = 'WI-p004-park';
+    const trigger = `work-item:done:${id}-dependency`;
+    // Durable-park settlement writes its receipt here (writeDurableParkClearReceipt).
+    await db.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.audit_log (
+        id text PRIMARY KEY, ts bigint, actor text, action text, subject text,
+        details jsonb, workspace_id text)`).simple();
+    await seedIssue(id, { payload: { keepMe: 'kept' } });
+    const releaseContract = await buildDurableParkReleaseContract(
+      { condition: `${id}-dependency reaches done`, trigger, parkId: id }, 'park-owner');
+    expect(releaseContract.reachability).toBe('reachable');
+    await wi.setWorkItemClaimHold(id, true, { harness: H, parkedBy: 'park-owner', releaseContract });
+    expect(await readPayload(id)).toMatchObject({ _claimHold: true, claim_hold_by: 'park-owner' });
+
+    // The emit's two store calls, in order: the latch statement finds the waiter, then settlement.
+    expect((await recordKeyFire({ eventKey: trigger, firedBy: 'fixture-producer' })).provingWaiterPending).toBe(true);
+    expect(await settleProvingFire(trigger, { firedBy: 'fixture-producer' })).toBe(1);
+
+    expect(await readPayload(id)).toEqual({ keepMe: 'kept' });
+    // Nothing left waiting on the key: the next fire's latch reports no waiter.
+    expect((await recordKeyFire({ eventKey: trigger, firedBy: 'fixture-producer' })).provingWaiterPending).toBe(false);
   });
 
   // EI-25664119449929994: the writer read the key's LIFETIME latch at park time, so a trigger

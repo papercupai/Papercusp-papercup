@@ -40,14 +40,19 @@ import { findFulltextLexicalDupes } from './agent-tools/work_items/fulltext-lexi
 import { findRecentLexicalDupes } from './agent-tools/work_items/recent-lexical-dupe-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './agent-tools/work_items/semantic-dupe-guard';
 import type { OrgSql } from './work-items';
+import { mapWithConcurrency } from './gym/concurrency';
 import { failOpenExclusionSql, type AdmissionFailOpenExclusion } from './work-items-admission';
 
 /** Ceiling on the rows one fail-open run READS for re-screening; deliberately not the
- *  throttle. The wall budget below is the binding limit: measured live at ~0.7-2s per
- *  screen, 45s fits roughly 25-60 rows. A cap of 20 used to bind first, so a backlog of
- *  ~165 degraded rows drained at 20 per 30-minute run and a fresh row waited ~4h behind
- *  it (WI-6554700010018182). */
+ *  throttle. The wall budget below is the binding limit (WI-6554700010018182). */
 export const DEFAULT_DEDUP_RESCREEN_BATCH_SIZE = 200;
+/** Screens in flight at once inside the wall budget. Measured live 2026-10-20 17:15Z: one
+ *  screen at a time took ~2s each, so the 45s budget re-screened 21 rows per 30-minute run
+ *  (attempted=21, budgetExhausted=true) and a 278-row degraded backlog drained in ~6h.
+ *  Raising the row cap alone moved that from 20 to 21. A screen is three guard queries
+ *  plus an embed call, mostly waiting on I/O, so overlapping a few multiplies throughput
+ *  without widening the budget. Kept small because each screen runs three PG legs at once. */
+export const DEFAULT_DEDUP_RESCREEN_CONCURRENCY = 3;
 /** Wall budget for the whole re-screen pass, so the must-never-starve admit step that
  *  follows is never delayed by a slow embedder or a loaded database. */
 export const DEFAULT_DEDUP_RESCREEN_WALL_BUDGET_MS = 45_000;
@@ -171,6 +176,8 @@ export async function rescreenDegradedPendingRows(opts: {
   scopePredicate?: postgres.Fragment;
   batchSize?: number;
   wallBudgetMs?: number;
+  /** Screens in flight at once (default DEFAULT_DEDUP_RESCREEN_CONCURRENCY). */
+  concurrency?: number;
   now?: () => number;
 }): Promise<DedupRescreenSummary> {
   const sql = opts.sql ?? getOrgPg().sql;
@@ -206,12 +213,8 @@ export async function rescreenDegradedPendingRows(opts: {
     errored: [],
     budgetExhausted: false,
   };
-  for (const row of rows) {
-    if (now() >= deadline) {
-      summary.budgetExhausted = true;
-      break;
-    }
-    summary.attempted += 1;
+  type RowOutcome = 'clean' | 'candidates' | 'degraded' | 'error' | 'race';
+  const rescreenOne = async (row: (typeof rows)[number]): Promise<RowOutcome> => {
     const prior = row.coverage && typeof row.coverage === 'object' ? row.coverage : null;
     const attempts = priorAttempts(prior) + 1;
     let verdict: DedupRescreenVerdict | null = null;
@@ -252,25 +255,46 @@ export async function rescreenDegradedPendingRows(opts: {
       },
     };
     if (candidates.length > 0) patch.dedupCandidates = candidates;
-    const written = await sql<Array<{ feature_id: string }>>`
-      UPDATE harness_shared.work_items
-         SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb,
-             updated_ts = ${atMs}
-       WHERE workspace_id = ${opts.workspaceId}
-         AND harness_slug = ${row.harness_slug}
-         AND feature_id = ${row.feature_id}
-         AND admission = 'pending'
-         -- Race guard: still exactly the row the selector picked (same shared record).
-         AND ${failOpenExclusionSql(sql)} = ${'degraded-dedup-coverage' satisfies AdmissionFailOpenExclusion}
-       RETURNING feature_id`;
-    if (written.length === 0) {
-      summary.raceSkipped.push(row.feature_id);
-      continue;
+    let written: Array<{ feature_id: string }>;
+    try {
+      written = await sql<Array<{ feature_id: string }>>`
+        UPDATE harness_shared.work_items
+           SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb,
+               updated_ts = ${atMs}
+         WHERE workspace_id = ${opts.workspaceId}
+           AND harness_slug = ${row.harness_slug}
+           AND feature_id = ${row.feature_id}
+           AND admission = 'pending'
+           -- Race guard: still exactly the row the selector picked (same shared record).
+           AND ${failOpenExclusionSql(sql)} = ${'degraded-dedup-coverage' satisfies AdmissionFailOpenExclusion}
+         RETURNING feature_id`;
+    } catch {
+      // Unstamped, so the next run picks the row up again. Throwing here would reject the
+      // pool while sibling screens kept writing after this function had returned.
+      return 'error';
     }
-    if (outcome === 'clean') summary.clean.push(row.feature_id);
-    else if (outcome === 'candidates') summary.candidatesFound.push(row.feature_id);
-    else if (outcome === 'degraded') summary.stillDegraded.push(row.feature_id);
-    else summary.errored.push(row.feature_id);
+    return written.length === 0 ? 'race' : outcome;
+  };
+
+  // WI-6554700010018182: overlap screens; the deadline is checked before each one STARTS,
+  // so the wall budget still bounds the pass. Outcomes come back in selection order.
+  const outcomes = await mapWithConcurrency(
+    rows,
+    opts.concurrency ?? DEFAULT_DEDUP_RESCREEN_CONCURRENCY,
+    async (row): Promise<RowOutcome | null> => {
+      if (now() >= deadline) return null;
+      summary.attempted += 1;
+      return rescreenOne(row);
+    },
+  );
+  for (const [i, outcome] of outcomes.entries()) {
+    const id = rows[i]!.feature_id;
+    if (outcome === null) summary.budgetExhausted = true;
+    else if (outcome === 'race') summary.raceSkipped.push(id);
+    else if (outcome === 'clean') summary.clean.push(id);
+    else if (outcome === 'candidates') summary.candidatesFound.push(id);
+    else if (outcome === 'degraded') summary.stillDegraded.push(id);
+    else summary.errored.push(id);
   }
   return summary;
 }

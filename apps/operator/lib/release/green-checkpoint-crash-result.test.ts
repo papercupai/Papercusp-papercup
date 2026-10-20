@@ -508,6 +508,35 @@ describe('WI-41252 / D-066: dependency-generation torn snapshots are not code re
     expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
   });
 
+  it('WI-6554700010018253: an incomplete source install is a STANDING no-verdict, not self-clearing drift', () => {
+    // Shape copied from the measured 2026-10-20 drill-pot gate abort (install papercusp-pr-drill-20261014).
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: '11d56fad7ef9',
+      error: new Error(
+        'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /clones/drill ' +
+          '--ensure-ref 11d56fad --retain-as checkpoint-candidate exited 75: ' +
+          '[dependency-generation] LOCK_TREE_DEFECT\tmissing\tnode_modules/parse5\tlocked 8.0.1\n' +
+          '[dependency-generation] PHASE schema=1 phase=source-lock-tree-audit outcome=failed duration_ms=4449\n' +
+          '[dependency-generation] SUMMARY schema=1 result=lock-tree-incomplete source=a2d5 identity=v1-a2d5\n' +
+          '[dependency-generation] FATAL: source dependency trees do not realise their lockfiles',
+      ),
+      runId: 'run-lock-tree',
+    });
+
+    expect(r).toMatchObject({
+      advanced: false,
+      candidate: '11d56fad7ef9',
+      green: null,
+      reason: 'dependency-generation-unusable',
+    });
+    expect(r.crashed).toBeUndefined();
+    expect(r.summary).toContain('npm run install:safe');
+    expect(r.summary).toContain('/clones/drill');
+    expect(r.summary).not.toContain('wait for dependency writers to settle');
+    // Counted, so the no-verdict invariant can see a gate stuck on it.
+    expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
+  });
+
   it('uses the dependency-generation writer\'s reserved exit-75 contract, not message prose', () => {
     const r = buildTerminalFailureCheckpointResult({
       candidate: 'dfe7bd9f4e56',

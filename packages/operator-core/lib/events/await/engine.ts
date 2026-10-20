@@ -43,6 +43,7 @@ import {
   keyFireId,
   recordKeyFire,
   stampAnnouncementsFired,
+  settleProvingFire,
   type LatchedEventSubscriber,
   fireTimedOutAwaits,
   insertDeliveries,
@@ -347,6 +348,10 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // out. Fail-soft — never break the emit when the diagnostic latch is unavailable.
   // Unknown (latch failed, or a stub returned nothing) ⇒ take the locked stamp path.
   let announcementPending = true;
+  // event-wait-settlement-2026-10-20 P-004: the latch statement also says whether a work
+  // item waits on this proving key. Unknown ⇒ settle; settleProvingFire re-checks that
+  // the key is proving before it touches the database.
+  let provingWaiterPending = true;
   // WI-10003631: the latch statement also returns the standing event-key
   // subscribers; undefined (latch failed / stub) ⇒ the separate read below.
   let latchedSubscribers: LatchedEventSubscriber[] | undefined;
@@ -357,6 +362,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       subscribersFrom: subscriberScope,
     });
     if (latch && latch.announcementPending === false) announcementPending = false;
+    if (latch && latch.provingWaiterPending === false) provingWaiterPending = false;
     latchedSubscribers = latch?.eventSubscribers;
     // P-018 (D-029 §2): worn async identity rules subscribe as muted rows. Each one
     // this fire reached becomes a durable reaction keyed by the latch's fire
@@ -417,11 +423,27 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // EI-9270: latch any ANNOUNCED gate on this key (fired_at stamped, row kept) so a
   // late registrant is told the gate already opened. Fail-soft — never break the emit.
   // WI-10003631: skipped when the latch statement proved no unfired announcement existed.
+  // A latched announcement settles this key's waits in its own transaction.
+  let settledByAnnouncement = false;
   if (announcementPending) {
     try {
-      await stampAnnouncementsFired(opts.key, { firedBy: opts.source ?? null, payload: opts.payload });
+      const latched = await stampAnnouncementsFired(opts.key, { firedBy: opts.source ?? null, payload: opts.payload });
+      settledByAnnouncement = typeof latched === 'number' && latched > 0;
     } catch (e) {
       log(`announce latch stamp failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  // event-wait-settlement-2026-10-20 P-004 (Design 4): an UNANNOUNCED proving fire
+  // releases its waiters too — event and gate blockers and durable parks, in one
+  // transaction under the key's announce lock, then the shared follow-up. Skipped when
+  // the latch proved nobody waits (no extra round trip, R-21) or the announcement
+  // latch above already settled this fire. Fail-soft (R-8): a settlement error is
+  // logged and never fails the emit; the recovery pass (P-005) is the backstop.
+  if (provingWaiterPending && !settledByAnnouncement) {
+    try {
+      await settleProvingFire(opts.key, { firedBy: opts.source ?? null });
+    } catch (e) {
+      log(`proving-fire settlement failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
     }
   }
 

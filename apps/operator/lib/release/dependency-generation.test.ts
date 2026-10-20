@@ -3787,7 +3787,12 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
       'sleep 45 </dev/null >/dev/null 2>&1 & holder=$!',
       'printf "host=%s\\npid=%s\\nstarted=%s\\n" "$(dependency_generation_host)" "$holder" "$(date +%s)" > "$lock/writer"',
       'printf "%s copying dependency tree: node_modules\\n" "$(date +%s)" > "$lock/progress"',
-      'if [ "$OUTCOME" = holder-finishes ]; then ( sleep 2; rm -rf -- "$lock" ) </dev/null >/dev/null 2>&1 & fi',
+      // WI-6554700010018236: the holder ends only after the waiter has relayed its
+      // progress line, never after a fixed 2s timer. The waiter samples holder copy
+      // I/O (a host-wide `ps -e`) before its first poll; on a loaded host that
+      // outlasted 2s, so the lock vanished before any relay.
+      'eval "__orig_$(declare -f dependency_generation_log)"; dependency_generation_log() { __orig_dependency_generation_log "$@"; printf "%s\\n" "$*" >> "$ROOT/log"; }',
+      'if [ "$OUTCOME" = holder-finishes ]; then ( for _ in $(seq 1 600); do grep -qF ": copying dependency tree" "$ROOT/log" 2>/dev/null && break; sleep 0.1; done; rm -rf -- "$lock" ) </dev/null >/dev/null 2>&1 & fi',
       'rc=0; dependency_generation_wait_inflight "$ROOT" "$ID" || rc=$?',
       'printf "RC=%s\\n" "$rc"',
       'kill "$holder" 2>/dev/null || true',
@@ -3932,7 +3937,12 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
       'source "$SCRIPT"',
       // The worker reads using a shell builtin so the kernel counters belong
       // to the actual monitored PID, just as rsync sender checksum reads do.
-      'rsync() { local chunk; for i in 1 2 3; do IFS= read -r -N 1048576 chunk < "$ROOT/payload"; sleep 1.2; done; }',
+      // WI-6554700010018236: the worker stays alive until the monitor has logged a
+      // read sample, never for a fixed wall-clock window. Each sample walks the host
+      // process table (`ps -e` in dependency_generation_subtree_io); on a loaded host
+      // that took longer than the old 3.6s worker, so no sample landed and stderr was empty.
+      'eval "__orig_$(declare -f dependency_generation_log)"; dependency_generation_log() { __orig_dependency_generation_log "$@"; printf "%s\\n" "$*" >> "$ROOT/log"; }',
+      'rsync() { local chunk i; for i in $(seq 1 150); do IFS= read -r -N 1048576 chunk < "$ROOT/payload"; grep -qE "checksum read progress: .* read=[1-9]" "$ROOT/log" 2>/dev/null && return 0; sleep 0.2; done; return 1; }',
       'rc=0; dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" --rsync-checksum || rc=$?',
       'printf "RC=%s\\n" "$rc"',
     ].join('\n');

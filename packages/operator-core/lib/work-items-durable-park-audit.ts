@@ -576,30 +576,28 @@ export async function reconcileEventDurableParks(
   eventKey: string,
   actor?: string,
   now = new Date().toISOString(),
+  opts: {
+    /** false = an unannounced proving fire (event-wait-settlement-2026-10-20 P-004): no
+     *  producer declared the key, so an uncatalogued trigger is not proof. Default: the
+     *  caller has just latched a producer announcement in its transaction. */
+    announced?: boolean;
+  } = {},
 ): Promise<EventDurableParkReconcileResult> {
   const trigger = eventKey.trim();
   if (!trigger) return { matched: 0, cleared: 0, skipped: 0, preservedLeases: 0, items: [] };
-  // The caller has just latched a producer announcement in this transaction.
+  const announced = opts.announced !== false;
   // Even a declared broad notification is only a wake, not condition satisfaction; so is
   // a change notification about one subject (P-001: only completion families certify).
-  const specificCondition = fireCertifiesCondition(trigger, true);
+  const specificCondition = fireCertifiesCondition(trigger, announced);
+  const firedEvidence = `${announced ? 'announcement trigger' : 'trigger'} "${trigger}" fired`;
 
   const parsedNow = Date.parse(now);
   const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
   const settledBy = actor?.trim() || 'system:event-settlement';
-  // `payload ? 'claim_hold_release'` and `(payload -> 'claim_hold_release') ->> 'trigger'`
-  // are the predicate and expression of work_items_claim_hold_release_trigger_idx
-  // (migration 1539, event-wait-settlement-2026-10-20 P-002). Keep both written exactly
-  // so: a COALESCE(payload, …) wrapper selects the same rows but no index can serve it
-  // (measured: a parallel seq scan, 676.6 ms / 930,107 buffers on 404,825 rows).
   const rows = await tx<EventDurableParkRow[]>`
     SELECT workspace_id, harness_slug, feature_id, item_kind, status AS state, taken_by, payload
       FROM harness_shared.work_items
-     WHERE payload ? 'claim_hold_release'
-       AND (payload -> 'claim_hold_release') ->> 'trigger' = ${trigger}
-       AND payload ->> '_claimHold' = 'true'
-       AND NULLIF(payload ->> 'claim_hold_by', '') IS NOT NULL
-       AND (taken_by IS NULL OR btrim(taken_by) = '')
+     WHERE ${durableParkOnTriggerSql(tx, trigger)}
      FOR UPDATE
   `;
 
@@ -623,7 +621,7 @@ export async function reconcileEventDurableParks(
         id: row.feature_id,
         expectedParkFingerprint,
         reasonCode: 'condition-satisfied',
-        evidence: `announcement trigger "${trigger}" fired${actor?.trim() ? ` by ${settledBy}` : ''}`,
+        evidence: `${firedEvidence}${actor?.trim() ? ` by ${settledBy}` : ''}`,
       },
     );
     if (plan.outcome !== 'cleared' || !plan.nextPayload) {
@@ -678,12 +676,35 @@ export async function reconcileEventDurableParks(
       holder: normalizeTakenBy(textOrNull(priorPayload.claim_hold_by)),
       restored: true,
       activeRemaining: activeExternalBlockers(plan.nextPayload).length,
-      cleared: [{ kind: 'durable-park', ref: trigger, evidence: `announcement trigger "${trigger}" fired` }],
+      cleared: [{ kind: 'durable-park', ref: trigger, evidence: firedEvidence }],
       clearedBy: settledBy,
     });
   }
 
   return { matched: rows.length, cleared, skipped, preservedLeases, items };
+}
+
+/**
+ * A durable park released only by `trigger` — the one predicate shared by
+ * {@link reconcileEventDurableParks} and the emit-time waiter probe in `recordKeyFire`
+ * (events/await/store.ts; event-wait-settlement-2026-10-20 P-004), so the probe cannot
+ * answer "nobody waits" for a park settlement would have released. `trigger` must
+ * already be trimmed.
+ *
+ * `payload ? 'claim_hold_release'` and `(payload -> 'claim_hold_release') ->> 'trigger'`
+ * are the predicate and expression of work_items_claim_hold_release_trigger_idx
+ * (migration 1539, P-002). Keep both written exactly so: a COALESCE(payload, …) wrapper
+ * selects the same rows but no index can serve it (measured: a parallel seq scan,
+ * 676.6 ms / 930,107 buffers on 404,825 rows).
+ */
+export function durableParkOnTriggerSql(sql: EventDurableParkSql, trigger: string) {
+  return sql`(
+    payload ? 'claim_hold_release'
+    AND (payload -> 'claim_hold_release') ->> 'trigger' = ${trigger}
+    AND payload ->> '_claimHold' = 'true'
+    AND NULLIF(payload ->> 'claim_hold_by', '') IS NOT NULL
+    AND (taken_by IS NULL OR btrim(taken_by) = '')
+  )`;
 }
 
 /** The same atomic receipt for explicit reconciliation and announced-event settlement. */

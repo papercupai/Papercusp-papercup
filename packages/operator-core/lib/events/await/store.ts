@@ -42,9 +42,10 @@ import {
 } from './turn-proof';
 import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
-import { reconcileEventExternalBlockers } from '../../work-items';
-import { reconcileEventDurableParks } from '../../work-items-durable-park-audit';
+import { activeEventWaitBlockerSql, reconcileEventExternalBlockers } from '../../work-items';
+import { durableParkOnTriggerSql, reconcileEventDurableParks } from '../../work-items-durable-park-audit';
 import { followUpSystemClears, type SystemClearedBlockerItem } from '../../work-item-ref-blocker-auto-clear';
+import { fireCertifiesCondition } from '../../external-condition-reachability';
 import { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 export { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 import type {
@@ -3111,7 +3112,7 @@ async function markDeliveryAcked(
   return rows.length > 0;
 }
 
-type DirectDeliveryCancelResult = 'confirmed-before-write' | 'requested' | 'unconfirmed';
+type DirectDeliveryCancelResult = 'confirmed-before-write' | 'requested' | 'committed' | 'unconfirmed';
 
 async function requestDirectDeliveryCancellation(
   input: { deliveryId: number; subscriberId: string },
@@ -3131,11 +3132,44 @@ async function requestDirectDeliveryCancellation(
     if (result.confirmation !== 'acked' || !result.ok) return 'unconfirmed';
     if (result.reason === 'cancelled-before-write') return 'confirmed-before-write';
     if (result.reason === 'cancel-requested') return 'requested';
+    if (result.reason === 'delivery-already-committed' || result.reason === 'duplicate-delivery-id') {
+      return 'committed';
+    }
   } catch {
     // This is an optional recall attempt. A transport/discovery miss preserves
     // the durable row as delivering; it must not turn into an optimistic ACK.
   }
   return 'unconfirmed';
+}
+
+/** Record the host's exact zero-byte cancellation receipt without pretending
+ * the delivery started a turn. An in-turn ACK uses a different proof. */
+async function markDeliverySuppressedBeforeWrite(input: {
+  deliveryId: number;
+  subscriberId: string;
+}): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const hasTurnProof = await turnProofColumnsReady();
+  const rows = hasTurnProof
+    ? await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivered', channel = 'suppressed-redundant', delivered_at = COALESCE(delivered_at, now()),
+             turn_proof = 'superseded', turn_started_at = NULL, pickup_deadline_at = NULL,
+             last_error = 'host confirmed cancelled-before-write during handled-message settlement'
+       WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
+         AND status IN ('delivering', 'delivered')
+       RETURNING id
+    `
+    : await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivered', channel = 'suppressed-redundant', delivered_at = COALESCE(delivered_at, now()),
+             last_error = 'host confirmed cancelled-before-write during handled-message settlement'
+       WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
+         AND status IN ('delivering', 'delivered')
+       RETURNING id
+    `;
+  return rows.length > 0;
 }
 
 export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<AckDeliveryResult> {
@@ -3146,44 +3180,67 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
   // A wake can be settled by the inbox/wake path between the nudge and the
   // caller's acknowledgement. Distinguish that benign race from a missing or
   // peer-owned delivery so events:cancel can report an explicit outcome.
-  const readOwnedStatus = async (): Promise<string | undefined> => {
+  type OwnedDeliveryState = {
+    status: string;
+    channel?: string | null;
+    turnProof?: string | null;
+  };
+  const readOwnedState = async (): Promise<OwnedDeliveryState | undefined> => {
     const { sql } = getOrgPg();
-    const rows = await sql<{ status: string }[]>`
-      SELECT status
-        FROM harness_shared.event_wake_deliveries
-       WHERE workspace_id = ${eventsWs()} AND id = ${input.deliveryId}
-         AND subscriber_id = ${input.subscriberId}
-       LIMIT 1
-    `;
-    return rows[0]?.status;
+    const hasTurnProof = await turnProofColumnsReady();
+    const rows = hasTurnProof
+      ? await sql<OwnedDeliveryState[]>`
+          SELECT status, channel, turn_proof AS "turnProof"
+            FROM harness_shared.event_wake_deliveries
+           WHERE workspace_id = ${eventsWs()} AND id = ${input.deliveryId}
+             AND subscriber_id = ${input.subscriberId}
+           LIMIT 1
+        `
+      : await sql<OwnedDeliveryState[]>`
+          SELECT status, channel
+            FROM harness_shared.event_wake_deliveries
+           WHERE workspace_id = ${eventsWs()} AND id = ${input.deliveryId}
+             AND subscriber_id = ${input.subscriberId}
+           LIMIT 1
+        `;
+    return rows[0];
+  };
+  const recallableHostWake = (state: OwnedDeliveryState | undefined): boolean => {
+    if (!state) return false;
+    if (state.status === 'delivering') return true;
+    return state.status === 'delivered' &&
+      (state.channel === 'psu-socket-inject' || state.channel === 'pty-inject') &&
+      (state.turnProof == null || state.turnProof === 'awaiting');
   };
 
-  let status = await readOwnedStatus();
-  if (status === 'delivering') {
+  let owned = await readOwnedState();
+  if (recallableHostWake(owned)) {
     const cancellation = await requestDirectDeliveryCancellation(input);
     if (cancellation === 'confirmed-before-write') {
       // Only the host's acknowledged pre-write barrier permits a direct ACK of
-      // a row the pump already claimed. Include queued states too: the pump may
-      // have re-armed the exact delivery while the host was confirming its
-      // tombstone, but that host will still refuse this id before any PTY byte.
-      if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: true })) {
+      // a row the pump already claimed or optimistically marked delivered.
+      if (owned?.status === 'delivered') {
+        if (await markDeliverySuppressedBeforeWrite(input)) {
+          return { acked: true, alreadySettled: false };
+        }
+      } else if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: true })) {
         return { acked: true, alreadySettled: false };
       }
     }
     // The pump can win the terminal update while the host request is in flight.
-    // Re-read rather than returning a stale `delivering` snapshot.
-    status = await readOwnedStatus();
-    if (status === 'pending' || status === 'parked' || status === 'delivering') {
+    // Re-read rather than returning a stale snapshot.
+    owned = await readOwnedState();
+    if (owned && (owned.status === 'pending' || owned.status === 'parked' || owned.status === 'delivering' || owned.status === 'delivered')) {
       return {
         acked: false,
         alreadySettled: false,
-        status,
-        ...(cancellation === 'requested' && status === 'delivering' ? { cancellationRequested: true } : {}),
+        status: owned.status,
+        ...(cancellation === 'requested' ? { cancellationRequested: true } : {}),
       };
     }
   }
 
-  if (status != null) return { acked: false, alreadySettled: true, status };
+  if (owned?.status != null) return { acked: false, alreadySettled: true, status: owned.status };
   return { acked: false, alreadySettled: false };
 }
 
@@ -3212,8 +3269,15 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
  * assignAndWakeActionableWorkItems for plan runs and coord:dispatch) survive
  * for the same reason: the assignment they carry is not a coord message, so a
  * bulk inbox read never shows it, and settling the wake leaves the dispatched
- * item open with nobody woken to work it (WI-6554700010009881). Returns rows
- * settled.
+ * item open with nobody woken to work it (WI-6554700010009881).
+ *
+ * A delivered `psu-socket-inject`/`pty-inject` row with an unconfirmed turn
+ * proof is also eligible. The pump may have received the host's early
+ * acceptance ACK and marked the row delivered while the PTY write is still
+ * behind its busy gate. The exact host cancellation receipt is required before
+ * changing it to `suppressed-redundant`; otherwise a later prompt can replay an
+ * already-handled message after the database row is quiet (EI-26389196845755713
+ * / EI-25561320530819600). Returns rows settled.
  */
 export async function settleCaughtUpInboxWakeDeliveries(input: {
   subscriberId: string;
@@ -3222,6 +3286,33 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const key = `${INBOX_WAKE_KEY_PREFIX}${input.subscriberId}`;
+  let recalled = 0;
+  if (await turnProofColumnsReady()) {
+    const hostOwned = await sql<Array<{ id: number }>>`
+      SELECT d.id
+        FROM harness_shared.event_wake_deliveries AS d
+       WHERE d.workspace_id = ${ws} AND d.subscriber_id = ${input.subscriberId}
+         AND d.event_key = ${key}
+         AND COALESCE(d.source, '') NOT LIKE 'loop:%'
+         AND COALESCE(d.payload->>'kind', '') <> 'actionable-work-item-dispatch'
+         AND d.status = 'delivered'
+         AND d.channel IN ('psu-socket-inject', 'pty-inject')
+         AND d.turn_proof = 'awaiting'
+         AND d.created_at <= ${input.cutoffTs}
+    `;
+    for (const row of hostOwned) {
+      const cancellation = await requestDirectDeliveryCancellation({
+        deliveryId: Number(row.id),
+        subscriberId: input.subscriberId,
+      });
+      if (cancellation === 'confirmed-before-write' && await markDeliverySuppressedBeforeWrite({
+        deliveryId: Number(row.id),
+        subscriberId: input.subscriberId,
+      })) {
+        recalled++;
+      }
+    }
+  }
   const proof = (await turnProofColumnsReady()) ? sql`turn_proof = 'superseded',` : sql``;
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
@@ -3236,7 +3327,7 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
        AND created_at <= ${input.cutoffTs}
     RETURNING id
   `;
-  return rows.length;
+  return rows.length + recalled;
 }
 
 /**
@@ -3713,9 +3804,7 @@ export async function stampAnnouncementsFired(
     // so it stays off the ordinary emit path, where stampAnnouncementsFired is called
     // for every key and this UPDATE matches nothing.
     if (rows.length > 0) {
-      const blockers = await reconcileEventExternalBlockers(tx, eventKey, meta.firedBy ?? undefined);
-      const parks = await reconcileEventDurableParks(tx, eventKey, meta.firedBy ?? undefined);
-      settled = [...(blockers?.items ?? []), ...(parks?.items ?? [])];
+      settled = await settleWaitsOnFiredKey(tx, eventKey, { firedBy: meta.firedBy, announced: true });
     }
     return rows.length;
   })) as number;
@@ -3724,6 +3813,56 @@ export async function stampAnnouncementsFired(
   // After commit, and it never throws, so it cannot fail the emit that fired the key.
   await followUpSystemClears(settled);
   return latched;
+}
+
+/**
+ * The settlement body shared by every fire of a key: clear the event AND gate
+ * blockers waiting on it and release the durable parks it triggers, inside the
+ * caller's transaction (which holds the key's announce advisory lock). Returns what
+ * it settled for the caller's post-commit {@link followUpSystemClears}.
+ *
+ * `announced` says whether a producer declared the key: it decides whether an
+ * uncatalogued park trigger counts as proof (fireCertifiesCondition) and the evidence
+ * text recorded on each cleared wait.
+ */
+async function settleWaitsOnFiredKey(
+  tx: Parameters<typeof reconcileEventExternalBlockers>[0],
+  eventKey: string,
+  opts: { firedBy?: string | null; announced: boolean },
+): Promise<SystemClearedBlockerItem[]> {
+  const actor = opts.firedBy ?? undefined;
+  const blockers = await reconcileEventExternalBlockers(tx, eventKey, actor, undefined, { announced: opts.announced });
+  const parks = await reconcileEventDurableParks(tx, eventKey, actor, undefined, { announced: opts.announced });
+  return [...(blockers?.items ?? []), ...(parks?.items ?? [])];
+}
+
+/**
+ * event-wait-settlement-2026-10-20 P-004 (Design 4) — settle the waits on an
+ * UNANNOUNCED fire that proves its condition. Until this, an event blocker or durable
+ * park released only when its key had been announced in advance, so an item blocked
+ * on `release:deployed:<sha>` stayed blocked after the deploy fired (scenario S1).
+ *
+ * Called by `emitAwaitedEvent` only when {@link recordKeyFire}'s probe found a waiter
+ * and no announcement latch already settled this fire. Re-checks
+ * {@link fireCertifiesCondition} itself (no producer declared the key), so a caller
+ * whose probe result is unknown pays no database round trip for a key no fire can
+ * prove. Takes the same per-key advisory lock as the announced stamp and declaration,
+ * then hands what it settled to the shared post-commit follow-up. Returns how many
+ * waits it settled. The CALLER owns fail-soft: the emit catches and logs a throw.
+ */
+export async function settleProvingFire(
+  eventKey: string,
+  meta: { firedBy?: string | null } = {},
+): Promise<number> {
+  if (!fireCertifiesCondition(eventKey)) return 0;
+  const { sql } = getOrgPg();
+  let settled: SystemClearedBlockerItem[] = [];
+  await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + eventKey}, 0))`;
+    settled = await settleWaitsOnFiredKey(tx, eventKey, { firedBy: meta.firedBy, announced: false });
+  });
+  await followUpSystemClears(settled);
+  return settled.length;
 }
 
 /** ACTIVE announcements (not cancelled, not lapsed) — the discovery read for
@@ -3853,12 +3992,37 @@ export async function recordKeyFire(input: {
   subscribersFrom?: { workspaceId: string; targetKind: string };
 }): Promise<{
   announcementPending: boolean;
+  /** event-wait-settlement-2026-10-20 P-004: some work item waits on this key (an
+   *  active event/gate blocker or a durable park) AND a fire of it proves its
+   *  condition — so the emit must run {@link settleProvingFire}. Always false for a
+   *  key no fire can prove, which is not probed at all. */
+  provingWaiterPending: boolean;
   fire?: KeyFireIdentity;
   eventSubscribers?: LatchedEventSubscriber[];
 }> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const subs = input.subscribersFrom;
+  // P-004 (R-21): the waiter probe rides THIS statement, so an emit nobody waits on
+  // costs no extra round trip; and it is only written for a key whose fire certifies
+  // its condition (fireCertifiesCondition), so the common broad emits (inbox wakes,
+  // change notifications) carry no probe at all. Lock-free like announcement_pending,
+  // so it is the fast path, not the guarantee: a wait committed concurrently with this
+  // fire is left to the recovery pass in the blocker re-check sweep (P-005).
+  // Both arms are the reconcilers' own predicates, served by the migration-1539 indexes.
+  // The blocker arm is a count, not an EXISTS, on purpose: EXISTS plans for the first row,
+  // and the GIN containment's row estimate is so high (8,036 estimated vs 14 actual on
+  // live data, 2026-10-20) that the planner then prefers a seq scan — 1,503 ms per emit.
+  // A count is planned for every match, which the GIN index serves; matches are bounded
+  // by the waiters on one key. The park arm's btree equality is well estimated either way.
+  const settleRef = input.eventKey.trim();
+  const probeWaiters = fireCertifiesCondition(settleRef);
+  const waiterSql = probeWaiters
+    ? sql`, (
+        (SELECT count(*) FROM harness_shared.work_items WHERE ${activeEventWaitBlockerSql(sql, settleRef)}) > 0
+        OR EXISTS (SELECT 1 FROM harness_shared.work_items WHERE ${durableParkOnTriggerSql(sql, settleRef)})
+      ) AS proving_waiter_pending`
+    : sql``;
   const subscribersSql = subs
     ? sql`, (
         SELECT COALESCE(jsonb_agg(jsonb_build_object(
@@ -3892,7 +4056,7 @@ export async function recordKeyFire(input: {
       SELECT 1 FROM harness_shared.event_awaits
        WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
          AND fired_at IS NULL AND cancelled_at IS NULL AND superseded_at IS NULL
-    ) AS announcement_pending${subscribersSql}
+    ) AS announcement_pending${waiterSql}${subscribersSql}
   `;
   const raw = subs ? rows[0]?.event_subscribers : undefined;
   const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -3900,6 +4064,8 @@ export async function recordKeyFire(input: {
   const firstFiredAtUs = rows[0]?.first_fired_at_us;
   return {
     announcementPending: rows[0]?.announcement_pending !== false,
+    // Conservative like announcementPending: a probed key with no readable answer settles.
+    provingWaiterPending: probeWaiters && rows[0]?.proving_waiter_pending !== false,
     ...(Number.isInteger(count) && count > 0 && typeof firstFiredAtUs === 'string'
       ? { fire: { count, firstFiredAtUs } }
       : {}),

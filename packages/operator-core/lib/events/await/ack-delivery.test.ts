@@ -150,4 +150,75 @@ describe('ackDelivery for a pump-claimed row', () => {
     });
     expect(sqlState.calls.some((call) => call.values[call.values.length - 1] === true)).toBe(false);
   });
+
+  it('recalls a delivered but unconfirmed socket wake before a handled-message replay', async () => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    sqlState.respond = (text) => {
+      if (text.includes('pg_attribute')) return [{ n: schema.TURN_PROOF_COLUMNS.length }];
+      if (text.includes('SELECT status, channel')) {
+        return [{ status: 'delivered', channel: 'psu-socket-inject', turnProof: 'awaiting' }];
+      }
+      if (text.includes("channel = 'suppressed-redundant'")) return [{ id: 7 }];
+      return [];
+    };
+    vi.mocked(pty.injectIntoHostWithConfirmation).mockResolvedValue({
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    } as never);
+
+    await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+      acked: true,
+      alreadySettled: false,
+    });
+    expect(pty.injectIntoHostWithConfirmation).toHaveBeenCalledWith('/test/host.sock', {
+      mode: 'delivery-cancel', data: '', ownerId: 'su-ack', deliveryId: '7',
+    });
+    expect(sqlState.calls.some((call) => call.text.includes("channel = 'suppressed-redundant'"))).toBe(true);
+  });
+
+  it.each([
+    ['cancel request is still pending', 'cancel-requested', { cancellationRequested: true }],
+    ['host already committed the write', 'delivery-already-committed', {}],
+    ['host has already seen this delivery id', 'duplicate-delivery-id', {}],
+  ])('preserves a delivered unconfirmed wake when %s', async (_label, reason, extra) => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    sqlState.respond = (text) => {
+      if (text.includes('pg_attribute')) return [{ n: schema.TURN_PROOF_COLUMNS.length }];
+      if (text.includes('SELECT status, channel')) {
+        return [{ status: 'delivered', channel: 'psu-socket-inject', turnProof: 'awaiting' }];
+      }
+      return [];
+    };
+    vi.mocked(pty.injectIntoHostWithConfirmation).mockResolvedValue({
+      ok: true, confirmation: 'acked', reason,
+    } as never);
+
+    await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+      acked: false,
+      alreadySettled: false,
+      status: 'delivered',
+      ...extra,
+    });
+    expect(sqlState.calls.some((call) => call.text.includes("channel = 'suppressed-redundant'"))).toBe(false);
+  });
+
+  it('bulk turn-end settlement recalls delivered unconfirmed socket wakes', async () => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    sqlState.respond = (text) => {
+      if (text.includes('pg_attribute')) return [{ n: schema.TURN_PROOF_COLUMNS.length }];
+      if (text.includes('SELECT d.id')) return [{ id: 7 }];
+      if (text.includes("channel = 'suppressed-redundant'")) return [{ id: 7 }];
+      return [];
+    };
+    vi.mocked(pty.injectIntoHostWithConfirmation).mockResolvedValue({
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    } as never);
+
+    await expect(store.settleCaughtUpInboxWakeDeliveries({
+      subscriberId: 'su-ack',
+      cutoffTs: new Date().toISOString(),
+    })).resolves.toBe(1);
+    expect(pty.injectIntoHostWithConfirmation).toHaveBeenCalledWith('/test/host.sock', {
+      mode: 'delivery-cancel', data: '', ownerId: 'su-ack', deliveryId: '7',
+    });
+  });
 });

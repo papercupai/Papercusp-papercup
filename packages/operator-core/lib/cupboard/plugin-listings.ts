@@ -22,12 +22,12 @@ import {
   resolveProjectPath,
   HARNESSES_DIR,
   GLOBAL_PLUGINS_DIR,
-  type PluginManifest,
+  type ListedPluginManifest,
 } from '../plugin-catalog';
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-export type InstalledPlugin = PluginManifest & { source: string; path: string };
+export type InstalledPlugin = ListedPluginManifest;
 
 export interface CupboardPluginResolution {
   /** The `listing_ref` (plugin slug) of every active `kind=plugin` listing. */

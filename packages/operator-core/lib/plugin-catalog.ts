@@ -17,81 +17,20 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ManifestProvidedEvent, ManifestEventDependency } from '@papercusp/plugin-sdk';
+import type { PluginManifest } from '@papercusp/plugin-sdk';
 
 import { papercuspRoot } from './papercusp-root';
 
 export function HARNESSES_DIR(): string { return join(papercuspRoot(), 'harnesses'); }
 export function GLOBAL_PLUGINS_DIR(): string { return join(papercuspRoot(), 'global-plugins'); }
 
-interface DashboardTabManifest {
-  id: string;
-  label: string;
-  icon?: string;
-  componentId?: string;
-  componentRoot?: string;
-  iframeUrl?: string;
-  iframeUrlConfigKey?: string;
-  replaces?: string[];
-  iframeAppendProjectFolder?: boolean;
-}
-
-interface SidebarItemManifest {
-  id: string;
-  label: string;
-  href: string;
-  icon?: string;
-  badge?: { source: 'static' | 'fetch'; value?: string | number; url?: string };
-}
-
-interface UiContributionManifest {
-  slug: string;
-  label: string;
-  icon?: string;
-  componentId?: string;
-  componentRoot?: string;
-}
-
-export interface PluginManifest {
-  name: string;
-  version: string;
-  description?: string;
-  author?: string;
-  papercusp?: string;
-  /**
-   * Distribution kind. `'plugin'` (default) = runtime-bearing pack;
-   * `'pack'` = runtime-less code-tool pack (tools only —
-   * tool-distribution-granularity-2026-06-05 D-001/D-004).
-   */
-  kind?: string;
-  capabilities?: string[];
-  roles?: string[];
-  /** MCP tool declarations (`registerPluginTools` naming: `<short>.<name>`). */
-  tools?: Array<{ name?: unknown; expose?: { mcp?: { name?: unknown } } } | null>;
-  /**
-   * Unit-level provisions surfaced to the Cupboard catalog + resolver (D-003,
-   * P-005): the awaitable event-key families this unit provides. This models a
-   * field the manifest schema (plugin-sdk `ManifestProvides`) and validator have
-   * carried since P-005 — the loader type simply hadn't caught up, which left
-   * every consumer of an InstalledPlugin (e.g. the Cupboard publish path)
-   * type-blind to `provides.events` even though it is parsed at runtime.
-   */
-  provides?: { events?: ManifestProvidedEvent[] };
-  /**
-   * Tool/pack/plugin deps this unit's tools need (D-003 plugin-to-tool deps),
-   * plus the EVENT axis (P-005): the event-key families this unit REQUIRES,
-   * resolved at Cupboard install time.
-   */
-  dependencies?: { tools?: string[]; packs?: string[]; plugins?: string[]; events?: ManifestEventDependency[] };
-  dashboardTabs?: DashboardTabManifest[];
-  sidebarItems?: SidebarItemManifest[];
-  ui?: UiContributionManifest;
-  routines?: Array<{ name: string; trigger: 'cron' | 'webhook' | 'api' }>;
-  schema?: unknown;
-  /** JSON-Schema describing config keys this plugin accepts. */
-  configSchema?: { properties?: Record<string, { default?: unknown }> };
-  [k: string]: unknown;
-}
+/**
+ * A manifest found on disk plus where it was found. The shape is plugin-sdk's
+ * `PluginManifest` (the one authority — EI-21114087507786980). This reader
+ * does not schema-validate; the plugin loader does, so a listed manifest may
+ * still be refused at load time.
+ */
+export type ListedPluginManifest = PluginManifest & { source: string; path: string };
 
 async function readJson<T>(path: string): Promise<T | null> {
   try { return JSON.parse(await fs.readFile(path, 'utf8')) as T; } catch { return null; }
@@ -107,8 +46,8 @@ async function readJson<T>(path: string): Promise<T | null> {
 export async function listPluginsIn(
   parent: string,
   source: 'project' | 'harness' | 'global',
-): Promise<Array<PluginManifest & { source: string; path: string }>> {
-  const out: Array<PluginManifest & { source: string; path: string }> = [];
+): Promise<ListedPluginManifest[]> {
+  const out: ListedPluginManifest[] = [];
   if (!existsSync(parent)) return out;
   const entries = await fs.readdir(parent, { withFileTypes: true }).catch(() => []);
   const seen = new Set<string>();

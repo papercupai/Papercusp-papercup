@@ -147,7 +147,11 @@ function fakeDeps(payloads: Record<string, unknown>) {
 describe('sweepWorkItemBlockerDefaults', () => {
   it.each([
     { kind: 'gate' as const, ref: 'plan:acceptance:grading-plan', clearsBlocker: false, announced: false },
-    { kind: 'event' as const, ref: 'release:deployed:abc123', clearsBlocker: false, announced: false },
+    // The bare deploy key binds no sha, so its fire proves nothing about one deploy.
+    { kind: 'event' as const, ref: 'release:deployed', clearsBlocker: false, announced: false },
+    // event-wait-settlement-2026-10-20 D-005: the per-sha deploy key names one deploy and
+    // proves it landed, so its fire clears the blocker even unannounced.
+    { kind: 'event' as const, ref: 'release:deployed:abc123', clearsBlocker: true, announced: false },
     // event-wait-settlement-2026-10-20 R-1: a fired CHANGE notification about one subject
     // names that subject but proves nothing about the condition — the blocker stays.
     { kind: 'event' as const, ref: 'work-item:status:WI-ready', clearsBlocker: false, announced: false },

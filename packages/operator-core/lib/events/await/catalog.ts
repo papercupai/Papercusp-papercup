@@ -308,6 +308,14 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true, // P-102: deploy.ts now fires `release:deployed:<sha>` alongside the global `release:deployed`
     replacesPoll: 'dev:pipeline_position (polling "is my sha live on :3070")',
     sugar: 'deploy:await',
+    // event-wait-settlement-2026-10-20 D-005: the derivation reads the OPTIONAL <sha> as
+    // "no subject" and returns 'global', but a concrete `release:deployed:<sha>` names
+    // exactly one deploy — the plan's own proving key for an unannounced fire (R-6, S1).
+    // The bare `release:deployed` still binds nothing (bindsConcreteSubject refuses the
+    // bare prefix), so only the per-sha key certifies.
+    subjectScope: 'id',
+    // A fire certifies that this sha landed on :3070; a later deploy does not undo that.
+    fireProves: 'condition',
   },
   {
     family: 'deploy-failed',

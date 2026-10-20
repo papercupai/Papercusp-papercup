@@ -11,7 +11,7 @@ import {
   type DeltaChange,
   type RedFileObservation,
   type ReplayQueueInput,
-} from './exclude-the-breaker-replay';
+} from '../replay/exclude-the-breaker-replay';
 
 const H = 3_600_000;
 const MODEL = { exclusionBuildMin: 10, fullRoundMin: 85 };

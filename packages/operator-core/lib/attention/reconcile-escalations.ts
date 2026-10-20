@@ -52,6 +52,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { classifyItemActivity, isActivelyWorked } from '../item-activity';
 import { getWorkItem, TERMINAL_WORK_ITEM_STATES } from '../work-items';
 import { observeFallback } from '../degradation/fallback-observations';
+import { CONVERSATION_LINK_META_KEY } from './conversation-escalation-link';
 
 /** Resolver identity stamped on auto-reconciled escalations (audit trail). */
 export const RECONCILE_OWNER = 'system:attention-reconcile';
@@ -554,6 +555,8 @@ const ESCALATION_REROUTE_IDENTITY: AgentIdentity = {
 export interface EscalationRerouteInput extends StaleEscalationInput {
   summary?: string;
   body?: string;
+  /** Flat metadata stamped by coord:ask-owner; this is the canonical linked conversation, not prose. */
+  conversationId?: unknown;
   plan_slug?: string;
   harness_slug?: string;
   /** Legacy/meta-flattened harness context. */
@@ -590,6 +593,16 @@ export interface EscalationRerouteSelection {
 
 function concrete(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/**
+ * The linked conversation is authoritative when a coord:ask-owner escalation
+ * carries one. The summary is caller prose and may mention an older or
+ * unrelated conversation id; reroute notices must not promote that prose to
+ * the machine link an agent should inspect.
+ */
+function linkedConversationIdOf(escalation: EscalationRerouteInput): string | null {
+  return concrete((escalation as Record<string, unknown>)[CONVERSATION_LINK_META_KEY]);
 }
 
 function isRerouteEligible(
@@ -1166,6 +1179,19 @@ export async function rerouteUnackedEscalationsOnce(
   for (const route of batch) {
     const { escalation } = route;
     const noticeMsgId = `${ESCALATION_REROUTE_MSG_PREFIX}${escalation.msg_id}`;
+    const originalSummary = concrete(escalation.summary) ?? escalation.msg_id;
+    const linkedConversationId = linkedConversationIdOf(escalation);
+    // The linked conversation metadata is the machine-readable source of truth.
+    // Keep caller prose in the body for context, but never make a possibly stale
+    // conversation id embedded in that prose the reroute's headline target.
+    const noticeSummary = linkedConversationId
+      ? `⏰ escalation needs a live driver (${route.reason}, ~${Math.round(route.overdueMinutes)}m): ` +
+        `linked conversation ${linkedConversationId}`
+      : `⏰ escalation needs a live driver (${route.reason}, ~${Math.round(route.overdueMinutes)}m): ${originalSummary}`;
+    const linkedConversationNote = linkedConversationId
+      ? `\n\nCanonical linked conversation: ${linkedConversationId}. Read it with conversations:get { id: '${linkedConversationId}' } before acting.` +
+        `\nOriginal escalation summary (verbatim): ${originalSummary}`
+      : '';
     const predicateValidation = predicateValidations.get(escalation.msg_id);
     const artifactValidation = artifactValidations.get(escalation.msg_id);
     const validationLines: string[] = [];
@@ -1194,9 +1220,7 @@ export async function rerouteUnackedEscalationsOnce(
       const notice = await sendFn(ESCALATION_REROUTE_IDENTITY, {
         to: [route.targetOwnerId],
         msgId: noticeMsgId,
-        summary:
-          `⏰ escalation needs a live driver (${route.reason}, ~${Math.round(route.overdueMinutes)}m): ` +
-          `${escalation.summary ?? escalation.msg_id}`,
+        summary: noticeSummary,
         body:
           `Escalation ${escalation.msg_id} from ${escalation.from ?? 'an agent'} has remained open without ` +
           `any related coord acknowledgement for ~${Math.round(route.overdueMinutes)} minutes. You were selected ` +
@@ -1204,6 +1228,7 @@ export async function rerouteUnackedEscalationsOnce(
           'escalation open: only the human resolution path is authoritative. After taking ownership, acknowledge ' +
           `this reroute notice with coord:ack { msg_id: '${noticeMsgId}' }; that stable target remains valid even ` +
           'when the original escalation message has been pruned.' +
+          linkedConversationNote +
           validationNote,
         plan_slug: concrete(escalation.plan_slug) ?? undefined,
         harnessSlug: concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? undefined,
@@ -1213,6 +1238,7 @@ export async function rerouteUnackedEscalationsOnce(
           expects: 'action',
           escalationRerouteReason: route.reason,
           [ESCALATION_REROUTE_MARKER_FIELD]: escalation.msg_id,
+          ...(linkedConversationId ? { conversationId: linkedConversationId } : {}),
           ...(predicateValidation ? { predicateValidation } : {}),
           ...(artifactValidation ? { evidenceValidation: artifactValidation } : {}),
         },
@@ -1221,7 +1247,11 @@ export async function rerouteUnackedEscalationsOnce(
       try {
         await wakeFn([route.targetOwnerId], {
           summary: `take over unacknowledged escalation ${escalation.msg_id}`,
-          payload: { escalationMsgId: escalation.msg_id, noticeMsgId: notice.msg_id },
+          payload: {
+            escalationMsgId: escalation.msg_id,
+            noticeMsgId: notice.msg_id,
+            ...(linkedConversationId ? { conversationId: linkedConversationId } : {}),
+          },
           source: ESCALATION_REROUTE_OWNER,
           workspaceId,
         });

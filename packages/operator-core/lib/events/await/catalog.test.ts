@@ -91,6 +91,8 @@ const ID_SCOPED_FIRE_PROOF: Record<string, FireProof> = {
   'consult-reply': 'change',
   'handoff-accepted': 'condition',
   'report-published': 'condition',
+  // event-wait-settlement-2026-10-20 D-005: explicit id scope — `release:deployed:<sha>`.
+  deploy: 'condition',
 };
 
 describe('events catalog — fireProves classification (event-wait-settlement-2026-10-20 P-001)', () => {

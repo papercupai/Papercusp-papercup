@@ -10,6 +10,7 @@ import {
   MIN_DAILY_DIGEST_COVERAGE,
   DAILY_DIGEST_MAX_PROMPT_CHARS,
   DAILY_DIGEST_MAX_TITLE_CHARS,
+  DAILY_DIGEST_MAX_SUMMARY_CHARS,
   DAILY_DIGEST_MAX_OUTPUT_TOKENS,
   DAILY_DIGEST_ANSWER_TOKENS,
   DAILY_DIGEST_ANSWER_TOKEN_SHARE,
@@ -90,6 +91,7 @@ describe('work-item admission daily digest', () => {
     expect(prompt.system).toContain('DAILY FULL-CORPUS CLUSTER DIGEST');
     expect(prompt.system).toContain('Only IDs present in the CORPUS ITEMS section');
     expect(prompt.user).toContain('Checkout command hangs');
+    expect(prompt.user).toContain('The child exits while the checkout lock remains held.');
     expect(prompt.user).toContain('census-1');
     expect(prompt.user).toContain('bulk-stage-1');
   });
@@ -505,9 +507,8 @@ describe('work-item admission daily digest', () => {
   /**
    * D-029. The prompt used to stringify every item's full `summary` as pretty-printed
    * JSON. On the live corpus that produced a 3,220,412-token request against a 1,000,000
-   * ceiling — a hard 400, and the same defect class as the bulk-judge truncation: a
-   * payload sized without reference to the budget that must hold it. P-012 specified
-   * ~150-200k tokens of TITLES; these cases pin that shape and the budget guard.
+   * ceiling — a hard 400. Bounded excerpts now preserve source evidence without returning
+   * to the unbounded payload; these cases pin excerpting and the prompt budget.
    */
   describe('D-029 prompt budget', () => {
     const bigItem = (index: number): DailyDigestItem => ({
@@ -521,13 +522,16 @@ describe('work-item admission daily digest', () => {
       shardId: index % 40,
     });
 
-    it('sends titles, NOT summaries — the payload that blew the model ceiling', () => {
+    it('sends a bounded summary excerpt so the model can distinguish unrelated shard members', () => {
+      const summary = `UNIQUE_SUMMARY_SENTINEL ${'x'.repeat(300)} SUMMARY_TAIL_SENTINEL`;
       const prompt = buildDailyDigestPrompt({
         ...context,
-        items: [{ ...context.items[0], summary: 'UNIQUE_SUMMARY_SENTINEL' }, ...context.items.slice(1)],
+        items: [{ ...context.items[0], summary }, ...context.items.slice(1)],
       });
       expect(prompt.user).toContain('Checkout command hangs');
-      expect(prompt.user).not.toContain('UNIQUE_SUMMARY_SENTINEL');
+      expect(prompt.user).toContain('UNIQUE_SUMMARY_SENTINEL');
+      expect(prompt.user).not.toContain('SUMMARY_TAIL_SENTINEL');
+      expect(prompt.system).toContain('A shared word, a shard assignment');
     });
 
     it('stays inside the budget at the real corpus scale that produced the 400', () => {
@@ -559,14 +563,18 @@ describe('work-item admission daily digest', () => {
       expect(tiny.omitted).toBeGreaterThan(0);
     });
 
-    it('keeps one item on exactly one line even when its title contains newlines or tabs', () => {
-      // the encoding is line- and tab-delimited, so unsanitized text would silently
-      // corrupt the corpus the model parses — inventing ids that were never in the queue
+    it('keeps one item on exactly one line when title or summary contains newlines or tabs', () => {
+      // The encoding is line- and tab-delimited, so unsanitized text would silently
+      // corrupt the corpus the model parses — inventing ids that were never in the queue.
       const encoded = encodeDailyDigestItems([
-        { ...bigItem(1), title: 'first line\nsecond\tline\r\nthird' },
+        {
+          ...bigItem(1),
+          title: 'first line\nsecond\tline\r\nthird',
+          summary: 'first summary\nsecond\tsummary\r\nthird',
+        },
       ]);
       expect(encoded.lines).toHaveLength(1);
-      expect(encoded.lines[0].split('\t')).toHaveLength(6);
+      expect(encoded.lines[0].split('\t')).toHaveLength(7);
       expect(encoded.lines[0]).not.toMatch(/[\n\r]/);
     });
 
@@ -574,6 +582,13 @@ describe('work-item admission daily digest', () => {
       const encoded = encodeDailyDigestItems([{ ...bigItem(1), title: 'x'.repeat(50_000) }]);
       const titleCell = encoded.lines[0].split('\t')[5];
       expect(titleCell.length).toBeLessThanOrEqual(DAILY_DIGEST_MAX_TITLE_CHARS);
+    });
+
+    it('caps a pathological summary excerpt independently of the title', () => {
+      const encoded = encodeDailyDigestItems([{ ...bigItem(1), summary: 'y'.repeat(50_000) }]);
+      const summaryCell = encoded.lines[0].split('\t')[6];
+      expect(summaryCell.length).toBeLessThanOrEqual(DAILY_DIGEST_MAX_SUMMARY_CHARS);
+      expect(summaryCell.endsWith('…')).toBe(true);
     });
   });
 

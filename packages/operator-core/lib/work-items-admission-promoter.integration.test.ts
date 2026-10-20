@@ -8,6 +8,7 @@ import { getBuildInfo } from './build-info';
 import { readProcessIdentity } from './process-identity';
 import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
 import {
+  DEFAULT_DEDUP_RESCREEN_CONCURRENCY,
   DEFAULT_DEDUP_RESCREEN_WALL_BUDGET_MS,
   rescreenDegradedPendingRows,
   type DedupRescreenRow,
@@ -4300,5 +4301,36 @@ describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018
     for (const id of backlogIds.slice(fits)) {
       expect((await readRow(id)).payload).toEqual({ dedupCoverage: ORIGINAL });
     }
+  });
+
+  // WI-6554700010018182: live, one screen at a time took ~2s, so the 45s budget fit 21 rows
+  // per run whatever the row cap was. Overlapping screens is what multiplies throughput.
+  it('overlaps screens up to the concurrency limit and still reports outcomes in selection order', async () => {
+    await seedBacklog();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const screen = vi.fn(async (): Promise<DedupRescreenVerdict> => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return clean;
+    });
+
+    const summary = await rescreenDegradedPendingRows({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      cutoffMs: NOW - 60 * 60_000,
+      cooldownCutoffMs: NOW - 60 * 60_000,
+      nowMs: NOW,
+      runId: 'rescreen-concurrency',
+      screen,
+      sql: db.sql,
+    });
+
+    expect(DEFAULT_DEDUP_RESCREEN_CONCURRENCY).toBeGreaterThan(1);
+    expect(maxInFlight).toBe(DEFAULT_DEDUP_RESCREEN_CONCURRENCY);
+    expect(summary).toMatchObject({ attempted: BACKLOG, budgetExhausted: false, errored: [], raceSkipped: [] });
+    expect(summary.clean).toEqual(backlogIds);
   });
 });

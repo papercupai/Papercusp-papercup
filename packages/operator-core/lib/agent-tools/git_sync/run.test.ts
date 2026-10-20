@@ -517,6 +517,12 @@ describe('git-sync:run', () => {
         completion_event: {
           key: 'resource:released:git-sync:papercusp',
           payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
+          payload_filter: {
+            all: [
+              { resource: { equals: 'git-sync:papercusp' } },
+              { workspaceId: { equals: 'default' } },
+            ],
+          },
         },
         await_tool: 'events:await',
         progress_ref: {
@@ -537,7 +543,7 @@ describe('git-sync:run', () => {
       key: 'resource:released:git-sync:papercusp',
     });
     expect(continuation.completion_event).not.toMatchObject({ key: 'git-sync:lock-retry' });
-    expect(result.note).toMatch(/exact resource release event/);
+    expect(result.note).toMatch(/caller-scoped resource release event/);
     expect(result.note).not.toMatch(/git-sync:lock-retry/);
   });
 
@@ -569,18 +575,25 @@ describe('git-sync:run', () => {
       completion_event: {
         key: 'resource:released:git-sync:papercusp',
         payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
+        payload_filter: {
+          all: [
+            { resource: { equals: 'git-sync:papercusp' } },
+            { workspaceId: { equals: 'default' } },
+          ],
+        },
       },
       await_tool: 'events:await',
     });
   });
 
-  it('uses the exact release event for an exclusive_pending restart barrier', async () => {
+  it('uses the caller install release as a retry hint for an exclusive_pending workspace barrier', async () => {
     const outcome = {
       status: 'skipped' as const,
       reason: 'exclusive_pending',
       blockedOn: 'git-sync',
-      // A queued dev:restart exclusive may have no current exclusive holder;
-      // the resource release event still fires when the barrier is cleared.
+      // A queued dev:restart exclusive may have no current exclusive holder.
+      // The caller's install release is only a retry hint: other harnesses may
+      // continue holding the shared workspace barrier after this event fires.
       holders: [],
     };
     const result = await mockSkippedFire(outcome);
@@ -592,8 +605,14 @@ describe('git-sync:run', () => {
       outcome,
       continuation: {
         completion_event: {
-          key: 'resource:released:git-sync',
+          key: 'resource:released:git-sync:papercusp',
           payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
+          payload_filter: {
+            all: [
+              { resource: { equals: 'git-sync:papercusp' } },
+              { workspaceId: { equals: 'default' } },
+            ],
+          },
         },
         await_tool: 'events:await',
         progress_ref: {
@@ -602,7 +621,7 @@ describe('git-sync:run', () => {
         },
       },
     });
-    expect(result.note).toMatch(/exact resource release event/);
+    expect(result.note).toMatch(/per-install retry hint/);
     expect(result.note).not.toMatch(/git-sync:lock-retry/);
   });
 
@@ -626,6 +645,13 @@ describe('git-sync:run', () => {
         completion_event: {
           key: 'git-sync:lock-retry',
           payload_fields: ['installSlug', 'workspaceId', 'resource', 'reason', 'holders'],
+          payload_filter: {
+            all: [
+              { installSlug: { equals: 'papercusp' } },
+              { workspaceId: { equals: 'default' } },
+              { resource: { equals: 'libs-papercusp-submodule' } },
+            ],
+          },
         },
         await_tool: 'events:await',
         progress_ref: {

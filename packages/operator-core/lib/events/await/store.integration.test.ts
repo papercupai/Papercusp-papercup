@@ -77,6 +77,7 @@ const {
   countActiveAwaitsByPrefixes,
   countActiveAwaitsByKeyShapes,
   recordKeyFire,
+  settleProvingFire,
   keyFireId,
   clearKeyFire,
   getKeyFireLatch,
@@ -1281,7 +1282,9 @@ describe('await-event store (PG)', () => {
     }
   });
 
-  it.each(['work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+  // `release:deployed:abc123` left this list with event-wait-settlement-2026-10-20 D-005:
+  // the per-sha deploy key is a proving key (see the P-004 block at the end of this file).
+  it.each(['work-item:claimable', 'release:deployed',
     'coord:inbox-wake:park-owner', 'fleet:item-completed:test', 'work-item:unblocked'])
   ('firing a declared broad trigger retains the specific-condition park: %s', async (eventKey) => {
     await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
@@ -2867,5 +2870,186 @@ describe('probePatternMatchScope (PG) — EI-19332682533219755, the cross-pipeli
     const scope = await probePatternMatchScope('many:key:*', { limit: 2 });
     expect(scope.truncated).toBe(true);
     expect(scope.matchedKeys.length).toBeLessThanOrEqual(2);
+  });
+});
+
+/**
+ * event-wait-settlement-2026-10-20 P-004 (Design 4) — settle on every proving fire.
+ * The emit half (engine.ts calls settleProvingFire when the latch reports a waiter, and
+ * never fails on its error) is pinned by engine.test.ts; this block pins the store half
+ * against real Postgres: the latch statement's waiter probe and the settlement itself.
+ *   AUTO-BAR-R-6-P-004  — an item blocked on an unannounced proving key returns to open.
+ *   AUTO-BAR-R-7-P-004  — a gate-kind blocker on an announced key clears when it fires.
+ *   AUTO-BAR-R-18-P-004 — a durable park on an unannounced proving trigger is released.
+ */
+describe('proving-fire settlement (PG) — event-wait-settlement-2026-10-20 P-004', () => {
+  const SHA_KEY = 'release:deployed:4f2a9c1d';
+
+  function gateBlocker(eventKey: string) {
+    return { ...eventBlocker(eventKey), kind: 'gate' };
+  }
+
+  async function seedBlocked(id: string, blockers: unknown[]) {
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES (${id}, 'blocked', 'bug', ${JSON.stringify({
+        _claimHold: true, held_open_by: 'test-agent', held_open_reason: 'blocked', externalBlockers: blockers,
+      })}::text::jsonb)`;
+  }
+
+  /** A durable park released only by `trigger` (the shape park-time stamping writes). */
+  async function seedDurablePark(id: string, trigger: string) {
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES (${id}, 'open', 'bug', ${JSON.stringify({
+        _claimHold: true, claim_hold_by: 'parker', claim_hold_reason: 'wait for the upstream fix',
+        claim_hold_at: '2026-10-20T12:00:00.000Z',
+        claim_hold_release: { condition: `${trigger} fires`, owner: 'parker', trigger, reachability: 'reachable',
+          evidence: 'upstream not done yet' },
+        keepMe: 'kept',
+      })}::text::jsonb)`;
+  }
+
+  async function rowOf(id: string) {
+    const [row] = await rootSql<{ status: string; payload: Record<string, any> }[]>`
+      SELECT status, payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    return row!;
+  }
+
+  it.each([
+    ['an active event blocker', () => seedBlocked('EI-probe', [eventBlocker(SHA_KEY)]), true],
+    ['an active gate blocker', () => seedBlocked('EI-probe', [gateBlocker(SHA_KEY)]), true],
+    ['a durable park on the key', () => seedDurablePark('EI-probe', SHA_KEY), true],
+    ['nothing', async () => {}, false],
+    ['only a CLEARED blocker on the key', () => seedBlocked('EI-probe', [{ ...eventBlocker(SHA_KEY), status: 'cleared' }]), false],
+    ['a blocker on a different key', () => seedBlocked('EI-probe', [eventBlocker('release:deployed:0000000')]), false],
+  ])('the fire latch reports a proving waiter when the key has %s', async (_label, arrange, expected) => {
+    await arrange();
+    const latch = await recordKeyFire({ eventKey: SHA_KEY, firedBy: 'release-gate' });
+    expect(latch.provingWaiterPending).toBe(expected);
+    expect(latch.fire?.count).toBe(1); // the latch itself still recorded the fire
+  });
+
+  it('a key no fire can prove is not probed, even when an item waits on it', async () => {
+    await seedBlocked('EI-broad', [eventBlocker('git-sync:committed')]);
+    expect((await recordKeyFire({ eventKey: 'git-sync:committed' })).provingWaiterPending).toBe(false);
+    // …and settlement refuses it outright: the blocker stays active.
+    expect(await settleProvingFire('git-sync:committed', { firedBy: 'git-sync' })).toBe(0);
+    expect((await rowOf('EI-broad')).payload.externalBlockers[0].status).toBe('active');
+    expect(followUp.calls).toEqual([]);
+  });
+
+  it('AUTO-BAR-R-6-P-004: an item blocked on an unannounced release:deployed:<sha> returns to open when it fires', async () => {
+    await seedBlocked('EI-deploy-wait', [eventBlocker(SHA_KEY)]);
+    await seedBlocked('EI-other-wait', [eventBlocker('release:deployed:0000000')]);
+    expect(await findAnnouncementsForKey(SHA_KEY)).toEqual([]); // genuinely unannounced
+
+    expect(await settleProvingFire(SHA_KEY, { firedBy: 'release-gate' })).toBe(1);
+
+    const after = await rowOf('EI-deploy-wait');
+    expect(after.status).toBe('open');
+    expect(after.payload).not.toHaveProperty('held_open_reason');
+    expect(after.payload).not.toHaveProperty('_claimHold');
+    // The history records what cleared it, and why (scenario S1).
+    expect(after.payload.externalBlockers).toEqual([expect.objectContaining({
+      kind: 'event', ref: SHA_KEY, status: 'cleared', clearedBy: 'release-gate', evidence: `event "${SHA_KEY}" fired`,
+    })]);
+    expect((await rowOf('EI-other-wait')).status).toBe('blocked');
+    // One hand-off to the shared post-commit follow-up (un-park, claimable refresh, wake).
+    expect(followUp.calls.map((items) => items.map((i) => i.featureId))).toEqual([['EI-deploy-wait']]);
+  });
+
+  it('AUTO-BAR-R-6-P-004: an item with a second active blocker loses only the fired wait and stays blocked', async () => {
+    await seedBlocked('EI-two-waits', [eventBlocker(SHA_KEY), runtimeBlocker()]);
+    expect(await settleProvingFire(SHA_KEY, { firedBy: 'release-gate' })).toBe(1);
+    const after = await rowOf('EI-two-waits');
+    expect(after.status).toBe('blocked');
+    expect(after.payload.externalBlockers.map((b: { ref: string; status: string }) => [b.ref, b.status]))
+      .toEqual([[SHA_KEY, 'cleared'], ['runtime:still-live', 'active']]);
+  });
+
+  it('AUTO-BAR-R-7-P-004: a gate-kind blocker on an announced key is cleared when that key fires', async () => {
+    const gateKey = 'release:green:papercusp';
+    await registerAnnouncement({ subscriberId: 'release-gate', eventKey: gateKey, scopeKind: 'global' });
+    await seedBlocked('EI-gate-wait', [gateBlocker(gateKey)]);
+
+    expect(await stampAnnouncementsFired(gateKey, { firedBy: 'release-gate' })).toBe(1);
+
+    const after = await rowOf('EI-gate-wait');
+    expect(after.status).toBe('open');
+    expect(after.payload.externalBlockers).toEqual([expect.objectContaining({
+      kind: 'gate', ref: gateKey, status: 'cleared', clearedBy: 'release-gate',
+    })]);
+    expect(followUp.calls.map((items) => items.map((i) => i.featureId))).toEqual([['EI-gate-wait']]);
+  });
+
+  // Rubric vetting (conv-mvh091tq, reviewer 2): this is the gate-kind variant of
+  // the UNANNOUNCED proving release, so it evidences R-6. R-7 is the announced
+  // path (D-005), covered by the announced-key case above.
+  it('AUTO-BAR-R-6-P-004: a gate-kind blocker on an unannounced proving key is cleared too', async () => {
+    await seedBlocked('EI-gate-proving', [gateBlocker(SHA_KEY)]);
+    expect(await settleProvingFire(SHA_KEY, { firedBy: 'release-gate' })).toBe(1);
+    expect((await rowOf('EI-gate-proving')).status).toBe('open');
+  });
+
+  it('AUTO-BAR-R-1-P-004: a change-notification fire naming a concrete item is not proof on the emit-time path, so its blocker stays active', async () => {
+    // A concrete id does not make a change notification proof (D-001 item 3):
+    // work-item:status:<id> fires on ANY status change, not on the condition.
+    const notification = 'work-item:status:WI-p004-watched';
+    await seedBlocked('EI-status-wait', [eventBlocker(notification)]);
+    await seedBlocked('EI-status-gate', [gateBlocker(notification)]);
+    // The emit-time probe never reports a proving waiter for it…
+    expect((await recordKeyFire({ eventKey: notification })).provingWaiterPending).toBe(false);
+    // …and settlement refuses it even when called directly.
+    expect(await settleProvingFire(notification, { firedBy: 'work-items:set_state' })).toBe(0);
+    for (const id of ['EI-status-wait', 'EI-status-gate']) {
+      const row = await rowOf(id);
+      expect(row.status).toBe('blocked');
+      expect(row.payload.externalBlockers[0].status).toBe('active');
+    }
+    expect(followUp.calls).toEqual([]);
+  });
+
+  it('AUTO-BAR-R-18-P-004: a durable park on an unannounced work-item:done:<id> trigger is released when it fires', async () => {
+    const trigger = 'work-item:done:WI-p004-upstream';
+    await seedDurablePark('EI-parked', trigger);
+    await seedDurablePark('EI-parked-elsewhere', 'work-item:done:WI-p004-unrelated');
+    expect(await findAnnouncementsForKey(trigger)).toEqual([]);
+    expect((await recordKeyFire({ eventKey: trigger })).provingWaiterPending).toBe(true);
+
+    expect(await settleProvingFire(trigger, { firedBy: 'work-items:complete' })).toBe(1);
+
+    const after = await rowOf('EI-parked');
+    expect(after.payload).toEqual({ keepMe: 'kept' });
+    expect((await rowOf('EI-parked-elsewhere')).payload).toHaveProperty('claim_hold_by', 'parker');
+    const receipts = await rootSql<{ subject: string; details: Record<string, any> }[]>`
+      SELECT subject, details FROM harness_shared.audit_log WHERE action = 'work_items:durable_park:clear'`;
+    expect(receipts.map((r) => r.subject)).toEqual(['EI-parked']);
+    expect(followUp.calls.map((items) => items.map((i) => i.featureId))).toEqual([['EI-parked']]);
+  });
+
+  it('settles under the key\'s announce advisory lock, so it waits for a concurrent declaration or stamp', async () => {
+    await seedBlocked('EI-locked', [eventBlocker(SHA_KEY)]);
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const holder = rootSql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + SHA_KEY}, 0))`;
+      await holderReleased;
+    });
+    let settledCount: number | undefined;
+    let settling: Promise<void> | undefined;
+    try {
+      await waitForAnnouncementAdvisoryLock(SHA_KEY, 'held');
+      settling = settleProvingFire(SHA_KEY, { firedBy: 'release-gate' }).then((n) => { settledCount = n; });
+      await waitForAnnouncementAdvisoryLock(SHA_KEY, 'waiting');
+      expect(settledCount).toBeUndefined();
+      expect((await rowOf('EI-locked')).status).toBe('blocked');
+    } finally {
+      releaseHolder();
+      await holder;
+      if (settling) await settling;
+    }
+    expect(settledCount).toBe(1);
+    expect((await rowOf('EI-locked')).status).toBe('open');
   });
 });

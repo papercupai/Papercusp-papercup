@@ -110,6 +110,7 @@ vi.mock('../coordination/event-subscriptions', () => ({ subscribeEventKey: vi.fn
 
 import watch from './watch';
 import { lookupByMcpName, toArgsJsonSchema } from '@papercusp/agent-mcp';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { registerAwait, cancelAwait, findMatchingActiveStandingWatch } from '../../events/await/store';
 import { deliverToSpecificAwaits } from '../../events/await/engine';
 import { registerPredicateWatch, evalPredicateWatch, findMatchingActivePredicateWatch } from '../../events/await/predicate-watch';
@@ -180,6 +181,13 @@ describe('watch routing', () => {
     // while the caller believed a standing event-key subscription had been created.
     await expect(call({ pattern: 'work-item:claimable', wake: true, targetKind: 'event' })).rejects.toThrow(/targetKind/);
     await expect(call({ pattern: 'some-topic', wake: true, targetKind: 'topic' })).rejects.toThrow(/targetKind/);
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('EI-26373223291344427: targetKind misuse is caller input, not a structural handler error', async () => {
+    const err = await call({ pattern: 'work-item:claimable', wake: true, targetKind: 'event' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidInputError);
+    expect((err as Error).message).toMatch(/targetKind/);
     expect(registerAwait).not.toHaveBeenCalled();
   });
 

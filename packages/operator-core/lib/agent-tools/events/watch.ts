@@ -27,6 +27,7 @@
 import { z } from 'zod';
 import { dataConditionSchema } from '@papercusp/rules';
 import { defineTool, lookupByMcpName, SU_ROLES } from '@papercusp/agent-mcp';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait, cancelAwait, findMatchingActiveStandingWatch } from '../../events/await/store';
@@ -469,7 +470,7 @@ export default defineTool({
     // loud instead, and name the two forms that actually work — the same fail-loud
     // treatment payload_filter and predicate already get on the opposite path.
     if (args.targetKind) {
-      throw new Error(
+      throw new InvalidInputError(
         `watch:create — targetKind:"${args.targetKind}" is not supported with wake:true (it is read only on the wake:false inject path). ` +
           'For a standing subscription that RE-INVOKES you, drop targetKind and pass { wake:true, once:false } — it never expires and is floored by min_sleep_sec. ' +
           `For a no-token-cost inbox subscription, pass { wake:false, targetKind:"${args.targetKind}" }.`,

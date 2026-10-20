@@ -1620,6 +1620,8 @@ export interface ScratchWriteTimings {
   quotaWaitMs: number;
   refreshWaitMs: number;
   quotaRecoveryMs: number;
+  /** Time waiting for the shared payload-data read lease. */
+  dataLeaseWaitMs?: number;
   /** Awaited shared quota-state file reads, including the revision read before publication. */
   quotaStateReadMs?: number;
   /** Awaited publication I/O (parent mkdir, temp write, rename, and failed-temp cleanup). */
@@ -1842,6 +1844,15 @@ function scratchWriteMutexWaitOwner(owner: string): ScratchWriteMutexWaitOwner {
 
 const SCRATCH_WRITE_PROGRESS_AFTER_MS = 5_000;
 const SCRATCH_USAGE_REFRESH_REQUIRED = Symbol('scratch-usage-refresh-required');
+const SCRATCH_QUOTA_RECOVERY_REQUIRED = Symbol('scratch-quota-recovery-required');
+const SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED = Symbol('scratch-quota-recovery-wait-required');
+
+interface ScratchQuotaReservation {
+  sharedStateStale: boolean;
+  sharedMeasuredAt: number;
+  markerPath: string;
+  markerBytes: number;
+}
 
 export async function writeWithScratchQuota(
   opts: { workspaceId: string; filePath: string; bytes: number;
@@ -1864,6 +1875,7 @@ export async function writeWithScratchQuota(
     quotaWaitMs: 0,
     refreshWaitMs: 0,
     quotaRecoveryMs: 0,
+    dataLeaseWaitMs: 0,
     quotaStateReadMs: 0,
     quotaStatePublishMs: 0,
     markerProbeMs: 0,
@@ -2023,6 +2035,74 @@ export async function writeWithScratchQuota(
       }
     }
   };
+  /**
+   * Quota recovery is the one path that needs an exclusive data lease. It is deliberately
+   * started after the short quota reservation callback returns: recovery acquires data → quota,
+   * while writers acquire quota → data(read) → quota(settlement). Holding the quota mutex while
+   * trying to acquire the data mutex would deadlock a payload writer that is settling.
+   */
+  const ensureQuotaRecovery = (): { promise: Promise<void>; started: boolean } => {
+    if (entry.recovering) return { promise: entry.recovering, started: false };
+    let recovery!: Promise<void>;
+    recovery = (async () => {
+      await timed('quotaRecoveryMs', async () => {
+        const diagnostics = newScratchQuotaRecoveryDiagnostics();
+        activeRecoveryDiagnostics = diagnostics;
+        try {
+          await withScratchWorkspaceDataMutex(opts.workspaceId, 'quota-recovery', () =>
+            withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery', async () => {
+              const targetBytes = Math.max(
+                0,
+                WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
+                  [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0),
+              );
+              await evictWorkspaceQuotaLocked(
+                opts.workspaceId,
+                () => targetBytes,
+                true,
+                diagnostics,
+              );
+              await writeSharedScratchQuotaState(
+                opts.workspaceId,
+                entry.bytes,
+                entry.measuredAt || Date.now(),
+                observeAwait,
+              );
+            }));
+        } finally {
+          timings.quotaRecoveryDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
+          activeRecoveryDiagnostics = undefined;
+        }
+      });
+    })().finally(() => {
+      if (entry.recovering === recovery) entry.recovering = null;
+    });
+    entry.recovering = recovery;
+    return { promise: recovery, started: true };
+  };
+
+  const recordDataLeaseWait = (info: {
+    waitedMs: number;
+    localWaitMs: number;
+    fsMutexAdmissionMs: number;
+    admissionSubphaseTimingsMs?: Record<string, number>;
+  }) => {
+    timings.dataLeaseWaitMs = (timings.dataLeaseWaitMs ?? 0) + info.waitedMs;
+    // Keep the historical aggregate useful to callers that only inspect quotaWaitMs, while
+    // preserving the precise data-lease duration in its own field.
+    timings.quotaWaitMs += info.waitedMs;
+    if (opts.captureSubphaseTimings) {
+      const subphases = timings.awaitSubphaseTimingsMs ??= {};
+      for (const [name, elapsedMs] of Object.entries(info.admissionSubphaseTimingsMs ?? {})) {
+        const key = `scratch-data-read-admission.${name}`;
+        subphases[key] = (subphases[key] ?? 0) + elapsedMs;
+      }
+    }
+  };
+
+  let reservation: ScratchQuotaReservation | undefined;
+  let markerPresentAfterWrite = true;
+  let writeFailure: unknown;
   try {
     for (;;) {
       const outcome = await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
@@ -2063,7 +2143,9 @@ export async function writeWithScratchQuota(
         const reservationBytes = opts.bytes + markerBytes;
         pending.bytes = reservationBytes;
 
-        if (entry.recovering) await timed('quotaWaitMs', () => entry.recovering!);
+        // Recovery owns the data → quota lock order. Do not wait for it while holding the quota
+        // mutex or the recovery can be unable to acquire the second half of its pair.
+        if (entry.recovering) return SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED;
         try {
           reserveScratchSpace({
             workspaceId: opts.workspaceId,
@@ -2072,92 +2154,117 @@ export async function writeWithScratchQuota(
           });
         } catch (err) {
           if (!(err instanceof ScratchQuotaError)) throw err;
-          const startsRecovery = !entry.recovering;
-          if (!entry.recovering) {
-            entry.recovering = (async () => {
-              // The shared total was just read under this workspace lock. A queued background
-              // refresher runs after us, so waiting for it here would deadlock on our own lock.
-              const waitingBytes = [...entry.writes.values()].reduce((sum, request) =>
-                sum + (request.reserved ? 0 : request.bytes), 0);
-              if (entry.bytes + waitingBytes <= WORKSPACE_QUOTA_BYTES) return;
-              await timed('quotaRecoveryMs', async () => {
-                const diagnostics = newScratchQuotaRecoveryDiagnostics();
-                activeRecoveryDiagnostics = diagnostics;
-                try {
-                  await evictWorkspaceQuotaLocked(opts.workspaceId, () => Math.max(0,
-                    WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
-                    [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)),
-                  true, diagnostics);
-                  await writeSharedScratchQuotaState(
-                    opts.workspaceId, entry.bytes, entry.measuredAt, observeAwait,
-                  );
-                  sharedMeasuredAt = entry.measuredAt;
-                } finally {
-                  timings.quotaRecoveryDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
-                  activeRecoveryDiagnostics = undefined;
-                }
-              });
-            })().finally(() => { entry.recovering = null; });
-          }
-          if (startsRecovery) await entry.recovering;
-          else await timed('quotaWaitMs', () => entry.recovering!);
-          reserveScratchSpace({
-            workspaceId: opts.workspaceId,
-            bytes: reservationBytes,
-            filePath: opts.filePath,
-          }); // still full/protected/unreclaimable ⇒ explicit, bounded refusal
+          return SCRATCH_QUOTA_RECOVERY_REQUIRED;
         }
 
+        // `reserveScratchSpace` accounts bytes in the target run. The marker belongs to the
+        // workspace root, so remove that known root-file size from the per-run index immediately.
+        if (markerBytes > 0) {
+          adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -markerBytes);
+        }
         pending.reserved = true;
-        try {
-          // Publish the reservation before touching the payload. A process crash can leave a
-          // conservative over-count, but never an under-count that admits another process past quota.
-          await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt, observeAwait);
-          reservedStatePersisted = true;
-          await timed('writeMs', () => write(observeAwait));
-          succeeded = true;
-
-          if (markerBytes > 0) {
-            try {
-              await observeAwait('marker-probe', 'after-write', () => lstatAsync(markerPath));
-            } catch {
-              entry.bytes = Math.max(0, entry.bytes - markerBytes);
-              pending.bytes -= markerBytes;
-              adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -markerBytes);
-              await writeSharedScratchQuotaState(
-                opts.workspaceId, entry.bytes, sharedMeasuredAt, observeAwait,
-              ).catch(() => {});
-            }
-          }
-        } catch (error) {
-          if (pending.reserved && !succeeded) {
-            entry.writeGeneration += 1;
-            entry.bytes = Math.max(0, entry.bytes - pending.bytes);
-            pending.reserved = false;
-            adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -pending.bytes);
-            if (reservedStatePersisted) {
-              // A failed write may have left a partial file. Remove the ledger so the next writer
-              // measures the actual tree before making a quota decision.
-              await removeSharedScratchQuotaState(opts.workspaceId).catch(() => {});
-            }
-          }
-          throw error;
-        }
-        return sharedStateStale;
+        // Publish the reservation before touching the payload. A process crash can leave a
+        // conservative over-count, but never an under-count that admits another process past quota.
+        await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt, observeAwait);
+        reservedStatePersisted = true;
+        return {
+          sharedStateStale,
+          sharedMeasuredAt,
+          markerPath,
+          markerBytes,
+        } satisfies ScratchQuotaReservation;
       }, onMutexWaiting, recordMutexWait, opts.requestTraceId, opts.mutexTimeoutMs, recordMutexWait);
       if (outcome === SCRATCH_USAGE_REFRESH_REQUIRED) {
         await timed('refreshWaitMs', () => refreshScratchUsage(opts.workspaceId));
         continue;
       }
-      if (outcome === true) {
-        // Keep stale-ledger reconciliation off the publication critical path. The current write
-        // is still reserved in `entry.writes`, so scheduleDeferredUsageRefresh starts the walk
-        // only after the payload settles and can no longer be mistaken for a complete snapshot.
-        entry.refreshDeferred = true;
-        entry.runBytesValid = false;
+      if (outcome === SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED) {
+        const recovery = entry.recovering;
+        if (recovery) await timed('quotaWaitMs', () => recovery);
+        continue;
       }
+      if (outcome === SCRATCH_QUOTA_RECOVERY_REQUIRED) {
+        const recovery = ensureQuotaRecovery();
+        if (recovery.started) await recovery.promise;
+        else await timed('quotaWaitMs', () => recovery.promise);
+        continue;
+      }
+      reservation = outcome as ScratchQuotaReservation;
       break;
     }
+
+    try {
+      await withScratchWorkspaceDataReadLease(
+        opts.workspaceId,
+        'write',
+        async () => {
+          // The quota mutex is intentionally NOT held here. The shared data read lease keeps
+          // retention/GC/quota eviction from deleting or sizing the payload while it is written.
+          await timed('writeMs', () => write(observeAwait));
+          if (reservation!.markerBytes > 0) {
+            try {
+              await observeAwait('marker-probe', 'after-write', () => lstatAsync(reservation!.markerPath));
+            } catch {
+              markerPresentAfterWrite = false;
+            }
+          }
+        },
+        onMutexWaiting,
+        recordDataLeaseWait,
+        opts.requestTraceId,
+        opts.mutexTimeoutMs,
+      );
+      succeeded = true;
+    } catch (error) {
+      writeFailure = error;
+    }
+
+    // Settle the reservation only after payload I/O has released the shared data lease. This is
+    // short metadata work under the quota mutex and advances the ledger revision so a concurrent
+    // refresh cannot publish a pre-settlement snapshot over the writer's result.
+    try {
+      await withScratchWorkspaceMutex(opts.workspaceId, 'write-settlement', async () => {
+        if (!pending.reserved) return;
+        if (succeeded) {
+          if (reservation!.markerBytes > 0 && !markerPresentAfterWrite) {
+            entry.bytes = Math.max(0, entry.bytes - reservation!.markerBytes);
+            pending.bytes -= reservation!.markerBytes;
+          }
+          pending.reserved = false;
+          entry.writeGeneration += 1;
+          try {
+            await writeSharedScratchQuotaState(
+              opts.workspaceId,
+              entry.bytes,
+              entry.measuredAt || reservation!.sharedMeasuredAt,
+              observeAwait,
+            );
+          } catch {
+            // The payload is already durable. Invalidate the local/shared cache so the next
+            // reservation performs a complete reconciliation instead of trusting stale bytes.
+            invalidateLocalScratchUsage(opts.workspaceId);
+          }
+          if (reservation!.sharedStateStale) {
+            entry.refreshDeferred = true;
+            entry.runBytesValid = false;
+          }
+          return;
+        }
+
+        entry.writeGeneration += 1;
+        entry.bytes = Math.max(0, entry.bytes - pending.bytes);
+        pending.reserved = false;
+        adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -opts.bytes);
+        if (reservedStatePersisted) {
+          // A failed write may have left a partial file. Remove the ledger so the next writer
+          // measures the actual tree before making a quota decision.
+          await removeSharedScratchQuotaState(opts.workspaceId).catch(() => {});
+        }
+      }, onMutexWaiting, recordMutexWait, opts.requestTraceId, opts.mutexTimeoutMs, recordMutexWait);
+    } catch (error) {
+      writeFailure ??= error;
+    }
+    if (writeFailure) throw writeFailure;
   } finally {
     entry.writes.delete(token);
     if (pending.reserved) entry.writeGeneration += 1;

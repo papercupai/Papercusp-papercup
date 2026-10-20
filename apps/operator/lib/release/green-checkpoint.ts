@@ -2731,6 +2731,38 @@ export function buildTerminalFailureCheckpointResult(opts: {
     };
   }
 
+  // WI-6554700010018253: dependency-generation.sh ALSO exits 75 when the SOURCE install does not
+  // realise its own lockfiles (a locked package is missing from node_modules). That is not one of
+  // the self-clearing live-input drifts the generic exit-75 branch below describes: nothing is
+  // still writing, so "wait for writers to settle" never heals it, and classifying it 'noop' left
+  // a drill pot's gate rendering no verdict with consecutiveNoVerdict frozen (measured
+  // 2026-10-20, install papercusp-pr-drill-20261014, after its lockfile advanced). Classify on the
+  // writer's machine SUMMARY token (emitted by dependency_generation_emit_summary), not the FATAL
+  // prose, and keep it COUNTED under the standing exit-74 sibling: it persists until the source
+  // install is repaired.
+  const dependencySourceInstallIncomplete =
+    dependencySnapshotChanged &&
+    /SUMMARY schema=1 result=lock-tree-incomplete\b/.test(detail);
+  if (dependencySourceInstallIncomplete) {
+    const integrationRoot = /--integration (\S+)/.exec(detail)?.[1] ?? null;
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "dependency-generation-unusable",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint could not START: the integration checkout's installed node_modules do " +
+        "not realise its lockfiles (a locked package is missing, typically after the lockfile " +
+        "advanced without a reinstall), so dependency-generation refused (exit 75, " +
+        "result=lock-tree-incomplete) before any test ran. NO code verdict was rendered — do not " +
+        "triage this candidate's files. This does NOT clear on its own and waiting for writers " +
+        "will not heal it: run the guarded install in the integration checkout " +
+        `(\`npm run install:safe\`${integrationRoot ? ` in ${integrationRoot}` : ""}), then re-run. ${detail}`,
+    };
+  }
+
   // WI-10002039: the promotion push was refused for AUTHORIZATION reasons.
   //
   // ⚠ EVIDENCE QUALITY, stated because this file's own rule is "classify on the CODE, not the

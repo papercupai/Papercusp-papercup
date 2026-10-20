@@ -714,6 +714,48 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     }
   });
 
+  it('releases the quota mutex during payload I/O while retaining the shared data lease', async () => {
+    const workspaceId = 'ws-write-data-lease';
+    const runDir = ensureScratchRunDir({ workspaceId, toolName: 'result-door', runId: UUID(8) });
+    await refreshScratchUsage(workspaceId);
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const quotaMutexName = `papercusp-scratch-quota-${mutexDigest}`;
+    const dataMutexName = `papercusp-scratch-data-${mutexDigest}`;
+    const filePath = join(runDir, 'spill.bin');
+    let releaseWrite!: () => void;
+    let startedWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const writeStarted = new Promise<void>((resolve) => { startedWrite = resolve; });
+    const writer = writeWithScratchQuota({ workspaceId, filePath, bytes: 16 }, async () => {
+      startedWrite();
+      await writeGate;
+      await writeFile(filePath, Buffer.alloc(16));
+    });
+    let quotaProbe: Promise<void> | undefined;
+    let dataProbe: Promise<void> | undefined;
+    try {
+      await writeStarted;
+      let quotaEntered = false;
+      quotaProbe = withFsMutex(quotaMutexName, async () => { quotaEntered = true; }, {
+        timeoutMs: 500,
+        retryMs: 5,
+      });
+      await quotaProbe;
+      expect(quotaEntered).toBe(true);
+
+      dataProbe = withFsMutex(dataMutexName, async () => {}, {
+        timeoutMs: 40,
+        retryMs: 5,
+      });
+      await expect(dataProbe).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    } finally {
+      releaseWrite();
+      await Promise.allSettled([writer, ...(quotaProbe ? [quotaProbe] : []), ...(dataProbe ? [dataProbe] : [])]);
+    }
+    expect(readFileSync(filePath)).toHaveLength(16);
+  });
+
   it('keeps each workspace walk sequential and caps filesystem work across concurrent workspaces', async () => {
     for (let i = 0; i < 6; i++) {
       makeRunDir('ws-Q', `tool-${i}`, UUID(10 + i), 128);

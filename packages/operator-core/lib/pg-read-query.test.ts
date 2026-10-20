@@ -3489,17 +3489,17 @@ describe('buildJsonTextSearchAdvisory (EI-21663090256112441 — unbounded JSONB 
     ).toContain('metadata_json::text');
   });
 
-  it('stays silent when SQL supplies an explicit row bound', () => {
+  it('still warns when SQL supplies a LIMIT/FETCH row cap because the WHERE scan remains unbounded', () => {
     expect(
       buildJsonTextSearchAdvisory(
         `SELECT id FROM ${TOOL_INVOCATIONS} WHERE args_json::text ILIKE '%needle%' LIMIT 5`,
       ),
-    ).toBeNull();
+    ).toContain('unbounded JSON-text search');
     expect(
       buildJsonTextSearchAdvisory(
         `SELECT id FROM ${TOOL_INVOCATIONS} WHERE metadata_json::text LIKE '%needle%' FETCH FIRST 5 ROWS ONLY`,
       ),
-    ).toBeNull();
+    ).toContain('unbounded JSON-text search');
   });
 
   it('stays silent for projections, other relations, and quoted examples', () => {

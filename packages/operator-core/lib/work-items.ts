@@ -7369,7 +7369,8 @@ export function externalBlockersExclusionSql(sql: OrgSql) {
  * transaction: otherwise the announcement can become superseded while the
  * work item remains parked, which strands it outside scheduler self-select.
  *
- * Only the matching active event blocker is cleared. The record remains in
+ * Only the matching active event or gate blocker is cleared (a gate blocker's ref is
+ * an event key too; event-wait-settlement-2026-10-20 P-004). The record remains in
  * the payload history, and unrelated blockers continue to gate the item. An
  * issue-family row that was auto-parked by `work_items:set_blocker` is restored
  * to `open` only after the last active blocker is gone; a durable claim park is
@@ -7384,33 +7385,30 @@ export async function reconcileEventExternalBlockers(
   eventKey: string,
   actor?: string,
   now = new Date().toISOString(),
+  opts: {
+    /** false = an unannounced proving fire (event-wait-settlement-2026-10-20 P-004); it
+     *  only changes the evidence recorded on the cleared blocker. Default: announced. */
+    announced?: boolean;
+  } = {},
 ): Promise<{ cleared: number; restored: number; items: SystemClearedBlockerItem[] }> {
   const ref = eventKey.trim();
   if (!ref) return { cleared: 0, restored: 0, items: [] };
 
   const settledBy = actor?.trim() || 'system:event-settlement';
-  // The containment is written on `payload -> 'externalBlockers'`, the expression of the
-  // GIN index work_items_external_blockers_gin_idx (migration 1539, plan
-  // event-wait-settlement-2026-10-20 P-002), whose partial predicate (that expression IS
-  // NOT NULL) the planner proves from the strict `@>` alone. Do NOT add 1475's
-  // `payload ? 'externalBlockers'` here: it makes 1475's btree a candidate too, which only
-  // filters every blocked payload, and the planner's costs for the two differ by ~1.6 —
-  // a fresh database picked the btree. `payload @> {externalBlockers:[…]}` selects the same
-  // rows but no index serves it (measured 89.7 ms / 25,429 buffers on live data).
+  const evidence = opts.announced === false ? `event "${ref}" fired` : `announced event "${ref}" settled`;
   const rows = await tx<Array<LockedExternalBlockerRow & { harness_slug: string | null; taken_by: string | null }>>`
     SELECT workspace_id, feature_id, item_kind, status, payload, harness_slug, taken_by
       FROM harness_shared.work_items
-     WHERE (payload -> 'externalBlockers') @> jsonb_build_array(
-         jsonb_build_object('kind', 'event', 'ref', ${ref}::text, 'status', 'active')
-       )
+     WHERE ${activeEventWaitBlockerSql(tx, ref)}
      FOR UPDATE
   `;
 
   let cleared = 0;
   let restored = 0;
   const items: SystemClearedBlockerItem[] = [];
+  const targets = EVENT_WAIT_BLOCKER_KINDS.map((kind) => ({ kind, ref, evidence }));
   for (const row of rows) {
-    const outcome = await clearExternalBlockersOnLockedRow(tx, row, [{ kind: 'event', ref }], settledBy, now);
+    const outcome = await clearExternalBlockersOnLockedRow(tx, row, targets, settledBy, now);
     if (!outcome.changed) continue;
     cleared += 1;
     if (outcome.restored) restored += 1;
@@ -7423,12 +7421,50 @@ export async function reconcileEventExternalBlockers(
       holder: normalizeTakenBy(row.taken_by),
       restored: outcome.restored,
       activeRemaining: outcome.activeRemaining,
-      cleared: [{ kind: 'event', ref, evidence: `announced event "${ref}" settled` }],
+      cleared: outcome.cleared.map((c) => ({ kind: c.kind, ref: c.ref, evidence })),
       clearedBy: settledBy,
     });
   }
 
   return { cleared, restored, items };
+}
+
+/**
+ * event-wait-settlement-2026-10-20 P-004 (R-7): the blocker kinds that wait on an event
+ * key. A `gate` blocker's ref is an event key exactly as an `event` blocker's is (the
+ * re-check sweep already treats them alike), so a fire settles both.
+ */
+export const EVENT_WAIT_BLOCKER_KINDS = ['event', 'gate'] as const satisfies readonly ExternalBlockerKind[];
+
+/**
+ * An ACTIVE event/gate blocker whose ref is `ref` — the one predicate shared by
+ * {@link reconcileEventExternalBlockers} and the emit-time waiter probe in
+ * `recordKeyFire` (events/await/store.ts), so the probe cannot answer "nobody waits"
+ * for a row settlement would have cleared. `ref` must already be trimmed.
+ *
+ * ONE containment, written on `payload -> 'externalBlockers'`, the expression of the GIN
+ * index work_items_external_blockers_gin_idx (migration 1539, P-002), whose partial
+ * predicate (that expression IS NOT NULL) the planner proves from the strict `@>`. It
+ * names no kind, so the index finds every active blocker with this ref; the
+ * jsonb_path_exists recheck then keeps only event/gate ones on those few rows. Do NOT
+ * split it into an OR of per-kind containments: measured on live data 2026-10-20, that
+ * form under EXISTS ran as a parallel-free seq scan (1,503 ms; estimate 8,036 rows,
+ * actual 14). Do NOT add 1475's `payload ? 'externalBlockers'` either: it makes 1475's
+ * btree a candidate too, which only filters every blocked payload, and a fresh database
+ * picked the btree. `payload @> {externalBlockers:[…]}` selects the same rows but no index
+ * serves it (measured 89.7 ms / 25,429 buffers on live data).
+ */
+export function activeEventWaitBlockerSql(sql: OrgSql | TransactionSql, ref: string) {
+  return sql`(
+    (payload -> 'externalBlockers') @> jsonb_build_array(
+      jsonb_build_object('ref', ${ref}::text, 'status', 'active')
+    )
+    AND jsonb_path_exists(
+      payload -> 'externalBlockers',
+      '$[*] ? (@.ref == $ref && @.status == "active" && (@.kind == "event" || @.kind == "gate"))',
+      jsonb_build_object('ref', ${ref}::text)
+    )
+  )`;
 }
 
 /** A work-item row read `FOR UPDATE` by a caller that is about to clear blockers on it. */

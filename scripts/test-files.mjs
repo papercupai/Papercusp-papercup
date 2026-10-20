@@ -4377,15 +4377,28 @@ export async function runTestFilesCli(
 
   const previousMarker = env.PAPERCUSP_INSTALL_MUTEX_HELD;
   const inheritedMarker = envWithInstallMutex(lockName, env).PAPERCUSP_INSTALL_MUTEX_HELD;
-  return acquireReadLease(lockName, async () => {
-    env.PAPERCUSP_INSTALL_MUTEX_HELD = inheritedMarker;
-    try {
-      return await run(args);
-    } finally {
-      if (previousMarker === undefined) delete env.PAPERCUSP_INSTALL_MUTEX_HELD;
-      else env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMarker;
-    }
-  });
+  return acquireReadLease(
+    lockName,
+    async () => {
+      env.PAPERCUSP_INSTALL_MUTEX_HELD = inheritedMarker;
+      try {
+        return await run(args);
+      } finally {
+        if (previousMarker === undefined) delete env.PAPERCUSP_INSTALL_MUTEX_HELD;
+        else env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMarker;
+      }
+    },
+    {
+      onWaiting: ({ owner, elapsedMs }) => {
+        const holder = String(owner ?? 'unknown writer').replace(/\s+/g, ' ').trim().slice(0, 240);
+        console.error(
+          `TEST_FILE_INSTALL_READER_WAIT elapsedMs=${elapsedMs} ` +
+            `waitedSec=${Math.round(elapsedMs / 1000)} holder=${holder || 'unknown writer'}`,
+        );
+      },
+      waitingNoticeIntervalMs: 30_000,
+    },
+  );
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

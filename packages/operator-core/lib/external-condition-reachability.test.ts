@@ -137,8 +137,11 @@ describe('external condition reachability', () => {
     expect(reachability.evidence).toContain('registration expired');
   });
 
+  // `release:deployed:abc123` left this list with event-wait-settlement-2026-10-20 D-005: the
+  // per-sha deploy key names one deploy and is a proving key (asserted below). The bare
+  // `release:deployed` still binds nothing.
   it.each([
-    'work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+    'work-item:claimable', 'release:deployed',
     'coord:inbox-wake:park-owner', 'fleet:item-completed:test', 'work-item:unblocked',
     'work-item:unblocked:*',
   ])('keeps a fired broad or incomplete trigger unverified for a specific condition: %s', async (trigger) => {
@@ -156,6 +159,19 @@ describe('external condition reachability', () => {
 
   it('accepts an exact completion-family subject key without requiring an announcement', async () => {
     const reachability = await readEventConditionReachability('work-item:done:WI-specific', {
+      requireSpecificCondition: true,
+      inspect: async () => ({ announcements: [], waiters: [], deliveries: [], composedRoot: null,
+        fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never }),
+    });
+    expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
+  });
+
+  // event-wait-settlement-2026-10-20 D-005: the deploy family's <sha> is optional, so the
+  // derivation alone read it as global; its explicit id scope makes the per-sha key proof.
+  it('accepts a per-sha deploy key as a proving key, unannounced (D-005)', async () => {
+    expect(fireCertifiesCondition('release:deployed:abc123')).toBe(true);
+    expect(fireCertifiesCondition('release:deployed')).toBe(false);
+    const reachability = await readEventConditionReachability('release:deployed:abc123', {
       requireSpecificCondition: true,
       inspect: async () => ({ announcements: [], waiters: [], deliveries: [], composedRoot: null,
         fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never }),

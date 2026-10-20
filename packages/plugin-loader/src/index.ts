@@ -171,57 +171,12 @@ export interface LoaderOptions {
 // papercuspRootResolved() above. Each loadPlugins() call resolves fresh
 // (with mtime cache) so workspace switches don't need a server restart.
 
-interface ManifestShape {
-  name: string;
-  version: string;
-  description?: string;
-  papercusp?: string;
-  kind?: import('@papercusp/plugin-sdk').Plugin['kind'];
-  capabilities?: string[];
-  /** Install/consent-canonical action declarations. Runtime handlers bind by name. */
-  actions?: import('@papercusp/plugin-sdk').ActionDefinition[];
-  configSchema?: Record<string, unknown>;
-  oauth?: import('@papercusp/plugin-sdk').PluginOAuthRequirement[];
-  /** MCP tool declarations. Handlers live on the plugin's `tools` export. */
-  tools?: import('@papercusp/plugin-sdk').ToolDefinition[];
-  /**
-   * Optional multi-runtime descriptor. Omitted = JS plugin (existing
-   * behavior). 'wasm' / 'daemon' route through alternate loaders.
-   * See @papercusp/plugin-sdk PluginRuntime.
-   */
-  runtime?: import('@papercusp/plugin-sdk').PluginRuntime;
-  /**
-   * UI contributions parsed from the manifest. The `type` field
-   * distinguishes React (in-bundle) from iframe surfaces (Batch H).
-   */
-  ui?: import('@papercusp/plugin-sdk').UiSurfaceManifestEntry[];
-  /** Manifest-driven dashboard contributions (runtime exports may add component functions). */
-  dashboardTabs?: Array<Record<string, unknown> & { id: string }>;
-  /** Manifest-driven sidebar contributions (runtime exports may add badge functions). */
-  sidebarItems?: Array<Record<string, unknown> & { id: string }>;
-  /**
-   * Declarative event-reaction rules (plugin-system-hive-port D-003 / P-005).
-   * The manifest carries the declarative subset only (data-match `when`,
-   * static `args` — enforced by the JSON schema); function forms live on the
-   * entry plugin's `reactions` export. Merged by `collectReactionRules`.
-   */
-  reactions?: import('@papercusp/plugin-sdk').PluginReactionRule[];
-  /**
-   * Event-key families this unit PROVIDES + the ones it DEPENDS ON — the
-   * events-as-a-dependency axis (cupboard-public-release-2026-07-12 D-003 /
-   * P-005). Pure data (a kind:'pack' may declare them); the installed-tier
-   * events:catalog (P-006) + resolver (P-007) consume `provides.events`, and
-   * install-time dep validation (P-007) consumes `dependencies.events`.
-   */
-  provides?: import('@papercusp/plugin-sdk').ManifestProvides;
-  dependencies?: import('@papercusp/plugin-sdk').ManifestDependencies;
-  /** Pure-data trigger-pack declaration (external-triggers P-012). */
-  triggerPack?: import('@papercusp/plugin-sdk').PluginTriggerPack;
-  /** Integration provider descriptor (generalized-integrations D-006 / P-001). */
-  provider?: import('@papercusp/plugin-sdk').ProviderDescriptor;
-  /** How a running app obtains the package; see `PluginManifest.distribution`. */
-  distribution?: import('@papercusp/plugin-sdk').PluginDistribution;
-}
+/**
+ * The papercusp.json shape. plugin-sdk's `PluginManifest` is the single
+ * authority (EI-21114087507786980); `readManifest` validates against the JSON
+ * schema before returning one, so this reader's values match the type.
+ */
+type ManifestShape = import('@papercusp/plugin-sdk').PluginManifest;
 
 /**
  * cupboard-distributable-integrations-2026-10-10 D-015: a `distribution: "cupboard"` package

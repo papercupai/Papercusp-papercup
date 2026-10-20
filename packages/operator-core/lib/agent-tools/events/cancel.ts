@@ -231,7 +231,10 @@ export default defineTool({
                 'This delivery was already handed to the wake host and cannot be recalled. A queued/in-flight wake may still arrive; reconcile it once as stale rather than repeating the handled action.';
             }
           }
-          if (!ack.acked && !ack.alreadySettled && ack.status === 'delivering') {
+          const cancellationPending =
+            !ack.acked && !ack.alreadySettled &&
+            (ack.status === 'delivering' || (ack.status === 'delivered' && ack.cancellationRequested));
+          if (cancellationPending) {
             if (ack.cancellationRequested) out.cancellation_requested = true;
             const warning = ack.cancellationRequested
               ? 'The host accepted cancellation, but has not confirmed its pre-write barrier; this delivery remains in flight and may still reach the recipient.'
@@ -240,7 +243,7 @@ export default defineTool({
           }
           if (!ack.acked && !ack.alreadySettled && item.await_id == null && item.root_id == null) {
             out.ok = false;
-            if (ack.status === 'delivering') out.error = 'delivery_in_flight';
+            if (cancellationPending) out.error = 'delivery_in_flight';
           }
         }
         if (item.announcement_id != null) {

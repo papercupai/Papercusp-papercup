@@ -46,7 +46,7 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
   for (const e of result.errors.slice(0, 5)) console.warn(`[gate-watch]   ! ${e.file}: ${e.error}`);
   try {
     const reviews = await sweepOmittedReviews();
-    if (reviews.examined || reviews.errors.length) console.log(`[omitted-review] ${JSON.stringify(reviews)}`);
+    if (reviews.examined || reviews.released || reviews.errors.length) console.log(`[omitted-review] ${JSON.stringify(reviews)}`);
   } catch (error) {
     console.warn(`[omitted-review] ${error instanceof Error ? error.message : String(error)}`);
   }
