@@ -1080,6 +1080,21 @@ export function validateObservationRatings(obs: StructuredObservation | undefine
           'concrete evidence (a metric, a query result, a reference)',
       );
     }
+    // `unknownReason` explains why a criterion could not be assessed. Keeping it
+    // on an assessed rating (for example `weak` + `not-assessed`) makes readers
+    // disagree about whether the criterion was measured, so reject that
+    // contradictory shape at the shared write boundary used by scorecards:emit
+    // and improvements:capture.
+    if (
+      entry.unknownReason != null &&
+      String(entry.unknownReason).trim() &&
+      String(entry.rating).trim().toLowerCase() !== 'unknown'
+    ) {
+      throw new ObservationEvidenceError(
+        `observation.ratings['${criterion}'].unknownReason is only valid when rating is 'unknown'; ` +
+          `received rating '${entry.rating}'`,
+      );
+    }
     if (OBSERVATION_EVIDENCE_TRUNCATION_MARKER.test(String(entry.evidence))) {
       throw new ObservationEvidenceError(
         `observation.ratings['${criterion}'].evidence contains a projection/truncation marker; recover the full tool result before citing it`,

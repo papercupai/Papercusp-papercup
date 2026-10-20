@@ -137,6 +137,21 @@ describe('headless host-code adoption (WI-6554700010016005)', () => {
     expect(usePtyHost({ env: adopt(before), ...detachedStdio })).toBe(false);
     for (const [key, value] of Object.entries(policy)) expect(adopt(before)[key]).toBe(value);
   });
+
+  it.each([
+    {
+      PAPERCUSP_CODEX_GATEWAY: '1',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto',
+    },
+    {
+      PAPERCUSP_CODEX_GATEWAY: '1',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin',
+      PAPERCUSP_ACCOUNT_ID: 'codex-pinned-account',
+    },
+  ])('preserves the effective Codex provider and account route across adoption (%j)', (route) => {
+    const before = { PAPERCUSP_AGENT: 'codex', ...route };
+    expect(adopt(before)).toMatchObject(before);
+  });
 });
 
 describe('host-code handoff mutex identity', () => {

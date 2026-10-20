@@ -18,10 +18,20 @@
 import {
   DEFAULT_MAX_BLOB_BYTES,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES,
+  type AttributionTally,
   type RepoError,
   type ScopedOversized,
 } from './run-git-sync';
 import { isLocalDiskFullError } from './git-fetch-headroom-refusal';
+
+/**
+ * True when agents had dirty work in this repo and none of it got an attributed commit
+ * (WI-6554700010018198). Lives here, beside its only consumer, so the detector does not
+ * take a runtime dependency on run-git-sync (whose module tests replace wholesale).
+ */
+export function isZeroAttribution(t: Pick<AttributionTally, 'agentGroupCount' | 'agentCommitCount'>): boolean {
+  return t.agentGroupCount > 0 && t.agentCommitCount === 0;
+}
 
 /** Consecutive error ticks before the failure escalates (3 ticks ≈ 30 min).
  *  NOTE the name is historical: this counts ANY failing leg, not just pushes
@@ -45,6 +55,30 @@ export const PUSH_FAILURE_ESCALATION_TICKS = 3;
  */
 export const CHRONIC_CUMULATIVE_PEEL_TICKS = 3;
 export const CHRONIC_CUMULATIVE_REBROADCAST_TICKS = 18;
+
+/**
+ * WI-6554700010018198: from 2026-10-16T17:32Z to 2026-10-20T06:48Z the superproject
+ * produced no attributed commit at all while dozens of agents edited it. Every tick
+ * reported success, the only evidence was console.log, and journald rotated it away
+ * within 12h. Alarm after 6 consecutive zero-attribution ticks (~1h at the 10-min
+ * default), then re-broadcast every 18 (~3h) while it persists.
+ */
+export const ZERO_ATTRIBUTION_ESCALATION_TICKS = 6;
+export const ZERO_ATTRIBUTION_REBROADCAST_TICKS = 18;
+
+/**
+ * The persisted counter's next value. A tick where some repo had agent work and none of
+ * it was attributed counts; a tick with an attributed commit and no zero repo resets.
+ * A tick that measured nothing (no phase ran, or no agent had dirty work) HOLDS the
+ * count: it is not evidence either way, and resetting on it would let an idle tick hide
+ * an outage that resumes on the next busy one.
+ */
+export function nextZeroAttributionTicks(prev: number, attribution: readonly AttributionTally[] | undefined): number {
+  if (!attribution || attribution.length === 0) return prev;
+  if (attribution.some(isZeroAttribution)) return prev + 1;
+  if (attribution.some((t) => t.agentCommitCount > 0)) return 0;
+  return prev;
+}
 
 /** Which LEG of a git-sync tick failed (EI-19275994927087666). `disk-headroom` (WI-10004397)
  *  is not a git leg at all: the local disk is full, so no leg can run. */
@@ -160,9 +194,14 @@ export interface EscalationInput {
    *  refreshes the escalation row without re-broadcasting every tick (mirrors
    *  `prevOversizedKeys`). */
   prevPublishBlockedAtCommit?: string | null;
+  /** WI-6554700010018198: `consecutive_zero_attribution_ticks` INCLUDING this tick, from
+   *  nextZeroAttributionTicks. OPTIONAL: an omitted value never raises the condition. */
+  zeroAttributionTicks?: number;
+  /** This tick's per-repo attributed-phase tallies, used to name the failing repos. */
+  attribution?: readonly AttributionTally[];
 }
 
-export type EscalationReason = 'push-failure' | 'oversized-blobs' | 'publish-refused';
+export type EscalationReason = 'push-failure' | 'oversized-blobs' | 'publish-refused' | 'attribution-failed';
 
 export interface EscalationDecision {
   /** Write/refresh the `git-sync-error` escalation row this tick. */
@@ -222,6 +261,8 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
   // exists to absorb transient network flakes this condition never has.
   const publishRefused = i.publishRefusal?.refused ? i.publishRefusal : null;
   if (publishRefused) reasons.push('publish-refused');
+  const zeroAttributionTicks = i.zeroAttributionTicks ?? 0;
+  if (zeroAttributionTicks >= ZERO_ATTRIBUTION_ESCALATION_TICKS) reasons.push('attribution-failed');
   const escalate = reasons.length > 0;
 
   const parts: string[] = [];
@@ -302,6 +343,22 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
         `metadata->'own_head_publish' (healthy = refused:null AND publishedSha==sha). Fixing the offending file ` +
         `forward does NOT clear this — the blob is already in history. Clear a confirmed false positive with ` +
         `pot_git:secrets_exemptions { action:'add', path:'<exact repo-relative path>', reason:'<why>' }.`,
+    );
+  }
+
+  const sinceZeroAttributionAlarm = zeroAttributionTicks - ZERO_ATTRIBUTION_ESCALATION_TICKS;
+  if (sinceZeroAttributionAlarm >= 0 && sinceZeroAttributionAlarm % ZERO_ATTRIBUTION_REBROADCAST_TICKS === 0) {
+    const failing = (i.attribution ?? []).filter(isZeroAttribution);
+    const detail = failing
+      .map((t) => `${t.scope}: ${t.agentGroupCount} agent group(s), ${t.failedGroups} failed${t.error ? ` (${t.error.split('\n')[0]})` : ''}`)
+      .join('; ')
+      .slice(0, 400);
+    parts.push(
+      `⚠ git-sync on ${i.installSlug}: agents' edits have produced NO attributed commit for ` +
+        `${zeroAttributionTicks} CONSECUTIVE ticks. Their work is landing only in the anonymous catch-all, so ` +
+        `commits carry no Papercusp-Agent trailer and work-item completions cannot settle against them. ` +
+        `Read routines:list { name:'git-sync' } health.last_attribution for the per-repo failure` +
+        `${detail ? `. This tick: ${detail}` : ''}.`,
     );
   }
 

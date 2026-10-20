@@ -47,8 +47,10 @@ import {
   MIN_VALID_GIT_INDEX_BYTES,
   clearStaleIndexLock,
   clearStaleConfigLock,
+  clearStaleMaintenanceLock,
   scavengeStaleTempPacks,
   STALE_INDEX_LOCK_MS,
+  STALE_MAINTENANCE_LOCK_MS,
   STALE_TEMP_PACK_MS,
   GIT_SYNC_BOT_EMAIL,
   GIT_SYNC_BOT_NAME,
@@ -3472,6 +3474,41 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(cleared).toContain('holder check 12.3s — SLOW (WI-10006519)');
   });
 
+  it('clearStaleMaintenanceLock reclaims an orphaned objects/maintenance.lock past its 1h floor (WI-6554700010018201)', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const unlinked: string[] = [];
+    const snapshot = { mtimeMs: Date.now() - STALE_MAINTENANCE_LOCK_MS - 60_000, size: 0, dev: 1, ino: 2 };
+    expect(
+      await clearStaleMaintenanceLock(fakeRunGit, '/fake', () => {}, {
+        inspectLock: async (p) => (p.endsWith('/objects/maintenance.lock') ? snapshot : null),
+        isOpen: async () => false,
+        unlinkFile: async (p) => {
+          unlinked.push(p);
+        },
+      }),
+    ).toBe(true);
+    expect(unlinked).toEqual(['/fake/.git/objects/maintenance.lock']);
+  });
+
+  it.each([
+    // 10 min is past config.lock's 90s floor but inside maintenance's 1h floor.
+    { name: 'younger than the 1h floor', ageMs: 10 * 60_000, open: false },
+    { name: 'held open by a live maintenance run', ageMs: 2 * 60 * 60_000, open: true },
+    { name: 'with unknown holder state', ageMs: 2 * 60 * 60_000, open: null },
+  ])('clearStaleMaintenanceLock leaves a lock $name untouched', async ({ ageMs, open }) => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const unlinkFile = vi.fn(async () => {});
+    const snapshot = { mtimeMs: Date.now() - ageMs, size: 0, dev: 1, ino: 2 };
+    expect(
+      await clearStaleMaintenanceLock(fakeRunGit, '/fake', () => {}, {
+        inspectLock: async () => snapshot,
+        isOpen: async () => open,
+        unlinkFile,
+      }),
+    ).toBe(false);
+    expect(unlinkFile).not.toHaveBeenCalled();
+  });
+
   it('clearStaleConfigLock removes only an old empty holderless lock', async () => {
     const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
     const unlinked: string[] = [];
@@ -4182,6 +4219,19 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(out).toEqual({ removed: [], bytesReclaimed: 0 });
     expect(existsSync(staleTmpPack)).toBe(true);
+  });
+
+  it('a sync reclaims an orphaned objects/maintenance.lock so git auto-gc is not silently disabled (WI-6554700010018201)', async () => {
+    const lock = join(repo, '.git', 'objects', 'maintenance.lock');
+    writeFileSync(lock, '');
+    const oldSeconds = (Date.now() - STALE_MAINTENANCE_LOCK_MS - 60_000) / 1000;
+    utimesSync(lock, oldSeconds, oldSeconds);
+    writeFileSync(join(repo, 'maintenance-lock.txt'), 'edit\n');
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, isGitLockOpen: async () => false });
+
+    expect(out.status).not.toBe('error');
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('on a divergent conflict: aborts to a CLEAN tree and reports conflicted files', async () => {

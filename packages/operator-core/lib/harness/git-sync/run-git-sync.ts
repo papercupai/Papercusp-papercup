@@ -2027,6 +2027,10 @@ export type GitSyncOutcome = {
   strandedSubmodules: StrandedSubmodule[] | null;
   /** Live-lock paths excluded this pass. Other unlocked paths may still sync. */
   skippedPaths?: GitSyncSkippedPath[];
+  /** WI-6554700010018198: one entry per repo whose attributed phase ran this pass.
+   *  Absent means no phase ran (flag off, nothing attributed, or a checkpointed step was
+   *  replayed): NOT measured, which callers must keep distinct from a measured success. */
+  attribution?: AttributionTally[];
   /**
    * Scopes whose fetch+merge stage completed successfully this pass, even when a
    * later push failed. This is distinct from `merged`: it proves that the merge
@@ -3116,7 +3120,7 @@ interface ClearStaleConfigLockDeps {
 export async function clearStaleHolderlessEmptyGitLock(
   runGit: RunGit,
   repoPath: string,
-  lockName: 'config.lock' | 'shallow.lock',
+  lockName: 'config.lock' | 'shallow.lock' | 'objects/maintenance.lock',
   log: (m: string) => void,
   deps: ClearStaleConfigLockDeps = {},
 ): Promise<boolean> {
@@ -3184,6 +3188,32 @@ export async function clearStaleConfigLock(
   deps: ClearStaleConfigLockDeps = {},
 ): Promise<boolean> {
   return clearStaleHolderlessEmptyGitLock(runGit, repoPath, 'config.lock', log, deps);
+}
+
+/** Age floor before an orphaned `objects/maintenance.lock` may be reclaimed.
+ * A live `git maintenance run` keeps the lock's descriptor open, so the
+ * holderless proof already protects it; the long floor is belt-and-braces. */
+export const STALE_MAINTENANCE_LOCK_MS = 60 * 60_000;
+
+/** Clear an orphaned `objects/maintenance.lock` (WI-6554700010018201).
+ *
+ * Git spawns `git maintenance run --auto` after a commit, so it runs as a child
+ * of git-sync's own commit. A SIGKILL (a cgroup kill or session death) skips
+ * git's lockfile cleanup and strands a zero-byte lock. Git 2.43 then skips
+ * every later auto-maintenance run SILENTLY (no warning under `--auto`), so
+ * auto-gc stays off for the repo and every worktree sharing its object store.
+ * Observed: a 5-day-old lock with 31k loose objects. Same empty + old +
+ * holderless + unchanged proof as `config.lock`. */
+export async function clearStaleMaintenanceLock(
+  runGit: RunGit,
+  repoPath: string,
+  log: (m: string) => void,
+  deps: ClearStaleConfigLockDeps = {},
+): Promise<boolean> {
+  return clearStaleHolderlessEmptyGitLock(runGit, repoPath, 'objects/maintenance.lock', log, {
+    staleMs: STALE_MAINTENANCE_LOCK_MS,
+    ...deps,
+  });
 }
 
 /** A crash-left `index-pack` file is safe to consider only after this age floor. */
@@ -5112,12 +5142,74 @@ async function commitPriorityPaths(
   }
 }
 
+/** Argv batch size for the vanished-path `ls-files` probe. */
+const VANISHED_PATH_PROBE_BATCH = 500;
+
+/**
+ * WI-6554700010018197: drop the group paths that exist in NEITHER the working tree NOR the
+ * HEAD-seeded private index. `dirtyFiles` reads `git status` over the SHARED index, so an
+ * entry staged only there (a temp file `git add`ed and then deleted, status `AD`) is listed
+ * as dirty, while the private index, seeded at HEAD, never holds it: `git add -- <path>` then
+ * fails "pathspec did not match any files". One such phantom
+ * (`.papercusp/dependency-exact-ref/<id>/.live-inputs`) failed the residual group on every
+ * superproject tick from 2026-10-16T17:32Z to 2026-10-20T06:48Z. A path absent from the
+ * working tree but present in the private index is a real deletion and is kept, so `add`
+ * stages it. Only the paths lstat cannot find are probed, in literal-pathspec batches.
+ */
+async function dropVanishedPaths(
+  privateGit: RunGit,
+  repoPath: string,
+  files: readonly string[],
+): Promise<{ ok: true; files: string[]; vanished: string[] } | { ok: false; error: string }> {
+  const missing: string[] = [];
+  await Promise.all(
+    files.map(async (file) => {
+      try {
+        await lstat(join(repoPath, file));
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') missing.push(file);
+      }
+    }),
+  );
+  if (missing.length === 0) return { ok: true, files: [...files], vanished: [] };
+  const indexed = new Set<string>();
+  for (let i = 0; i < missing.length; i += VANISHED_PATH_PROBE_BATCH) {
+    const batch = missing.slice(i, i + VANISHED_PATH_PROBE_BATCH);
+    const res = await privateGit(['ls-files', '-z', '--', ...batch], repoPath, { env: { GIT_LITERAL_PATHSPECS: '1' } });
+    if (res.code !== 0) return { ok: false, error: `could not check vanished paths: ${gitFailureDetail(res)}` };
+    for (const entry of res.stdout.split('\0').filter(Boolean)) indexed.add(entry);
+  }
+  const isIndexed = (file: string): boolean =>
+    indexed.has(file) || [...indexed].some((entry) => entry.startsWith(file + '/'));
+  const vanished = new Set(missing.filter((file) => !isIndexed(file)));
+  return { ok: true, files: files.filter((file) => !vanished.has(file)), vanished: [...vanished] };
+}
+
+/** One attributed/residual group that did not publish, and why (WI-6554700010018197). */
+export interface AttributedGroupFailure {
+  /** The group's agent; null for the anonymous residual group. */
+  agent: string | null;
+  files: number;
+  error: string;
+}
+
 /**
  * P-004 (git-sync-dx-hardening): peel each declaring agent's dirty files into its OWN commit
  * (intent subject + a Co-Authored-By trailer), preserving the CI-skip marker. Excluded files
  * (oversized / content offenders) stay quarantined. The catch-all (agent=null) group is left
- * for the caller's existing whole-tree commit. A real commit failure returns an
- * error; a cooperative yield from beforeCommit propagates after private-index cleanup.
+ * for the caller's existing whole-tree commit. A cooperative yield from beforeCommit
+ * propagates after private-index cleanup.
+ *
+ * WI-6554700010018197: a failure is per GROUP, not per phase. A group whose seed, add, guard
+ * or publish fails is recorded in `groupFailures` and skipped (its files stay dirty for the
+ * caller's catch-all), and the loop goes on to the next group, which is seeded afresh from
+ * HEAD and guarded against everything outside its own index. Before, the first failing group
+ * returned, and every later agent's files went to the anonymous catch-all: the residual
+ * group runs first, so one bad residual path voided attribution for the whole tick (an 85h
+ * superproject outage). `error` joins the per-group errors so the caller still logs them.
+ * Only phase-wide refusals (no private index; a priority gitlink that cannot land) return
+ * before the loop.
  * Exported for the P-004 commit-grouping test (injected runGit, no real repo).
  *
  * WI-10006705: each group is built in a PRIVATE index, never the shared one. The
@@ -5140,7 +5232,47 @@ async function commitPriorityPaths(
  * The runner must forward `GitRunOptions.env`; it is probed once and the phase refuses
  * (the caller falls through to the catch-all) rather than ever touching the shared index.
  */
+/** One repo's attributed phase in one tick, as carried on GitSyncOutcome.attribution
+ *  (WI-6554700010018198). `scope` uses the same labels as skippedPaths. */
+export interface AttributionTally {
+  scope: string;
+  agentGroupCount: number;
+  agentCommitCount: number;
+  failedGroups: number;
+  error: string | null;
+}
+
+/** What one attributed phase did (WI-6554700010018197, WI-6554700010018198). */
+export interface AttributedGroupsResult {
+  committedAny: boolean;
+  committedCount: number;
+  /** Per-agent groups (agent !== null) that had dirty files this pass. */
+  agentGroupCount: number;
+  /** Of those, how many published a commit carrying the agent's trailer. Zero with a
+   *  non-zero agentGroupCount is an attribution failure: the agents' work went to the
+   *  anonymous catch-all. */
+  agentCommitCount: number;
+  error?: string;
+  /** Present only when at least one group failed (WI-6554700010018197). */
+  groupFailures?: AttributedGroupFailure[];
+}
+
 export async function commitAttributedGroups(
+  runGit: RunGit,
+  repoPath: string,
+  attribution: Map<string, FileAttribution>,
+  excludePaths: string[],
+  message: string,
+  opts: CommitAttributedGroupsOpts = {},
+): Promise<AttributedGroupsResult> {
+  const tally = { agentGroupCount: 0, agentCommitCount: 0 };
+  const res = await commitAttributedGroupsPass(runGit, repoPath, attribution, excludePaths, message, opts, tally);
+  return { ...res, ...tally };
+}
+
+type CommitAttributedGroupsOpts = Parameters<typeof commitAttributedGroupsPass>[5];
+
+async function commitAttributedGroupsPass(
   runGit: RunGit,
   repoPath: string,
   attribution: Map<string, FileAttribution>,
@@ -5156,12 +5288,17 @@ export async function commitAttributedGroups(
     deferAttributedPaths?: (paths: string[]) => void;
     /** EI-24712906810240170: runs after each group's add and before its commit (see
      *  guardStagedIndexBeforeCommit). WI-10006705: it receives the runner bound to the
-     *  group's PRIVATE index and must guard through it. A failure aborts the phase. */
+     *  group's PRIVATE index and must guard through it. A failure skips that group only
+     *  (WI-6554700010018197). */
     beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>;
     /** WI-10006519: receives the stale-lock recovery diagnostics. */
     log?: (m: string) => void;
   } = {},
-): Promise<{ committedAny: boolean; committedCount: number; error?: string }> {
+  tally: { agentGroupCount: number; agentCommitCount: number },
+): Promise<Omit<AttributedGroupsResult, 'agentGroupCount' | 'agentCommitCount'>> {
+  // Flag-OFF degradation: with nothing attributed there is no per-agent work, and the
+  // residual is exactly the caller's catch-all, so open no private index at all.
+  if (attribution.size === 0) return { committedAny: false, committedCount: 0 };
   const excludeSet = new Set(excludePaths);
   // Child worktree edits cannot change a superproject gitlink. Status also
   // reports staged reverts when the shared index has an obsolete gitlink, so
@@ -5234,6 +5371,7 @@ export async function commitAttributedGroups(
     ...grouped.filter((g) => g.agent !== null && g.files.length > 0),
   ];
   if (groups.length === 0) return { committedAny: false, committedCount: 0 };
+  tally.agentGroupCount = groups.filter((g) => g.agent !== null).length;
   const suffix = skipCiSuffix(message);
   const log = opts.log ?? (() => {});
   let committedAny = false;
@@ -5298,24 +5436,54 @@ export async function commitAttributedGroups(
     }
   }
 
+  const groupFailures: AttributedGroupFailure[] = [];
   for (const g of groups) {
     const groupLabel = g.agent ? `attributed commit for ${g.agent}` : 'residual catch-all';
     const indexFile = site.newIndexFile();
     const privateGit = site.bindIndex(indexFile);
+    // WI-6554700010018197: a failing group is recorded and skipped; later groups still run.
+    const fail = (error: string): void => {
+      groupFailures.push({ agent: g.agent, files: g.files.length, error });
+      log(
+        `[git-sync] ${repoPath}: ${groupLabel} skipped (${error}); its ${g.files.length} file(s) ` +
+          'stay dirty for the catch-all, and the remaining groups still commit',
+      );
+    };
     try {
       // 1. The CAS base and a private index seeded from it.
       const seeded = await seedPrivateIndex(runGit, privateGit, repoPath, indexFile, site.sharedIndex, groupLabel);
-      if (!seeded.ok) return { committedAny, committedCount, error: seeded.error };
+      if (!seeded.ok) {
+        fail(seeded.error);
+        continue;
+      }
       const { base, baseTree } = seeded;
 
-      // 2. Stage ONLY this group's files, then guard exactly that index.
-      const add = await privateGit(['add', '--', ...g.files], repoPath);
+      // 2. Stage ONLY this group's files, then guard exactly that index. Paths that exist
+      //    in neither the working tree nor this index are dropped first (dropVanishedPaths).
+      const present = await dropVanishedPaths(privateGit, repoPath, g.files);
+      if (!present.ok) {
+        fail(`${groupLabel} ${present.error}`);
+        continue;
+      }
+      if (present.vanished.length > 0) {
+        log(
+          `[git-sync] ${repoPath}: ${groupLabel} dropped ${present.vanished.length} path(s) present in neither ` +
+            `the working tree nor HEAD (shared-index-only entries): ${present.vanished.slice(0, 5).join(', ')}` +
+            (present.vanished.length > 5 ? ', …' : ''),
+        );
+      }
+      if (present.files.length === 0) continue;
+      const add = await privateGit(['add', '--', ...present.files], repoPath);
       if (add.code !== 0) {
-        return { committedAny, committedCount, error: `${groupLabel} add failed: ${gitFailureDetail(add)}` };
+        fail(`${groupLabel} add failed: ${gitFailureDetail(add)}`);
+        continue;
       }
       if (opts.beforeCommit) {
         const guard = await opts.beforeCommit(privateGit);
-        if (!guard.ok) return { committedAny, committedCount, error: guard.error };
+        if (!guard.ok) {
+          fail(guard.error);
+          continue;
+        }
       }
 
       // 5 (runs inside step 4, before the CAS). WI-10006850: bring the SHARED index's entries
@@ -5378,13 +5546,16 @@ export async function commitAttributedGroups(
           let intentBody: string | null = null;
           let sweepMessageBody: string | null = null;
           if (opts.diffSubjects !== false) {
-            const ns = await privateGit(['diff', '--cached', '--numstat', ...(base ? [base] : []), '--', ...g.files], repoPath);
+            const ns = await privateGit(
+              ['diff', '--cached', '--numstat', ...(base ? [base] : []), '--', ...present.files],
+              repoPath,
+            );
             const stats = ns.code === 0 ? parseNumstat(ns.stdout) : undefined;
             if (g.agent === null && (!stats || stats.length === 0)) {
               // Match the catch-all fallback when numstat cannot describe a non-empty commit.
               return attributedMessageArgs(g, message, '', null);
             }
-            subject = diffDerivedSubject(g.files, stats);
+            subject = diffDerivedSubject(present.files, stats);
             if (g.agent === null) sweepMessageBody = message;
             else if (g.subject && g.subject !== DEFAULT_GIT_SYNC_SUBJECT) intentBody = g.subject;
           } else if (g.agent === null) {
@@ -5395,7 +5566,10 @@ export async function commitAttributedGroups(
         },
       });
       if (published.status === 'nothing') continue;
-      if (published.status === 'error') return { committedAny, committedCount, error: published.error };
+      if (published.status === 'error') {
+        fail(published.error);
+        continue;
+      }
       if (published.status === 'cas-refused') {
         log(
           `[git-sync] ${repoPath}: HEAD moved while ${groupLabel} was being built ` +
@@ -5406,12 +5580,21 @@ export async function commitAttributedGroups(
       }
       committedAny = true;
       committedCount += 1;
+      if (g.agent !== null) tally.agentCommitCount += 1;
     } finally {
       await rm(indexFile, { force: true }).catch(() => {});
       await rm(`${indexFile}.lock`, { force: true }).catch(() => {});
     }
   }
-  return { committedAny, committedCount };
+  if (groupFailures.length === 0) return { committedAny, committedCount };
+  return {
+    committedAny,
+    committedCount,
+    error:
+      `${groupFailures.length} of ${groups.length} group(s) failed: ` +
+      groupFailures.map((f) => f.error).join('; '),
+    groupFailures,
+  };
 }
 
 /** The knobs the COMMIT half of one repo's sync needs (stage + content-guard + commit). */
@@ -5432,6 +5615,8 @@ interface CommitRepoOpts {
   log: (m: string) => void;
   staleTempPackMs: number;
   isTempPackOpen?: (path: string) => Promise<boolean | null>;
+  /** Test seam: holder probe for the stale `objects/maintenance.lock` guard. */
+  isGitLockOpen?: (path: string) => Promise<boolean | null>;
   /** Caller-supplied protected paths in THIS repo's relative coordinate space. */
   excludePaths: string[];
   /**
@@ -5449,6 +5634,9 @@ interface CommitRepoOpts {
    *  anonymous residual is committed first, then attributed groups; the final catch-all
    *  `git add -A` still sweeps concurrent arrivals and failed groups. */
   attribution?: Map<string, FileAttribution>;
+  /** WI-6554700010018198: receives this repo's attributed-phase tally whenever the phase
+   *  runs, so the tick outcome can carry it to routine metadata and the escalation. */
+  onAttribution?: (t: AttributionTally) => void;
   /** Root-relative submodule gitlinks to commit before any attributed source groups. */
   priorityPaths?: string[];
   /** Source/generated pairs that must bypass per-agent peeling and land together
@@ -5548,7 +5736,7 @@ function migrationReservationSkips(
  * reconcile, and push. */
 type ReconcileRepoOpts = Pick<
   CommitRepoOpts,
-  'remote' | 'defaultBranch' | 'log' | 'staleTempPackMs' | 'isTempPackOpen'
+  'remote' | 'defaultBranch' | 'log' | 'staleTempPackMs' | 'isTempPackOpen' | 'isGitLockOpen'
 > & {
   doPush: boolean;
   /** Disable Git's commit-graph ancestry fast path when this repo merges submodule gitlinks. */
@@ -6341,6 +6529,13 @@ async function commitOneRepoWithScratch(
       }
       committedAny = res.committedAny;
       committedCount += res.committedCount;
+      o.onAttribution?.({
+        scope: o.scope,
+        agentGroupCount: res.agentGroupCount,
+        agentCommitCount: res.agentCommitCount,
+        failedGroups: res.groupFailures?.length ?? 0,
+        error: res.error ?? null,
+      });
     }
     // Catch-all = today's single whole-tree commit: sweeps the unattributed remainder (or
     // EVERYTHING when no attribution), including anything a path-specific add missed (rename
@@ -6943,6 +7138,15 @@ async function reconcileAndPushOneRepo(
       `[git-sync] ${repoPath}: stale tmp_pack cleanup; pruned ${stale.removed.length} unopened unreferenced file(s), reclaimed ${stale.bytesReclaimed} bytes`,
     );
   }
+  // WI-6554700010018201: an orphaned objects/maintenance.lock silently disables
+  // git's auto-gc for this repo. Best-effort: a failed check must never fail the sync.
+  try {
+    await clearStaleMaintenanceLock(runGit, repoPath, o.log, o.isGitLockOpen ? { isOpen: o.isGitLockOpen } : {});
+  } catch (e) {
+    o.log(
+      `[git-sync] ${repoPath}: objects/maintenance.lock check failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   const zeroByteLooseObjects = await findZeroByteLooseObjects(runGit, repoPath);
   if (zeroByteLooseObjects.length > 0) {
     return {
@@ -7250,6 +7454,18 @@ async function syncOneRepo(
  * unreconciled submodule defers the superproject push to a later (clean) tick.
  */
 export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promise<GitSyncOutcome> {
+  // WI-6554700010018198: collected here rather than threaded through every return
+  // branch, so no outcome path can drop it.
+  const attribution: AttributionTally[] = [];
+  const out = await runGitSyncPass(slug, opts, (t) => attribution.push(t));
+  return attribution.length > 0 ? { ...out, attribution } : out;
+}
+
+async function runGitSyncPass(
+  slug: string,
+  opts: RunGitSyncOpts,
+  onAttribution: (t: AttributionTally) => void,
+): Promise<GitSyncOutcome> {
   /**
    * An action-level stall guard can abort the owning fire while a git child is
    * still draining its SIGTERM/SIGKILL grace period.  Check the signal at the
@@ -7384,6 +7600,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     log,
     staleTempPackMs: opts.staleTempPackMs ?? STALE_TEMP_PACK_MS,
     isTempPackOpen: opts.isTempPackOpen,
+    isGitLockOpen: opts.isGitLockOpen,
     diffSubjects: opts.diffSubjects ?? true,
     migrationReservationChecker: opts.migrationReservationChecker,
     loadMigrationFenceRoster: opts.loadMigrationFenceRoster,
@@ -7623,6 +7840,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           .filter((holding) => holding.path.length > 0),
         refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.(s, subPaths),
         attribution: attributionMapForRepo(roster, s, repo),
+        onAttribution,
       });
     // WI-10003100: syncing every repo serially delayed the superproject commit
     // behind a 338s submodule phase on a 38-submodule checkout. Sync only
@@ -7791,6 +8009,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       protectedHoldings: superprojectProtectedHoldings,
       refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', submodulePaths),
       attribution: attributionMapForRepo(roster, '', repo),
+      onAttribution,
       priorityPaths: superprojectGitlinkPaths,
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
       yieldIfRequested: yieldSuperproject,

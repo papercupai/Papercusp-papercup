@@ -279,16 +279,21 @@ export function fullRunDue(input: { lastFullRunAtMs: number | null; nowMs: numbe
   return input.nowMs - input.lastFullRunAtMs >= (input.intervalMs ?? PERIODIC_FULL_RUN_INTERVAL_MS);
 }
 
-/** The whole-suite leg's payload: the full suite in a clean tree at `sha`. */
+/** The whole-suite leg's payload: the full suite in a clean tree at `sha`.
+ *  `--any` is required: lint-as-committed refuses any script outside `lint:*` with exit 2
+ *  before it extracts a tree. Without it every run was inconclusive ("no terminal break-set
+ *  line (exit 2)", first live fire 2026-10-20 17:55Z, WI-6554700010018216). The test feeds
+ *  these argv through lint-as-committed's own parseArgs so the two cannot drift again. */
 export function fullRunPayload(sha: string): { cmd: string; args: string[] } {
-  return { cmd: 'npm', args: ['run', '--silent', 'lint:as-committed', '--', 'test:all', `--ref=${sha}`] };
+  return { cmd: 'npm', args: ['run', '--silent', 'lint:as-committed', '--', 'test:all', `--ref=${sha}`, '--any'] };
 }
 
 /** One bisection probe's payload: ONE file in a clean tree at `sha`. One file per invocation,
  *  because a multi-file run can abort at collection and its result must not be attributed
- *  to every requested path (root CLAUDE.md, gate failure triage). */
+ *  to every requested path (root CLAUDE.md, gate failure triage). `--any` goes before the
+ *  forward `--`; anything after it is passed to test:file as an operand. */
 export function probePayload(sha: string, file: string): { cmd: string; args: string[] } {
-  return { cmd: 'npm', args: ['run', '--silent', 'lint:as-committed', '--', 'test:file', `--ref=${sha}`, '--', file] };
+  return { cmd: 'npm', args: ['run', '--silent', 'lint:as-committed', '--', 'test:file', `--ref=${sha}`, '--any', '--', file] };
 }
 
 /** The whole-suite leg inside the reserved slice (R-11 falsifier 3). The deps run the payload

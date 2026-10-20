@@ -39,12 +39,12 @@
  * 25-minute affected leg in the delta check can never delay a guard red).
  */
 import {
-  buildCoverageAlarm,
   creditLateJudgedSlots,
   evaluateCapacity,
   evaluateCoverage,
   EDITOR_LOOKBACK_MARGIN_MS,
   fileRoutedRed,
+  maintainCoverageAlarm,
   pickRedAuthor,
   recordCoverageOpportunities,
   SYNC_DELTA_SLA_MINUTES,
@@ -536,14 +536,10 @@ async function recordLintGuardCoverage(
     });
   }
   const verdict = evaluateCoverage(coverage, now);
-  if (verdict.low && coverage.alarmOpenSinceMs === undefined) {
-    const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage, LINT_GUARDS_COVERAGE_ALARM_SUBJECT));
-    if (res.ok) coverage = { ...coverage, alarmOpenSinceMs: now };
-    deps.log(`[sync-lint-guards] coverage low (${verdict.evaluated}/${verdict.total}) — alarm ${res.ok ? 'filed' : `failed: ${res.error}`}`);
-  } else if (!verdict.low && verdict.ratio !== null && coverage.alarmOpenSinceMs !== undefined) {
-    const { alarmOpenSinceMs: _cleared, ...rest } = coverage;
-    coverage = rest;
-  }
+  coverage = await maintainCoverageAlarm(deps, coverage, verdict, now, {
+    subject: LINT_GUARDS_COVERAGE_ALARM_SUBJECT,
+    logLabel: 'sync-lint-guards',
+  });
   const next: SyncLintGuardState = { ...state, coverage };
   await deps.writeGuardState(next);
   return next;

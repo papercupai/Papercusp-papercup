@@ -136,6 +136,21 @@ describe('validateObservationRatings — the D-002 mandatory-evidence gate', () 
     };
     expect(() => validateObservationRatings(obs)).not.toThrow();
   });
+
+  it('rejects an unknownReason attached to an assessed rating', () => {
+    expect(() =>
+      validateObservationRatings({
+        rubricRef: 'meta-acceptance-rubric',
+        ratings: {
+          'prefer-structured-check': {
+            rating: 'weak',
+            evidence: 'reviewer assessed the criterion as weak',
+            unknownReason: 'not-assessed',
+          },
+        },
+      }),
+    ).toThrow(/unknownReason is only valid when rating is 'unknown'/);
+  });
 });
 
 describe('validateScorecardCompleteness — the P-014a completeness gate', () => {

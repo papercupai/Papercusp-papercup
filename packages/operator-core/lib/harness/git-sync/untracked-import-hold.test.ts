@@ -168,12 +168,14 @@ describe('WI-10006734: importers of untracked modules absent from the commit', (
       ['lib/sync-resolver/index.ts', { agent: 'ag1', intent: 'work' }],
     ]);
 
-    const res = await commitAttributedGroups(runGit, repo, attribution, [], MSG, {
+    // The unattributed provider would otherwise commit first as the anonymous residual
+    // (0eacc351a9). Held out of this tick, it stays untracked while ag1's group commits.
+    const res = await commitAttributedGroups(runGit, repo, attribution, ['lib/integrations/ticket-integrations.ts'], MSG, {
       beforeCommit: (privateRunGit) => guard(privateRunGit),
       log,
     });
 
-    expect(res).toEqual({ committedAny: true, committedCount: 1 });
+    expect(res).toEqual({ committedAny: true, committedCount: 1, agentGroupCount: 1, agentCommitCount: 1 });
     expect(await git(repo, 'show', '--name-only', '--format=', 'HEAD')).toBe('lib/a.ts');
     expect(await git(repo, 'ls-tree', '-r', '--name-only', 'HEAD', '--', 'lib/sync-resolver')).toBe('');
     expect(await git(repo, 'status', '--porcelain', '-uall', '--', 'lib/sync-resolver', 'lib/integrations')).toBe(
@@ -199,12 +201,13 @@ describe('WI-10006734: importers of untracked modules absent from the commit', (
       [importerPath, { agent: 'ag1', intent: 'work' }],
     ]);
 
-    const result = await commitAttributedGroups(runGit, repo, attribution, [], MSG, {
+    // Held out of this tick, so the anonymous residual (0eacc351a9) cannot commit it first.
+    const result = await commitAttributedGroups(runGit, repo, attribution, [providerPath], MSG, {
       beforeCommit: (privateRunGit) => guard(privateRunGit),
       log,
     });
 
-    expect(result).toEqual({ committedAny: true, committedCount: 1 });
+    expect(result).toEqual({ committedAny: true, committedCount: 1, agentGroupCount: 1, agentCommitCount: 1 });
     expect(await git(repo, 'show', '--name-only', '--format=', 'HEAD')).toBe(controlPath);
     expect(await git(repo, 'show', `HEAD:${providerPath}`)).toContain('oldValue');
     expect(await git(repo, 'show', `HEAD:${providerPath}`)).not.toContain('newValue');

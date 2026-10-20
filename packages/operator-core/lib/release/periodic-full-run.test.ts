@@ -7,8 +7,10 @@ import {
   failureDelta,
   fullRunArgv,
   fullRunDue,
+  fullRunPayload,
   parseMainReflog,
   probeArgv,
+  probePayload,
   routeFailure,
   runPeriodicFullRun,
   type FailingFile,
@@ -218,6 +220,29 @@ describe('cadence and reserved capacity (R-11 falsifier 3)', () => {
     }
     expect(fullRunArgv(sha(7)).args).toContain('test:all');
     expect(probeArgv(sha(7), 'x.test.ts').args.slice(-2)).toEqual(['--', 'x.test.ts']);
+  });
+});
+
+describe('payloads are accepted by lint-as-committed (WI-6554700010018216)', () => {
+  // The first live fire (2026-10-20 17:55Z) was inconclusive: lint-as-committed refused
+  // 'test:all' as a non-lint script with exit 2, because the payload had no --any. Parse the
+  // payloads with the runner's OWN parser so a change on either side fails here, not live.
+  // npm hands the script everything after the first '--' (npm's own separator).
+  const scriptArgv = (args: string[]) => args.slice(args.indexOf('--') + 1);
+  async function parse(args: string[]) {
+    // @ts-expect-error TS7016 — plain-JS script with no .d.mts; the cast names the one export used.
+    const mod = (await import('../../../../scripts/lint-as-committed.mjs')) as {
+      parseArgs: (argv: string[]) => { scripts: string[]; forward: string[]; ref: string; any: boolean; unknown: string[]; nonLint: string[] };
+    };
+    return mod.parseArgs(scriptArgv(args));
+  }
+  it('runs test:all at the sha without a non-lint refusal or unknown flag', async () => {
+    const p = await parse(fullRunPayload(sha(7)).args);
+    expect(p).toMatchObject({ scripts: ['test:all'], ref: sha(7), any: true, nonLint: [], unknown: [], forward: [] });
+  });
+  it('runs test:file at the sha on exactly the one forwarded file', async () => {
+    const p = await parse(probePayload(sha(7), 'x.test.ts').args);
+    expect(p).toMatchObject({ scripts: ['test:file'], ref: sha(7), any: true, nonLint: [], unknown: [], forward: ['x.test.ts'] });
   });
 });
 

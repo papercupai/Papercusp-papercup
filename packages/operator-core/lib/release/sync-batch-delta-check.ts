@@ -891,6 +891,9 @@ export interface SyncDeltaCoverage {
   ticks: CoverageTick[];
   /** Epoch ms the low-coverage alarm was raised; absent while coverage is healthy. */
   alarmOpenSinceMs?: number;
+  /** Epoch ms the open alarm was last (re-)filed with current numbers; absent on cursors
+   *  written before WI-6554700010018239, which then refresh on their next low tick. */
+  alarmRefreshedAtMs?: number;
 }
 
 /** Coverage history kept on the cursor: 24h, bounded so the row cannot grow. */
@@ -921,7 +924,8 @@ export const SYNC_DELTA_RUN_BUDGET_MS =
  *  DERIVED, not chosen (D-031, refining D-030 #3): runs go one at a time, so a slot that
  *  arrives mid-run is judged by the NEXT run, which starts within one run plus one interval
  *  and ends one run later. A check that is keeping up therefore judges every slot within
- *  2 x SYNC_DELTA_RUN_BUDGET_MS + COVERAGE_EXPECTED_INTERVAL_MS (95 min today); the old fixed
+ *  2 x SYNC_DELTA_RUN_BUDGET_MS + COVERAGE_EXPECTED_INTERVAL_MS (135 min today: legs
+ *  10 + 10 + 45 per D-034, so 2 x 65 + 5); the old fixed
  *  30 minutes assumed a few-minute run and failed normal in-budget runs by construction. */
 export const COVERAGE_JUDGE_DEADLINE_MS = 2 * SYNC_DELTA_RUN_BUDGET_MS + COVERAGE_EXPECTED_INTERVAL_MS;
 
@@ -981,7 +985,11 @@ export function recordCoverageTick(
 ): SyncDeltaCoverage {
   const cutoff = tick.atMs - COVERAGE_RETENTION_MS;
   const ticks = [...(prior?.ticks ?? []).filter((t) => t.atMs >= cutoff), tick].slice(-COVERAGE_MAX_TICKS);
-  return { ...(prior?.alarmOpenSinceMs !== undefined ? { alarmOpenSinceMs: prior.alarmOpenSinceMs } : {}), ticks };
+  return {
+    ...(prior?.alarmOpenSinceMs !== undefined ? { alarmOpenSinceMs: prior.alarmOpenSinceMs } : {}),
+    ...(prior?.alarmRefreshedAtMs !== undefined ? { alarmRefreshedAtMs: prior.alarmRefreshedAtMs } : {}),
+    ticks,
+  };
 }
 
 /** Record a completed invocation plus schedule opportunities that passed while
@@ -1137,6 +1145,53 @@ export function buildCoverageAlarm(
     assignee: null,
     authorSource: 'none',
   };
+}
+
+/** How often an OPEN low-coverage alarm is re-filed so its numbers stay current
+ *  (WI-6554700010018239). Without it the item kept the text of the tick that opened it:
+ *  the 2026-10-07 alarm still read "2h window, 80% floor" thirteen days and one rule
+ *  change later. A re-file goes through the conditionKey upsert, which rewrites an
+ *  UNCLAIMED incumbent's title/summary and leaves a claimed one's subject alone; if the
+ *  item was closed meanwhile, the same re-file mints a fresh alarm. */
+export const COVERAGE_ALARM_REFRESH_MS = 60 * 60_000;
+
+/**
+ * Raise, refresh or clear the low-coverage alarm for one check. Both sync-batch checks
+ * call this so their alarm lifecycles cannot drift apart (P-009 / D-017 point 4).
+ * - low, no alarm open → file it; on success record open + refreshed times.
+ * - low, alarm open, last (re-)file at least `COVERAGE_ALARM_REFRESH_MS` ago → re-file
+ *   with the current verdict; on success record the refresh time. A cursor written
+ *   before refresh existed has only `alarmOpenSinceMs`, which stands in as the last file.
+ * - healthy on enough samples, alarm open → clear both times (the item itself is left
+ *   to its holder or the condition reconciler).
+ * Filing failures never throw and never advance the timestamps, so the next tick retries.
+ */
+export async function maintainCoverageAlarm(
+  deps: Pick<SyncBatchDeltaDeps, 'fileRed' | 'log'>,
+  coverage: SyncDeltaCoverage,
+  verdict: CoverageVerdict,
+  now: number,
+  opts: { subject?: CoverageAlarmSubject; logLabel: string },
+): Promise<SyncDeltaCoverage> {
+  if (verdict.low) {
+    const lastFiledMs = coverage.alarmRefreshedAtMs ?? coverage.alarmOpenSinceMs;
+    const opening = coverage.alarmOpenSinceMs === undefined;
+    if (!opening && lastFiledMs !== undefined && now - lastFiledMs < COVERAGE_ALARM_REFRESH_MS) return coverage;
+    const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage, opts.subject));
+    deps.log(
+      `[${opts.logLabel}] coverage low (${verdict.evaluated}/${verdict.total}) — alarm ` +
+        `${res.ok ? (opening ? 'filed' : 'refreshed') : `${opening ? 'filing' : 'refresh'} failed: ${res.error}`}`,
+    );
+    if (!res.ok) return coverage;
+    return opening
+      ? { ...coverage, alarmOpenSinceMs: now, alarmRefreshedAtMs: now }
+      : { ...coverage, alarmRefreshedAtMs: now };
+  }
+  if (verdict.ratio !== null && coverage.alarmOpenSinceMs !== undefined) {
+    const { alarmOpenSinceMs: _open, alarmRefreshedAtMs: _refreshed, ...rest } = coverage;
+    return rest;
+  }
+  return coverage;
 }
 
 // ── author routing (P-002 / R-3) ─────────────────────────────────────────────
@@ -1668,9 +1723,9 @@ export async function runSyncBatchDeltaCheck(
   return result;
 }
 
-/** Append this tick to the coverage history and raise/clear the low-coverage alarm.
- *  The alarm files only on the TRANSITION into low coverage, so a sustained low
- *  period is one item, not one per tick. */
+/** Append this tick to the coverage history and raise/refresh/clear the low-coverage
+ *  alarm. A sustained low period stays ONE item (conditionKey upsert), re-filed at most
+ *  hourly so its numbers stay current (maintainCoverageAlarm). */
 async function recordCoverage(
   deps: SyncBatchDeltaDeps,
   prior: SyncDeltaCoverage | undefined,
@@ -1703,14 +1758,7 @@ async function recordCoverage(
     });
   }
   const verdict = evaluateCoverage(coverage, now);
-  if (verdict.low && coverage.alarmOpenSinceMs === undefined) {
-    const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage));
-    if (res.ok) coverage = { ...coverage, alarmOpenSinceMs: now };
-    deps.log(`[sync-batch-delta] coverage low (${verdict.evaluated}/${verdict.total}) — alarm ${res.ok ? 'filed' : `failed: ${res.error}`}`);
-  } else if (!verdict.low && verdict.ratio !== null && coverage.alarmOpenSinceMs !== undefined) {
-    const { alarmOpenSinceMs: _cleared, ...rest } = coverage;
-    coverage = rest;
-  }
+  coverage = await maintainCoverageAlarm(deps, coverage, verdict, now, { logLabel: 'sync-batch-delta' });
   const nextCursor = { ...cursor, coverage };
   if (result.status === 'skipped' && tickReason) {
     nextCursor.lastSkipReason = tickReason;

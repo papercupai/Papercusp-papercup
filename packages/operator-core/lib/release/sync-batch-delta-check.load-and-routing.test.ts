@@ -72,6 +72,7 @@ import { buildSyncLintGuardDeps } from './sync-batch-lint-guards-deps';
 import {
   COVERAGE_ALARM_CONDITION_KEY,
   COVERAGE_ALARM_MIN_TICKS,
+  COVERAGE_ALARM_REFRESH_MS,
   COVERAGE_ALARM_THRESHOLD,
   COVERAGE_ALARM_WINDOW_MS,
   COVERAGE_EXPECTED_INTERVAL_MS,
@@ -492,13 +493,73 @@ describe('coverage record + alarm (R-2)', () => {
     state.cursor = {
       sha: SHA_A,
       updatedAtMs: 1,
-      coverage: { alarmOpenSinceMs: NOW - 1, ticks: judged },
+      coverage: { alarmOpenSinceMs: NOW - 1, alarmRefreshedAtMs: NOW - 1, ticks: judged },
     };
     deps.headSha = async () => SHA_B;
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res.status).toBe('green');
     expect(state.cursor?.coverage?.alarmOpenSinceMs).toBeUndefined();
+    expect(state.cursor?.coverage?.alarmRefreshedAtMs).toBeUndefined();
     expect(state.cursor?.coverage?.ticks.at(-1)).toMatchObject({ atMs: NOW, evaluated: true });
+  });
+
+  // WI-6554700010018239: an alarm opened on 2026-10-07 still carried that day's text (2h
+  // window, 80% floor) under the 24h/95% rule, because the check filed only on the
+  // transition into low coverage. While it stays low, the open alarm is re-filed hourly.
+  it('re-files the open alarm with current numbers once COVERAGE_ALARM_REFRESH_MS has passed', async () => {
+    let now = NOW;
+    const { deps, state } = fakeDeps(
+      { headSha: async () => null, now: () => now }, // every tick skips → unevaluated
+      { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: ticks(COVERAGE_ALARM_MIN_TICKS, false) } },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.filed).toHaveLength(1);
+    expect(state.cursor?.coverage).toMatchObject({ alarmOpenSinceMs: NOW, alarmRefreshedAtMs: NOW });
+
+    now = NOW + COVERAGE_ALARM_REFRESH_MS - 1; // still inside the throttle
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.filed).toHaveLength(1);
+
+    now = NOW + COVERAGE_ALARM_REFRESH_MS;
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.filed).toHaveLength(2);
+    const refreshed = state.filed[1]!;
+    expect(refreshed.conditionKey).toBe(COVERAGE_ALARM_CONDITION_KEY);
+    // The re-file carries THIS tick's verdict, not the opening one's.
+    const verdict = evaluateCoverage(state.cursor?.coverage, now);
+    expect(refreshed.body).toContain(`judged only ${verdict.evaluated} of ${verdict.total} schedule slots`);
+    expect(refreshed.body).not.toBe(state.filed[0]!.body);
+    expect(state.cursor?.coverage).toMatchObject({ alarmOpenSinceMs: NOW, alarmRefreshedAtMs: now });
+    expect(state.logs.some((line) => /alarm refreshed/.test(line))).toBe(true);
+  });
+
+  it('refreshes a pre-refresh cursor (alarmOpenSinceMs only) on its next low tick, and retries a failed refresh', async () => {
+    const opened = NOW - 13 * 24 * 60 * 60_000; // the 2026-10-07 shape: open, never refreshed
+    const { deps, state } = fakeDeps(
+      { headSha: async () => null },
+      { sha: SHA_A, updatedAtMs: 1, coverage: { alarmOpenSinceMs: opened, ticks: ticks(COVERAGE_ALARM_MIN_TICKS, false) } },
+    );
+    const fileRed = deps.fileRed;
+    deps.fileRed = async () => ({ ok: false, error: 'store down' });
+    await runSyncBatchDeltaCheck(deps);
+    // A failed refresh keeps the open time and records no refresh, so the next tick retries.
+    expect(state.cursor?.coverage?.alarmOpenSinceMs).toBe(opened);
+    expect(state.cursor?.coverage?.alarmRefreshedAtMs).toBeUndefined();
+    expect(state.logs.some((line) => /refresh failed: store down/.test(line))).toBe(true);
+
+    deps.fileRed = fileRed;
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.filed).toHaveLength(1);
+    expect(state.filed[0]!.title).toMatch(/over 24h$/);
+    expect(state.cursor?.coverage).toMatchObject({ alarmOpenSinceMs: opened, alarmRefreshedAtMs: NOW });
+  });
+
+  it('carries the refresh time through recordCoverageTick', () => {
+    const kept = recordCoverageTick(
+      { alarmOpenSinceMs: 1, alarmRefreshedAtMs: 2, ticks: [] },
+      { atMs: NOW, evaluated: false, status: 'skipped' },
+    );
+    expect(kept).toMatchObject({ alarmOpenSinceMs: 1, alarmRefreshedAtMs: 2 });
   });
 });
 

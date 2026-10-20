@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { CoverageTick, RedFinding, SyncBatch } from './sync-batch-delta-check';
+import { COVERAGE_ALARM_REFRESH_MS } from './sync-batch-delta-check';
 import {
   classifyGuardRun,
   diffGuardViolations,
@@ -559,6 +560,23 @@ describe('lint-guard coverage', () => {
     await runSyncLintGuardTick(again.deps);
     expect(again.filed.filter(isAlarm)).toHaveLength(0);
     expect(again.state.value?.coverage?.alarmOpenSinceMs).toBe(T0);
+  });
+
+  // WI-6554700010018239: the same refresh the delta check does, through the shared helper.
+  it('re-files the still-low alarm hourly with the current numbers, keeping its open time', async () => {
+    const prior = { ...allPass('h1'), coverage: { ticks: history(T0, 200, 10) } };
+    const f = fake({ head: 'h1', prior, now: () => T0 });
+    await runSyncLintGuardTick(f.deps);
+    expect(f.state.value?.coverage).toMatchObject({ alarmOpenSinceMs: T0, alarmRefreshedAtMs: T0 });
+
+    const later = T0 + COVERAGE_ALARM_REFRESH_MS;
+    const again = fake({ head: 'h1', prior: f.state.value, now: () => later });
+    await runSyncLintGuardTick(again.deps);
+    const alarms = again.filed.filter(isAlarm);
+    expect(alarms).toHaveLength(1);
+    expect(alarms[0]!.conditionKey).toBe('sync-lint-guards-coverage-low');
+    expect(alarms[0]!.title).toMatch(/^sync-batch lint guards coverage low: \d+% of schedule slots judged over 24h$/);
+    expect(again.state.value?.coverage).toMatchObject({ alarmOpenSinceMs: T0, alarmRefreshedAtMs: later });
   });
 
   it('does not alarm at or above 95%, nor on fewer than 144 slots of history', async () => {

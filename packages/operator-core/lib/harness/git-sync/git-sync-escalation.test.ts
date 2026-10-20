@@ -7,15 +7,71 @@ import {
   decideContentQuarantineNotice,
   decideGitSyncEscalation,
   effectivePublishRefusal,
+  nextZeroAttributionTicks,
   oversizedKey,
   PUSH_FAILURE_ESCALATION_TICKS,
   selectContentNoticeRecipients,
+  ZERO_ATTRIBUTION_ESCALATION_TICKS,
+  ZERO_ATTRIBUTION_REBROADCAST_TICKS,
 } from './git-sync-escalation';
 import {
   DEFAULT_MAX_BLOB_BYTES,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES,
+  type AttributionTally,
   type ScopedOversized,
 } from './run-git-sync';
+
+describe('zero-attribution detector (WI-6554700010018198)', () => {
+  const tally = (scope: string, agentGroupCount: number, agentCommitCount: number, error: string | null = null): AttributionTally => ({
+    scope,
+    agentGroupCount,
+    agentCommitCount,
+    failedGroups: agentGroupCount - agentCommitCount,
+    error,
+  });
+
+  it('counts a tick where one repo had agent work and none was attributed, even if another repo attributed', () => {
+    // The 85h outage: submodules kept attributing while the superproject got nothing.
+    expect(nextZeroAttributionTicks(4, [tally('superproject', 3, 0, 'residual add failed'), tally('libs/papercusp', 2, 2)])).toBe(5);
+  });
+
+  it('resets only on a measured attributed commit with no zero repo', () => {
+    expect(nextZeroAttributionTicks(9, [tally('superproject', 2, 1)])).toBe(0);
+  });
+
+  it('holds the count on a tick that measured nothing, so an idle tick cannot hide an outage', () => {
+    expect(nextZeroAttributionTicks(7, undefined)).toBe(7);
+    expect(nextZeroAttributionTicks(7, [])).toBe(7);
+    expect(nextZeroAttributionTicks(7, [tally('superproject', 0, 0)])).toBe(7);
+  });
+
+  it('escalates from the threshold tick and broadcasts at the threshold, then every rebroadcast window', () => {
+    const attribution = [tally('superproject', 3, 0, 'residual catch-all add failed: pathspec did not match')];
+    const below = decideGitSyncEscalation({ ...base, zeroAttributionTicks: ZERO_ATTRIBUTION_ESCALATION_TICKS - 1, attribution });
+    expect(below.reasons).not.toContain('attribution-failed');
+    expect(below.broadcast).toBeNull();
+    expect(below.clear).toBe(true);
+
+    const at = decideGitSyncEscalation({ ...base, zeroAttributionTicks: ZERO_ATTRIBUTION_ESCALATION_TICKS, attribution });
+    expect(at.escalate).toBe(true);
+    expect(at.reasons).toContain('attribution-failed');
+    expect(at.clear).toBe(false);
+    expect(at.broadcast).toContain(`NO attributed commit for ${ZERO_ATTRIBUTION_ESCALATION_TICKS} CONSECUTIVE ticks`);
+    expect(at.broadcast).toContain('superproject: 3 agent group(s), 3 failed (residual catch-all add failed');
+
+    const spoken: number[] = [];
+    for (let t = ZERO_ATTRIBUTION_ESCALATION_TICKS; t <= ZERO_ATTRIBUTION_ESCALATION_TICKS + 2 * ZERO_ATTRIBUTION_REBROADCAST_TICKS; t++) {
+      const d = decideGitSyncEscalation({ ...base, zeroAttributionTicks: t, attribution });
+      expect(d.reasons).toContain('attribution-failed');
+      if (d.broadcast) spoken.push(t);
+    }
+    expect(spoken).toEqual([
+      ZERO_ATTRIBUTION_ESCALATION_TICKS,
+      ZERO_ATTRIBUTION_ESCALATION_TICKS + ZERO_ATTRIBUTION_REBROADCAST_TICKS,
+      ZERO_ATTRIBUTION_ESCALATION_TICKS + 2 * ZERO_ATTRIBUTION_REBROADCAST_TICKS,
+    ]);
+  });
+});
 
 const big: ScopedOversized = { scope: 'superproject', path: 'apps/tui/target/huge.rlib', sizeBytes: 200 * 1048576 };
 

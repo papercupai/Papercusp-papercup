@@ -303,7 +303,7 @@ export function parsePapercuspTrailers(commitBody: string): ParsedCommitAttribut
 export interface CommitAttributionRow {
   workspaceId: string;
   harnessSlug: string;
-  /** scope: 'superproject' or a submodule path. */
+  /** 'superproject', or the submodule path relative to the top-level superproject; `file` is relative to this repo. */
   repo: string;
   commitSha: string;
   file: string;
@@ -311,6 +311,8 @@ export interface CommitAttributionRow {
   sessionId?: string;
   workItemId?: string;
   planSlug?: string;
+  /** Committer date of `commitSha` (ISO 8601). `ts` is when the row was recorded, which can lag by hours. */
+  committedAt?: string;
 }
 
 /**
@@ -325,7 +327,7 @@ export async function recordCommitAttribution(rows: CommitAttributionRow[]): Pro
     const { sql } = getOrgPg();
     await sql`
       INSERT INTO harness_shared.git_sync_commit_attribution
-        (workspace_id, harness_slug, repo, commit_sha, file, agent_id, session_id, work_item_id, plan_slug)
+        (workspace_id, harness_slug, repo, commit_sha, file, agent_id, session_id, work_item_id, plan_slug, committed_at)
       SELECT * FROM unnest(
         ${rows.map((r) => r.workspaceId)}::text[],
         ${rows.map((r) => r.harnessSlug)}::text[],
@@ -335,11 +337,16 @@ export async function recordCommitAttribution(rows: CommitAttributionRow[]): Pro
         ${rows.map((r) => r.agentId ?? null)}::text[],
         ${rows.map((r) => r.sessionId ?? null)}::text[],
         ${rows.map((r) => r.workItemId ?? null)}::text[],
-        ${rows.map((r) => r.planSlug ?? null)}::text[]
+        ${rows.map((r) => r.planSlug ?? null)}::text[],
+        ${rows.map((r) => r.committedAt ?? null)}::timestamptz[]
       )
     `;
-  } catch {
-    // best-effort: commit attribution must never affect git-sync.
+  } catch (error) {
+    // best-effort: commit attribution must never affect git-sync — but a silent drop hid
+    // an 85h attribution outage once (WI-6554700010018198), so leave a trace.
+    console.warn(
+      `[edit-attribution] git_sync_commit_attribution insert of ${rows?.length ?? 0} row(s) failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -365,7 +372,7 @@ export async function lookupDriftCauseWorkItems(
        WHERE file = ANY(${uniq})
          AND work_item_id IS NOT NULL
          ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
-         AND ts >= now() - make_interval(hours => ${opts.lookbackHours ?? 24 * 14})
+         AND coalesce(committed_at, ts) >= now() - make_interval(hours => ${opts.lookbackHours ?? 24 * 14})
     `;
     for (const r of rows) {
       const arr = out.get(r.file) ?? [];

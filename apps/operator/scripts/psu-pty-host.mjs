@@ -3771,6 +3771,10 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_FS_MUTEX_LOCK_DIR',
   'PAPERCUSP_FLEET_SLUG',
   'PAPERCUSP_FLEET_ROLE',
+  // Codex's effective provider is selected from this marker when the successor
+  // rebuilds its isolated config; carrying only the route mode/id loses the
+  // gateway provider on host-code adoption.
+  'PAPERCUSP_CODEX_GATEWAY',
   'PAPERCUSP_ACCOUNT_ID',
   'PAPERCUSP_ACCOUNT_ROUTING_MODE',
   'PAPERCUSP_OPERATOR_URL',

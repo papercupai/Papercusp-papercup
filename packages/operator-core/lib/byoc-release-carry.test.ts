@@ -10,7 +10,11 @@ import {
   renderByocReleaseCarry,
 } from './byoc-release-carry';
 import { buildCarryBrief, renderCarryBriefColdExtras, type CarryBrief } from './carry-brief';
-import { resolveWorkspaceHostSoakPolicy, WORKSPACE_HOST_SOAK_CHECKS } from './workspace-host/soak';
+import {
+  resolveWorkspaceHostSoakPolicy,
+  WORKSPACE_HOST_SOAK_ACCEPTANCE_DURATION_MS,
+  WORKSPACE_HOST_SOAK_CHECKS,
+} from './workspace-host/soak';
 import type { WorkspaceHostSoakRecord } from './workspace-host/soak-store';
 
 function journal(overrides: Partial<TaskReleaseJournal> = {}): TaskReleaseJournal {
@@ -88,6 +92,32 @@ describe('BYOC strict soak acceptance', () => {
     expect(strict.shipped).toBe(false);
     expect(strict.milestones.find(({ key }) => key === 'soak')?.status).toBe('failed');
     expect(strict.milestones.find(({ key }) => key === 'shipment')?.status).toBe('blocked');
+  });
+
+  // D-013 (byoc-delivery-acceleration-2026-09-06): the acceptance soak floor is the canonical one-hour
+  // workspace-host acceptance duration. Pin the FLOOR, not only the DAY-bar mechanism: one minute short
+  // of it must fail and block shipment, and exactly the floor must pass.
+  it('rejects a 59-minute soak at the canonical one-hour acceptance floor and accepts exactly one hour', () => {
+    const floor = { minimumSoakDurationMs: WORKSPACE_HOST_SOAK_ACCEPTANCE_DURATION_MS };
+    expect(WORKSPACE_HOST_SOAK_ACCEPTANCE_DURATION_MS).toBe(60 * 60_000);
+    const short = projectByocReleaseMilestones(completedSoak(59 * 60_000).source, floor);
+    expect(short.shipped).toBe(false);
+    expect(short.milestones.find(({ key }) => key === 'soak')?.status).toBe('failed');
+    expect(short.milestones.find(({ key }) => key === 'shipment')?.status).toBe('blocked');
+    expect(projectByocReleaseMilestones(completedSoak(WORKSPACE_HOST_SOAK_ACCEPTANCE_DURATION_MS).source, floor).shipped)
+      .toBe(true);
+  });
+
+  it('refuses a 59-minute soak through the acceptance reader at the one-hour floor', async () => {
+    const { source, record } = completedSoak(59 * 60_000);
+    const sql = vi.fn(async () => [{ detail: { release: source } }]) as unknown as Sql;
+    const read = vi.fn(async () => record);
+    const result = await readByocReleaseAcceptance({
+      taskId: 'release-task', workspaceId: 'workspace-1',
+      minimumSoakDurationMs: WORKSPACE_HOST_SOAK_ACCEPTANCE_DURATION_MS,
+    }, sql, read);
+    expect(result?.shipped).toBe(false);
+    expect(result?.milestones.find(({ key }) => key === 'soak')?.status).toBe('failed');
   });
 
   it('accepts a complete 24-hour receipt prefix for phase projection', () => {

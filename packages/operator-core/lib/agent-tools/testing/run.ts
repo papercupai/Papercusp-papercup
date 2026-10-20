@@ -123,7 +123,7 @@ import {
 import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { managedSpawn, type ManagedSpawnResult } from '../../task-manager/managed-spawn';
+import { managedSpawn, markManagedSpawnTeardown, type ManagedSpawnResult } from '../../task-manager/managed-spawn';
 import { killScopeUnit, type ScopeControlOutcome } from '../../task-manager/control';
 import { mutationProbeRefusal } from './mutation-probe-fence';
 import { restrictedHoldRefusal } from './restricted-hold-fence';
@@ -2200,6 +2200,7 @@ export interface ManagedTestProcessDeps {
     opts?: Parameters<typeof managedSpawn>[3],
   ) => Promise<ManagedTestSpawn>;
   killScopeUnitFn?: (scopeUnit: string, opts?: Parameters<typeof killScopeUnit>[1]) => Promise<ScopeControlOutcome>;
+  markManagedTeardownFn?: typeof markManagedSpawnTeardown;
   killProcessGroupFn?: (pid: number, signal: NodeJS.Signals) => void;
 }
 
@@ -2228,6 +2229,7 @@ export async function launchManagedTestProcess(
 ): Promise<ManagedTestProcess> {
   const spawnManaged = deps.managedSpawnFn ?? managedSpawn;
   const killOwnedScope = deps.killScopeUnitFn ?? killScopeUnit;
+  const markTeardown = deps.markManagedTeardownFn ?? markManagedSpawnTeardown;
   const killProcessGroup = deps.killProcessGroupFn ?? ((pid, signal) => process.kill(-pid, signal));
   const outputFd = openSync(opts.outputPath, 'w', 0o600);
   let stderrFd = outputFd;
@@ -2313,6 +2315,17 @@ export async function launchManagedTestProcess(
         terminateProcessGroup();
         return;
       }
+      // Mark before signalling: systemd-run can exit while its scope drains.
+      // If both control attempts fail, restore abnormal-exit diagnostics.
+      const undoTeardown = markTeardown(launched.child);
+      const forceScopeKill = async (): Promise<void> => {
+        try {
+          const outcome = await killOwnedScope(launched.scopeUnit!, { signal: 'SIGKILL' });
+          if (!outcome.ok && outcome.error !== 'already_gone') undoTeardown();
+        } catch {
+          undoTeardown();
+        }
+      };
       // The `ChildProcess` is the systemd-run client, while the payload lives
       // in the sibling scope. Address the scope itself; signalling only the
       // client can orphan the still-running router and Vitest descendants.
@@ -2322,11 +2335,11 @@ export async function launchManagedTestProcess(
       }).then(
         (outcome) => {
           if (!outcome.ok && outcome.error !== 'already_gone') {
-            void killOwnedScope(launched.scopeUnit!, { signal: 'SIGKILL' }).catch(() => undefined);
+            void forceScopeKill();
           }
         },
         () => {
-          void killOwnedScope(launched.scopeUnit!, { signal: 'SIGKILL' }).catch(() => undefined);
+          void forceScopeKill();
         },
       );
     },
