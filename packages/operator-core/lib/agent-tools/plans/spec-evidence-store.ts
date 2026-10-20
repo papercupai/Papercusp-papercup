@@ -25,6 +25,8 @@ import { planItemRef } from '../../issue-blocks-merge';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import type { SpecClauseSql } from './spec-clauses-store';
+// Type-only: spec-test-adequacy imports this module, so its runtime is loaded lazily below.
+import type { FixtureAbsencePairingKey } from './spec-test-adequacy';
 import { declaredConfigurationFingerprint, parseProductionConfiguration } from './declared-configuration';
 import { resolvePlanScope } from './source';
 import { trackDetached } from '../../detached-imports';
@@ -1182,7 +1184,9 @@ export type IndependentVerificationRefusalStatus =
   | 'verified_binding_required'
   | 'verified_binding_not_allowed'
   | 'verified_binding_not_found'
-  | 'independent_fingerprint_mismatch';
+  | 'independent_fingerprint_mismatch'
+  // WI-6554700010018061: a fixture-free review fixture-absence certification would never pair.
+  | 'fixture_absence_pairing_mismatch';
 
 export type BindSpecEvidenceResult =
   | {
@@ -1210,6 +1214,13 @@ export type BindSpecEvidenceResult =
       mismatched: Array<'source' | 'environment'>;
       /** The cited binding's test run, when its proof is a recorded execution (EI-25847620673275477). */
       citedTestRunId?: number;
+      message: string;
+    }
+  | {
+      status: Extract<IndependentVerificationRefusalStatus, 'fixture_absence_pairing_mismatch'>;
+      verifiesBindingId: number;
+      /** Each key on which resolveFixtureAbsenceVerifications would skip this review. */
+      mismatched: FixtureAbsencePairingKey[];
       message: string;
     }
   | {
@@ -1738,8 +1749,22 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     }
     if (verifiesBindingId != null) {
       const cited = (
-        await tx<{ source_fingerprint: string; environment_fingerprint: string | null }[]>`
-          SELECT source_fingerprint, environment_fingerprint
+        await tx<{
+          source_fingerprint: string;
+          environment_fingerprint: string | null;
+          created_by: string | null;
+          evidence_kind: string;
+          spec_revision: number | string;
+          spec_fingerprint: string;
+          test_run_id: number | string | null;
+          test_fingerprint: string | null;
+          fixture_fingerprint: string | null;
+          rubric_fingerprint: string | null;
+          details: Record<string, unknown> | null;
+        }[]>`
+          SELECT source_fingerprint, environment_fingerprint, created_by, evidence_kind,
+                 spec_revision, spec_fingerprint, test_run_id, test_fingerprint,
+                 fixture_fingerprint, rubric_fingerprint, details
             FROM harness_shared.spec_evidence_bindings
            WHERE id = ${verifiesBindingId}
              AND workspace_id = ${scope.workspaceId}
@@ -1776,6 +1801,66 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
               : ''),
           ...(citedTestRunId != null ? { citedTestRunId } : {}),
         };
+      }
+      // WI-6554700010018061: a review claiming fixture absence is useful ONLY if the evaluator
+      // pairs it with the cited proof. Apply the evaluator's own pairing rule here, so a review
+      // it would skip is refused with every disqualifying key instead of binding 'created' and
+      // silently never counting. Scoped to the fixture-free claim: a live-bar re-observation
+      // (plans:bind-independent-verification) legitimately differs on these keys.
+      const { claimsFixtureAbsence, fixtureAbsencePairingMismatches } = await import('./spec-test-adequacy');
+      if (claimsFixtureAbsence(details)) {
+        const citedRevision = Number(cited.spec_revision);
+        const citedRun = cited.test_run_id == null ? null : Number(cited.test_run_id);
+        const pairingMismatches = fixtureAbsencePairingMismatches(
+          {
+            evidenceKind: cited.evidence_kind as SpecEvidenceKind,
+            createdBy: cited.created_by ?? undefined,
+            planSlug,
+            specId: identity.spec_id,
+            specRevision: citedRevision,
+            specFingerprint: cited.spec_fingerprint,
+            testRunId: citedRun,
+            fingerprints: {
+              sourceFingerprint: cited.source_fingerprint,
+              testFingerprint: cited.test_fingerprint,
+              fixtureFingerprint: cited.fixture_fingerprint,
+              rubricFingerprint: cited.rubric_fingerprint,
+              environmentFingerprint: cited.environment_fingerprint ?? null,
+            },
+            details: cited.details ?? {},
+          },
+          {
+            evidenceKind: 'independent-verification',
+            createdBy: input.actorId,
+            planSlug,
+            specId: identity.spec_id,
+            specRevision,
+            specFingerprint: revision.content_hash,
+            testRunId: input.testRunId ?? null,
+            fingerprints: {
+              sourceFingerprint,
+              testFingerprint,
+              fixtureFingerprint,
+              rubricFingerprint,
+              environmentFingerprint: environmentFingerprint ?? null,
+            },
+            details,
+          },
+        );
+        if (pairingMismatches.length > 0) {
+          return {
+            status: 'fixture_absence_pairing_mismatch',
+            verifiesBindingId,
+            mismatched: pairingMismatches,
+            message:
+              `independent-verification refused: details.adequacy.fixtureFree=true claims fixture absence, but ` +
+              `fixture-absence certification would never pair this review with cited binding ${verifiesBindingId} ` +
+              `(mismatched: ${pairingMismatches.join(', ')}). Re-observe exactly the cited proof: spec revision ` +
+              `${citedRevision}, test run ${citedRun ?? '(none — the cited proof must be a recorded run)'}, its ` +
+              'test fingerprint, every one of its details.adequacy.testCases, and an author other than the ' +
+              "cited binding's. If this review does not certify fixture absence, omit details.adequacy.fixtureFree.",
+          };
+        }
       }
     }
 

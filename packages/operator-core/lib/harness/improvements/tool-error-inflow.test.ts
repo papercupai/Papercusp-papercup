@@ -74,6 +74,24 @@ describe('R-3: structural failures that differ only in ids/paths are ONE row', (
     expect(signals).toHaveLength(1);
     expect(signals[0].body).toMatch(/6×/);
   });
+
+  it('two-sided: a different error code or a different field path on one tool is a different key', () => {
+    const byCode = aggregateToolErrorRowsByKey(rowsFrom('work_items:claim', [
+      { code: 'handler_error', message: 'handler_error: claim_conflict: WI-1 is held by su-a' },
+      { code: 'handler_error', message: 'handler_error: not_found: WI-2 does not exist' },
+    ], 40));
+    expect(byCode.map((r) => r.key).sort()).toEqual([
+      'work_items:claim:structural:claim_conflict:field-unknown',
+      'work_items:claim:structural:not_found:field-unknown',
+    ]);
+
+    const byField = aggregateToolErrorRowsByKey(rowsFrom('plans:get', [
+      { code: 'handler_error', message: 'handler_error: column "slug" does not exist' },
+      { code: 'handler_error', message: 'handler_error: column "harness" does not exist' },
+    ], 40));
+    expect(byField).toHaveLength(2);
+    expect(new Set(byField.map((r) => r.key)).size).toBe(2);
+  });
 });
 
 describe('R-2 (D-010): caller failures are ONE usability item per tool, with a per-argument counter', () => {

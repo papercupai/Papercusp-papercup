@@ -141,6 +141,7 @@ From `IndependentVerificationRefusalStatus` (`packages/operator-core/lib/agent-t
 | `verified_binding_not_allowed` | A binding of any other evidence kind carries `verifiesBindingId`. |
 | `verified_binding_not_found` | The cited binding does not exist, or is itself an independent-verification row. |
 | `independent_fingerprint_mismatch` | The re-observation's source or environment fingerprint differs from the cited binding's. |
+| `fixture_absence_pairing_mismatch` | A review claiming fixture absence (`details.adequacy.fixtureFree=true`) does not pair with the cited binding on a key fixture-absence certification requires: author, spec revision, test run, source/test/environment/fixture fingerprints, or the cited `details.adequacy.testCases`. `mismatched` names each key, using the evaluator's own pairing rule (WI-6554700010018061). |
 
 ### `plans:set-plan-status`
 

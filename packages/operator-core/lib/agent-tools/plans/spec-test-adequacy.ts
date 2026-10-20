@@ -929,7 +929,7 @@ function metadataCoverageLimitations(details: Record<string, unknown>): string[]
   return [...new Set(gaps)];
 }
 
-function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
+function detailsOf(evidence: Pick<SpecEvidenceForAdequacy, 'details' | 'provisionalProofBase'>): AdequacyDetails {
   const nested = evidence.details.adequacy;
   // A disclosure is read from BOTH the nested adequacy block and the top level.
   // `plans:bind-spec-evidence` accepts a free-form `details` object, so an author
@@ -2614,6 +2614,72 @@ function appendRatingRerunProbes(
  */
 export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 36;
 
+/** One key on which a fixture-free review fails to pair with the binding it cites. */
+export type FixtureAbsencePairingKey =
+  | 'author'
+  | 'cited-kind'
+  | 'cited-not-fixture-free'
+  | 'plan-clause'
+  | 'spec-revision'
+  | 'test-run'
+  | 'source-fingerprint'
+  | 'test-fingerprint'
+  | 'environment-fingerprint'
+  | 'fixture-fingerprint'
+  | 'test-cases';
+
+/** The stored fields of a binding that the fixture-absence pairing reads. */
+export type FixtureAbsencePairingSide = Pick<
+  SpecEvidenceForAdequacy,
+  'evidenceKind' | 'createdBy' | 'planSlug' | 'specId' | 'specRevision' | 'specFingerprint' |
+  'testRunId' | 'fingerprints' | 'details' | 'provisionalProofBase'
+>;
+
+/** True when a binding's details claim fixture absence (`details.adequacy.fixtureFree === true`). */
+export function claimsFixtureAbsence(details: Record<string, unknown>): boolean {
+  return detailsOf({ details }).fixtureFree === true;
+}
+
+/**
+ * WI-6554700010018061: the ONE pairing rule between a fixture-free independent review and
+ * the executable binding it cites. Shared by the evaluator (resolveFixtureAbsenceVerifications)
+ * and plans:bind-spec-evidence, so a review the evaluator would skip is refused at bind
+ * with the keys that disqualify it, instead of binding 'created' and silently never counting.
+ * Currentness and lineage independence are read-time facts and stay with the resolver.
+ */
+export function fixtureAbsencePairingMismatches(
+  cited: FixtureAbsencePairingSide,
+  review: FixtureAbsencePairingSide,
+): FixtureAbsencePairingKey[] {
+  const mismatched: FixtureAbsencePairingKey[] = [];
+  const citedDetails = detailsOf(cited);
+  if (!cited.createdBy || cited.createdBy === review.createdBy) mismatched.push('author');
+  if (!EXECUTABLE_EVIDENCE_KINDS.has(cited.evidenceKind)) mismatched.push('cited-kind');
+  if (citedDetails.fixtureFree !== true) mismatched.push('cited-not-fixture-free');
+  if (cited.planSlug !== review.planSlug || cited.specId !== review.specId) mismatched.push('plan-clause');
+  if (cited.specRevision !== review.specRevision || cited.specFingerprint !== review.specFingerprint) {
+    mismatched.push('spec-revision');
+  }
+  if (!cited.testRunId || cited.testRunId !== review.testRunId) mismatched.push('test-run');
+  if (cited.fingerprints.sourceFingerprint !== review.fingerprints.sourceFingerprint) {
+    mismatched.push('source-fingerprint');
+  }
+  if (!cited.fingerprints.testFingerprint ||
+      cited.fingerprints.testFingerprint !== review.fingerprints.testFingerprint) {
+    mismatched.push('test-fingerprint');
+  }
+  if (cited.fingerprints.environmentFingerprint !== review.fingerprints.environmentFingerprint) {
+    mismatched.push('environment-fingerprint');
+  }
+  if (cited.fingerprints.fixtureFingerprint !== null || review.fingerprints.fixtureFingerprint !== null) {
+    mismatched.push('fixture-fingerprint');
+  }
+  const cases = citedDetails.testCases ?? [];
+  const reviewedCases = new Set(detailsOf(review).testCases ?? []);
+  if (cases.length === 0 || cases.some(title => !reviewedCases.has(title))) mismatched.push('test-cases');
+  return mismatched;
+}
+
 /**
  * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.
  * Reuse the independently authored, source-pinned re-observation of the SAME
@@ -2632,20 +2698,8 @@ export async function resolveFixtureAbsenceVerifications(
         !review.verifiesBindingId || !review.createdBy || !measured(review) ||
         detailsOf(review).fixtureFree !== true) continue;
     const cited = rows.find(row => row.id === review.verifiesBindingId);
-    if (!cited?.id || !cited.createdBy || cited.createdBy === review.createdBy ||
-        !EXECUTABLE_EVIDENCE_KINDS.has(cited.evidenceKind) || !measured(cited) ||
-        detailsOf(cited).fixtureFree !== true ||
-        cited.planSlug !== review.planSlug || cited.specId !== review.specId ||
-        cited.specRevision !== review.specRevision || cited.specFingerprint !== review.specFingerprint ||
-        !cited.testRunId || cited.testRunId !== review.testRunId ||
-        !cited.fingerprints.testFingerprint ||
-        cited.fingerprints.sourceFingerprint !== review.fingerprints.sourceFingerprint ||
-        cited.fingerprints.testFingerprint !== review.fingerprints.testFingerprint ||
-        cited.fingerprints.environmentFingerprint !== review.fingerprints.environmentFingerprint ||
-        cited.fingerprints.fixtureFingerprint !== null || review.fingerprints.fixtureFingerprint !== null) continue;
-    const cases = detailsOf(cited).testCases ?? [];
-    const reviewedCases = new Set(detailsOf(review).testCases ?? []);
-    if (cases.length === 0 || cases.some(title => !reviewedCases.has(title))) continue;
+    if (!cited?.id || !cited.createdBy || !measured(cited) ||
+        fixtureAbsencePairingMismatches(cited, review).length > 0) continue;
     try {
       if (!(await isIndependent(review.createdBy, cited.createdBy, cited.planSlug))) continue;
     } catch {

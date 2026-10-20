@@ -27,7 +27,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { setIssueState } from '../../issues-engineer';
 import { runWithWorkspace } from '../../workspace-als';
-import type { WatchdogKeyCollision } from './watchdog-key-migration';
+import { ISSUE_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { REPEATED_TOOL_ERROR_PREFIX, type KeyedCandidate, type WatchdogKeyCollision } from './watchdog-key-migration';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -40,17 +41,53 @@ export interface WatchdogKeyFoldGroup {
   folded: string[];
 }
 
-/** Pure: group the key migration's collisions by shared key onto the row holding it. */
+/**
+ * Pure: group the key migration's collisions onto the row holding each key. One group
+ * per (holder, key): ownership is per workspace, so one key can have a holder in each
+ * workspace, and each workspace's losers fold onto their own holder.
+ */
 export function planWatchdogKeyFolds(collisions: readonly WatchdogKeyCollision[]): WatchdogKeyFoldGroup[] {
-  const byKey = new Map<string, WatchdogKeyFoldGroup>();
+  const byHolderKey = new Map<string, WatchdogKeyFoldGroup>();
   for (const c of collisions) {
     if (c.id === c.heldBy) continue;
-    const group = byKey.get(c.newKey) ?? { key: c.newKey, canonical: c.heldBy, folded: [] };
-    if (group.canonical !== c.heldBy) continue; // one holder per key by construction; never fold across two
+    const slot = `${c.heldBy}\u0000${c.newKey}`;
+    const group = byHolderKey.get(slot) ?? { key: c.newKey, canonical: c.heldBy, folded: [] };
     if (!group.folded.includes(c.id)) group.folded.push(c.id);
-    byKey.set(c.newKey, group);
+    byHolderKey.set(slot, group);
   }
-  return [...byKey.values()].sort((a, b) => b.folded.length - a.folded.length || a.key.localeCompare(b.key));
+  return [...byHolderKey.values()].sort((a, b) =>
+    b.folded.length - a.folded.length || a.key.localeCompare(b.key) || a.canonical.localeCompare(b.canonical));
+}
+
+/**
+ * Every NON-TERMINAL `repeated-tool-error:*` row in every workspace, in canonical order
+ * (the order IS the canonical-row rule recomputeWatchdogKeys applies per workspace + key):
+ * a work-lane row before an observation row, a claimed row before an unclaimed one, then
+ * the oldest, then the id. Non-open rows (wip, blocked, needs-human) are listed so they
+ * hold their key — a duplicate of a blocked row folds onto it — while only an open,
+ * unclaimed loser ever folds (FOLD_ELIGIBLE_SQL).
+ */
+export async function listRepeatedToolErrorKeyHolders(sql: Sql): Promise<KeyedCandidate[]> {
+  const rows = await sql<{ issue_id: string; workspace_id: string; body: string | null; wk: string }[]>`
+    SELECT issue_id, workspace_id, body, payload->>'watchdogKey' AS wk
+      FROM harness_shared.engineer_issues
+     WHERE state <> ALL(${[...ISSUE_TERMINAL_STATES]}::text[])
+       AND payload ? 'watchdogKey'
+       AND payload->>'watchdogKey' LIKE ${REPEATED_TOOL_ERROR_PREFIX + '%'}
+     ORDER BY (coalesce(lane, payload->>'lane', '') = 'observation') ASC,
+              (assignee IS NULL) ASC,
+              created_at ASC,
+              issue_id ASC`;
+  return rows.map((r) => ({
+    id: r.issue_id,
+    workspaceId: r.workspace_id,
+    kind: 'bug',
+    scope: 'operator',
+    title: '',
+    state: 'open',
+    body: r.body ?? undefined,
+    watchdogKey: r.wk,
+  }));
 }
 
 export interface WatchdogKeyFoldResult {

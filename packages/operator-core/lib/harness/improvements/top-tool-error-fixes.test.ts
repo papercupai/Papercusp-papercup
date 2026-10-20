@@ -3,6 +3,17 @@
  * one regression test per top structural tool-error class by 7-day volume,
  * each failing on the pre-fix code.
  *
+ * CENSUS PIN (D-023, which supersedes D-013's rank 2): window 2026-10-13T06:00Z ..
+ * 2026-10-20T06:00Z, workspace papercusp-workspace, status <> 'ok', the production
+ * tool-error classifier, tools:invoke unwrapped to the inner tool it dispatched;
+ * output sha256 fcc7d2b5818beb9914bcec4d60621ed53f6f4e7a372c966a271f64f559defb29.
+ * Rank → class → describe block below:
+ *   1 session:request-compaction no_live_pty_host 1931
+ *   2 capability:read read_failed 448
+ *   3 capability:bash_output job_process_gone 344
+ *   4 capability:read evidence_not_selectable 288
+ *   5 capability:launch-agent handler_refusal 145 (5a and 5b)
+ *
  * Class map (census 2026-10-20, WI-6554700010017610 checkpoint):
  *   - capability:read read_failed ENOENT on a result-door spill: the caller
  *     retyped the cursor by hand (run-id character, workspace segment, or the
@@ -131,7 +142,7 @@ afterAll(() => {
   rmSync(ROOT, { recursive: true, force: true });
 });
 
-describe('class: capability:read ENOENT on a hand-retyped result-door cursor', () => {
+describe('D-023 rank 2 (capability:read read_failed, 448): ENOENT on a hand-retyped result-door cursor', () => {
   it('a changed run-id character returns scratch_path_mistyped with the exact cursor, and the cursor reads', async () => {
     const typo = join(SCRATCH, WS, TOOL, 'c3986847-b504-46ca-9db5-a3d6367ad1ed', BASENAME);
     const refused = await read({ file_path: typo, byte_offset: 0, byte_limit: 64 });
@@ -184,7 +195,7 @@ describe('class: capability:read ENOENT on a hand-retyped result-door cursor', (
   });
 });
 
-describe('class: capability:read evidence selection on a Markdown-prefixed JSON spill', () => {
+describe('D-023 rank 4 (capability:read evidence_not_selectable, 288): evidence selection on a Markdown-prefixed JSON spill', () => {
   it('evidence_class reads the declared JSON body instead of refusing "payload is not JSON"', async () => {
     const selected = await read({ file_path: SPILL, evidence_class: 'work-item' });
     expect(selected.isError).not.toBe(true);
@@ -195,7 +206,7 @@ describe('class: capability:read evidence selection on a Markdown-prefixed JSON 
   });
 });
 
-describe('class: capability:bash_output job_process_gone on a ledger-recorded exit', () => {
+describe('D-023 rank 3 (capability:bash_output job_process_gone, 344): a ledger-recorded exit', () => {
   type ToolResultish = { content: Array<{ text: string }>; isError?: boolean };
   const bashOutput = bashOutputTool as unknown as {
     handler: (args: unknown, ctx: unknown) => Promise<ToolResultish>;
@@ -301,7 +312,7 @@ describe('class: capability:bash_output job_process_gone on a ledger-recorded ex
   });
 });
 
-describe('class 1: session:request-compaction no_live_pty_host from retired owners', () => {
+describe('D-023 rank 1 (session:request-compaction no_live_pty_host, 1931): retired owners', () => {
   let tb: MultiSessionTestbed;
   let provDir: string;
   let prevProvDir: string | undefined;
@@ -350,7 +361,7 @@ describe('class 1: session:request-compaction no_live_pty_host from retired owne
   });
 });
 
-describe('class 5a: capability:launch-agent handler_refusal for a live compaction source', () => {
+describe('D-023 rank 5 (capability:launch-agent handler_refusal, 145), 5a: a live compaction source', () => {
   afterEach(() => {
     forceSuccessorSeam.tool = null;
     forceSuccessorSeam.dispatched = 0;

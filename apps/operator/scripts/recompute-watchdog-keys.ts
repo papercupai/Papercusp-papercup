@@ -34,13 +34,13 @@ import {
   deriveToolErrorWatchdogKey,
   extractSampleFromBody,
   parseRepeatedToolErrorKey,
-  REPEATED_TOOL_ERROR_PREFIX,
   type RecomputeDeps,
 } from '@papercusp/operator-core/lib/harness/improvements/watchdog-key-migration';
 import type { ImprovementCandidate } from '@papercusp/operator-core/lib/harness/improvements/policy';
 import {
   backfillDuplicateOfFromLinks,
   foldWatchdogKeyCollisions,
+  listRepeatedToolErrorKeyHolders,
 } from '@papercusp/operator-core/lib/harness/improvements/watchdog-key-fold';
 
 const url =
@@ -62,30 +62,9 @@ async function main(): Promise<void> {
   // every workspace — each row is migrated IN PLACE (its workspace_id is unchanged),
   // so the per-workspace watchdog dedup reads the migrated key in its own scope.
   const deps: RecomputeDeps = {
-    listOpenKeyed: async (): Promise<ImprovementCandidate[]> => {
-      const rows = await sql<{ issue_id: string; body: string | null; wk: string }[]>`
-        SELECT issue_id, body, payload->>'watchdogKey' AS wk
-          FROM harness_shared.engineer_issues
-         WHERE state = 'open'
-           AND payload ? 'watchdogKey'
-           AND payload->>'watchdogKey' LIKE ${REPEATED_TOOL_ERROR_PREFIX + '%'}
-         -- The CANONICAL-ROW rule (recomputeWatchdogKeys: the first candidate holds a key):
-         -- a work-lane row before an observation row, a claimed row before an unclaimed
-         -- one, then the oldest, then the id. The fold drops later holders onto it.
-         ORDER BY (coalesce(lane, payload->>'lane', '') = 'observation') ASC,
-                  (assignee IS NULL) ASC,
-                  created_at ASC,
-                  issue_id ASC`;
-      return rows.map((r) => ({
-        id: r.issue_id,
-        kind: 'bug',
-        scope: 'operator',
-        title: '',
-        state: 'open',
-        body: r.body ?? undefined,
-        watchdogKey: r.wk,
-      }));
-    },
+    // Every non-terminal repeated-tool-error row, in canonical order; key ownership is
+    // per workspace (bug-inflow-one-problem-one-row-2026-10-18 R-7).
+    listOpenKeyed: () => listRepeatedToolErrorKeyHolders(sql),
     setWatchdogKey: async (id, newKey) => {
       await sql`
         UPDATE harness_shared.engineer_issues

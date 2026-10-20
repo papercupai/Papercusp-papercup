@@ -145,9 +145,20 @@ export interface RecomputeResult {
   dryRun: boolean;
 }
 
+/**
+ * A candidate as the recompute sees it. `workspaceId` scopes key ownership: the
+ * watchdog dedups per workspace, so a key held in one workspace never makes a row
+ * in another a collision. Absent → every candidate shares one unnamed scope.
+ */
+export type KeyedCandidate = ImprovementCandidate & { workspaceId?: string };
+
 export interface RecomputeDeps {
-  /** OPEN improvement candidates that carry a `payload.watchdogKey`. */
-  listOpenKeyed: () => Promise<ImprovementCandidate[]>;
+  /**
+   * NON-TERMINAL improvement candidates that carry a `payload.watchdogKey`, in
+   * canonical order (the first row per workspace + key holds it). Listing wip /
+   * blocked rows too means a duplicate of a blocked row still folds onto it.
+   */
+  listOpenKeyed: () => Promise<KeyedCandidate[]>;
   /** Persist a recomputed key onto one EI (e.g. `mergeIssuePayload(id, { watchdogKey })`). */
   setWatchdogKey: (id: string, newKey: string) => Promise<void>;
 }
@@ -161,10 +172,15 @@ export interface RecomputeDeps {
  * auto-close path reconciles. Two open EIs that ALREADY share an exact key are
  * reported the same way (the later one is the collision).
  *
- * Canonical-row rule: the FIRST candidate in `deps.listOpenKeyed()` order holds a
- * key, so the caller's ordering IS the canonical rule. The production lister
- * (apps/operator/scripts/recompute-watchdog-keys.ts) orders work-lane rows before
- * observation rows, claimed before unclaimed, then oldest first, then by id.
+ * Canonical-row rule: per workspace, the FIRST candidate in `deps.listOpenKeyed()`
+ * order holds a key, so the caller's ordering IS the canonical rule. The production
+ * lister (listRepeatedToolErrorKeyHolders in watchdog-key-fold.ts) orders work-lane
+ * rows before observation rows, claimed before unclaimed, then oldest first, then id.
+ *
+ * Ownership is per workspace (bug-inflow-one-problem-one-row-2026-10-18 R-7): with a
+ * workspace-blind map, two duplicates in workspace B whose key was already held in
+ * workspace A both collided with A's row, the fold skipped them as cross-workspace,
+ * and they stayed duplicates of each other.
  */
 export async function recomputeWatchdogKeys(
   deriveKey: (candidate: ImprovementCandidate) => string | null,
@@ -174,14 +190,18 @@ export async function recomputeWatchdogKeys(
   const dryRun = opts.dryRun ?? true;
   const candidates = await deps.listOpenKeyed();
   const withKey = candidates.filter(
-    (c): c is ImprovementCandidate & { watchdogKey: string } =>
+    (c): c is KeyedCandidate & { watchdogKey: string } =>
       typeof c.watchdogKey === 'string' && c.watchdogKey.length > 0,
   );
 
-  // The live key→owner map, mutated as we migrate so a SECOND old key mapping to
-  // the same new key collides too (consistent in dry-run + execute).
+  // The live (workspace, key)→owner map, mutated as we migrate so a SECOND old key
+  // mapping to the same new key collides too (consistent in dry-run + execute).
+  const slot = (c: KeyedCandidate, key: string) => `${c.workspaceId ?? ''}\u0000${key}`;
   const ownerOfKey = new Map<string, string>();
-  for (const c of withKey) if (!ownerOfKey.has(c.watchdogKey)) ownerOfKey.set(c.watchdogKey, c.id);
+  for (const c of withKey) {
+    const s = slot(c, c.watchdogKey);
+    if (!ownerOfKey.has(s)) ownerOfKey.set(s, c.id);
+  }
 
   const changed: WatchdogKeyChange[] = [];
   const collisions: WatchdogKeyCollision[] = [];
@@ -194,7 +214,7 @@ export async function recomputeWatchdogKeys(
       // bug-inflow-one-problem-one-row-2026-10-18 R-7: a row that keeps its key while an
       // EARLIER candidate already holds that exact key is a pre-existing duplicate, not an
       // unchanged row. Counting it `unchanged` hid every exact-key pair from the fold.
-      const exactHolder = ownerOfKey.get(oldKey);
+      const exactHolder = ownerOfKey.get(slot(c, oldKey));
       if (exactHolder !== undefined && exactHolder !== c.id) {
         collisions.push({ id: c.id, oldKey, newKey: oldKey, heldBy: exactHolder });
         continue;
@@ -202,7 +222,7 @@ export async function recomputeWatchdogKeys(
       unchanged += 1;
       continue;
     }
-    const holder = ownerOfKey.get(newKey);
+    const holder = ownerOfKey.get(slot(c, newKey));
     if (holder !== undefined && holder !== c.id) {
       collisions.push({ id: c.id, oldKey, newKey, heldBy: holder });
       continue;
@@ -210,8 +230,8 @@ export async function recomputeWatchdogKeys(
     if (!dryRun) await deps.setWatchdogKey(c.id, newKey);
     changed.push({ id: c.id, oldKey, newKey });
     // Reflect the move in the owner map for downstream collision checks.
-    if (ownerOfKey.get(oldKey) === c.id) ownerOfKey.delete(oldKey);
-    ownerOfKey.set(newKey, c.id);
+    if (ownerOfKey.get(slot(c, oldKey)) === c.id) ownerOfKey.delete(slot(c, oldKey));
+    ownerOfKey.set(slot(c, newKey), c.id);
   }
 
   return { scanned: withKey.length, changed, collisions, unchanged, dryRun };

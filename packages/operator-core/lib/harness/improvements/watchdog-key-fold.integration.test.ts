@@ -10,10 +10,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../test/_work-items-schema';
-import type { WatchdogKeyCollision } from './watchdog-key-migration';
+import {
+  deriveToolErrorWatchdogKey,
+  recomputeWatchdogKeys,
+  type WatchdogKeyCollision,
+} from './watchdog-key-migration';
 import {
   backfillDuplicateOfFromLinks,
   foldWatchdogKeyCollisions,
+  listRepeatedToolErrorKeyHolders,
   planWatchdogKeyFolds,
 } from './watchdog-key-fold';
 
@@ -46,12 +51,15 @@ interface Row {
 describe('watchdog-key fold + duplicates-link backfill (P-008)', () => {
   let db: FreshPgDb;
 
-  async function insert(id: string, opts: { ws?: string; status?: string; takenBy?: string; payload?: object; dup?: string } = {}) {
+  async function insert(
+    id: string,
+    opts: { ws?: string; status?: string; takenBy?: string; payload?: object; dup?: string; createdTs?: number } = {},
+  ) {
     await db.sql`
       INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, workspace_id, title, status, item_kind, payload, created_ts, taken_by, duplicate_of, duplicate_source)
       VALUES (${H}, ${id}, ${opts.ws ?? WS}, ${`title ${id}`}, ${opts.status ?? 'open'}, 'bug',
-              ${db.sql.json((opts.payload ?? {}) as never)}, 0, ${opts.takenBy ?? null},
+              ${db.sql.json((opts.payload ?? {}) as never)}, ${opts.createdTs ?? 0}, ${opts.takenBy ?? null},
               ${opts.dup ?? null}, ${opts.dup ? 'agent' : null})`;
   }
 
@@ -140,6 +148,89 @@ describe('watchdog-key fold + duplicates-link backfill (P-008)', () => {
     const again = await foldWatchdogKeyCollisions(COLLISIONS, { sql: db.sql, dropDuplicate: drop }, { dryRun: false });
     expect(again.folded).toBe(0);
     expect((await row('EI-CANON')).payload.repeatCount).toBe(6);
+  });
+
+  it('R-7 live path: list → recompute → fold leaves no workspace with two open, unclaimed rows on one key', async () => {
+    await db.sql`DELETE FROM harness_shared.work_items`;
+    const CALLER = 'repeated-tool-error:coord:send:caller'; // current tool-keyed shape
+    const LEGACY = 'repeated-tool-error:coord:send:caller:md5-abc'; // re-keys to CALLER
+    const STRUCT = 'repeated-tool-error:exec_command:structural:rejected:cmd'; // current structural shape
+    const obs = (watchdogKey: string) => ({ watchdogKey, lane: 'observation' });
+    // ws1: an EXACT-key pair across lanes plus a legacy row that re-keys onto it.
+    await insert('X-OBS-OLD', { payload: obs(CALLER), createdTs: 1_000 });
+    await insert('X-WORK', { payload: { watchdogKey: CALLER }, createdTs: 2_000 }); // canonical: work lane beats an older observation
+    await insert('X-WORK-NEW', { payload: { watchdogKey: LEGACY }, createdTs: 3_000 });
+    await insert('X-DONE', { status: 'done', payload: { watchdogKey: CALLER }, createdTs: 100 }); // terminal: never a holder
+    // ws1: an open duplicate of a BLOCKED row. The blocked row holds its key.
+    await insert('Z-BLOCKED', { status: 'blocked', payload: { watchdogKey: STRUCT }, createdTs: 500 });
+    await insert('Z-OBS', { payload: obs(STRUCT), createdTs: 2_500 });
+    // ws2: two legacy rows on a key ws1 ALREADY holds. Ownership is per workspace, so
+    // they fold onto each other instead of both colliding with ws1's row and staying.
+    await insert('Y-A', { ws: 'ws2', payload: obs(LEGACY), createdTs: 1_500 });
+    await insert('Y-B', { ws: 'ws2', payload: obs(LEGACY), createdTs: 1_600 });
+
+    const runFullPath = async () => {
+      const recompute = await recomputeWatchdogKeys(
+        (c) => deriveToolErrorWatchdogKey(c),
+        {
+          listOpenKeyed: () => listRepeatedToolErrorKeyHolders(db.sql),
+          setWatchdogKey: async (id, newKey) => {
+            await db.sql`
+              UPDATE harness_shared.work_items
+                 SET payload = payload || ${db.sql.json({ watchdogKey: newKey } as never)}
+               WHERE feature_id = ${id}`;
+          },
+        },
+        { dryRun: false },
+      );
+      const drop = async (id: string) => {
+        await db.sql`UPDATE harness_shared.work_items SET status = 'dropped' WHERE feature_id = ${id}`;
+      };
+      const fold = await foldWatchdogKeyCollisions(recompute.collisions, { sql: db.sql, dropDuplicate: drop }, { dryRun: false });
+      return { recompute, fold };
+    };
+
+    const first = await runFullPath();
+    expect(first.recompute.changed.map((c) => c.id)).toEqual(['Y-A']);
+    expect(first.fold.groups.map((g) => [g.canonical, g.key, [...g.folded].sort()])).toEqual(
+      expect.arrayContaining([
+        ['X-WORK', CALLER, ['X-OBS-OLD', 'X-WORK-NEW']],
+        ['Y-A', CALLER, ['Y-B']],
+        ['Z-BLOCKED', STRUCT, ['Z-OBS']],
+      ]),
+    );
+    expect(first.fold.groups).toHaveLength(3);
+    expect(first.fold.folded).toBe(4);
+    expect(first.fold.skipped).toEqual([]);
+
+    const verdict = async (id: string) => {
+      const r = await row(id);
+      return [r.status, r.duplicate_of];
+    };
+    expect(await verdict('X-WORK')).toEqual(['open', null]);
+    expect(await verdict('X-OBS-OLD')).toEqual(['dropped', 'X-WORK']);
+    expect(await verdict('X-WORK-NEW')).toEqual(['dropped', 'X-WORK']);
+    expect(await verdict('Y-A')).toEqual(['open', null]);
+    expect(await verdict('Y-B')).toEqual(['dropped', 'Y-A']);
+    expect(await verdict('Z-BLOCKED')).toEqual(['blocked', null]);
+    expect(await verdict('Z-OBS')).toEqual(['dropped', 'Z-BLOCKED']);
+    expect(await verdict('X-DONE')).toEqual(['done', null]);
+    expect((await row('Y-A')).payload.watchdogKey).toBe(CALLER);
+    expect((await row('X-WORK')).payload.repeatCount).toBe(3);
+
+    // The operational falsifier, read back: no workspace holds two open, unclaimed rows on one key.
+    const shared = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM (
+        SELECT workspace_id, payload->>'watchdogKey'
+          FROM harness_shared.work_items
+         WHERE status = 'open' AND taken_by IS NULL AND payload->>'watchdogKey' LIKE 'repeated-tool-error:%'
+         GROUP BY 1, 2 HAVING count(*) > 1) s`;
+    expect(shared[0].n).toBe(0);
+
+    // Idempotent: a second pass finds nothing left to fold.
+    const second = await runFullPath();
+    expect(second.recompute.collisions).toEqual([]);
+    expect(second.fold.folded).toBe(0);
   });
 
   it('link backfill stamps duplicate_of from pre-1534 duplicates edges, first edge wins', async () => {

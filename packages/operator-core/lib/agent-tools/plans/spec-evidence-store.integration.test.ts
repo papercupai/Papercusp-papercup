@@ -869,6 +869,80 @@ describe('exact spec evidence bindings', () => {
     expect(row.details).toMatchObject({ note: 'receipts re-read', evidencePlane: 'live', testRun });
   });
 
+  // WI-6554700010018061: resolveFixtureAbsenceVerifications pairs a fixture-free review with its
+  // cited binding on author, spec revision, test run, test fingerprint and reviewed cases, but bind
+  // checked only source and environment. A review differing on any other key bound 'created' and
+  // then silently never certified fixture absence. Bind now refuses it, naming each key.
+  it('refuses a fixture-free independent review that fixture-absence certification would skip', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const runId = '20261020T000000Z-061';
+    const receipts = [{ runId, resultSha256: 'd'.repeat(64), sourceSha256: 'e'.repeat(64),
+      lifecycleSha256: 'f'.repeat(64) }];
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      testLayer: 'integration', passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha: null, worktreeDirty: true, isolatedRuntimeReceipts: receipts };
+    const seedRun = async () => {
+      const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+      await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+        WHERE id = ${testRunId}`;
+      return testRunId;
+    };
+    const testRunId = await seedRun();
+    const currentMeasurement = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+      runtimeUnits: [`isolated-integration:${runId}`] };
+    const adequacy = { fixtureFree: true, testCases: ['does not replay acknowledged event 42'] };
+    const implementer = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-implementer', evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts', testRunId,
+      sourceFingerprint: 'source', testFingerprint: 'test-file',
+      details: { evidencePlane: 'live', testRun: { id: testRunId, filePath: 'test/reconnect.test.ts' },
+        currentMeasurement, adequacy },
+    });
+    expect(implementer).toMatchObject({ status: 'created' });
+    const citedId = (implementer as { id: number }).id;
+    const judge = {
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-judge', evidenceKind: 'independent-verification' as const, verifiesBindingId: citedId,
+      evidenceRef: 'test/reconnect.test.ts', sourceFingerprint: 'source', testFingerprint: 'test-file',
+      details: { note: 'fixture absence re-observed', currentMeasurement, adequacy },
+    };
+    const refusedWith = async (over: Partial<typeof judge> & { testRunId?: number; specRevision?: number }) => {
+      const result = await evidenceStore.bindSpecEvidence({ ...judge, ...over });
+      return result.status === 'fixture_absence_pairing_mismatch'
+        ? (result as { mismatched: string[] }).mismatched
+        : result.status;
+    };
+
+    // A different run whose receipts yield the SAME environment passes the source+environment check.
+    const sameEnvironmentRun = await seedRun();
+    expect(await refusedWith({ testRunId: sameEnvironmentRun })).toEqual(['test-run']);
+    expect(await refusedWith({ testFingerprint: 'another-test-file' })).toEqual(['test-fingerprint']);
+    expect(await refusedWith({ actorId: 'su-implementer' })).toEqual(['author']);
+    expect(await refusedWith({
+      details: { ...judge.details, adequacy: { fixtureFree: true, testCases: ['some other case'] } },
+    })).toEqual(['test-cases']);
+    const refusal = await evidenceStore.bindSpecEvidence({ ...judge, testFingerprint: 'another-test-file' });
+    expect(refusal).toMatchObject({ status: 'fixture_absence_pairing_mismatch', verifiesBindingId: citedId,
+      mismatched: ['test-fingerprint'] });
+    expect((refusal as { message: string }).message).toContain('test-fingerprint');
+    expect((refusal as { message: string }).message).toContain('details.adequacy.fixtureFree');
+    expect(await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings
+      WHERE evidence_kind = 'independent-verification'`, 'a refused review writes nothing').toHaveLength(0);
+
+    // Positive control: the exact re-observation still binds, adopting the cited run.
+    expect(await evidenceStore.bindSpecEvidence(judge)).toMatchObject({ status: 'created' });
+    // A review that makes no fixture-absence claim (the live-bar door) keeps the old checks only:
+    // the same differing run the fixture-free review was refused for binds here.
+    expect(await evidenceStore.bindSpecEvidence({ ...judge, testRunId: sameEnvironmentRun,
+      details: { note: 'live outcome re-observed', currentMeasurement } })).toMatchObject({ status: 'created' });
+
+    // The clause moved on: a review at the new revision cannot pair with the revision-1 proof.
+    await specs.setSpecClause(clause({ mutationRequired: false, expectedRevision: 1,
+      behavior: 'Acknowledged events 42 and 43 are not replayed after reconnect.' }));
+    expect(await refusedWith({})).toEqual(['spec-revision']);
+  });
+
   it('pins only matching execution-time ledger witnesses and never a binding-time caller runtime', async () => {
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
