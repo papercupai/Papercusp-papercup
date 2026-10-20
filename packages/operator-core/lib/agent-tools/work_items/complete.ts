@@ -332,6 +332,10 @@ import {
 import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { isNonCodeWorkItemKind } from '../../plan-verification-profile';
+import {
+  describeNonCodeDeliverableCodeEvidence,
+  readNonCodeDeliverableCloseEvidence,
+} from '../../plan-verification-escape';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 import { COMPLETE_RECEIPT, toWorkItemReceipt } from './receipt';
 import {
@@ -4406,6 +4410,48 @@ async function completeOne(
       }
     } else setContractRequirement('spec-conformance-closure', false);
   } else setContractRequirement('spec-conformance-closure', false);
+
+  // plan-verification-profiles P-005 (R-15, D-008): a work item whose linked plan item
+  // declares a non-code deliverable (or inherits one from the general profile) may not close
+  // successfully with code-change evidence: a filesChanged list or the `bug` kind. That is
+  // code work under a non-code label, which would skip the code verification module.
+  // `feature` is not evidence: plan promotion gives every item that kind.
+  if (closeIntentRequested && successfulClose && !isAbandonedClose && !duplicateCloseCoverageException) {
+    const link = conformanceClosurePlanLink(existing, finishPlanStamp(existing as unknown as Record<string, unknown>));
+    if (link.planSlug && link.planItemIds.length > 0) {
+      try {
+        const hit = await readNonCodeDeliverableCloseEvidence({
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+          harnessSlug: link.harnessSlug,
+          planSlug: link.planSlug,
+          planItemIds: link.planItemIds,
+          filesChanged: completionFilesChanged(it.completion),
+          workItemKind: existing.kind,
+        });
+        if (hit) {
+          refuseGate(
+            `REJECTED — ${describeNonCodeDeliverableCodeEvidence(it.id, `${link.planSlug}#${hit.itemId}`, hit.evidence)} ` +
+              'No completion write was made.',
+            {
+              nonCodeDeliverableRefusal: {
+                code: 'non_code_deliverable_code_evidence',
+                planSlug: link.planSlug,
+                itemId: hit.itemId,
+                deliverable: hit.evidence.deliverable,
+                profile: hit.evidence.profile,
+                signals: hit.evidence.signals,
+              },
+            },
+          );
+        }
+      } catch (error) {
+        refuseGate(
+          `Cannot check the linked plan item's declared deliverable at close: ${error instanceof Error ? error.message : String(error)}. No completion write was made.`,
+          { nonCodeDeliverableRefusal: { code: 'deliverable_check_unavailable', retryable: true } },
+        );
+      }
+    }
+  }
 
   // ---- ONE refusal naming every unmet gate (EI-20286699547467039) -------------------
   // The last contract gate is above; emit the accumulated verdict here, still BEFORE any

@@ -19,6 +19,7 @@ import {
   parseFailingFilesLine,
   parseSyncBatches,
   planStaleBacklogSkip,
+  SYNC_DELTA_MAX_LISTED_COMMITS,
   runSyncBatchDeltaCheck,
   STALE_BACKLOG_MS,
   unionBatchPaths,
@@ -948,6 +949,55 @@ describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
     expect(planStaleBacklogSkip([...backlog([1, 5]), admission], NOW)).toBeNull();
     // Nothing dated at all: nothing proves the backlog stale.
     expect(planStaleBacklogSkip(backlog([null, null]), NOW)).toBeNull();
+  });
+
+  it('skips a listing that hit SYNC_DELTA_MAX_LISTED_COMMITS even when no listed commit is 2h old', () => {
+    const ages = [1, 2, 3, ...Array.from({ length: SYNC_DELTA_MAX_LISTED_COMMITS - 3 }, () => 60)];
+    const batches = backlog(ages);
+    // By age alone this backlog is fresh: the uncapped planner leaves it to the walk.
+    expect(planStaleBacklogSkip(batches, NOW)).toBeNull();
+    const skip = planStaleBacklogSkip(batches, NOW, { truncated: true });
+    expect(skip?.truncated).toBe(true);
+    expect(skip?.remaining.map((b) => b.sha)).toEqual([sha(1), sha(2), sha(3)]);
+    expect(skip?.anchor.sha).toBe(sha(4));
+    expect(skip?.skippedCount).toBe(SYNC_DELTA_MAX_LISTED_COMMITS - 3);
+  });
+
+  it('anchors a capped listing that sits wholly inside the credit window on its oldest listed commit', () => {
+    const skip = planStaleBacklogSkip(backlog([1, 2, 3, 4]), NOW, { truncated: true });
+    expect(skip?.anchor.sha).toBe(sha(4));
+    expect(skip?.remaining.map((b) => b.sha)).toEqual([sha(1), sha(2), sha(3)]);
+    expect(skip?.skippedCount).toBe(1);
+    // An undated capped listing still re-anchors: its size is the proof.
+    expect(planStaleBacklogSkip(backlog([null, null]), NOW, { truncated: true })?.anchor.sha).toBe(sha(1));
+  });
+
+  it('re-anchors from a capped listing without running a leg and records the cap in the reason', async () => {
+    const ages = Array.from({ length: SYNC_DELTA_MAX_LISTED_COMMITS }, (_, i) => (i < 2 ? i + 1 : 60));
+    const batches = backlog(ages);
+    let affectedRuns = 0;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => sha(1),
+        listBatches: async () => batches,
+        runAffected: async () => {
+          affectedRuns += 1;
+          return { ok: true, failing: [] };
+        },
+        now: () => NOW,
+      },
+      { sha: SHA_A, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('backlog-skipped');
+    expect(affectedRuns).toBe(0);
+    expect(state.cursor?.sha).toBe(sha(3));
+    expect(state.cursor?.lastSkipReason).toMatch(
+      new RegExp(
+        `^backlog-skipped: at least ${SYNC_DELTA_MAX_LISTED_COMMITS - 2} commit\\(s\\) through 0{12} skipped unjudged: ` +
+          `the listing hit SYNC_DELTA_MAX_LISTED_COMMITS=${SYNC_DELTA_MAX_LISTED_COMMITS}`,
+      ),
+    );
   });
 
   it('re-anchors the cursor, resets the learned window state, and records an unjudged slot', async () => {

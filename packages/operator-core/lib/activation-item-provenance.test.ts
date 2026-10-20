@@ -4,6 +4,7 @@ import {
   fetchOrderSourceTurns,
   fetchSourceTurns,
   isOwnerTurnVerdict,
+  orderRowVerdict,
   parseOrderSourceRef,
   itemProvenanceLabelText,
   resolveItemProvenance,
@@ -237,12 +238,18 @@ describe('order:<id> source refs — WI-6554700010017011: an owner directive wit
   const HOOK_CAPTURED = 'order:1970';
   const AGENT_RECORDED = 'order:1971';
   const ABSENT = 'order:1972';
+  const LEGACY_MACHINE = 'order:174';
   const OWNER_WORDS = 'can we make an interactive diagram as well for the cupboard page?';
+  // Shape of the real legacy rows #170-#181 (WI-10002491): a carry-respawn continuation the
+  // pre-fix hook captured with captured_by_hook = true. Nobody typed it.
+  const MACHINE_CONTINUATION =
+    '\n\n<pasted_content id="6620">\n⟦turn-origin:self-compaction nonce:0cfb7d076ccba175⟧\nResume plan papercusp-com-cupboard-diagram-2026-10-17.\n</pasted_content id="6620">';
   const directives: Record<string, { verbatim: string; captured_by_hook: boolean }> = {
+    174: { verbatim: MACHINE_CONTINUATION, captured_by_hook: true },
     1970: { verbatim: OWNER_WORDS, captured_by_hook: true },
     1971: { verbatim: 'relayed: the owner wants a cupboard diagram', captured_by_hook: false },
   };
-  /** Serves owner_directives by id (emulating left(verbatim_text, width)) and records every query. */
+  /** Serves owner_directives by id (emulating left/right(verbatim_text, width)) and records every query. */
   const makeSql = () => {
     const queries: string[] = [];
     const sql: TurnSql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -250,13 +257,15 @@ describe('order:<id> source refs — WI-6554700010017011: an owner directive wit
       queries.push(text);
       if (!text.includes('harness_shared.owner_directives')) return [];
       expect(text).toMatch(/directives\.workspace_id = \?/);
-      const [width, workspace, ids] = values as [number, string, number[]];
+      // Template order: left(text, width), right(text, tailWidth), then the WHERE values.
+      const [width, tailWidth, workspace, ids] = values as [number, number, string, number[]];
       if (workspace !== 'ws') return [];
       return ids
         .filter((id) => directives[id])
         .map((id) => ({
           id: String(id),
           verbatim_head: directives[id]!.verbatim.slice(0, width),
+          verbatim_tail: directives[id]!.verbatim.slice(-tailWidth),
           captured_by_hook: directives[id]!.captured_by_hook,
         }));
     }) as TurnSql;
@@ -279,6 +288,23 @@ describe('order:<id> source refs — WI-6554700010017011: an owner directive wit
     expect(turns.get(AGENT_RECORDED)?.verdict).toBe('unknown');
     expect(isOwnerTurnVerdict(turns.get(AGENT_RECORDED)?.verdict)).toBe(false);
     expect(turns.has(ABSENT)).toBe(false);
+  });
+
+  it('a hook-captured row carrying a machine origin envelope (legacy #170-#181) is NOT owner speech', async () => {
+    const { sql } = makeSql();
+    const turns = await fetchSourceTurns(sql, 'ws', [LEGACY_MACHINE, HOOK_CAPTURED]);
+    const legacy = turns.get(LEGACY_MACHINE)?.verdict;
+    expect(legacy).toBeDefined();
+    expect(legacy).not.toBe('owner-typed');
+    expect(isOwnerTurnVerdict(legacy)).toBe(false);
+    expect(turns.get(HOOK_CAPTURED)?.verdict).toBe('owner-typed');
+  });
+
+  it('orderRowVerdict only ever downgrades the hook proof', () => {
+    expect(orderRowVerdict(false, OWNER_WORDS, OWNER_WORDS)).toBe('unknown');
+    expect(orderRowVerdict(true, OWNER_WORDS, OWNER_WORDS)).toBe('owner-typed');
+    expect(isOwnerTurnVerdict(orderRowVerdict(true, MACHINE_CONTINUATION, MACHINE_CONTINUATION))).toBe(false);
+    expect(orderRowVerdict(false, MACHINE_CONTINUATION, MACHINE_CONTINUATION)).toBe('unknown');
   });
 
   it('is workspace-scoped: the same id in another workspace does not resolve', async () => {

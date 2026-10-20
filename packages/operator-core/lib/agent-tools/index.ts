@@ -1472,6 +1472,8 @@ import './plans/run-transcript';
 import './plans/start';
 import './plans/pause';
 import './plans/set-priority';
+// plan-verification-profiles P-005: decision-gated change of a plan's verification profile.
+import './plans/set-verification-profile';
 import './plans/set-archived';
 import './plans/launch';
 import './plans/resume';

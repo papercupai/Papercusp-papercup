@@ -87,6 +87,7 @@ import {
   type NonCodeItemProof,
 } from './plan-requirement-realization';
 import { isReasonedNonCodeAudit, unfinishedItemsAreAuditedNonCode } from './plan-verification-profile';
+import { describeNonCodeDeliverableCodeEvidence, readNonCodeDeliverableShipEvidence } from './plan-verification-escape';
 import { genericCitationStaleReason, isGenericCitationKind, resolveGenericCitation } from './plan-audits-generic-citations';
 import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
@@ -140,6 +141,11 @@ export type PlanAcceptanceGateCode =
   // The two audits were both present and never compared, so a requirement could be
   // recorded `covered` while its plan item was audited with no verifying citation.
   | 'requirement_unrealized'
+  // plan-verification-profiles-2026-10-17 P-005 (R-15, D-008) — a closed work item carries
+  // code-change evidence while its plan item now resolves to a non-code deliverable, and the
+  // read that checks it. Neither is waived by force: a waiver would re-open the escape.
+  | 'non_code_deliverable_code_evidence'
+  | 'non_code_deliverable_check_unavailable'
   // A plan cannot ship a report that exists only in a session/account-local
   // presentation surface. The URL/path detector is shared with the advisory
   // turn-end warnings; this code is the completion-time enforcement leg.
@@ -1338,6 +1344,48 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
             })) return collectedRefusal();
         }
       }
+    }
+  }
+
+  // ── R-15 at ship (plan-verification-profiles-2026-10-17 P-005, D-008) ────────
+  // Completion refuses a non-code deliverable whose close carries code-change evidence, but
+  // it judges the declaration in force AT CLOSE. Lowering an item's deliverable (or the plan
+  // profile) after its code completion would let that code skip the code module, so ship
+  // re-runs the same check against the declarations in force now. Not waived by force, like
+  // requirement_unrealized: a waiver would re-open exactly the escape this closes. An
+  // unreadable check refuses rather than passing silently.
+  if (planHarnessSlug) {
+    let shipHits: Awaited<ReturnType<typeof readNonCodeDeliverableShipEvidence>> | null = null;
+    let shipReadError: string | null = null;
+    try {
+      shipHits = await readNonCodeDeliverableShipEvidence({
+        workspaceId: activeWorkspaceId(),
+        harnessSlug: planHarnessSlug,
+        planSlug,
+      });
+    } catch (error) {
+      shipReadError = error instanceof Error ? error.message : String(error);
+    }
+    if (shipReadError !== null) {
+      if (refuse({
+        satisfied: false,
+        code: 'non_code_deliverable_check_unavailable',
+        message:
+          `plan '${planSlug}' cannot be marked shipped: the check that each non-code deliverable's closed work ` +
+          `items carry no code-change evidence could not read its inputs (${shipReadError}). Retry the ship; ` +
+          `this refusal is not waived by force.`,
+      })) return collectedRefusal();
+    } else if (shipHits && shipHits.length > 0) {
+      const lines = shipHits.map((hit) =>
+        describeNonCodeDeliverableCodeEvidence(`work item ${hit.workItemId}`, `${planSlug}#${hit.itemId}`, hit.evidence));
+      if (refuse({
+        satisfied: false,
+        code: 'non_code_deliverable_code_evidence',
+        message:
+          `plan '${planSlug}' cannot be marked shipped: ${shipHits.length} closed work item(s) carry code-change ` +
+          `evidence under a non-code deliverable. ${lines.slice(0, 3).join(' ')}` +
+          `${lines.length > 3 ? ` (+${lines.length - 3} more)` : ''} This refusal is not waived by force.`,
+      })) return collectedRefusal();
     }
   }
 

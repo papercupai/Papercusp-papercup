@@ -75,4 +75,16 @@ describe('listBatches walks the first-parent chain (WI-6554700010018028)', () =>
     // The absorbing merge changed nothing against staging's first parent.
     expect(batches?.[1]?.paths).toEqual([]);
   });
+
+  it('caps the listing at maxListedCommits, newest first (a cursor off the chain listed 110k commits)', async () => {
+    const deps = buildSyncBatchDeltaDeps({
+      installSlug: 'h',
+      workspaceId: 'w',
+      root,
+      branch: 'staging',
+      maxListedCommits: 1,
+    });
+    const batches = await deps.listBatches(shas.cursor!);
+    expect(batches?.map((b) => b.sha)).toEqual([shas.tip]);
+  });
 });

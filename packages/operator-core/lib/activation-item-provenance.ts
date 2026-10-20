@@ -327,6 +327,13 @@ export function parseOrderSourceRef(ref: string): number | null {
  * recorded with `orders:record` is a relay, so its origin is `unknown`. That does not
  * qualify as owner backing, and it does not mean the row was fabricated. Missing ids are
  * absent from the result.
+ *
+ * `captured_by_hook` alone is NOT sufficient: before the capture rail was fixed, the hook
+ * captured machine-injected continuations (wake-pump, self-compaction, fleet-kickoff) as
+ * well — rows #170-#181 here (WI-10002491), each still `captured_by_hook = true`. So a
+ * hook-captured row is also run through the same text classifier session turns use (head
+ * AND tail, WI-10004057), as a DOWNGRADE ONLY: a `⟦turn-origin:…⟧` envelope makes it
+ * agent-origin, and only a clean residual keeps the hook's `owner-typed`.
  */
 export async function fetchOrderSourceTurns(
   sql: TurnSql,
@@ -340,8 +347,12 @@ export async function fetchOrderSourceTurns(
     .filter((entry): entry is { ref: string; id: number } => entry.id != null);
   if (keyed.length === 0) return out;
   const wrap = (values: unknown[]) => (sql.array ? sql.array(values) : values);
-  const rows = await sql<Array<{ id: string | number; verbatim_head: string | null; captured_by_hook: boolean | null }>>`
-    SELECT directives.id, left(directives.verbatim_text, ${Math.max(chars, 1)}) AS verbatim_head,
+  const width = Math.max(chars, TURN_ORIGIN_HEAD_CHARS);
+  const rows = await sql<Array<{
+    id: string | number; verbatim_head: string | null; verbatim_tail?: string | null; captured_by_hook: boolean | null;
+  }>>`
+    SELECT directives.id, left(directives.verbatim_text, ${width}) AS verbatim_head,
+           right(directives.verbatim_text, ${TURN_ORIGIN_TAIL_CHARS}) AS verbatim_tail,
            directives.captured_by_hook
       FROM harness_shared.owner_directives AS directives
      WHERE directives.workspace_id = ${workspaceId}
@@ -350,13 +361,26 @@ export async function fetchOrderSourceTurns(
   for (const { ref, id } of keyed) {
     const row = byId.get(String(id));
     if (!row) continue;
+    const head = row.verbatim_head ?? null;
     out.set(ref, {
       speaker: 'user',
-      text: row.verbatim_head ?? null,
-      verdict: row.captured_by_hook === true ? 'owner-typed' : 'unknown',
+      text: head === null ? null : head.slice(0, Math.max(chars, 1)),
+      verdict: orderRowVerdict(row.captured_by_hook === true, head, row.verbatim_tail ?? null),
     });
   }
   return out;
+}
+
+/**
+ * Verdict for one owner_directives row. Not hook-captured → `unknown` (an agent relay).
+ * Hook-captured → the text classifier's verdict, which can only DOWNGRADE the hook's
+ * owner proof: an origin envelope (a legacy machine capture, WI-10002491) yields the
+ * agent-origin verdict; a clean residual stays `owner-typed`.
+ */
+export function orderRowVerdict(capturedByHook: boolean, head: string | null, tail: string | null): HitTurnOriginVerdict {
+  if (!capturedByHook) return 'unknown';
+  const fromText = classifyHitTurnOrigin('user', head === null ? null : head.slice(0, TURN_ORIGIN_HEAD_CHARS), tail).verdict;
+  return fromText === 'owner-typed' ? 'owner-typed' : fromText;
 }
 
 /**

@@ -44,6 +44,7 @@ import {
   parseLoadavg1,
   parseSyncBatches,
   parseTscFailingFiles,
+  SYNC_DELTA_MAX_LISTED_COMMITS,
   type ConfirmVerdict,
   type EditorHit,
   type LoadReading,
@@ -99,6 +100,9 @@ export interface SyncBatchDeltaDepsConfig {
   /** Process seam — defaults to the real async argv spawn below. Tests inject a
    *  recorder to assert WHICH legs run in the reserved slice without spawning anything. */
   exec?: (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<RunResult | null>;
+  /** Most commits `listBatches` lists per window (`git log --max-count`). Defaults to
+   *  SYNC_DELTA_MAX_LISTED_COMMITS; tests lower it to exercise the cap on a small repo. */
+  maxListedCommits?: number;
 }
 
 export interface RunResult {
@@ -330,6 +334,9 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       // is the order staging actually moved in, so the cursor can only land on it. An
       // absorbing merge's own first-parent diff is listed too (--diff-merges), so no
       // content that reached staging through a merge is dropped.
+      // `--max-count` bounds the listing: a cursor already OFF the first-parent chain
+      // listed 110,362 commits and timed out every tick. A capped listing is planned as
+      // a too-large backlog (planStaleBacklogSkip `truncated`), which re-anchors the cursor.
       const r = await exec(
         'git',
         [
@@ -337,6 +344,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
           cfg.root,
           'log',
           `${sinceSha}..${cfg.branch}`,
+          `--max-count=${cfg.maxListedCommits ?? SYNC_DELTA_MAX_LISTED_COMMITS}`,
           '--first-parent',
           '--diff-merges=first-parent',
           '--name-only',

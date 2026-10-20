@@ -460,7 +460,8 @@ describe('plans:audit activation — order:<id> owner directives (WI-65547000100
       const first = args[0];
       if (Array.isArray(first) && 'raw' in first &&
         (first as unknown as string[]).join('?').includes('harness_shared.owner_directives')) {
-        const [, , workspace, ids] = args as [unknown, number, string, number[]];
+        // Template values: left(text, width), right(text, tailWidth), workspace, ids.
+        const [, , , workspace, ids] = args as [unknown, number, number, string, number[]];
         if (workspace !== 'test-workspace') return Promise.resolve([]);
         return Promise.resolve(ids.filter((id) => DIRECTIVES[id]).map((id) => ({ id: String(id), ...DIRECTIVES[id] })));
       }

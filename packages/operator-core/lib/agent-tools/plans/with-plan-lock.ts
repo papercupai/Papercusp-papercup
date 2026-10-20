@@ -34,6 +34,15 @@ import {
   type ActivationAuditEditNotice,
 } from '../../plan-audits';
 import { hashPlanContent } from './content-hash';
+import {
+  declaredDeliverablesChanged,
+  deliverableLowerings,
+  effectivePlanProfile,
+  evaluateDeliverableLowering,
+  isPlanActivated,
+  readLatestActivationAuditAnchor,
+  type VerificationLoweringRefusal,
+} from '../../plan-verification-escape';
 import { summarizeForcedPast } from './forced-past-stamp';
 import {
   invalidPlanDependenciesValue,
@@ -527,7 +536,8 @@ export interface RefusedResult {
   value:
     | ReturnType<typeof invalidPlanDependenciesValue>
     | ReturnType<typeof childSeedTemplateRefusalValue>
-    | ReturnType<typeof activationGateRefusalValue>;
+    | ReturnType<typeof activationGateRefusalValue>
+    | VerificationLoweringRefusal;
   filePath: string;
   version: number;
   scope: { workspaceId: string; harnessSlug: string };
@@ -753,6 +763,52 @@ export async function withPlanLock<T>(
           return {
             kind: 'refused',
             value: activationGateRefusalValue(slug, gate),
+            filePath,
+            version: curVersion,
+            scope: { workspaceId, harnessSlug },
+          } satisfies RefusedResult;
+        }
+      }
+    }
+    // plan-verification-profiles P-005 (R-14, D-008): an item's deliverable is plan text, so
+    // this one content-write chokepoint is where lowering it from code to non-code is caught.
+    // After activation that needs an already-recorded Decision naming the item AND a latest
+    // activation audit that reviewed the content carrying that Decision.
+    // A content write cannot change the profile column, so only a changed `deliverable:`
+    // keyword can lower anything; the profile is read (in its own query) only then, which
+    // keeps this off the common write path and away from fixtures that predate the column.
+    if (newBody !== null && cur) {
+      const priorParsed = parsePlan(cur.content, { filePath });
+      const nextParsed = parsePlan(newBody, { filePath });
+      const lowerings = declaredDeliverablesChanged(priorParsed.items, nextParsed.items)
+        ? deliverableLowerings(
+            priorParsed.items,
+            nextParsed.items,
+            effectivePlanProfile(
+              (
+                await tx<{ verification_profile: string | null }[]>`
+                  SELECT verification_profile FROM harness_shared.harness_plans
+                   WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}`
+              )[0]?.verification_profile,
+            ),
+          )
+        : [];
+      if (lowerings.length > 0) {
+        const profile = lowerings[0]!.profile;
+        const audit = await readLatestActivationAuditAnchor(tx as never, { workspaceId, harnessSlug, planSlug: slug });
+        const lowering = evaluateDeliverableLowering({
+          planSlug: slug,
+          activated: isPlanActivated(cur.status, audit !== null),
+          profile,
+          lowerings,
+          priorDecisions: priorParsed.decisions,
+          priorContentHash: hashPlanContent(cur.content),
+          latestActivationAudit: audit,
+        });
+        if (lowering) {
+          return {
+            kind: 'refused',
+            value: lowering,
             filePath,
             version: curVersion,
             scope: { workspaceId, harnessSlug },
