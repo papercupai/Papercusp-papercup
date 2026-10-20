@@ -58,6 +58,17 @@ async function uiPhase<T>(page: Page, name: string, action: () => Promise<T>): P
         ['password-policy', 'Password should not be common'],
       ].filter(([, message]) => text.includes(message!)).map(([code]) => code);
     }).catch(() => []);
+    const signupFields = name === 'submit provider signup' ?
+      await page.locator('input').evaluateAll(elements => elements.flatMap(element => {
+        const input = element as HTMLInputElement;
+        if (!['name', 'email', 'password'].includes(input.name)) return [];
+        // Fixed field categories and booleans only. Browser validation messages
+        // and values can include the identity or password being submitted.
+        return [{ field: input.name, present: input.value.length > 0,
+          valid: input.validity.valid, valueMissing: input.validity.valueMissing,
+          typeMismatch: input.validity.typeMismatch, tooShort: input.validity.tooShort,
+          patternMismatch: input.validity.patternMismatch, customError: input.validity.customError }];
+      })).catch(() => []) : undefined;
     const fieldLayout = name.includes('provider canvas signature field') ?
       await page.locator('#field-tooltip').evaluateAll(elements => elements.slice(0, 4).map(element => {
         const { x, y, width, height } = element.getBoundingClientRect();
@@ -74,6 +85,7 @@ async function uiPhase<T>(page: Page, name: string, action: () => Promise<T>): P
     const errorType = error instanceof Error && ['TimeoutError', 'AssertionError', 'Error'].includes(error.name) ? error.name : 'unexpected';
     throw new Error('Documenso UI phase failed: ' + name + '; errorType=' + errorType +
       '; errorCode=' + safeUiErrorCode(error) + '; issues=' + JSON.stringify(issues) + '; controls=' + JSON.stringify(controls) +
+      (signupFields === undefined ? '' : '; signupFields=' + JSON.stringify(signupFields)) +
       (fieldLayout === undefined ? '' : '; fieldLayout=' + JSON.stringify(fieldLayout)));
   }
 }
@@ -118,13 +130,19 @@ export async function register(browser: Browser, person: SigningPerson) {
   await uiPhase(page, 'open provider signup form', async () => {
     await page.goto(baseUrl + '/signup');
   });
+  // The interactive dialog proves the client form has hydrated. Filling the
+  // server-rendered inputs first can lose those values when React attaches.
+  await uiPhase(page, 'save required signup signature', () => savedSignature(page, person.name));
   await uiPhase(page, 'fill provider signup identity', async () => {
     await page.locator('input[name="name"]').fill(person.name);
     await page.locator('input[name="email"]').fill(person.email);
     await page.locator('input[name="password"]').fill(password);
   });
-  await uiPhase(page, 'save required signup signature', () => savedSignature(page, person.name));
   await uiPhase(page, 'submit provider signup', async () => {
+    expect({ name: await page.locator('input[name="name"]').inputValue() === person.name,
+      email: await page.locator('input[name="email"]').inputValue() === person.email,
+      password: await page.locator('input[name="password"]').inputValue() === password },
+    'Signup fields retain the intended identity').toEqual({ name: true, email: true, password: true });
     expect(await page.locator('input[name="email"]').evaluate(input => (input as HTMLInputElement).form!.checkValidity())).toBe(true);
     await page.getByRole('button', { name: 'Create account', exact: true }).click();
     await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).not.toBe('/signup');

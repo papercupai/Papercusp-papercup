@@ -44,6 +44,38 @@ describe('Documenso UI failure diagnostics', () => {
     expect(Boolean(values.password)).toBe(true);
   });
 
+  it.each([false, true])('retains safe signup field validity after refusal (browser invalid=%s)', async browserInvalid => {
+    const values: Record<string, string> = {};
+    const person = { personId: 'PER-signup', name: 'PRIVATE_NAME', email: 'PRIVATE_EMAIL@example.test' };
+    const privateValues = [person.name, person.email, 'PRIVATE_VALIDATION_MESSAGE'];
+    const submit = vi.fn(async () => { throw new Error(privateValues.join(' ')); });
+    const dialog = { isVisible: async () => false,
+      getByRole: () => ({ click: vi.fn() }), getByTestId: () => ({ fill: vi.fn() }) };
+    const validity = { valid: !browserInvalid, valueMissing: false, typeMismatch: false,
+      tooShort: browserInvalid, patternMismatch: false, customError: false };
+    const page = {
+      goto: vi.fn(), getByTestId: () => ({ click: vi.fn() }),
+      getByRole: (role: string) => role === 'dialog' ? dialog : { click: submit },
+      locator: (selector: string) => {
+        const field = /input\[name="(\w+)"\]/.exec(selector)?.[1];
+        if (field) return { fill: async (value: string) => { values[field] = value; },
+          inputValue: async () => values[field] ?? '',
+          evaluate: async (callback: (input: object) => unknown) => callback({ form: { checkValidity: () => !browserInvalid } }) };
+        return { evaluate: async () => [], evaluateAll: async (callback: (elements: object[]) => unknown) =>
+          selector === 'input' ? callback(['name', 'email', 'password'].map(name => ({ name,
+            value: values[name], validity, validationMessage: privateValues[2] }))) : [] };
+      },
+    } as unknown as Page;
+    const browser = { newContext: async () => ({ newPage: async () => page }) } as unknown as Browser;
+    const error = await register(browser, person).then(() => null, value => value as Error);
+    expect(error!.message).toContain('submit provider signup');
+    const fields = JSON.parse(error!.message.split('; signupFields=')[1]!);
+    expect(fields).toEqual(['name', 'email', 'password'].map(field => ({ field, present: true, ...validity })));
+    expect(submit).toHaveBeenCalledTimes(Number(!browserInvalid));
+    for (const value of [...privateValues, values.password!]) expect(error!.stack).not.toContain(value);
+    expect(error!.cause).toBeUndefined();
+  });
+
   it.each([false, true])('waits for the PDF viewer before navigating to a virtualized signature field (signature dialog=%s)', async needsSignature => {
     let viewerReady = false, fieldRevealed = false, dialogVisible = false, fieldSigned = false, completed = false;
     const viewer = { first: () => viewer, waitFor: vi.fn(async () => {

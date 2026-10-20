@@ -360,6 +360,45 @@ const vm = (name: string, run: string, zone = 'us-central1-a') => ({
 });
 const bootDisk = (name: string, zone = 'us-central1-a') => ({ name, zone: zoneUrl(zone), users: [`.../instances/${name}`] });
 
+describe('readCensus', () => {
+  it('keeps only one SDK command active while collecting every resource kind', async () => {
+    const inventory: Record<string, Array<Record<string, unknown>>> = {
+      instances: [vm('r1-a', 'r1')],
+      disks: [bootDisk('r1-a'), { name: 'orphan', zone: zoneUrl('us-central1-b'), users: [] }],
+      addresses: [{ name: 'reserved-ip' }],
+      buckets: [{ name: 'artifacts' }],
+    };
+    const calls: string[][] = [];
+    let active = 0;
+    let peakActive = 0;
+    const exec: Exec = async (argv) => {
+      calls.push([...argv]);
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      try {
+        // Keep the command pending for one microtask, without wall-clock timing assumptions.
+        await Promise.resolve();
+        return { code: 0, stdout: JSON.stringify(inventory[argv[1]]), stderr: '' };
+      } finally {
+        active -= 1;
+      }
+    };
+
+    const census = await readCensus(exec);
+    expect(peakActive).toBe(1);
+    expect(active).toBe(0);
+    expect(census).toEqual({
+      instances: [{ name: 'r1-a', zone: 'us-central1-a', status: 'RUNNING', runId: 'r1', maxCostCents: 60 }],
+      orphanDisks: [{ name: 'orphan', zone: 'us-central1-b' }],
+      staticAddresses: ['reserved-ip'],
+      buckets: ['artifacts'],
+    });
+    expect(calls).toEqual(['instances', 'disks', 'addresses', 'buckets'].map((kind) => [
+      kind === 'buckets' ? 'storage' : 'compute', kind, 'list', `--project=${TEST_PROJECT}`, '--format=json',
+    ]));
+  });
+});
+
 describe('teardownRun', () => {
   it('deletes only the run, per zone, and verifies with a fresh census', async () => {
     const g = fakeGcloud({
@@ -416,8 +455,10 @@ describe('teardownRun', () => {
     expect(result.deleted).toEqual(['r1-a']);
   });
 
-  it('throws instead of reporting an empty census when a list call fails', async () => {
-    const exec: Exec = async () => ({ code: 1, stdout: '', stderr: 'permission denied' });
-    await expect(readCensus(exec)).rejects.toThrow(/permission denied/);
+  it.each(['instances', 'disks', 'addresses', 'buckets'])('throws instead of reporting a partial census when %s listing fails', async (failedKind) => {
+    const exec: Exec = async (argv) => argv[1] === failedKind
+      ? { code: 1, stdout: '', stderr: `permission denied: ${failedKind}` }
+      : { code: 0, stdout: '[]', stderr: '' };
+    await expect(readCensus(exec)).rejects.toThrow(`permission denied: ${failedKind}`);
   });
 });

@@ -443,12 +443,12 @@ async function listJson(exec: Exec, argv: string[]): Promise<Array<Record<string
 
 /** Read everything billable in the test project. Throws if any read fails: no silent empty. */
 export async function readCensus(exec: Exec = gcloudExec): Promise<Census> {
-  const [instances, disks, addresses, buckets] = await Promise.all([
-    listJson(exec, ['compute', 'instances', 'list']),
-    listJson(exec, ['compute', 'disks', 'list']),
-    listJson(exec, ['compute', 'addresses', 'list']),
-    listJson(exec, ['storage', 'buckets', 'list']),
-  ]);
+  // These SDK processes share config/credential SQLite stores. Do not make one census
+  // contend with itself; each command must finish before the next starts.
+  const instances = await listJson(exec, ['compute', 'instances', 'list']);
+  const disks = await listJson(exec, ['compute', 'disks', 'list']);
+  const addresses = await listJson(exec, ['compute', 'addresses', 'list']);
+  const buckets = await listJson(exec, ['storage', 'buckets', 'list']);
   return {
     instances: instances.map((i) => {
       const labels = (i.labels ?? {}) as Record<string, string>;
