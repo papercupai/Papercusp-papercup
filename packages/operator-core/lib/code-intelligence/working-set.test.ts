@@ -85,6 +85,23 @@ describe('deriveCodeWorkingSet (R-1: edits rank first)', () => {
     expect(ranked.files).toEqual([{ path: 'lib/abs.ts', reason: 'edited', hits: 1 }]);
     expect(ranked.symbols).toEqual([]);
   });
+
+  it('carries only first-party code: hidden-directory scratch and node_modules never take a file slot (P-006 live run 1)', () => {
+    const scratch = ['.papercusp/scratch/ci-probes/rubric-rev-current.json', 'packages/x/.vitest-tmp/run.ts',
+      'node_modules/pkg/index.js', 'packages/a/node_modules/dep/lib.ts'];
+    const ranked = rankCodeWorkingSet({
+      pushes: [{ leg: 'first-touch', subject: scratch[0], citedPaths: [scratch[0]], at: 5 }],
+      edits: [{ file: scratch[1], at: 4 }, { file: 'lib/real.ts', at: 1 }],
+      tools: [
+        { tool: 'capability:read', args: { file_path: `/repo/root/${scratch[2]}` }, at: 3 },
+        { tool: 'lsp:query', args: { op: 'workspace_symbols', name: 'thing', file: scratch[3] }, at: 2 },
+      ],
+    }, { root: '/repo/root' });
+    expect(ranked.files).toEqual([{ path: 'lib/real.ts', reason: 'edited', hits: 1 }]);
+    // A stamp written before the filter existed is filtered on read-back too.
+    expect(parseStampedWorkingSet({ owner: 'su-1', epoch: 1, derivedAt: 'd', paths: [...scratch, 'lib/real.ts'], symbols: [] })!.paths)
+      .toEqual(['lib/real.ts']);
+  });
 });
 
 describe('deriveCodeWorkingSet (R-2: bounded)', () => {

@@ -19,16 +19,12 @@ import { firstPartyCallersOffthread } from '../code-intelligence/first-party-cal
 // Keep the controllable test double partial: this file is imported into the
 // native-ecosystem aggregate, where capability-review's source discovery must
 // still see the real compiler worker after these tests finish.
-const graphWorker = vi.hoisted(() => {
-  const mock = vi.fn();
-  mock.mockResolvedValue({
-    error: 'graph unavailable',
-    sites: [],
-    freshness: { health: 'unknown', staleVsDisk: null },
-    evidence: undefined,
-  } as never);
-  return mock;
-});
+// Typed with the real signature so every install below is checked (no `as never`
+// escape — lint:mock-cast-escape). It needs no default value: the vi.mock factory
+// installs the real implementation the moment the module is first imported, and
+// afterEach re-installs it after each mockReset.
+const graphWorker = vi.hoisted(() =>
+  vi.fn<typeof import('../code-intelligence/first-party-callers-offthread').firstPartyCallersOffthread>());
 const realGraphWorker = vi.hoisted(() => ({
   fn: undefined as typeof import('../code-intelligence/first-party-callers-offthread').firstPartyCallersOffthread | undefined,
 }));

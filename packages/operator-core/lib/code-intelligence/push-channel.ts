@@ -214,6 +214,8 @@ registerCodeIntelPushLeg('first-touch', snapshotFirstTouchLeg);
  * a new holder) has not been pushed yet. Read before the resume leg runs. */
 export interface ResumeContext {
   entries: readonly ResumeEntry[];
+  /** Source links for the entries, read with the context and off the push wall (P-006). */
+  links?: FirstTouchContext;
 }
 export interface ResumeEntry {
   path: string;
@@ -296,6 +298,48 @@ export async function readPushResumeContext(input: PushInput, deps: ReadResumeCo
     add({ path, reason: 'held', from: 'work-item', itemId: set.itemId, previousOwner: set.stamp.owner });
   }
   return { entries };
+}
+
+/** P-006 (live run 1): the resume read keeps running after it misses its 100ms bound.
+ * Discarding that late result and re-reading on every batch meant a loaded host never
+ * fit the read inside the bound, so resume never fired. A late result is instead parked
+ * per (workspace, owner) and served once to the next batch; an in-flight read is joined,
+ * never duplicated. Consume-once keeps the already-pushed subjects current: the next
+ * read after a consumption sees what that batch pushed. */
+export const RESUME_CONTEXT_TIMEOUT_MS = 100;
+/** The links read runs inside the parked background read, so it is not on the 250ms wall. */
+export const RESUME_LINKS_TIMEOUT_MS = 2_000;
+export const RESUME_PARK_TTL_MS = 60_000;
+export const RESUME_PARK_MAX = 256;
+interface ParkedResume { at: number; read: Promise<ResumeContext>; value?: ResumeContext }
+const resumeParking = pinModuleState('@papercusp/operator-core.code-intel-resume-parking',
+  () => ({ parked: new Map<string, ParkedResume>() }));
+/** Test seam: forget every parked resume read. */
+export function resetParkedResumeContexts(): void { resumeParking.parked.clear(); }
+/** Test/diagnostic seam: how many resume reads are parked right now. */
+export function parkedResumeContextCount(): number { return resumeParking.parked.size; }
+
+export async function boundedResumeContext(input: PushInput, read: (input: PushInput) => Promise<ResumeContext>,
+  timeoutMs = RESUME_CONTEXT_TIMEOUT_MS): Promise<ResumeContext | undefined> {
+  const { parked } = resumeParking;
+  const key = `${input.workspace}\u0000${input.owner}`;
+  const now = Date.now();
+  for (const [k, entry] of parked) if (now - entry.at > RESUME_PARK_TTL_MS) parked.delete(k);
+  let entry = parked.get(key);
+  if (entry?.value) { parked.delete(key); return entry.value; }
+  if (!entry) {
+    while (parked.size >= RESUME_PARK_MAX) parked.delete(parked.keys().next().value!);
+    const fresh: ParkedResume = { at: now, read: Promise.resolve().then(() => read(input)) };
+    fresh.read.then(
+      value => { if (parked.get(key) === fresh) { fresh.value = value; fresh.at = Date.now(); } },
+      () => { if (parked.get(key) === fresh) parked.delete(key); });
+    parked.set(key, fresh);
+    entry = fresh;
+  }
+  const result = await withBoundedTimeout(entry.read, { timeoutMs, fallback: undefined, label: 'code-intel-resume-context' });
+  // Answered in time (or failed): consumed. Timed out: stays parked for the next batch.
+  if (result.reason !== 'timeout' && parked.get(key) === entry) parked.delete(key);
+  return result.value;
 }
 
 /** code-intel-epoch-carry-2026-10-20 P-005: code notes (`code-note:` facts) anchored
@@ -679,6 +723,18 @@ const defaults: PushChannelDeps = {
   notesContext: (input, paths) => readPushNotesContext(input, paths),
 };
 
+/** P-006: the resume context and its entries' source links in ONE background read. A
+ * links read awaited inside the wall (`code-intel-resume-links`) was measured on :3170
+ * to push the whole batch past CODE_INTEL_PUSH_WALL_MS, so nothing was committed. */
+async function readResumeWithLinks(input: PushInput, deps: PushChannelDeps): Promise<ResumeContext> {
+  const context = await deps.resumeContext!(input);
+  const paths = context.entries.map(entry => entry.path).slice(0, RESUME_FACTS_PER_BATCH + 2);
+  if (!deps.context || !paths.length) return context;
+  const links = await withBoundedTimeout(() => deps.context!(input, paths),
+    { timeoutMs: RESUME_LINKS_TIMEOUT_MS, fallback: undefined, label: 'code-intel-resume-links' });
+  return links.value ? { ...context, links: links.value } : context;
+}
+
 /** A failed optional push never drops memory, worn rules, or the failure hint. */
 export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps: PushChannelDeps = defaults): Promise<string> {
   if (!input.owner || !input.workspace || !input.calls.length || !deps.legs().size) return '';
@@ -690,8 +746,7 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     // The resume read does not depend on any other leg, so it overlaps with them
     // instead of adding its own wait to the 250ms wall (P-003).
     const resumeContext = deps.resumeContext && deps.legs().has('resume') && await deps.enabled(PUSH_LEG_FLAGS.resume)
-      ? withBoundedTimeout(() => deps.resumeContext!(input), { timeoutMs: 100, fallback: undefined, label: 'code-intel-resume-context' })
-        .catch(() => ({ value: undefined }))
+      ? boundedResumeContext(input, i => readResumeWithLinks(i, deps)).then(value => ({ value }), () => ({ value: undefined }))
       : null;
     // P-005: same overlap for the code-note read (a fact fold plus a re-hash of the
     // notes' file anchors), started only when this batch first-touched a file.
@@ -718,13 +773,12 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
         if (id === 'resume') {
           if (!resumeContext) continue;
           input.resumeContext = (await resumeContext).value ?? { entries: [] };
-          // A resume needs the same source links a first touch would carry.
-          const paths = input.resumeContext.entries.map(entry => entry.path).slice(0, RESUME_FACTS_PER_BATCH + 2);
-          if (deps.context && paths.length && !input.firstTouchContext) {
-            const context = await withBoundedTimeout(() => deps.context!(input, paths),
-              { timeoutMs: 100, fallback: undefined, label: 'code-intel-resume-links' });
-            input.firstTouchContext = context.value;
-          }
+          // A resume carries the same source links a first touch would; they were read
+          // with the context. Merge per path so this batch's first-touch links survive.
+          const links = input.resumeContext.links;
+          if (links) input.firstTouchContext = input.firstTouchContext
+            ? { ...input.firstTouchContext, byPath: { ...links.byPath, ...input.firstTouchContext.byPath } }
+            : links;
         }
         let candidates = leg(input, snapshot);
         if (id === 'incident' && candidates.length && deps.incidentContext) {

@@ -3,10 +3,10 @@
  * a new holder of a work item, receives FRESH first-touch facts for the carried
  * working set on its next tool batch.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
 import {
-  codeIntelPushText, PUSH_LEG_FLAGS, readPushResumeContext, snapshotResumeLeg,
+  codeIntelPushText, parkedResumeContextCount, PUSH_LEG_FLAGS, readPushResumeContext, resetParkedResumeContexts, snapshotResumeLeg,
   type PushChannelDeps, type PushFact, type PushInput, type ReadResumeContextDeps,
 } from './push-channel';
 import { parsePushSnapshot } from './push-snapshot';
@@ -87,6 +87,75 @@ describe('R-4: a new epoch receives fresh facts for its predecessor\'s files', (
     await codeIntelPushText(input(), 0, off.deps);
     expect(off.resumeContext).not.toHaveBeenCalled();
     expect(FLAG_DEFAULTS[PUSH_LEG_FLAGS.resume]).toBe(true);
+  });
+});
+
+describe('P-006: a resume read that misses its bound is parked for the next batch, not discarded', () => {
+  beforeEach(() => resetParkedResumeContexts());
+  afterEach(() => { resetParkedResumeContexts(); vi.restoreAllMocks(); });
+
+  /** A resume read that does not settle until the test releases it. */
+  function slowChannel() {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const base = channel(resumeDeps().deps);
+    const read = vi.fn(async (i: PushInput) => { await gate; return readPushResumeContext(i, resumeDeps().deps); });
+    return { ...base, deps: { ...base.deps, resumeContext: read }, read, release: () => release() };
+  }
+
+  it('serves a late result to the next batch instead of re-reading (live run 1: >100ms under load, never fired)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const slow = slowChannel();
+    await codeIntelPushText(input(), 0, slow.deps);
+    expect(slow.committed).toEqual([]);
+    expect(parkedResumeContextCount()).toBe(1);
+    slow.release();
+    await vi.waitFor(async () => {
+      await codeIntelPushText(input(), 0, slow.deps);
+      expect(slow.committed).toHaveLength(1);
+    });
+    expect(slow.committed[0]).toMatchObject({ leg: 'resume', subject: 'resume:lib/target.ts' });
+    // One read served both batches; the consumed result is gone, so the next read is fresh.
+    expect(slow.read).toHaveBeenCalledTimes(1);
+    expect(parkedResumeContextCount()).toBe(0);
+  });
+
+  it('joins an in-flight read rather than starting another, and keys it per (workspace, owner)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const slow = slowChannel();
+    await codeIntelPushText(input(), 0, slow.deps);
+    await codeIntelPushText(input(), 0, slow.deps);
+    expect(slow.read).toHaveBeenCalledTimes(1);
+    await codeIntelPushText({ ...input(), owner: 'su-other' }, 0, slow.deps);
+    expect(slow.read).toHaveBeenCalledTimes(2);
+    expect(parkedResumeContextCount()).toBe(2);
+    slow.release();
+  });
+
+  it('reads the resume entries\' source links inside the background read, not on the push wall', async () => {
+    const order: string[] = [];
+    const base = channel(resumeDeps().deps);
+    const context = vi.fn(async (_i: PushInput, paths: string[]) => {
+      order.push(`links:${paths.join(',')}`);
+      return { docs: null, specs: null, locks: null, byPath: { 'lib/target.ts': { docs: ['doc-carried'], specs: [] } } };
+    });
+    const resumeContext = vi.fn(async (i: PushInput) => { order.push('resume'); return base.resumeContext(i); });
+    await codeIntelPushText(input(), 0, { ...base.deps, context, resumeContext });
+    expect(order).toEqual(['resume', 'links:lib/target.ts']);
+    expect(base.committed).toHaveLength(1);
+    expect(base.committed[0].text).toContain('Anchored docs: doc-carried.');
+  });
+
+  it('an in-time read is consumed, not parked; a failed read is dropped', async () => {
+    const fast = channel(resumeDeps().deps);
+    await codeIntelPushText(input(), 0, fast.deps);
+    expect(fast.committed).toHaveLength(1);
+    expect(parkedResumeContextCount()).toBe(0);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failing = channel(resumeDeps({ epoch: async () => { throw new Error('ledger down'); } }).deps);
+    await codeIntelPushText(input(), 0, failing.deps);
+    expect(failing.committed).toEqual([]);
+    expect(parkedResumeContextCount()).toBe(0);
   });
 });
 

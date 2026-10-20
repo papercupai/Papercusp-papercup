@@ -69,6 +69,15 @@ const SYMBOL_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
  * `lsp:query { file:'packages/operator-core/lib' }` is a search root, not a file. */
 const FILE_RE = /\.[A-Za-z0-9]{1,8}$/;
 
+/** A working-set path names first-party code. Hidden directories (`.papercusp/scratch`,
+ * `.vitest-tmp`, `.git`) and `node_modules` hold agent scratch or vendored output the
+ * snapshot does not index: carrying them spends the file cap on entries that can never
+ * produce a resume fact (P-006 live run 1: an owner's whole previous-epoch set was
+ * `.papercusp/scratch/*`, so the resume leg had nothing to push). */
+export function isCodeWorkingSetPath(path: unknown): path is string {
+  return safeSnapshotPath(path) && !path.split('/').some(part => part.startsWith('.') || part === 'node_modules');
+}
+
 function normalizePath(raw: unknown, root?: string): string | null {
   if (typeof raw !== 'string' || !raw || raw.length > 400) return null;
   let path = raw;
@@ -77,7 +86,7 @@ function normalizePath(raw: unknown, root?: string): string | null {
     path = relative(root, path);
   }
   path = path.replace(/^\.\//, '');
-  return FILE_RE.test(path) && safeSnapshotPath(path) ? path : null;
+  return FILE_RE.test(path) && isCodeWorkingSetPath(path) ? path : null;
 }
 
 function argsRecord(value: unknown): Record<string, unknown> | null {
@@ -316,7 +325,7 @@ export async function readForeignWorkingSets(owner: string, workspace: string,
 export function parseStampedWorkingSet(value: unknown): StampedCodeWorkingSet | null {
   const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
   if (!record || typeof record.owner !== 'string' || !record.owner || !Array.isArray(record.paths)) return null;
-  const paths = record.paths.filter((path): path is string => safeSnapshotPath(path)).slice(0, WORKING_SET_MAX_FILES);
+  const paths = record.paths.filter(isCodeWorkingSetPath).slice(0, WORKING_SET_MAX_FILES);
   const symbols = Array.isArray(record.symbols)
     ? record.symbols.filter((name): name is string => typeof name === 'string' && name.length <= 120 && SYMBOL_RE.test(name)).slice(0, WORKING_SET_MAX_SYMBOLS)
     : [];
