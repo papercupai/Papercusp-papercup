@@ -1058,6 +1058,21 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
   });
 
+  // WI-6554700010018277: a stative verb after "while" is the guard, not a second outcome.
+  it.each([
+    'Portfolio closeout refuses shipment while a required driven plan remains nonterminal.',
+    'The gate rejects the candidate while its seed manifest has no sparse-core entry.',
+    'The installer refuses to start while another installer process exists.',
+  ])('keeps an outcome guarded by a stative while-clause atomic: %s', (behavior) => {
+    expect(specBehaviorNonAtomicReason(behavior)).toBeNull();
+  });
+
+  it('still rejects an outcome verb after while as a second outcome', () => {
+    expect(
+      specBehaviorNonAtomicReason('The dashboard renders the banner while the sidebar renders a warning.'),
+    ).toBe('behavior joins multiple independently observable outcomes');
+  });
+
   it.each([
     'A versioned pilot price sheet reproduces idle, normal, heavy and burst costs from measured inputs, separates platform/consumption margin and specifies finite allowances and numeric experiment thresholds.',
     'The pinned current-build customer journey satisfies the hosted security/privacy and operating promises.',

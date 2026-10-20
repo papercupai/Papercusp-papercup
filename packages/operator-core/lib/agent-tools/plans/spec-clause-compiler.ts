@@ -121,8 +121,14 @@ const MULTI_EXTENDED_CONJUNCTION_RE = new RegExp(
   '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]*\\b(?:and|or)\\b[^.;\\n]*\\b' + EXTENDED_OBSERVABLE_VERB + '\\b',
   'i',
 );
+// A stative verb after "while" states the guard condition, not a second outcome:
+// "refuses shipment while a required plan remains nonterminal" is ONE observable
+// refusal (WI-6554700010018277). Only an outcome verb after "while" ("rows render
+// once while other rows render every turn") joins two independently observable outcomes.
+const WHILE_GUARD_STATIVE_VERB = '(?:remains?|stays?|exists?|has)';
 const MULTI_EXTENDED_WHILE_RE = new RegExp(
-  '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]*\\bwhile\\b[^.;\\n]*\\b' + EXTENDED_OBSERVABLE_VERB + '\\b',
+  '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]*\\bwhile\\b[^.;\\n]*\\b(?!' + WHILE_GUARD_STATIVE_VERB + '\\b)' +
+    EXTENDED_OBSERVABLE_VERB + '\\b',
   'i',
 );
 // A shared predicate can still bundle separately testable output objects:

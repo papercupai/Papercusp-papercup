@@ -308,7 +308,7 @@ export default defineTool({
           'There is no tools.invoke shortcut in this sandbox; dynamic dispatch is tools.tools.invoke({ name, args }), or use tools.ns.verb(args) directly. ' +
           'The recursive execution doors `tools.code.run` and `tools.orchestrate.run` are deliberately excluded from this facade; keep the sequence in this outer script. ' +
           'On script timeout, `timeoutSettledReadRecovery.calls` returns settled read-only child results, capped at 24 KiB/20 calls; ' +
-          'check `omittedReadCount`, and never assume a slow Promise.all sibling returned to the script. Write results are never included in timeout recovery. ' +
+          'check `omittedReadCount`, and never assume a slow Promise.all sibling returned to the script. A timeout with settled work is marked `partial:true` in the public envelope; use the last recovered page\'s cursor/hash to resume without replaying settled reads. Write results are never included in timeout recovery. ' +
           'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
           'To run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
           'If you hold multiple work-items, pass `work_item_id` naming a work-item you currently hold: ' +
@@ -754,12 +754,26 @@ export default defineTool({
     // D-019/P-027: media is an MCP content-item variant, not part of P-006's JSON envelope.
     // Keep it out of the serialized text payload (which would duplicate the base64 and charge
     // context twice); append only the orchestrator's validated final blocks below.
+    // A timed-out script can still have a useful, settled read prefix. The generic
+    // orchestrator keeps `partial` reserved for a script that completed with a semantic
+    // child failure, so project the timeout's settled work as partial only at this public
+    // code:run boundary. This gives callers a machine-readable resume signal while keeping
+    // the internal orchestration contract and timeout classification unchanged.
+    const timeoutRecovery = result.timeoutSettledReadRecovery;
+    const timeoutHasSettledWork =
+      typeof result.error === 'string' &&
+      /^script_timeout/i.test(result.error) &&
+      ((result.dispatchCount ?? 0) > 0 || result.state !== undefined || timeoutRecovery !== undefined);
+    const resultForCodeRunPayload =
+      timeoutHasSettledWork && result.partial !== true
+        ? { ...result, partial: true }
+        : result;
     const {
       media,
       callRecords: traceOnlyCallRecords,
       replayProof,
       ...resultForPayload
-    } = result;
+    } = resultForCodeRunPayload;
     void traceOnlyCallRecords;
     const shownResult = shapeCodeRunSummary(
       shapeCodeRunLogs(
@@ -2553,13 +2567,20 @@ export function annotateChildFailureWarning<T extends OrchestrationRunResult | R
   );
   if (unnamed.length === 0) return result;
 
+  const error = (result as { error?: unknown }).error;
+  const timeoutLike = typeof error === 'string' && /^(?:script_timeout|script_aborted|worker exited unexpectedly)/i.test(error);
+  const completionNote = timeoutLike
+    ? `The script did not complete before returning${typeof error === 'string' ? ` (${error})` : ''}; inspect ` +
+      '`childFailures` and `timeoutSettledReadRecovery` before resuming from the last settled read.'
+    : (result as { ok?: unknown }).ok === true
+      ? 'The script ran to completion, so `ok` is true — but any value derived from these calls may be wrong, not merely missing. Check `childFailures` for each result before trusting this summary.'
+      : 'The outer run did not report a successful result; inspect `childFailures` before trusting this summary.';
+
   return {
     ...result,
     childFailureWarning:
       `${unnamed.length} read-effect call(s) dispatched without throwing but reported ok:false in ` +
-      `their own result: ${unnamed.join(', ')}. The script still ran to completion, so \`ok\` is ` +
-      'true — but any value derived from these calls may be wrong, not merely missing. Check ' +
-      '`childFailures` for each result before trusting this summary.',
+      `their own result: ${unnamed.join(', ')}. ${completionNote}`,
   };
 }
 

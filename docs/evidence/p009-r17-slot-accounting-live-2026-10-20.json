@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1",
+  "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "P-009 / R-17 live sync-batch slot accounting on the operator database (green-main-ratchet-convergence-2026-10-17, rubric rev 12)",
   "framework": "operational",
@@ -8,8 +8,8 @@
     "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/run.mjs"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-20T19:05:24.717Z",
-  "finishedAt": "2026-10-20T19:05:25.559Z",
+  "startedAt": "2026-10-20T19:11:12.892Z",
+  "finishedAt": "2026-10-20T19:11:13.796Z",
   "plan": "green-main-ratchet-convergence-2026-10-17",
   "planItem": "P-009",
   "workItemId": "WI-6554700010016943",
@@ -77,7 +77,7 @@
     "scripts/lib/sync-batch-coverage-accounting-oracle.mjs": "979839d4441b1b58ad1a99a676f84d3289b7b0a1"
   },
   "artifacts": {
-    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/run.mjs": "sha256:caf64f3903c6e25737369d77723af9d0ab921e8df5ff8384de4876054cce96a5",
+    "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/run.mjs": "sha256:0ac238418019fb167774129078b74790129acb1c8a9615e69db3434851018ddf",
     "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/probe.sql": "sha256:01e2bf3ad66c9df3237a94aade3f02c0ce89ab01f49587eff45d40118e7e2f1b",
     "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/control-noalarm.sql": "sha256:d0d4f329d09ba9096a4103240c6f249616cb7087eefcacdc7c8300ae9039cef0",
     "docs/evidence/p009-r17-slot-accounting-live-2026-10-20/control-stale.sql": "sha256:3fee0c6243e696e2e7ac55846e29f52881a2dc233afecd247717ea0c927a4c80",
