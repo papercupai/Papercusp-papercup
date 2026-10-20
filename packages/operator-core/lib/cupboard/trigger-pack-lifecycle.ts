@@ -30,6 +30,7 @@ import type {
 import type postgres from 'postgres';
 import { providerOptionSourceOf } from '@papercusp/plugin-sdk/provider';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { TicketFilingError, ticketAssigneeOf } from '../capability-verbs/ticket';
 import { detachExternalTriggerBinding } from '../external-triggers/admin';
 import { loadHarnessRegistry } from '../harness-registry';
 import { listProviderOptions, type ProviderOptionsDeps } from '../integrations/provider-options';
@@ -383,6 +384,13 @@ async function validateArmInputs(
 ): Promise<void> {
   if (bindings.some((binding) => !binding.sourceKind || binding.sourceStatus === 'disabled')) {
     throw new TriggerPackLifecycleError('trigger_pack_source_unavailable', 'an owned binding has a missing or disabled source');
+  }
+  // The same check ticket:file applies before recording an attempt, so a bad value never arms.
+  try {
+    ticketAssigneeOf(row.inputs);
+  } catch (error) {
+    if (error instanceof TicketFilingError) throw new TriggerPackLifecycleError('trigger_pack_input_unavailable', error.message);
+    throw error;
   }
   const properties = asRecord(asRecord(asRecord(asRecord(row.manifest).triggerPack).inputs).properties);
   const inputs = asRecord(row.inputs);

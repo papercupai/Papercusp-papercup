@@ -1,20 +1,17 @@
 /**
  * scan.integration.test.ts — the negative-space miner's live artifact probe
- * (frontier P-044 / FB-18, + the FB-18 follow-on memory-anchor leg) against a
- * real MIGRATED Postgres.
+ * (frontier P-044 / FB-18) against a real MIGRATED Postgres.
  *
  * probeDemandArtifact is the IO half of the kind-fidelity split: exists +
  * zero-hit = resolution gap (kind=bug, EI-397 shape), absent = missing
  * knowledge (kind=change). The unit tests fake the probe (scan.test.ts); this
- * pins the THREE real legs end-to-end, each with its exists→ref / absent→null
+ * pins the two supported real legs end-to-end, each with its exists→ref / absent→null
  * pair plus the degrade-to-null guards that keep a probe miss from ever
  * manufacturing a falsely-confident bug:
  *   plans  — exact plan_slug anywhere in harness_shared.harness_plans (the
  *            cross-scope EI-397 case);
  *   docs   — MDX slug match in a corpus dir (basename + section/slug path,
- *            missing-corpus degrade);
- *   memory — exact memory_anchors.value on an ACTIVE memory_canonical row
- *            (the identifier-keyed leg; non-active = deliberate removal, null).
+ *            missing-corpus degrade).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -80,42 +77,5 @@ describe('probeDemandArtifact — docs leg', () => {
 
   it('a missing corpus dir degrades to null (the stripped-deploy-tree rule), never throws', async () => {
     expect(await probeDemandArtifact(db.adminSql, 'docs', 'top-level-page', join(docsDir, 'does-not-exist'))).toBeNull();
-  });
-});
-
-describe('probeDemandArtifact — memory leg (FB-18 follow-on: anchors are the identifier-keyed index)', () => {
-  it('an ACTIVE memory anchored to the exact query resolves to memory-anchor:<value>', async () => {
-    const value = 'lib/replay/regret/mine.ts';
-    const [m] = await db.adminSql<{ id: string }[]>`
-      INSERT INTO harness_shared.memory_canonical (payload, state)
-      VALUES ('{"name":"regret miner file note"}'::jsonb, 'active')
-      RETURNING id`;
-    await db.adminSql`
-      INSERT INTO harness_shared.memory_anchors (memory_id, kind, value)
-      VALUES (${m!.id}, 'file', ${value})`;
-    expect(await probeDemandArtifact(db.adminSql, 'memory', value)).toBe(`memory-anchor:${value}`);
-  });
-
-  it('matches case-insensitively and returns the stored-case value (the query is normalized lowercase)', async () => {
-    const [m] = await db.adminSql<{ id: string }[]>`
-      INSERT INTO harness_shared.memory_canonical (state) VALUES ('active') RETURNING id`;
-    await db.adminSql`
-      INSERT INTO harness_shared.memory_anchors (memory_id, kind, value)
-      VALUES (${m!.id}, 'feature', 'F-204')`;
-    expect(await probeDemandArtifact(db.adminSql, 'memory', 'f-204')).toBe('memory-anchor:F-204');
-  });
-
-  it('an anchor on a NON-active (forgotten) memory does NOT resolve — a deliberate removal is not a gap', async () => {
-    const value = 'deliberately-forgotten-plan-2026-06-13';
-    const [m] = await db.adminSql<{ id: string }[]>`
-      INSERT INTO harness_shared.memory_canonical (state) VALUES ('forgotten') RETURNING id`;
-    await db.adminSql`
-      INSERT INTO harness_shared.memory_anchors (memory_id, kind, value)
-      VALUES (${m!.id}, 'plan', ${value})`;
-    expect(await probeDemandArtifact(db.adminSql, 'memory', value)).toBeNull();
-  });
-
-  it('no anchor match is null (missing knowledge)', async () => {
-    expect(await probeDemandArtifact(db.adminSql, 'memory', 'never/anchored.ts')).toBeNull();
   });
 });

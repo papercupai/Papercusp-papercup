@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { lexicalSimilarity } from '@papercusp/memory';
 import { getMemoryBackend } from './backend';
 import { detectPossibleSecrets } from './secret-detect';
+import { supersessionWinner } from './supersession-winner';
 
 const T = 'harness_shared.memory_write_journal';
 
@@ -154,6 +155,12 @@ export async function purgeJournalForMemory(
   const sql = deps.sql ?? getOrgPg().sql;
   const hard = args.mode === 'hard';
   const hasSnapshot = Boolean(args.snapshot?.scope && args.snapshot.text);
+  // Soft mode deliberately does NOT match `__journal_supersede_of`. Such a row
+  // carries the REPLACEMENT's content (a pending remember/update that
+  // supersedes this memory). Replaying it only links the already-closed row to
+  // its successor, so it can never make the forgotten text current again.
+  // Cancelling it silently discarded the correction (EI-26515229747561182).
+  // Hard mode still removes it: a privacy delete retains no linked content.
   const rows = await sql<{ id: string }[]>`
     DELETE FROM harness_shared.memory_write_journal
      WHERE (
@@ -174,7 +181,6 @@ export async function purgeJournalForMemory(
        AND status <> 'committed'
        AND (
          metadata->>'__journal_update_of' = ${args.id}
-         OR metadata->>'__journal_supersede_of' = ${args.id}
          OR (
            ${hasSnapshot}
            AND scope = ${args.snapshot?.scope ?? ''}
@@ -308,8 +314,14 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
           const closed = await invalidateEntry(supersedeOf, { supersededBy: updateOf });
           if (!closed) {
             const after = await backend.get(supersedeOf);
-            const validity = after?.metadata?.validity as { superseded_by?: unknown } | undefined;
-            if (validity?.superseded_by !== updateOf) {
+            const winner = supersessionWinner(after);
+            if (after && !winner) {
+              // Nothing else won: not a lost race. Keep the replacement current
+              // and leave the row pending so a later tick retries the link
+              // (EI-26515229747561182).
+              throw new Error('journal update supersession not recorded: superseded memory has no winner but did not accept the link');
+            }
+            if (winner && winner !== updateOf) {
               await invalidateEntry(updateOf);
               throw new Error('journal update supersession lost immutable-winner race; replacement closed');
             }

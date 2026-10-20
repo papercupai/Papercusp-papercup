@@ -156,6 +156,16 @@
         "reason": "explicit missing-CLI precondition refusal: records failed project history health and returns without running an ambient PATH lookup; no fallback is performed"
       },
       "evidenceRef": "WI-6554700010016778: verified fail-closed branch and fresh lint reproduction"
+    },
+    {
+      "rowId": "bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog-key-fold.ts|<module>|1",
+      "author": "su-807ee9d7-200a-4664-808d-c6000c52e818",
+      "reason": "configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately"
+      },
+      "evidenceRef": "WI-6554700010016568: watchdog-key-fold.ts is the dry-run-by-default backlog fold for repeated-tool-error keys (sibling of watchdog-key-migration.ts); it closes duplicate rows and raises no condition"
     }
   ]
 }

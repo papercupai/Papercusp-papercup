@@ -367,17 +367,22 @@ describe('ticket.create files one issue per correlation id in a configured team'
     adapter.invoke({ source: SOURCE, capability: 'ticket.create', args, config }, host);
 
   /** A Linear workspace holding `issues` by id; issueCreate stores the issue under the id it was given. */
-  function linear(issues = new Map<string, { id: string; url: string; team: { id: string } }>(), opts: { loseCreateResponse?: boolean } = {}) {
+  function linear(
+    issues = new Map<string, { id: string; url: string; team: { id: string }; assignee?: { id: string } | null }>(),
+    opts: { loseCreateResponse?: boolean } = {},
+  ) {
     const created: Array<Record<string, unknown>> = [];
     const fake = fakeHost((op, vars) => {
+      if (op === 'PapercuspViewer') return json(200, { data: { viewer: { id: 'viewer-papercusp' } } });
       if (op === 'PapercuspIssueById') {
         const found = issues.get(String(vars.id));
         return json(200, { data: { issues: { nodes: found ? [{ ...found, identifier: 'ENG-1' }] : [] } } });
       }
       expect(op).toBe('PapercuspIssueCreate');
-      const input = vars.input as { id: string; teamId: string };
+      const input = vars.input as { id: string; teamId: string; assigneeId?: string };
       created.push(input);
-      issues.set(input.id, { id: input.id, url: `https://linear.app/acme/issue/ENG-${created.length}`, team: { id: input.teamId } });
+      issues.set(input.id, { id: input.id, url: `https://linear.app/acme/issue/ENG-${created.length}`, team: { id: input.teamId },
+        assignee: input.assigneeId ? { id: input.assigneeId } : null });
       if (opts.loseCreateResponse) return json(502, {});
       return json(200, { data: { issueCreate: { success: true, issue: { ...issues.get(input.id), identifier: `ENG-${created.length}` } } } });
     });
@@ -428,6 +433,35 @@ describe('ticket.create files one issue per correlation id in a configured team'
     await expect(create(remote.host, ARGS, {})).rejects.toThrow('ticket_create_project_out_of_scope');
     await expect(create(remote.host, { ...ARGS, correlationId: '' })).rejects.toThrow('ticket_create_correlation_required');
     await expect(create(remote.host, { ...ARGS, title: '' })).rejects.toThrow('ticket_create_content_invalid');
+    expect(remote.calls).toHaveLength(0);
+  });
+
+  it("assignee 'self' assigns the issue to the connected account (the viewer) and the receipt confirms it", async () => {
+    const remote = linear();
+    const out = await create(remote.host, { ...ARGS, assignee: 'self' });
+    const input = remote.created[0] as { id: string; assigneeId?: string };
+    expect(input.assigneeId).toBe('viewer-papercusp');
+    expect(out).toEqual({ externalRef: input.id, url: 'https://linear.app/acme/issue/ENG-1', recovered: false, assignee: 'self' });
+    // A recovery of the same issue confirms the assignee from the issue Linear holds.
+    expect(await create(remote.host, { ...ARGS, assignee: 'self', recoveryOnly: true })).toMatchObject({ recovered: true, assignee: 'self' });
+    expect(remote.created).toHaveLength(1);
+  });
+
+  it('without the option nothing asks for the viewer; a recovered issue assigned to someone else is not confirmed', async () => {
+    const remote = linear();
+    const out = await create(remote.host);
+    expect(out).not.toHaveProperty('assignee');
+    expect(remote.calls.map((c) => c.op)).not.toContain('PapercuspViewer');
+    expect(remote.created[0]).not.toHaveProperty('assigneeId');
+    const id = (remote.created[0] as { id: string }).id;
+    remote.issues.set(id, { ...remote.issues.get(id)!, assignee: { id: 'someone-else' } });
+    expect(await create(remote.host, { ...ARGS, assignee: 'self' })).not.toHaveProperty('assignee');
+    expect(remote.created).toHaveLength(1);
+  });
+
+  it('refuses an assignee other than self before any Linear call', async () => {
+    const remote = linear();
+    await expect(create(remote.host, { ...ARGS, assignee: 'user-123' })).rejects.toThrow('ticket_create_assignee_invalid');
     expect(remote.calls).toHaveLength(0);
   });
 

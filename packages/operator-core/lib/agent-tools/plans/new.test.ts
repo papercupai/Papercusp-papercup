@@ -13,6 +13,7 @@
 
 import { describe, it, expect } from 'vitest';
 import newPlan, { buildTemplate } from './new';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 import {
   LIBRARIES_SECTION_DESCRIPTION,
   REUSE_SECTION_DESCRIPTION,
@@ -67,6 +68,12 @@ describe('plans:new declaration scaffolds', () => {
     for (const decision of ['owner-specified', 'already-in-project', 'skip-research']) {
       expect(LIBRARIES_SECTION_DESCRIPTION).toContain(decision);
     }
+  });
+
+  // D-013 #6: the section line must not push plans:new over the per-tool guidance budget that
+  // tool-guidance-budget.test.ts enforces catalog-wide; this pins it for this tool alone.
+  it('R-8: plans:new description and guidance stay within the tool guidance budget', () => {
+    expect(promptWeight(newPlan as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
 });
 

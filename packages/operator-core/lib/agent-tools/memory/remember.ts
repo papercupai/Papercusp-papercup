@@ -33,6 +33,7 @@ import { warnConflictJudgeUnavailableOnce } from '../../memory/anthropic-judge';
 import { resolveConflictJudge } from '../../memory/conflict-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
 import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
+import { supersessionWinner } from '../../memory/supersession-winner';
 import { isMemoryPaused, MEMORY_PAUSED_REFUSAL } from '../../memory/memory-pause';
 import { detectPossibleSecrets, possibleSecretWarning } from '../../memory/secret-detect';
 import { getSessionUserOrDefault } from '../../auth';
@@ -376,8 +377,10 @@ export default defineTool({
       if (!target.scope || target.scope !== scopeKey) {
         return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'supersede_scope_mismatch' }) }] };
       }
-      const validity = target.metadata?.validity as { status?: unknown } | undefined;
-      if (validity?.status === 'superseded') {
+      // Only a row that already NAMES a winner refuses. A soft-forgotten row
+      // (closed, no winner) accepts its correction as a lineage link
+      // (EI-26515229747561182).
+      if (supersessionWinner(target)) {
         return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'supersede_already_closed' }) }] };
       }
     }
@@ -880,9 +883,13 @@ export default defineTool({
           superseded = closed ? args.supersede : false;
           if (!closed) {
             const after = await withMemoryToolTimeout(backend.get(args.supersede), 'memory:remember supersede reconcile');
-            const validity = after?.metadata?.validity as { superseded_by?: unknown } | undefined;
-            if (validity?.superseded_by === replacingId) {
+            const winner = supersessionWinner(after);
+            if (winner === replacingId) {
               superseded = args.supersede;
+            } else if (!winner) {
+              // Nothing else won, so this is not a lost race. Keep the
+              // replacement current; it is the only current fact.
+              supersedeNote = 'the superseded memory has no winner, but the store did not accept the link; the replacement stays current';
             } else {
               // Another immutable winner closed the old row first. Close this
               // losing replacement so the race cannot leave two current facts.

@@ -17376,3 +17376,30 @@ describe("P-012: fresh cut from the newest known-good point", () => {
     expect(result.redLegsAtR1?.legs).toEqual(["unattributed"]);
   });
 });
+
+/**
+ * WI-6554700010018169: a standalone harness gate (slack-asana-bug-drill: an app tree with no `libs/`)
+ * owns no Papercusp migrations. Its migration preflight used to wait on the backup rendezvous for the
+ * whole backup because the busy-rendezvous proof could not read a missing sql directory.
+ */
+describe("candidateCarriesPapercuspMigrations", () => {
+  it("only the absence of libs/papercusp means the candidate owns no migrations", async () => {
+    const { mkdtemp, mkdir, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const { candidateCarriesPapercuspMigrations } = await import("./green-checkpoint");
+    const root = await mkdtemp(path.join(tmpdir(), "gc-migrations-"));
+    try {
+      const sqlDir = path.join(root, "libs", "papercusp", "libs", "db", "sql");
+      // A standalone app tree: no libs/ at all.
+      expect(await candidateCarriesPapercuspMigrations(sqlDir)).toBe(false);
+      // An uninitialized submodule (empty directory) still owns migrations: the preflight must run.
+      await mkdir(path.join(root, "libs", "papercusp"), { recursive: true });
+      expect(await candidateCarriesPapercuspMigrations(sqlDir)).toBe(true);
+      await mkdir(sqlDir, { recursive: true });
+      expect(await candidateCarriesPapercuspMigrations(sqlDir)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

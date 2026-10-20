@@ -9,9 +9,13 @@
  * stricter than the installer (malformed/absent at one path falls through) and
  * that an unsafe subdir ref is skipped exactly as the installer skips it.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
 import {
   assertPluginManifestPublishable,
+  CUPBOARD_LISTING_REF_RE,
+  pluginListingRef,
   PublishManifestError,
   type PublishManifestCheckDeps,
 } from './publish-manifest-check';
@@ -91,5 +95,49 @@ describe('assertPluginManifestPublishable', () => {
     await expect(
       assertPluginManifestPublishable({ owner: 'acme', repo: 'plugins' }, { fetchRepoFile }),
     ).rejects.toMatchObject({ status: 422 });
+  });
+});
+
+// EI-25707770061626540: a scoped manifest name was sent as listing_ref and the
+// Cupboard worker refused it with a bare `invalid_field`.
+describe('pluginListingRef', () => {
+  it('strips the npm scope from a scoped slug (the live @papercupai/bug-triage listing is bug-triage)', () => {
+    expect(pluginListingRef('@papercupai/bug-triage')).toEqual({ ok: true, listingRef: 'bug-triage' });
+  });
+
+  it('keeps an unscoped slug unchanged', () => {
+    expect(pluginListingRef('firecrawl')).toEqual({ ok: true, listingRef: 'firecrawl' });
+  });
+
+  it('every derived ref satisfies the worker rule', () => {
+    for (const slug of ['@papercupai/bug-triage', '@a/b.c_d-e', 'plain', 'nested/dir']) {
+      const ref = pluginListingRef(slug);
+      expect(ref.ok).toBe(true);
+      if (ref.ok) expect(CUPBOARD_LISTING_REF_RE.test(ref.listingRef)).toBe(true);
+    }
+  });
+
+  it('passes a valid explicit override through, trimmed', () => {
+    expect(pluginListingRef('@papercupai/bug-triage', '  packs/triage ')).toEqual({ ok: true, listingRef: 'packs/triage' });
+  });
+
+  it('refuses an override the worker would reject, naming the field and the allowed charset', () => {
+    const ref = pluginListingRef('bug-triage', '@papercupai/bug-triage');
+    expect(ref.ok).toBe(false);
+    if (!ref.ok) expect(ref.error).toMatch(/invalid listing_ref "@papercupai\/bug-triage".*letters, digits/);
+  });
+
+  it('refuses when no valid ref can be derived from the slug', () => {
+    expect(pluginListingRef('@scope/').ok).toBe(false);
+  });
+
+  it('matches the Cupboard worker LISTING_REF_RE exactly (pinned against the worker source)', () => {
+    const worker = readFileSync(
+      fileURLToPath(new URL('../../../../apps/operator-public/src/routes/listings.ts', import.meta.url)),
+      'utf8',
+    );
+    const match = /const LISTING_REF_RE = (\/.+\/[a-z]*);/.exec(worker);
+    expect(match, 'LISTING_REF_RE not found in the worker listings route').not.toBeNull();
+    expect(String(CUPBOARD_LISTING_REF_RE)).toBe(match![1]);
   });
 });

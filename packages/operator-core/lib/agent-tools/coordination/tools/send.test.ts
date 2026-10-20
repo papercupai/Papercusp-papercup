@@ -890,6 +890,26 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results.every((result: { error?: string }) => result.error === 'request_aborted')).toBe(true);
   });
 
+  it('EI-26238459293701258: freezes one recipient verdict across all chunks', async () => {
+    // The roster can change between sequential chunk writes. Before this guard,
+    // the first part could be refused while a later part was persisted after the
+    // resolver returned a different answer for the same logical recipient.
+    mockResolvedOnceTyped(resolveM, { resolved: [], unknown: ['ghost'], ambiguous: [] });
+    const b = await body({
+      to: ['ghost'],
+      summary: 'one logical send',
+      expects: 'none',
+      body: [{ text: 'x'.repeat(DEFAULT_INBOX_BODY_CAP * 2) }],
+    });
+
+    expect(b.ok).toBe(false);
+    expect(b.results.length).toBeGreaterThan(1);
+    expect(b.results.every((result: { ok: boolean; error?: string }) =>
+      !result.ok && result.error === 'unknown_recipient',
+    )).toBe(true);
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
   it('RSR-P-008-B: chunked replies to a departed sender authenticate every part without threading continuations', async () => {
     const departedSender = 'ghost-sender';
     mockResolvedTyped(

@@ -23,10 +23,12 @@ const row = (over: Partial<ZeroHitRow> = {}): ZeroHitRow => ({
 });
 
 describe('surfaceOfTool', () => {
-  it('maps the three mined search tools and rejects everything else', () => {
+  it('maps the two mined search tools and rejects everything else', () => {
     expect(surfaceOfTool('docs:search')).toBe('docs');
-    expect(surfaceOfTool('memory:search')).toBe('memory');
     expect(surfaceOfTool('plans:search')).toBe('plans');
+    // Similarity-ranked memory results have no calibrated zero-relevance
+    // contract, so they are not a negative-space demand surface.
+    expect(surfaceOfTool('memory:search')).toBeNull();
     expect(surfaceOfTool('search:fulltext')).toBeNull();
     expect(surfaceOfTool('docs:get')).toBeNull();
   });
@@ -68,9 +70,10 @@ describe('aggregateZeroHits', () => {
     expect(plans.missCount).toBe(1);
   });
 
-  it('drops non-mined tools and noise queries, sorts hottest-first', () => {
+  it('drops unsupported tools (including memory search) and noise queries, sorts hottest-first', () => {
     const entries = aggregateZeroHits([
       row({ toolName: 'search:fulltext' }),
+      row({ toolName: 'memory:search', query: 'unresolved/identifier-2026' }),
       row({ query: 'ab' }),
       row({ query: 'rare query', agent: 'a' }),
       row({ query: 'hot query', agent: 'a' }),

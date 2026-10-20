@@ -77,6 +77,52 @@ describe('resolveOperationBoundaryProfile', () => {
     });
   });
 
+  // EI-26515377589991990: an acceptance judge launched through the SU-bearer spawn door
+  // (orchestrator spawn-mcp.ts sets superuser=1 plus role=judge) carries isSuperuser:true.
+  // That flag must not lift the judge's raw network/exec operations to the trusted tier.
+  it('confines a judge even when the SU-bearer door marks it superuser or power-user', async () => {
+    await expect(
+      resolveOperationBoundaryProfile(
+        { isSuperuser: true, role: 'judge' as never, uiClientId: 'spawn-judge' },
+        none,
+      ),
+    ).resolves.toEqual({ kind: 'confined', reason: 'evidence-role' });
+    await expect(
+      resolveOperationBoundaryProfile(
+        { isSuperuser: true, isPowerUser: true, role: 'judge' as never },
+        none,
+      ),
+    ).resolves.toEqual({ kind: 'confined', reason: 'evidence-role' });
+  });
+
+  it('confines a signed role-scoped judge spawn', async () => {
+    await expect(
+      resolveOperationBoundaryProfile(
+        { role: 'judge' as never, sigVerifiedSpawn: true, uiClientId: 's-judge' },
+        none,
+      ),
+    ).resolves.toEqual({ kind: 'confined', reason: 'evidence-role' });
+  });
+
+  it('gives a superuser-flagged judge the required exec sandbox', async () => {
+    await expect(
+      capabilityExecSandboxPolicy({ isSuperuser: true, role: 'judge' as never }),
+    ).resolves.toEqual({
+      enabled: true,
+      required: true,
+      profile: { kind: 'confined', reason: 'evidence-role' },
+    });
+  });
+
+  it('still lets a launch-declared confinement win over the judge rule', async () => {
+    await expect(
+      resolveOperationBoundaryProfile(
+        { isSuperuser: true, role: 'judge' as never, uiClientId: 'spawn-judge' },
+        { declaredConfinement: async () => declared },
+      ),
+    ).resolves.toEqual({ kind: 'confined', reason: 'session-confinement', confinement: declared });
+  });
+
   it('fails a resolver fault and an unattributed context toward confinement', async () => {
     await expect(
       resolveOperationBoundaryProfile(

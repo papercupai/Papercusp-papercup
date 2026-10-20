@@ -1,16 +1,16 @@
 {
-  "startedAt": "2026-10-20T06:14:10.681Z",
+  "startedAt": "2026-10-20T16:24:27.570Z",
   "stage1": ".papercusp/scratch/p-identity/p003-live-run/governed-stage1.json",
   "stack": [
     "domain:blueprint-operation-worker"
   ],
   "governedDeclared": true,
-  "sessionId": 47846,
+  "sessionId": 48157,
   "assertions": [
     {
       "id": "served-build-carries-p003-source",
       "passed": true,
-      "evidence": "http://127.0.0.1:3170 /api/health build 98d59341a704f7444d8e6715903a83cb3c38291a; 6/6 P-003 source blobs equal HEAD"
+      "evidence": "http://127.0.0.1:3170 /api/health build 19ced41388522d7b4cb9454ce19cc2b690e43069; 6/6 P-003 source blobs equal HEAD"
     },
     {
       "id": "role-door-accepts-judge-with-stack",
@@ -20,12 +20,12 @@
     {
       "id": "judge-prompt-renders-worn-layer",
       "passed": true,
-      "evidence": "/home/builduser/.papercusp/launch-context/session-47846.md (51996 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
+      "evidence": "/home/builduser/.papercusp/launch-context/session-48157.md (52156 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
     },
     {
       "id": "governed-launch-record-names-judge-and-stack",
       "passed": true,
-      "evidence": "adv_sessions 47846: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-5481f596-c89f-4dfc-b4af-ce82824b33f7"
+      "evidence": "adv_sessions 48157: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-43238975-f432-44b1-be7a-e6ee7dd49370"
     },
     {
       "id": "grant-is-judge-scoped",
@@ -49,13 +49,13 @@
     }
   ],
   "launchRecord": {
-    "owner": "role-5481f596-c89f-4dfc-b4af-ce82824b33f7",
+    "owner": "role-43238975-f432-44b1-be7a-e6ee7dd49370",
     "role": "judge",
     "specRole": "judge",
     "stack": [
       "domain:blueprint-operation-worker"
     ],
-    "specRev": "b5e44efcfe3d922d26f5b95a22a68236237839d50f7ae6c5fd467d3cb26f2081",
+    "specRev": "71dfc0ea75dc09c5093423471ec8b7c9cff7c6cd50909ee79fe5ad5cc53aed00",
     "hasGrants": true
   },
   "potJudgeCeiling": null,
@@ -73,11 +73,11 @@
   "activationBefore": "desired applied=none",
   "turnStart": {
     "http": 200,
-    "body": "{\"ok\":true,\"text\":\"⟦CTRL:transition⟧ {\\\"state\\\":{\\\"modes\\\":[],\\\"activation\\\":{\\\"schemaVersion\\\":1,\\\"attribution\\\":{\\\"actorId\\\":\\\"role-5481f596-c89f-4dfc-b4af-ce82824b33f7\\\",\\\"principalId\\\":\\\"role-5481f596-c89f-4dfc-b4af-ce82824b33f7\\\",\\\"sessionId\\\":\\\"role-5481f596-c89f-4dfc-b4af-ce82824b33f7\\\"},\\\"desired\\\":{\\\"specificationRevision\\\":\\\"b5e44efcfe3d922d26f5b95a22a68236237839d50f7ae6c5fd467d3cb26f208"
+    "body": "{\"ok\":true,\"text\":\"⟦CTRL:transition⟧ {\\\"state\\\":{\\\"modes\\\":[],\\\"activation\\\":{\\\"schemaVersion\\\":1,\\\"attribution\\\":{\\\"actorId\\\":\\\"role-43238975-f432-44b1-be7a-e6ee7dd49370\\\",\\\"principalId\\\":\\\"role-43238975-f432-44b1-be7a-e6ee7dd49370\\\",\\\"sessionId\\\":\\\"role-43238975-f432-44b1-be7a-e6ee7dd49370\\\"},\\\"desired\\\":{\\\"specificationRevision\\\":\\\"71dfc0ea75dc09c5093423471ec8b7c9cff7c6cd50909ee79fe5ad5cc53aed0"
   },
-  "activationAfterTurnStart": "applied applied=b5e44efcfe3d",
+  "activationAfterTurnStart": "applied applied=71dfc0ea75dc",
   "orient": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unavailable (tools:invoke) — lifts when: the identity policy for this pot and role can be read again, or a ceiling policy is published for it. Usually transient infrastructure: retry shortly; if it persists, escalate; who: host/owner\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":3}",
-  "activationAfter": "applied applied=b5e44efcfe3d",
+  "activationAfter": "applied applied=71dfc0ea75dc",
   "toolsListed": 29,
   "refusals": [
     {
@@ -98,8 +98,8 @@
   "allowedRead": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unavailable (tools:invoke) — lifts when: the identity policy for this pot and role can be read again, or a ceiling policy is published for it. Usually transient infrastructure: retry shortly; if it persists, escalate; who: host/owner\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":20}",
   "sessionEnded": {
     "http": 200,
-    "body": "{\"ok\":true,\"ended\":true,\"endAttemptKey\":\"p003-live-probe-end-47846\"}"
+    "body": "{\"ok\":true,\"ended\":true,\"endAttemptKey\":\"p003-live-probe-end-48157\"}"
   },
-  "finishedAt": "2026-10-20T06:14:14.791Z",
+  "finishedAt": "2026-10-20T16:24:31.939Z",
   "exitCode": 0
 }

@@ -528,6 +528,27 @@ export interface CheckpointMigrationInput {
   sqlDir: string;
 }
 
+/**
+ * Does this candidate tree own Papercusp migrations at all? Only a tree that carries the
+ * `libs/papercusp` path does (sqlDir is `<root>/libs/papercusp/libs/db/sql`). A standalone harness
+ * gate (e.g. slack-asana-bug-drill, an app tree with no `libs/`) owns none, so applying "its"
+ * migrations is not applicable. Before that check existed, its preflight waited on the backup
+ * migration rendezvous for the whole backup, because the busy-rendezvous proof could not read a
+ * directory that does not exist (WI-6554700010018169: a drill runner sat in `materializing` for
+ * 60+ minutes behind a running pcbackup).
+ * Only the path's ABSENCE answers false: an uninitialized submodule is an empty directory, so a
+ * Papercusp tree before materialization still runs the preflight and keeps its unknown-state policy.
+ */
+export async function candidateCarriesPapercuspMigrations(sqlDir: string): Promise<boolean> {
+  const { stat } = await import("node:fs/promises");
+  try {
+    await stat(path.resolve(sqlDir, "..", "..", ".."));
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code !== "ENOENT";
+  }
+}
+
 export interface CheckpointExecutionContext {
   candidate: string;
   headAtStart?: string;
@@ -21925,6 +21946,13 @@ export function realCheckpointDeps(
     // db-boot-migrate targets at operator boot, just without its once-per-process
     // `_ran` guard (a gate run is its own per-invocation caller).
     async ensureMigrationsCurrent(input) {
+      if (!(await candidateCarriesPapercuspMigrations(input.sqlDir))) {
+        console.log(
+          `[green-checkpoint] migration preflight not applicable: candidate ${input.candidate.slice(0, 12)} ` +
+            `carries no libs/papercusp, so this harness owns no Papercusp migrations`,
+        );
+        return null;
+      }
       const { applyPendingMigrationsNow } =
         await import("@papercusp/operator-core/lib/db-boot-migrate");
       return applyPendingMigrationsNow({ sqlDir: input.sqlDir });

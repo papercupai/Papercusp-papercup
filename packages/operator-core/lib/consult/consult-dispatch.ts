@@ -327,6 +327,7 @@ export type DispatchSkipReason =
   | 'kickoff-not-persisted'
   | 'launch-exited'
   | 'first-turn-rejected'
+  | 'first-turn-provider-error'
   | 'consult-closed';
 
 export interface ConsultDispatchAttempt {
@@ -422,7 +423,8 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
     ClaudeResumeTranscriptAnalysis,
     'trailingMissingToolReferenceTurns' | 'lastMissingToolReferenceName' | 'assistantTurnsSinceLastPrompt' |
     'trailingContextLimitTurns' | 'lastContextLimitEvidence' |
-    'trailingAccountWallTurns' | 'lastAccountWallEvidence'
+    'trailingAccountWallTurns' | 'lastAccountWallEvidence' |
+    'trailingProviderErrorTurns' | 'lastProviderErrorEvidence'
   > | null;
   /** Wait seam for the first-turn poll (WI-10004645); tests resolve it at once. */
   sleepMs: (ms: number) => Promise<void>;
@@ -712,6 +714,7 @@ const LAUNCH_FAILURE_REASONS: ReadonlySet<string> = new Set<DispatchSkipReason>(
   'kickoff-not-persisted',
   'launch-exited',
   'first-turn-rejected',
+  'first-turn-provider-error',
 ]);
 
 /** The fields of a persisted walk ({@link dispatchRecordEntry}) the cool-down reads. */
@@ -1469,11 +1472,11 @@ async function walkConsultDispatch(
         }
       }
 
-      const attempt = await launchAnsweringSession({
+      const { attempt, replaced } = await launchAnsweringSessionWithProviderRetry({
         ...opts,
         ...(evidenceSource ? { evidenceSource } : {}),
       }, ctx, d, launchTarget, rank, operation);
-      attempts.push(attempt.record);
+      attempts.push(...replaced, attempt.record);
       // Closure is not a failed rank. Continuing would spend more launch
       // capacity on a consult whose terminal answer already won the race.
       if (attempt.record.reason === 'consult-closed') {
@@ -1540,12 +1543,12 @@ async function walkConsultDispatch(
         attempts.push({ ...base, outcome: 'skipped', reason: 'account-walled', detail: capacity.detail });
         continue;
       }
-      const attempt = await launchAnsweringSession({
+      const { attempt, replaced } = await launchAnsweringSessionWithProviderRetry({
         ...opts,
         evidenceSource,
         citedTurns,
       }, ctx, d, target, rank, 'brief');
-      attempts.push(attempt.record);
+      attempts.push(...replaced, attempt.record);
       if (attempt.record.reason === 'consult-closed') return give(attempt.record.detail);
       if (attempt.record.outcome === 'dispatched') {
         return {
@@ -1572,6 +1575,36 @@ async function walkConsultDispatch(
 
 /** One rank's launch. Never throws — a thrown launcher error is this rank's
  *  failure, and the walk owns what happens next. */
+/**
+ * WI-6554700010018146: launches one rank may spend when its first reply is a
+ * transient provider error. The fault is the provider's, not the responder's, so
+ * the same rank earns one more launch before the walk moves past it; a second
+ * provider error cascades, so a provider outage cannot hold the walk on one rank.
+ */
+export const PROVIDER_ERROR_LAUNCHES_PER_RANK = 2;
+
+/**
+ * {@link launchAnsweringSession}, relaunched while its first reply is a transient
+ * provider error and launches remain. Returns the final launch plus the records of
+ * the launches it replaced, which the caller records in order before the final one.
+ */
+async function launchAnsweringSessionWithProviderRetry(
+  ...args: Parameters<typeof launchAnsweringSession>
+): Promise<{ attempt: Awaited<ReturnType<typeof launchAnsweringSession>>; replaced: ConsultDispatchAttempt[] }> {
+  const replaced: ConsultDispatchAttempt[] = [];
+  for (let launch = 1; ; launch += 1) {
+    const attempt = await launchAnsweringSession(...args);
+    if (attempt.record.reason !== 'first-turn-provider-error' || launch >= PROVIDER_ERROR_LAUNCHES_PER_RANK) {
+      return { attempt, replaced };
+    }
+    replaced.push({
+      ...attempt.record,
+      detail: `${attempt.record.detail} Relaunching the same rank (launch ${launch} of ` +
+        `${PROVIDER_ERROR_LAUNCHES_PER_RANK}): the provider failed, not the responder.`,
+    });
+  }
+}
+
 async function launchAnsweringSession(
   opts: {
     sourceOwnerId: string;
@@ -1882,7 +1915,9 @@ async function launchAnsweringSession(
     firstTurnUncheckedReason = 'the kickoff proof named no native transcript';
   }
   if (rank.agent === 'claude' && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
-    let rejection: { turns: number; tool: string | null; contextEvidence?: string; accountEvidence?: string } | null = null;
+    let rejection: {
+      turns: number; tool: string | null; contextEvidence?: string; accountEvidence?: string; providerEvidence?: string;
+    } | null = null;
     const deadline = kickoffSeenAtMs + FIRST_TURN_WAIT_MS;
     // The read-count bound is independent of the clock, so a stalled clock
     // cannot turn this into an unbounded loop.
@@ -1919,6 +1954,17 @@ async function launchAnsweringSession(
             turns: analysis.trailingMissingToolReferenceTurns,
             tool: analysis.lastMissingToolReferenceName,
           };
+        } else if ((analysis.trailingProviderErrorTurns ?? 0) > 0) {
+          // WI-6554700010018146: a transient provider failure ("API Error: Server
+          // error mid-response…") is a synthetic assistant record, so it read as the
+          // answerer's first reply and the session parked with no answer, no retry
+          // and no cascade. The fault is the provider's, not the responder's: stop
+          // it, and the walk relaunches this rank once before moving on.
+          rejection = {
+            turns: analysis.trailingProviderErrorTurns!,
+            tool: null,
+            providerEvidence: analysis.lastProviderErrorEvidence ?? 'provider error',
+          };
         }
         break;
       }
@@ -1936,11 +1982,15 @@ async function launchAnsweringSession(
           outcome: 'failed',
           // Billing cannot poison the expert's transcript or other ranks.
           // Reuse the existing account-wall disposition, then walk onward.
-          reason: rejection.accountEvidence ? 'account-walled' : 'first-turn-rejected',
+          reason: rejection.accountEvidence
+            ? 'account-walled'
+            : rejection.providerEvidence ? 'first-turn-provider-error' : 'first-turn-rejected',
           detail:
             `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
             (rejection.accountEvidence
               ? `its first reply was a provider account rejection (${rejection.accountEvidence})`
+              : rejection.providerEvidence
+              ? `its first reply was a transient provider error (${rejection.providerEvidence})`
               : rejection.contextEvidence
               ? `its first reply was a provider context-limit rejection (${rejection.contextEvidence})`
               : `its first reply was a provider "Tool reference not found" rejection`) +

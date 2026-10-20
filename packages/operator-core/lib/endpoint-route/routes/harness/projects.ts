@@ -596,6 +596,33 @@ const remove = defineTool({
   auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
+    const { activeWorkspaceId } = await import('../../../workspace-registry');
+    const workspaceId = activeWorkspaceId();
+    // This is the explicit uninstall/removal seam. `removeHarnessFromWorkspace`
+    // stays registry-only because moveHarness and temporary benchmark cleanup
+    // reuse it; this route is the path that also retires the install-scoped
+    // runtime rows before the registry entry disappears.
+    const current = await loadHarnessRegistry(workspaceId);
+    if (!current.projects.some((project) => project.slug === slug)) {
+      return Response.json({ error: 'not found' }, { status: 404 });
+    }
+    const { teardownPotLearningLoop } = await import('../../../pot/provision-learning-loop');
+    const retirement = await teardownPotLearningLoop({
+      sql: getOrgPg().sql,
+      workspaceId,
+      potSlug: slug,
+    });
+    const failedRetirements = Object.entries(retirement)
+      .filter(([key, succeeded]) => key !== 'potSlug' && succeeded !== true)
+      .map(([key]) => key);
+    if (failedRetirements.length > 0) {
+      // Keep the registry entry so the caller can retry; removing it after a
+      // partial teardown would leave routines orphaned with no uninstall path.
+      return Response.json(
+        { error: 'routine retirement incomplete', failed: failedRetirements },
+        { status: 503 },
+      );
+    }
     // Atomic remove (audit P-006 / EI-82): the old load→filter→save raced any
     // concurrent registry write — the second save reverted the first.
     let removed = false;
@@ -606,7 +633,7 @@ const remove = defineTool({
       if (projects.length === cur.projects.length) return cur;
       removed = true;
       return { ...cur, projects };
-    }, undefined, { allowEmpty: true });
+    }, workspaceId, { allowEmpty: true });
     if (!removed) return Response.json({ error: 'not found' }, { status: 404 });
     // Bust the registry caches so the removed harness disappears immediately.
     bustProjectsLiteCache();

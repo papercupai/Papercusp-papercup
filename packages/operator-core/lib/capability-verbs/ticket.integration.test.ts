@@ -43,7 +43,9 @@ let posts = 0;
 let loseResponse = false;
 /** Asana's external-id lookup lags a create it already accepted: the task exists but GET external: still 404s. */
 let lookupLag = false;
-const remote = new Map<string, { gid: string; project: string; title: string; notes: string }>();
+const remote = new Map<string, { gid: string; project: string; title: string; notes: string; assignee?: string }>();
+/** The connected Asana account: what `assignee: 'me'` resolves to and what GET /users/me answers. */
+const ASANA_ME = 'asana-user-papercusp';
 const json = (status: number, data: unknown, extra: Record<string, unknown> = {}) =>
   ({ status, headers: {}, bodyEncoding: 'utf8' as const, body: JSON.stringify({ data, ...extra }) });
 
@@ -57,6 +59,7 @@ const hostFetch: HostFetch = async ({ request }) => {
       { gid: 'project-other', resource_type: 'project', name: 'Not configured' },
     ], { next_page: null });
   }
+  if (request.method === 'GET' && path === '/users/me') return json(200, { gid: ASANA_ME });
   if (path.startsWith('/tasks')) {
     // No ticket HTTP, not even the correlation GET, before the attempt is committed.
     const [fence] = await sql`SELECT count(*)::int AS n FROM harness_shared.trigger_runs
@@ -66,15 +69,17 @@ const hostFetch: HostFetch = async ({ request }) => {
   if (request.method === 'GET' && path.startsWith('/tasks/external:')) {
     const task = lookupLag ? undefined : remote.get(path.slice('/tasks/external:'.length));
     return json(task ? 200 : 404, task ? { gid: task.gid, permalink_url: `https://app.asana.com/0/${task.project}/${task.gid}`,
-      memberships: [{ project: { gid: task.project } }] } : null);
+      memberships: [{ project: { gid: task.project } }], assignee: task.assignee ? { gid: task.assignee } : null } : null);
   }
   if (request.method === 'POST' && path === '/tasks') {
     posts += 1;
     const body = JSON.parse(String(request.body)).data;
-    const task = { gid: 'task-' + posts, project: body.projects[0], title: body.name, notes: body.notes };
+    const task = { gid: 'task-' + posts, project: body.projects[0], title: body.name, notes: body.notes,
+      ...(body.assignee === 'me' ? { assignee: ASANA_ME } : {}) };
     remote.set(body.external.gid, task);
     if (loseResponse) throw new Error('lost success response');
-    return json(201, { gid: task.gid, permalink_url: `https://app.asana.com/0/${task.project}/${task.gid}` });
+    return json(201, { gid: task.gid, permalink_url: `https://app.asana.com/0/${task.project}/${task.gid}`,
+      assignee: task.assignee ? { gid: task.assignee } : null });
   }
   throw new Error(`unrouted Asana HTTP ${request.method} ${path}`);
 };
@@ -250,6 +255,61 @@ describe('ticket:file files at the destination the installation chose', () => {
   });
 });
 
+/**
+ * The installation's `assignee: 'self'` input (plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08
+ * D-050, WI-6554700010018191): a Slack-filed bug lands assigned to the connected account, so it syncs
+ * back with selfRoles ['assignee'] and an assigned-to-Papercusp admission rule routes it.
+ */
+describe('ticket:file assigns the ticket when the installation asks for it', () => {
+  it("files the ticket assigned to the connected account, records the confirmation, and a replay reports it", async () => {
+    const run = await triggerRun(await installPack({ destination: 'project-eng', assignee: 'self' }));
+    expect(await file(run)).toMatchObject({ created: true, externalRef: 'task-1', provider: 'asana', assigned: true });
+    expect([...remote.values()][0]).toMatchObject({ project: 'project-eng', assignee: ASANA_ME });
+    expect(await filingOf(run)).toMatchObject({ state: 'created', assignee: 'self', assigned: true });
+    expect(await file(run)).toMatchObject({ alreadyCreated: true, externalRef: 'task-1', assigned: true });
+    expect(posts).toBe(1);
+  });
+
+  it('an installation without the input files unassigned and the result says nothing about assignment', async () => {
+    const run = await triggerRun(await installPack({ destination: 'project-eng' }));
+    const result = await file(run);
+    expect(result).toMatchObject({ created: true });
+    expect(result).not.toHaveProperty('assigned');
+    expect([...remote.values()][0]!.assignee).toBeUndefined();
+    const filing = await filingOf(run);
+    expect(filing).not.toHaveProperty('assignee');
+    expect(filing).not.toHaveProperty('assigned');
+  });
+
+  it('a lost create response recovers the same assigned ticket: the attempt froze the request', async () => {
+    const run = await triggerRun(await installPack({ destination: 'project-eng', assignee: 'self' }));
+    loseResponse = true;
+    expect(await file(run)).toMatchObject({ pendingReconciliation: true });
+    expect(await filingOf(run)).toMatchObject({ state: 'attempted', assignee: 'self' });
+    loseResponse = false;
+    expect(await file(run)).toMatchObject({ alreadyCreated: true, externalRef: 'task-1', assigned: true });
+    expect(posts).toBe(1);
+  });
+
+  it('records an unconfirmed assignment as assigned:false rather than assuming it', async () => {
+    const run = await triggerRun(await installPack({ destination: 'project-eng', assignee: 'self' }));
+    loseResponse = true;
+    expect(await file(run)).toMatchObject({ pendingReconciliation: true });
+    // The task exists but was reassigned before recovery: Asana no longer reports the connected account.
+    for (const task of remote.values()) task.assignee = 'someone-else';
+    loseResponse = false;
+    expect(await file(run)).toMatchObject({ alreadyCreated: true, assigned: false });
+    expect(await filingOf(run)).toMatchObject({ state: 'created', assignee: 'self', assigned: false });
+  });
+
+  it('refuses an assignee other than self before recording an attempt or calling the provider', async () => {
+    const run = await triggerRun(await installPack({ destination: 'project-eng', assignee: 'someone' }));
+    await expect(file(run)).rejects.toMatchObject({ code: 'ticket_assignee_invalid' });
+    expect(await filingOf(run)).toBeNull();
+    expect(posts).toBe(0);
+  });
+});
+
 describe('ticket:file durable classification', () => {
   it('records non-bug and needs-information without provider HTTP, preserving the first reason on replay', async () => {
     const untouched = { options: { hostFetchFor: () => { throw new Error('negative verdict called provider'); } } };
@@ -310,8 +370,8 @@ describe('ticket:file durable classification', () => {
 });
 
 describe('trigger-pack arming validates the configured destination', () => {
-  async function configuredForArm(destination = 'project-eng') {
-    const bindingId = await installPack({ destination });
+  async function configuredForArm(destination = 'project-eng', extra: Record<string, unknown> = {}) {
+    const bindingId = await installPack({ destination, ...extra });
     const [bindingRow] = await sql<Array<{ installationId: string }>>`
       UPDATE harness_shared.trigger_bindings SET armed = FALSE
        WHERE workspace_id = ${WS} AND id = ${bindingId}::uuid
@@ -360,6 +420,14 @@ describe('trigger-pack arming validates the configured destination', () => {
     } finally {
       await sql`UPDATE harness_shared.data_sources SET status = 'connected', scope = 'personal', owner_user_id = ${userId} WHERE workspace_id = ${WS} AND id = ${chat.id}`;
     }
+  });
+
+  it("arms with assignee 'self' and refuses any other assignee before recording a review", async () => {
+    const options = { ...deps.options, registry };
+    expect(await armTriggerPack(sql, WS, await configuredForArm('project-eng', { assignee: 'self' }), { options })).toMatchObject({ ok: true });
+    const bad = await configuredForArm('project-eng', { assignee: 'someone' });
+    await expect(armTriggerPack(sql, WS, bad, { options })).rejects.toMatchObject({ code: 'trigger_pack_input_unavailable' });
+    await expectUnarmed(bad.installationId);
   });
 
   it('refuses an ambiguous ticket destination before arming', async () => {

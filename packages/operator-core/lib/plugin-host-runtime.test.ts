@@ -15,7 +15,41 @@ import {
   pluginHostStatus,
   warmUpPluginsForSlug,
   buildPapercuspContext,
+  resolveBundledPluginsParent,
+  bundledPluginsSkewError,
 } from './plugin-host-runtime';
+
+// EI-25701594650317389: a retained bundle launched from the live tree read that
+// tree's newer manifests (cwd seed won) and dropped providers as unexplained
+// `unknown property` errors. The module's own tree wins; cwd is a labelled fallback.
+describe('resolveBundledPluginsParent', () => {
+  const trees = (...roots: string[]) => (p: string) => roots.some((r) => p === `${r}/libs/papercusp/plugins`);
+
+  it('prefers the module tree over the launch directory when both hold plugins', () => {
+    const found = resolveBundledPluginsParent(
+      [{ dir: '/srv/release/apps/operator/dist-host', source: 'module' }, { dir: '/srv/canonical/apps/operator', source: 'cwd' }],
+      trees('/srv/release', '/srv/canonical'),
+    );
+    expect(found).toEqual({ dir: '/srv/release/libs/papercusp', source: 'module' });
+    expect(bundledPluginsSkewError(found!, '/srv/release/apps/operator/dist-host')).toBeNull();
+  });
+
+  it('falls back to the launch directory for an out-of-tree bundle and labels it a version skew', () => {
+    const found = resolveBundledPluginsParent(
+      [{ dir: '/tmp/drill-host', source: 'module' }, { dir: '/srv/canonical/apps/operator', source: 'cwd' }],
+      trees('/srv/canonical'),
+    );
+    expect(found).toEqual({ dir: '/srv/canonical/libs/papercusp', source: 'cwd' });
+    const skew = bundledPluginsSkewError(found!, '/tmp/drill-host');
+    expect(skew?.path).toBe('<bundled-plugins>');
+    expect(skew?.error).toMatch(/version skew/);
+    expect(skew?.error).toContain('/srv/canonical/libs/papercusp');
+  });
+
+  it('returns null when no seed reaches a plugins dir (installed build)', () => {
+    expect(resolveBundledPluginsParent([{ dir: '/opt/app', source: 'module' }, { dir: '/home/u', source: 'cwd' }], trees())).toBeNull();
+  });
+});
 
 const SLUG_ARGS = {
   installSlug: 'test-harness',

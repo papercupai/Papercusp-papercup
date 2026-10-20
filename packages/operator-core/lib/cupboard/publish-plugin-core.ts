@@ -27,7 +27,7 @@ import {
   fetchGithubRepoFile,
   type RepoCoords,
 } from './resolve-repo-coords';
-import { assertPluginManifestPublishable, PublishManifestError } from './publish-manifest-check';
+import { assertPluginManifestPublishable, pluginListingRef, PublishManifestError } from './publish-manifest-check';
 
 export interface PublishInstalledUnitInput {
   /** The installed unit's manifest name (used as listing_ref unless overridden). */
@@ -36,7 +36,7 @@ export interface PublishInstalledUnitInput {
   github_url?: string;
   /** Papercupai project remote (D-008). */
   project_ref?: string;
-  /** Override the within-repo listing ref (else the slug). */
+  /** Override the within-repo listing ref (else the slug, npm scope stripped). */
   listing_ref?: string;
   /** Override title (else the manifest name). */
   title?: string;
@@ -114,8 +114,9 @@ export async function publishInstalledUnitToCupboard(
   // 'pack' listing kind; everything else stays a plugin listing (D-001).
   const listingKind = installed?.kind === 'pack' ? ('pack' as const) : ('plugin' as const);
   const providesTools = providesToolsOverride ?? (installed ? manifestToolNames(installed) : []);
-  const listingRef =
-    typeof input.listing_ref === 'string' && input.listing_ref.trim() ? input.listing_ref.trim() : slug;
+  const ref = pluginListingRef(slug, input.listing_ref);
+  if (!ref.ok) return { ok: false, status: 400, error: ref.error };
+  const listingRef = ref.listingRef;
 
   // The EVENT axis (D-003; P-007 resolver + P-008 wire). Derived from the
   // installed manifest — NOT overridable like provides_tools, because a provided

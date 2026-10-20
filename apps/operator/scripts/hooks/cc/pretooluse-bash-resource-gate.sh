@@ -4297,6 +4297,136 @@ def _cmd_in_canonical_tree():
     except Exception:
         return False
 
+# ── Redirected-work-tree index guard (WI-6554700010017981) ─────────────────
+# `git --work-tree=<dir> <cmd>` (or GIT_WORK_TREE=<dir>) moves only where FILES
+# land. The index, HEAD and refs still belong to the git dir found from cwd or
+# -C. Run from the shared checkout, it writes the SHARED .git/index (and, for a
+# ref writer, the shared HEAD). Observed 2026-10-18 13:38Z: a session exported a
+# candidate tree with
+#     git --work-tree=/tmp/pc-candidate-b42… checkout b42a3e8a35… -- .
+# and staged that commit's blobs over 91 tracked paths of the shared index.
+# Nothing errored, and the stale entries read `MM` for two days. The `.` form
+# happens to trip the `checkout .` guard below, with a misleading reason; every
+# narrower pathspec, GIT_WORK_TREE=, `read-tree -u` and `add -A` passed.
+#
+# Deny when ALL hold: the work tree is redirected; the git dir is not
+# (--git-dir / GIT_DIR); the subcommand writes the index or refs; and the
+# repository resolved from cwd (a leading `cd`, then literal -C targets) is the
+# canonical tree. A private GIT_INDEX_FILE makes the index-only forms safe, so
+# they pass with one. It does not protect HEAD, so ref writers still deny.
+# Read-only subcommands (status, diff, log, archive, checkout-index…) never
+# deny. Assignments are read from the whole command, so `export X=…; git …` and
+# `env X=… git …` count. An unresolvable -C target ($VAR, ~) fails open, as
+# everywhere else in this hook.
+_WT_REF_WRITERS = frozenset((
+    'switch', 'merge', 'pull', 'commit', 'cherry-pick', 'revert', 'rebase',
+    'am', 'stash',
+))
+_WT_INDEX_WRITERS = frozenset((
+    'add', 'rm', 'mv', 'update-index', 'read-tree', 'sparse-checkout',
+))
+_WT_GLOBAL_VALUE_OPTS = frozenset((
+    '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env',
+    '--attr-source',
+))
+_WT_DENY = (
+    'shared-tree guard: `git --work-tree=… {op}` writes the SHARED repository\'s '
+    'index (and, for a ref-moving command, its HEAD), not the other directory\'s. '
+    '--work-tree only redirects where files are written; the index, HEAD and refs '
+    'still come from the git dir found from cwd or -C, here the canonical staging '
+    'checkout. On 2026-10-18 `git --work-tree=/tmp/… checkout <sha> -- .` staged '
+    'an old commit over 91 tracked paths this way (WI-6554700010017981). To export '
+    'a commit\'s tree, use `git archive <sha> | tar -x -C <dir>`. To run an '
+    'index-only command against another directory, give it a private index: '
+    '`GIT_INDEX_FILE=$(mktemp -u) git --work-tree=<dir> {op} …`. For anything '
+    'that moves HEAD, use a separate clone (`git clone --local . <dir>`) and work there.'
+)
+
+
+def _wt_repo_in_canonical_tree(c_targets):
+    if not c_targets:
+        return _cmd_in_canonical_tree()
+    try:
+        _ws_root = os.path.realpath(
+            os.environ.get('PAPERCUSP_WORKSPACE_ROOT')
+            or os.path.expanduser('~/papercupai-workspace'))
+        _canon = os.path.realpath(
+            os.environ.get('PAPERCUSP_CANONICAL_TREE')
+            or os.path.join(_ws_root, 'papercusp'))
+        _eff = os.path.realpath(payload.get('cwd') or os.getcwd())
+        _cd = re.match(r"\s*cd\s+(['\"]?)([^&|;<>\s'\"]+)\1\s*(?:&&|;|\||$)", command)
+        if _cd:
+            _eff = os.path.realpath(os.path.join(_eff, _cd.group(2)))
+        for _t in c_targets:
+            if re.search(r'[$`~*?\[]', _t):
+                return False
+            _eff = os.path.realpath(os.path.join(_eff, _t))
+        return _eff == _canon or _eff.startswith(_canon + os.sep)
+    except Exception:
+        return False
+
+
+def _wt_index_hazard(words, whole):
+    """The offending subcommand when `words` is a git command whose redirected
+    work tree would write the canonical repository's index or refs, else None."""
+    start = _scan_command_start(words)
+    argv = words[start:]
+    if not argv or argv[0].split('/')[-1] != 'git':
+        return None
+    env = ' '.join(words[:start]) + '\n' + whole
+    redirected = bool(re.search(r'(?<!\w)GIT_WORK_TREE=', env))
+    own_git_dir = bool(re.search(r'(?<!\w)GIT_DIR=', env))
+    private_index = bool(re.search(r'(?<!\w)GIT_INDEX_FILE=', env))
+    c_targets, i = [], 1
+    while i < len(argv):
+        w = argv[i]
+        if not w.startswith('-') or w == '-':
+            break
+        key = w.split('=', 1)[0]
+        if key == '--work-tree':
+            redirected = True
+        elif key == '--git-dir':
+            own_git_dir = True
+        if key in _WT_GLOBAL_VALUE_OPTS and '=' not in w:
+            if key == '-C' and i + 1 < len(argv):
+                c_targets.append(argv[i + 1])
+            i += 2
+        else:
+            i += 1
+    if i >= len(argv) or not redirected or own_git_dir:
+        return None
+    sub, rest = argv[i], argv[i + 1:]
+    if sub in _WT_REF_WRITERS:
+        op, index_only = sub, False
+    elif sub in ('checkout', 'reset'):
+        # Without `--` either can move HEAD (`checkout <branch>`, `reset <sha>`).
+        op, index_only = sub, '--' in rest
+    elif sub in _WT_INDEX_WRITERS:
+        op, index_only = sub, True
+    elif sub == 'restore' and any(
+            a == '--staged' or re.match(r'^-[A-Za-z]*S', a) for a in rest):
+        op, index_only = 'restore --staged', True
+    elif sub == 'apply' and any(
+            a in ('--index', '--cached', '-3', '--3way') for a in rest):
+        op, index_only = 'apply --index', True
+    else:
+        return None
+    if index_only and private_index:
+        return None
+    if not _wt_repo_in_canonical_tree(c_targets):
+        return None
+    return op
+
+
+try:
+    _wt_commands, _wt_nested = _scan_shell(_scannable())
+    for _wt_words in _wt_commands:
+        _wt_op = _wt_index_hazard(_wt_words, command or '')
+        if _wt_op:
+            deny(_WT_DENY.format(op=_wt_op))
+except Exception:
+    pass  # classifier failure must never wedge Bash (deny() exits via SystemExit)
+
 if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree():
     _GIT = r'git\b(?:\s+-C\s+\S+|\s+-c\s+\S+|\s+--git-dir\S*|\s+--work-tree\S*)*\s+'
     _git_deny = (

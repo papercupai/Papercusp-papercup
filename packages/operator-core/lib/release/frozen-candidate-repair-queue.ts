@@ -3008,20 +3008,28 @@ export function markFrozenCandidateVerificationRed(
 ): FrozenCandidateRepairQueue {
   requirePhase(queue, 'ready-to-test', 'initial candidate red');
   assertTimestamp(input.nowMs, 'nowMs');
+  // WI-6554700010018209: the ready-to-test suite judges the immutable CANDIDATE. An admission
+  // can land while that suite runs (markFrozenRepairAdmitted keeps ready-to-test), and the
+  // caller then applies this red to the fresh row whose repairHead is the admitted head. The
+  // measurement still belongs to the candidate: stamping it at repairHead marked a fix that
+  // was never measured as red and parked the queue in awaiting-fixer. When an admitted head
+  // is waiting, it owes verification instead.
+  const measuredHead = queue.candidate;
+  const admittedHeadOwesVerification = queue.repairHead !== queue.candidate;
   const round = nextConvergenceRound(queue);
   const { signature, failingTests } = nextRepairSignature(queue.signature, {
     ...input,
-    head: queue.repairHead,
+    head: measuredHead,
     round,
   });
   return {
     ...queue,
-    phase: 'awaiting-fixer',
+    phase: admittedHeadOwesVerification ? 'ready-to-verify' : 'awaiting-fixer',
     updatedAtMs: input.nowMs,
-    fixerStateChangedAtMs: input.nowMs,
+    ...(admittedHeadOwesVerification ? {} : { fixerStateChangedAtMs: input.nowMs }),
     lastVerdictAtMs: input.nowMs,
     convergenceRounds: appendConvergenceRound(queue, {
-      head: queue.repairHead,
+      head: measuredHead,
       failingTests,
       nowMs: input.nowMs,
       executed: input.executed,

@@ -7,7 +7,12 @@ import { createImplementationReadiness, sealImplementationAcceptance, countWorkI
 import { getBuildInfo } from './build-info';
 import { readProcessIdentity } from './process-identity';
 import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
-import type { DedupRescreenRow, DedupRescreenVerdict } from './work-items-admission-dedup-rescreen';
+import {
+  DEFAULT_DEDUP_RESCREEN_WALL_BUDGET_MS,
+  rescreenDegradedPendingRows,
+  type DedupRescreenRow,
+  type DedupRescreenVerdict,
+} from './work-items-admission-dedup-rescreen';
 import { flushFallbackObservations, observeFallback } from './degradation/fallback-observations';
 import { configureRuntimeVintageStore, InMemoryRuntimeVintageStore, reportRuntimeVintage, resetRuntimeVintageStore } from './runtime-vintage';
 
@@ -4241,5 +4246,59 @@ describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018
     const row = await readRow('WI-rs-boom');
     expect(row.admission).toBe('pending');
     expect(row.payload.dedupCoverage).toMatchObject({ degraded: true, rescreen: { attempts: 1, outcome: 'error' } });
+  });
+
+  // WI-6554700010018182: the row cap used to bind before the wall budget, so a backlog drained
+  // at 20 rows per 30-minute run. With fast screens the whole backlog clears in one run.
+  const BACKLOG = 25;
+  const backlogIds = Array.from({ length: BACKLOG }, (_, i) => `WI-rs-backlog-${String(i).padStart(2, '0')}`);
+  const seedBacklog = async () => {
+    // Oldest first: index 0 is the row the FIFO selector reaches first.
+    for (const [i, id] of backlogIds.entries()) {
+      await seedItem({ id, createdAtMs: OLD - (BACKLOG - i) * 1_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    }
+  };
+
+  it('re-screens a backlog larger than the old 20-row cap in one run when the wall budget allows', async () => {
+    await seedBacklog();
+    const screen = screenWith(Object.fromEntries(backlogIds.map((id) => [id, clean])));
+
+    const result = await failOpenAt(NOW, screen, 'fail-open-rescreen-backlog');
+
+    expect(screen).toHaveBeenCalledTimes(BACKLOG);
+    expect(result.dedupRescreen).toMatchObject({ attempted: BACKLOG, budgetExhausted: false, stillDegraded: [], errored: [] });
+    expect([...(result.dedupRescreen as { clean: string[] }).clean].sort()).toEqual(backlogIds);
+    expect([...result.autoPromoted].sort()).toEqual(backlogIds);
+  });
+
+  it('the wall budget, not the row cap, stops a slow pass, and leaves the rest for the next run', async () => {
+    await seedBacklog();
+    let clock = NOW;
+    const perScreenMs = 10_000;
+    const screen = vi.fn(async (): Promise<DedupRescreenVerdict> => {
+      clock += perScreenMs;
+      return clean;
+    });
+
+    const summary = await rescreenDegradedPendingRows({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      cutoffMs: NOW - 60 * 60_000,
+      cooldownCutoffMs: NOW - 60 * 60_000,
+      nowMs: NOW,
+      runId: 'rescreen-budget-stop',
+      screen,
+      sql: db.sql,
+      now: () => clock,
+    });
+
+    // Starts at 0, 10s, ..., 40s are inside the 45s budget; the start at 50s is not.
+    const fits = Math.ceil(DEFAULT_DEDUP_RESCREEN_WALL_BUDGET_MS / perScreenMs);
+    expect(fits).toBe(5);
+    expect(summary).toMatchObject({ attempted: fits, budgetExhausted: true });
+    expect(summary.clean).toEqual(backlogIds.slice(0, fits));
+    for (const id of backlogIds.slice(fits)) {
+      expect((await readRow(id)).payload).toEqual({ dedupCoverage: ORIGINAL });
+    }
   });
 });

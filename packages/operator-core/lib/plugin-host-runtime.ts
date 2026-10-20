@@ -222,34 +222,61 @@ export interface PluginHostStatus {
   }>;
 }
 
+export interface BundledPluginsParent {
+  /** `<repo-root>/libs/papercusp`, the parent of the bundled `plugins/` dir. */
+  dir: string;
+  /** `module`: found from this code's own location, so manifests and loader come from one tree.
+   *  `cwd`: this code's tree has no plugins dir (an out-of-tree bundle), so the manifests
+   *  come from whatever tree the process was launched in and can be newer than this loader. */
+  source: 'module' | 'cwd';
+}
+
 /**
- * In development we also look for plugins bundled inside the monorepo
- * at `<repo-root>/libs/papercusp/plugins/`. We walk up from the
- * operator's working directory (a bundled runtime can make `__dirname`
- * unreliable, so process.cwd() is also tried).
+ * Resolve the bundled in-repo plugins parent by walking up from each seed in order.
+ * The module seed comes FIRST (EI-25701594650317389): a host must load the manifests
+ * of the tree its own code was built from. Trying cwd first let a retained bundle
+ * launched from the live tree read manifests newer than its loader schema, and every
+ * such provider dropped as an unexplained `unknown property` load error.
+ */
+export function resolveBundledPluginsParent(
+  seeds: ReadonlyArray<{ dir: string; source: BundledPluginsParent['source'] }>,
+  exists: (path: string) => boolean,
+): BundledPluginsParent | null {
+  for (const seed of seeds) {
+    let dir = seed.dir;
+    for (let i = 0; i < 12; i++) {
+      if (exists(join(dir, 'libs', 'papercusp', 'plugins'))) return { dir: join(dir, 'libs', 'papercusp'), source: seed.source };
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return null;
+}
+
+/**
+ * The load error recorded when the bundled plugins came from the cwd fallback, so
+ * runtime_status names the version skew instead of showing per-plugin typos.
+ */
+export function bundledPluginsSkewError(found: BundledPluginsParent, moduleDir: string): { error: string; path: string } | null {
+  if (found.source !== 'cwd') return null;
+  return {
+    path: '<bundled-plugins>',
+    error: `bundled plugins loaded from the launch directory's tree (${found.dir}), not from this host's own tree (${moduleDir}): ` +
+      'its manifests can be newer than this loader schema, so "manifest invalid: unknown property" errors here are a version skew, not manifest typos',
+  };
+}
+
+/**
+ * In development we also look for plugins bundled inside the monorepo at
+ * `<repo-root>/libs/papercusp/plugins/`: first from this module's own path, then
+ * from the working directory (a bundled runtime can make `__dirname` unreliable).
  * Returns null in installed builds where the in-repo path doesn't exist.
  */
-function findBundledPluginsParent(): string | null {
+function findBundledPluginsParent(): BundledPluginsParent | null {
   try {
     const { existsSync } = require('node:fs') as typeof import('node:fs');
-    const { dirname, join } = require('node:path') as typeof import('node:path');
-    // Search both cwd and __dirname-equivalent (this module's path).
-    // The operator dev server is typically launched from the home dir
-    // (`/home/dev`), so cwd won't find the in-repo plugin
-    // dir; the module's own path always traces back to
-    // packages/operator-core/lib and walking up gets us to the repo root.
-    const seeds = [process.cwd(), __dirname];
-    for (const seed of seeds) {
-      let dir = seed;
-      for (let i = 0; i < 12; i++) {
-        if (existsSync(join(dir, 'libs', 'papercusp', 'plugins'))) {
-          return join(dir, 'libs', 'papercusp');
-        }
-        const parent = dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-      }
-    }
+    return resolveBundledPluginsParent([{ dir: __dirname, source: 'module' }, { dir: process.cwd(), source: 'cwd' }], existsSync);
   } catch { /* not in dev */ }
   return null;
 }
@@ -362,14 +389,17 @@ async function discover(onProvidersRegistered: () => void = () => {}): Promise<H
   }
 
   try {
+    const bundled = findBundledPluginsParent();
     const r = await loadPlugins({
       harnessSlugs,
       // Pick up bundled in-repo plugins (Repomix, fetch-plus, code2prompt,
       // firecrawl-bridge, etc) without requiring symlinks into ~/.papercusp.
-      projectDir: findBundledPluginsParent() ?? undefined,
+      projectDir: bundled?.dir,
     });
     loaded = r.loaded;
     loadErrors = r.errors;
+    const skew = bundled ? bundledPluginsSkewError(bundled, __dirname) : null;
+    if (skew) loadErrors.unshift(skew);
   } catch (e: any) {
     loadErrors = [{ error: `discovery threw: ${e?.message ?? e}`, path: '<discovery>' }];
   }

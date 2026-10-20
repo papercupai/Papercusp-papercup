@@ -33,6 +33,7 @@ import {
   DISPATCH_VERIFY_TIMEOUT_MS,
   FIRST_TURN_POLL_MS,
   FIRST_TURN_WAIT_MS,
+  PROVIDER_ERROR_LAUNCHES_PER_RANK,
   consultDispatchBrief,
   dispatchConsultResponder,
   dispatchRecordEntry,
@@ -932,6 +933,98 @@ describe('dispatchConsultResponder — the walk', () => {
       expect(calls.stopped).toEqual(['task-1']);
       expect(result.attempts.some(attempt => attempt.reason === 'source-transcript-poisoned')).toBe(false);
       expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    // WI-6554700010018146: a first reply that is a transient provider failure was
+    // counted as the answer, so the session parked with no answer and no cascade.
+    describe('a first reply that is a transient provider error (real analyzer)', () => {
+      // The measured record of a provider failure that ended an answer session's turn.
+      const providerError = JSON.stringify({
+        type: 'assistant', error: 'server_error', isApiErrorMessage: true,
+        message: {
+          role: 'assistant', model: '<synthetic>',
+          content: [{ type: 'text', text: 'API Error: Server error mid-response. The response above may be incomplete.' }],
+        },
+      });
+      const prompt = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Answer the exact consult.' } });
+      const reply = JSON.stringify({
+        type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Here is the answer.' }] },
+      });
+
+      /** One answer transcript per launch; launch N reads file N (the last one repeats). */
+      async function withAnswerTranscripts(perLaunch: string[][], run: (paths: string[]) => Promise<void>) {
+        const dir = mkdtempSync(join(tmpdir(), 'consult-provider-error-'));
+        const paths = perLaunch.map((lines, i) => {
+          const path = join(dir, `answer-${i + 1}.jsonl`);
+          writeFileSync(path, `${lines.join('\n')}\n`);
+          return path;
+        });
+        __resetClaudeResumeTranscriptCacheForTests();
+        try {
+          await run(paths);
+        } finally {
+          __resetClaudeResumeTranscriptCacheForTests();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+      // The fixture spawn's kickoff receipt names '/native/answer.jsonl' for every launch.
+      const answerReader = (paths: string[], launches: () => number) => (p: string) =>
+        p === '/native/answer.jsonl'
+          ? analyzeClaudeResumeTranscriptFile(paths[Math.min(Math.max(launches(), 1), paths.length) - 1]!)
+          : null;
+      const walk = (attempts: { rank: number; operation: string | null; outcome: string; reason?: string }[]) =>
+        attempts.map((a) => [a.rank, a.operation, a.outcome, a.reason ?? null]);
+
+      it('relaunches the same rank once, and dispatches the relaunch that replies', () =>
+        withAnswerTranscripts([[prompt, providerError], [prompt, reply]], async (paths) => {
+          const fakes: ReturnType<typeof makeFakes> = makeFakes({
+            analyzeClaudeTranscript: answerReader(paths, () => fakes.calls.spawn.length),
+          });
+          const r = await dispatchConsultResponder(OPTS, CTX, fakes.deps);
+          expect(walk(r.attempts)).toEqual([
+            [1, 'fork', 'failed', 'first-turn-provider-error'],
+            [1, 'fork', 'dispatched', null],
+          ]);
+          expect(r.attempts[0]!.detail).toContain(
+            'its first reply was a transient provider error (API Error: Server error mid-response.');
+          expect(r.attempts[0]!.detail).toContain(`Relaunching the same rank (launch 1 of ${PROVIDER_ERROR_LAUNCHES_PER_RANK})`);
+          expect(fakes.calls.stopped).toEqual(['task-1']);
+          expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+        }));
+
+      it('cascades to the next rank once the bounded relaunches all hit provider errors', () =>
+        withAnswerTranscripts([[prompt, providerError]], async (paths) => {
+          const fakes: ReturnType<typeof makeFakes> = makeFakes({
+            analyzeClaudeTranscript: answerReader(paths, () => fakes.calls.spawn.length),
+          });
+          const r = await dispatchConsultResponder(OPTS, CTX, fakes.deps);
+          expect(walk(r.attempts)).toEqual([
+            ...Array.from({ length: PROVIDER_ERROR_LAUNCHES_PER_RANK }, () => [1, 'fork', 'failed', 'first-turn-provider-error']),
+            [2, 'convert', 'dispatched', null],
+          ]);
+          expect(fakes.calls.spawn).toHaveLength(PROVIDER_ERROR_LAUNCHES_PER_RANK + 1);
+          expect(fakes.calls.stopped).toEqual(
+            Array.from({ length: PROVIDER_ERROR_LAUNCHES_PER_RANK }, (_, i) => `task-${i + 1}`));
+          expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+        }));
+
+      it('does not treat a provider error as a poisoned source: the next fork rank still runs', () =>
+        withAnswerTranscripts(
+          [...Array.from({ length: PROVIDER_ERROR_LAUNCHES_PER_RANK }, () => [prompt, providerError]), [prompt, reply]],
+          async (paths) => {
+            const fakes: ReturnType<typeof makeFakes> = makeFakes({
+              loadRanks: async () => [
+                { rank: 1, agent: 'claude', model: 'opus' },
+                { rank: 2, agent: 'claude', model: 'sonnet' },
+              ],
+              analyzeClaudeTranscript: answerReader(paths, () => fakes.calls.spawn.length),
+            });
+            const r = await dispatchConsultResponder(OPTS, CTX, fakes.deps);
+            expect(walk(r.attempts).at(-1)).toEqual([2, 'fork', 'dispatched', null]);
+            expect(r.attempts.some((a) => a.reason === 'first-turn-rejected')).toBe(false);
+            expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude', model: 'sonnet' });
+          },
+        ));
     });
 
     it('CONTROL: a fork whose first reply has not been rejected stays dispatched', async () => {

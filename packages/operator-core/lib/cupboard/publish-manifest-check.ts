@@ -52,6 +52,37 @@ function isSafeListingRef(ref: string): boolean {
 }
 
 /**
+ * The Cupboard worker's `listing_ref` rule (apps/operator-public/src/routes/listings.ts
+ * `LISTING_REF_RE`). Restated here because operator-core cannot import the worker;
+ * `publish-manifest-check.test.ts` reads the worker source and fails if the two drift.
+ */
+export const CUPBOARD_LISTING_REF_RE = /^[A-Za-z0-9._/-]{1,200}$/;
+
+/**
+ * The listing ref a plugin/pack publish sends (EI-25707770061626540). An explicit
+ * override must already satisfy the worker rule. Otherwise the manifest name is
+ * used, with an npm scope (`@scope/`) stripped: the worker rejects `@`, and a
+ * scoped first-party pack such as `@papercupai/bug-triage` is listed as
+ * `bug-triage` (live listing 508f85df). Refusing locally names the fix instead of
+ * surfacing the worker's bare `invalid_field`.
+ */
+export function pluginListingRef(
+  slug: string,
+  override?: string,
+): { ok: true; listingRef: string } | { ok: false; error: string } {
+  const explicit = typeof override === 'string' ? override.trim() : '';
+  if (explicit) {
+    return CUPBOARD_LISTING_REF_RE.test(explicit)
+      ? { ok: true, listingRef: explicit }
+      : { ok: false, error: `invalid listing_ref "${explicit}": the Cupboard accepts only letters, digits, '.', '_', '-' and '/' (1-200 chars)` };
+  }
+  const unscoped = slug.startsWith('@') ? slug.slice(slug.indexOf('/') + 1) : slug;
+  return CUPBOARD_LISTING_REF_RE.test(unscoped)
+    ? { ok: true, listingRef: unscoped }
+    : { ok: false, error: `cannot derive a listing_ref from plugin slug "${slug}"; pass listing_ref explicitly` };
+}
+
+/**
  * Assert the repo `owner/repo` carries an installable plugin manifest. Mirrors
  * the installer's locate order: the `listingRef` subdir first (when it is a safe
  * subdir), then the repo root; the first `papercusp.json` that parses with a

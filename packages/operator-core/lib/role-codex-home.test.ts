@@ -1875,13 +1875,50 @@ describe('writeSuCodexHome', () => {
     expect(diag.configPath).toBe(out.configPath);
   });
 
-  it('the HUMAN su home gets NO native-scheduler guard (native-scheduler-lockout D-003)', async () => {
+  it('the HUMAN su home gets the shared bash gate but NO native-scheduler marker (D-003; WI-6554700010017981)', async () => {
+    // Parity with Claude su (~/.claude/settings.json runs the gate unmarked): the
+    // gate's shared-tree git guards key on the canonical tree, so the su needs the
+    // gate itself; the scheduler lockout reads the marker, which the su must not get.
     await installFakeHooks();
     const { writeSuCodexHome } = await loadMod();
     const out = writeSuCodexHome({ sessionKey: 61, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    expect(JSON.stringify(hooks)).not.toContain('pretooluse-bash-resource-gate.sh');
+    const gates = hooks.hooks.PreToolUse.filter((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((h) => h.command.includes('pretooluse-bash-resource-gate.sh')),
+    );
+    expect(gates).toHaveLength(1);
+    // codex reports its shell tool as "Bash" (the RTK rewrite matches ^Bash$).
+    expect(new RegExp(gates[0].matcher).test('Bash')).toBe(true);
     expect(JSON.stringify(hooks)).not.toContain('PAPERCUSP_AGENT_SESSION');
+  });
+
+  it('a resumed su home written before the gate was attached is repaired once, then left byte-identical (WI-6554700010017981)', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const home = writeSuCodexHome({
+      sessionKey: 'gate-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-gate-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    const isGate = (e: { hooks: { command: string }[] }) =>
+      e.hooks.some((h) => h.command.includes('pretooluse-bash-resource-gate.sh'));
+    // Reproduce the pre-fix home exactly: the same hooks.json minus the gate entry.
+    const written = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    written.hooks.PreToolUse = written.hooks.PreToolUse.filter((e: { hooks: { command: string }[] }) => !isGate(e));
+    writeFileSync(hooksPath, JSON.stringify(written, null, 2));
+
+    const resume = () =>
+      ensureSuCodexHomeConfig({ sessionKey: 'gate-upgrade', mcpUrl: 'http://x/api/mcp?superuser=1', sid: 'su-gate-upgrade' });
+    expect(resume()).toMatchObject({ identityRepaired: true });
+    const repairedText = readFileSync(hooksPath, 'utf8');
+    const repaired = JSON.parse(repairedText).hooks.PreToolUse.filter(isGate);
+    expect(repaired).toHaveLength(1);
+    expect(repaired[0].hooks[0].command).not.toContain('PAPERCUSP_AGENT_SESSION');
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+    expect(resume()).toMatchObject({ identityRepaired: false });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repairedText);
   });
 
   it('adds the coord-folding activity hook (PostToolUse, matcher .*, baked PAPERCUSP_SID = the session id)', async () => {

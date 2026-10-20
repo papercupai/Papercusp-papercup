@@ -472,6 +472,18 @@ export default defineTool({
       /* best-effort */
     }
 
+    // EI-26515229747561182: a memory can assert that the owner said something but
+    // cannot prove it, and one such manufactured quote was recalled as binding for
+    // two months. Mark every claimed owner quote as unverified, outermost (after the
+    // staleness banner) so orient's 200-char clip keeps it. Pure and synchronous;
+    // a failure here leaves the results as they were.
+    try {
+      const { applyOwnerQuoteProvenance } = await import('../../memory/owner-quote-provenance');
+      results = applyOwnerQuoteProvenance(results);
+    } catch {
+      /* best-effort */
+    }
+
     // Result count into tool_invocations.metadata_json (mirrors plans:search):
     // the negative-space miner (self-learning-frontier P-010) detects zero-hit
     // searches by `metadata_json->>'count'`; the query rides in args_json.

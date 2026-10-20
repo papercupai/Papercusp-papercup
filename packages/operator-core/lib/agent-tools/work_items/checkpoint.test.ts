@@ -5547,6 +5547,22 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
   });
 
+  it('does not lint an unread-run advisory quoted from a peer checkpoint receipt', async () => {
+    const body = [
+      'Reconciled the work_items:checkpoint receipt for contentHash d6260111f61c that warns',
+      "'run you launched but have not read (in-flight — /tmp/machine-first-commit-hop-0132.json)'.",
+      'That peer-authored receipt was already read through the managed task; no unread local run exists.',
+    ].join(' ');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-PEER-RECEIPT', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-PEER-RECEIPT', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+  });
+
   it('stays absent for an ordinary progress checkpoint', async () => {
     const body = 'Implemented the compatibility path and the focused test passes 7/7.';
     getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-CLEAN', harness: 'papercup' });

@@ -42,8 +42,12 @@ import { findSemanticDupes, type SemanticDupeCandidate } from './agent-tools/wor
 import type { OrgSql } from './work-items';
 import { failOpenExclusionSql, type AdmissionFailOpenExclusion } from './work-items-admission';
 
-/** Rows re-screened per fail-open run. Each screen is a few hundred ms when healthy. */
-export const DEFAULT_DEDUP_RESCREEN_BATCH_SIZE = 20;
+/** Ceiling on the rows one fail-open run READS for re-screening; deliberately not the
+ *  throttle. The wall budget below is the binding limit: measured live at ~0.7-2s per
+ *  screen, 45s fits roughly 25-60 rows. A cap of 20 used to bind first, so a backlog of
+ *  ~165 degraded rows drained at 20 per 30-minute run and a fresh row waited ~4h behind
+ *  it (WI-6554700010018182). */
+export const DEFAULT_DEDUP_RESCREEN_BATCH_SIZE = 200;
 /** Wall budget for the whole re-screen pass, so the must-never-starve admit step that
  *  follows is never delayed by a slow embedder or a loaded database. */
 export const DEFAULT_DEDUP_RESCREEN_WALL_BUDGET_MS = 45_000;

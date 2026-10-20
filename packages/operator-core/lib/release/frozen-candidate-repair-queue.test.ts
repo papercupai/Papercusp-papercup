@@ -2521,3 +2521,50 @@ describe('settleFrozenRepairAdmission — what a missed door write means (WI-100
     expect(settleFrozenRepairAdmission(otherParent, door)).toMatchObject({ kind: 'diverged', queue: null });
   });
 });
+
+describe('WI-6554700010018209: a candidate red after a mid-suite admission belongs to the candidate', () => {
+  const readyToTest = () => createFrozenCandidateQueue({ candidate: C, base: BASE, nowMs: T0 });
+  const admitDuringSuite = (queue: FrozenCandidateRepairQueue) =>
+    markFrozenRepairAdmitted(queue, {
+      atMs: T0 + 1_000,
+      actor: 'su-fixer',
+      source: { ref: 'staging', sha: C1 },
+      fromRepairHead: C,
+      toRepairHead: C1,
+      paths: ['tests/host-smoke.test.ts'],
+      unchanged: [],
+      blobs: { 'tests/host-smoke.test.ts': 'blob-fix' },
+    });
+
+  it('records the round and signature at the candidate and leaves the admitted head to verification', () => {
+    const admitted = admitDuringSuite(readyToTest());
+    expect(admitted.phase).toBe('ready-to-test');
+    expect(admitted.repairHead).toBe(C1);
+
+    const red = markFrozenCandidateVerificationRed(admitted, {
+      failingTests: ['tests/host-smoke.test.ts'],
+      nowMs: T0 + 2_000,
+    });
+
+    expect(red.phase).toBe('ready-to-verify');
+    expect(red.repairHead).toBe(C1);
+    expect(red.candidate).toBe(C);
+    expect(red.convergenceRounds?.map((r) => r.head)).toEqual([C]);
+    expect(red.signature?.length).toBeGreaterThan(0);
+    expect(red.signature?.every((entry) => entry.measuredHead === C)).toBe(true);
+    expect(red.retestRequested?.repairHead).toBe(C1);
+    expect(red.fixerStateChangedAtMs).toBe(admitted.fixerStateChangedAtMs);
+    expect(red.lastVerdictAtMs).toBe(T0 + 2_000);
+  });
+
+  it('with no admission the candidate red still dispatches the fixer at the candidate', () => {
+    const red = markFrozenCandidateVerificationRed(readyToTest(), {
+      failingTests: ['tests/host-smoke.test.ts'],
+      nowMs: T0 + 2_000,
+    });
+    expect(red.phase).toBe('awaiting-fixer');
+    expect(red.repairHead).toBe(C);
+    expect(red.convergenceRounds?.map((r) => r.head)).toEqual([C]);
+    expect(red.fixerStateChangedAtMs).toBe(T0 + 2_000);
+  });
+});

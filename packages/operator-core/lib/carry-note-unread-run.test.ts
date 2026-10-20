@@ -104,6 +104,16 @@ describe('describeUnreadRun', () => {
     expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['results pending']);
   });
 
+  it('ignores an unread-run advisory quoted from a checkpoint receipt being reconciled', () => {
+    const body = [
+      'Reconciled the work_items:checkpoint receipt for contentHash d6260111f61c that warns',
+      "'run you launched but have not read (in-flight — /tmp/machine-first-commit-hop-0132.json)'.",
+      'That peer-authored receipt was already read through the managed task; no unread local run exists.',
+    ].join(' ');
+
+    expect(describeUnreadRun(body, 0)).toBeNull();
+  });
+
   it('does not turn an explicitly negated run status into an unread-run admission (EI-25989239695201915)', () => {
     for (const status of [
       'not still running',

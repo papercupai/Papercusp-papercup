@@ -745,6 +745,45 @@ describe('ticket.create uses OAuth correlation and the configured project', () =
     await expect(adapter.invoke(invokeReq('ticket.create', createArgs), fake.host)).rejects.toThrow('recovery_scope_invalid');
     expect(fake.named('POST', '/tasks')).toHaveLength(0);
   });
+  it("assignee 'self' creates the task assigned to Asana's 'me' and confirms it from the response", async () => {
+    const fake = fakeHost((call) => call.method === 'GET' ? json(404, {})
+      : json(201, { data: { gid: 'new-task', permalink_url: 'https://app.asana.com/0/proj-eng/new-task', assignee: { gid: ME.gid } } }));
+    expect(await adapter.invoke(invokeReq('ticket.create', { ...createArgs, assignee: 'self' }), fake.host))
+      .toEqual({ externalRef: 'new-task', url: 'https://app.asana.com/0/proj-eng/new-task', recovered: false, assignee: 'self' });
+    const post = fake.named('POST', '/tasks')[0]!;
+    expect(post.body).toEqual({ data: { name: 'Export fails', notes: 'Original report', projects: ['proj-eng'], external: { gid: 'slack-source-event' }, assignee: 'me' } });
+    expect(post.query.get('opt_fields')).toBe('gid,permalink_url,assignee.gid');
+    // Without the option the request is unchanged and the receipt says nothing about an assignee.
+    const plain = fakeHost((call) => call.method === 'GET' ? json(404, {}) : json(201, { data: { gid: 'plain', assignee: { gid: ME.gid } } }));
+    const receipt = await adapter.invoke(invokeReq('ticket.create', createArgs), plain.host);
+    expect(receipt).not.toHaveProperty('assignee');
+    expect((plain.named('POST', '/tasks')[0]!.body as { data: Record<string, unknown> }).data).not.toHaveProperty('assignee');
+  });
+  it('an unconfirmed assignment is not reported: a response without an assignee has no assignee in the receipt', async () => {
+    const fake = fakeHost((call) => call.method === 'GET' ? json(404, {}) : json(201, { data: { gid: 'new-task', assignee: null } }));
+    expect(await adapter.invoke(invokeReq('ticket.create', { ...createArgs, assignee: 'self' }), fake.host)).not.toHaveProperty('assignee');
+  });
+  it('a recovered task confirms the assignee only when it is assigned to the connected account', async () => {
+    const recovered = (assigneeGid: string | null) => fakeHost(() => json(200, { data: {
+      gid: 'original', memberships: [{ project: ENG }], assignee: assigneeGid ? { gid: assigneeGid } : null } }));
+    const mine = recovered(ME.gid);
+    expect(await adapter.invoke(invokeReq('ticket.create', { ...createArgs, assignee: 'self', recoveryOnly: true }), mine.host))
+      .toMatchObject({ externalRef: 'original', recovered: true, assignee: 'self' });
+    expect(mine.calls[0]!.query.get('opt_fields')).toBe('gid,permalink_url,memberships.project.gid,assignee.gid');
+    expect(mine.selfCalls).toHaveLength(1);
+    for (const other of ['someone-else', null]) {
+      const fake = recovered(other);
+      expect(await adapter.invoke(invokeReq('ticket.create', { ...createArgs, assignee: 'self', recoveryOnly: true }), fake.host))
+        .not.toHaveProperty('assignee');
+      expect(fake.named('POST', '/tasks')).toHaveLength(0);
+    }
+  });
+  it('refuses an assignee other than self before any HTTP', async () => {
+    const fake = fakeHost(() => json(404, {}));
+    await expect(adapter.invoke(invokeReq('ticket.create', { ...createArgs, assignee: 'user-123' }), fake.host)).rejects.toThrow('ticket_create_assignee_invalid');
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.selfCalls).toHaveLength(0);
+  });
 });
 
 describe('ticket.containers lists what the source can be configured with (D-014)', () => {

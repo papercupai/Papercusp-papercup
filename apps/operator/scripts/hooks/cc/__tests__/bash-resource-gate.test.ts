@@ -1199,6 +1199,62 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
   });
 });
 
+describe('redirected-work-tree index guard (WI-6554700010017981)', () => {
+  // `git --work-tree=<dir>` moves only where FILES land. The index, HEAD and refs
+  // still come from the git dir found from cwd/-C, so run from the shared checkout
+  // it rewrites the SHARED .git/index. The first case is the exact command that, on
+  // 2026-10-18, staged b42a3e8a35's blobs over 91 tracked paths of the shared index.
+  // It already tripped the `checkout .` guard, with a reason about discarding
+  // uncommitted work; every narrower form below used to pass. The guard keys on the
+  // tree, not the agent marker, so these run with CANON_ENV alone.
+  const expectWorkTreeDeny = (out: GateOut) => {
+    expectGitDeny(out);
+    expect(parseDecision(out).hookSpecificOutput.permissionDecisionReason).toContain('WI-6554700010017981');
+  };
+  const SUB = `${CANON}/apps/operator`;
+
+  it.concurrent.each([
+    ['the exact 2026-10-18 export command', 'git --work-tree=/tmp/pc-candidate-b42a3e8a35 checkout b42a3e8a35fd9af27be3609f5fcf992bef6ff17c -- .', CANON],
+    ['checkout of a narrower pathspec', 'git --work-tree=/tmp/x checkout b42a3e8a35 -- src/', CANON],
+    ['space-separated --work-tree value', 'git --work-tree /tmp/x checkout b42a3e8a35 -- src/', CANON],
+    ['GIT_WORK_TREE assignment prefix', 'GIT_WORK_TREE=/tmp/x git checkout b42a3e8a35 -- src/', CANON],
+    ['exported GIT_WORK_TREE earlier in the command', 'export GIT_WORK_TREE=/tmp/x; git add -A', CANON],
+    ['read-tree -u', 'git --work-tree=/tmp/x read-tree -u b42a3e8a35', CANON],
+    ['add -A', 'git --work-tree=/tmp/x add -A', CANON],
+    ['mixed reset', 'git --work-tree=/tmp/x reset b42a3e8a35', CANON],
+    ['restore --staged', 'git --work-tree=/tmp/x restore --staged --source=b42a3e8a35 -- src/', CANON],
+    ['a ref writer even with a private index', 'GIT_INDEX_FILE=/tmp/idx git --work-tree=/tmp/x commit -am wip', CANON],
+    ['checkout without `--` (can move HEAD) even with a private index', 'GIT_INDEX_FILE=/tmp/idx git --work-tree=/tmp/x checkout some-branch', CANON],
+    ['timeout-wrapped', 'timeout 60 git --work-tree=/tmp/x checkout b42a3e8a35 -- src/', CANON],
+    ['bash -c payload', "bash -c 'git --work-tree=/tmp/x checkout b42a3e8a35 -- src/'", CANON],
+    ['rtk-wrapped', 'rtk git --work-tree=/tmp/x add -A', CANON],
+    ['from a subdirectory of the canonical tree', 'git --work-tree=/tmp/x add -A', SUB],
+    ['-C into the canonical tree from outside', `git -C ${CANON} --work-tree=/tmp/x checkout b42 -- src/`, '/tmp'],
+    ['a leading cd into the canonical tree', `cd ${CANON} && git --work-tree=/tmp/x add -A`, '/tmp'],
+  ])('denies %s', async (_label, command, cwd) => {
+    expectWorkTreeDeny(await runGateAsyncFull(bashCmd(command, { cwd }), CANON_ENV));
+  });
+
+  it.concurrent.each([
+    ['the recommended archive export', 'git archive b42a3e8a35 | tar -x -C /tmp/x', CANON],
+    ['an index-only form with a private GIT_INDEX_FILE', 'GIT_INDEX_FILE=$(mktemp -u) git --work-tree=/tmp/x checkout b42a3e8a35 -- src/', CANON],
+    ['env-wrapped private index', 'env GIT_INDEX_FILE=/tmp/idx git --work-tree=/tmp/x read-tree -u b42a3e8a35', CANON],
+    ['an explicit --git-dir', 'git --git-dir=/tmp/x/.git --work-tree=/tmp/x checkout b42a3e8a35 -- src/', CANON],
+    ['a GIT_DIR assignment', 'GIT_DIR=/tmp/x/.git git --work-tree=/tmp/x add -A', CANON],
+    ['read-only status', 'git --work-tree=/tmp/x status', CANON],
+    ['read-only diff', 'git --work-tree=/tmp/x diff --stat', CANON],
+    ['checkout-index (writes files, not the index)', 'git --work-tree=/tmp/x checkout-index -a --prefix=/tmp/y/', CANON],
+    ['restore without --staged (writes files only)', 'git --work-tree=/tmp/x restore --source=b42a3e8a35 -- src/', CANON],
+    ['an ordinary single-path checkout with no redirect', 'git checkout b42a3e8a35 -- src/', CANON],
+    ['-C into another repository', 'git -C /tmp/other-repo --work-tree=/tmp/x checkout b42 -- src/', CANON],
+    ['the construct only inside an echo string', 'echo "never run git --work-tree=/tmp/x add -A"', CANON],
+    ['the construct only inside a commit message', 'git commit -m "explain git --work-tree=/tmp/x add -A"', CANON],
+    ['a cwd outside the canonical tree', 'git --work-tree=/tmp/x checkout b42 -- src/', '/tmp/other-repo'],
+  ])('allows %s', async (_label, command, cwd) => {
+    expectAllow(await runGateAsyncFull(bashCmd(command, { cwd }), CANON_ENV));
+  });
+});
+
 describe('GOAL-mode tracked Bash mutation bridge (EI-21567270631276419)', () => {
   // This file cannot make /ws/... a real Git checkout, so hook/server integration
   // is pinned in the fake-operator suite below. These local controls prove the

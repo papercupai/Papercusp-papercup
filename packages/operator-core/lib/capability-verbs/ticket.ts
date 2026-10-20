@@ -39,6 +39,15 @@ export const TICKET_DESTINATION_INPUT = 'destination';
  * these channels can file (the in-app filer's `config.channels` check, made provider-neutral).
  */
 export const TICKET_CHANNELS_INPUT = 'channels';
+/**
+ * The optional trigger-pack input that assigns every filed ticket. Its one value, `self`, assigns
+ * the ticket to the connected ticket account (the Papercusp user), so the ticket syncs back with
+ * `selfRoles: ['assignee']` and an assigned-to-Papercusp admission rule can route it. The provider
+ * confirms the assignment in its `ticket.create` receipt (`assignee: 'self'`); the filing records
+ * `assigned: false` when it did not.
+ */
+export const TICKET_ASSIGNEE_INPUT = 'assignee';
+export const TICKET_ASSIGNEE_SELF = 'self';
 /** Where the filing record lives on `trigger_runs.outcome`. */
 export const TICKET_FILING_OUTCOME_KEY = 'ticketFiling';
 export const TICKET_CLASSIFICATION_OUTCOME_KEY = 'classification';
@@ -60,6 +69,7 @@ export type TicketFilingErrorCode =
   | 'ticket_destination_unset'
   | 'ticket_destination_unavailable'
   | 'ticket_destination_ambiguous'
+  | 'ticket_assignee_invalid'
   | 'ticket_owner_changed'
   | 'ticket_classification_conflict';
 
@@ -81,6 +91,10 @@ const Attempt = z.object({
   state: z.enum(['attempted', 'created']),
   externalRef: z.string().optional(),
   url: z.string().optional(),
+  /** The assignment requested, frozen with the attempt so a recovery asks for the same thing. */
+  assignee: z.literal(TICKET_ASSIGNEE_SELF).optional(),
+  /** Whether the provider's receipt confirmed `assignee`; absent when none was requested. */
+  assigned: z.boolean().optional(),
 });
 export type TicketFilingAttempt = z.infer<typeof Attempt>;
 
@@ -113,6 +127,8 @@ export type FileTicketResult =
     triggerRunId: string; created: boolean; alreadyCreated: boolean; externalRef: string; url: string; sourceId: string;
     /** The provider that answered; null when an earlier call already recorded the ticket. */
     provider: string | null;
+    /** Present only when the installation asked for an assignee: whether the provider confirmed it. */
+    assigned?: boolean;
   }
   | { triggerRunId: string; pendingReconciliation: true; error?: string }
   | { triggerRunId: string; classification: Exclude<TicketClassification, 'bug'>; recorded: boolean; filed: false };
@@ -294,6 +310,19 @@ function assertChannelInScope(row: RunRow): void {
   }
 }
 
+/**
+ * The installation's assignee request. Unset means unassigned; any value other than `self` is
+ * refused before anything is recorded, since no provider can be asked for an assignee it cannot name.
+ */
+export function ticketAssigneeOf(inputs: unknown): typeof TICKET_ASSIGNEE_SELF | undefined {
+  const value = record(inputs)?.[TICKET_ASSIGNEE_INPUT];
+  if (value === undefined || value === null || value === '') return undefined;
+  if (value !== TICKET_ASSIGNEE_SELF) {
+    throw new TicketFilingError('ticket_assignee_invalid', `'${TICKET_ASSIGNEE_INPUT}' must be '${TICKET_ASSIGNEE_SELF}' or unset`);
+  }
+  return TICKET_ASSIGNEE_SELF;
+}
+
 /** The option list the destination was picked from: the input's own `x-options`, else the default. */
 export function destinationOptionSource(manifest: unknown): ProviderOptionSource {
   const pack = record(record(manifest)?.triggerPack);
@@ -365,6 +394,7 @@ export async function fileTicketFromPlanRun(
     assertChannelInScope(seen);
     const destination = text(record(seen.inputs)?.[TICKET_DESTINATION_INPUT]);
     if (!destination) throw new TicketFilingError('ticket_destination_unset', `the '${seen.pluginName}' installation has no ${TICKET_DESTINATION_INPUT}`);
+    ticketAssigneeOf(seen.inputs);
     const registry = deps.registry ?? (await readyProviderRegistry());
     const optionSource = destinationOptionSource(seen.manifest);
     const listed = await listProviderOptions(sql, {
@@ -400,11 +430,14 @@ export async function fileTicketFromPlanRun(
         return { attempt: messageAttempt, fresh: false };
       }
       const correlationId = ticketCorrelationId(workspaceId, row);
+      // Read under the lock: the installation's request at the moment the attempt commits.
+      const assignee = ticketAssigneeOf(row.inputs);
       const attempt: TicketFilingAttempt = {
         sourceId, containerId: destination, correlationId, title,
         body: ticketBody({ triggerRunId: row.triggerRunId, pluginName: row.pluginName, observed, expected,
           payload: record(row.args?.trigger?.payload) ?? {} }),
         ownerUserId: row.ownerUserId!, state: 'attempted',
+        ...(assignee ? { assignee } : {}),
       };
       await tx`UPDATE harness_shared.trigger_runs SET
         outcome = COALESCE(outcome, '{}'::jsonb) || ${JSON.stringify({ [TICKET_FILING_OUTCOME_KEY]: attempt })}::text::jsonb,
@@ -417,7 +450,7 @@ export async function fileTicketFromPlanRun(
   const triggerRunId = seen.triggerRunId;
   if (attempt.state === 'created') {
     return { triggerRunId, created: false, alreadyCreated: true, externalRef: attempt.externalRef ?? '', url: attempt.url ?? '',
-      sourceId: attempt.sourceId, provider: null };
+      sourceId: attempt.sourceId, provider: null, ...(attempt.assignee ? { assigned: attempt.assigned === true } : {}) };
   }
 
   // 3. The provider call, against exactly the source the attempt names.
@@ -429,20 +462,24 @@ export async function fileTicketFromPlanRun(
     const result = await invokeOutboundProvider(sql, target, 'ticket.create', {
       containerId: attempt.containerId, title: attempt.title, body: attempt.body,
       correlationId: attempt.correlationId, recoveryOnly,
+      ...(attempt.assignee ? { assignee: attempt.assignee } : {}),
     }, deps);
     if (result.pendingReconciliation === true) return { triggerRunId, pendingReconciliation: true };
     if (typeof result.externalRef !== 'string' || !result.externalRef.trim()) {
       return { triggerRunId, pendingReconciliation: true, error: 'ticket_receipt_invalid' };
     }
+    // A provider that ignores the request leaves the ticket unassigned; record that, never assume it.
     const completed: TicketFilingAttempt = { ...attempt, state: 'created', externalRef: result.externalRef,
-      url: typeof result.url === 'string' ? result.url : '' };
+      url: typeof result.url === 'string' ? result.url : '',
+      ...(attempt.assignee ? { assigned: result.assignee === attempt.assignee } : {}) };
     await sql`UPDATE harness_shared.trigger_runs SET
       outcome = jsonb_set(outcome, ${'{' + TICKET_FILING_OUTCOME_KEY + '}'}::text[], ${JSON.stringify(completed)}::text::jsonb),
       updated_at = now()
       WHERE workspace_id = ${workspaceId} AND id = ${triggerRunId}::uuid
         AND outcome->${TICKET_FILING_OUTCOME_KEY}->>'correlationId' = ${attempt.correlationId}`;
     return { triggerRunId, created: result.recovered !== true, alreadyCreated: result.recovered === true,
-      externalRef: completed.externalRef!, url: completed.url!, sourceId: attempt.sourceId, provider: target.provider.id };
+      externalRef: completed.externalRef!, url: completed.url!, sourceId: attempt.sourceId, provider: target.provider.id,
+      ...(completed.assignee ? { assigned: completed.assigned === true } : {}) };
   } catch {
     // The committed attempt fences a re-POST. Report failure without the provider's error body,
     // which can echo private content or credentials.

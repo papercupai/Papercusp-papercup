@@ -1,16 +1,16 @@
 {
-  "startedAt": "2026-10-20T06:14:15.606Z",
+  "startedAt": "2026-10-20T16:24:33.685Z",
   "stage1": ".papercusp/scratch/p-identity/p003-live-run/ungoverned-stage1.json",
   "stack": [
     "ideation:su.mode-ideate"
   ],
   "governedDeclared": false,
-  "sessionId": 47847,
+  "sessionId": 48158,
   "assertions": [
     {
       "id": "served-build-carries-p003-source",
       "passed": true,
-      "evidence": "http://127.0.0.1:3170 /api/health build 98d59341a704f7444d8e6715903a83cb3c38291a; 6/6 P-003 source blobs equal HEAD"
+      "evidence": "http://127.0.0.1:3170 /api/health build 19ced41388522d7b4cb9454ce19cc2b690e43069; 6/6 P-003 source blobs equal HEAD"
     },
     {
       "id": "role-door-accepts-judge-with-stack",
@@ -20,12 +20,12 @@
     {
       "id": "judge-prompt-renders-worn-layer",
       "passed": true,
-      "evidence": "/home/builduser/.papercusp/launch-context/session-47847.md (59108 chars) contains the worn layer text \"## IDEATE mode — the owner's switch\"; launch role=judge, compositionSource=blueprint"
+      "evidence": "/home/builduser/.papercusp/launch-context/session-48158.md (59287 chars) contains the worn layer text \"## IDEATE mode — the owner's switch\"; launch role=judge, compositionSource=blueprint"
     },
     {
       "id": "ungoverned-launch-writes-no-identity-record",
       "passed": true,
-      "evidence": "adv_sessions 47847: role=judge, launch_spec.role=null, launch_spec.stack=null, artifact grants present=false, owner=role-8beeb2aa-4efe-4d10-9396-33c2903ac806 (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)"
+      "evidence": "adv_sessions 48158: role=judge, launch_spec.role=null, launch_spec.stack=null, artifact grants present=false, owner=role-ed6a13e4-e81a-47e0-9b83-197740329721 (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)"
     },
     {
       "id": "grant-is-judge-scoped",
@@ -54,7 +54,7 @@
     }
   ],
   "launchRecord": {
-    "owner": "role-8beeb2aa-4efe-4d10-9396-33c2903ac806",
+    "owner": "role-ed6a13e4-e81a-47e0-9b83-197740329721",
     "role": "judge",
     "specRole": null,
     "stack": null,
@@ -76,10 +76,10 @@
   "activationBefore": "none applied=none",
   "turnStart": {
     "http": 200,
-    "body": "{\"ok\":true,\"text\":\"## Orientation\\n- authority: exec confirm-before-execution · mission execute-owner-directed-scope · ideation direct-improvements-only.\\n- ⚠ engine loop: not armed — loop:arm open-ended work or you halt silently after this turn.\\n- 🛡️ never-drop facts: guard-rail:bg-host-code-drift-routine…, guard-rail:coord-feed-intent-divergen… +10 more — facts:list before you plan.\\n- holding"
+    "body": "{\"ok\":true,\"text\":\"## Orientation\\n- authority: exec confirm-before-execution · mission execute-owner-directed-scope · ideation direct-improvements-only.\\n- ⚠ engine loop: not armed — loop:arm open-ended work or you halt silently after this turn.\\n- 🛡️ never-drop facts: guard-rail:coord-feed-intent-divergen…, guard-rail:fleet-respawn-liveness-mis… +10 more — facts:list before you plan.\\n- holding"
   },
   "activationAfterTurnStart": "none applied=none",
-  "orient": "{\"result\":{\"_meta\":{\"format\":\"json\",\"resultProjection\":{\"applied\":true,\"spec\":{\"pick\":[\"ok\"]},\"linesIn\":3,\"linesOut\":3,\"charsIn\":81306,\"charsOut\":16,\"notes\":[\"the tool or its payload shaper marked field-level/custom-shaper truncation or partial-result metadata before this projection ($.content (inline) (…[TRUNCATED +386 chars]); $.claimable[4].summary (inline) (…[TRUNCATED +386 chars]); $.claimable[4].summary_truncated (summary_truncated marker); $.claimableTruncated (claimableTruncated marker);",
+  "orient": "{\"result\":{\"_meta\":{\"format\":\"json\",\"resultProjection\":{\"applied\":true,\"spec\":{\"pick\":[\"ok\"]},\"linesIn\":3,\"linesOut\":3,\"charsIn\":80229,\"charsOut\":16,\"notes\":[\"the tool or its payload shaper marked field-level/custom-shaper truncation or partial-result metadata before this projection ($.content (inline) (…[TRUNCATED +386 chars]); $.claimable[8].summary (inline) (…[TRUNCATED +386 chars]); $.claimable[8].summary_truncated (summary_truncated marker); $.claimable[13].summary (inline) (…[TRUNCATED +11",
   "activationAfter": "none applied=none",
   "toolsListed": 31,
   "refusals": [
@@ -98,11 +98,11 @@
       "text": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"handler_error: missing_capability: Principal \\\"system:judge\\\" lacks capability \\\"processes:kill\\\" (tool: processes:kill) — This is a judge-scoped MCP session; this principal lacks processes:kill for processes:kill. `tools:invoke` preserves the same judge principal, so do not retry it in this session: it will be denied identically. Use a separate authorized su/operator session through the papercusp-su MCP server to invoke the tool.\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":11}"
     }
   ],
-  "allowedRead": "{\"result\":{\"_meta\":{\"format\":\"json\",\"delta\":{\"mode\":\"full\",\"supported\":true,\"cursor\":\"eyJ2IjoxLCJmcCI6IjVkcTJpanZ6dXM0OCIsInJldiI6IjVxdXd3ZWU2aWZrZSIsInN2IjoicGxhbnMtZ2V0LXYxIn0\",\"reason\":\"no_request\",\"semanticUnavailable\":{\"reason\":\"no_semantic_surface\",\"needs\":\"itemKey\"}},\"_seeAlso\":[{\"tool\":\"tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)\"}],\"resultDoor\":{\"truncated\":true,\"spillPath\":\"/home/builduser/.papercusp/scratch/papercusp-workspace/tools:invoke/76a4e420-cdc2-482b-879f-fe8983196920/result-door-1792476865461.md\",\"spillUri\":\"papercusp://scratch/papercusp-workspace/tools:invoke/76a4e420-cdc2-482b-879f-fe8983196920/result-door-1792476865461.md\",\"spillFailed\":false,\"spillError\":null,\"spillErrorCode\":null,\"originalChars\":11150,\"originalBytes\":11158,\"nonTextChars\":0,\"nonTextBytes\":0,\"doorTokens\":1500,\"upstreamProjected\":false,\"innerTruncationMarkers\":[],\"structural\":true,\"recoveryCursor\":{\"kind\":\"scratch-page\",\"tool\":\"capability:read\",\"args\":{\"file_path\":\"/home/builduser/.papercusp/scratch/papercusp-workspace/tools:invoke/76a4e420-cdc2-482b-879f-fe8983196920/result-door-1792476865461.md\",\"byte_offset\":0,\"byte_limit\":3072}",
+  "allowedRead": "{\"result\":{\"_meta\":{\"format\":\"json\",\"delta\":{\"mode\":\"full\",\"supported\":true,\"cursor\":\"eyJ2IjoxLCJmcCI6IjVkcTJpanZ6dXM0OCIsInJldiI6IjJlMGRkcnBzeTI1NSIsInN2IjoicGxhbnMtZ2V0LXYxIn0\",\"reason\":\"no_request\",\"semanticUnavailable\":{\"reason\":\"no_semantic_surface\",\"needs\":\"itemKey\"}},\"_seeAlso\":[{\"tool\":\"tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)\"}],\"resultDoor\":{\"truncated\":true,\"spillPath\":\"/home/builduser/.papercusp/scratch/papercusp-workspace/tools:invoke/5cfbbf02-a2b3-4e30-95e3-a272d3ac71d5/result-door-1792513482725.md\",\"spillUri\":\"papercusp://scratch/papercusp-workspace/tools:invoke/5cfbbf02-a2b3-4e30-95e3-a272d3ac71d5/result-door-1792513482725.md\",\"spillFailed\":false,\"spillError\":null,\"spillErrorCode\":null,\"originalChars\":11150,\"originalBytes\":11158,\"nonTextChars\":0,\"nonTextBytes\":0,\"doorTokens\":1500,\"upstreamProjected\":false,\"innerTruncationMarkers\":[],\"structural\":true,\"recoveryCursor\":{\"kind\":\"scratch-page\",\"tool\":\"capability:read\",\"args\":{\"file_path\":\"/home/builduser/.papercusp/scratch/papercusp-workspace/tools:invoke/5cfbbf02-a2b3-4e30-95e3-a272d3ac71d5/result-door-1792513482725.md\",\"byte_offset\":0,\"byte_limit\":3072}",
   "sessionEnded": {
     "http": 200,
-    "body": "{\"ok\":true,\"ended\":true,\"endAttemptKey\":\"p003-live-probe-end-47847\"}"
+    "body": "{\"ok\":true,\"ended\":true,\"endAttemptKey\":\"p003-live-probe-end-48158\"}"
   },
-  "finishedAt": "2026-10-20T06:14:25.487Z",
+  "finishedAt": "2026-10-20T16:24:42.751Z",
   "exitCode": 0
 }

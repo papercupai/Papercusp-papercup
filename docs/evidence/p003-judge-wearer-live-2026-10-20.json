@@ -8,8 +8,8 @@
     "docs/evidence/p003-judge-wearer-live-2026-10-20/run.sh"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-20T06:14:09Z",
-  "finishedAt": "2026-10-20T06:14:25Z",
+  "startedAt": "2026-10-20T16:24:25.859Z",
+  "finishedAt": "2026-10-20T16:24:42.751Z",
   "plan": "identity-system-everything-migration-2026-10-18",
   "planItem": "P-003",
   "workItemId": "WI-6554700010017314",
@@ -18,12 +18,12 @@
     "SPEC-P-003@1"
   ],
   "evidencePlane": "live",
-  "summary": "Two judges were launched through the live :3170 role door (POST /api/agent-mcp/console/bootstrap-role, role judge) on build 98d59341a7, whose six P-003 source blobs equal HEAD. One wore a grant-bearing (governed) stack, domain:blueprint-operation-worker (adv_sessions 47846); the other wore a grant-free (ungoverned) stack, ideation:su.mode-ideate (adv_sessions 47847). Each signed judge MCP grant was then exercised at dispatch after the real first-turn path (turn-start-memory, then coord:orient), and the session was ended. 17 of 17 assertions passed and run.sh exited 0. Both judges rendered their worn layer into the prompt. The governed launch recorded role judge with the exact stack and the artifact grants. The ungoverned launch recorded no identity record, by the bootstrap-role.ts contract (it records only grant-bearing artifacts). Neither grant carried superuser, and neither tool list exposed su-only tools. Dispatch refused capability:bash and processes:kill in both runs. The ungoverned judge was refused by the judge role envelope (missing_capability, principal system:judge) and could read plans:get. The governed judge was granted nothing: the papercusp pot (.papercusp/blueprint.yaml fleet.workerRoles) declares capability ceilings for su, operator and researcher but none for judge, so readIdentityGrantPolicy refuses and the grant kernel fails closed with policy-unavailable on every call, the read included. That is no more than its role and pot ceiling.",
+  "summary": "Two judges were launched through the live :3170 role door (POST /api/agent-mcp/console/bootstrap-role, role judge) on build 19ced41388, whose six P-003 source blobs equal HEAD. One wore a grant-bearing (governed) stack, domain:blueprint-operation-worker (adv_sessions 48157); the other wore a grant-free (ungoverned) stack, ideation:su.mode-ideate (adv_sessions 48158). Each signed judge MCP grant was then exercised at dispatch after the real first-turn path (turn-start-memory, then coord:orient), and the session was ended. 17 of 17 assertions passed and run.sh exited 0. Both judges rendered their worn layer into the prompt. The governed launch recorded role judge with the exact stack and the artifact grants. The ungoverned launch recorded no identity record, by the bootstrap-role.ts contract (it records only grant-bearing artifacts). Neither grant carried superuser, and neither tool list exposed su-only tools. Dispatch refused capability:bash and processes:kill in both runs. The ungoverned judge was refused by the judge role envelope (missing_capability, principal system:judge) and could read plans:get. The governed judge was granted nothing: the papercusp pot (.papercusp/blueprint.yaml fleet.workerRoles) declares capability ceilings for su, operator and researcher but none for judge, so readIdentityGrantPolicy refuses and the grant kernel fails closed with policy-unavailable on every call, the read included. That is no more than its role and pot ceiling.",
   "assertions": [
     {
       "id": "governed:served-build-carries-p003-source",
       "passed": true,
-      "evidence": "http://127.0.0.1:3170 /api/health build 98d59341a704f7444d8e6715903a83cb3c38291a; 6/6 P-003 source blobs equal HEAD"
+      "evidence": "http://127.0.0.1:3170 /api/health build 19ced41388522d7b4cb9454ce19cc2b690e43069; 6/6 P-003 source blobs equal HEAD"
     },
     {
       "id": "governed:role-door-accepts-judge-with-stack",
@@ -33,12 +33,12 @@
     {
       "id": "governed:judge-prompt-renders-worn-layer",
       "passed": true,
-      "evidence": "/home/builduser/.papercusp/launch-context/session-47846.md (51996 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
+      "evidence": "/home/builduser/.papercusp/launch-context/session-48157.md (52156 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
     },
     {
       "id": "governed:governed-launch-record-names-judge-and-stack",
       "passed": true,
-      "evidence": "adv_sessions 47846: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-5481f596-c89f-4dfc-b4af-ce82824b33f7"
+      "evidence": "adv_sessions 48157: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-43238975-f432-44b1-be7a-e6ee7dd49370"
     },
     {
       "id": "governed:grant-is-judge-scoped",
@@ -63,7 +63,7 @@
     {
       "id": "ungoverned:served-build-carries-p003-source",
       "passed": true,
-      "evidence": "http://127.0.0.1:3170 /api/health build 98d59341a704f7444d8e6715903a83cb3c38291a; 6/6 P-003 source blobs equal HEAD"
+      "evidence": "http://127.0.0.1:3170 /api/health build 19ced41388522d7b4cb9454ce19cc2b690e43069; 6/6 P-003 source blobs equal HEAD"
     },
     {
       "id": "ungoverned:role-door-accepts-judge-with-stack",
@@ -73,12 +73,12 @@
     {
       "id": "ungoverned:judge-prompt-renders-worn-layer",
       "passed": true,
-      "evidence": "/home/builduser/.papercusp/launch-context/session-47847.md (59108 chars) contains the worn layer text \"## IDEATE mode — the owner's switch\"; launch role=judge, compositionSource=blueprint"
+      "evidence": "/home/builduser/.papercusp/launch-context/session-48158.md (59287 chars) contains the worn layer text \"## IDEATE mode — the owner's switch\"; launch role=judge, compositionSource=blueprint"
     },
     {
       "id": "ungoverned:ungoverned-launch-writes-no-identity-record",
       "passed": true,
-      "evidence": "adv_sessions 47847: role=judge, launch_spec.role=null, launch_spec.stack=null, artifact grants present=false, owner=role-8beeb2aa-4efe-4d10-9396-33c2903ac806 (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)"
+      "evidence": "adv_sessions 48158: role=judge, launch_spec.role=null, launch_spec.stack=null, artifact grants present=false, owner=role-ed6a13e4-e81a-47e0-9b83-197740329721 (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)"
     },
     {
       "id": "ungoverned:grant-is-judge-scoped",
@@ -108,7 +108,7 @@
   ],
   "environment": {
     "operator": "http://127.0.0.1:3170",
-    "servedBuild": "98d59341a704f7444d8e6715903a83cb3c38291a",
+    "servedBuild": "19ced41388522d7b4cb9454ce19cc2b690e43069",
     "mcpOrigin": "http://127.0.0.1:9171",
     "workspace": "papercusp-workspace",
     "harness": "papercusp",
@@ -124,10 +124,10 @@
   },
   "artifacts": {
     "docs/evidence/p003-judge-wearer-live-2026-10-20/run.sh": "sha256:72086b5c157cfd07fe2540a4d735e72cf09013a5b1204b46e367646e711e6191",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/stage1-launch.mjs": "sha256:6b7e5307e5c9649a259eee5e5b2cde36914360abb69b83c4faf2d3411e640305",
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/stage1-launch.mjs": "sha256:ee1f3ec2932757df5e39b9ce883bcd479c77f82879a09545e884af5b9a86217e",
     "docs/evidence/p003-judge-wearer-live-2026-10-20/stage2-exercise.mjs": "sha256:d3711f427158e3e35a8349bc4ba5aa0cb96f205ee9edd43abd33d1b26c821fb8",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/governed-report.json": "sha256:24cdadfa84e74678c4380c38b78066d818ae8085a8c7ac91f9423fc37d463cf8",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/ungoverned-report.json": "sha256:8099074416b3b19a9f80130f661d630914adf600f1a8db71cf6bb7647ee74b13",
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/governed-report.json": "sha256:91e5fd306c0cdb98fdc62943b5a06991e746f7da63e48379625ef876df785694",
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/ungoverned-report.json": "sha256:ad98b9bfd8763ffd7617c97820ca3f8c1e3da6e36c4cc8c459954409a82fc14d",
     "scripts/lib/judge-wearer-live-oracle.mjs": "sha256:21d69acf29a48afa4bede0960ff2a6c3158c0ad3857a49428d0f0ab7c385a123",
     "scripts/lib/judge-wearer-live-oracle.test.ts": "sha256:78f211044dd02e9e0ef6f78188d6f27f1a116761ae050518f785fd093eb388bd"
   },

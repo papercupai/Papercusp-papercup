@@ -393,6 +393,27 @@ interface SendMsg {
   expectEffect?: DirectiveEffectSpec;
 }
 
+type RelatedOriginal = Awaited<ReturnType<typeof getMessageById>>;
+
+/**
+ * Recipient and reply-reference validation is a property of one logical send,
+ * not of each inbox-sized chunk. Keep the first verdict so a roster/reference
+ * transition between parts cannot persist a partial message.
+ */
+type ChunkRecipientValidation = {
+  cache: Map<number, {
+    kind: 'resolved';
+    relatedOriginal: RelatedOriginal;
+    relatedMsgIdForSend?: string;
+    toSend: string[];
+    goneRepliedTo: string[];
+  } | {
+    kind: 'refused';
+    result: BulkItemResult;
+  }>;
+  key: number;
+};
+
 /** Whether `to` is a DIRECTED send: at least one recipient, ALL concrete (none a
  *  selector / wildcard / '*' / 'human' — `isSelectorOrWildcard` already covers
  *  those). Used by the wakeOnReply default only when the sender expects a reply. */
@@ -1219,6 +1240,8 @@ async function sendOne(
   phaseTimer: CoordSendPhaseTimer = { startedAt: performance.now() },
   /** The dispatcher aborts this signal when the caller stops waiting. */
   requestSignal?: AbortSignal,
+  /** Shared validation state for all parts of one logical chunked message. */
+  chunkRecipientValidation?: ChunkRecipientValidation,
 ): Promise<BulkItemResult> {
   // Reference prose is server-derived before cap/chunk/inline truth checks.
   // A caller's short body cannot substitute for the pinned snapshot.
@@ -1330,20 +1353,35 @@ async function sendOne(
   // Keep the caller's ref for diagnostics, but persist and reuse the canonical
   // full id when resolveMessageRef accepted a unique leading prefix.
   let relatedMsgIdForSend = msg.related_msg_id;
+  let resolvedRelatedMsgId: string | undefined;
+  let toSend = msg.to;
+  let goneRepliedTo: string[] = [];
   // A chunk continuation carries this internal auth-only reference so the
   // departed-sender exception is checked consistently for every part. It is
   // deliberately not persisted as related_msg_id and cannot cause a reply wake.
   const recipientAuthRelatedMsgId = msg.related_msg_id ?? msg.recipientAuthRelatedMsgId;
-  if (recipientAuthRelatedMsgId) {
+  const cachedChunkValidation = chunkRecipientValidation?.cache.get(chunkRecipientValidation.key);
+  let recipientValidationReused = false;
+  if (cachedChunkValidation?.kind === 'refused') return cachedChunkValidation.result;
+  if (cachedChunkValidation?.kind === 'resolved') {
+    relatedOriginal = cachedChunkValidation.relatedOriginal;
+    relatedMsgIdForSend = msg.related_msg_id ? cachedChunkValidation.relatedMsgIdForSend : undefined;
+    resolvedRelatedMsgId = cachedChunkValidation.relatedMsgIdForSend;
+    toSend = cachedChunkValidation.toSend;
+    goneRepliedTo = cachedChunkValidation.goneRepliedTo;
+    recipientValidationReused = true;
+  }
+  if (!recipientValidationReused && recipientAuthRelatedMsgId) {
     let lookupErrored = false;
     let relatedLookup: Awaited<ReturnType<typeof resolveMessageRef>> | null = null;
     try {
       relatedLookup = await resolveMessageRef(recipientAuthRelatedMsgId);
       if (relatedLookup.status === 'found') {
         relatedOriginal = relatedLookup.message;
+        resolvedRelatedMsgId = relatedLookup.msgId;
         if (msg.related_msg_id) relatedMsgIdForSend = relatedLookup.msgId;
       } else if (relatedLookup.status === 'ambiguous') {
-        return {
+        const result = {
           ok: false,
           to: msg.to,
           error: 'related_msg_ambiguous',
@@ -1352,6 +1390,8 @@ async function sendOne(
             `(${relatedLookup.candidates.join(', ')}) — nothing was sent. ` +
             'Use the full msg_id or a longer unique leading prefix.',
         };
+        chunkRecipientValidation?.cache.set(chunkRecipientValidation.key, { kind: 'refused', result });
+        return result;
       }
     } catch {
       lookupErrored = true; // infra hiccup — deliver anyway (fail-soft)
@@ -1377,7 +1417,7 @@ async function sendOne(
       } catch {
         // best-effort probe — never let it block or alter the primary refusal
       }
-      return {
+      const result = {
         ok: false,
         to: msg.to,
         error: 'related_msg_not_found',
@@ -1392,6 +1432,8 @@ async function sendOne(
             ? ' A shortened ref is accepted only when it uniquely matches one stored message.'
             : ''),
       };
+      chunkRecipientValidation?.cache.set(chunkRecipientValidation.key, { kind: 'refused', result });
+      return result;
     }
   }
 
@@ -1418,9 +1460,7 @@ async function sendOne(
   // re-surfacing as "unanswered" with no way to ever clear it). Scoped tight:
   // only an unknown or ambiguous alias matching `relatedOriginal.from` is
   // canonicalized; unrelated recipients still go through normal validation.
-  let toSend = msg.to;
-  let goneRepliedTo: string[] = [];
-  if (msg.to.some((id) => !isSelectorOrWildcard(id))) {
+  if (!recipientValidationReused && msg.to.some((id) => !isSelectorOrWildcard(id))) {
     try {
       const r = await resolveRecipients(msg.to, identity.workspaceId);
       const closingReplySender = relatedOriginal?.from ?? null;
@@ -1480,7 +1520,7 @@ async function sendOne(
         } catch {
           roleHint = '';
         }
-        return {
+        const result = {
           ok: false,
           to: msg.to,
           error: 'unknown_recipient',
@@ -1504,11 +1544,22 @@ async function sendOne(
           ...(trulyUnknown.length ? { unknown_recipients: trulyUnknown } : {}),
           ...(trulyAmbiguous.length ? { ambiguous_recipients: trulyAmbiguous } : {}),
         };
+        chunkRecipientValidation?.cache.set(chunkRecipientValidation.key, { kind: 'refused', result });
+        return result;
       }
       toSend = [...r.resolved, ...resolvedAmbiguousReplySender, ...goneRepliedTo];
     } catch (e) {
       console.warn(`[coord:send] recipient resolve failed, sending unresolved: ${e instanceof Error ? e.message : e}`);
     }
+  }
+  if (chunkRecipientValidation && !recipientValidationReused) {
+    chunkRecipientValidation.cache.set(chunkRecipientValidation.key, {
+      kind: 'resolved',
+      relatedOriginal,
+      relatedMsgIdForSend: resolvedRelatedMsgId,
+      toSend: [...toSend],
+      goneRepliedTo: [...goneRepliedTo],
+    });
   }
 
   // H2 (coord-authority-hardening P-004): resolve the sender's relay reference
@@ -3496,6 +3547,16 @@ export default defineTool({
     // itself. A returned msg_id is the append receipt (even if a later wake step
     // makes the per-part result unsuccessful).
     const chunkCompletion = new Map<number, 'persisted' | 'aborted-before-persist'>();
+    const chunkRecipientValidation = new Map<number, {
+      kind: 'resolved';
+      relatedOriginal: RelatedOriginal;
+      relatedMsgIdForSend?: string;
+      toSend: string[];
+      goneRepliedTo: string[];
+    } | {
+      kind: 'refused';
+      result: BulkItemResult;
+    }>();
     const env = await runBulk(
       expanded,
       async ({ msg, refusal, goalReportPreVerdict, chunk, chunkRunId }, itemIndex): Promise<BulkItemResult> => {
@@ -3586,6 +3647,7 @@ export default defineTool({
           goalReportPreVerdict,
           phaseTimer,
           chunk && priorChunkState === 'persisted' ? undefined : ctx.signal,
+          chunk ? { cache: chunkRecipientValidation, key: chunkRunId! } : undefined,
         );
         if (chunkRunId !== undefined && priorChunkState !== 'persisted') {
           if (typeof result.msg_id === 'string' && result.msg_id.length > 0) {

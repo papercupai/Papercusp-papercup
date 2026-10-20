@@ -24,6 +24,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
+import { supersessionWinner } from '../../memory/supersession-winner';
 import { detectPossibleSecrets, possibleSecretWarning } from '../../memory/secret-detect';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
@@ -242,14 +243,17 @@ export default defineTool({
           if (it.scope !== undefined && it.scope !== supersededBefore.scope) {
             return { ok: false as const, id: it.id, error: 'a superseding update cannot move the replacement across scopes' };
           }
-          const validity = supersededBefore.metadata?.validity as { status?: unknown; superseded_by?: unknown } | undefined;
-          if (validity?.status === 'superseded') {
+          // Only a closed row that NAMES a winner refuses. A row closed without
+          // one (soft-forgotten) accepts the lineage link: the store attaches
+          // superseded_by and keeps its window (EI-26515229747561182).
+          const winner = supersessionWinner(supersededBefore);
+          if (winner) {
             return {
               ok: false as const,
               id: it.id,
-              error: validity.superseded_by === it.id
+              error: winner === it.id
                 ? 'supersession already converged'
-                : 'superseded memory already has a different immutable winner',
+                : `superseded memory already has a different immutable winner (${winner})`,
             };
           }
         }
@@ -369,11 +373,25 @@ export default defineTool({
               return { ok: true as const, id: it.id, superseded: it.supersedes, ...secretFields };
             }
             const after = await withMemoryToolTimeout(backend.get(it.supersedes), 'memory:update supersede reconcile');
-            const validity = after?.metadata?.validity as { superseded_by?: unknown } | undefined;
-            if (validity?.superseded_by === it.id) {
+            const winner = supersessionWinner(after);
+            if (winner === it.id) {
               await captureSurfacedOutcome(ctx, [it.supersedes], 'contradicted');
               if (journalId) await markJournalCommitted(journalId, it.id);
               return { ok: true as const, id: it.id, superseded: it.supersedes, ...secretFields };
+            }
+            if (!winner) {
+              // Nothing else won, so this is NOT a lost race: the store just
+              // did not take the link (the row vanished, or the backend lacks
+              // lineage attach). Closing the replacement here would retract
+              // the only current fact (EI-26515229747561182).
+              if (journalId) await markJournalCommitted(journalId, it.id);
+              return {
+                ok: false as const,
+                id: it.id,
+                error: 'supersession not recorded: the superseded memory has no winner, but the store did not accept the link; the replacement stays current',
+                superseded: false as const,
+                ...secretFields,
+              };
             }
             // A concurrent immutable winner beat this replacement. Close the
             // losing replacement so two current facts can never survive.

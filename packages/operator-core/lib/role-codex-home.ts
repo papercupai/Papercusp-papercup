@@ -143,6 +143,9 @@ const CODEX_TURN_JOURNAL_HOOK = 'stop-turn-journal.sh';
  *  reports tool_name "Bash" to hooks (codex-rs core/src/tools/hook_names.rs). */
 export const CODEX_RTK_REWRITE_HOOK = 'pretooluse-codex-rtk-rewrite.mjs';
 const CODEX_RTK_REWRITE_MATCHER = '^Bash$';
+/** The shared shell guard every Codex home runs (WI-6554700010017981). */
+const CODEX_BASH_GATE_HOOK = 'pretooluse-bash-resource-gate.sh';
+const CODEX_BASH_GATE_MATCHER = 'Bash|exec_command|local_shell|shell';
 
 /**
  * TOML preamble baked into EVERY per-session codex home (psu-isolation P-004 /
@@ -1055,20 +1058,30 @@ export function writeCodexLockHooks(
     });
   }
 
-  // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010):
-  // AGENT homes (role sessions — never the human su home, D-003) get the
-  // bash-resource-gate with the agent marker BAKED (codex hands hooks a
-  // minimal env, same reason the coord/activity hooks bake PAPERCUSP_SID), so
-  // shell-created OS schedules (crontab/at/batch/systemd-run) are denied and
-  // wakes can only live in the harness routines table.
-  const gate = join(dir, 'pretooluse-bash-resource-gate.sh');
-  if (opts.agentSession && existsSync(gate)) {
+  // The shared bash-resource-gate goes on EVERY home, su and role alike, as it
+  // does for Claude (~/.claude/settings.json runs it for su sessions with no
+  // marker). Its shared-tree git guards (reset --hard, stash, checkout ., the
+  // --work-tree index guard) key on the canonical TREE, not on a marker
+  // (EI-7872), so they protect the human su too. Until WI-6554700010017981 the
+  // su home got no gate at all; a Codex su session then ran
+  // `git --work-tree=/tmp/… checkout <sha> -- .` from the shared checkout and
+  // staged an old commit over 91 tracked paths of the shared index.
+  //
+  // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010): only
+  // AGENT homes (role sessions — never the human su home, D-003) get the agent
+  // marker BAKED (codex hands hooks a minimal env, same reason the
+  // coord/activity hooks bake PAPERCUSP_SID), so their shell-created OS
+  // schedules (crontab/at/batch/systemd-run) are denied and wakes can only live
+  // in the harness routines table. The gate's scheduler deny reads that marker.
+  const gate = join(dir, CODEX_BASH_GATE_HOOK);
+  if (existsSync(gate)) {
+    const agentMarker = opts.agentSession ? ' PAPERCUSP_AGENT_SESSION=1' : '';
     preToolUse.push({
-      matcher: 'Bash|exec_command|local_shell|shell',
+      matcher: CODEX_BASH_GATE_MATCHER,
       hooks: [
         {
           type: 'command',
-          command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT_SESSION=1 ${gate}`,
+          command: `PAPERCUSP_WORKSPACE_ROOT=${root}${agentMarker} ${gate}`,
         },
       ],
     });
@@ -1356,6 +1369,27 @@ function repairSuCodexHomeIdentityImpl(
       return false;
     }
   })();
+  // WI-6554700010017981: an su home written before the gate was attached to su
+  // homes would otherwise read as current, so a RESUMED codex su session would
+  // keep running its shell with no shared-tree guards. The su home must carry
+  // the gate WITHOUT the agent marker (D-003). Gated on the script being
+  // installed, like the writer, so a host without it never repair-loops.
+  const bashGateHookMatches = (() => {
+    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', CODEX_BASH_GATE_HOOK))) {
+      return true;
+    }
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
+      };
+      const gates = parsed.hooks?.PreToolUse?.flatMap((g) =>
+        g.matcher === CODEX_BASH_GATE_MATCHER ? (g.hooks ?? []) : [],
+      ).filter((h) => h.command?.includes(CODEX_BASH_GATE_HOOK)) ?? [];
+      return gates.length > 0 && gates.every((h) => !h.command?.includes('PAPERCUSP_AGENT_SESSION'));
+    } catch {
+      return false;
+    }
+  })();
   const ownerQuestionGuardMatches = (() => {
     if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', 'ask-gate-mirror.sh'))) return true;
     try {
@@ -1376,6 +1410,7 @@ function repairSuCodexHomeIdentityImpl(
     preCompactHookMatches &&
     managedTurnHooksMatch &&
     rtkRewriteHookMatches &&
+    bashGateHookMatches &&
     ownerQuestionGuardMatches
   ) {
     return { repaired: false, hooksInstalled: hooksExpected };

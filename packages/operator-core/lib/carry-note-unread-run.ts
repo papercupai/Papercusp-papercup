@@ -77,6 +77,17 @@ const RUN_REF_RE = /(?:\/tmp\/\S+|\S+\.log\b|bash_id|run_in_background|bash_outp
 const MAX_SIGNALS = 3;
 
 /**
+ * A checkpoint receipt can quote the advisory emitted by an earlier write. That
+ * quoted text describes the receipt's subject, not the current writer's run.
+ * Keep this narrower than the historical-quote rule: current runner prose such
+ * as `The current runner says "still running"` remains actionable, while a
+ * `work_items:checkpoint receipt ... warns 'run ... in-flight ...'` quote is
+ * evidence being reconciled rather than a new unread admission.
+ */
+const RECEIPT_QUOTE_ATTRIBUTION_RE =
+  /\b(?:receipt|checkpoint)\b[^.!?;\n]{0,140}\b(?:warns?|reports?|says?|states?|contains?|includes?)\s*$/i;
+
+/**
  * An explicitly attributed historical quotation is evidence about an earlier
  * report, not the writer's current admission. Keep ambiguous prose and quoted
  * current reports actionable; this is deliberately not a result-line suppressor.
@@ -92,7 +103,8 @@ function withoutHistoricalQuotations(text: string): string {
     const attribution = text.slice(start, offset);
     const historical = /\b(?:historical|(?:saved|recovered)\b[^.!?;\n]{0,100}\b(?:transcript|parts?\d*))\b/i;
     const current = /\b(?:but|however|now|current(?:ly)?)\b/i;
-    return historical.test(attribution) && !current.test(attribution)
+    const receiptQuote = RECEIPT_QUOTE_ATTRIBUTION_RE.test(attribution);
+    return (historical.test(attribution) && !current.test(attribution)) || receiptQuote
       ? ' '.repeat(quote.length)
       : quote;
   });

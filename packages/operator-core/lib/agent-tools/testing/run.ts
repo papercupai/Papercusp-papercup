@@ -455,10 +455,51 @@ export function buildDetachedTestRunRequest(opts: {
   workspaceId?: string;
   harnessSlug?: string;
   timeoutMs?: number;
+  /** Caller-bound recovery retains the original absolute budget and owns a new artifact packet. */
+  deadline?: TestRunDeadline;
   /** expensive-verification-loops P-001: the work-item this run verifies, stamped on
    *  the task-ledger row so a long detached run counts as an attempt against it. */
   workItemId?: string;
 }): SpawnRequest {
+  if (opts.deadline) {
+    // Re-enter the maintained core, rather than the bare router: only the core
+    // enforces the absolute child cutoff and owns cleanup after confirmed exit.
+    // The store still owns the detached lifecycle and run-group/ledger identity.
+    const replay = {
+      root: opts.root, files: opts.files, deadline: opts.deadline,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      taskDeadlineAtMs: opts.deadline.taskDeadlineAtMs,
+      cleanupReserveMs: opts.deadline.cleanupReserveMs,
+      allowDetachedRecovery: false,
+      ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
+      ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
+      ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
+      ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
+    };
+    return {
+      kind: 'vitest', testRunSource: 'local',
+      label: `testing:run caller-bound timeout recovery (${opts.files.join(', ')})`,
+      filePath: opts.files.length === 1 ? opts.files[0] : undefined,
+      requestedFiles: requestedLedgerFilePaths(opts.root, opts.files),
+      command: process.execPath,
+      args: ['--import', 'tsx', '--input-type=module', '-e', [
+        `const { runTestFilesCore } = await import(${JSON.stringify(import.meta.url)});`,
+        `const result = await runTestFilesCore({ ...${JSON.stringify(replay)}, runId: process.env.PAPERCUSP_TEST_RUN_GROUP });`,
+        'console.log(JSON.stringify(result));',
+        'process.exitCode = result.ok ? 0 : 1;',
+      ].join('\n')],
+      cwd: opts.root,
+      runtimeMaxSec: Math.max(1, Math.floor((opts.deadline.taskDeadlineAtMs - Date.now()) / 1_000)),
+      ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
+      env: {
+        PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(opts.deadline.taskDeadlineAtMs),
+        PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(opts.deadline.childCutoffAtMs),
+        PAPERCUSP_TEST_CLEANUP_RESERVE_MS: String(opts.deadline.cleanupReserveMs),
+        ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
+        ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
+      },
+    };
+  }
   // An explicit Vitest reporter replaces the reporters declared by the workspace config.
   // The admin reporter normally writes durable testRunIds directly. A single integration
   // test is different: its suite can mock @papercusp/db-org, which also redirects the
@@ -523,10 +564,16 @@ export function buildDetachedMixedTestRunRequest(opts: {
   workspaceId?: string;
   harnessSlug?: string;
   timeoutMs?: number;
+  deadline?: TestRunDeadline;
   /** expensive-verification-loops P-001: the work-item this run verifies, stamped on
    *  the task-ledger row so a long detached run counts as an attempt against it. */
   workItemId?: string;
 }): SpawnRequest {
+  if (opts.deadline) return buildDetachedTestRunRequest({
+    ...opts,
+    root: opts.groups[0]!.root,
+    files: opts.groups.flatMap(group => group.files.map(file => resolve(group.root, file))),
+  });
   const commands: Array<{ command: string; args: string[]; cwd: string }> = [];
   const detachedReportArtifacts: NonNullable<SpawnRequest['detachedReportArtifacts']> = [];
   const reportPathFor = (root: string, routerReports = false): string => {
@@ -3367,10 +3414,11 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   const deadline = opts.deadline ?? testRunDeadline(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts);
   if (Date.now() >= deadline.childCutoffAtMs) return { ok: false, runId, root: resolve(opts.root),
     error: 'deadline_exhausted', hint: 'absolute child cutoff reached; no test child or artifact packet was created' };
-  // Detached replay is a fresh store operation with a fresh lifecycle. It cannot
-  // share this operation's fixed cleanup reserve or parent-owned DB registry.
+  // Transport time and the caller's absolute task budget are independent. A
+  // replay owns a new cleanup registry, but must retain the same fixed cutoff.
   const callerBound = opts.deadline !== undefined || opts.taskDeadlineAtMs !== undefined || opts.cleanupReserveMs !== undefined;
-  const foregroundCutoffAtMs = Math.min(Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS), deadline.childCutoffAtMs);
+  const foregroundTransportAtMs = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const foregroundCutoffAtMs = Math.min(foregroundTransportAtMs, deadline.childCutoffAtMs);
   const packet = new TestRunArtifactPacket(runId, resolve(opts.root), deadline, deps.artifactBaseDir);
   let result: TestFilesCoreResult | undefined;
   let cleanup: OwnedTestDbCleanupResult | undefined;
@@ -3378,7 +3426,9 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   try {
     result = await runTestFilesCoreInternal({ ...opts, runId, taskDeadlineAtMs: deadline.taskDeadlineAtMs,
       cleanupReserveMs: deadline.cleanupReserveMs,
-      ...(callerBound ? { allowDetachedRecovery: false } : {}) }, deps, packet, deadline, foregroundCutoffAtMs);
+      ...(callerBound ? { deadline } : {}),
+      ...(callerBound && deadline.taskDeadlineAtMs <= foregroundTransportAtMs
+        ? { allowDetachedRecovery: false } : {}) }, deps, packet, deadline, foregroundCutoffAtMs);
     if (packet.childState === 'pending') {
       // An unconfirmed/host-detached writer keeps custody; do not drop its database.
       cleanup = { complete: false, databases: [], errors: ['child exit is unconfirmed; owned cleanup retained'] };
@@ -3471,6 +3521,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
             ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
             ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
             timeoutMs: recoveryTimeoutMs,
+            ...(opts.deadline ? { deadline: opts.deadline } : {}),
           }),
         );
         return {
@@ -3623,10 +3674,13 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     }
     let directReportPaths: string[] | null = null;
     let outcome: RouterOutcome;
-    if (Date.now() >= foregroundCutoffAtMs) return { ok: false, runId, root, error: 'deadline_exhausted', timeoutMs,
+    if (Date.now() >= deadline.childCutoffAtMs) return { ok: false, runId, root, error: 'deadline_exhausted', timeoutMs,
       hint: 'preparation consumed the absolute child budget; cleanup reserve remains available' };
-    packet.childState = 'pending';
-    if (hasRouter) {
+    if (Date.now() >= foregroundCutoffAtMs) {
+      outcome = { code: null, signal: null, timedOut: true, aborted: false,
+        output: 'preparation exhausted the foreground transport window before router spawn' };
+    } else if (hasRouter) {
+      packet.childState = 'pending';
       outcome = await (deps.runRouterFn ?? runRouter)(
         [...pathResolution.files, '--', ...vitestArgs],
         root,
@@ -3645,6 +3699,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         opts.privatePg,
       );
     } else {
+      packet.childState = 'pending';
       const groups = groupDirectVitestRoutes(pathResolution.files, root);
       directReportPaths = groups.map((_, index) => (index === 0 ? reportPath : join(dir, `report.${index}.json`)));
       const outcomes: RouterOutcome[] = [];
@@ -3778,7 +3833,8 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
-      const detachedEnabled = hasRouter && !opts.privatePg && opts.allowDetachedRecovery !== false;
+      const detachedEnabled = hasRouter && !opts.privatePg && opts.allowDetachedRecovery !== false
+        && (!opts.deadline || Date.now() < deadline.childCutoffAtMs);
       const detachedHarnessSlug = await resolveDetachedHarnessSlug({
         root,
         detachedEnabled,
@@ -3796,6 +3852,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
                 ...(detachedHarnessSlug !== undefined ? { harnessSlug: detachedHarnessSlug } : {}),
                 ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
                 timeoutMs: recoveryTimeoutMs,
+                ...(opts.deadline ? { deadline: opts.deadline } : {}),
               }),
             )
           : undefined;
@@ -4101,10 +4158,10 @@ export default defineTool({
         `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for provenance/evidence preparation, ledger readback, and finalization before the ~55s MCP transport cap. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
       ),
     taskDeadlineAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe(
-      'Absolute Unix time in milliseconds for this test task, including preparation, admission and owned cleanup. Never extended. Supplying this or cleanupReserveMs disables fresh detached replay; the foreground transport cap still applies.',
+      'Absolute Unix time in milliseconds for this test task, including preparation, admission and owned cleanup. Never extended or replaced by the foreground transport cap. Recovery beyond that cap retains this deadline and cleanup reserve unchanged.',
     ),
     cleanupReserveMs: z.number().int().min(0).max(MAX_TIMEOUT_MS - 1).optional().describe(
-      'Milliseconds reserved before taskDeadlineAtMs for owned resource cleanup; must be smaller than timeoutMs (or its default). This fixes the child cutoff and disables fresh detached replay.',
+      'Milliseconds reserved before taskDeadlineAtMs for owned resource cleanup; must be smaller than timeoutMs (or its default). Child cutoff = taskDeadlineAtMs minus this reserve, unchanged through detached recovery.',
     ),
     maxFailures: z
       .number()
@@ -4154,17 +4211,13 @@ export default defineTool({
         deadline = testRunDeadline(args.timeoutMs ?? DEFAULT_TIMEOUT_MS, {
           now: handlerStartedAtMs, taskDeadlineAtMs: args.taskDeadlineAtMs, cleanupReserveMs: args.cleanupReserveMs,
         });
-        // A caller may shorten the transport window but cannot lengthen it. Keep
-        // the explicit reserve intact even when it leaves no foreground child slot.
-        deadline.taskDeadlineAtMs = Math.min(deadline.taskDeadlineAtMs,
-          handlerStartedAtMs + clampTestingRunForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS));
-        deadline.childCutoffAtMs = deadline.taskDeadlineAtMs - deadline.cleanupReserveMs;
+        // The foreground cap limits this response's wait, not the caller's task.
+        // The anchored deadline/reserve also govern any detached continuation.
       } catch (error) {
         return { data: { ok: false, error: 'invalid_test_deadline', message: String(error) } };
       }
     }
-    const deadlineRefusal = () => deadline && (Date.now() >= deadline.childCutoffAtMs
-      || Date.now() >= handlerStartedAtMs + clampTestingRunForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS))
+    const deadlineRefusal = () => deadline && Date.now() >= deadline.childCutoffAtMs
       ? { data: { ok: false, error: 'deadline_exhausted', deadline,
         hint: 'preparation exhausted the fixed child budget; no test child was started' } } : undefined;
     const initialDeadlineRefusal = deadlineRefusal();
@@ -4622,7 +4675,7 @@ export default defineTool({
             // waits for the detached run itself — so steer away from a run-status loop.
             (result.terminationUnconfirmed
               ? `The foreground process is not confirmed stopped; do not start a duplicate run. Tracked task: ${result.taskId ?? 'unknown'}. `
-              : deadline
+              : deadline && !result.detachedRunId
               ? 'Caller deadline/reserve preserved; no fresh detached replay was started. Owned cleanup is reported separately. '
               : prepared && result.detachedRunId
               ? 'To bind this evidence, call evidenceBundle.recovery (testing:run { recoverEvidence }) now: it waits up to ' +

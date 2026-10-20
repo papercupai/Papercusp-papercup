@@ -25,6 +25,18 @@ vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
+// event-wait-settlement-2026-10-20 P-003: retirement and fire hand what they settled to
+// the shared follow-up after commit. The follow-up's own effects (un-park, message, wake,
+// view refresh) are pinned by work-item-ref-blocker-auto-clear*.test.ts; here it is a spy,
+// so this file pins the hand-off and never runs coordination writes against its bare schema.
+const followUp = vi.hoisted(() => ({ calls: [] as Array<Array<{ featureId: string }>> }));
+vi.mock('../../work-item-ref-blocker-auto-clear', async (orig) => ({
+  ...(await orig<typeof import('../../work-item-ref-blocker-auto-clear')>()),
+  followUpSystemClears: vi.fn(async (items: readonly { featureId: string }[]) => {
+    followUp.calls.push([...items]);
+    return [];
+  }),
+}));
 
 const {
   registerAwait,
@@ -200,6 +212,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  followUp.calls.length = 0;
   await rootSql`TRUNCATE harness_shared.event_awaits RESTART IDENTITY`;
   await rootSql`TRUNCATE harness_shared.event_wake_deliveries RESTART IDENTITY`;
   await rootSql`TRUNCATE harness_shared.predicate_watches`;
@@ -954,6 +967,8 @@ describe('await-event store (PG)', () => {
     await expect(
       retireAnnouncement({ announcementId: announcement.id, subscriberId: 'declarer' }),
     ).resolves.toMatchObject({ retired: true });
+    // P-003: retirement hands exactly what it settled to the shared follow-up, in one call.
+    expect(followUp.calls.map((items) => items.map((i) => i.featureId))).toEqual([['EI-retire-reconcile']]);
 
     const rows = await rootSql`
       SELECT status, payload
@@ -1039,6 +1054,8 @@ describe('await-event store (PG)', () => {
     `;
 
     await expect(stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).resolves.toBe(1);
+    // P-003: the fire hands exactly what it settled to the shared follow-up, in one call.
+    expect(followUp.calls.map((items) => items.map((i) => i.featureId))).toEqual([['EI-fire-reconcile']]);
 
     const rows = await rootSql`
       SELECT status, payload

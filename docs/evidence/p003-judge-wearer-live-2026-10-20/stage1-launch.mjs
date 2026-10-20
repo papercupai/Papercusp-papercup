@@ -41,7 +41,7 @@ try {
   const res = await fetch(`${BASE}/api/agent-mcp/console/bootstrap-role`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ role: 'judge', agent: 'claude', workspace: 'papercusp-workspace', harness_slug: 'papercusp',
-      stack: STACK, launched_by: 'su-7a61b3ed-841b-4d7c-b177-f87c76073391',
+      stack: STACK, launched_by: process.env.PAPERCUSP_SID,
       bootstrap_idempotency_key: `p003-live-judge-probe-${Date.now()}` }),
   });
   const body = await res.json();

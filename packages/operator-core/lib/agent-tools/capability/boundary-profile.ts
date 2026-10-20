@@ -24,9 +24,20 @@ export type OperationBoundaryProfile =
     }
   | {
       kind: 'confined';
-      reason: 'session-confinement' | 'autonomous-caller' | 'unattributed-caller';
+      reason: 'session-confinement' | 'evidence-role' | 'autonomous-caller' | 'unattributed-caller';
       confinement?: SessionToolConfinement;
     };
+
+/**
+ * Roles whose contract is evidence-only toward their subject (EI-26515377589991990).
+ * An acceptance judge may be launched through the SU-bearer spawn door
+ * (orchestrator spawn-mcp.ts: `superuser=1` plus `role=<spawned role>`), so its
+ * context can carry `isSuperuser: true` alongside `role: 'judge'`. Superuser
+ * dispatch bypass is about which tools are reachable; it must not make a
+ * judge's raw network or exec operations trusted. These roles therefore
+ * resolve confined before any trusted tier is considered.
+ */
+const EVIDENCE_ONLY_ROLES: ReadonlySet<string> = new Set(['judge']);
 
 export type BoundaryContext = ResolveIdentityCtx & {
   role?: UnifiedToolContext['role'];
@@ -56,7 +67,8 @@ const DEFAULT_DEPS: BoundaryProfileDeps = {
  * Resolve whether a real operation may retain the historic raw-host behavior.
  *
  * Launch-declared confinement always wins, including for an su-tier directed
- * implementer.  Otherwise only an authenticated human/admin tier or the
+ * implementer.  An evidence-only role (judge) is confined next, whatever its
+ * superuser flag.  Otherwise only an authenticated human/admin tier or the
  * in-process operator principal is trusted.  Every autonomous, signed-spawn,
  * role principal, or un-attributable context fails toward confinement.
  */
@@ -80,6 +92,11 @@ export async function resolveOperationBoundaryProfile(
   }
   if (declared) {
     return { kind: 'confined', reason: 'session-confinement', confinement: declared };
+  }
+
+  // Evidence-only roles never reach a trusted tier, even on the SU-bearer door.
+  if (EVIDENCE_ONLY_ROLES.has(String(ctx.role ?? ''))) {
+    return { kind: 'confined', reason: 'evidence-role' };
   }
 
   if (ctx.isPowerUser === true) return { kind: 'trusted', reason: 'power-user' };

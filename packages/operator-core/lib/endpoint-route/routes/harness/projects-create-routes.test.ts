@@ -20,6 +20,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // composition never runs (no clone, no PG, no registry mutation).
 const createHiveFromRepo = vi.fn();
 const createHiveHarness = vi.fn();
+const loadHarnessRegistry = vi.fn();
+const mutateHarnessRegistry = vi.fn();
+const teardownPotLearningLoop = vi.fn();
 
 vi.mock('../../../agent-tools/pot/_create_from_repo', () => ({
   createPotFromRepo: (...a: unknown[]) => createHiveFromRepo(...a),
@@ -29,6 +32,18 @@ vi.mock('../../../agent-tools/pot/_create', () => ({
 }));
 vi.mock('../../../workspace-registry', () => ({
   activeWorkspaceId: () => 'ws-test',
+}));
+vi.mock('../../../harness-registry', async (orig) => ({
+  ...(await orig<typeof import('../../../harness-registry')>()),
+  loadHarnessRegistry: (...a: unknown[]) => loadHarnessRegistry(...a),
+  mutateHarnessRegistry: (...a: unknown[]) => mutateHarnessRegistry(...a),
+}));
+vi.mock('../../../pot/provision-learning-loop', () => ({
+  teardownPotLearningLoop: (...a: unknown[]) => teardownPotLearningLoop(...a),
+}));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: vi.fn() }),
 }));
 vi.mock('../../../harness/projects-lite', () => ({
   bustProjectsLiteCache: vi.fn(),
@@ -45,6 +60,10 @@ const byPath = (path: string) => {
 
 const fromRepoRoute = byPath('/harness/pots/from-repo');
 const createHiveRoute = byPath('/harness/pots');
+const deleteProjectRoute = (routes as Array<{ path: string; method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>).find(
+  (x) => x.path === '/harness/projects/:slug' && x.method === 'DELETE',
+);
+if (!deleteProjectRoute) throw new Error('no DELETE route for /harness/projects/:slug');
 
 async function post(
   route: { path: string; handler: (req: Request, ctx: unknown) => Promise<Response> },
@@ -60,9 +79,27 @@ async function post(
   return { status: res.status, body: (await res.json().catch(() => null)) as Record<string, unknown> | null };
 }
 
+async function removeProject(slug: string) {
+  const req = new Request(`http://127.0.0.1/api/harness/projects/${slug}`, { method: 'DELETE' });
+  const res = await deleteProjectRoute.handler(req, { params: { slug } });
+  return { status: res.status, body: (await res.json().catch(() => null)) as Record<string, unknown> | null };
+}
+
 beforeEach(() => {
   createHiveFromRepo.mockReset();
   createHiveHarness.mockReset();
+  loadHarnessRegistry.mockReset().mockResolvedValue({ projects: [{ slug: 'gone', path: '/tmp/gone' }] });
+  mutateHarnessRegistry.mockReset().mockImplementation(async (mutator: (reg: { projects: Array<{ slug: string; path: string }> }) => unknown) => {
+    await mutator({ projects: [{ slug: 'gone', path: '/tmp/gone' }] });
+  });
+  teardownPotLearningLoop.mockReset().mockResolvedValue({
+    potSlug: 'gone',
+    gymAutoloop: true,
+    scoutRoutine: true,
+    dreamRoutines: true,
+    governorRegistrants: true,
+    gitSyncRoutines: true,
+  });
 });
 
 // ── Gap 7: POST /harness/pots/from-repo status map ──────────────────────────
@@ -243,5 +280,49 @@ describe('POST /api/harness/pots — createHive error→status map (Gap 8)', () 
     expect(createHiveHarness).toHaveBeenCalledTimes(1);
     const arg = createHiveHarness.mock.calls[0][0] as Record<string, unknown>;
     expect(arg).not.toHaveProperty('blueprintId');
+  });
+});
+
+describe('DELETE /api/harness/projects/:slug — explicit uninstall retirement seam', () => {
+  it('retires install-scoped learning/infrastructure rows before atomically removing the registry entry', async () => {
+    const { status, body } = await removeProject('gone');
+
+    expect(status).toBe(200);
+    expect(body).toEqual({ ok: true });
+    expect(teardownPotLearningLoop).toHaveBeenCalledWith({
+      sql: expect.any(Function),
+      workspaceId: 'ws-test',
+      potSlug: 'gone',
+    });
+    expect(mutateHarnessRegistry).toHaveBeenCalledWith(expect.any(Function), 'ws-test', { allowEmpty: true });
+    expect(teardownPotLearningLoop.mock.invocationCallOrder[0]).toBeLessThan(
+      mutateHarnessRegistry.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('keeps the registry entry when any routine retirement step fails so removal can be retried', async () => {
+    teardownPotLearningLoop.mockResolvedValueOnce({
+      potSlug: 'gone',
+      gymAutoloop: true,
+      scoutRoutine: true,
+      dreamRoutines: false,
+      governorRegistrants: true,
+      gitSyncRoutines: true,
+    });
+
+    const { status, body } = await removeProject('gone');
+
+    expect(status).toBe(503);
+    expect(body).toEqual({ error: 'routine retirement incomplete', failed: ['dreamRoutines'] });
+    expect(mutateHarnessRegistry).not.toHaveBeenCalled();
+  });
+
+  it('does not retire routines when the registry has no matching harness', async () => {
+    const { status, body } = await removeProject('missing');
+
+    expect(status).toBe(404);
+    expect(body).toEqual({ error: 'not found' });
+    expect(teardownPotLearningLoop).not.toHaveBeenCalled();
+    expect(mutateHarnessRegistry).not.toHaveBeenCalled();
   });
 });

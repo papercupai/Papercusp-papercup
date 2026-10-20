@@ -3,8 +3,8 @@
  * (self-learning-frontier-2026-06-12 P-010 / FB-04).
  *
  * "Negative space" = the knowledge agents LOOKED for and didn't find: a
- * zero-hit docs:search / plans:search / memory:search is a recorded demand
- * signal for a doc page, plan pointer, or memory that doesn't exist. This
+ * zero-hit docs:search / plans:search is a recorded demand signal for a doc
+ * page or plan pointer that doesn't exist. This
  * module turns the raw zero-hit invocation rows (mined from
  * harness_shared.tool_invocations by scan.ts) into a deduped DEMAND MAP and
  * picks the capped candidate set worth filing as kind=change improvements.
@@ -15,15 +15,18 @@
  * runWatchdogTick glued).
  */
 
-export type DemandSurface = 'docs' | 'memory' | 'plans';
+/**
+ * Search surfaces with an operational zero-hit contract. memory:search is
+ * similarity-ranked top-K recall and has no calibrated relevance floor, so
+ * its successful result count cannot serve as a reliable demand signal.
+ */
+export type DemandSurface = 'docs' | 'plans';
 
 /** tool_name → demand surface; null = not a mined search tool. */
 export function surfaceOfTool(toolName: string): DemandSurface | null {
   switch (toolName) {
     case 'docs:search':
       return 'docs';
-    case 'memory:search':
-      return 'memory';
     case 'plans:search':
       return 'plans';
     default:
@@ -163,7 +166,7 @@ export function demandWatchdogKey(entry: Pick<DemandEntry, 'surface' | 'queryNor
  *                      from any scope"), regression-testable → kind=bug, the
  *                      AUTO lane. EI-397 is the canonical instance.
  *   missing-knowledge — nothing with that identity exists; whether to write
- *                      the doc/memory is a judgment call → kind=change, the
+ *                      the doc is a judgment call → kind=change, the
  *                      gate lane (today's shape, unchanged).
  * ──────────────────────────────────────────────────────────────────────── */
 
@@ -238,7 +241,7 @@ export function demandCaptureBody(entry: DemandEntry, windowDays: number, classi
   }
   return (
     evidence +
-    `Worth either writing the missing doc/insight/memory, or renaming/aliasing existing material ` +
+    `Worth either writing the missing doc/insight, or renaming/aliasing existing material ` +
     `so these terms find it. If the searches were probes/noise, close as not-planned.`
   );
 }

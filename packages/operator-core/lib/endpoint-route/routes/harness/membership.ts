@@ -8,12 +8,15 @@
  *        op='remove' { workspace }     — unregister from workspace (folder untouched)
  *        op='move'   { fromWorkspace, toWorkspace }
  *
- * Registry edits only: never moves/deletes the folder, never migrates run data
- * (D-1). `auth: 'public'` matches the sibling local harness routes.
+ * Membership edits never move/delete the folder or migrate run data (D-1).
+ * Explicit remove retires workspace/install-scoped runtime rows; move remains
+ * registry-only so the destination keeps the installation.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
 import { readRegistry } from '../../../workspace-registry';
 import { loadHarnessRegistry } from '../../../harness-registry';
+import { teardownPotLearningLoop } from '../../../pot/provision-learning-loop';
 import {
   addHarnessToWorkspace,
   moveHarness,
@@ -74,6 +77,30 @@ const membership = defineTool({
         case 'remove': {
           if (!knownWorkspace(body.workspace)) {
             return Response.json({ error: 'unknown workspace' }, { status: 400 });
+          }
+          const current = await loadHarnessRegistry(body.workspace);
+          if (current.projects.some((project) => project.slug === slug)) {
+            try {
+              const retirement = await teardownPotLearningLoop({
+                sql: getOrgPg().sql,
+                workspaceId: body.workspace,
+                potSlug: slug,
+              });
+              const failedRetirements = Object.entries(retirement)
+                .filter(([key, succeeded]) => key !== 'potSlug' && succeeded !== true)
+                .map(([key]) => key);
+              if (failedRetirements.length > 0) {
+                return Response.json(
+                  { error: 'routine retirement incomplete', failed: failedRetirements },
+                  { status: 503 },
+                );
+              }
+            } catch (error) {
+              return Response.json(
+                { error: 'routine retirement failed', detail: error instanceof Error ? error.message : String(error) },
+                { status: 503 },
+              );
+            }
           }
           return Response.json({ ok: true, result: await removeHarnessFromWorkspace(body.workspace, slug) });
         }

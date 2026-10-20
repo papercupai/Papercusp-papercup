@@ -4,10 +4,10 @@
  *
  * One tick = recompute the demand map + file the capped candidates:
  *
- *   1. read zero-hit docs:search / plans:search / memory:search rows from
+ *   1. read zero-hit docs:search / plans:search rows from
  *      harness_shared.tool_invocations over a trailing window (the hit counts
- *      the handlers emit via ctx.metadata: docs `hit_count`, plans/memory
- *      `count`; the query is args_json->>'query');
+ *      the handlers emit via ctx.metadata: docs `hit_count`, plans `count`;
+ *      the query is args_json->>'query');
  *   2. aggregate (miner-core, pure) and REWRITE
  *      harness_shared.negative_space_demand for the workspace — idempotent,
  *      no watermark; only candidate_improvement_id survives the rewrite;
@@ -65,7 +65,7 @@ export interface NegativeSpaceTickDeps {
   markFiled: (workspaceId: string, entry: DemandEntry, improvementId: string) => Promise<void>;
   /**
    * Does the demanded artifact actually EXIST under this exact identifier?
-   * Returns its ref (`plan:<slug>` / `doc:<slug>` / `memory-anchor:<value>`) or
+   * Returns its ref (`plan:<slug>` / `doc:<slug>`) or
    * null. Drives the kind-fidelity split (frontier P-044): exists + zero-hit =
    * resolution gap (kind=bug, EI-397 shape); absent = missing knowledge
    * (kind=change). Only called for reference-shaped queries; absent dep ⇒
@@ -101,7 +101,7 @@ export async function readZeroHitRows(sql: Sql, workspaceId: string, windowDays:
        AND args_json->>'query' IS NOT NULL
        AND (
              (tool_name = 'docs:search' AND (metadata_json->>'hit_count')::int = 0)
-          OR (tool_name IN ('plans:search', 'memory:search') AND (metadata_json->>'count')::int = 0)
+          OR (tool_name = 'plans:search' AND (metadata_json->>'count')::int = 0)
        )
      ORDER BY invoked_at DESC
      LIMIT ${READ_LIMIT}`;
@@ -176,13 +176,6 @@ const DOCS_CONTENT_DIR = join(REPO_ROOT, 'apps/operator-docs/src/content/docs');
  *   docs   — a page whose slug (basename or section/slug path) equals the
  *            query, in the MDX corpus (missing corpus degrades to null, the
  *            neologism reader's stripped-deploy-tree rule);
- *   memory — an ACTIVE memory whose anchor (file/plan/symbol/feature/migration)
- *            value equals the query exactly: the record exists under that exact
- *            identifier yet recall zero-hit it. memory_anchors ARE the
- *            identifier-keyed index (the cosine + lexical recall legs are
- *            similarity-based, which is why the original FB-18 probe left this
- *            null); the reference-shaped gate keeps collision-prone bare words
- *            from ever reaching here.
  * Never throws: a probe failure means "not proven to exist" — the candidate
  * files in today's change shape rather than a falsely-confident bug.
  */
@@ -211,23 +204,6 @@ export async function probeDemandArtifact(
         if (baseSlug === queryNorm || relSlug === queryNorm) return `doc:${relSlug}`;
       }
       return null;
-    }
-    if (surface === 'memory') {
-      // An ACTIVE memory anchored to this exact value that a memory:search
-      // still zero-hit is a recall RESOLUTION GAP, not missing knowledge — the
-      // record exists under that exact identifier (anchors are the
-      // identifier-keyed index; cosine/lexical recall is similarity-based).
-      // Global match mirrors the cross-scope plans probe (the EI-397 shape). A
-      // non-active (forgotten/superseded/…) memory is a deliberate removal, not
-      // a gap — state='active' only.
-      const rows = await sql<{ value: string }[]>`
-        SELECT a.value
-          FROM harness_shared.memory_anchors a
-          JOIN harness_shared.memory_canonical m ON m.id = a.memory_id
-         WHERE m.state = 'active'
-           AND lower(a.value) = ${queryNorm}
-         LIMIT 1`;
-      return rows.length > 0 ? `memory-anchor:${rows[0].value}` : null;
     }
     return null;
   } catch {
