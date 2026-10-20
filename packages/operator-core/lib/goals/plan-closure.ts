@@ -86,6 +86,10 @@ export const GATE_CODE_CLOSURE_LEG: Record<
   acceptance_unaudited: { leg: 'verificationReadBack', rating: 'fail' },
   audit_coverage_stale: { leg: 'verificationReadBack', rating: 'fail' },
   audit_citations_unresolved: { leg: 'verificationReadBack', rating: 'fail' },
+  // plan-verification-profiles D-009 (R-11): a code deliverable's audit cites no code truth.
+  code_deliverable_unverified: { leg: 'verificationReadBack', rating: 'fail' },
+  // plan-verification-profiles D-008 (R-15 at ship): code work closed under a non-code label.
+  non_code_deliverable_code_evidence: { leg: 'verificationReadBack', rating: 'fail' },
   requirement_unrealized: { leg: 'verificationReadBack', rating: 'fail' },
   spec_proof_stale: { leg: 'verificationReadBack', rating: 'fail' },
   spec_clause_unproven: { leg: 'verificationReadBack', rating: 'fail' },
@@ -102,6 +106,7 @@ export const GATE_CODE_CLOSURE_LEG: Record<
   spec_coverage_unavailable: { leg: 'verificationReadBack', rating: 'unknown' },
   independent_verification_unavailable: { leg: 'verificationReadBack', rating: 'unknown' },
   blind_review_unavailable: { leg: 'verificationReadBack', rating: 'unknown' },
+  non_code_deliverable_check_unavailable: { leg: 'verificationReadBack', rating: 'unknown' },
 
   // --- leg 3: an INDEPENDENT evaluator regraded the current subject ---------
   // WI-10004178 / endgame D-095: a federated receiver cannot tell whether the authoring

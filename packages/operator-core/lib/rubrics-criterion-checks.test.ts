@@ -11,7 +11,7 @@
  */
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -31,7 +31,7 @@ import {
   type CoverageMeasurement,
   type CoverageReader,
 } from './rubrics-criterion-checks';
-import { checkoutRootForPath } from './agent-tools/testing/run';
+import { checkoutRootForPath, selectTestFileRoot } from './agent-tools/testing/run';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
@@ -71,6 +71,33 @@ mkdirSync(join(siblingRepo, 'tests'), { recursive: true });
 writeFileSync(join(siblingRepo, 'tests', 'sibling.test.ts'), 'export {}\n');
 symlinkSync(siblingRepo, siblingRepoLink, 'dir');
 afterAll(() => rmSync(siblingWorkspace, { recursive: true, force: true }));
+
+// WI-6554700010018010: a single-package Vitest sibling (the papercusp.com site
+// shape — package.json with NO `workspaces` field, its own vitest.config.js) is a
+// real sibling too, admitted through a symlink like the production site clone.
+// Controls: a sibling with no runnable Vitest, and a pointer-file `.git`
+// (worktree/submodule) sibling, stay refused; a Vitest clone NESTED inside the
+// strict superproject keeps routing to the superproject.
+const vitestWorkspace = mkdtempSync(join(tmpdir(), 'rubric-checks-vitest-sibling-'));
+const vitestAmbient = join(vitestWorkspace, 'papercusp');
+const vitestSiteClone = mkdtempSync(join(tmpdir(), 'rubric-checks-vitest-site-clone-'));
+const singlePackage = (dir: string, opts: { gitFile?: boolean; vitestConfig?: boolean } = {}) => {
+  mkdirSync(join(dir, 'tests'), { recursive: true });
+  if (opts.gitFile) writeFileSync(join(dir, '.git'), 'gitdir: /nowhere/.git/worktrees/x\n');
+  else mkdirSync(join(dir, '.git'), { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'single', type: 'module' }));
+  if (opts.vitestConfig !== false) writeFileSync(join(dir, 'vitest.config.js'), 'export default {};\n');
+  writeFileSync(join(dir, 'tests', 'map.test.js'), 'export {}\n');
+};
+mkdirSync(join(vitestAmbient, '.git'), { recursive: true });
+writeFileSync(join(vitestAmbient, 'package.json'), JSON.stringify({ workspaces: [] }));
+singlePackage(vitestSiteClone);
+symlinkSync(vitestSiteClone, join(vitestWorkspace, 'site'), 'dir');
+singlePackage(join(vitestWorkspace, 'plain'), { vitestConfig: false });
+singlePackage(join(vitestWorkspace, 'worktree-site'), { gitFile: true });
+singlePackage(join(vitestAmbient, 'apps', 'drill'));
+afterAll(() => rmSync(vitestWorkspace, { recursive: true, force: true }));
+afterAll(() => rmSync(vitestSiteClone, { recursive: true, force: true }));
 
 const testsCheck = (files: string[]) => ({ kind: 'tests' as const, files });
 describe('scorecard integration PG route', () => {
@@ -360,6 +387,36 @@ describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () =>
     expect(v.normalizedByKey.sibling).toEqual([join(siblingRepo, 'tests', 'sibling.test.ts')]);
     expect(checkoutRootForPath(v.normalizedByKey.sibling![0]!)).toBe(siblingRepo);
     expect(() => assertCriterionCheckPathsResolve([{ key: 'sibling', check: testsCheck([siblingPath]) }], { root: siblingAmbient })).not.toThrow();
+  });
+
+  it('admits a single-package Vitest sibling with no workspaces field and selects its own root (WI-6554700010018010)', () => {
+    const sitePath = 'site/tests/map.test.js';
+    const v = validateCriterionCheckPaths([{ key: 'site', check: testsCheck([sitePath]) }], { root: vitestAmbient });
+    expect(v.failures).toEqual([]);
+    expect(v.ok).toBe(true);
+    const absolute = join(realpathSync(vitestSiteClone), 'tests', 'map.test.js');
+    expect(v.normalizedByKey.site).toEqual([absolute]);
+    expect(checkoutRootForPath(absolute)).toBe(realpathSync(vitestSiteClone));
+    // The runner gate accepts it as the execution root, not just the binding.
+    expect(selectTestFileRoot([absolute], vitestAmbient, { discoveredRoots: [] })).toEqual({
+      root: realpathSync(vitestSiteClone),
+      source: 'absolute-file-checkout',
+    });
+  });
+
+  it.each([
+    ['no runnable Vitest', 'plain/tests/map.test.js'],
+    ['a pointer-file .git (worktree/submodule)', 'worktree-site/tests/map.test.js'],
+  ])('still refuses a single-package sibling with %s', (_label, path) => {
+    const v = validateCriterionCheckPaths([{ key: 'refused', check: testsCheck([path]) }], { root: vitestAmbient });
+    expect(v.ok).toBe(false);
+    expect(v.failures).toEqual([
+      expect.objectContaining({ criterionKey: 'refused', path, reason: 'does not resolve against the live tree' }),
+    ]);
+  });
+
+  it('keeps a Vitest clone nested inside a workspaces superproject owned by the superproject', () => {
+    expect(checkoutRootForPath(join(vitestAmbient, 'apps', 'drill', 'tests', 'map.test.js'))).toBe(vitestAmbient);
   });
 
   it('refuses sibling-prefixed paths that traverse outside the admitted checkout', () => {

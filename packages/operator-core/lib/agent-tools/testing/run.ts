@@ -665,9 +665,13 @@ function isInsideRoot(root: string, candidate: string): boolean {
 }
 
 /**
- * A checkout that can own an absolute test path without relying on Papercusp's
- * router. This requires superproject markers, then accepts either a Vitest
- * config or an installed Vitest binary for the generic runner.
+ * An npm-workspaces superproject checkout: a `.git` entry (a directory, or a
+ * worktree/submodule pointer file) plus a package.json declaring `workspaces`.
+ * This is the STRICT owner: it wins every ancestor walk, so a path inside the
+ * Papercusp tree (submodules included) keeps routing through its router.
+ * Runnability is a separate question — see {@link isVitestCheckoutRoot}. A
+ * single-package repo with no `workspaces` field is admitted only through
+ * {@link isIndependentVitestCheckoutRoot}, never here (WI-6554700010018010).
  */
 function isWorkspaceCheckoutRoot(root: string): boolean {
   try {
@@ -691,6 +695,47 @@ function isCanonicalWorkspaceTestRoot(root: string): boolean {
   }
 }
 
+const VITEST_CONFIG_NAMES = [
+  'vitest.config.ts',
+  'vitest.config.mts',
+  'vitest.config.cts',
+  'vitest.config.js',
+  'vitest.config.mjs',
+  'vitest.config.cjs',
+] as const;
+
+/** The generic runner can execute here: a Vitest config, or an installed Vitest binary. */
+function hasVitestRunner(root: string): boolean {
+  return (
+    VITEST_CONFIG_NAMES.some((name) => existsSync(join(root, name))) ||
+    existsSync(join(root, 'node_modules', '.bin', 'vitest'))
+  );
+}
+
+/**
+ * A single-package repository that runs its own Vitest — e.g. the papercusp.com
+ * site checkout, whose package.json has no `workspaces` field. It must be an
+ * INDEPENDENT clone (a real `.git` DIRECTORY: a pointer-file `.git` is a
+ * submodule or a release/checkpoint worktree), carry a parseable package.json,
+ * and have a runnable Vitest.
+ *
+ * This is deliberately NOT folded into {@link isWorkspaceCheckoutRoot}: 34 of
+ * this tree's submodules carry a Vitest config, and one
+ * (apps/slack-asana-bug-drill) has a real `.git` directory. Callers use it only
+ * where a strict owner has already been ruled out — direct-sibling admission
+ * and the no-workspace-ancestor fallback in {@link checkoutRootForPath} — so a
+ * path the superproject owns is never re-routed (WI-6554700010018010).
+ */
+function isIndependentVitestCheckoutRoot(root: string): boolean {
+  try {
+    if (!statSync(join(root, '.git')).isDirectory()) return false;
+    JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    return hasVitestRunner(root);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Discover independent workspace checkouts sitting beside the requested repo.
  *
@@ -699,9 +744,11 @@ function isCanonicalWorkspaceTestRoot(root: string): boolean {
  * `portal` checkout itself.  The plan-audit citation resolver already admits
  * these sibling repositories; keep testing:run on the same admission rule rather
  * than rejecting a real, tracked test merely because it is outside the ambient
- * checkout.  Only direct children with a real `.git` directory and a workspace
- * package are admitted, so release/checkpoint worktrees and arbitrary folders do
- * not become execution roots.
+ * checkout.  Only direct children with a real `.git` directory and EITHER a
+ * workspace package OR a runnable single-package Vitest setup are admitted, so
+ * release/checkpoint worktrees and arbitrary folders do not become execution
+ * roots.  (Plan audit is looser — any real `.git` directory — because citing a
+ * file needs no runner; executing one does.)
  */
 function independentWorkspaceCheckoutRoots(root: string): ReadonlyMap<string, string> {
   const names = new Map<string, string>();
@@ -727,7 +774,9 @@ function independentWorkspaceCheckoutRoots(root: string): ReadonlyMap<string, st
       // A pointer-file `.git` identifies a release/checkpoint worktree, not an
       // independent checkout that may supply rubric evidence or run tests.
       if (!statSync(join(candidate, '.git')).isDirectory()) continue;
-      if (!isWorkspaceCheckoutRoot(candidate)) continue;
+      // A single-package Vitest repo (no `workspaces` field) is a real sibling
+      // too; its own runner executes the tests (WI-6554700010018010).
+      if (!isWorkspaceCheckoutRoot(candidate) && !isIndependentVitestCheckoutRoot(candidate)) continue;
       names.set(entry.name, realpathSync(candidate));
     } catch {
       // Broken symlink / disappearing checkout: leave it out of this snapshot.
@@ -737,30 +786,29 @@ function independentWorkspaceCheckoutRoots(root: string): ReadonlyMap<string, st
 }
 
 function isVitestCheckoutRoot(root: string): boolean {
-  if (!isWorkspaceCheckoutRoot(root)) return false;
-  return (
-    [
-      'vitest.config.ts',
-      'vitest.config.mts',
-      'vitest.config.cts',
-      'vitest.config.js',
-      'vitest.config.mjs',
-      'vitest.config.cjs',
-    ].some((name) => existsSync(join(root, name))) || existsSync(join(root, 'node_modules', '.bin', 'vitest'))
-  );
+  return (isWorkspaceCheckoutRoot(root) && hasVitestRunner(root)) || isIndependentVitestCheckoutRoot(root);
 }
 
-/** Find the owning superproject for an absolute path, bounded to its ancestors. */
+/**
+ * Find the owning checkout for an absolute path, bounded to its ancestors.
+ *
+ * The nearest npm-workspaces superproject wins. Only when NO ancestor is one
+ * does the nearest independent single-package Vitest checkout own the path, so
+ * a Vitest-carrying submodule or nested clone inside this tree still routes
+ * through the superproject's router (WI-6554700010018010).
+ */
 export function checkoutRootForPath(file: string): string | undefined {
   if (!isAbsolute(file)) return undefined;
   let dir = dirname(resolve(file));
+  let independent: string | undefined;
   for (let depth = 0; depth < 64; depth += 1) {
     if (isWorkspaceCheckoutRoot(dir)) return dir;
+    if (independent === undefined && isIndependentVitestCheckoutRoot(dir)) independent = dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return undefined;
+  return independent;
 }
 
 /**

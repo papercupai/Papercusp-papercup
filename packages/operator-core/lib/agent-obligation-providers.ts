@@ -1039,6 +1039,12 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   acceptance_unaudited: 'author',
   audit_coverage_stale: 'author',
   audit_citations_unresolved: 'author',
+  // plan-verification-profiles D-009 (R-11): a done code deliverable whose audit cites no
+  // resolving code/test evidence; the author re-audits it with code truth.
+  code_deliverable_unverified: 'author',
+  // plan-verification-profiles D-008 (R-15 at ship): code-change evidence closed under a
+  // non-code deliverable; the author re-declares the deliverable or re-closes the work.
+  non_code_deliverable_code_evidence: 'author',
   requirement_unrealized: 'author',
   ephemeral_deliverable_unbacked: 'author',
   spec_proof_stale: 'author',
@@ -1065,6 +1071,8 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   spec_coverage_unavailable: 'unmeasured',
   independent_verification_unavailable: 'unmeasured',
   blind_review_unavailable: 'unmeasured',
+  // plan-verification-profiles D-008: the ship gate could not read the linked closes.
+  non_code_deliverable_check_unavailable: 'unmeasured',
 
   // --- the repair belongs to another node -----------------------------------
   // WI-10004178 / endgame D-095: a federated receiver cannot grade or ship; the

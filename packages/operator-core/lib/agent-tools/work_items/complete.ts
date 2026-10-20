@@ -4516,10 +4516,13 @@ async function completeOne(
   // (P-002 measured 4.2% of evidence-bearing rows carry no `verifiedHow`) both land
   // `proposed` — the partial case is rejected explicitly rather than assumed away,
   // because an "is the object present?" test passes every one of them.
-  const authorityByEvidence = authorityForCompletion(
-    completionEvidenceForGate,
-    nonCodeDeliverableClose ? { nonCodeDeliverable: true } : undefined,
-  );
+  // R-13: the evidence-only reading for a non-code deliverable close. Every evidence-level
+  // check below (the authority AND the reply's explanation of it) reads through this, so the
+  // reply never tells a non-code closer to add testsRun when the grade did not ask for it.
+  const evidenceOnlyFindings: CompletionEvidenceFindings | undefined = nonCodeDeliverableClose
+    ? { nonCodeDeliverable: true }
+    : undefined;
+  const authorityByEvidence = authorityForCompletion(completionEvidenceForGate, evidenceOnlyFindings);
 
   // EI-19319623239777505: the object actually PERSISTED to the row additionally carries
   // the caller's free-text `completion.summary`. This is deliberately a SEPARATE object
@@ -5718,16 +5721,16 @@ async function completeOne(
                 // Keep the rule-level text rather than inventing a per-path story we do not have.
                 (contentIdentityDetail ??
                 `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`)
-          : terminalCriteriaUnmet && insufficientEvidenceReason(completionEvidenceForGate) === undefined
+          : terminalCriteriaUnmet && insufficientEvidenceReason(completionEvidenceForGate, evidenceOnlyFindings) === undefined
             ? `Its evidence fields are complete; terminal criteria lowered the grade. ${terminalCriteriaWarning}`
-          : insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
+          : insufficientEvidenceReason(completionEvidenceForGate, evidenceOnlyFindings) === 'added-tests-without-path'
             ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +
               `be true: if this close added or changed tests, it changed at least one file, and a completion ` +
               `nobody can locate is the exact claim this gate exists to refuse. To settle it, re-call ` +
               `work_items:complete for this id with \`filesChanged\` listing the test file(s) you touched — ` +
               `real paths only, never a plausible-looking guess. If it did NOT add tests, pass ` +
               `\`addedTests: false\` instead; that is not a workaround, it is the accurate record.`
-            : insufficientEvidenceReason(completionEvidenceForGate) === undefined && completionEvidenceFindings
+            : insufficientEvidenceReason(completionEvidenceForGate, evidenceOnlyFindings) === undefined && completionEvidenceFindings
               ? // The evidence fields are complete and a FINDING lowered the grade, so the generic
                 // "supply verifiedHow plus testsRun" advice below would send the closer to re-send
                 // fields it already sent. Name the finding; its own warning carries the repair.

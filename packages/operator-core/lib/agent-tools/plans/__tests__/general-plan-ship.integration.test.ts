@@ -48,7 +48,7 @@ import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { evaluatePlanAcceptanceGate } from '../../../plan-acceptance-gate';
 import { hashPlanContent } from '../content-hash';
 import { runWithWorkspace } from '../../../workspace-als';
-import { ensureFirstPartyRubricsSeeded, __resetRubricSeedStateForTests } from '../../../rubrics';
+import { getRubric, ensureFirstPartyRubricsSeeded, __resetRubricSeedStateForTests } from '../../../rubrics';
 import { setupPlanPgFixture, cleanupPlans, registerHarnessProject, type PlanPgFixture } from './_pg-tool-fixture';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -76,13 +76,19 @@ function ctx(): never {
   } as never;
 }
 
-async function call(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+async function call(
+  tool: string,
+  args: Record<string, unknown>,
+  opts: { withHarness?: boolean } = {},
+): Promise<Record<string, unknown> | null> {
   const projected = lookupByMcpName(tool);
   expect(projected, `${tool} must be registered in the projection registry`).toBeTruthy();
+  // rubrics:propose declares no `harness` arg and refuses one; every plans:* tool needs it.
+  const sent = opts.withHarness === false ? args : { harness: HARNESS, ...args };
   // The MCP transport runs every call inside the caller's workspace ALS; the gate reads
   // activeWorkspaceId(), not ctx.workspaceId.
   const d = await runWithWorkspace(WS, () =>
-    dispatchProjectedTool(projected!, tool, { harness: HARNESS, ...args }, ctx(), {}));
+    dispatchProjectedTool(projected!, tool, sent, ctx(), {}));
   const structured = (d.result as { structuredContent?: unknown } | undefined)?.structuredContent;
   if (structured && typeof structured === 'object') return structured as Record<string, unknown>;
   const text = (d.result as { content?: Array<{ text?: string }> } | undefined)?.content?.[0]?.text;
@@ -212,8 +218,10 @@ beforeAll(async () => {
   // In a real process the loadAllRubrics choke point seeds the bundled library on first read;
   // under vitest that auto-hook is guarded off, so drive the ordinary seed pass explicitly. The
   // general plan CLASS rubric the R-12 rubric binds to comes from this seed.
+  // Seed inside the fixture workspace: every tool call below runs in WS's ALS, and the seed
+  // writes to activeWorkspaceId().
   __resetRubricSeedStateForTests();
-  await ensureFirstPartyRubricsSeeded();
+  await runWithWorkspace(WS, () => ensureFirstPartyRubricsSeeded());
 }, 180_000);
 
 afterEach(() => {
@@ -296,6 +304,9 @@ describe('R-12: independent grading stays mandatory for general plans', () => {
     await makePlan(slug, 'general');
     await finishItems(slug);
     await auditGenericOnly(slug);
+    // Precondition: the bundled general CLASS rubric the acceptance rubric binds to is seeded.
+    const cls = await runWithWorkspace(WS, () => getRubric('plan-class-general'));
+    expect(cls?.kind, 'plan-class-general must be seeded before an acceptance rubric can bind to it').toBe('standard');
     const proposed = first(await call('rubrics:propose', {
       rubricRef: `acceptance-${slug}`,
       kind: 'acceptance',
@@ -303,17 +314,17 @@ describe('R-12: independent grading stays mandatory for general plans', () => {
       classRef: 'plan-class-general',
       characteristic: 'plan-verification-profiles',
       title: `Acceptance for ${slug}`,
-      criteria: [
-        { key: 'runbook-usable', title: 'A new hire completes onboarding from the runbook alone', weight: 1 },
-      ],
-    }));
+      // Class-only: the rubric inherits plan-class-general's criteria (P-006).
+      criteria: [],
+    }, { withHarness: false }));
     // The rubric must really exist, or the gate stops at acceptance_rubric_missing and this
     // case would prove nothing about grading.
     expect((proposed as { error?: unknown }).error ?? null, brief(proposed)).toBeNull();
-    expect(proposed.ok, brief(proposed)).not.toBe(false);
-    const [rubricRow] = await admin<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM harness_shared.rubrics WHERE rubric_id = ${`acceptance-${slug}`}`.catch(() => [{ n: -1 }]);
-    expect(rubricRow?.n, `rubric row for ${slug}: ${brief(proposed)}`).toBeGreaterThan(0);
+    const stored = await runWithWorkspace(WS, () => getRubric(`acceptance-${slug}`));
+    expect(stored, `rubric acceptance-${slug}: ${brief(proposed)}`).toMatchObject({
+      kind: 'acceptance',
+      classRef: 'plan-class-general',
+    });
 
     const codes = await blockerCodes(slug);
     expect(codes, brief(codes)).toContain('acceptance_ungraded');
