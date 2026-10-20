@@ -54,11 +54,11 @@ describe('searchDocs', () => {
   it('emits ctx.metadata', async () => {
     const metadata = vi.fn();
     await searchDocs(makeSource({ pages, contents }), { query: 'overview' }, { metadata });
-    expect(metadata.mock.calls[0][0]).toMatchObject({
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       query_tokens: 1,
       hit_count: 1,
       returned: 1,
-    });
+    }));
   });
 });
 

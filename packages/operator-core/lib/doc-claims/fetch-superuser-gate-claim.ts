@@ -33,7 +33,6 @@
  * this forbids is prose that is CONFIDENTLY WRONG about a fact the code owns.
  */
 import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { papercuspHome as resolvePapercuspHome } from '@papercusp/host-platform/home';
 
 /** A superuser-token path as written in prose, including the scoped home. */

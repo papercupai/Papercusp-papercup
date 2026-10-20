@@ -30,6 +30,7 @@ import { purgeJournalForMemory } from './write-journal';
 const TARGET_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ID = '22222222-2222-4222-8222-222222222222';
 const SOFT_ID = '33333333-3333-4333-8333-333333333333';
+const REPL_ID = '44444444-4444-4444-8444-444444444444';
 const SCOPE_A = 'harness:removal-a';
 const SCOPE_B = 'harness:removal-b';
 const VECTOR_384 = Array.from({ length: 384 }, (_, i) => (i === 0 ? 1 : 0));
@@ -320,6 +321,15 @@ describe('memory removal parity (fully migrated real PG)', () => {
       metadata: { __journal_update_of: SOFT_ID },
     });
     await seedJournal({ scope: SCOPE_A, content: softText, status: 'pending' });
+    // A pending CORRECTION of the forgotten memory (a timed-out
+    // remember { supersede }). It carries the replacement's content, so soft
+    // forget must not cancel it (EI-26515229747561182).
+    await seedJournal({
+      scope: SCOPE_A,
+      content: 'corrected indigo needle',
+      status: 'pending',
+      metadata: { __journal_supersede_of: SOFT_ID },
+    });
 
     await expect(
       purgeJournalForMemory(
@@ -327,7 +337,14 @@ describe('memory removal parity (fully migrated real PG)', () => {
         { sql: db.adminSql as never },
       ),
     ).resolves.toBe(2);
+    const [correction] = await db.adminSql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.memory_write_journal
+       WHERE status = 'pending' AND metadata->>'__journal_supersede_of' = ${SOFT_ID}`;
+    expect(correction.n).toBe(1);
     await expect(hybrid.invalidateEntry(SOFT_ID)).resolves.toBe(true);
+    // A bare re-close of the already-closed row stays a first-wins no-op.
+    await expect(hybrid.invalidateEntry(SOFT_ID)).resolves.toBe(false);
 
     expect(await artifactCounts(SOFT_ID)).toEqual({
       canonical: 1,
@@ -360,6 +377,22 @@ describe('memory removal parity (fully migrated real PG)', () => {
           OR metadata->>'__journal_update_of' = ${SOFT_ID}
           OR (scope = ${SCOPE_A} AND content = ${softText})`;
     expect(journal).toEqual({ committed: 1, pending: 0 });
+
+    // Lineage attach (EI-26515229747561182): the soft-forgotten row is closed
+    // with no winner, so it still accepts its correction's link. Its window
+    // stays as soft forget left it, and the first winner then stands.
+    const closedAt = (historical?.metadata?.validity as { invalid_at?: unknown }).invalid_at;
+    expect(closedAt).toBeTruthy();
+    await seedMemory(REPL_ID, SCOPE_A, 'corrected indigo needle');
+    await expect(hybrid.invalidateEntry(SOFT_ID, { supersededBy: REPL_ID })).resolves.toBe(true);
+    const linked = await mem0.get(SOFT_ID);
+    expect(linked?.metadata?.validity).toMatchObject({
+      status: 'superseded',
+      superseded_by: REPL_ID,
+      invalid_at: closedAt,
+    });
+    await expect(hybrid.invalidateEntry(SOFT_ID, { supersededBy: OTHER_ID })).resolves.toBe(false);
+    expect((await mem0.get(SOFT_ID))?.metadata?.validity).toMatchObject({ superseded_by: REPL_ID });
 
     expect((await hybrid.searchLexical('amber', { scope: SCOPE_B })).map((row) => row.id)).toEqual([
       OTHER_ID,

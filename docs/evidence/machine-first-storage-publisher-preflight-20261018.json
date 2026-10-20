@@ -27,7 +27,7 @@
       "schemaVersion": 2,
       "buildId": "1LPOfgFMsSpwcguWTsv9e",
       "release": "1LPOfgFMsSpwcguWTsv9e-20261018031007952-3586394-3710b33b",
-      "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "publishedAt": "2026-10-18T03:10:07.952Z",
       "sourceRootDigest": "12b1e1b143dca43dbdfe9073e4cb5a5fa6651d26eed8b59ec958072449db4554"
     },

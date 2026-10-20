@@ -631,6 +631,69 @@ exec "$TEST_REAL_GIT" "$@"
   }, NATIVE_SHELL_TIMEOUT_MS);
 });
 
+describe('WI-6554700010017090: an unhydrated integration submodule is hydrated once, then fails closed', () => {
+  // Local-path submodule URLs need file protocol explicitly allowed (git >= 2.38.1).
+  const FILE_PROTOCOL_ENV = {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'protocol.file.allow',
+    GIT_CONFIG_VALUE_0: 'always',
+  };
+  const LOCK = '{"name":"vendor","lockfileVersion":3,"packages":{}}\n';
+
+  // The drill clone's shape: the gitlink and .gitmodules entry are committed, but the
+  // submodule directory is an empty, never-initialized directory with no
+  // submodule.<name>.url in .git/config.
+  function uninitializedSubmoduleFixture(useMissingRemote: boolean) {
+    const integration = makeIntegration();
+    commitFixture(integration, 'seed repository');
+    const source = join(dirname(integration), 'vendor-source');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, 'package-lock.json'), LOCK);
+    const vendorRef = commitAllFixture(source, 'vendor inputs');
+    const url = useMissingRemote ? join(dirname(integration), 'missing-vendor-source') : source;
+    writeFileSync(join(integration, '.gitmodules'), `[submodule "vendor"]\n\tpath = libs/vendor\n\turl = ${url}\n`);
+    mkdirSync(join(integration, 'libs/vendor'), { recursive: true });
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${vendorRef},libs/vendor`], { cwd: integration });
+    const ref = commitAllFixture(integration, 'record gitlink without initializing the submodule');
+    return { integration, ref, vendorRef };
+  }
+
+  function manifest(integration: string, ref: string) {
+    const out = join(dirname(integration), 'manifest');
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_input_manifest_ref "$INTEGRATION" "$REF" "" "" "$CACHE" > "$OUT"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, ...FILE_PROTOCOL_ENV, SCRIPT, INTEGRATION: integration, REF: ref,
+        CACHE: join(dirname(integration), 'manifest-cache'), OUT: out },
+    });
+    return { result, out };
+  }
+
+  it('initializes the never-initialized submodule and manifests its inputs instead of refusing', () => {
+    const { integration, ref, vendorRef } = uninitializedSubmoduleFixture(false);
+    const { result, out } = manifest(integration, ref);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('submodule libs/vendor is not initialized');
+    const digest = createHash('sha256').update(LOCK).digest('hex');
+    expect(readFileSync(out, 'utf8')).toContain(`libs/vendor/package-lock.json\t${digest}`);
+    const vendor = join(integration, 'libs/vendor');
+    expect(execFileSync('git', ['-C', vendor, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim())
+      .toBe(realpathSync(vendor));
+    expect(execFileSync('git', ['-C', vendor, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(vendorRef);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('still refuses with exit 74 when the submodule remote cannot supply the pinned commit', () => {
+    const { integration, ref, vendorRef } = uninitializedSubmoduleFixture(true);
+    const { result } = manifest(integration, ref);
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain(`requires unavailable submodule libs/vendor@${vendorRef}`);
+    expect(result.stderr).toContain('integration-checkout defect');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
 describe('immutable dependency generation', () => {
   it.each(['1', '2'])('rejects a nested dependency-root alias before publication (walk jobs %s)', (jobs) => {
     const integration = makeIntegration();

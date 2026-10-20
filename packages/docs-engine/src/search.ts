@@ -170,98 +170,145 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
     return { query: args.query, tokenCount: 0, hitCount: 0, hits: [] };
   }
 
-  const allPages = await raceWithAbort(source.listPages(), ctx.signal);
-  // EI-10937 guard 1: generated navigation aggregators opt out via
-  // `searchable: false` frontmatter. They stay fully reachable through
-  // docs:get and the outline — they are simply not ANSWERS to a query.
-  const pages = allPages.filter((p) => p.searchable !== false);
-  const excludedCount = allPages.length - pages.length;
-  if (ctx.signal?.aborted) throw new Error('cancelled');
-  ctx.progress?.(10, `searching ${pages.length} pages`);
-
-  // Pass cancellation through the content adapter. Adapters race the caller's
-  // wait against its signal; the Starlight adapter also cancels queued renders
-  // only after the last shared reader leaves, preserving live concurrent calls.
+  // Keep the in-flight phase in the invocation ledger: a cancelled corpus scan
+  // never reaches the final hit-count metadata below. No query or page content
+  // belongs in these diagnostic snapshots.
+  const startedAtMs = Date.now();
+  const completedMs: Record<string, number> = {};
+  let active: { phase: string; startedAtMs: number } | undefined;
+  let outcome: 'running' | 'complete' | 'cancelled' | 'failed' = 'running';
+  let stoppedIn: string | undefined;
+  let listed = 0;
+  let searchable = 0;
   let scanned = 0;
-  const rendered = await Promise.all(
-    pages.map(async (p) => {
-      if (ctx.signal?.aborted) throw new Error('cancelled');
-      const body = await raceWithAbort(source.getContent(p, { signal: ctx.signal }), ctx.signal);
-      scanned += 1;
-      if (scanned % 25 === 0) {
-        const pct = 10 + Math.floor((scanned / pages.length) * 70);
-        ctx.progress?.(pct, `scored ${scanned}/${pages.length}`);
-      }
-      return { page: p, body };
-    }),
-  );
-  if (ctx.signal?.aborted) throw new Error('cancelled');
-  ctx.progress?.(85, 'ranking');
-
-  // EI-10937 guard 2: mean body length across the searched corpus is the BM25
-  // normalization baseline, so "long" is measured relative to THIS corpus rather
-  // than a hard-coded byte threshold that would rot as the docs grow.
-  const avgBodyLen = rendered.length
-    ? rendered.reduce((sum, r) => sum + r.body.length, 0) / rendered.length
-    : 1;
-
-  // Document frequency per query token, over the searched corpus — the input to
-  // IDF. Computed once per query, not per page.
-  const totalDocs = rendered.length;
-  const tokenIdf = new Map<string, number>();
-  for (const t of tokens) {
-    let df = 0;
-    for (const { page, body } of rendered) {
-      const hay = `${page.title ?? ''} ${page.description ?? ''} ${body}`;
-      if (hay.toLowerCase().includes(t)) df += 1;
-    }
-    tokenIdf.set(t, idf(df, totalDocs));
-  }
-
-  const scored: SearchHit[] = [];
-  for (const { page, body } of rendered) {
-    const title = page.title ?? '';
-    const description = page.description ?? '';
-    let score = 0;
-    for (const t of tokens) {
-      const w = tokenIdf.get(t) ?? 1;
-      // IDF applies to EVERY field, not just the body. Weighting only the body by
-      // informativeness leaves the same hole one level up: a page whose TITLE is
-      // full of common query words ('...race conditions, url routing and flush
-      // semantics') would out-rank the page that actually answers the rare part of
-      // the query. Field weights (title ×4, description ×2) survive as multipliers
-      // ON the informativeness-weighted score, so a title hit is still a strong
-      // signal — just not a strong signal for a word that means nothing.
-      score += countOccurrences(title, t) * 4 * w;
-      score += countOccurrences(description, t) * 2 * w;
-      score += bm25BodyScore(countOccurrences(body, t), body.length, avgBodyLen, w);
-    }
-    score += slugMatchBonus(args.query, page);
-    if (score === 0) continue;
-
-    // OKF read-time trust (P-005): a hit that is PAST its stale_after must say so
-    // in the result list, so a reader can skip it before spending a docs:get on it.
-    const trust = evaluateOkfTrust(page.okf, now);
-    scored.push({
-      slug: page.slug || '_root',
-      url: page.url,
-      title,
-      ...(description ? { description } : {}),
-      score,
-      excerpt: makeExcerpt(body, tokens),
-      ...(okfTrustIsNotable(trust) ? { trust } : {}),
-    });
-  }
-
-  scored.sort((a, b) => b.score - a.score || a.slug.localeCompare(b.slug));
-  const hits = scored.slice(0, limit);
-
-  ctx.metadata?.({
-    query_tokens: tokens.length,
-    hit_count: scored.length,
-    returned: hits.length,
-    non_searchable_excluded: excludedCount,
+  const publishTiming = () => ctx.metadata?.({
+    docsLexicalTiming: {
+      version: 1,
+      totalElapsedMs: Math.max(0, Date.now() - startedAtMs),
+      outcome,
+      ...(stoppedIn ? { stoppedIn } : {}),
+      completedMs: { ...completedMs },
+      active: active ? { phase: active.phase, elapsedMs: Math.max(0, Date.now() - active.startedAtMs) } : null,
+      pages: { listed, searchable, loaded: scanned },
+    },
   });
+  const finishPhase = () => {
+    if (active) completedMs[active.phase] = Math.max(0, Date.now() - active.startedAtMs);
+    active = undefined;
+  };
+  const startPhase = (phase: string) => {
+    finishPhase();
+    active = { phase, startedAtMs: Date.now() };
+    publishTiming();
+  };
 
-  return { query: args.query, tokenCount: tokens.length, hitCount: scored.length, hits };
+  try {
+    startPhase('listPages');
+    const allPages = await raceWithAbort(source.listPages(), ctx.signal);
+    // EI-10937 guard 1: generated navigation aggregators opt out via
+    // `searchable: false` frontmatter. They stay fully reachable through
+    // docs:get and the outline — they are simply not ANSWERS to a query.
+    const pages = allPages.filter((p) => p.searchable !== false);
+    const excludedCount = allPages.length - pages.length;
+    listed = allPages.length;
+    searchable = pages.length;
+    if (ctx.signal?.aborted) throw new Error('cancelled');
+    ctx.progress?.(10, `searching ${pages.length} pages`);
+
+    // Pass cancellation through the content adapter. Adapters race the caller's
+    // wait against its signal; the Starlight adapter also cancels queued renders
+    // only after the last shared reader leaves, preserving live concurrent calls.
+    startPhase('getContent');
+    const rendered = await Promise.all(
+      pages.map(async (p) => {
+        if (ctx.signal?.aborted) throw new Error('cancelled');
+        const body = await raceWithAbort(source.getContent(p, { signal: ctx.signal }), ctx.signal);
+        scanned += 1;
+        if (scanned % 25 === 0) {
+          const pct = 10 + Math.floor((scanned / pages.length) * 70);
+          ctx.progress?.(pct, `scored ${scanned}/${pages.length}`);
+          if (outcome === 'running') publishTiming();
+        }
+        return { page: p, body };
+      }),
+    );
+    if (ctx.signal?.aborted) throw new Error('cancelled');
+    startPhase('ranking');
+    ctx.progress?.(85, 'ranking');
+
+    // EI-10937 guard 2: mean body length across the searched corpus is the BM25
+    // normalization baseline, so "long" is measured relative to THIS corpus rather
+    // than a hard-coded byte threshold that would rot as the docs grow.
+    const avgBodyLen = rendered.length
+      ? rendered.reduce((sum, r) => sum + r.body.length, 0) / rendered.length
+      : 1;
+
+    // Document frequency per query token, over the searched corpus — the input to
+    // IDF. Computed once per query, not per page.
+    const totalDocs = rendered.length;
+    const tokenIdf = new Map<string, number>();
+    for (const t of tokens) {
+      let df = 0;
+      for (const { page, body } of rendered) {
+        const hay = `${page.title ?? ''} ${page.description ?? ''} ${body}`;
+        if (hay.toLowerCase().includes(t)) df += 1;
+      }
+      tokenIdf.set(t, idf(df, totalDocs));
+    }
+
+    const scored: SearchHit[] = [];
+    for (const { page, body } of rendered) {
+      const title = page.title ?? '';
+      const description = page.description ?? '';
+      let score = 0;
+      for (const t of tokens) {
+        const w = tokenIdf.get(t) ?? 1;
+        // IDF applies to EVERY field, not just the body. Weighting only the body by
+        // informativeness leaves the same hole one level up: a page whose TITLE is
+        // full of common query words ('...race conditions, url routing and flush
+        // semantics') would out-rank the page that actually answers the rare part of
+        // the query. Field weights (title ×4, description ×2) survive as multipliers
+        // ON the informativeness-weighted score, so a title hit is still a strong
+        // signal — just not a strong signal for a word that means nothing.
+        score += countOccurrences(title, t) * 4 * w;
+        score += countOccurrences(description, t) * 2 * w;
+        score += bm25BodyScore(countOccurrences(body, t), body.length, avgBodyLen, w);
+      }
+      score += slugMatchBonus(args.query, page);
+      if (score === 0) continue;
+
+      // OKF read-time trust (P-005): a hit that is PAST its stale_after must say so
+      // in the result list, so a reader can skip it before spending a docs:get on it.
+      const trust = evaluateOkfTrust(page.okf, now);
+      scored.push({
+        slug: page.slug || '_root',
+        url: page.url,
+        title,
+        ...(description ? { description } : {}),
+        score,
+        excerpt: makeExcerpt(body, tokens),
+        ...(okfTrustIsNotable(trust) ? { trust } : {}),
+      });
+    }
+
+    scored.sort((a, b) => b.score - a.score || a.slug.localeCompare(b.slug));
+    const hits = scored.slice(0, limit);
+
+    ctx.metadata?.({
+      query_tokens: tokens.length,
+      hit_count: scored.length,
+      returned: hits.length,
+      non_searchable_excluded: excludedCount,
+    });
+
+    outcome = 'complete';
+    return { query: args.query, tokenCount: tokens.length, hitCount: scored.length, hits };
+  } catch (error) {
+    outcome = ctx.signal?.aborted ? 'cancelled' : 'failed';
+    stoppedIn = active?.phase;
+    throw error;
+  } finally {
+    finishPhase();
+    publishTiming();
+  }
 }

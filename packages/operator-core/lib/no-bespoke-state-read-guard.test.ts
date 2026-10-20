@@ -27,7 +27,7 @@ const REPO_ROOT = new URL('../../../', import.meta.url).pathname;
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup, capabilityEffect, SCAN_DIRS, WRITE_CAPABILITIES as GUARD_WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES as GUARD_WRITE_CAPABILITY_SUFFIXES, VOLUME_WINDOW_DAYS, VOLUME_MIN_CALLS, VOLUME_MIN_DISTINCT_CALLERS, meetsVolumeFloor, findVolumeCandidates, volumeReportStatus, formatVolumeReport } from '../../../scripts/check-no-bespoke-state-read.mjs';
+import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup, capabilityEffect, SCAN_DIRS, isExcluded, WRITE_CAPABILITIES as GUARD_WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES as GUARD_WRITE_CAPABILITY_SUFFIXES, VOLUME_WINDOW_DAYS, VOLUME_MIN_CALLS, VOLUME_MIN_DISTINCT_CALLERS, meetsVolumeFloor, findVolumeCandidates, volumeReportStatus, formatVolumeReport } from '../../../scripts/check-no-bespoke-state-read.mjs';
 import { inferCapabilityEffect, WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES } from '@papercusp/tooldef';
 import { buildBuiltinToolSourceFiles } from './static-tool-catalog';
 
@@ -533,33 +533,38 @@ describe('no-bespoke-state-read guard:where it looks (EI-19444550724173505)', ()
   });
 
   it('sees every state-read candidate derived from the production tool graph', () => {
-    const scanned = new Set<string>();
-    const guardFiles = execSync(`git ls-files ${(SCAN_DIRS as string[]).join(' ')}`, {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      maxBuffer: 256 * 1024 * 1024,
-      timeout: 30_000,
-      killSignal: 'SIGKILL',
-    })
-      .split('\n')
-      .filter((file) => /\.ts$/.test(file) && !/\.(test|spec)\./.test(file))
-      // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
-      .filter((file) => existsSync(join(REPO_ROOT, file)));
-    for (const file of guardFiles) {
-      for (const row of parseToolDefs(readFileSync(join(REPO_ROOT, file), 'utf8'))) {
-        if (isStateReadCandidate(row)) scanned.add(row.name);
-      }
-    }
+    // The production guard scans exactly the tracked, present .ts files below SCAN_DIRS.
+    // Prove each graph source file is in that population, then parse the graph files once.
+    // Parsing every file under the guard roots and then parsing all graph files again made
+    // this coverage test itself time out on the full candidate (the guard roots are much
+    // broader than the production import graph).
+    const guardScanFiles = new Set(
+      execSync(`git ls-files ${(SCAN_DIRS as string[]).join(' ')}`, {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        maxBuffer: 256 * 1024 * 1024,
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      })
+        .split('\n')
+        .filter((file) => !isExcluded(file))
+        // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+        .filter((file) => existsSync(join(REPO_ROOT, file))),
+    );
+    const graphFilesNotScanned = relativeSourceFiles.filter((file) => !guardScanFiles.has(file));
+    expect(
+      graphFilesNotScanned,
+      'the guard scan omits graph-reachable production tool source(s)',
+    ).toEqual([]);
+
     const graphCandidates = new Set<string>();
     for (const file of sourceFiles) {
       for (const row of parseToolDefs(readFileSync(file, 'utf8'))) {
         if (isStateReadCandidate(row)) graphCandidates.add(row.name);
       }
     }
-    expect(
-      [...graphCandidates].filter((name) => !scanned.has(name)),
-      'these graph-derived state-read tools are invisible to the guard scan',
-    ).toEqual([]);
-    expect(scanned.size).toBeGreaterThanOrEqual(20);
+    // A candidate declared in a graph file is visible to the guard because that exact file
+    // is in guardScanFiles and both paths use parseToolDefs + isStateReadCandidate.
+    expect(graphCandidates.size).toBeGreaterThanOrEqual(20);
   }, 30_000);
 });

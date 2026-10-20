@@ -56,6 +56,30 @@ describe('plan declarations', () => {
     expect(preview.libraries.status).toBe('declared');
   });
 
+  it('R-2: optional fields may be omitted, while the rules that need them still refuse', () => {
+    const preview = previewPlanDeclarations(plan(
+      reuseSection({ ...validReuse, searched: [{ where: 'packages/operator-core/lib', how: 'grep' }] }),
+      librariesSection({ needs: [
+        { need: 'schema validation', decision: 'already-in-project', package: 'zod', existingUse: 'product-shaping.ts' },
+        { need: 'url state', decision: 'owner-specified', package: 'nuqs', sourceRef: 'session_turn:claude:abc:3' },
+      ], notApplicable: null }),
+    ));
+    expect(preview.diagnostics).toEqual([]);
+    expect(preview.ok).toBe(true);
+
+    const missing = previewPlanDeclarations(plan(
+      reuseSection(validReuse),
+      librariesSection({ needs: [
+        { need: 'trim helper', decision: 'skip-research' },
+        { need: 'schema validation', decision: 'already-in-project', existingUse: 'product-shaping.ts' },
+      ], notApplicable: null }),
+    ));
+    expect(missing.diagnostics.map((d) => [d.code, d.path])).toEqual([
+      ['declaration_invalid', 'needs.0.reason'],
+      ['declaration_invalid', 'needs.1.package'],
+    ]);
+  });
+
   it('accepts a not-applicable reason in place of entries', () => {
     const preview = previewPlanDeclarations(plan(
       reuseSection({ searched: [], reused: [], newSurfaces: [], notApplicable: 'docs-only plan' }),

@@ -516,7 +516,8 @@ export default defineTool({
               ...(ctxAny.signal && { signal: ctxAny.signal }),
               ...(ctxAny.progress && { progress: ctxAny.progress }),
               metadata: (d) => {
-                innerMeta = d;
+                innerMeta = { ...innerMeta, ...d };
+                publishDocsSearchTiming();
               },
             },
           ),

@@ -263,8 +263,11 @@ const MARKER_AWARE_RECOVERY = ${JSON.stringify(MARKER_AWARE_POST_COMPACTION_RECO
 // '@papercusp/host-platform/home', so it restates papercuspPtyPath() with its
 // own imports. Calling the generator's import here threw a ReferenceError at
 // load and killed the whole hook (WI-6554700010018176).
+const HOST_PAPERCUSP_HOME_NAME = '.papercusp';
+const HOST_PAPERCUSP_HOME = (typeof process.env.PAPERCUSP_HOME === 'string' ? process.env.PAPERCUSP_HOME.trim() : '')
+  || join(homedir(), HOST_PAPERCUSP_HOME_NAME);
 const PSU_PTY_DIR = (typeof process.env.PAPERCUSP_PSU_PTY_DIR === 'string' ? process.env.PAPERCUSP_PSU_PTY_DIR.trim() : '')
-  || join(homedir(), '.papercusp', 'psu-pty');
+  || join(HOST_PAPERCUSP_HOME, 'psu-pty');
 const RESPAWN_EVENT_LOG_MAX_BYTES = 2 * 1024 * 1024;
 function sanitizeOwnerKey(ownerId) {
   return String(ownerId || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200);

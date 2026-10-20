@@ -339,4 +339,61 @@ describe('memory:remember supersession convergence', () => {
     expect(b.invalidateEntry).toHaveBeenNthCalledWith(1, OLD_ID, { supersededBy: NEW_ID });
     expect(b.invalidateEntry).toHaveBeenNthCalledWith(2, NEW_ID);
   });
+
+  // EI-26515229747561182: a soft-forgotten row is closed with superseded_by
+  // NULL. It folds to status 'superseded' but has no winner, so it must accept
+  // its correction instead of being refused as already closed.
+  it('accepts a soft-forgotten (closed, winner-less) target and links the replacement', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [NEW_ID] });
+    b.invalidateEntry.mockResolvedValueOnce(true);
+    b.get.mockResolvedValueOnce({
+      id: OLD_ID, text: 'old', scope: 'user-1',
+      metadata: { validity: { status: 'superseded', superseded_by: null } },
+    });
+    useBackend(b);
+
+    const res = await remember.handler({ content: 'replacement', kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed).toMatchObject({ ok: true, ids: [NEW_ID], superseded: OLD_ID });
+    expect(b.invalidateEntry).toHaveBeenCalledTimes(1);
+    expect(b.invalidateEntry).toHaveBeenCalledWith(OLD_ID, { supersededBy: NEW_ID });
+  });
+
+  it('still refuses a target that already names a winner, before any write', async () => {
+    const b = fakeBackend();
+    b.get.mockResolvedValueOnce({
+      id: OLD_ID, text: 'old', scope: 'user-1',
+      metadata: { validity: { status: 'superseded', superseded_by: '33333333-3333-4333-8333-333333333333' } },
+    });
+    useBackend(b);
+
+    const res = await remember.handler({ content: 'replacement', kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed).toEqual({ ok: false, reason: 'supersede_already_closed' });
+    expect(b.remember).not.toHaveBeenCalled();
+    expect(b.invalidateEntry).not.toHaveBeenCalled();
+  });
+
+  it('never closes the replacement when the link is refused but no winner exists', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [NEW_ID] });
+    b.invalidateEntry.mockResolvedValueOnce(false);
+    b.get
+      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'user-1', metadata: { validity: { status: 'current' } } })
+      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'user-1', metadata: { validity: { status: 'superseded', superseded_by: null } } });
+    useBackend(b);
+
+    const res = await remember.handler({ content: 'replacement', kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed).toMatchObject({ ok: true, ids: [NEW_ID], superseded: false });
+    expect(parsed.supersede_note).toContain('no winner');
+    expect(parsed.supersede_note).not.toContain('another replacement won');
+    // Exactly the one link attempt: the replacement was NOT closed.
+    expect(b.invalidateEntry).toHaveBeenCalledTimes(1);
+    expect(b.invalidateEntry).not.toHaveBeenCalledWith(NEW_ID);
+  });
 });

@@ -326,14 +326,21 @@ describe('memory:update supersedes (P-004 write path)', () => {
   it('a concurrent immutable winner closes the losing replacement and reports failure', async () => {
     const b = fakeBackend();
     (b.invalidateEntry as ReturnType<typeof vi.fn>).mockResolvedValue(false);
-    b.get.mockImplementation(async (id: string) => ({
-      id,
-      text: id === NEW_ID ? 'replacement' : 'old',
-      scope: 'user-1',
-      metadata: id === OLD_ID
-        ? { validity: { status: 'current', superseded_by: id === OLD_ID ? '33333333-3333-4333-8333-333333333333' : null } }
-        : { validity: { status: 'current', superseded_by: null } },
-    }));
+    // A real race: the old row is OPEN at preflight, and a different winner
+    // closes it before this replacement's close lands. (A winner already named
+    // at preflight is refused before any write; see the test below.)
+    let oldReads = 0;
+    b.get.mockImplementation(async (id: string) => {
+      if (id === OLD_ID) oldReads += 1;
+      return {
+        id,
+        text: id === NEW_ID ? 'replacement' : 'old',
+        scope: 'user-1',
+        metadata: id === OLD_ID && oldReads > 1
+          ? { validity: { status: 'superseded', superseded_by: '33333333-3333-4333-8333-333333333333' } }
+          : { validity: { status: 'current', superseded_by: null } },
+      };
+    });
     useBackend(b);
     const out = parse(
       await update.handler({ id: NEW_ID, content: 'x', supersedes: OLD_ID } as never, ctx),
@@ -342,6 +349,64 @@ describe('memory:update supersedes (P-004 write path)', () => {
     expect(out.results[0].error).toContain('another replacement won');
     expect(b.invalidateEntry).toHaveBeenNthCalledWith(1, OLD_ID, { supersededBy: NEW_ID });
     expect(b.invalidateEntry).toHaveBeenNthCalledWith(2, NEW_ID);
+  });
+
+  // EI-26515229747561182: memory:forget { soft } closes a row with
+  // superseded_by NULL. That row folds to status 'superseded' with NO winner,
+  // and memory:update { supersedes } was refused with "already has a different
+  // immutable winner", naming a winner that did not exist.
+  it('a soft-forgotten (closed, winner-less) target passes preflight and gets the lineage link', async () => {
+    const b = fakeBackend();
+    b.get.mockImplementation(async (id: string) => ({
+      id,
+      text: id === NEW_ID ? 'replacement' : 'retracted',
+      scope: 'user-1',
+      metadata: id === OLD_ID
+        ? { validity: { status: 'superseded', superseded_by: null } }
+        : { validity: { status: 'current', superseded_by: null } },
+    }));
+    useBackend(b);
+    const out = parse(await update.handler({ id: NEW_ID, supersedes: OLD_ID } as never, ctx));
+    expect(out.results[0]).toMatchObject({ ok: true, id: NEW_ID, superseded: OLD_ID });
+    expect(b.invalidateEntry).toHaveBeenCalledTimes(1);
+    expect(b.invalidateEntry).toHaveBeenCalledWith(OLD_ID, { supersededBy: NEW_ID });
+  });
+
+  it('a target that names a DIFFERENT winner is refused before mutation, and the error names it', async () => {
+    const WINNER = '33333333-3333-4333-8333-333333333333';
+    const b = fakeBackend();
+    b.get.mockImplementation(async (id: string) => ({
+      id,
+      text: 'x',
+      scope: 'user-1',
+      metadata: id === OLD_ID
+        ? { validity: { status: 'superseded', superseded_by: WINNER } }
+        : { validity: { status: 'current', superseded_by: null } },
+    }));
+    useBackend(b);
+    const out = parse(await update.handler({ id: NEW_ID, content: 'x', supersedes: OLD_ID } as never, ctx));
+    expect(out.results[0]).toMatchObject({ ok: false, id: NEW_ID });
+    expect(out.results[0].error).toContain(`different immutable winner (${WINNER})`);
+    expect(b.update).not.toHaveBeenCalled();
+    expect(b.invalidateEntry).not.toHaveBeenCalled();
+  });
+
+  it('a refused link with NO winner does not close the replacement (not a lost race)', async () => {
+    const b = fakeBackend();
+    (b.invalidateEntry as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    b.get.mockImplementation(async (id: string) => ({
+      id,
+      text: id === NEW_ID ? 'replacement' : 'old',
+      scope: 'user-1',
+      metadata: { validity: { status: 'current', superseded_by: null } },
+    }));
+    useBackend(b);
+    const out = parse(await update.handler({ id: NEW_ID, content: 'x', supersedes: OLD_ID } as never, ctx));
+    expect(out.results[0]).toMatchObject({ ok: false, id: NEW_ID, superseded: false });
+    expect(out.results[0].error).toContain('supersession not recorded');
+    expect(out.results[0].error).not.toContain('another replacement won');
+    expect(b.invalidateEntry).toHaveBeenCalledTimes(1);
+    expect(b.invalidateEntry).not.toHaveBeenCalledWith(NEW_ID);
   });
 
   it('rejects unknown, cross-scope, and entity supersession endpoints before mutation', async () => {

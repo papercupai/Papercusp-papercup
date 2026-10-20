@@ -68,6 +68,7 @@ import { createRequire } from 'node:module';
 import {
   closeSync,
   existsSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -457,6 +458,8 @@ export function buildDetachedTestRunRequest(opts: {
   timeoutMs?: number;
   /** Caller-bound recovery retains the original absolute budget and owns a new artifact packet. */
   deadline?: TestRunDeadline;
+  /** Mixed-checkout recovery retains a separate reporter sink for each owning root. */
+  groups?: TestFileCheckoutGroup[];
   /** expensive-verification-loops P-001: the work-item this run verifies, stamped on
    *  the task-ledger row so a long detached run counts as an attempt against it. */
   workItemId?: string;
@@ -465,6 +468,19 @@ export function buildDetachedTestRunRequest(opts: {
     // Re-enter the maintained core, rather than the bare router: only the core
     // enforces the absolute child cutoff and owns cleanup after confirmed exit.
     // The store still owns the detached lifecycle and run-group/ledger identity.
+    const reportArtifacts = (opts.groups ?? [{ root: opts.root, files: opts.files }]).map(group => {
+      const directory = mkdtempSync(join(ensurePapercuspTmpdir() ?? tmpdir(), 'testing-run-replay-'));
+      return {
+        reportPath: join(directory, 'report.json'),
+        failureDetailsPath: join(directory, TEST_FAILURE_DETAILS_FILENAME),
+        root: group.root,
+        routerReports: true,
+        testNamePattern: opts.testNamePattern ?? null,
+        ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
+          ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } } : {}),
+      };
+    });
+    const reportDirectories = Object.fromEntries(reportArtifacts.map(artifact => [resolve(artifact.root), dirname(artifact.reportPath)]));
     const replay = {
       root: opts.root, files: opts.files, deadline: opts.deadline,
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -484,11 +500,12 @@ export function buildDetachedTestRunRequest(opts: {
       command: process.execPath,
       args: ['--import', 'tsx', '--input-type=module', '-e', [
         `const { runTestFilesCore } = await import(${JSON.stringify(import.meta.url)});`,
-        `const result = await runTestFilesCore({ ...${JSON.stringify(replay)}, runId: process.env.PAPERCUSP_TEST_RUN_GROUP });`,
+        `const result = await runTestFilesCore({ ...${JSON.stringify(replay)}, runId: process.env.PAPERCUSP_TEST_RUN_GROUP }, { reportDirectories: ${JSON.stringify(reportDirectories)} });`,
         'console.log(JSON.stringify(result));',
         'process.exitCode = result.ok ? 0 : 1;',
       ].join('\n')],
       cwd: opts.root,
+      detachedReportArtifacts: reportArtifacts,
       runtimeMaxSec: Math.max(1, Math.floor((opts.deadline.taskDeadlineAtMs - Date.now()) / 1_000)),
       ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
       env: {
@@ -3407,7 +3424,12 @@ export interface RunTestFilesCoreOptions {
   /** Optional handler-owned timing accumulator; omitted by internal callers. */
   phaseTimings?: TestingRunPhaseTimings;
 }
-type TestFilesCoreDeps = { runRouterFn?: typeof runRouter; artifactBaseDir?: string };
+type TestFilesCoreDeps = {
+  runRouterFn?: typeof runRouter;
+  artifactBaseDir?: string;
+  /** Existing detached-store sinks, allocated before launch so observer loss can recover them. */
+  reportDirectories?: Record<string, string>;
+};
 
 export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
   const runId = opts.runId ?? randomUUID();
@@ -3420,6 +3442,12 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   const foregroundTransportAtMs = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const foregroundCutoffAtMs = Math.min(foregroundTransportAtMs, deadline.childCutoffAtMs);
   const packet = new TestRunArtifactPacket(runId, resolve(opts.root), deadline, deps.artifactBaseDir);
+  const reportDirectory = deps.reportDirectories?.[resolve(opts.root)];
+  if (reportDirectory) {
+    packet.paths.reports = reportDirectory;
+    packet.write('manifest.json', { schemaVersion: 1, runId, root: resolve(opts.root), deadline,
+      state: 'running', paths: packet.paths });
+  }
   let result: TestFilesCoreResult | undefined;
   let cleanup: OwnedTestDbCleanupResult | undefined;
   let error: string | undefined;

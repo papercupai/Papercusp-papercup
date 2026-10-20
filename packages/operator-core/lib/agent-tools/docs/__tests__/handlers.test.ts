@@ -757,6 +757,38 @@ describe('docs:search handler', () => {
     expect(JSON.stringify(timing)).not.toContain('auth flow');
   });
 
+  it('publishes partial lexical diagnostics before search settles and preserves earlier engine metadata', async () => {
+    vi.useFakeTimers();
+    try {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      let releaseSearch!: () => void;
+      const lexicalTiming = { version: 1, active: { phase: 'getContent' }, pages: { loaded: 25 } };
+      searchDocs.mockImplementationOnce(async (...params: unknown[]) => {
+        const engineCtx = params[2] as { metadata: (data: Record<string, unknown>) => void };
+        engineCtx.metadata({ non_searchable_excluded: 2 });
+        engineCtx.metadata({ docsLexicalTiming: lexicalTiming });
+        return await new Promise(resolve => {
+          releaseSearch = () => resolve({ hits: [{ slug: 'p1', title: 'P1', excerpt: 'ex' }] });
+        });
+      });
+      const tool = (await import('../search')).default;
+      const metadata = vi.fn();
+      const pending = tool.handler(
+        { query: 'private query', limit: 8, semantic: false } as never,
+        { harnessSlug: 'sheets', metadata } as never,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(metadata.mock.lastCall?.[0]).toMatchObject({
+        non_searchable_excluded: 2,
+        docsLexicalTiming: lexicalTiming,
+        docsSearchTiming: { active: expect.arrayContaining([expect.objectContaining({ phase: 'lexicalSearch' })]) },
+      });
+      releaseSearch();
+      await pending;
+      expect(metadata.mock.lastCall?.[0]).toMatchObject({ non_searchable_excluded: 2, docsLexicalTiming: lexicalTiming });
+    } finally { vi.useRealTimers(); }
+  });
+
   it('logs one query-free breadcrumb when a search phase stays pending past the diagnostic threshold', async () => {
     vi.useFakeTimers();
     try {

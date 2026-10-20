@@ -44,6 +44,7 @@ import {
 } from 'vscode-jsonrpc/node.js';
 
 import { pinModuleState } from '@papercusp/module-singleton';
+import { papercuspHome as resolveHostPapercuspHome } from '@papercusp/host-platform/home';
 import type { LspCacheRevision, MeasuredLspInputs } from './lsp-daemon-cache';
 import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn.ts';
 import { killScopeUnit, killTask } from '../task-manager/control.ts';
@@ -79,7 +80,7 @@ export type LspLanguage = typeof LSP_LANGUAGES[number];
 
 /** Select once at daemon bootstrap, so a warm client cannot change installations. */
 export function resolveLspVendorDir(setting: string | undefined = process.env.PAPERCUSP_LSP_VENDOR_DIR): string {
-  if (setting === undefined) return join(homedir(), '.papercusp', 'vendor', 'lsp');
+  if (setting === undefined) return join(resolveHostPapercuspHome({}, homedir()), 'vendor', 'lsp');
   if (!isAbsolute(setting) || resolvePath(setting) !== setting)
     throw new Error('PAPERCUSP_LSP_VENDOR_DIR must be an absolute canonical directory');
   try {
@@ -1371,7 +1372,7 @@ async function startClient(language: LspLanguage, rootPath: string, semanticPlug
   }
 
   const args = [...spec.serverArgs];
-  const goBin = join(homedir(), '.papercusp', 'vendor', 'go', 'go', 'bin');
+  const goBin = join(resolveHostPapercuspHome({}, homedir()), 'vendor', 'go', 'go', 'bin');
   const env = language === 'go' && existsSync(join(goBin, 'go'))
     ? { ...process.env, PATH: `${goBin}:${process.env.PATH ?? ''}`, GOTOOLCHAIN: 'local' }
     : process.env;

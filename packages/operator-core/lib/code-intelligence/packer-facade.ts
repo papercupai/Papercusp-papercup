@@ -1,4 +1,4 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspHome as resolveHostPapercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 /**
  * The PACKING leg of the code-intelligence routing table (plan
  * `code-intelligence-routing-lsp-gitnexus-2026-08-20`, P-016; rulings D-005 and
@@ -87,7 +87,7 @@ const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) a
  * scratch artifacts below.
  */
 export function resolvePackerVendorDir(engine: 'repomix' | 'code2prompt'): string {
-  return join(homedir(), '.papercusp', 'vendor', engine);
+  return join(resolveHostPapercuspHome({}, homedir()), 'vendor', engine);
 }
 
 /** Vendor roots. Provisioned by P-016; never installed at runtime. */

@@ -286,6 +286,62 @@ describe('drainMemoryWriteJournal', () => {
     );
   });
 
+  // EI-26515229747561182: a refused link with NO winner is not a lost race —
+  // the drain must keep the replacement current and leave the row to retry.
+  it('an update-supersede replay whose link is refused with no winner keeps the replacement and stays pending', async () => {
+    pendingRows = [{
+      ...baseRow,
+      id: 'row-nw',
+      scope: 'userA',
+      content: 'edited text',
+      metadata: { __journal_update_of: 'new-mem', __journal_supersede_of: 'old-mem' },
+    }];
+    backend.invalidateEntry.mockResolvedValueOnce(false);
+    backend.get.mockResolvedValueOnce({
+      id: 'old-mem', text: 'old', scope: 'userA',
+      metadata: { validity: { status: 'superseded', superseded_by: null } },
+    });
+    const r = await drainMemoryWriteJournal();
+    expect(r.recovered).toBe(0);
+    expect(r.stillPending).toBe(1);
+    expect(backend.invalidateEntry).toHaveBeenCalledTimes(1);
+    expect(backend.invalidateEntry).not.toHaveBeenCalledWith('new-mem');
+  });
+
+  it('an update-supersede replay whose superseded row is gone commits without closing the replacement', async () => {
+    pendingRows = [{
+      ...baseRow,
+      id: 'row-gone',
+      scope: 'userA',
+      content: 'edited text',
+      metadata: { __journal_update_of: 'new-mem', __journal_supersede_of: 'old-mem' },
+    }];
+    backend.invalidateEntry.mockResolvedValueOnce(false);
+    backend.get.mockResolvedValueOnce(null);
+    const r = await drainMemoryWriteJournal();
+    expect(r.recovered).toBe(1);
+    expect(backend.invalidateEntry).toHaveBeenCalledTimes(1);
+    expect(backend.invalidateEntry).not.toHaveBeenCalledWith('new-mem');
+  });
+
+  it('an update-supersede replay that lost to a DIFFERENT winner closes the replacement and retries', async () => {
+    pendingRows = [{
+      ...baseRow,
+      id: 'row-lost',
+      scope: 'userA',
+      content: 'edited text',
+      metadata: { __journal_update_of: 'new-mem', __journal_supersede_of: 'old-mem' },
+    }];
+    backend.invalidateEntry.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    backend.get.mockResolvedValueOnce({
+      id: 'old-mem', text: 'old', scope: 'userA',
+      metadata: { validity: { status: 'superseded', superseded_by: 'other-winner' } },
+    });
+    const r = await drainMemoryWriteJournal();
+    expect(r.recovered).toBe(0);
+    expect(backend.invalidateEntry).toHaveBeenNthCalledWith(2, 'new-mem');
+  });
+
   it('EI-10371: re-detects credentials at replay time and stamps the flag', async () => {
     // A row journaled BEFORE stamping existed (no flag in its metadata) whose
     // content is credential-shaped — the drain must land it flagged.

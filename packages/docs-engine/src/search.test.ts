@@ -78,6 +78,98 @@ describe('tokenize', () => {
 });
 
 describe('searchDocs', () => {
+  it('distinguishes page listing, content loading and ranking without retaining query text', async () => {
+    vi.useFakeTimers();
+    try {
+      const base = makeSource([{ slug: 'private-page', body: 'private-query' }]);
+      let releasePages!: (pages: DocPage[]) => void;
+      let releaseContent!: (body: string) => void;
+      const source: DocSource = {
+        ...base,
+        listPages: () => new Promise(resolve => { releasePages = resolve; }),
+        getContent: () => new Promise(resolve => { releaseContent = resolve; }),
+      };
+      const metadata = vi.fn();
+      const pending = searchDocs(source, { query: 'private-query' }, { metadata });
+      expect(metadata.mock.lastCall?.[0].docsLexicalTiming.active.phase).toBe('listPages');
+      await vi.advanceTimersByTimeAsync(12);
+      releasePages(await base.listPages());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(metadata.mock.lastCall?.[0].docsLexicalTiming).toMatchObject({
+        active: { phase: 'getContent' }, completedMs: { listPages: 12 },
+        pages: { listed: 1, searchable: 1, loaded: 0 },
+      });
+      await vi.advanceTimersByTimeAsync(25);
+      releaseContent('private-query');
+      const result = await pending;
+      expect(result.hits[0]?.slug).toBe('private-page');
+      expect(metadata.mock.calls.map(([data]) => data.docsLexicalTiming?.active?.phase).filter(Boolean))
+        .toEqual(['listPages', 'getContent', 'ranking']);
+      const timing = metadata.mock.lastCall?.[0].docsLexicalTiming;
+      expect(timing).toMatchObject({
+        outcome: 'complete', active: null, totalElapsedMs: 37,
+        completedMs: { listPages: 12, getContent: 25, ranking: 0 },
+        pages: { listed: 1, searchable: 1, loaded: 1 },
+      });
+      expect(JSON.stringify(timing)).not.toContain('private');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['listPages', 'getContent'] as const)('retains the interrupted %s phase when cancelled', async (phase) => {
+    vi.useFakeTimers();
+    try {
+      const base = makeSource([{ slug: 'a', body: 'foo' }]);
+      const pendingForever = () => new Promise<never>(() => undefined);
+      const source: DocSource = {
+        ...base,
+        ...(phase === 'listPages' ? { listPages: pendingForever } : { getContent: pendingForever }),
+      };
+      const controller = new AbortController();
+      const metadata = vi.fn();
+      const pending = searchDocs(source, { query: 'foo' }, { metadata, signal: controller.signal });
+      const rejection = expect(pending).rejects.toThrow('cancelled');
+      await vi.advanceTimersByTimeAsync(17);
+      controller.abort();
+      await rejection;
+      expect(metadata.mock.lastCall?.[0].docsLexicalTiming).toMatchObject({
+        outcome: 'cancelled', stoppedIn: phase, active: null,
+        completedMs: { [phase]: 17 },
+      });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('reports partial loaded-page counts while a corpus scan is still pending', async () => {
+    const base = makeSource(Array.from({ length: 26 }, (_, i) => ({ slug: String(i), body: 'foo' })));
+    const controller = new AbortController();
+    const metadata = vi.fn();
+    const pending = searchDocs({
+      ...base,
+      getContent: page => page.slug === '25' ? new Promise(() => undefined) : base.getContent(page),
+    }, { query: 'foo' }, { metadata, signal: controller.signal });
+    const rejection = expect(pending).rejects.toThrow('cancelled');
+    await vi.waitFor(() => expect(metadata.mock.lastCall?.[0].docsLexicalTiming).toMatchObject({
+      outcome: 'running', active: { phase: 'getContent' },
+      pages: { listed: 26, searchable: 26, loaded: 25 },
+    }));
+    controller.abort();
+    await rejection;
+    expect(metadata.mock.lastCall?.[0].docsLexicalTiming).toMatchObject({
+      outcome: 'cancelled', stoppedIn: 'getContent', pages: { loaded: 25 },
+    });
+  });
+
+  it.each(['listPages', 'getContent'] as const)('records a failed %s source without masking the error or copying it into timing', async phase => {
+    const base = makeSource([{ slug: 'a', body: 'foo' }]);
+    const failure = new Error('private backend detail');
+    const reject = async () => { throw failure; };
+    const source: DocSource = { ...base, ...(phase === 'listPages' ? { listPages: reject } : { getContent: reject }) };
+    const metadata = vi.fn();
+    await expect(searchDocs(source, { query: 'foo' }, { metadata })).rejects.toBe(failure);
+    const timing = metadata.mock.lastCall?.[0].docsLexicalTiming;
+    expect(timing).toMatchObject({ outcome: 'failed', stoppedIn: phase, active: null });
+    expect(JSON.stringify(timing)).not.toContain('private');
+  });
+
   it('reports the full pre-truncation match total in hitCount while truncating hits to limit (Gap 2)', async () => {
     // Contract: hitCount = how many pages matched even if not all are returned,
     // so the model can detect that results were truncated. hits.length is capped

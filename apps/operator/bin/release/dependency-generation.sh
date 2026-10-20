@@ -249,6 +249,48 @@ dependency_generation_input_manifest_ref() {
   [ -z "$manifest" ] || printf '%s\n' "$manifest"
 }
 
+# True only when "$root/$path" is its OWN initialized checkout and holds "$object".
+# A plain directory is not enough: `git -C <plain dir>` silently walks up to the
+# superproject and would answer from the wrong object database.
+dependency_generation_submodule_has_commit() {
+  local root="$1" path="$2" object="$3" top here
+  [ -d "$root/$path" ] || return 1
+  top="$(git -C "$root/$path" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  here="$(cd "$root/$path" && pwd -P)" || return 1
+  [ "$top" = "$here" ] || return 1
+  git -C "$root/$path" cat-file -e "$object^{commit}" 2>/dev/null
+}
+
+# WI-6554700010017090: an integration checkout (a pot's review-mode clone) can pin a
+# submodule that was never initialized because its first fill failed, and git-sync
+# skips uninitialized ('-') submodules by design. It can also hold an initialized
+# submodule that has not fetched the pinned commit yet. Either way every gate run
+# refused with exit 74 and the run never recovered. Hydrate the integration checkout
+# once from the submodule's own remote: initialize an uninitialized submodule, or
+# fetch into an initialized one. Never re-check-out an existing working tree. The
+# caller still fails closed when this cannot produce the commit.
+dependency_generation_hydrate_submodule() {
+  local root="$1" path="$2" object="$3"
+  local timeout_s="${PAPERCUSP_DEPENDENCY_SUBMODULE_HYDRATE_TIMEOUT_SEC:-1800}" top='' here=''
+  if [ -d "$root/$path" ]; then
+    top="$(git -C "$root/$path" rev-parse --show-toplevel 2>/dev/null || true)"
+    here="$(cd "$root/$path" && pwd -P)" || here=''
+  fi
+  if [ -n "$top" ] && [ "$top" = "$here" ]; then
+    dependency_generation_log "submodule $path lacks $object; fetching it from its origin"
+    GIT_TERMINAL_PROMPT=0 timeout "$timeout_s" \
+      git -C "$root/$path" fetch --no-tags --quiet origin "$object" >&2 \
+      || GIT_TERMINAL_PROMPT=0 timeout "$timeout_s" \
+        git -C "$root/$path" fetch --no-tags --quiet origin >&2 \
+      || return 1
+  else
+    dependency_generation_log "submodule $path is not initialized in $root; initializing it for $object"
+    GIT_TERMINAL_PROMPT=0 timeout "$timeout_s" \
+      git -C "$root" submodule update --init -- "$path" >&2 || return 1
+  fi
+  dependency_generation_submodule_has_commit "$root" "$path" "$object"
+}
+
 dependency_generation_emit_input_manifest_ref() {
   local root="$1" ref="$2" prefix="${3:-}" extract_root="${4:-}"
   local cache_root="${5:-}"
@@ -287,10 +329,10 @@ dependency_generation_emit_input_manifest_ref() {
         "FATAL: exact dependency-input ref $ref has no gitlink for submodule $submodule_path"
       return 74
     }
-    [ -d "$root/$submodule_path" ] \
-      && git -C "$root/$submodule_path" cat-file -e "$submodule_object^{commit}" 2>/dev/null || {
+    dependency_generation_submodule_has_commit "$root" "$submodule_path" "$submodule_object" \
+      || dependency_generation_hydrate_submodule "$root" "$submodule_path" "$submodule_object" || {
         dependency_generation_log \
-          "FATAL: exact dependency-input ref $ref requires unavailable submodule $submodule_path@$submodule_object"
+          "FATAL: exact dependency-input ref $ref requires unavailable submodule $submodule_path@$submodule_object (hydrating the integration checkout from the submodule's own remote did not produce that commit; this is an integration-checkout defect, not a generation-store one)"
         return 74
       }
     dependency_generation_input_manifest_ref \

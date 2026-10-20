@@ -32,7 +32,10 @@ export const LIBRARIES_SECTION_DESCRIPTION =
   'This section lists each need a third-party library could meet, one row per need, with how the library was chosen. No research is needed when the owner already named the library (owner-specified: sourceRef cites the owner turn), when the project already uses a library for this (already-in-project: package names it and existingUse says where it is used), or when the job is small or no suitable library is expected (skip-research: reason gives one line why). Research only when a library would remove a lot of work and fits the use case: the realistic options are compared, one is picked, and the runners-up are recorded with why (researched). A second library is never added for a job an existing dependency already does. A plan that needs no library records a one-line notApplicable reason.';
 
 const required = (max = 2000) => z.string().trim().min(1, 'must not be empty').max(max);
-const optionalText = (max = 2000) => z.string().trim().max(max);
+// Genuinely optional: a hand-written row may omit the key (P-010 E2E found an already-in-project
+// row with no `reason` refused as "expected string, received undefined"). Rules that need the value
+// (a package for every non-skip-research row, a reason for skip-research) live in the superRefine.
+const optionalText = (max = 2000) => z.string().trim().max(max).optional();
 const notApplicable = z.string().trim().min(1, 'must be a one-line reason or null').max(500).nullable();
 const OWNER_TURN_RE = /^session_turn:(claude|codex|omp|agent_chat):[^\s:]+:\d+$/;
 const PLAN_ITEM_RE = /^P-\d{3,}$/;
@@ -471,7 +474,7 @@ export async function checkLibraryDeclarations(declaration: LibrariesDeclaration
   const rows = declaration.needs.map((row, index) => ({ row, index }));
 
   for (const { row, index } of rows.filter(({ row }) => row.decision === 'already-in-project')) {
-    const name = normalisePackageName(row.package);
+    const name = normalisePackageName(row.package ?? '');
     if (!deps.packages) { unverified.push(`needs.${index}`); continue; }
     if (!deps.packages.isDependency(name)) {
       blockers.push({ code: 'library_not_a_dependency', row: index, need: row.need,
@@ -505,7 +508,7 @@ export async function checkLibraryDeclarations(declaration: LibrariesDeclaration
     if (descriptions) {
       for (const { row, index } of researched) {
         const words = adviceWords(row.need);
-        const chosen = normalisePackageName(row.package);
+        const chosen = normalisePackageName(row.package ?? '');
         const existingDependencies = [...descriptions]
           .filter(([name, description]) => name !== chosen && [...adviceWords(description)].some((word) => words.has(word)))
           .map(([name]) => name)

@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 // EI-24100872054224181: a testing:run { evidence } refused by the mutation-probe fence used to
 // register pending spec-evidence rows first and then FINISH them, leaving two never-settling
@@ -13,11 +13,16 @@ const phases = vi.hoisted(() => ({
   finish: vi.fn(),
   retract: vi.fn(),
   buildRemeasure: vi.fn(),
+  detach: vi.fn(),
 }));
 vi.mock('./mutation-probe-fence', () => ({ mutationProbeRefusal: phases.fence }));
 // The restricted-write fence (WI-10005634) reads the fence module's closure exports, which the
 // factory above omits; its reach logic has its own suite (restricted-hold-fence.test.ts).
 vi.mock('./restricted-hold-fence', () => ({ restrictedHoldRefusal: phases.restricted }));
+vi.mock('../../testing-run-store', async (original) => ({
+  ...(await original<typeof import('../../testing-run-store')>()),
+  startRunDurable: phases.detach,
+}));
 vi.mock('./evidence', async (original) => ({
   ...(await original<typeof import('./evidence')>()),
   prepareTestEvidence: phases.prepare,
@@ -26,23 +31,36 @@ vi.mock('./evidence', async (original) => ({
   buildTestEvidenceRemeasure: phases.buildRemeasure,
 }));
 
-import runTool from './run';
+import runTool, { buildDetachedMixedTestRunRequest, buildDetachedTestRunRequest, runTestFilesCore } from './run';
+import * as runArtifacts from './run-artifacts';
 
 const refusal = { error: 'mutation_probe_active' as const, hint: 'active mutation probe on src/feature.ts' };
 const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  for (const [request] of phases.detach.mock.calls) {
+    for (const artifact of request.detachedReportArtifacts ?? []) roots.push(dirname(artifact.reportPath));
+  }
   Object.values(phases).forEach((mock) => mock.mockReset());
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function invoke(extra: Record<string, unknown> = {}) {
+async function makeTestRoot(router = false) {
   const root = await mkdtemp(join(tmpdir(), 'testing-run-evidence-refusal-'));
   roots.push(root);
   await mkdir(join(root, '.git'));
   await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
   await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
   await writeFile(join(root, 'feature.test.ts'), "import { it } from 'vitest';\nit('noop', () => {});\n");
+  if (router) {
+    await mkdir(join(root, 'scripts'));
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+  }
+  return root;
+}
+
+async function invoke(extra: Record<string, unknown> = {}) {
+  const root = await makeTestRoot();
   const evidence = { workItemId: 'WI-refusal', planSlug: 'refusal-plan', bindings: [{
     specId: 'SPEC-001', specRevision: 1, testPath: 'feature.test.ts', sourcePaths: ['feature.ts'], testLayer: 'unit' as const,
   }] };
@@ -76,10 +94,129 @@ it('rejects an invalid relative reserve before pending evidence writes', async (
 });
 
 it('preserves the foreground transport cap without shrinking an explicit oversized reserve', async () => {
+  const clock = Date.now();
+  vi.spyOn(Date, 'now').mockReturnValue(clock);
+  const anchored = vi.spyOn(runArtifacts, 'testRunDeadline');
+  phases.fence.mockResolvedValue(refusal);
   const { result } = await invoke({ timeoutMs: 600_000, taskDeadlineAtMs: Date.now() + 600_000,
     cleanupReserveMs: 60_000 });
-  expect(result).toMatchObject({ ok: false, error: 'deadline_exhausted', deadline: { cleanupReserveMs: 60_000 } });
+  expect(anchored.mock.results[0]?.value).toEqual({ startedAtMs: clock, taskDeadlineAtMs: clock + 600_000,
+    cleanupReserveMs: 60_000, childCutoffAtMs: clock + 540_000 });
+  expect(result).toMatchObject({ ok: false, error: 'mutation_probe_active' });
   expect(phases.prepare).not.toHaveBeenCalled();
+});
+
+it('R5 preserves a caller deadline beyond the foreground cap without overwriting it', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(1_000);
+  const anchored = vi.spyOn(runArtifacts, 'testRunDeadline');
+  phases.fence.mockResolvedValue(refusal);
+  const { result } = await invoke({ timeoutMs: 45_000, taskDeadlineAtMs: 46_000, cleanupReserveMs: 10_000 });
+  expect(anchored.mock.results[0]?.value).toEqual({ startedAtMs: 1_000, taskDeadlineAtMs: 46_000,
+    cleanupReserveMs: 10_000, childCutoffAtMs: 36_000 });
+  expect(result).toMatchObject({ error: 'mutation_probe_active' });
+});
+
+const timedOutRouter = () => vi.fn(async (_args: string[], _root: string,
+  _env: NodeJS.ProcessEnv, _timeoutMs: number) => ({
+  code: null, signal: null, timedOut: true, aborted: false, output: '',
+}));
+const callerDeadline = { startedAtMs: 1_000, taskDeadlineAtMs: 46_000,
+  cleanupReserveMs: 10_000, childCutoffAtMs: 36_000 };
+
+it('R5 replays a caller-bound foreground timeout with the identical deadline and reserve', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(1_000);
+  const root = await makeTestRoot(true);
+  phases.detach.mockResolvedValue({ snapshot: { runId: 'caller-replay' }, durable: true });
+  const runRouterFn = timedOutRouter();
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'], timeoutMs: 25_000,
+    deadline: callerDeadline, harnessSlug: 'refusal-harness', workspaceId: 'refusal-workspace' },
+  { runRouterFn, artifactBaseDir: root });
+  expect(result).toMatchObject({ error: 'timeout', detachedRunId: 'caller-replay', detachedDurable: true });
+  expect(phases.detach).toHaveBeenCalledOnce();
+  expect(phases.detach.mock.calls[0]![0]).toMatchObject({ env: {
+    PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: '46000', PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: '36000',
+    PAPERCUSP_TEST_CLEANUP_RESERVE_MS: '10000',
+  } });
+  expect(runRouterFn).toHaveBeenCalledOnce();
+});
+
+it('R5 keeps the replay cutoff fixed after preparation and refuses an exhausted replay before spawn', async () => {
+  let now = 10_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const root = await makeTestRoot(true);
+  const request = buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
+    timeoutMs: 45_000, deadline: callerDeadline });
+  expect(request.env).toMatchObject({ PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: '46000',
+    PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: '36000', PAPERCUSP_TEST_CLEANUP_RESERVE_MS: '10000' });
+  const reportArtifact = request.detachedReportArtifacts?.[0];
+  expect(reportArtifact).toMatchObject({ root, routerReports: true, testNamePattern: null });
+  const reportDirectory = dirname(reportArtifact!.reportPath);
+  roots.push(reportDirectory);
+  expect(request.args.at(-1)).toContain(JSON.stringify({ [root]: reportDirectory }));
+  const runRouterFn = timedOutRouter();
+  const replay = { root, files: ['feature.test.ts'], timeoutMs: 45_000,
+    deadline: callerDeadline, allowDetachedRecovery: false };
+  const replayResult = await runTestFilesCore(replay, { runRouterFn, artifactBaseDir: root,
+    reportDirectories: { [root]: reportDirectory } });
+  expect(replayResult.artifacts?.reports).toBe(reportDirectory);
+  expect(runRouterFn.mock.calls[0]![0]).toContain(`--outputFile=${reportArtifact!.reportPath}`);
+  expect(runRouterFn.mock.calls[0]![2]).toMatchObject(request.env!);
+  expect(runRouterFn.mock.calls[0]![3]).toBe(26_000);
+  now = 36_000;
+  const exhausted = await runTestFilesCore(replay, { runRouterFn, artifactBaseDir: root });
+  expect(exhausted).toMatchObject({ error: 'deadline_exhausted' });
+  expect(exhausted).not.toHaveProperty('artifacts');
+  expect(runRouterFn).toHaveBeenCalledOnce();
+  expect(phases.detach).not.toHaveBeenCalled();
+});
+
+it('R5 writes both checkout reports at the paths retained by caller-bound detached recovery', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(10_000);
+  const groups = await Promise.all([makeTestRoot(true), makeTestRoot(true)])
+    .then(checkouts => checkouts.map(root => ({ root, files: ['feature.test.ts'] })));
+  const request = buildDetachedMixedTestRunRequest({ groups, deadline: callerDeadline, timeoutMs: 45_000 });
+  const artifacts = request.detachedReportArtifacts!;
+  expect(artifacts.map(artifact => artifact.root)).toEqual(groups.map(group => group.root));
+  const reportDirectories = Object.fromEntries(artifacts.map(artifact => [artifact.root, dirname(artifact.reportPath)]));
+  roots.push(...Object.values(reportDirectories));
+  expect(request.args.at(-1)).toContain(JSON.stringify(reportDirectories));
+  const runRouterFn = vi.fn(async (args: string[], root: string) => {
+    const output = args.find(arg => arg.startsWith('--outputFile='))!.slice('--outputFile='.length);
+    await writeFile(output, JSON.stringify({ success: true, numPassedTests: 1, numFailedTests: 0,
+      numPendingTests: 0, testResults: [{ name: join(root, 'feature.test.ts'), status: 'passed',
+        assertionResults: [{ title: 'noop', fullName: 'noop', status: 'passed' }] }] }));
+    return { code: 0, signal: null, timedOut: false, aborted: false, output: '' };
+  });
+  const result = await runTestFilesCore({ root: groups[0]!.root,
+    files: groups.flatMap(group => group.files.map(file => join(group.root, file))),
+    deadline: callerDeadline, timeoutMs: 45_000, allowDetachedRecovery: false },
+  { runRouterFn, artifactBaseDir: groups[0]!.root, reportDirectories });
+  expect(result).toMatchObject({ ok: true, passed: 2, failed: 0 });
+  expect(runRouterFn).toHaveBeenCalledTimes(2);
+  for (const artifact of artifacts) {
+    expect(runRouterFn.mock.calls.find(([, root]) => root === artifact.root)?.[0])
+      .toContain(`--outputFile=${artifact.reportPath}`);
+    expect(JSON.parse(await readFile(artifact.reportPath, 'utf8')).testResults[0].name)
+      .toBe(join(artifact.root, 'feature.test.ts'));
+  }
+  expect(phases.detach).not.toHaveBeenCalled();
+});
+
+it('R5 keeps a caller deadline within the foreground cap unchanged and foreground-only', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(1_000);
+  const root = await makeTestRoot(true);
+  const deadline = { startedAtMs: 1_000, taskDeadlineAtMs: 21_000,
+    cleanupReserveMs: 5_000, childCutoffAtMs: 16_000 };
+  const runRouterFn = timedOutRouter();
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'], timeoutMs: 25_000, deadline },
+    { runRouterFn, artifactBaseDir: root });
+  expect(result).toMatchObject({ error: 'timeout' });
+  expect(result).not.toHaveProperty('detachedRunId');
+  expect(runRouterFn.mock.calls[0]![2]).toMatchObject({ PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: '21000',
+    PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: '16000', PAPERCUSP_TEST_CLEANUP_RESERVE_MS: '5000' });
+  expect(deadline).toEqual({ startedAtMs: 1_000, taskDeadlineAtMs: 21_000,
+    cleanupReserveMs: 5_000, childCutoffAtMs: 16_000 });
+  expect(phases.detach).not.toHaveBeenCalled();
 });
 
 it('charges elapsed handler preflight to the caller child cutoff before evidence preparation', async () => {
