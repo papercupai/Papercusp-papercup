@@ -3923,6 +3923,7 @@ describe('collectSchemaObjectDriftSignals (WI-918476)', () => {
     drift: { ...clean, ...drift },
     unavailableReason: null,
     manifestGeneratedAt: '2026-08-29T00:00:00.000Z',
+    unverifiableOnHost: [],
   });
   const noPending = async () => ({ missing: [] as string[] });
 
@@ -3980,7 +3981,7 @@ describe('collectSchemaObjectDriftSignals (WI-918476)', () => {
 
   it('reports an UNGENERATED manifest as a finding rather than as a clean result', async () => {
     const [signal] = await collectSchemaObjectDriftSignals(
-      async () => ({ drift: null, unavailableReason: 'the migration-derived index manifest is empty', manifestGeneratedAt: null }),
+      async () => ({ drift: null, unavailableReason: 'the migration-derived index manifest is empty', manifestGeneratedAt: null, unverifiableOnHost: [] }),
       noPending,
     );
     expect(signal.key).toBe('schema-object-drift-unavailable');
@@ -3989,7 +3990,7 @@ describe('collectSchemaObjectDriftSignals (WI-918476)', () => {
   it('stays quiet when the LIVE census fails — unreachable is service-health\'s question', async () => {
     expect(
       await collectSchemaObjectDriftSignals(
-        async () => ({ drift: null, unavailableReason: 'live index census failed: connection refused', manifestGeneratedAt: null }),
+        async () => ({ drift: null, unavailableReason: 'live index census failed: connection refused', manifestGeneratedAt: null, unverifiableOnHost: [] }),
         noPending,
       ),
     ).toEqual([]);
@@ -4001,5 +4002,38 @@ describe('collectSchemaObjectDriftSignals (WI-918476)', () => {
 
   it('is NOT auto-close eligible — it degrades quiet, so silence can mean "could not look"', () => {
     expect(AUTO_CLOSE_ELIGIBLE_SOURCES).not.toContain('schema-object-drift');
+  });
+});
+
+describe('bug-inflow rollup refresh on the tick (bug-inflow-one-problem-one-row-2026-10-18 P-007 / R-6)', () => {
+  const baseDeps = {
+    readKeyDups: noKeyDups,
+    pruneTicks: noPrune,
+    collect: async () => [] as WatchdogSignal[],
+    recordTick: async () => {},
+  };
+
+  it('refreshes the stored daily rollup for the ticking workspace', async () => {
+    const calls: string[] = [];
+    const res = await runTick('ws-inflow', {}, {
+      ...baseDeps,
+      refreshBugInflow: async (ws) => { calls.push(ws); },
+    });
+    expect(res.status).toBe('ran');
+    expect(calls).toEqual(['ws-inflow']);
+  });
+
+  it('a failed refresh warns and leaves the tick ran (the reader reports the rows as stale)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await runTick('ws-inflow', {}, {
+        ...baseDeps,
+        refreshBugInflow: async () => { throw new Error('relation "harness_shared.bug_inflow_daily" does not exist'); },
+      });
+      expect(res.status).toBe('ran');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('bug-inflow refresh failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

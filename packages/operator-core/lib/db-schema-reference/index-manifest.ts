@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-16T13:30:45.505Z",
-  "migrationCountAtGeneration": 1309,
+  "generatedAt": "2026-10-20T04:10:49.235Z",
+  "migrationCountAtGeneration": 1317,
   "indexes": [
     {
       "schema": "audit",
@@ -490,6 +490,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "agent_activity_workspace_created_historical_idx",
+      "table": "agent_activity",
+      "definition": "CREATE INDEX agent_activity_workspace_created_historical_idx ON harness_shared.agent_activity USING btree (workspace_id, created_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "agent_activity_workspace_id_idx",
       "table": "agent_activity",
       "definition": "CREATE INDEX agent_activity_workspace_id_idx ON harness_shared.agent_activity USING btree (workspace_id, id)",
@@ -773,6 +780,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "agent_usage_samples_harness_idx",
       "table": "agent_usage_samples",
       "definition": "CREATE INDEX agent_usage_samples_harness_idx ON harness_shared.agent_usage_samples USING btree (workspace_id, harness_slug, ts DESC) INCLUDE (cost_usd) WHERE (harness_slug IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "agent_usage_samples_pending_response_account_idx",
+      "table": "agent_usage_samples",
+      "definition": "CREATE INDEX agent_usage_samples_pending_response_account_idx ON harness_shared.agent_usage_samples USING btree (workspace_id, id DESC) WHERE ((source = 'interactive'::text) AND (account_id IS NULL) AND ((usage_provenance ->> 'providerResponseId'::text) IS NOT NULL))",
       "constraintBacked": false
     },
     {
@@ -1698,6 +1712,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "boot_history_events",
       "definition": "CREATE INDEX boot_history_events_scope_idx ON harness_shared.boot_history_events USING btree (workspace_id, harness_slug, created_ts)",
       "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "bug_inflow_daily_pkey",
+      "table": "bug_inflow_daily",
+      "definition": "CREATE UNIQUE INDEX bug_inflow_daily_pkey ON harness_shared.bug_inflow_daily USING btree (workspace_id, day)",
+      "constraintBacked": true
     },
     {
       "schema": "harness_shared",
@@ -3675,6 +3696,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "doc_sections_lexical_search_idx",
+      "table": "doc_sections",
+      "definition": "CREATE INDEX doc_sections_lexical_search_idx ON harness_shared.doc_sections USING gin (to_tsvector('english'::regconfig, ((title || ' '::text) || content)))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "doc_sections_page_order_idx",
       "table": "doc_sections",
       "definition": "CREATE INDEX doc_sections_page_order_idx ON harness_shared.doc_sections USING btree (source_key, slug, section_idx) WHERE (section_idx >= 0)",
@@ -4582,6 +4610,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "gateway_request_outcomes",
       "definition": "CREATE UNIQUE INDEX gateway_request_outcomes_pkey ON harness_shared.gateway_request_outcomes USING btree (gateway_process_instance_id, request_ordinal)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "gateway_request_outcomes_response_idx",
+      "table": "gateway_request_outcomes",
+      "definition": "CREATE INDEX gateway_request_outcomes_response_idx ON harness_shared.gateway_request_outcomes USING btree (workspace_id, provider_response_id, owner_id) WHERE (provider_response_id IS NOT NULL)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -10409,6 +10444,20 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "session_turns_workspace_ingested_historical_idx",
+      "table": "session_turns",
+      "definition": "CREATE INDEX session_turns_workspace_ingested_historical_idx ON harness_shared.session_turns USING btree (workspace_id, ingested_at DESC) WHERE ((owner IS NOT NULL) AND (session_id IS NOT NULL) AND (ts IS NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "session_turns_workspace_ts_historical_idx",
+      "table": "session_turns",
+      "definition": "CREATE INDEX session_turns_workspace_ts_historical_idx ON harness_shared.session_turns USING btree (workspace_id, ts DESC) WHERE ((owner IS NOT NULL) AND (session_id IS NOT NULL) AND (ts IS NOT NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "setup_wizard_state_pkey",
       "table": "setup_wizard_state",
       "definition": "CREATE UNIQUE INDEX setup_wizard_state_pkey ON harness_shared.setup_wizard_state USING btree (workspace_id)",
@@ -11004,6 +11053,27 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "test_downgrades_active_uniq",
+      "table": "test_downgrades",
+      "definition": "CREATE UNIQUE INDEX test_downgrades_active_uniq ON harness_shared.test_downgrades USING btree (workspace_id, harness_slug, test_file, test_case) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "test_downgrades_created_idx",
+      "table": "test_downgrades",
+      "definition": "CREATE INDEX test_downgrades_created_idx ON harness_shared.test_downgrades USING btree (workspace_id, harness_slug, created_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "test_downgrades_pkey",
+      "table": "test_downgrades",
+      "definition": "CREATE UNIQUE INDEX test_downgrades_pkey ON harness_shared.test_downgrades USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "test_executed_sources_newest_idx",
       "table": "test_executed_sources",
       "definition": "CREATE INDEX test_executed_sources_newest_idx ON harness_shared.test_executed_sources USING btree (workspace_name, test_file, recorded_at DESC)",
@@ -11357,6 +11427,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "tool_invocations_telemetry_idx",
       "table": "tool_invocations",
       "definition": "CREATE INDEX tool_invocations_telemetry_idx ON harness_shared.tool_invocations USING btree (workspace_id, harness_slug, invoked_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "tool_invocations_workspace_invoked_historical_idx",
+      "table": "tool_invocations",
+      "definition": "CREATE INDEX tool_invocations_workspace_invoked_historical_idx ON harness_shared.tool_invocations USING btree (workspace_id, invoked_at DESC) INCLUDE (coord_owner_id) WHERE (coord_owner_id IS NOT NULL)",
       "constraintBacked": false
     },
     {
@@ -12197,6 +12274,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "work_items_directive_ref_idx",
       "table": "work_items",
       "definition": "CREATE INDEX work_items_directive_ref_idx ON harness_shared.work_items USING btree (workspace_id, directive_ref) WHERE (directive_ref IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "work_items_duplicate_of_idx",
+      "table": "work_items",
+      "definition": "CREATE INDEX work_items_duplicate_of_idx ON harness_shared.work_items USING btree (workspace_id, duplicate_of) WHERE (duplicate_of IS NOT NULL)",
       "constraintBacked": false
     },
     {

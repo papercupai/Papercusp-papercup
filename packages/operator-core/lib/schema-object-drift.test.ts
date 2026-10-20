@@ -14,6 +14,8 @@ import {
   describeSchemaObjectDrift,
   hasSchemaObjectDrift,
   normalizeIndexDefinition,
+  indexAccessMethod,
+  splitExtensionGatedIndexes,
   type IndexCensusEntry,
 } from './schema-object-drift';
 import { INDEX_MANIFEST } from './db-schema-reference/index-manifest';
@@ -218,5 +220,50 @@ describe('the committed index manifest', () => {
     const keys = INDEX_MANIFEST.indexes.map((e) => `${e.schema}.${e.name}`);
     const repeated = [...new Set(keys.filter((k, i) => keys.indexOf(k) !== i))];
     expect(repeated).toEqual([]);
+  });
+
+  it('still carries the extension-gated bm25 indexes migration 1447 builds', () => {
+    // WI-6554700010017979: a regeneration on a PG without pg_textsearch dropped all of them.
+    const bm25 = INDEX_MANIFEST.indexes.filter((e) => indexAccessMethod(e.definition) === 'bm25');
+    expect(bm25.length).toBeGreaterThan(0);
+  });
+});
+
+describe('extension-gated index methods (WI-6554700010017979)', () => {
+  const BM25 = idx(
+    'harness_shared',
+    'work_items_bm25',
+    'work_items',
+    "CREATE INDEX work_items_bm25 ON harness_shared.work_items USING bm25 (title) WITH (text_config=simple)",
+  );
+  const BTREE = BASE[1]!;
+
+  it('reads the access method out of a rendered definition', () => {
+    expect(indexAccessMethod(BM25.definition)).toBe('bm25');
+    expect(indexAccessMethod(BTREE.definition)).toBe('btree');
+    expect(indexAccessMethod('CREATE INDEX x ON s.t (c)')).toBeNull();
+  });
+
+  it('marks a gated entry unverifiable only where its method is absent', () => {
+    const absent = splitExtensionGatedIndexes([BM25, BTREE], new Set());
+    expect(absent.unverifiable.map((e) => e.name)).toEqual(['work_items_bm25']);
+    expect(absent.checkable.map((e) => e.name)).toEqual([BTREE.name]);
+
+    const present = splitExtensionGatedIndexes([BM25, BTREE], new Set(['bm25']));
+    expect(present.unverifiable).toEqual([]);
+    expect(present.checkable).toHaveLength(2);
+  });
+
+  it('never exempts an ordinary access method, even when the host lists none', () => {
+    const gin = idx('harness_shared', 'x_gin', 'x', 'CREATE INDEX x_gin ON harness_shared.x USING gin (c)');
+    expect(splitExtensionGatedIndexes([gin, BTREE], new Set()).unverifiable).toEqual([]);
+  });
+
+  it('without the split, a host lacking the method reads gated entries as missing drift', () => {
+    // Control: the false finding the split exists to remove.
+    const live = [BTREE];
+    expect(compareIndexCensus([BM25, BTREE], live).referenceOnly.map((e) => e.name)).toEqual(['work_items_bm25']);
+    const { checkable } = splitExtensionGatedIndexes([BM25, BTREE], new Set());
+    expect(hasSchemaObjectDrift(compareIndexCensus(checkable, live))).toBe(false);
   });
 });

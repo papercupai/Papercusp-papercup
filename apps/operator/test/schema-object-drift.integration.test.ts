@@ -39,6 +39,10 @@ import {
   takeIndexCensus,
   compareIndexCensus,
   describeSchemaObjectDrift,
+  availableGatedIndexMethods,
+  splitExtensionGatedIndexes,
+  indexAccessMethod,
+  EXTENSION_GATED_INDEX_METHODS,
   type IndexCensusEntry,
 } from '@papercusp/operator-core/lib/schema-object-drift';
 import { INDEX_MANIFEST } from '@papercusp/operator-core/lib/db-schema-reference/index-manifest';
@@ -113,6 +117,7 @@ let adminUri: string;
 let dbName: string;
 let sql: postgres.Sql;
 let referenceCensus: IndexCensusEntry[];
+let gatedMethodsHere: Set<string>;
 let migrationCount: number;
 
 beforeAll(async () => {
@@ -136,10 +141,27 @@ beforeAll(async () => {
   await applyPendingMigrations({ client: sql, sqlDir: SQL_DIR });
 
   referenceCensus = await takeIndexCensus(sql);
+  gatedMethodsHere = await availableGatedIndexMethods(sql);
   migrationCount = readdirSync(SQL_DIR).filter((f) => f.endsWith('.sql')).length;
 
   if (UPDATE) {
-    writeFileSync(MANIFEST_FILE, renderManifest(referenceCensus, migrationCount), 'utf8');
+    // A reference built on a PG WITHOUT an extension-gated access method cannot see
+    // the indexes that method builds (migration 1447 creates the bm25 ones only when
+    // pg_textsearch is preloaded). Carry those entries over from the committed
+    // manifest instead of silently dropping them (WI-6554700010017979).
+    const { unverifiable: carried } = splitExtensionGatedIndexes(
+      [...INDEX_MANIFEST.indexes],
+      gatedMethodsHere,
+    );
+    const byteCmp = (a: IndexCensusEntry, b: IndexCensusEntry): number => {
+      const ka = `${a.schema}.${a.name}`;
+      const kb = `${b.schema}.${b.name}`;
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    };
+    const have = new Set(referenceCensus.map((e) => `${e.schema}.${e.name}`));
+    const merged = [...referenceCensus, ...carried.filter((e) => !have.has(`${e.schema}.${e.name}`))];
+    if (carried.length > 0) merged.sort(byteCmp);
+    writeFileSync(MANIFEST_FILE, renderManifest(merged, migrationCount), 'utf8');
   }
 }, 180_000);
 
@@ -180,7 +202,7 @@ describe('the migration-derived index manifest', () => {
     expect(autoNamed.length).toBeGreaterThan(0);
   });
 
-  it('matches the committed manifest', () => {
+  it('matches the committed manifest', async ({ annotate }) => {
     if (UPDATE) {
       // The regeneration run wrote the file above; asserting the stale in-memory
       // import against it would be comparing the old bytes to the new ones.
@@ -191,7 +213,24 @@ describe('the migration-derived index manifest', () => {
       `The index manifest has never been generated. Run:\n  PAPERCUSP_UPDATE_INDEX_MANIFEST=1 npm run test:file -- apps/operator/test/schema-object-drift.integration.test.ts`,
     ).toBeGreaterThan(0);
 
-    const drift = compareIndexCensus(referenceCensus, [...INDEX_MANIFEST.indexes]);
+    // Entries whose extension-gated access method this reference PG lacks cannot be
+    // produced here, so they are left out of the comparison (and named in the log)
+    // rather than read as "exist in the manifest but no migration builds them".
+    // The skipped population is reported as a test annotation (console output fails
+    // the run under vitest-fail-on-console).
+    const { checkable, unverifiable } = splitExtensionGatedIndexes(
+      [...INDEX_MANIFEST.indexes],
+      gatedMethodsHere,
+    );
+    if (unverifiable.length > 0) {
+      await annotate(
+        `${unverifiable.length} manifest index(es) use an extension-gated access method ` +
+          `this reference PG lacks (available: ${[...gatedMethodsHere].join(', ') || 'none'}); not verified here: ` +
+          unverifiable.map((e) => `${e.schema}.${e.name}`).join(', '),
+        'notice',
+      );
+    }
+    const drift = compareIndexCensus(referenceCensus, checkable);
     expect(
       drift.liveOnly.length + drift.referenceOnly.length + drift.definitionMismatch.length,
       `The committed index manifest no longer matches the migrations.\n\n` +
@@ -199,6 +238,24 @@ describe('the migration-derived index manifest', () => {
         `(In this comparison "live" means THE COMMITTED MANIFEST and "reference" means the migrations as they are on disk right now.)\n\n` +
         `Regenerate it:\n  PAPERCUSP_UPDATE_INDEX_MANIFEST=1 npm run test:file -- apps/operator/test/schema-object-drift.integration.test.ts`,
     ).toBe(0);
+  });
+
+  it('keeps the extension-gated indexes even when this PG cannot build them', () => {
+    // WI-6554700010017979: a regeneration on a PG without pg_textsearch once dropped
+    // every bm25 entry, and a fresh install WITH the extension then read its own
+    // indexes as drift. Migration 1447 builds bm25 indexes, so the manifest must carry
+    // them regardless of which PG generated it.
+    for (const method of EXTENSION_GATED_INDEX_METHODS) {
+      const inManifest = INDEX_MANIFEST.indexes.filter((e) => indexAccessMethod(e.definition) === method);
+      expect(inManifest.length, `the manifest carries no '${method}' index`).toBeGreaterThan(0);
+      if (gatedMethodsHere.has(method)) {
+        // Where the method exists, the migrations must really build what the manifest claims.
+        const built = referenceCensus.filter((e) => indexAccessMethod(e.definition) === method);
+        expect(built.length).toBe(inManifest.length);
+      } else {
+        expect(referenceCensus.filter((e) => indexAccessMethod(e.definition) === method)).toEqual([]);
+      }
+    }
   });
 
   it('carries each index exactly once', () => {

@@ -233,6 +233,57 @@ export async function takeIndexCensus(client: Queryable): Promise<IndexCensusEnt
 const keyOf = (e: { schema: string; name: string }): string => `${e.schema}.${e.name}`;
 
 /**
+ * Index access methods that an OPTIONAL extension supplies, and whose migration
+ * builds nothing when that extension is unavailable. Migration 1447 calls
+ * `bm25_ensure_indexes()`, which creates the pg_textsearch `bm25` indexes only when
+ * the library is preloaded; a host without it gets none of them, by design.
+ *
+ * An index built with one of these methods is therefore CONDITIONAL. On a host
+ * where the method does not exist (no `pg_am` row), its absence is expected rather
+ * than drift, and a reference generated there cannot see it at all
+ * (WI-6554700010017979: a manifest regenerated on such a test PG silently dropped
+ * all 16 bm25 entries).
+ */
+export const EXTENSION_GATED_INDEX_METHODS: readonly string[] = ['bm25'];
+
+/** The access method named in a rendered `CREATE INDEX ... USING <method>` definition. */
+export function indexAccessMethod(definition: string): string | null {
+  const m = /\bUSING\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(definition);
+  return m ? m[1]!.toLowerCase() : null;
+}
+
+/**
+ * Split entries into the ones this host can verify and the ones it cannot:
+ * an entry is UNVERIFIABLE when it uses an extension-gated access method that
+ * `availableMethods` (the host's `pg_am` names) does not contain. Pure.
+ */
+export function splitExtensionGatedIndexes(
+  entries: readonly IndexCensusEntry[],
+  availableMethods: ReadonlySet<string>,
+): { checkable: IndexCensusEntry[]; unverifiable: IndexCensusEntry[] } {
+  const checkable: IndexCensusEntry[] = [];
+  const unverifiable: IndexCensusEntry[] = [];
+  for (const e of entries) {
+    const method = indexAccessMethod(e.definition);
+    if (method && EXTENSION_GATED_INDEX_METHODS.includes(method) && !availableMethods.has(method)) {
+      unverifiable.push(e);
+    } else {
+      checkable.push(e);
+    }
+  }
+  return { checkable, unverifiable };
+}
+
+/** The extension-gated access methods that exist on the connected host. */
+export async function availableGatedIndexMethods(client: Queryable): Promise<Set<string>> {
+  const list = EXTENSION_GATED_INDEX_METHODS.map((m) => `'${m.replace(/'/g, "''")}'`).join(', ');
+  const rows = (await client.unsafe(
+    `SELECT amname FROM pg_catalog.pg_am WHERE amname IN (${list})`,
+  )) as Array<{ amname: string }>;
+  return new Set(rows.map((r) => r.amname));
+}
+
+/**
  * Compare two censuses. Pure — no I/O, no clock, no environment — which is what
  * lets the unit tests exercise the real false-positive classes directly instead
  * of asserting them through a database.
@@ -351,6 +402,13 @@ export interface SchemaObjectDriftResult {
   readonly unavailableReason: string | null;
   /** The manifest's generation stamp, for staleness triage. */
   readonly manifestGeneratedAt: string | null;
+  /**
+   * Manifest entries this host CANNOT verify and that were therefore left out of
+   * `drift`: they use an extension-gated access method (EXTENSION_GATED_INDEX_METHODS)
+   * that the live database does not have. Reported rather than dropped silently, so
+   * "no drift" never hides a skipped population.
+   */
+  readonly unverifiableOnHost: readonly IndexCensusEntry[];
 }
 
 /**
@@ -370,31 +428,39 @@ export async function checkSchemaObjectDrift(): Promise<SchemaObjectDriftResult>
       unavailableReason:
         'the migration-derived index manifest is empty or malformed — regenerate it with PAPERCUSP_UPDATE_INDEX_MANIFEST=1 npm run test:file -- apps/operator/test/schema-object-drift.integration.test.ts',
       manifestGeneratedAt: null,
+      unverifiableOnHost: [],
     };
   }
 
   let live: IndexCensusEntry[];
+  let gatedMethods: Set<string>;
   try {
     const { sql } = getOrgPg();
     live = await takeIndexCensus(sql as unknown as Queryable);
+    gatedMethods = await availableGatedIndexMethods(sql as unknown as Queryable);
   } catch (err) {
     return {
       drift: null,
       unavailableReason: `live index census failed: ${err instanceof Error ? err.message : String(err)}`,
       manifestGeneratedAt: manifest.generatedAt ?? null,
+      unverifiableOnHost: [],
     };
   }
 
   // Normalize the manifest side too: it was written by this module, but a
   // hand-edit or a formatter pass must not be able to manufacture a mismatch.
-  const reference = manifest.indexes.map((e) => ({
+  const normalized = manifest.indexes.map((e) => ({
     ...e,
     definition: normalizeIndexDefinition(e.definition),
   }));
+  // An index whose access method this host lacks cannot exist here, so its absence
+  // is not drift (WI-6554700010017979). It is reported, never silently dropped.
+  const { checkable: reference, unverifiable } = splitExtensionGatedIndexes(normalized, gatedMethods);
 
   return {
     drift: compareIndexCensus(reference, live),
     unavailableReason: null,
     manifestGeneratedAt: manifest.generatedAt ?? null,
+    unverifiableOnHost: unverifiable,
   };
 }

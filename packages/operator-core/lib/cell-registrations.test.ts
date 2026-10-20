@@ -246,6 +246,9 @@ describe('P-007: the four verdict cells', () => {
       // read (contract coverage by cohort, evidence-bound share, triage gaps, stale
       // acceptance, VAL-* residue), resolved through plans:verification-health.
       'verification.health',
+      // bug-inflow-one-problem-one-row-2026-10-18 P-007: issue-family rows filed per day by
+      // source vs closed per day, read from the stored bug_inflow_daily rollup.
+      'work.bugInflow',
       // workspace-work-scope-policy-2026-09-04 / WI-2145092: "is this workspace confined to
       // an allow-list of harnesses?" — the D-003 residue, resolved through the read-only
       // lens workspace:work_scope_status (the control tool is write-capable, which the cell
