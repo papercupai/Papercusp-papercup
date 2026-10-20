@@ -30,6 +30,7 @@ import {
   type AgentReviewFailure,
   type CaptureWatchdogIdentityConflictError,
 } from '../../harness/improvements/capture-core';
+import { isVolumeGatedToolErrorClass } from '../../harness/improvements/tool-error-volume-gate';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { OBSERVATION_KINDS, ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import {
@@ -1391,7 +1392,14 @@ export default defineTool({
           : 'bug'
       : undefined;
     const effectiveKind = toolFailureKind ?? args.kind ?? 'change';
-    const effectiveLane = normalizedToolFailure && !normalizedToolFailure.direct ? 'observation' : args.lane;
+    // WI-6554700010018038: a volume-gated class (transient / rate-limit) is never born
+    // promoted on legacy booleans alone; only structured directEvidence lifts it. It lands in
+    // probation, where repeats are counted and the invocation watchdog's volume bar decides.
+    const bornPromoted =
+      normalizedToolFailure !== undefined &&
+      normalizedToolFailure.direct &&
+      (!isVolumeGatedToolErrorClass(normalizedToolFailure.class) || args.toolFailure?.directEvidence !== undefined);
+    const effectiveLane = normalizedToolFailure && !bornPromoted ? 'observation' : args.lane;
     // D-001 / WI-38403: mode is server-side standing state, never caller prose or
     // a public bypass flag. Read it only for a claimable bug admission; observations
     // and non-bugs retain their existing availability-first behavior.
@@ -1443,7 +1451,7 @@ export default defineTool({
       ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
     const toolFailureProbation = normalizedToolFailure
       ? {
-          state: normalizedToolFailure.direct ? ('promoted' as const) : ('probation' as const),
+          state: bornPromoted ? ('promoted' as const) : ('probation' as const),
           class: normalizedToolFailure.class,
           watchdogKey: normalizedToolFailure.watchdogKey,
           classKey: normalizedToolFailure.classKey,
@@ -1456,7 +1464,7 @@ export default defineTool({
           firstSeenAt: new Date().toISOString(),
           lastSeenAt: new Date().toISOString(),
           report: args.toolFailure,
-          ...(normalizedToolFailure.direct ? { directEvidence: true } : {}),
+          ...(bornPromoted ? { directEvidence: true } : {}),
           // Recorded so a later audit can count every suppressed duplicate by
           // class id, and so the suppression is visible on the row itself
           // rather than being an invisible server-side decision.
@@ -1509,7 +1517,7 @@ export default defineTool({
         if (
           normalizedToolFailure && reportedToolFailure &&
           toolFailureSubsystemForCode(reportedToolFailure.errorCode) &&
-          !normalizedToolFailure.direct && onlyStructuredCaptureFields
+          !bornPromoted && onlyStructuredCaptureFields
         ) {
           const friction = await timing.measure('core.toolInvocationFriction', () => captureToolInvocationFriction({
             workspaceId: resolveConcreteWorkspaceId(id.workspaceId ?? ctxWorkspace, ctxWorkspace),

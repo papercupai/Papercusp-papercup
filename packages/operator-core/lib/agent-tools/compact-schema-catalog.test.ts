@@ -62,6 +62,7 @@ import {
   compactWireBytes,
   COMPACT_DROPPED_KEYS,
   isFormatImpliedPattern,
+  isVacuousPropertyNames,
   type ProjectedTool,
 } from '@papercusp/tooldef';
 import { MIN_PLAUSIBLE_CATALOG_SIZE } from './tool-guidance-budget';
@@ -151,12 +152,17 @@ function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out
   // date-time / email fields failed on a drop that is not a contract change
   // (measured 2026-10-13, WI-6554700010009813).
   const omitPattern = !inNameKeyedMap && isFormatImpliedPattern(schema);
+  // A `propertyNames` every JSON key satisfies (zod's `{ type: 'string' }` beside a
+  // z.record) constrains nothing; the reducer drops it (WI-10006197). Same move as
+  // the pattern rule above: normalize by the reducer's OWN exported predicate, so a
+  // CONSTRAINING propertyNames dropped by mistake still shows as `missing`.
   const entries = Object.entries(schema).filter(
-    ([key]) =>
+    ([key, value]) =>
       inNameKeyedMap ||
       (!PROSE_KEYS.has(key) &&
         !(key === 'type' && omitType) &&
-        !(key === 'pattern' && omitPattern)),
+        !(key === 'pattern' && omitPattern) &&
+        !(key === 'propertyNames' && isVacuousPropertyNames(value))),
   );
   if (entries.length === 0) out.push(`${path}={}`);
   for (const [key, value] of entries) {

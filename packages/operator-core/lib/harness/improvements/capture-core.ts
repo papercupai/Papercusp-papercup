@@ -55,7 +55,10 @@ import {
   toolFailureSignatureKey,
   toolFailureSubsystemForCode,
   type SuspectedToolFailure,
+  type ToolErrorClass,
 } from './tool-error-classifier';
+// WI-6554700010018038: agent corroboration of a volume-gated class counts, never promotes.
+import { isVolumeGatedToolFailureProbation } from './tool-error-volume-gate';
 import { getFlag } from '@papercusp/flags/server';
 import { classifyObservationFold, type FoldCandidate, type FoldClassification } from './observation-fold';
 import { trackDetached } from '../../detached-imports';
@@ -1281,6 +1284,7 @@ export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {
 
 interface ToolFailureProbationPayload {
   state?: 'probation' | 'promoted';
+  class?: ToolErrorClass;
   reporters?: string[];
   classKey?: string;
   contractFingerprint?: string;
@@ -2001,6 +2005,7 @@ async function coalesceWatchdogWinner(args: {
     incomingProbation &&
     compatibleToolFailureClassIdentity(prior, incomingProbation) &&
     priorReporters.length > 0 &&
+    !isVolumeGatedToolFailureProbation(incomingProbation) &&
     independentReporter
   ) {
     const promoted = await promoteToolFailureProbation(prior, input, deps, undefined, preserveCanonicalWatchdogKey);
@@ -2279,7 +2284,7 @@ export async function captureToolInvocationFriction(
   // promotes it, and a single new-build report never rewrites it.
   const earlierReporters = toolFailureSignatureOf(priorPayload)?.classes[normalized.classKey]?.reporters ?? [];
   if (hasCompleteToolFailureClassReport(report) && issueWatchdogLane(signatureRow) === 'observation' &&
-      rowProbation?.state === 'probation' &&
+      rowProbation?.state === 'probation' && !isVolumeGatedToolFailureProbation(incomingProbation) &&
       earlierReporters.length > 0 && !earlierReporters.includes(ownerId)) {
     const classView: EngineerIssue = { ...signatureRow, payload: { ...priorPayload,
       toolFailureProbation: { ...rowProbation, ...normalized, watchdogKey: rowKey, signatureKey,
@@ -3511,6 +3516,7 @@ export async function captureImprovement(
         priorProbation?.state === 'probation' &&
         incomingProbation &&
         priorReporters.length > 0 &&
+        !isVolumeGatedToolFailureProbation(incomingProbation) &&
         independentReporter
       ) {
         const promoted = await promoteToolFailureProbation(prior, input, deps, priorHits);

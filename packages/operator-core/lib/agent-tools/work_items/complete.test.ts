@@ -41,6 +41,17 @@ const conformanceClosure = vi.hoisted(() => ({
 vi.mock('../../spec-conformance/closure-guard', () => ({
   conformanceClosureAssessment: (...args: unknown[]) => conformanceClosure.read(...args),
 }));
+// plan-verification-profiles P-005 (R-15): the close-time deliverable check reads PG through
+// the real withWorkspace, so it is stubbed here (default: nothing to refuse). Its SQL and
+// decision logic run against real PG in verification-profile-escape.integration.test.ts;
+// this file pins the wiring into work_items:complete.
+const nonCodeClose = vi.hoisted(() => ({
+  read: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+}));
+vi.mock('../../plan-verification-escape', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../plan-verification-escape')>(),
+  readNonCodeDeliverableCloseEvidence: (...args: unknown[]) => nonCodeClose.read(...args),
+}));
 vi.mock('../../external-condition-reachability', () => ({
   readEventConditionReachability: (...args: unknown[]) => parkReachability.read(...args),
 }));
@@ -1484,6 +1495,46 @@ describe('work_items:complete (keyed-array)', () => {
     conformanceClosure.read.mockRejectedValue(new Error('ledger unavailable'));
     const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'R-1 delivered', discharges: ['R-1'] } });
     expect(r).toMatchObject({ ok: false, specConformanceRefusal: { code: 'conformance_check_unavailable', retryable: true } });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  // plan-verification-profiles P-005 (R-15, D-008): the close-time deliverable check is wired
+  // into the real completion path, refuses before any write, and fails closed.
+  it('refuses code evidence under a non-code deliverable before writing a linked completion (R-15)', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-002'] });
+    nonCodeClose.read.mockResolvedValueOnce({
+      itemId: 'P-002',
+      evidence: { signals: ['files-changed'], deliverable: 'doc', profile: 'general', filesChanged: ['packages/x/runbook-helper.ts'] },
+    });
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: { summary: 'runbook written', discharges: ['R-1'], filesChanged: ['packages/x/runbook-helper.ts'] },
+    });
+    expect(nonCodeClose.read).toHaveBeenCalledWith(expect.objectContaining({
+      planSlug: 'requirement-plan',
+      planItemIds: ['P-002'],
+      filesChanged: ['packages/x/runbook-helper.ts'],
+    }));
+    expect(r).toMatchObject({
+      ok: false,
+      nonCodeDeliverableRefusal: {
+        code: 'non_code_deliverable_code_evidence',
+        planSlug: 'requirement-plan',
+        itemId: 'P-002',
+        deliverable: 'doc',
+        signals: ['files-changed'],
+      },
+    });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(fireReactionInProcess).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unreadable deliverable check without writing a completion (R-15 fails closed)', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-002'] });
+    nonCodeClose.read.mockRejectedValueOnce(new Error('plan_items unreadable'));
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'runbook written', discharges: ['R-1'] } });
+    expect(r).toMatchObject({ ok: false, nonCodeDeliverableRefusal: { code: 'deliverable_check_unavailable', retryable: true } });
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
