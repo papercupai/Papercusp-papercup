@@ -35,12 +35,15 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 import routes from './membership';
 
-const membershipRoute = (routes as Array<{
-  path: string;
-  method: string;
-  handler: (req: Request, ctx: unknown) => Promise<Response>;
-}>).find((route) => route.path === '/harness/:slug/membership' && route.method === 'POST');
-if (!membershipRoute) throw new Error('no POST route for /harness/:slug/membership');
+const membershipRoute = (() => {
+  const route = (routes as Array<{
+    path: string;
+    method: string;
+    handler: (req: Request, ctx: unknown) => Promise<Response>;
+  }>).find((route) => route.path === '/harness/:slug/membership' && route.method === 'POST');
+  if (!route) throw new Error('no POST route for /harness/:slug/membership');
+  return route;
+})();
 
 async function postMembership(slug: string, body: unknown) {
   const req = new Request(`http://127.0.0.1/api/harness/${slug}/membership`, {
