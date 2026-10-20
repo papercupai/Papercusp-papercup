@@ -37,6 +37,15 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: sqlSpy }),
 }));
 
+// P-004: the clause-deliverable read is a DB query; fake the I/O, keep the key helper real.
+const deliverableSpy = vi.fn<typeof import('../plan-verification-escape').readClauseCodeDeliverables>(
+  async () => new Map(),
+);
+vi.mock('../plan-verification-escape', async (orig) => ({
+  ...(await orig<typeof import('../plan-verification-escape')>()),
+  readClauseCodeDeliverables: (...a: Parameters<typeof deliverableSpy>) => deliverableSpy(...a),
+}));
+
 const gateSpy = vi.fn();
 vi.mock('../agent-tools/work_items/spec-test-adequacy-gate', () => ({
   specTestAdequacyCompletionGate: (...a: unknown[]) => gateSpy(...a),
@@ -190,6 +199,15 @@ describe('resolveWorkItemSpecAdequacy — D-020 lower-bound honesty', () => {
       Record<string, unknown>
     >;
     expect((out[0].clauses as Array<Record<string, unknown>>)[0].requiredProofFloor).toBe('l4');
+  });
+
+  it('shows floor none when the clause plan item resolves to a non-code deliverable (P-004)', async () => {
+    // The view must show the floor the gate applies; the gate reads the same resolver.
+    deliverableSpy.mockResolvedValueOnce(new Map([['p\u0000P-001', false]]));
+    const out = (await resolveWorkItemSpecAdequacy({ ...BASE, classRef: 'plan-class-bugfix' })) as Array<
+      Record<string, unknown>
+    >;
+    expect((out[0].clauses as Array<Record<string, unknown>>)[0].requiredProofFloor).toBe('none');
   });
 });
 

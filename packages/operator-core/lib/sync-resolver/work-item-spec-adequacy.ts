@@ -197,14 +197,31 @@ export async function resolveWorkItemSpecAdequacy(args: WorkItemSpecAdequacyArgs
   // displayed set wrong everywhere it is rendered.
   const contract = await contractMod.resolveWorkItemBehaviorContract(workItem).catch(() => null);
 
-  const clauses: SpecAdequacyClauseView[] = (contract ? contractMod.enforcedClausesOf(contract).clauses : [])
+  const enforced = contract ? contractMod.enforcedClausesOf(contract).clauses : [];
+  // P-004: the floor shown must be the floor the gate applies, which reads each clause's
+  // deliverable through the verification resolver. A failed read stays code, as in the gate.
+  const deliverableHarness = workItem.harness?.trim();
+  const codeDeliverables = classRef && deliverableHarness && enforced.length > 0
+    ? await import('../plan-verification-escape')
+      .then((mod) => mod.readClauseCodeDeliverables({ harnessSlug: deliverableHarness, clauses: enforced })
+        .then((map) => ({ map, key: mod.clauseDeliverableKey })))
+      .catch(() => null)
+    : null;
+  const clauses: SpecAdequacyClauseView[] = enforced
     .map((clause) => ({
       specId: clause.specId,
       revision: clause.revision,
       behaviorClass: clause.behaviorClass,
       mutationRequired: clause.mutationRequired,
       requiredTestLayers: clause.requiredTestLayers ?? [],
-      requiredProofFloor: classRef ? adequacyMod.requiredProofFloor(clause, classRef) : null,
+      requiredProofFloor: classRef
+        ? adequacyMod.requiredProofFloor(
+          clause,
+          classRef,
+          undefined,
+          codeDeliverables?.map.get(codeDeliverables.key(clause.planSlug, clause.planItemId)),
+        )
+        : null,
     }));
 
   return [

@@ -2147,11 +2147,14 @@ export function requiredProofFloor(
   clause: SpecClauseRevision,
   classRef: PlanClassRubricRef,
   workItemKind?: string | null,
+  codeDeliverable?: boolean | null,
 ): 'none' | 'l3' | 'l4' {
-  // The task-kind and non-automated-clause exemptions are decided by the verification
-  // resolver (plan-verification-profile.ts), in the same order as before.
+  // The task-kind, non-code-deliverable and non-automated-clause exemptions are decided by
+  // the verification resolver (plan-verification-profile.ts). `codeDeliverable` is the
+  // resolver's verdict for the clause's plan item (P-004); only an explicit false exempts.
   if (executableProofExemption({
     workItemKind,
+    codeDeliverable,
     behaviorClass: clause.behaviorClass,
     requiredTestLayers: clause.requiredTestLayers,
   })) return 'none';
@@ -2168,15 +2171,23 @@ function riskFloorRating(
   now: Date,
   harness?: string,
   workItemKind?: string | null,
+  codeDeliverable?: boolean | null,
 ): { floor: 'none' | 'l3' | 'l4'; rating: AdequacyRatingEntry } {
-  const floor = requiredProofFloor(clause, classRef, workItemKind);
+  const floor = requiredProofFloor(clause, classRef, workItemKind, codeDeliverable);
   if (floor === 'none') {
+    const exemption = executableProofExemption({
+      workItemKind,
+      codeDeliverable,
+      behaviorClass: clause.behaviorClass,
+      requiredTestLayers: clause.requiredTestLayers,
+    });
+    const why = exemption === 'non-code-deliverable'
+      ? `Clause ${clauseIdentity(clause)} belongs to plan item ${clause.planItemId}, which resolves to a non-code ` +
+        `deliverable, so the code verification module (and its executable-proof floor) does not apply.`
+      : `Clause ${clauseIdentity(clause)} is non-automated and declares no required test layer.`;
     return {
       floor,
-      rating: {
-        rating: 'not-applicable',
-        evidence: `Clause ${clauseIdentity(clause)} is non-automated and declares no required test layer. ${clauseProbe(clause, harness)}`,
-      },
+      rating: { rating: 'not-applicable', evidence: `${why} ${clauseProbe(clause, harness)}` },
     };
   }
   const detailRows = evidence.map((row) => ({ row, details: detailsOf(row) }));
@@ -2932,6 +2943,11 @@ export function evaluateSpecTestAdequacy(input: {
   fixtureAbsenceVerifications?: ReadonlyMap<number, readonly number[]>;
   /** Work-item classification; `task` is the canonical non-code kind. */
   workItemKind?: string | null;
+  /**
+   * P-004: the verification resolver's verdict for the clause's plan item (profile +
+   * declared deliverable). Only `false` lowers the floor; absent or null stays code.
+   */
+  codeDeliverable?: boolean | null;
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
@@ -3834,7 +3850,9 @@ export function evaluateSpecTestAdequacy(input: {
             absenceOnly: true,
           };
 
-  const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date(), input.harness, input.workItemKind);
+  const risk = riskFloorRating(
+    clause, classRef, evidence, input.now ?? new Date(), input.harness, input.workItemKind, input.codeDeliverable,
+  );
   ratings['plan-class-risk-floor'] = risk.rating;
 
   // EI-23793489732627099: the non-code exemption reached ONLY plan-class-risk-floor.

@@ -151,6 +151,18 @@ describe('the routed exemption predicates', () => {
     expect(executableProofExemption({ workItemKind: 'bug', behaviorClass: 'happy-path', requiredTestLayers: [] })).toBeNull();
   });
 
+  it('executableProofExemption exempts a resolved non-code deliverable, and only an explicit false (P-004)', () => {
+    expect(executableProofExemption({ codeDeliverable: false, behaviorClass: 'happy-path', requiredTestLayers: ['integration'] }))
+      .toBe('non-code-deliverable');
+    // The kind check still comes first, so a task keeps its own named exemption.
+    expect(executableProofExemption({ workItemKind: 'task', codeDeliverable: false, behaviorClass: 'happy-path', requiredTestLayers: [] }))
+      .toBe('non-code-work-item-kind');
+    // A code deliverable, or one that was never read, keeps the floor (D-005 fails safe to coding).
+    expect(executableProofExemption({ codeDeliverable: true, behaviorClass: 'happy-path', requiredTestLayers: ['integration'] })).toBeNull();
+    expect(executableProofExemption({ codeDeliverable: null, behaviorClass: 'happy-path', requiredTestLayers: ['integration'] })).toBeNull();
+    expect(executableProofExemption({ behaviorClass: 'happy-path', requiredTestLayers: ['integration'] })).toBeNull();
+  });
+
   it('unfinishedItemsAreAuditedNonCode needs every unfinished item audited not-code', () => {
     const audits = [
       { entry: { itemId: 'P-001', verdict: 'not-code' } },

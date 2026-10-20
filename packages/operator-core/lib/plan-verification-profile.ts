@@ -136,18 +136,24 @@ export const EXECUTABLE_PROOF_CRITERIA = [
   'freshness',
 ] as const satisfies readonly AdequacyCriterion[];
 
-export type ExecutableProofExemption = 'non-code-work-item-kind' | 'non-automated-clause';
+export type ExecutableProofExemption = 'non-code-work-item-kind' | 'non-code-deliverable' | 'non-automated-clause';
 
 /**
  * Which non-code signal exempts a clause from the code module's executable-proof floor,
  * checked in the order `requiredProofFloor` always used. Null means the floor applies.
+ *
+ * P-004: `codeDeliverable` is the resolver's verdict for the clause's plan item (its plan's
+ * stamped profile plus the item's declared deliverable). Only an explicit `false` exempts:
+ * an unread or unknown deliverable stays code, so a failed read never lowers the floor (D-005).
  */
 export function executableProofExemption(input: {
   workItemKind?: string | null;
+  codeDeliverable?: boolean | null;
   behaviorClass: string;
   requiredTestLayers: readonly unknown[];
 }): ExecutableProofExemption | null {
   if (isNonCodeWorkItemKind(input.workItemKind)) return 'non-code-work-item-kind';
+  if (input.codeDeliverable === false) return 'non-code-deliverable';
   if (isNonAutomatedBehaviorClass(input.behaviorClass) && input.requiredTestLayers.length === 0) {
     return 'non-automated-clause';
   }

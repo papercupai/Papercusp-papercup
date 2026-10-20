@@ -11,6 +11,15 @@ import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 type ClassResolver = typeof import('../plans/evaluate-spec-test-adequacy').resolveEvaluatorClassRef;
 const classResolver = vi.hoisted(() => vi.fn<ClassResolver>(async () => ({ ok: true, classRef: 'plan-class-feature-ship', source: 'active-acceptance-rubric' })));
 vi.mock('../plans/evaluate-spec-test-adequacy', () => ({ resolveEvaluatorClassRef: classResolver }));
+// P-004: the clause-deliverable read is a DB query; keep this suite offline. An empty map
+// means every clause stays a code deliverable, which is the pre-P-004 behaviour.
+const readClauseCodeDeliverables = vi.hoisted(() =>
+  vi.fn<typeof import('../../plan-verification-escape').readClauseCodeDeliverables>(async () => new Map()),
+);
+vi.mock('../../plan-verification-escape', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../plan-verification-escape')>()),
+  readClauseCodeDeliverables,
+}));
 
 type GateDeps = NonNullable<Parameters<typeof specTestAdequacyCompletionGate>[1]>;
 type ListedEvidence = Awaited<ReturnType<NonNullable<GateDeps['listEvidence']>>>[number];
@@ -1231,6 +1240,72 @@ describe('specTestAdequacyCompletionGate', () => {
 
     expect(result.exempted).toBeUndefined();
     expect(result.checked).toEqual(['SPEC-003-01@1']);
+  });
+});
+
+/**
+ * plan-verification-profiles P-004: the executable-proof floor belongs to the CODE module,
+ * so it applies only when the clause's plan item resolves to a code deliverable (D-001).
+ * The resolver verdict arrives through readClauseCodeDeliverables; absent stays code (D-005).
+ */
+describe('specTestAdequacyCompletionGate — verification-profile deliverable floor (P-004)', () => {
+  const NON_CODE = new Map([['reconnect-plan\u0000P-003', false]]);
+  const CODE = new Map([['reconnect-plan\u0000P-003', true]]);
+
+  it('exempts a happy-path clause whose plan item resolves to a non-code deliverable, without an attestation', async () => {
+    const deps = passingDeps();
+    readClauseCodeDeliverables.mockResolvedValueOnce(NON_CODE);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'feature' } }, deps);
+
+    expect(result).toEqual({
+      ok: true,
+      applicable: false,
+      checked: [],
+      exempted: ['SPEC-003-01@1 — exempt (non-code deliverable for plan item P-003; the code module does not apply)'],
+    });
+    expect(readClauseCodeDeliverables).toHaveBeenLastCalledWith({
+      harnessSlug: 'papercusp',
+      clauses: [expect.objectContaining({ planSlug: 'reconnect-plan', planItemId: 'P-003' })],
+    });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps the attestation requirement when the same clause resolves to a code deliverable', async () => {
+    const deps = passingDeps();
+    readClauseCodeDeliverables.mockResolvedValueOnce(CODE);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'feature' } }, deps);
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toMatch(/current spec-test-adequacy attestation required for SPEC-003-01@1/);
+  });
+
+  it('fails safe to code when the deliverable read throws', async () => {
+    const deps = passingDeps();
+    readClauseCodeDeliverables.mockRejectedValueOnce(new Error('pg down'));
+
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'feature' } }, deps);
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toMatch(/attestation required for SPEC-003-01@1/);
+  });
+
+  it('names a non-code clause as exempt beside an enforced code clause under one attestation', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), clause({ specId: 'SPEC-004-01', planItemId: 'P-004' })]);
+    readClauseCodeDeliverables.mockResolvedValueOnce(new Map([
+      ['reconnect-plan\u0000P-003', true],
+      ['reconnect-plan\u0000P-004', false],
+    ]));
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result.exempted).toEqual([
+      'SPEC-004-01@1 — exempt (non-code deliverable for plan item P-004; the code module does not apply)',
+    ]);
+    expect(result.checked).toEqual(['SPEC-003-01@1']);
+    expect(result.ok).toBe(true);
   });
 });
 

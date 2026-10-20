@@ -341,6 +341,58 @@ export async function readCloseDeliverablesAreNonCode(input: {
   return rows.length === new Set(input.planItemIds).size && linkedDeliverablesAreNonCode(rows);
 }
 
+/** The key {@link readClauseCodeDeliverables} and its callers share for one (plan, item) pair. */
+export function clauseDeliverableKey(planSlug: string, planItemId: string): string {
+  return `${planSlug}\u0000${planItemId}`;
+}
+
+/**
+ * P-004 (spec-test adequacy): whether each clause's plan item is a CODE deliverable under its
+ * plan's stamped profile and the item's declared deliverable. One query covers every pair. A
+ * pair with no row is ABSENT from the map, and callers treat absent as code, so a missing or
+ * unreadable deliverable never lowers the executable-proof floor (D-005 fails safe to coding).
+ */
+export async function readClauseCodeDeliverables(input: {
+  harnessSlug: string;
+  workspaceId?: string;
+  clauses: readonly { planSlug: string; planItemId: string }[];
+}): Promise<Map<string, boolean>> {
+  const pairs = new Map<string, { planSlug: string; planItemId: string }>();
+  for (const clause of input.clauses) {
+    pairs.set(clauseDeliverableKey(clause.planSlug, clause.planItemId), clause);
+  }
+  const result = new Map<string, boolean>();
+  if (pairs.size === 0) return result;
+  const { resolvePlanScope } = await import('./agent-tools/plans/source');
+  const scope = await resolvePlanScope({
+    harnessSlug: input.harnessSlug,
+    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+  });
+  const { withWorkspace } = await import('@papercusp/db-org');
+  const slugs = [...pairs.values()].map((pair) => pair.planSlug);
+  const itemIds = [...pairs.values()].map((pair) => pair.planItemId);
+  const rows = await withWorkspace(scope.workspaceId, (tx) =>
+    tx<Array<{ plan_slug: string; item_id: string; deliverable: string | null; verification_profile: string | null }>>`
+      SELECT i.plan_slug, i.item_id, i.deliverable, p.verification_profile
+        FROM harness_shared.plan_items i
+        JOIN harness_shared.harness_plans p
+          ON p.workspace_id = i.workspace_id AND p.harness_slug = i.harness_slug AND p.plan_slug = i.plan_slug
+       WHERE i.workspace_id = ${scope.workspaceId}
+         AND i.harness_slug = ${scope.harnessSlug}
+         AND (i.plan_slug, i.item_id) IN (
+           SELECT s, t FROM unnest(${slugs}::text[], ${itemIds}::text[]) AS pair(s, t)
+         )`,
+  );
+  for (const row of rows) {
+    const resolved = resolveVerification(
+      { verificationProfile: effectivePlanProfile(row.verification_profile) },
+      { deliverable: row.deliverable },
+    );
+    result.set(clauseDeliverableKey(row.plan_slug, row.item_id), resolved.codeDeliverable);
+  }
+  return result;
+}
+
 /**
  * R-15 at completion: read the declared deliverable of each plan item a closing work item is
  * linked to (plus the plan's stamped profile) and return the first item whose non-code

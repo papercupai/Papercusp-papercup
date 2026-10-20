@@ -18,6 +18,7 @@ import {
 } from '../plans/behavior-contract-resolver';
 import type { EnforcementEligibility } from '../plans/spec-enforcement-eligibility';
 import { isNonAutomatedBehaviorClass, isNonCodeWorkItemKind } from '../../plan-verification-profile';
+import { clauseDeliverableKey, readClauseCodeDeliverables } from '../../plan-verification-escape';
 import {
   adequacyCardRevisionDisposition,
   activeSpecEvidence,
@@ -541,6 +542,8 @@ export async function specTestAdequacyCompletionGate(
      */
     listPlanStatuses?: ResolveBehaviorContractDeps['listPlanStatuses'];
     resolveSourceBarTestRequirements?: typeof resolveSourceBarTestRequirements;
+    /** P-004: whether each clause's plan item resolves to a code deliverable. */
+    readCodeDeliverables?: typeof readClauseCodeDeliverables;
   } = {},
 ): Promise<SpecAdequacyCompletionGateResult> {
   const listClauses = deps.listClauses ?? listSpecClauses;
@@ -635,6 +638,32 @@ export async function specTestAdequacyCompletionGate(
     return value;
   };
 
+  // P-004: the code module's executable-proof floor applies only to CODE deliverables, in
+  // any profile (D-001). Resolve each clause's plan item through the verification resolver
+  // (the plan's stamped profile + the item's declared deliverable). A failed or partial read
+  // leaves a clause absent, and absent stays code, so this can only ever lower a floor on a
+  // positive non-code resolution (D-005 fails safe to coding).
+  const deliverableHarness = stamp?.harnessSlug ?? input.workItem.harness?.trim();
+  let codeDeliverables = new Map<string, boolean>();
+  if (deliverableHarness) {
+    try {
+      codeDeliverables = await (deps.readCodeDeliverables ?? readClauseCodeDeliverables)({
+        harnessSlug: deliverableHarness,
+        clauses,
+      });
+    } catch {
+      codeDeliverables = new Map();
+    }
+  }
+  const codeDeliverableOf = (clause: SpecClauseRevision): boolean | undefined =>
+    codeDeliverables.get(clauseDeliverableKey(clause.planSlug, clause.planItemId));
+  const floorOf = (clause: SpecClauseRevision) =>
+    requiredProofFloor(clause, classFor(clause), undefined, codeDeliverableOf(clause));
+  const floorExemptionReason = (clause: SpecClauseRevision): string =>
+    codeDeliverableOf(clause) === false
+      ? `non-code deliverable for plan item ${clause.planItemId}; the code module does not apply`
+      : 'proof floor none — non-automated with no required test layer';
+
   // `task` is the canonical non-code kind (research was folded into it). A plan may
   // still carry projected clauses for a task deliverable, but executable L3/L4 proof
   // is not a meaningful completion obligation for that item. Resolve the contract first
@@ -648,9 +677,7 @@ export async function specTestAdequacyCompletionGate(
     // re-kind; silently relabelling only the evaluator input would hide the bad
     // execution record and leave every other kind-sensitive gate exempt.
     const sourceChanges = executableSourceChanges;
-    const submitsExecutableProof = input.attestation && clauses.some((clause) =>
-      requiredProofFloor(clause, classFor(clause)) !== 'none',
-    );
+    const submitsExecutableProof = input.attestation && clauses.some((clause) => floorOf(clause) !== 'none');
     if (sourceChanges.length > 0 || submitsExecutableProof) {
       return withReport({
         ok: false,
@@ -694,9 +721,12 @@ export async function specTestAdequacyCompletionGate(
     //
     // A manual clause that genuinely should not gate has an existing home: lifecycle_status
     // 'exempt' (40 clauses already use it). Reach for that, not a new clause state.
+    // P-004: a clause whose plan item resolves to a non-code deliverable carries no
+    // executable-proof floor, so it needs no adequacy attestation either.
     const potentiallyTestRequiring = clauses.filter(
       (clause) =>
-        !isNonAutomatedBehaviorClass(clause.behaviorClass) || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
+        codeDeliverableOf(clause) !== false &&
+        (!isNonAutomatedBehaviorClass(clause.behaviorClass) || clause.requiredTestLayers.length > 0 || clause.mutationRequired),
     );
     if (potentiallyTestRequiring.length === 0)
       return withReport({
@@ -704,7 +734,12 @@ export async function specTestAdequacyCompletionGate(
         applicable: false,
         checked: [],
         exempted: clauses.map((clause) =>
-          exemptionLabel(clause, 'non-automated clause declaring no required test layer'),
+          exemptionLabel(
+            clause,
+            codeDeliverableOf(clause) === false
+              ? floorExemptionReason(clause)
+              : 'non-automated clause declaring no required test layer',
+          ),
         ),
       });
     return withReport({
@@ -719,14 +754,14 @@ export async function specTestAdequacyCompletionGate(
     });
   }
 
-  const relevant = clauses.filter((clause) => requiredProofFloor(clause, classFor(clause)) !== 'none');
+  const relevant = clauses.filter((clause) => floorOf(clause) !== 'none');
   // WI-10002055: the complement of `relevant` is the excused set. Computed once so every
   // exit below can name it — including the MIXED case, where some clauses are enforced and
   // others excused in the same completion and the excused ones would otherwise vanish
   // behind a populated `checked`.
   const exempted = clauses
-    .filter((clause) => requiredProofFloor(clause, classFor(clause)) === 'none')
-    .map((clause) => exemptionLabel(clause, 'proof floor none — non-automated with no required test layer'));
+    .filter((clause) => floorOf(clause) === 'none')
+    .map((clause) => exemptionLabel(clause, floorExemptionReason(clause)));
   if (relevant.length === 0) return withReport({ ok: true, applicable: false, checked: [], exempted });
   // ⚠ The evidence read is scoped by the SAME namespaces as the enforced clause set, and
   // that coupling is not optional. This was `planSlug: stamp.planSlug` — a single-plan
@@ -792,6 +827,7 @@ export async function specTestAdequacyCompletionGate(
       classRef: classFor(clause),
       harness: harnessSlug,
       workItemKind: input.workItem.kind,
+      codeDeliverable: codeDeliverableOf(clause),
       sourceBarTestRequirements,
     });
     const evaluatorUnknownFailure = evaluatorUnknownFailureReason(label, result);
