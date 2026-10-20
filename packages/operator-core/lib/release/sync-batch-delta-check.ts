@@ -24,7 +24,9 @@
  *   against `TARGET_ROLE_SPEND` and reds the fleet gate on a half-landed pair):
  *     1. `sync-batch-delta-check-deps.ts` — bind `SyncBatchDeltaDeps` below to:
  *        `git -C <root> rev-parse <branch>` and `git log <cursor>..<branch>
- *        --no-merges --name-only --format=%x00%H %ct%n%(trailers:key=Papercusp-Agent)`
+ *        --first-parent --diff-merges=first-parent --name-only
+ *        --format=%x00%H %ct%n%(trailers:key=Papercusp-Agent)` (first-parent since
+ *        WI-6554700010018028: merged side lineages must not move the cursor)
  *        (argv spawn, never a shell string); `node scripts/affected-tests.mjs
  *        --changed-paths <csv> [--print-affected]`; `node scripts/lint-tsc.mjs
  *        --files=<csv>`; `node scripts/test-files.mjs <one file>` for `confirmOne`
@@ -271,7 +273,7 @@ export interface SyncBatch {
 const NUL = String.fromCharCode(0);
 
 /**
- * Parse `git log <since>..<branch> --no-merges --name-only
+ * Parse `git log <since>..<branch> --first-parent --diff-merges=first-parent --name-only
  *        --format=%x00%H %ct%n%(trailers:key=Papercusp-Agent)`.
  *
  * NUL separates commits; within a block the first line is `<sha> <epoch-seconds>`,
@@ -1618,13 +1620,25 @@ function selectOldestBoundedPrefix(
  *  current slot, so R-17 (95% of slots judged) could not pass however often it ran. */
 export const STALE_BACKLOG_MS = 2 * 60 * 60_000;
 
+/** Most commits one `listBatches` window may list. A cursor left OFF the first-parent
+ *  chain (a side-lineage commit persisted before the first-parent walk, or any reset)
+ *  makes `cursor..staging --first-parent` list the whole chain back to where the side
+ *  lineage diverged: 110,362 commits on 2026-10-20 08:00Z. With `--name-only` that blew
+ *  the git leg's timeout/buffer, so every tick returned `git-log-unreadable` and the
+ *  stale-backlog skip never saw a listing (WI-6554700010018028). A listing that hits
+ *  this cap is a backlog too large to walk: the planner skips it like a stale one and
+ *  re-anchors the cursor on a listed (first-parent) commit. */
+export const SYNC_DELTA_MAX_LISTED_COMMITS = 400;
+
 export interface StaleBacklogSkip {
   /** Newest commit skipped unjudged; the cursor moves here. */
   anchor: SyncBatch;
-  /** Commits skipped unjudged, the anchor included. */
+  /** Commits skipped unjudged, the anchor included. A floor when `truncated`. */
   skippedCount: number;
-  /** Commit time (epoch ms) of the oldest dated commit in the backlog. */
-  oldestMs: number;
+  /** Commit time (epoch ms) of the oldest dated LISTED commit, or null when none is dated. */
+  oldestMs: number | null;
+  /** The listing hit SYNC_DELTA_MAX_LISTED_COMMITS: older unlisted commits were skipped too. */
+  truncated: boolean;
   /** Commits left for later ticks to judge, newest first. */
   remaining: SyncBatch[];
 }
@@ -1643,20 +1657,26 @@ function datedMs(batch: SyncBatch): number | null {
  *  run of commits dated within `keepWindowMs` of now (the coverage credit window); the
  *  first commit outside it (or undated) ends the run, becomes the anchor, and it and
  *  everything older are skipped unjudged. A backlog with no dated commit is never
- *  skipped: nothing proves it is stale. */
+ *  skipped: nothing proves it is stale.
+ *
+ *  `truncated` (the listing hit SYNC_DELTA_MAX_LISTED_COMMITS) is proof by SIZE: the
+ *  skip triggers whatever the listed dates say, because the unlisted remainder is
+ *  older still. When every listed commit sits inside the credit window, the oldest
+ *  listed one becomes the anchor so the cursor still lands on a listed commit. */
 export function planStaleBacklogSkip(
   batchesNewestFirst: readonly SyncBatch[],
   nowMs: number,
-  opts: { staleAfterMs?: number; keepWindowMs?: number } = {},
+  opts: { staleAfterMs?: number; keepWindowMs?: number; truncated?: boolean } = {},
 ): StaleBacklogSkip | null {
   const staleAfterMs = opts.staleAfterMs ?? STALE_BACKLOG_MS;
   const keepWindowMs = opts.keepWindowMs ?? COVERAGE_JUDGE_DEADLINE_MS;
+  const truncated = opts.truncated === true && batchesNewestFirst.length > 0;
   let oldestMs: number | null = null;
   for (const batch of batchesNewestFirst) {
     const t = datedMs(batch);
     if (t !== null && (oldestMs === null || t < oldestMs)) oldestMs = t;
   }
-  if (oldestMs === null || nowMs - oldestMs <= staleAfterMs) return null;
+  if (!truncated && (oldestMs === null || nowMs - oldestMs <= staleAfterMs)) return null;
   const keepFrom = nowMs - keepWindowMs;
   let keep = 0;
   while (keep < batchesNewestFirst.length) {
@@ -1664,12 +1684,14 @@ export function planStaleBacklogSkip(
     if (t === null || t < keepFrom) break;
     keep += 1;
   }
+  if (truncated && keep === batchesNewestFirst.length) keep -= 1;
   const anchor = batchesNewestFirst[keep];
   if (!anchor) return null;
   return {
     anchor,
     skippedCount: batchesNewestFirst.length - keep,
     oldestMs,
+    truncated,
     remaining: batchesNewestFirst.slice(0, keep),
   };
 }
@@ -1686,11 +1708,16 @@ async function recordStaleBacklogSkip(
   filed: SyncBatchDeltaFiling[],
 ): Promise<SyncBatchDeltaResult> {
   const now = deps.now();
-  const ageMin = Math.round((now - skip.oldestMs) / 60_000);
-  const reason =
-    `${skip.skippedCount} commit(s) through ${skip.anchor.sha.slice(0, 12)} skipped unjudged: ` +
-    `oldest is ${ageMin} min old (> ${Math.round(STALE_BACKLOG_MS / 60_000)} min); ` +
-    `${skip.remaining.length} recent commit(s) kept for the next tick`;
+  const through = skip.anchor.sha.slice(0, 12);
+  const kept = `${skip.remaining.length} recent commit(s) kept for the next tick`;
+  const ageText = skip.oldestMs === null ? 'no listed commit is dated' : `oldest listed is ${Math.round((now - skip.oldestMs) / 60_000)} min old`;
+  const reason = skip.truncated
+    ? `at least ${skip.skippedCount} commit(s) through ${through} skipped unjudged: the listing hit ` +
+      `SYNC_DELTA_MAX_LISTED_COMMITS=${SYNC_DELTA_MAX_LISTED_COMMITS} (cursor off the first-parent chain or far behind; ` +
+      `${ageText}); ${kept}`
+    : `${skip.skippedCount} commit(s) through ${through} skipped unjudged: ` +
+      `oldest is ${Math.round((now - (skip.oldestMs ?? now)) / 60_000)} min old (> ${Math.round(STALE_BACKLOG_MS / 60_000)} min); ` +
+      kept;
   const { windowCommitCap: _cap, undeterminedStreak: _streak, ...rest } = cursor;
   const next: SyncDeltaCursor = {
     ...rest,
@@ -1887,7 +1914,9 @@ async function runSyncBatchDeltaTick(
   }
 
   // A backlog too old to warn about or to earn coverage is skipped, never walked.
-  const staleSkip = planStaleBacklogSkip(batches, deps.now());
+  const staleSkip = planStaleBacklogSkip(batches, deps.now(), {
+    truncated: batches.length >= SYNC_DELTA_MAX_LISTED_COMMITS,
+  });
   if (staleSkip) return recordStaleBacklogSkip(deps, cursor, staleSkip, stillOpen, filed);
 
   // A cap learned from earlier leg timeouts narrows the window below the static one.
