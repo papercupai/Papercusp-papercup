@@ -446,6 +446,31 @@ export function terminalStatusFromLedger(
   }
 }
 
+/**
+ * A ledger `exited` row with a recorded exit code is the command's OWN outcome: the shell
+ * ran it to the end and the task manager observed the exit. Losing this worker's in-memory
+ * handle does not make that outcome unknown, so it must read exactly as the live path reads
+ * it — `status` + `exit_code`, no tool error (capability:bash reserves `isError` for a
+ * command that never produced an exit code). Only a process that vanished WITHOUT a
+ * recorded exit (`stranded` / `ended_unobserved`) is genuinely `job_process_gone`.
+ * `killed` / `timed_out` keep their existing error shape; the systemd-scope recovery path
+ * pins `isError` for a deadline.
+ *
+ * WI-6554700010017610 / EI-24806944538644209: ~200 of ~240 `job_process_gone` failures in
+ * 7 days were exit-1/exit-2 test and typecheck runs reported as tool failures.
+ */
+export function ledgerRecordedCommandExit(row: TaskRow | null | undefined): boolean {
+  return row?.state === 'exited' && typeof row.exitCode === 'number';
+}
+
+/** The command from the `bash … -c <command>` argv capability:bash enrols; null for any other shape. */
+export function bashCommandFromLedgerArgv(argv: readonly string[] | null | undefined): string | null {
+  if (!argv || argv[0] !== 'bash') return null;
+  const flag = argv.indexOf('-c');
+  const command = flag >= 0 ? argv[flag + 1] : undefined;
+  return typeof command === 'string' ? command : null;
+}
+
 export type TerminalResourceLimitFields = {
   failure_class: 'infrastructure-resource-limit';
   /**
@@ -677,9 +702,21 @@ function terminalBashTaskRecovery(
     ? inspectStrandedJobLog(stranded, filter)
     : { terminal: null, output: '' };
   const output = !filter && inspected.output.length === 0 && stranded?.tail ? stranded.tail : inspected.output;
+  // Same rule as the confirmed_dead branch: a recorded exit is the command's outcome, not
+  // a tool error — unless the live path's own dead-typecheck verdict fires on it.
+  const ledgerCommand = bashCommandFromLedgerArgv(row.argv);
+  const deadTypecheck = ledgerCommand
+    ? backgroundTypecheckVerdict({
+        command: ledgerCommand,
+        status: terminal.status,
+        exitCode: terminal.exitCode,
+        log: stranded?.content ?? stranded?.tail ?? output,
+      })
+    : null;
+  const recordedExit = terminal.status === 'completed' || ledgerRecordedCommandExit(row);
   return {
     payload: {
-      ok: terminal.status === 'completed',
+      ok: recordedExit,
       task_id: row.taskId,
       status: terminal.status,
       exit_code: terminal.exitCode,
@@ -689,10 +726,17 @@ function terminalBashTaskRecovery(
       recovered_from_ledger: true,
       ...(terminalResourceLimitFields(row, stranded?.content ?? stranded?.tail ?? '') ?? {}),
       ...(inspected.filterError ? { filter_error: inspected.filterError } : {}),
+      ...(deadTypecheck
+        ? {
+            typecheck_verdict: deadTypecheck.reason,
+            headline: deadTypecheck.headline,
+            advice: deadTypecheck.advice,
+          }
+        : {}),
       output_tail: output,
       output,
     },
-    isError: terminal.status !== 'completed',
+    isError: !recordedExit || deadTypecheck !== null,
   };
 }
 
@@ -1445,16 +1489,32 @@ export default defineTool({
 
         if (ledgerVerdict.kind === 'confirmed_dead') {
           const terminal = terminalStatusFromLedger(ledgerRow);
-          // A durable `exited`/0 row is authoritative success evidence even when
-          // this worker missed both the live handle and the end-marker read. The
-          // old branch treated every terminal row as job_process_gone, causing
-          // successful Vitest/typecheck jobs to be reported as errors (EI-20232536598731015).
-          if (terminal?.status === 'completed') {
-            const exitMismatch = capturedExitMismatch({
-              status: terminal.status,
-              exitCode: terminal.exitCode,
-              log: recoveredStrandedOutput,
-            });
+          // A durable `exited` row with a recorded exit code is the command's own
+          // outcome even when this worker missed both the live handle and the
+          // end-marker read — `exited`/0 is success (EI-20232536598731015), and
+          // `exited`/N is a command that ran and failed, which the live path reports
+          // as status + exit_code without a tool error. Reporting it as
+          // job_process_gone turned ordinary red test/typecheck runs into tool
+          // failures (WI-6554700010017610). The same verdicts the live path applies
+          // run here, over the full log rather than the filtered chunk.
+          if (terminal && (terminal.status === 'completed' || ledgerRecordedCommandExit(ledgerRow))) {
+            const verdictLog = stranded?.content ?? stranded?.tail ?? recoveredStrandedOutput;
+            const ledgerCommand = bashCommandFromLedgerArgv(ledgerRow?.argv);
+            const deadTypecheck = ledgerCommand
+              ? backgroundTypecheckVerdict({
+                  command: ledgerCommand,
+                  status: terminal.status,
+                  exitCode: terminal.exitCode,
+                  log: verdictLog,
+                })
+              : null;
+            const exitMismatch = deadTypecheck
+              ? null
+              : capturedExitMismatch({
+                  status: terminal.status,
+                  exitCode: terminal.exitCode,
+                  log: verdictLog,
+                });
             return {
               content: [
                 {
@@ -1468,16 +1528,23 @@ export default defineTool({
                     ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                     ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                     recovered_from_ledger: true,
+                    ...(recoveredResourceLimitFields ?? {}),
                     ...selfRedirectFields,
-                    ...(exitMismatch
-                      ? { exit_code_verdict: exitMismatch.headline, advice: exitMismatch.advice }
-                      : {}),
+                    ...(deadTypecheck
+                      ? {
+                          typecheck_verdict: deadTypecheck.reason,
+                          headline: deadTypecheck.headline,
+                          advice: deadTypecheck.advice,
+                        }
+                      : exitMismatch
+                        ? { exit_code_verdict: exitMismatch.headline, advice: exitMismatch.advice }
+                        : {}),
                     ...strandedOutput,
                     output: recoveredStrandedOutput,
                   }),
                 },
               ],
-              ...(exitMismatch ? { isError: true } : {}),
+              ...(deadTypecheck || exitMismatch ? { isError: true } : {}),
             };
           }
           const exitDetail =

@@ -24,6 +24,7 @@
 import { normalizeMcpName } from '@papercusp/tooldef';
 import { parseProjection, PROJECTION_ARG } from '../../../result-projection';
 import type { LoopPressure } from '../../../event-loop-lag-monitor';
+import { PLAN_CLASS_RUBRIC_REFS as PLAN_CLASS_RUBRIC_REF_LIST } from '../../../plan-class-refs';
 
 export const ADMISSION_CONTROL_ENABLED = process.env.PAPERCUSP_MCP_ADMISSION_CONTROL !== '0';
 export const ADMISSION_RETRY_AFTER_SEC = Math.max(
@@ -435,12 +436,9 @@ const CRITICAL_WORK_ITEMS_SET_STATE_MAX_EVIDENCE_CHARS = 2_000;
 const CRITICAL_WORK_ITEMS_SET_STATE_MAX_ASSUMPTION_KEYS = 10;
 const CRITICAL_WORK_ITEMS_SET_STATE_MAX_ASSUMPTION_KEY_CHARS = 120;
 
-const PLAN_CLASS_RUBRIC_REFS = new Set([
-  'plan-class-feature-ship',
-  'plan-class-bugfix',
-  'plan-class-migration',
-  'plan-class-investigation',
-]);
+// Derived from the one class list (plan-verification-profiles P-006); a hand-kept copy here
+// silently refused a judge replay for any class added later.
+const PLAN_CLASS_RUBRIC_REFS: ReadonlySet<string> = new Set(PLAN_CLASS_RUBRIC_REF_LIST);
 const SPEC_EVIDENCE_KINDS = new Set([
   'test',
   'fixture',

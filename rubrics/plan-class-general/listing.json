@@ -1,0 +1,10 @@
+{
+  "ref": "plan-class-general",
+  "id": "plan-class-general",
+  "title": "Plan class: general (shared acceptance invariants)",
+  "description": "Class rubric for general plans' acceptance rubrics (5 criteria, pass/partial/fail/unknown): every deliverable backed by a durable, current citation, the outcome meets the stated request, rulings recorded as decisions, discoveries filed, and the independent grader spot-checks the implementer's audit citations. Investigation is a general sub-class (plan-verification-profiles-2026-10-17 D-003).",
+  "category": "plan-acceptance",
+  "scope": "rubric",
+  "version": "0.1.0",
+  "source": "first-party"
+}

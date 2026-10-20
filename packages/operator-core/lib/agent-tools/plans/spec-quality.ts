@@ -11,6 +11,7 @@ import {
   specBehaviorNonFalsifiableReason,
 } from './spec-clause-compiler';
 import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-adequacy';
+import { planClassAllowsAllExemptItems } from '../../plan-class-refs';
 
 export const SPEC_QUALITY_RUBRIC_REF = 'spec-quality';
 
@@ -485,6 +486,18 @@ function planClassFit(classRef: PlanClassRubricRef, clauses: SpecClauseRevision[
         : 'Migration plans require an active migration-data-integrity clause.',
     };
   }
+  if (classRef === 'plan-class-general') {
+    // The general-plan variant of this criterion (plan-verification-profiles P-006): any
+    // active outcome contract qualifies, and none is required to declare a test layer —
+    // a general plan's non-code deliverables are verified by artifact, work-item,
+    // measurement or external citations, not by a test run.
+    return {
+      ok: clauses.length > 0,
+      evidence: clauses.length
+        ? `General plan has ${clauses.length} active outcome contract(s): ${classes.join(', ')}; no test layer is required of a general plan.`
+        : 'General plans require at least one active outcome contract, or explicit item exemptions.',
+    };
+  }
   const ok = clauses.some(
     (clause) => clause.behaviorClass === 'observability' || isNonAutomatedBehaviorClass(clause.behaviorClass),
   );
@@ -882,11 +895,11 @@ export function evaluatePlanSpecQuality(input: {
           `Active clause(s) declare unrecordable required test layers: ${invalidLayerDeclarations.join('; ')}. Recorded layers: ${RECORDED_TEST_LAYERS.join(', ')}.`,
           'Append explicit revisions with recorded layers; preserve every original behavior, scenario and evidence obligation instead of silently dropping or mapping legacy labels.',
         )
-      : classFit.ok || (input.classRef === 'plan-class-investigation' && everyItemExplicitlyExempt)
+      : classFit.ok || (planClassAllowsAllExemptItems(input.classRef) && everyItemExplicitlyExempt)
       ? pass(
           classFit.ok
             ? classFit.evidence
-            : 'Every investigation item is explicitly non-behavioral and exempt with provenance.',
+            : `Every ${input.classRef === 'plan-class-general' ? 'general' : 'investigation'} plan item is explicitly non-behavioral and exempt with provenance.`,
         )
       : fail(
           classFit.evidence,

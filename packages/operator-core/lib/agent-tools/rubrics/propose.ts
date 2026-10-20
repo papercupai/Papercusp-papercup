@@ -203,7 +203,7 @@ export const rubricsProposeArgs = refineEvenWithShapeIssues(
       .max(120)
       .optional()
       .describe(
-        'acceptance kind only: rubricId of the standard-kind CLASS rubric this builds on (feature-ship / bugfix / migration / investigation). With classRef, criteria may be empty (the class alone may stand for e.g. investigation-only plans)',
+        'acceptance kind only: rubricId of the standard-kind CLASS rubric this builds on (feature-ship / bugfix / migration / investigation / general). With classRef, criteria may be empty (the class alone may stand for e.g. investigation-only plans)',
       ),
     composes: z
       .array(z.string().trim().min(1))

@@ -336,6 +336,7 @@ describe('the REAL bundled first-party set (in-repo rubrics/)', () => {
       'fleet-execution-health',
       'plan-class-bugfix',
       'plan-class-feature-ship',
+      'plan-class-general',
       'plan-class-investigation',
       'plan-class-migration',
       'pot-coordination-health',
@@ -366,6 +367,7 @@ describe('the REAL bundled first-party set (in-repo rubrics/)', () => {
     expect(planClasses.map((r) => r.rubricId)).toEqual([
       'plan-class-bugfix',
       'plan-class-feature-ship',
+      'plan-class-general',
       'plan-class-investigation',
       'plan-class-migration',
     ]);

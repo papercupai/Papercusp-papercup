@@ -93,8 +93,8 @@ it('cancels an actual native mutation guard and removes its observer and frozen 
         PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET: undefined },
     });
     let stderr = '';
-    child.stdout.resume();
-    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.stdout!.resume();
+    child.stderr!.on('data', chunk => { stderr += chunk; });
     const closed = new Promise<number | null>((done, reject) => {
       child!.once('close', done);
       child!.once('error', reject);

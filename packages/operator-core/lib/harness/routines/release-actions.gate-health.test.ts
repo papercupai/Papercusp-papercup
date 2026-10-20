@@ -12,6 +12,7 @@
  * other export so the release-actions import graph still resolves).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 // EI-19329732364513693: trackGateStall now measures candidate staleness via git whenever a
 // candidate is passed. Keep this file HERMETIC — without this mock, every existing test that
@@ -2590,5 +2591,99 @@ describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReu
     seededGh = { consecutiveReds: 0, lastGreenAt: Date.now(), roundPhases };
     await trackGateStall(ctx, status, undefined, undefined, null, undefined, null, undefined, {});
     expect(lastGateHealthWrite()?.roundPhases).toBeNull();
+  });
+});
+
+// WI-6554700010018008: green-checkpoint reported verdictFlipQuarantine (P-008) and the doc comment
+// said gate_health persisted it, but release-actions never threaded it, so gate_health never held
+// it. Pin both hops: trackGateStall stores the per-round records, and every call site that threads
+// gate records into trackGateStall carries them (the hop that was actually missing).
+describe('WI-6554700010018008: gate_health.verdictFlipQuarantine and gate_health.ratchetShadow', () => {
+  const vfq = (over: Record<string, unknown> = {}) => ({
+    flips: 2,
+    quarantined: [
+      { testFile: 'packages/x/a.test.ts', testCase: 'flips on the same sha', owner: 'su-abc', workItemId: 'WI-1' },
+    ],
+    alreadyCovered: 1,
+    unowned: [],
+    errors: [],
+    ...over,
+  });
+  const shadow = {
+    composedProof: {
+      schemaVersion: 1,
+      candidate: '1540f7f342c7',
+      repairHead: 'ff9f45a40f9d',
+      atMs: 1_792_478_000_000,
+      status: 'planned',
+      rerunCount: 4,
+      comparison: {
+        fullGreen: false,
+        composedGreen: false,
+        agree: true,
+        missedByComposed: [],
+        extraInComposed: [],
+        rerunReadFrom: 'full-run-failing-set',
+      },
+    },
+    newRedEjection: {
+      schemaVersion: 1,
+      candidate: '1540f7f342c7',
+      base: 'ac05bfd1a8c4',
+      atMs: 1_792_478_000_000,
+      status: 'nothing-new',
+      blameCheck: 'not-run',
+    },
+  };
+  const track = (status: string, opts: Record<string, unknown>) =>
+    trackGateStall(ctx, status, undefined, undefined, null, undefined, null, undefined, opts);
+
+  it.each([
+    ['a green verdict', 'advanced'],
+    ['a red verdict', 'not-green'],
+  ])('⭐ stores both round records on %s', async (_label, status) => {
+    await track(status, { verdictFlipQuarantine: vfq(), ratchetShadow: shadow });
+    const written = lastGateHealthWrite();
+    expect(written?.verdictFlipQuarantine).toEqual(vfq());
+    expect(written?.ratchetShadow).toEqual(shadow);
+  });
+
+  it('⭐ an unreported round CLEARS both (explicit null), never an older round beside a newer candidate', async () => {
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now(), verdictFlipQuarantine: vfq(), ratchetShadow: shadow };
+    await track('advanced', {});
+    const written = lastGateHealthWrite();
+    expect(written?.verdictFlipQuarantine).toBeNull();
+    expect(written?.ratchetShadow).toBeNull();
+  });
+
+  it('drops malformed values instead of storing them', async () => {
+    await track('not-green', {
+      verdictFlipQuarantine: { ...vfq(), flips: 'two' },
+      ratchetShadow: { composedProof: { ...shadow.composedProof, schemaVersion: 2 } },
+    });
+    const written = lastGateHealthWrite();
+    expect(written?.verdictFlipQuarantine).toBeNull();
+    expect(written?.ratchetShadow).toBeNull();
+  });
+
+  it('a quarantine entry missing its owner or work-item is dropped; the rest of the record is kept', async () => {
+    const extra = { testFile: 'packages/x/b.test.ts', testCase: 'no owner' };
+    await track('not-green', { verdictFlipQuarantine: vfq({ quarantined: [...vfq().quarantined, extra] }) });
+    expect(lastGateHealthWrite()?.verdictFlipQuarantine).toEqual(vfq());
+  });
+
+  it('⭐ every call site that threads gate records into trackGateStall threads these two as well', () => {
+    const src = readFileSync(new URL('./release-actions.ts', import.meta.url), 'utf8');
+    // A threading site is an options literal carrying `testPassReuse: <x>.testPassReuse`.
+    const sites = [...src.matchAll(/testPassReuse: (verdict|parsed\?)\.testPassReuse,([\s\S]*?)\n\s*\}/g)];
+    // Positive control: the three known sites (red hold, promotion-pending, marker fallback).
+    expect(sites.length).toBeGreaterThanOrEqual(3);
+    for (const [, from, block] of sites) {
+      for (const key of ['promotionRatchet', 'verdictFlipQuarantine', 'ratchetShadow']) {
+        expect(block, `${from}.${key} missing from a trackGateStall threading site`).toContain(
+          `${key}: ${from}.${key},`,
+        );
+      }
+    }
   });
 });

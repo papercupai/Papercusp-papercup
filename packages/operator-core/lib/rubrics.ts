@@ -2889,7 +2889,7 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
       throw new Error(
         `invalid_args: proposeRubric: acceptance rubric '${input.rubricId}' references classRef '${input.classRef}', ` +
           'but no rubric carries that id — rubrics:list the standard library and pick the class rubric ' +
-          '(feature-ship / bugfix / migration / investigation) this plan belongs to.',
+          '(feature-ship / bugfix / migration / investigation / general) this plan belongs to.',
       );
     }
     if (cls.kind !== 'standard') {

@@ -1,0 +1,47 @@
+{
+  "rubricId": "plan-class-general",
+  "title": "Plan class: general (shared acceptance invariants)",
+  "characteristic": "plan-acceptance",
+  "description": "The CLASS rubric general plans' acceptance rubrics reference (plan-verification-profiles-2026-10-17 D-003: the general verification profile maps to this class, with investigation as a general sub-class). A general plan delivers documents, decisions, research, operations or artifacts rather than code; it is done when each deliverable is durable, current and fit for the request. Independent grading stays mandatory (D-002). Graded at plan completion by a NON-implementer.",
+  "methodRef": null,
+  "ratingScale": ["pass", "partial", "fail", "unknown"],
+  "version": "0.1.0",
+  "source": "first-party",
+  "criteria": [
+    {
+      "key": "deliverable-durable-and-current",
+      "title": "Every deliverable is durable and its citation is current",
+      "model": "Each non-code deliverable is backed by a verifying citation (artifact, work-item, measurement or external snapshot) whose stored content hash still matches the live source; nothing exists only in a transcript or a scratch file.",
+      "method": "For each plan item, read its effective audit entry and resolve every artifact, work-item, measurement or external citation; confirm the resolved content hash equals the audited one.",
+      "driftMarkers": "A deliverable cited only as a doc path or chat message; a citation whose content changed after the audit; a scratch-file or unpublished artifact named as the deliverable."
+    },
+    {
+      "key": "outcome-meets-request",
+      "title": "The delivered outcome meets the stated request",
+      "model": "The deliverable answers the plan's stated audience, problem and outcome; a reader in that audience could act on it without asking the author.",
+      "method": "Read the plan's product shaping and requirements, then read each deliverable and check it against the named outcome and acceptance condition.",
+      "driftMarkers": "A deliverable that describes the work done instead of the outcome; a section the requirement names that is missing or deferred without a filed item."
+    },
+    {
+      "key": "decision-recorded",
+      "title": "The resulting rulings are addressable",
+      "model": "Every trade-off or ruling the plan settled is a plan Decision (or a filed, owned work-item) that others can re-read as authority, not a paraphrase in a message.",
+      "method": "Find the D-NNN or WI-NNN carrying each ruling; confirm it states the ruling and its grounds.",
+      "driftMarkers": "A ruling that exists only in coord chatter; the same question reopening in the next lane."
+    },
+    {
+      "key": "follow-ups-filed",
+      "title": "Actionable discoveries filed, none dropped",
+      "model": "Every actionable discovery made along the way was filed with an owner at the moment of discovery; nothing rides only in prose.",
+      "method": "Read the plan's record for mentioned-but-unfiled discoveries; spot-check that named frictions have filed, owned items.",
+      "driftMarkers": "'We should also…' sentences with no item behind them; a residue listed without an assignee."
+    },
+    {
+      "key": "audit-citations-spot-checked",
+      "title": "The independent grader audits the audit",
+      "model": "The independent grader opens a sample of the implementer's plan-audit citations and confirms each sampled reference resolves against its current source and actually supports the audited item; the audit verdict itself is never accepted as proof.",
+      "method": "Read the subject plan's effective per-item audit. Spot-check at least one resolving citation per deliverable kind (and expand the sample after any mismatch): a code/test citation for a code deliverable, or an artifact, work-item, measurement or external citation whose content hash is still current for a non-code deliverable. Compare it with the item requirement and audit claim, and record what was checked. Treat doc, workitem, and none citations as declarations of non-verification, never substitutes for the deliverable.",
+      "driftMarkers": "A grade copied from the audit's PASS label; no cited source opened; a stale content hash ignored; doc/work-item prose treated as proof that the deliverable exists."
+    }
+  ]
+}

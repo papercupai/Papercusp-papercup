@@ -1,6 +1,7 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
 import { EXECUTABLE_PROOF_CRITERIA, executableProofExemption } from '../../plan-verification-profile';
+import type { PlanClassRubricRef } from '../../plan-class-refs';
 import {
   hasMatchingDeclaredCaseTitle,
   hasSameCaseTitleIdentity,
@@ -66,13 +67,9 @@ export function specTestAdequacyReplayLimit(gradedRows: number): number {
   return rows < SPEC_TEST_ADEQUACY_REPLAY_LIMIT ? SPEC_TEST_ADEQUACY_REPLAY_LIMIT : rows + 1;
 }
 
-export const PLAN_CLASS_RUBRIC_REFS = [
-  'plan-class-feature-ship',
-  'plan-class-bugfix',
-  'plan-class-migration',
-  'plan-class-investigation',
-] as const;
-export type PlanClassRubricRef = (typeof PLAN_CLASS_RUBRIC_REFS)[number];
+// The class list is owned by the leaf ../../plan-class-refs (single source, also read by
+// MCP admission); re-exported here so every existing importer keeps working.
+export { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from '../../plan-class-refs';
 
 export const ADEQUACY_CRITERIA = [
   'traceability',

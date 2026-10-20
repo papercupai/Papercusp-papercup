@@ -26,6 +26,7 @@ import type { SelectionVia } from '@papercusp/ranked-selection';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
+import { PLAN_CLASS_RUBRIC_REFS } from './plan-class-refs';
 import { RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
 import {
   classifyRubricEvidenceCurrentness,
@@ -1461,7 +1462,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `plan '${planSlug}' cannot be marked shipped: it has no acceptance rubric ` +
         `(acceptance-rubrics-on-every-plan-2026-08-11). Author it NOW, post-implementation (D-007 — it is ` +
         `better informed against the as-built work): rubrics:propose { kind:'acceptance', subjectPlan:'${planSlug}', ` +
-        `classRef:'<plan-class-feature-ship|plan-class-bugfix|plan-class-migration|plan-class-investigation>', ` +
+        `classRef:'<${PLAN_CLASS_RUBRIC_REFS.join('|')}>', ` +
         `criteria:[3–7 outcomes tracing to the plan's goal + Decisions — never merely describing the diff] } ` +
         `(a pure investigation may pass classRef:'plan-class-investigation' with criteria:[] — D-009). ` +
         `It activates immediately (no ratification); then a ` +
