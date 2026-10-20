@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   ADMISSION_CREATE_BYPASSES,
+  ADMISSION_FAIL_OPEN_EXCLUSIONS,
   ADMISSION_FAIL_OPEN_TICKS,
+  asAdmissionFailOpenExclusion,
   DEFAULT_PROMOTER_TICK_MINUTES,
   admissionFailOpenSec,
   admissionFailOpenGuaranteedSec,
@@ -65,7 +67,7 @@ describe('admission-pending states a bound, derived from the promoter cadence', 
    * both exceptions instead of promising the ceiling unconditionally.
    */
   it('a candidate-carrying row is told the wait has no fixed bound, never the fail-open ceiling', () => {
-    const candidate = admissionPendingExplanation(undefined, { dedupCandidates: true });
+    const candidate = admissionPendingExplanation(undefined, { failOpenExclusion: 'duplicate-candidates' });
     expect(candidate).toContain('DUPLICATE CANDIDATES');
     expect(candidate).toContain('NO fixed bound');
     expect(candidate).not.toContain(`${ADMISSION_FAIL_OPEN_TICKS * DEFAULT_PROMOTER_TICK_MINUTES} min`);
@@ -75,12 +77,73 @@ describe('admission-pending states a bound, derived from the promoter cadence', 
     expect(generic).not.toContain('admits anything still pending');
     expect(generic).toContain('re-screened');
     expect(generic).toContain('no fixed bound');
+  });
 
-    // And the claim floor routes on the row: a candidate row gets that text and NO retry bound.
-    const floorSource = fs.readFileSync(new URL('./work-items.ts', import.meta.url), 'utf8');
-    expect(floorSource).toContain("((wi.payload -> 'dedupCandidates') IS NOT NULL)");
-    expect(floorSource).toContain('admissionPendingExplanation(undefined, { dedupCandidates: true })');
-    expect(floorSource).toMatch(/retry: r\?\.admission_has_dedup_candidates\s+\? undefined/);
+  /**
+   * EI-25209690807142935 / EI-26282407214531658 — the candidate leg was the only exclusion the
+   * claim floor knew about. A degraded-coverage row (measured on EI-26277464744695494) and a
+   * typed duplicate verdict were still promised the fail-open ceiling the runner never honours
+   * for them. Every exclusion gets its own text, and none of them quotes the ceiling.
+   */
+  it('EVERY fail-open exclusion has its own explanation, and none quotes the fail-open ceiling', () => {
+    const ceiling = `${ADMISSION_FAIL_OPEN_TICKS * DEFAULT_PROMOTER_TICK_MINUTES} min`;
+    const generic = admissionPendingExplanation();
+    // Positive control: the generic sentence DOES carry the ceiling, so the negative
+    // assertions below cannot pass merely because the ceiling text never renders.
+    expect(generic).toContain(ceiling);
+    expect(ADMISSION_FAIL_OPEN_EXCLUSIONS.length).toBe(3);
+    for (const failOpenExclusion of ADMISSION_FAIL_OPEN_EXCLUSIONS) {
+      const text = admissionPendingExplanation(undefined, { failOpenExclusion, duplicateOf: 'EI-CANON' });
+      expect(text, `${failOpenExclusion} fell through to the generic sentence`).not.toBe(generic);
+      expect(text, `${failOpenExclusion} still promises the fail-open ceiling`).not.toContain(ceiling);
+      expect(text).toMatch(/NO fixed\s+bound|does NOT clear on its own/);
+    }
+  });
+
+  it('a degraded-coverage row is told about the re-screen, with the cadence derived from the tick', () => {
+    const degraded = admissionPendingExplanation(7, { failOpenExclusion: 'degraded-dedup-coverage' });
+    expect(degraded).toContain('could NOT RUN');
+    expect(degraded).toContain(`every ${ADMISSION_FAIL_OPEN_TICKS} ticks of the 7-minute promoter`);
+    expect(degraded).not.toContain('30-minute');
+  });
+
+  it('a duplicate-verdict row names its canonical row and is told it never clears on its own', () => {
+    const verdict = admissionPendingExplanation(undefined, {
+      failOpenExclusion: 'duplicate-verdict',
+      duplicateOf: 'EI-26282407214531658',
+    });
+    expect(verdict).toContain('DUPLICATE VERDICT');
+    expect(verdict).toContain('(EI-26282407214531658)');
+    expect(verdict).toContain('does NOT clear on its own');
+    expect(verdict).not.toMatch(/CLEARS ON ITS\s+OWN/);
+    // Without an id the sentence still reads cleanly rather than printing "(null)".
+    expect(admissionPendingExplanation(undefined, { failOpenExclusion: 'duplicate-verdict' })).not.toContain('(null)');
+  });
+
+  it('only a known exclusion label narrows; anything else from the DB means "no exclusion"', () => {
+    for (const label of ADMISSION_FAIL_OPEN_EXCLUSIONS) expect(asAdmissionFailOpenExclusion(label)).toBe(label);
+    for (const junk of [null, undefined, '', 'degraded', 'DUPLICATE-VERDICT', 1, true]) {
+      expect(asAdmissionFailOpenExclusion(junk)).toBeNull();
+    }
+  });
+
+  it('the runner, its re-screen selector and the claim floor all read the ONE exclusion record', () => {
+    // Rung 2 (PIN): the behaviour is proven against real Postgres in
+    // work-items-advertise-claim-floor-parity.integration.test.ts; this pins that no consumer
+    // has gone back to a private copy of the predicates.
+    const read = (p: string) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
+    const runner = read('./work-items-admission-promoter.ts');
+    expect(runner).toContain('AND ${failOpenDedupEligibleWhereSql(sql)}');
+    const rescreen = read('./work-items-admission-dedup-rescreen.ts');
+    expect(rescreen).toContain('${failOpenExclusionSql(sql)}');
+    const floor = read('./work-items.ts');
+    expect(floor).toContain("failOpenExclusionSql(sql, 'wi')");
+    expect(floor).not.toContain('admission_has_dedup_candidates');
+    for (const [name, src] of [['runner', runner], ['rescreen', rescreen], ['floor', floor]] as const) {
+      expect(src, `${name} re-derives the candidate predicate by hand`).not.toContain(
+        "(payload -> 'dedupCandidates') IS NULL",
+      );
+    }
   });
 
   it('the two second-bounds agree with the constants they are derived from', () => {

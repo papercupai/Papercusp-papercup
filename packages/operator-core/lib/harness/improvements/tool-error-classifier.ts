@@ -154,6 +154,13 @@ export const ADMISSION_OFFTHREAD_BUSY_MESSAGE_PATTERN =
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
   'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable|could not access status of transaction [0-9]+';
 
+/** The pre-destructive backup hook fails closed when the filesystem cannot fit
+ * the next dump. This is an intentional capacity gate, not a deterministic
+ * backup-tool defect; keep it on the volume-gated transient path so a couple
+ * of safety refusals do not enter the structural auto-implement lane. */
+export const BACKUP_FREE_SPACE_REFUSAL_MESSAGE_PATTERN =
+  'insufficient free space \\([0-9]+ available; [0-9]+ needed for a dump of';
+
 /** An explicit nsenter refusal to open a process namespace is the operating
  * system enforcing the caller's namespace boundary, not a capability:bash
  * implementation failure. Keep this narrow so unrelated child permission
@@ -353,8 +360,8 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   {
     class: 'transient',
     errorCodes: ['sidecar_required_unavailable'],
-    messagePattern: INFRA_TRANSIENT_MESSAGE_PATTERN,
-    why: 'shared-infra exhaustion (PG max_connections / DB unavailable / disk-full transaction-status failure / embedding sidecar unavailable) — not a per-tool bug',
+    messagePattern: `${INFRA_TRANSIENT_MESSAGE_PATTERN}|${BACKUP_FREE_SPACE_REFUSAL_MESSAGE_PATTERN}`,
+    why: 'shared-infra exhaustion (PG max_connections / DB unavailable / disk-full transaction-status failure / backup free-space admission / embedding sidecar unavailable) — not a per-tool bug',
   },
 ];
 

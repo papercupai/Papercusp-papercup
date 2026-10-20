@@ -1,4 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
+
+// The production follow-up's transport ends (event-wait-settlement-2026-10-20 P-003):
+// spied, so a sweep tick can be observed refreshing claimable views and messaging/waking.
+const followUp = vi.hoisted(() => ({
+  notifySyncInvalidate: vi.fn(async () => undefined),
+  sendMessage: vi.fn(async () => ({})),
+  wakeRecipients: vi.fn(async () => ({})),
+}));
+vi.mock('../sync-sse', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../sync-sse')>()),
+  notifySyncInvalidate: followUp.notifySyncInvalidate,
+}));
+vi.mock('../agent-tools/coordination/messages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-tools/coordination/messages')>()),
+  sendMessage: followUp.sendMessage,
+}));
+vi.mock('../agent-tools/coordination/inbox-wake', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-tools/coordination/inbox-wake')>()),
+  wakeRecipients: followUp.wakeRecipients,
+}));
+vi.mock('../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../workspace-registry')>()),
+  activeWorkspaceId: () => 'ws-reaper-test',
+}));
+
 import * as eventStore from '../events/await/store';
 import type { AwaitRow, KeyFireRow } from '../events/await/types';
 import {
@@ -289,5 +314,87 @@ describe('sweepWorkItemBlockerDefaults', () => {
     const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
     expect(out.skipped['read-failed']).toBe(1);
     expect(out.applied.release_to_agents).toBe(1);
+  });
+});
+
+describe('the re-check sweep follows up every clear (event-wait-settlement-2026-10-20 P-003)', () => {
+  const fired = async () => ({ verdict: 'reachable' as const, basis: 'fired' as const, authoritative: true,
+    evidence: 'current event generation fired', checkedAt: NOW.toISOString() });
+  const due = (ref: string, over: Partial<ExternalBlockerRecord> = {}) =>
+    blocker({ kind: 'event', capability: 'live-dependency', ref, decideBy: undefined, defaultAction: undefined, ...over });
+
+  /** fakeDeps + the PRODUCTION follow-up, a feature held by su-holder, and a restore that
+   *  reports what the production restore sets for a feature whose last blocker cleared. */
+  function sweepDeps(blockers: ExternalBlockerRecord[]) {
+    const fake = fakeDeps({ 'WI-held': { externalBlockers: blockers } });
+    const read = fake.deps.readPayload;
+    fake.deps.readPayload = async (id, h) => ({ ...(await read(id, h))!, family: 'feature', state: 'blocked', holder: 'su-holder' });
+    fake.deps.restoreLifecycle = async ({ remaining }) => (remaining.length === 0 ? 'open' : 'blocked');
+    fake.deps.resolveCondition = fired;
+    fake.deps.escalate = vi.fn(async () => undefined);
+    fake.deps.followUp = defaultBlockerReapDeps.followUp;
+    for (const spy of Object.values(followUp)) spy.mockClear();
+    return fake.deps;
+  }
+
+  it('SPEC-P-003: a sweep tick that clears the last blocker invalidates the claimable sync queries', async () => {
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: sweepDeps([due('event:ready', { recheckAt: PAST })]) });
+
+    expect(out.rechecked).toEqual({ cleared: 1, escalated: 0 });
+    const invalidated = followUp.notifySyncInvalidate.mock.calls.map((call) => (call as unknown[])[0]);
+    expect(invalidated).toEqual(expect.arrayContaining(['workItems.byHarness', 'workItems.summary']));
+  });
+
+  it('AUTO-BAR-R-5-P-003: the holder gets a message and a wake when the sweep clears the last blocker', async () => {
+    await sweepWorkItemBlockerDefaults({ now: NOW, deps: sweepDeps([due('event:ready', { recheckAt: PAST })]) });
+
+    expect(followUp.sendMessage).toHaveBeenCalledTimes(1);
+    const [identity, opts] = followUp.sendMessage.mock.calls[0] as unknown as [
+      { ownerId: string; workspaceId: string },
+      { to: string[]; summary: string; body: string; harnessSlug: string },
+    ];
+    expect(identity).toMatchObject({ ownerId: 'system:blocker-auto-clear', workspaceId: 'ws-reaper-test' });
+    expect(opts).toMatchObject({ to: ['su-holder'], harnessSlug: 'h' });
+    expect(opts.summary).toContain('WI-held');
+    expect(opts.summary).toContain('event:ready');
+    expect(opts.body).toContain('clearedBy system:blocker-default-reaper');
+    expect(opts.body).toContain('No active blocker remains on WI-held.');
+    expect(followUp.wakeRecipients).toHaveBeenCalledWith(['su-holder'],
+      expect.objectContaining({ summary: opts.summary, workspaceId: 'ws-reaper-test' }));
+  });
+
+  it('a partial clear still tells the holder but does not refresh claimable views', async () => {
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW,
+      deps: sweepDeps([due('event:ready', { recheckAt: PAST }), due('event:later', { recheckAt: FUTURE })]) });
+
+    expect(out.rechecked).toEqual({ cleared: 1, escalated: 0 });
+    expect(followUp.notifySyncInvalidate).not.toHaveBeenCalled();
+    expect(followUp.sendMessage).toHaveBeenCalledTimes(1);
+    const opts = (followUp.sendMessage.mock.calls[0] as unknown as [unknown, { body: string }])[1];
+    expect(opts.body).toContain('1 other active blocker(s) still hold WI-held');
+  });
+
+  it('an escalation is not a clear: no follow-up', async () => {
+    const deps = sweepDeps([due('event:ready', { recheckAt: PAST })]);
+    deps.resolveCondition = async () => ({ verdict: 'unknown', basis: 'unmeasured', authoritative: false,
+      evidence: 'not fired', checkedAt: NOW.toISOString() });
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+
+    expect(out.rechecked).toEqual({ cleared: 0, escalated: 1 });
+    expect(followUp.notifySyncInvalidate).not.toHaveBeenCalled();
+    expect(followUp.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('a failing follow-up never changes what the sweep counted', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const deps = sweepDeps([due('event:ready', { recheckAt: PAST })]);
+      deps.followUp = async () => { throw new Error('coord down'); };
+      const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+      expect(out.rechecked).toEqual({ cleared: 1, escalated: 0 });
+      expect(out.skipped).toEqual({});
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

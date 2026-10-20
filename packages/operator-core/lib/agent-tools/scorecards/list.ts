@@ -16,7 +16,7 @@ import { DbCallDeadlineError } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
-import { listScorecardPage } from '../../scorecards';
+import { listScorecardPage, scorecardTimeoutLeadIn } from '../../scorecards';
 import type { ScorecardListCursor } from '../../scorecards';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 
@@ -249,7 +249,7 @@ export default defineTool({
               retryable: true,
               ...(error instanceof OrgTxnTimeoutError ? { pgCode: error.pgCode } : {}),
               message:
-                `scorecards:list read hit transient database contention: ${error.message}. ` +
+                `${scorecardTimeoutLeadIn(error, 'scorecards:list read')}: ${error.message}. ` +
                 'No scorecards were returned; retry shortly.',
             },
           };

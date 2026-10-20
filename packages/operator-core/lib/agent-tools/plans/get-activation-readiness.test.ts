@@ -25,8 +25,11 @@ vi.mock('../../consult/plan-start-consult', () => ({
   planStartConsult: M.planStartConsult,
   fetchTurnExcerpts: M.fetchTurnExcerpts,
 }));
+// getBuildInfo falls back to `git rev-parse` with a 2s timeout; under host load
+// it returns (and caches) null, which flaked the buildSha assertion below.
+vi.mock('../../build-info', () => ({ getBuildInfo: () => ({ sha: 'abc1234', version: '0.0.0' }) }));
 
-import { previewPlanStartConsult } from './get-activation-readiness';
+import { activationDeclarationReadiness, previewPlanStartConsult } from './get-activation-readiness';
 
 const params = {
   workspaceId: 'workspace-a',
@@ -146,5 +149,37 @@ describe('previewPlanStartConsult', () => {
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'normal_journey_missing' })]),
     } });
     expect(result.productShaping?.reviewerBrief.instructions[0]).toContain('BEFORE');
+  });
+});
+
+// plan-reuse-and-library-declarations-2026-10-20 R-3.
+describe('activationDeclarationReadiness', () => {
+  const plan = (sections = '') =>
+    `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\n---\n\n## Items\n\n- **P-001** \`todo\` Do the thing.\n${sections}`;
+  const librariesNotApplicable =
+    '\n## Third-party libraries\n\n```libraries\n{"needs":[],"notApplicable":"No library could do this."}\n```\n';
+
+  it('R-3: readiness lists a missing declaration section as a blocker', () => {
+    const readiness = activationDeclarationReadiness(plan(librariesNotApplicable), 'draft');
+    expect(readiness).toMatchObject({
+      ready: false,
+      applies: true,
+      reuse: 'missing',
+      libraries: 'not-applicable',
+      blockers: [{ code: 'plan_declarations_invalid', section: 'Existing infrastructure reused', status: 'missing' }],
+    });
+    expect(readiness.blockers).toHaveLength(1);
+  });
+
+  it('R-3 / D-013 #1: a plan with no status is gated (fail closed)', () => {
+    expect(activationDeclarationReadiness(plan(), null)).toMatchObject({
+      ready: false, applies: true, reuse: 'missing', libraries: 'missing',
+    });
+  });
+
+  it('R-3: readiness reports no blockers for an active plan (no retrofit)', () => {
+    expect(activationDeclarationReadiness(plan(), 'active')).toMatchObject({
+      ready: true, applies: false, reuse: 'missing', libraries: 'missing', blockers: [],
+    });
   });
 });

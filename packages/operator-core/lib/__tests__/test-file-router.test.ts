@@ -1207,6 +1207,72 @@ describe('collection child identity evidence (WI-10007991)', () => {
 });
 
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
+  it.each(['stdout', 'stderr'] as const)('retains bounded complete %s lines without promoting partial output', async channel => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+      });
+      const progress: string[] = [];
+      const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+        files: ['a.test.ts'], env: { PATH: '/usr/bin' }, progressIntervalMs: 10,
+        systemdRunPath: null, setsidPath: null, spawnImpl: () => child,
+        onProgress: (line: string) => progress.push(line),
+        governedProcessImpl: (_opts: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+      });
+      child[channel].write('case "quoted"');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(progress.at(-1)).toContain('lastOutputLine=null');
+      child[channel].write(' completed\npartial');
+      await vi.advanceTimersByTimeAsync(10);
+      const readLine = () => JSON.parse(progress.at(-1)!.split('lastOutputLine=')[1]!);
+      expect(readLine()).toEqual({ channel, text: 'case "quoted" completed' });
+      child[channel].write('x'.repeat(20_000) + '\n');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(readLine().text).toHaveLength(1024);
+      expect(readLine().text).toMatch(/^partialx+…$/);
+      child.emit('close', 1, null);
+      expect(await pending).toMatchObject({ status: 1, timedOut: false });
+      expect(progress.at(-1)).toContain('state=finished');
+      expect(readLine().text).toHaveLength(1024);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('emits the last complete child line before forwarding a parent termination', async () => {
+    const forwarders = new Map<string, (...args: unknown[]) => void>();
+    const once = vi.spyOn(process, 'once').mockImplementation((event, listener) => {
+      forwarders.set(String(event), listener);
+      return process;
+    });
+    const signalSelf = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const events: string[] = [];
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    try {
+      const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+        files: ['a.test.ts'], env: { PATH: '/usr/bin' },
+        systemdRunPath: null, setsidPath: '/usr/bin/setsid', spawnImpl: () => child,
+        killProcessImpl: () => { events.push('kill-child'); return 'group'; },
+        onProgress: (line: string) => events.push(line),
+        governedProcessImpl: (_opts: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+      });
+      child.stderr.write('assertion started\nunfinished');
+      forwarders.get('SIGTERM')!();
+      const receipt = events.find(line => line.includes('state=parent-sigterm'))!;
+      expect(JSON.parse(receipt.split('lastOutputLine=')[1]!))
+        .toEqual({ channel: 'stderr', text: 'assertion started' });
+      expect(receipt).toContain('exitStatus=pending');
+      expect(events.indexOf(receipt)).toBeLessThan(events.indexOf('kill-child'));
+      expect(signalSelf).toHaveBeenCalledWith(process.pid, 'SIGTERM');
+      child.emit('close', null, 'SIGKILL');
+      expect(await pending).toMatchObject({ status: null, signal: 'SIGKILL', timedOut: false });
+    } finally {
+      once.mockRestore();
+      signalSelf.mockRestore();
+    }
+  });
+
   it.each(['stdout', 'stderr'] as const)('retains worker-startup evidence from chunked %s before exit (EI-26268916098999544)', async (channel) => {
     const child = Object.assign(new EventEmitter(), {
       pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),

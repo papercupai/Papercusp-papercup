@@ -299,6 +299,21 @@ describe('durable park audit classification', () => {
     expect(liveness.evidence).toContain('broad trigger');
   });
 
+  // event-wait-settlement-2026-10-20 P-001: a change notification about ANOTHER subject names
+  // that subject, so it passed the old subject-only guard; its fire still proves nothing.
+  it.each(['work-item:status:WI-dep', 'work-item:claimed:WI-dep', 'work-item:unblocked:WI-dep', 'claim:released:WI-dep'])(
+    'downgrades a stored satisfied stamp from change-notification trigger %s to unverified',
+    (trigger) => {
+      const liveness = classifyDurableParkReleaseLiveness({ claim_hold_release: {
+        condition: 'WI-dep reaches a terminal state', owner: 'su-parker', trigger,
+        reachability: 'satisfied', evidence: 'fired',
+      } }, 'parked pending WI-dep');
+      expect(liveness).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+      expect(liveness.findings).not.toContain('condition-satisfied-still-parked');
+      expect(liveness.evidence).toContain('change-notification trigger');
+    },
+  );
+
   it('keeps a stored satisfied stamp on a subject-bound trigger or a non-catalogue declared gate', () => {
     for (const trigger of ['work-item:done:WI-1', 'my-declared-gate:abc']) {
       expect(classifyDurableParkReleaseLiveness({ claim_hold_release: {
@@ -337,18 +352,20 @@ describe('durable park audit classification', () => {
     )).toMatchObject({ status: 'satisfied-still-parked', reachability: 'satisfied' });
   });
 
-  it("downgrades the parked item's own generic status event even after the park, but not another item's", () => {
-    const own = classifyDurableParkReleaseLiveness(
-      storedFire('work-item:status:EI-parked', '2026-10-11 07:00:00+00', '2026-10-11T06:18:49.823Z'),
-      'parked pending a new failure', 'EI-parked',
-    );
-    expect(own).toMatchObject({ status: 'unverified', reachability: 'blocked' });
-    expect(own.evidence).toContain("parked item's own status event");
-    expect(classifyDurableParkReleaseLiveness(
-      storedFire('work-item:status:EI-other', '2026-10-11 07:00:00+00', '2026-10-11T06:18:49.823Z'),
-      'parked pending EI-other', 'EI-parked',
-    )).toMatchObject({ status: 'satisfied-still-parked' });
-  });
+  // event-wait-settlement-2026-10-20 P-001 supersedes the "but not another item's" half this
+  // case used to pin: work-item:status is a change notification for EVERY subject, so a fire
+  // after the park proves nothing about the parked item or about another one.
+  it.each(['work-item:status:EI-parked', 'work-item:status:EI-other'])(
+    'downgrades a generic status event %s even when it fired after the park',
+    (trigger) => {
+      const liveness = classifyDurableParkReleaseLiveness(
+        storedFire(trigger, '2026-10-11 07:00:00+00', '2026-10-11T06:18:49.823Z'),
+        'parked pending a new failure', 'EI-parked',
+      );
+      expect(liveness).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+      expect(liveness.evidence).toContain('change-notification trigger');
+    },
+  );
 
   it('orders ledger fire times by their explicit offset and never guesses a zone', () => {
     expect(parseEventInstantMs('2026-10-10 13:12:21.494399-04')).toBe(Date.parse('2026-10-10T17:12:21.494Z'));

@@ -11,6 +11,7 @@ import {
   classifyGradingAuditCurrentness,
   readScorecardEvidence,
   readScorecardRecipeHeader,
+  scorecardTimeoutLeadIn,
   type ScorecardEvidenceRow,
   type ScorecardRecipeHeader,
 } from '../../scorecards';
@@ -732,7 +733,7 @@ export default defineTool({
                 retryable: true,
                 ...(error instanceof OrgTxnTimeoutError ? { pgCode: error.pgCode } : {}),
                 message:
-                  `scorecards:get read hit transient database contention: ${error.message}. ` +
+                  `${scorecardTimeoutLeadIn(error, 'scorecards:get read')}: ${error.message}. ` +
                   'No scorecard was returned; retry shortly.',
               });
             }

@@ -52,7 +52,7 @@ import { getStalePathRefsForSubjects, stalePathRefsNote } from '../../stale-path
 import { evidenceCurrentInputSchema } from './spec-evidence-store';
 import { readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { previewPlanStartConsult } from './get-activation-readiness';
+import { activationDeclarationReadiness, previewPlanStartConsult } from './get-activation-readiness';
 import { getBuildInfo } from '../../build-info';
 
 /**
@@ -1615,6 +1615,9 @@ export default defineTool({
               planSlug: slug,
               planContent: previewRead.row.content,
             }),
+            // plan-reuse-and-library-declarations-2026-10-20 R-3: the activation
+            // audit's declaration gate, previewed with the same verdict.
+            declarations: activationDeclarationReadiness(previewRead.row.content, previewRead.row.status),
           };
         } catch (error) {
           // Keep the advisory read useful if a plan disappears between the

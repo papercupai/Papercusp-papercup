@@ -43,6 +43,7 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { readEventConditionReachability, type ExternalConditionReachability } from '../external-condition-reachability';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import { activeWorkspaceId } from '../workspace-registry';
+import { followUpSystemClears, type SystemClearedBlockerItem } from '../work-item-ref-blocker-auto-clear';
 
 export const BLOCKER_DEFAULT_REAPER_ACTOR = 'system:blocker-default-reaper';
 
@@ -55,18 +56,26 @@ export interface BlockerReapCandidate {
 export interface BlockerReapDeps {
   listCandidates(limit: number): Promise<BlockerReapCandidate[]>;
   /** Fresh read so the apply is compare-and-set against CURRENT blocker history. */
-  readPayload(id: string, harness: string): Promise<{ payload: unknown; family?: string; state?: string } | null>;
+  readPayload(
+    id: string,
+    harness: string,
+  ): Promise<{ payload: unknown; family?: string; state?: string; holder?: string | null } | null>;
   writeBlockers(id: string, harness: string, blockers: ExternalBlockerRecord[], expected?: unknown): Promise<boolean>;
   resolveCondition?(blocker: ExternalBlockerRecord): Promise<ExternalConditionReachability>;
   escalate?(id: string, harness: string, blocker: ExternalBlockerRecord): Promise<void>;
-  /** Return the item to the claimable pool (or the right parked state) after a release. */
+  /** Return the item to the claimable pool (or the right parked state) after a release.
+   *  Resolves to the lifecycle state it set, when it set one. */
   restoreLifecycle(args: {
     id: string;
     harness: string;
     family?: string;
     state?: string;
     remaining: ExternalBlockerRecord[];
-  }): Promise<void>;
+  }): Promise<string | void>;
+  /** After a re-check CLEARED a blocker: the shared system-clear follow-up (refresh
+   *  claimable views, message and wake the holder — event-wait-settlement-2026-10-20
+   *  P-003). Optional so a test's fake deps opt in; the production deps always run it. */
+  followUp?(items: SystemClearedBlockerItem[]): Promise<unknown>;
 }
 
 export interface BlockerSweepResult {
@@ -102,7 +111,7 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
   },
   async readPayload(id, harness) {
     const wi = await getWorkItem(id, harness);
-    return wi ? { payload: wi.payload, family: wi.family, state: wi.state } : null;
+    return wi ? { payload: wi.payload, family: wi.family, state: wi.state, holder: wi.assignee } : null;
   },
   async writeBlockers(id, harness, blockers, expected) {
     if (expected === undefined) {
@@ -146,12 +155,15 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
     if (remaining.length > 0) {
       // D-029: the hold registry's answerable ask, the predicate the needs-human writer refuses on.
       const strict = hasActiveStrictHumanAsk({ externalBlockers: remaining });
-      await setWorkItemStateWithAliasInfo(id, strict ? 'needs-human' : 'blocked', {
+      const parked = strict ? 'needs-human' : 'blocked';
+      await setWorkItemStateWithAliasInfo(id, parked, {
         harness,
         by: BLOCKER_DEFAULT_REAPER_ACTOR,
       });
+      return parked;
     } else if (family === 'feature' && (state === 'blocked' || state === 'needs-human')) {
       await setWorkItemStateWithAliasInfo(id, 'open', { harness, by: BLOCKER_DEFAULT_REAPER_ACTOR });
+      return 'open';
     } else if (family === 'issue') {
       await setWorkItemClaimHold(id, false, {
         harness,
@@ -165,10 +177,39 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
       // by the real-PG integration test (WI-10005093); the fake-deps unit test could not.
       if (state === 'blocked' || state === 'needs-human') {
         await setWorkItemStateWithAliasInfo(id, 'open', { harness, by: BLOCKER_DEFAULT_REAPER_ACTOR });
+        return 'open';
       }
     }
   },
+  followUp: (items) => followUpSystemClears(items),
 };
+
+/** The follow-up input for one blocker the re-check sweep cleared. */
+function recheckClearedItem(input: {
+  id: string;
+  harness: string;
+  family?: string;
+  stateBefore?: string;
+  stateAfter: string | void;
+  holder?: string | null;
+  cleared: ExternalBlockerRecord;
+  evidence: string;
+  remaining: number;
+}): SystemClearedBlockerItem {
+  const status = typeof input.stateAfter === 'string' ? input.stateAfter : (input.stateBefore ?? null);
+  return {
+    workspaceId: activeWorkspaceId(),
+    featureId: input.id,
+    harnessSlug: input.harness,
+    family: input.family === 'feature' ? 'feature' : 'issue',
+    status,
+    holder: input.holder ?? null,
+    restored: input.stateAfter === 'open',
+    activeRemaining: input.remaining,
+    cleared: [{ kind: input.cleared.kind, ref: input.cleared.ref, evidence: input.evidence }],
+    clearedBy: BLOCKER_DEFAULT_REAPER_ACTOR,
+  };
+}
 
 /**
  * One sweep. Never throws for a single bad row: a per-item failure is counted and the
@@ -230,8 +271,20 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
               bump(result, 'lost-race'); continue;
             }
             if (cleared) {
-              await deps.restoreLifecycle({ id: row.id, harness: row.harness, family: fresh.family,
-                state: fresh.state, remaining: history.blockers.filter((b) => b.status === 'active') });
+              const remaining = history.blockers.filter((b) => b.status === 'active');
+              const stateAfter = await deps.restoreLifecycle({ id: row.id, harness: row.harness, family: fresh.family,
+                state: fresh.state, remaining });
+              if (deps.followUp) {
+                // P-003: the same follow-up as every other system clear. The clear already
+                // committed, so a failed message or wake never undoes or miscounts it.
+                try {
+                  await deps.followUp([recheckClearedItem({ id: row.id, harness: row.harness, family: fresh.family,
+                    stateBefore: fresh.state, stateAfter, holder: fresh.holder, cleared: current,
+                    evidence: reachability.evidence, remaining: remaining.length })]);
+                } catch (err) {
+                  console.warn(`[blocker-recheck] follow-up ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
             } else {
               await deps.escalate!(row.id, row.harness, { ...current, ...(reachability ? { reachability } : {}) });
               const deliveredHistory = JSON.parse(JSON.stringify(history.blockers)) as ExternalBlockerRecord[];

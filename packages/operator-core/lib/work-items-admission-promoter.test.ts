@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  admissionEndpointBlock,
   admissionPairKey,
+  prescreenPromoterWindow,
+  type AdmissionMergeSnapshot,
   ADMISSION_REVIEW_ALERT_KEY,
   ADMISSION_REVIEW_RETRY_OWNER,
   DEFAULT_ADMISSION_REVIEW_SLO_MINUTES,
@@ -541,5 +544,88 @@ describe('responsePayload', () => {
     expect(preFixResponsePayload(truncated)).toBeNull();
     // The fixed body refuses to, and says why instead.
     expect(() => responsePayload(truncated)).toThrow(/unterminated/);
+  });
+});
+
+// WI-6554700010018134: a TERMINAL twin's open-work gates (agent review, claim, claim-hold)
+// are residue no later tick can lift. Measured live on 2026-10-20: EI-26282407214531658 sat
+// `deferred: review-gated` behind dropped EI-24515847775093700, whose agentReview was still
+// `pending`, on every promoter tick — the pending row could never be judged or admitted.
+describe('admission endpoint protection — terminal twins', () => {
+  const pendingReview = { status: 'pending', submittedBy: 'su-test', ledgerIdeaId: 'idea-1', round: 1 };
+  const snapshot = (id: string, overrides: Partial<AdmissionMergeSnapshot> = {}): AdmissionMergeSnapshot => ({
+    id,
+    workspaceId: 'ws',
+    harnessSlug: 'h',
+    title: `${id} title`,
+    summary: `${id} summary`,
+    state: 'open',
+    kind: 'change',
+    admission: 'admitted',
+    admittedAt: null,
+    admittedBy: null,
+    conditionKey: null,
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    origin: 'local',
+    assignee: null,
+    payload: {},
+    completionRef: null,
+    terminalCompletionRef: null,
+    terminalOwner: null,
+    terminalReason: null,
+    closedAtMs: null,
+    completionAuthority: null,
+    sourcePlanSlug: null,
+    sourcePlanItemIds: [],
+    seeAlso: [],
+    incomingSeeAlso: [],
+    dependencies: [],
+    fingerprint: id,
+    ...overrides,
+  });
+
+  it('keeps an OPEN twin with a pending agent review as a transient review gate', () => {
+    expect(admissionEndpointBlock(snapshot('EI-1', { payload: { agentReview: pendingReview } }))).toMatchObject({
+      reason: 'review-gated',
+      permanent: false,
+    });
+  });
+
+  it('classifies a dropped twin with a stale pending review as permanently unresolvable, not review-gated', () => {
+    const dropped = snapshot('EI-2', { state: 'dropped', payload: { agentReview: pendingReview } });
+    expect(admissionEndpointBlock(dropped)).toMatchObject({
+      reason: 'terminal-canonical-without-completion',
+      permanent: true,
+    });
+  });
+
+  it('treats a completed twin with stale review, claim and claim-hold residue as an ordinary judgeable twin', () => {
+    const done = snapshot('EI-3', {
+      state: 'done',
+      assignee: 'su-gone',
+      completionAuthority: 'committed',
+      payload: { agentReview: { ...pendingReview, status: 'revision-requested' }, _claimHold: true },
+    });
+    expect(admissionEndpointBlock(done)).toBeNull();
+  });
+
+  it('does not defer a pending row whose only twin is terminal with a stale review', () => {
+    const pending = item('EI-10');
+    const twin = item('EI-4', { state: 'dropped', admission: 'admitted' });
+    const snapshots = new Map<string, AdmissionMergeSnapshot>([
+      ['EI-10', snapshot('EI-10', { admission: 'pending', kind: 'bug' })],
+      ['EI-4', snapshot('EI-4', { state: 'dropped', payload: { agentReview: pendingReview } })],
+    ]);
+    const result = prescreenPromoterWindow({
+      window: [pending],
+      pairs: [pair(pending, twin, [pending.id])],
+      snapshots,
+      batchSize: 5,
+      nowMs: 1,
+    });
+    expect(result.batch.map((entry) => entry.id)).toEqual(['EI-10']);
+    expect(result.prescreen.samples.filter((s) => s.class === 'deferred')).toEqual([]);
+    expect(result.forcedHolds.has('EI-10')).toBe(false);
   });
 });

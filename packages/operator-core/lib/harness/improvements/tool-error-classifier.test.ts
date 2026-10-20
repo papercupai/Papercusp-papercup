@@ -925,6 +925,17 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     )).toBe('structural');
   });
 
+  it('classifies the intentional backup free-space safety refusal as transient capacity', () => {
+    const message =
+      'pre-destructive backup requires a successful database dump: insufficient free space ' +
+      '(38995595264 available; 120000000000 needed for a dump of 39600000000 bytes)';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('transient');
+    // A normal structural backup failure must stay structural; only the guard's
+    // measured free-space refusal belongs on the transient capacity path.
+    expect(classifyToolError('handler_error', 'error', 'pre-destructive backup requires a successful database dump: pg_dump exited 1'))
+      .toBe('structural');
+  });
+
   it('classifies a nested tools:invoke invalid_input wrapper as caller, not structural', () => {
     // tools:invoke re-throws target refusals; the wrapper adds `invalid_input:`
     // while outer telemetry can record `handler_error`, so match this exact shape.

@@ -2291,6 +2291,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // deadline; preserve the typed receipt instead of surfacing a transport
   // timeout that invites an unsafe replay.
   ['coord:send', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-26150958178632417: coord:dispatch can run durable resumeAdmission
+  // recovery and assignment/wake work after the caller has already crossed
+  // ptool's ordinary 30s deadline. Keep direct and tools:invoke-wrapped
+  // dispatches outside the MCP transport cap so the structured admission
+  // result (or typed refusal) is observed instead of an empty exit-1.
+  ['coord:dispatch', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21863905839650704: coord:declare-intent declares no timeoutSec, so it
   // is bound only by the flat 55s MCP_DEADLINE_MS floor (_mcp-handler.ts
   // effectiveMcpDeadlineMs). EI-9484 bounded its own enrichment legs (mailbox

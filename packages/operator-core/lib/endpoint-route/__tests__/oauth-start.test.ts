@@ -54,7 +54,14 @@ import { __resetRegistryForTest, registerProvider, type OAuthProvider } from '..
 import type { RouteContext } from '../define-route';
 import { createRequire } from 'node:module';
 import { providerRegistry } from '../../integrations/provider-registry';
-const facebookAdapter = createRequire(import.meta.url)('../../../../../libs/papercusp/plugins/facebook/index.cjs').providerAdapter;
+const requirePlugin = createRequire(import.meta.url);
+const facebookAdapter = requirePlugin('../../../../../libs/papercusp/plugins/facebook/index.cjs').providerAdapter;
+// The `google` descriptor credential group (provider-adapters-to-packages-2026-10-11 D-036).
+const GOOGLE_PACKAGES = ['gmail', 'google-calendar', 'google-contacts'] as const;
+const googleAdapters = GOOGLE_PACKAGES.map((pluginName) => ({
+  pluginName,
+  adapter: requirePlugin(`../../../../../libs/papercusp/plugins/${pluginName}/index.cjs`).providerAdapter,
+}));
 vi.mock('../../integrations/provider-registry', async (original) => {
   const actual = await original<typeof import('../../integrations/provider-registry')>();
   return { ...actual, readyProviderRegistry: async () => actual.providerRegistry() };
@@ -89,6 +96,11 @@ beforeEach(async () => {
   __resetRegistryForTest();
   providerRegistry().unregister('facebook');
   await providerRegistry().register({ descriptor: await facebookAdapter.describe(), adapter: facebookAdapter, pluginName: 'facebook' });
+  for (const { pluginName, adapter } of googleAdapters) {
+    const descriptor = await adapter.describe();
+    providerRegistry().unregister(descriptor.id);
+    await providerRegistry().register({ descriptor, adapter, pluginName });
+  }
   stateMocks.signState.mockClear();
   authMocks.getSessionUserOrDefault.mockClear();
   sourceMocks.listOwned.mockReset();
@@ -232,7 +244,7 @@ describe('GET /api/oauth/start', () => {
     const buildAuthorizeUrl = vi.fn(() => 'https://accounts.google.com/o/oauth2/v2/auth');
     registerProvider({
       ...stubProvider,
-      id: 'google',
+      id: 'provider:google',
       defaultScopes: ['scope:mail', 'scope:calendar'],
       allowedScopes: ['scope:mail', 'scope:calendar', 'scope:calendar-write'],
       createFlowContext: () => ({ codeVerifier: 'server-only-verifier' }),
@@ -241,7 +253,7 @@ describe('GET /api/oauth/start', () => {
 
     const response = await GET(
       new Request(
-        'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&scopes=scope:calendar-write',
+        'http://x/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner&scopes=scope:calendar-write',
         { headers: { cookie: 'papercusp_session=opaque' } },
       ),
     );
@@ -249,8 +261,8 @@ describe('GET /api/oauth/start', () => {
     expect(authMocks.getSessionUserOrDefault).toHaveBeenCalledTimes(1);
     expect(stateMocks.signState).toHaveBeenCalledWith(
       expect.objectContaining({
-        provider: 'google',
-        plugin: 'google-workspace',
+        provider: 'provider:google',
+        plugin: 'provider:google',
         harness: 'papercusp',
         field: expect.stringMatching(/^owner-22222222-2222-4222-8222-222222222222-[a-f0-9]{16}$/),
       }),
@@ -277,13 +289,13 @@ describe('GET /api/oauth/start', () => {
   });
 
   it('carries an internal Settings return path in the signed state, and refuses any other (D-014.2)', async () => {
-    registerProvider({ ...stubProvider, id: 'google', defaultScopes: ['scope:mail'], allowedScopes: ['scope:mail'] });
+    registerProvider({ ...stubProvider, id: 'provider:google', defaultScopes: ['scope:mail'], allowedScopes: ['scope:mail'] });
     const start = (ret: string) =>
-      GET(new Request(`http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&return=${encodeURIComponent(ret)}`));
+      GET(new Request(`http://x/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner&return=${encodeURIComponent(ret)}`));
 
     expect((await start('/settings/integrations')).status).toBe(302);
     expect(stateMocks.signState).toHaveBeenLastCalledWith(
-      expect.objectContaining({ plugin: 'google-workspace' }),
+      expect.objectContaining({ plugin: 'provider:google' }),
       { privateContext: expect.objectContaining({ returnPath: '/settings/integrations' }) },
     );
 
@@ -311,13 +323,13 @@ describe('GET /api/oauth/start', () => {
   it('uses a unique private token field for each Google Workspace Add Account flow', async () => {
     registerProvider({
       ...stubProvider,
-      id: 'google',
+      id: 'provider:google',
       defaultScopes: ['scope:mail'],
       allowedScopes: ['scope:mail'],
       buildAuthorizeUrl: () => 'https://accounts.google.com/o/oauth2/v2/auth',
     });
 
-    const url = 'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner';
+    const url = 'http://x/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner';
     expect((await GET(new Request(url))).status).toBe(302);
     expect((await GET(new Request(url))).status).toBe(302);
 
@@ -335,7 +347,7 @@ describe('GET /api/oauth/start', () => {
         kind: 'gmail',
         ownerUserId: '22222222-2222-4222-8222-222222222222',
         providerAccountId: 'owner@example.com',
-        credentialRef: 'google-workspace:existing-private-field',
+        credentialRef: 'provider:google:existing-private-field',
         status: 'disabled',
         config: {},
         cursor: {},
@@ -343,7 +355,7 @@ describe('GET /api/oauth/start', () => {
     ]);
     registerProvider({
       ...stubProvider,
-      id: 'google',
+      id: 'provider:google',
       defaultScopes: ['scope:mail'],
       allowedScopes: ['scope:mail'],
       buildAuthorizeUrl: () => 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -351,7 +363,7 @@ describe('GET /api/oauth/start', () => {
 
     const response = await GET(
       new Request(
-        'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&account=owner%40example.com',
+        'http://x/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner&account=owner%40example.com',
       ),
     );
     expect(response.status).toBe(302);
@@ -372,7 +384,7 @@ describe('GET /api/oauth/start', () => {
   it('rejects a Google Workspace reconnect for an account not owned by the local user', async () => {
     registerProvider({
       ...stubProvider,
-      id: 'google',
+      id: 'provider:google',
       defaultScopes: ['scope:mail'],
       allowedScopes: ['scope:mail'],
       buildAuthorizeUrl: () => 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -380,18 +392,18 @@ describe('GET /api/oauth/start', () => {
 
     const response = await GET(
       new Request(
-        'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&account=other%40example.com',
+        'http://x/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner&account=other%40example.com',
       ),
     );
     expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({ ok: false, error: 'google_workspace_account_not_found' });
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'provider_google_account_not_found' });
     expect(stateMocks.signState).not.toHaveBeenCalled();
   });
 
   it('rejects a non-Google provider under the reserved Workspace plugin id', async () => {
     registerProvider(stubProvider);
     const response = await GET(
-      new Request('http://x/api/oauth/start?provider=github&plugin=google-workspace&harness=papercusp&field=owner'),
+      new Request('http://x/api/oauth/start?provider=github&plugin=provider%3Agoogle&harness=papercusp&field=owner'),
     );
     expect(response.status).toBe(400);
     expect(authMocks.getSessionUserOrDefault).not.toHaveBeenCalled();

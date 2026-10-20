@@ -394,18 +394,40 @@ export type AdmissionBypassReason = (typeof ADMISSION_CREATE_BYPASSES)[number]['
 export function admissionPendingExplanation(
   tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES,
   /**
-   * WI-6554700010018098: `dedupCandidates` = this row carries file-time duplicate candidates.
-   * The fail-open runner never admits such a row (work-queue-exclusion-alarm-duplicates-
-   * 2026-10-16 P-002), so its wait has NO fixed bound and the generic sentence's ceiling would
-   * be a false promise. Omitted = the row-agnostic sentence, which names both exceptions.
+   * WI-6554700010018098 / EI-25209690807142935: `failOpenExclusion` = the fail-open runner
+   * never admits this row (see {@link ADMISSION_FAIL_OPEN_EXCLUSIONS}), so its wait has NO
+   * fixed bound and the generic sentence's ceiling would be a false promise. `duplicateOf`
+   * names the canonical row for a `duplicate-verdict`. Omitted = the row-agnostic sentence,
+   * which names the exceptions.
    */
-  opts: { dedupCandidates?: boolean } = {},
+  opts: { failOpenExclusion?: AdmissionFailOpenExclusion | null; duplicateOf?: string | null } = {},
 ): string {
   const preamble =
     'duplicate screening is pending for this WORK-ITEM CLAIM. It does not block opening an agent or ' +
     'fleet process; launch and queue admission are separate capabilities. A launched agent still needs ' +
     'claimable or validly pre-assigned work. ';
-  if (opts.dedupCandidates) {
+  if (opts.failOpenExclusion === 'duplicate-verdict') {
+    const twin = opts.duplicateOf ? ` (${opts.duplicateOf})` : '';
+    return (
+      preamble +
+      `This row carries a typed DUPLICATE VERDICT: it was adjudicated the same problem as its canonical row${twin}. ` +
+      'No admission path admits a row with a duplicate verdict, the independent fail-open runner included, ' +
+      'so this does NOT clear on its own and there is no bound to wait out. Work the canonical row instead.'
+    );
+  }
+  if (opts.failOpenExclusion === 'degraded-dedup-coverage') {
+    return (
+      preamble +
+      "This row's file-time duplicate screen could NOT RUN (its dedup coverage is degraded), so the " +
+      'independent fail-open runner will not admit it unscreened. That runner re-screens such rows ' +
+      `(one attempt per row every ${ADMISSION_FAIL_OPEN_TICKS} ticks of the ${tickMinutes}-minute promoter) ` +
+      'and admits the row when the re-screen comes back clean; a re-screen that finds twins hands it to the ' +
+      "promoter's model review, and one that cannot run again leaves it pending. So this wait has NO fixed " +
+      'bound. It is not a permanent refusal — but do not wait on it: check whether an existing row already ' +
+      'covers the same problem, or use a create-time admission route for genuinely distinct work.'
+    );
+  }
+  if (opts.failOpenExclusion === 'duplicate-candidates') {
     return (
       preamble +
       'This row carries DUPLICATE CANDIDATES found when it was filed, so only the promoter\'s model ' +
@@ -479,6 +501,78 @@ export function admittedWhereSql(sql: OrgSql, qualifier?: 'wi' | 'ei') {
  */
 export function admittedWhereSqlWi(sql: OrgSql) {
   return admittedWhereSql(sql, 'wi');
+}
+
+/**
+ * EI-25209690807142935 / EI-26282407214531658 — the rows the INDEPENDENT fail-open runner
+ * (`runAdmissionFailOpen`) never admits, however old they get, in the order a refusal names
+ * them. Each is unresolved duplicate work that only adjudication clears:
+ *
+ * - `duplicate-verdict` — migration 1534's typed `duplicate_of`: the row already HAS its row.
+ * - `duplicate-candidates` — file-time detection found twin(s); only the promoter's model
+ *   review admits it as distinct (work-queue-exclusion-alarm-duplicates-2026-10-16 P-002).
+ * - `degraded-dedup-coverage` — the file-time screen could not run, so admitting it would admit
+ *   an unscreened row; the runner re-screens it and admits only on a clean result.
+ *
+ * ONE record drives BOTH the runner's eligibility ({@link failOpenDedupEligibleWhereSql}) and
+ * the claim floor's attribution ({@link failOpenExclusionSql}). Before this, the claim floor
+ * re-derived only the candidate leg (WI-6554700010018098) and kept publishing the fail-open
+ * ceiling as `guaranteedWithinSec` to degraded-coverage and duplicate-verdict rows the runner
+ * excludes — measured on EI-26277464744695494 (2026-10-18), a degraded row promised 90 min.
+ */
+export const ADMISSION_FAIL_OPEN_EXCLUSIONS = [
+  'duplicate-verdict',
+  'duplicate-candidates',
+  'degraded-dedup-coverage',
+] as const;
+
+export type AdmissionFailOpenExclusion = (typeof ADMISSION_FAIL_OPEN_EXCLUSIONS)[number];
+
+/** Per-exclusion "this row IS excluded" predicate. `qualifier` is a closed internal union. */
+function failOpenExclusionPredicates(
+  sql: OrgSql,
+  qualifier?: 'wi',
+): ReadonlyArray<readonly [AdmissionFailOpenExclusion, ReturnType<OrgSql>]> {
+  const prefix = qualifier ? `${qualifier}.` : '';
+  const duplicateOf = sql.unsafe(`${prefix}duplicate_of`);
+  const payload = sql.unsafe(`${prefix}payload`);
+  const byReason: Record<AdmissionFailOpenExclusion, ReturnType<OrgSql>> = {
+    'duplicate-verdict': sql`${duplicateOf} IS NOT NULL`,
+    'duplicate-candidates': sql`(${payload} -> 'dedupCandidates') IS NOT NULL`,
+    // COALESCE first, so the complement below is exact: a NULL flag reads as not-degraded.
+    'degraded-dedup-coverage': sql`lower(COALESCE(${payload} #>> '{dedupCoverage,degraded}', 'false')) = 'true'`,
+  };
+  return ADMISSION_FAIL_OPEN_EXCLUSIONS.map((reason) => [reason, byReason[reason]] as const);
+}
+
+/**
+ * SQL: TRUE iff NO fail-open exclusion applies — the dedup half of the runner's eligibility
+ * (age, `admission = 'pending'` and status are the runner's own). Written as `NOT (excluded)`
+ * conjuncts, which Postgres normalises to the plain `IS NULL` / `<>` forms.
+ */
+export function failOpenDedupEligibleWhereSql(sql: OrgSql, qualifier?: 'wi') {
+  return failOpenExclusionPredicates(sql, qualifier)
+    .map(([, excluded]) => sql`NOT (${excluded})`)
+    .reduce((acc, clause) => sql`${acc} AND ${clause}`);
+}
+
+/**
+ * SQL: the FIRST {@link AdmissionFailOpenExclusion} that applies to the row, or NULL when the
+ * fail-open runner would admit it once it is old enough. The claim floor reads this to decide
+ * whether it may publish the fail-open bound at all.
+ */
+export function failOpenExclusionSql(sql: OrgSql, qualifier?: 'wi') {
+  const whens = failOpenExclusionPredicates(sql, qualifier)
+    .map(([reason, excluded]) => sql`WHEN ${excluded} THEN ${reason}::text`)
+    .reduce((acc, clause) => sql`${acc} ${clause}`);
+  return sql`CASE ${whens} ELSE NULL END`;
+}
+
+/** Narrow a DB text value to the closed exclusion union; anything else is "no exclusion". */
+export function asAdmissionFailOpenExclusion(value: unknown): AdmissionFailOpenExclusion | null {
+  return (ADMISSION_FAIL_OPEN_EXCLUSIONS as readonly unknown[]).includes(value)
+    ? (value as AdmissionFailOpenExclusion)
+    : null;
 }
 
 /**

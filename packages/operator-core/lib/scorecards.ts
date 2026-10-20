@@ -29,7 +29,7 @@ import { DbCallDeadlineError, getOrgPg, withAcquisitionDeadline } from '@papercu
 import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
 import { isRetriablePgConnectError } from './pg-transient-retry';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
-import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
+import { acquireWithContentionRetry, isWorkspaceContended } from './agent-tools/locks/contention-retry';
 import {
   BM25_LATENCY_ARTIFACT_IDENTITY, BM25_LATENCY_ARTIFACT_PATH, BM25_LATENCY_INSTRUMENT_KEY,
   parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
@@ -2038,7 +2038,7 @@ async function readScorecard(
                  FROM harness_shared.engineer_issues AS superseder
                 WHERE superseder.workspace_id = scorecard.workspace_id
                   AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
-                  AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
+                  AND (superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
                   AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
                 ORDER BY superseder.created_at DESC
                 LIMIT 1
@@ -2047,8 +2047,13 @@ async function readScorecard(
        WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
          AND scorecard.issue_id = ${issueId}
        ORDER BY scorecard.created_at DESC NULLS LAST
-       LIMIT 1`),
-  );
+       LIMIT 1`, { lockTimeoutMs: SCORECARD_READ_LOCK_TIMEOUT_MS }),
+    { isRetryable: isScorecardReadRetryable },
+  ).catch((error: unknown) => {
+    const pgCode = scorecardContentionPgCode(error);
+    if (pgCode) throw scorecardReadTimeoutError(pgCode, error, `readScorecard(${mode})`);
+    throw error;
+  });
   const row = rows[0];
   if (!row) return { kind: 'not_found' };
 
@@ -3598,7 +3603,7 @@ export async function scorecardTotalCountsByRubric(filter: ScorecardCountFilter 
            FROM harness_shared.engineer_issues AS superseder
           WHERE superseder.workspace_id = scorecard.workspace_id
             AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
-            AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
+            AND (superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
             AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
        )`
            : sql`TRUE`
@@ -3728,11 +3733,47 @@ interface ScorecardRowDb {
   audit_criteria_hash: string | null;
 }
 
-/** PG contention codes that can be retried without changing the read semantics. */
+/** PG timeout codes the scorecard reads normalize into a typed OrgTxnTimeoutError. */
 function scorecardContentionPgCode(error: unknown): '55P03' | '57014' | null {
   if (!error || typeof error !== 'object') return null;
   const value = (error as { code?: unknown; pgCode?: unknown }).code ?? (error as { pgCode?: unknown }).pgCode;
   return value === '55P03' || value === '57014' ? value : null;
+}
+
+/**
+ * WI-6554700010018139: the scorecard reads set a transaction-local lock_timeout
+ * below their statement_timeout, so a lock wait surfaces as 55P03 and a 57014
+ * means the statement itself ran past its budget. Retrying lock contention can
+ * ride out a dip; retrying a slow plan only multiplies it (measured: 4 x 5s +
+ * 6s backoff = the 26s `scorecards:list rubricRef=grading-integrity` failure,
+ * which five reporters then chased as "contention").
+ */
+export const SCORECARD_READ_LOCK_TIMEOUT_MS = 2000;
+
+/** Retry only lock/pool contention — never a statement_timeout (see above). */
+export function isScorecardReadRetryable(error: unknown): boolean {
+  return isWorkspaceContended(error) && scorecardContentionPgCode(error) !== '57014';
+}
+
+/** Normalize a scorecard read's PG timeout, naming the read and what a 57014 means here. */
+function scorecardReadTimeoutError(pgCode: '55P03' | '57014', cause: unknown, read: string): OrgTxnTimeoutError {
+  const phase =
+    pgCode === '57014'
+      ? `${read}: the statement itself ran past its statement_timeout (lock waits surface as 55P03 here), so this is query time, not lock contention, and it was not retried`
+      : `${read}: lock wait exceeded ${SCORECARD_READ_LOCK_TIMEOUT_MS}ms on every retry`;
+  return new OrgTxnTimeoutError(pgCode, cause, undefined, 'pg', 'read', phase);
+}
+
+/**
+ * Caller-facing lead-in for a scorecard tool's timeout envelope. A 57014 is a slow
+ * statement, never "contention": the scorecards:list/get/emit envelopes used to call
+ * every timeout "transient database contention", and that label is what sent five
+ * reporters of EI-26502753767803422 after locks instead of the query plan.
+ */
+export function scorecardTimeoutLeadIn(error: unknown, surface: string): string {
+  return scorecardContentionPgCode(error) === '57014'
+    ? `${surface} exceeded its statement timeout (pg 57014: a slow query, not lock contention)`
+    : `${surface} hit transient database contention`;
 }
 
 // EI-18691099450966094: was `typeof v === 'string' ? v : ...` — a raw
@@ -3764,6 +3805,15 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   // `(created_at, issue_id)` keyset until we have `limit` valid scorecard rows (or
   // the raw population is exhausted). `listScorecardPage` asks for one extra valid
   // row, making its boundedness bit authoritative even when malformed rows intervene.
+  //
+  // WI-6554700010018130: every correlated superseder probe writes its rubricRef
+  // equality as `(a = b) IS TRUE`. A bare `a = b` joins the planner's equivalence
+  // class with `scorecard.rubricRef = <const>`, so Postgres derives
+  // `superseder.rubricRef = <const>` and BitmapAnds the whole rubricRef index into
+  // EVERY per-row probe — quadratic in the rubric's card count (grading-integrity,
+  // 7.5k cards: 6s for the anti-join alone → pg 57014). `IS TRUE` has identical
+  // WHERE semantics (NULL → not matched) and keeps the probe on the selective
+  // supersedes index (measured 6,018 ms → 474 ms).
   let rows: ScorecardRowDb[] = [];
   let before = filter.before;
   let exhausted = false;
@@ -3793,7 +3843,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
                FROM harness_shared.engineer_issues AS superseder
               WHERE superseder.workspace_id = scorecard.workspace_id
                 AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
-                AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
+                AND (superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
                 AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
               ORDER BY superseder.created_at DESC
               LIMIT 1
@@ -3829,17 +3879,18 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
            FROM harness_shared.engineer_issues AS superseder
           WHERE superseder.workspace_id = scorecard.workspace_id
             AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
-            AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
+            AND (superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
             AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
        )`
        }
        AND ${filter.includeRetracted ? tx`TRUE` : tx`scorecard.payload -> 'observation' -> 'retracted' IS NULL`}
      ORDER BY scorecard.created_at DESC, scorecard.issue_id DESC
-     LIMIT ${batchLimit}`),
+     LIMIT ${batchLimit}`, { lockTimeoutMs: SCORECARD_READ_LOCK_TIMEOUT_MS }),
+        { isRetryable: isScorecardReadRetryable },
       );
     } catch (error) {
       const pgCode = scorecardContentionPgCode(error);
-      if (pgCode) throw new OrgTxnTimeoutError(pgCode, error);
+      if (pgCode) throw scorecardReadTimeoutError(pgCode, error, 'listScorecards');
       throw error;
     }
 

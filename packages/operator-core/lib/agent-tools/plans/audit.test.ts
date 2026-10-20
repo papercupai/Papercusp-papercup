@@ -72,6 +72,21 @@ vi.mock('./spec-clauses-store', async (importOriginal) => ({
 vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: vi.fn(),
 }));
+// plan-reuse-and-library-declarations-2026-10-20 R-4: no real fs / LSP / registry lookups
+// in this unit file; with no lookups configured every reuse entry is unverified.
+vi.mock('./plan-declaration-resolvers', () => ({
+  defaultReuseReferenceResolvers: vi.fn(() => ({})),
+  defaultLibraryCheckDeps: vi.fn(async () => ({ packages: null, ownerTurns: null, dependencyDescriptions: null })),
+  captureDependencyBaseline: vi.fn(async () => null),
+  readWorkspacePackageNames: vi.fn(async () => new Set<string>()),
+  readPlanCompletionFilesChanged: vi.fn(async () => []),
+}));
+// R-6: the ship check's import read is unit-tested against fixture files in
+// plan-library-ship-check.test.ts; here only its wiring into the audit is measured.
+vi.mock('./plan-library-ship-check', async (orig) => {
+  const actual = await orig<typeof import('./plan-library-ship-check')>();
+  return { ...actual, runLibraryShipCheck: vi.fn(), dependencyBaselineFrom: vi.fn(actual.dependencyBaselineFrom) };
+});
 // plan-item-provenance-2026-09-29 P-002: this file's activation fixtures cite turns the
 // shared mockOrgSql never returns rows for. Classify every cited ref as owner-typed so
 // these tests keep measuring what they were written for; the reverse item-provenance
@@ -110,6 +125,8 @@ import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { getPlanRow } from './source';
 import { setSpecClause } from './spec-clauses-store';
 import { previewPlanStartConsult } from './get-activation-readiness';
+import { defaultReuseReferenceResolvers, readPlanCompletionFilesChanged } from './plan-declaration-resolvers';
+import { dependencyBaselineFrom, runLibraryShipCheck, type LibraryShipCheckReport } from './plan-library-ship-check';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { recoverHarnessFromSlugs } from './slug-scope';
@@ -137,6 +154,7 @@ const mockSetSpecClause = vi.mocked(setSpecClause);
 const mockRecoverHarness = vi.mocked(recoverHarnessFromSlugs);
 const mockPreviewPlanStartConsult = vi.mocked(previewPlanStartConsult);
 const mockEmitPlanEvent = vi.mocked(emitPlanEventForCaller);
+const mockReuseResolvers = vi.mocked(defaultReuseReferenceResolvers);
 const mockAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const mockListScorecards = vi.mocked(listScorecards);
 
@@ -154,6 +172,7 @@ const body = async (items: Array<Record<string, unknown>>, over: Record<string, 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockReuseResolvers.mockReturnValue({});
   mockAcceptanceRubrics.mockResolvedValue([]);
   mockListScorecards.mockResolvedValue([]);
   mockItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' }]);
@@ -253,8 +272,11 @@ const activationArgs = (over: Record<string, unknown> = {}) => ({
  * tests read only `content`, so the partial fixture needs one cast — kept HERE, in
  * one place, rather than re-spelled at every call site (lint:mock-cast-escape).
  */
-const resolvePlanContent = (content: string): void => {
-  mockGetPlanRow.mockResolvedValue({ content } as never);
+const resolvePlanContent = (content: string, status?: string | null): void => {
+  // `status` is read only by the declaration gate (R-3). Omitted, the row is 'active',
+  // which that gate does not retrofit; a row with NO status is gated (fail closed, D-013 #1),
+  // so tests of the gate itself pass the status explicitly (null included).
+  mockGetPlanRow.mockResolvedValue({ content, status: status === undefined ? 'active' : status } as never);
 };
 
 // EI-23806095672871173 fixtures. Both carry P-001 so plan-target validation passes
@@ -999,9 +1021,9 @@ describe('plans:audit phase:activation', () => {
     '- **P-001** `todo` Final shipment verification waits for green main and :3070.',
     '- **P-001** `todo` Wait for :3070 before closing the deployed-only restart continuity check because staging cannot exercise the deployed-host supervisor restart.',
   ])('records activation for a valid final or reasoned deployed-only item: %s', async (item) => {
-    mockGetPlanRow.mockResolvedValue({
-      content: `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n${item}\n`,
-    } as never);
+    resolvePlanContent(
+      `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n${item}\n`,
+    );
 
     const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
 
@@ -2095,5 +2117,208 @@ describe('plans:audit activation classRef derivation (P-003)', () => {
     const matching = await run(activationArgs({ classRef: 'plan-class-feature-ship' }));
     expect(matching).toMatchObject({ ok: true, phase: 'activation' });
     expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({ classRef: 'plan-class-feature-ship' }));
+  });
+});
+
+// plan-reuse-and-library-declarations-2026-10-20 R-3 / D-003.
+describe('plans:audit activation declaration gate', () => {
+  const planWith = (sections: string) =>
+    `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-10-20\nupdated: 2026-10-20\nowner: test\n---\n\n` +
+    `## Items\n\n- **P-001** \`todo\` Implement the audit gate on staging.\n${sections}`;
+  const block = (heading: string, fence: string, value: unknown) =>
+    `\n## ${heading}\n\n\`\`\`${fence}\n${JSON.stringify(value, null, 2)}\n\`\`\`\n`;
+  const reuseNotApplicable = block('Existing infrastructure reused', 'reuse',
+    { searched: [], reused: [], newSurfaces: [], notApplicable: 'Docs-only plan; it builds nothing.' });
+  const librariesNotApplicable = block('Third-party libraries', 'libraries',
+    { needs: [], notApplicable: 'No library could do any of this work.' });
+  const run = async (over: Record<string, unknown> = {}) =>
+    ((await tool.handler(activationArgs(over) as never, ctx)) as { data: any }).data;
+
+  it('R-4: activation refuses an unresolved reuse reference and records unverified ones', async () => {
+    const reuseDeclared = (entries: unknown[]) => block('Existing infrastructure reused', 'reuse', {
+      searched: [{ where: 'packages/operator-core', how: 'lsp:query', found: '' }],
+      reused: entries,
+      newSurfaces: [],
+      notApplicable: null,
+    }) + librariesNotApplicable;
+    mockReuseResolvers.mockReturnValue({
+      table: async (ref) => (ref.table === 'plan_audits' ? { outcome: 'found', via: 'PG catalog' } : { outcome: 'not-found', via: 'PG catalog' }),
+      tool: async () => ({ outcome: 'unavailable', reason: 'registry down' }),
+    });
+
+    resolvePlanContent(planWith(reuseDeclared([
+      { ref: 'harness_shared.zzz_missing', kind: 'table', provides: 'rows', items: ['P-001'] },
+      { ref: 'plans:audit', kind: 'tool', provides: 'audit', items: ['P-404'] },
+    ])), 'draft');
+    const refused = await run();
+    expect(refused).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'plan_reuse_references_unresolved',
+      problems: [
+        { code: 'reuse_reference_unresolved', ref: 'harness_shared.zzz_missing', kind: 'table' },
+        { code: 'reuse_item_unknown', ref: 'plans:audit', detail: 'P-404 is not an item of this plan' },
+      ],
+      unverified: ['plans:audit'],
+    });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    // The resolver ran against the plan's citation root and this database.
+    expect(mockReuseResolvers).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: '/repo', workspaceId: 'test-workspace' }));
+
+    // A dry run refuses identically.
+    const dry = await run({ dryRun: true });
+    expect(dry).toMatchObject({ ok: false, error: 'plan_reuse_references_unresolved', dryRun: true });
+
+    // Present table + unavailable tool: activation proceeds and records the unverified entry.
+    resolvePlanContent(planWith(reuseDeclared([
+      { ref: 'harness_shared.plan_audits', kind: 'table', provides: 'rows', items: ['P-001'] },
+      { ref: 'plans:audit', kind: 'tool', provides: 'audit' },
+    ])), 'draft');
+    const passed = await run();
+    expect(passed).toMatchObject({ ok: true, phase: 'activation' });
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({
+      activation: expect.objectContaining({
+        declarationsCheck: expect.objectContaining({
+          enforced: true,
+          references: { checked: 2, found: 1, unverified: ['plans:audit'] },
+        }),
+      }),
+    }));
+  });
+
+  it('R-3: activation refuses a missing or invalid declaration section', async () => {
+    resolvePlanContent(planWith(''), 'draft');
+    const missing = await run();
+    expect(missing).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'plan_declarations_invalid',
+      problems: [
+        { code: 'plan_declarations_invalid', section: 'Existing infrastructure reused', status: 'missing' },
+        { code: 'plan_declarations_invalid', section: 'Third-party libraries', status: 'missing' },
+      ],
+    });
+    expect(missing.message).toContain('notApplicable');
+
+    // An empty reuse block with no notApplicable reason is invalid, not missing,
+    // and the refusal names the field path.
+    resolvePlanContent(planWith(
+      block('Existing infrastructure reused', 'reuse', { searched: [], reused: [], newSurfaces: [], notApplicable: null }) +
+        librariesNotApplicable,
+    ), 'ready');
+    const invalid = await run();
+    expect(invalid).toMatchObject({
+      ok: false,
+      error: 'plan_declarations_invalid',
+      problems: [{ section: 'Existing infrastructure reused', status: 'invalid' }],
+    });
+    expect(invalid.problems).toHaveLength(1);
+    expect(invalid.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'declaration_invalid', path: 'searched' }),
+    ]));
+
+    // A dry run refuses identically, so the preview cannot pass a plan the write refuses.
+    const dry = await run({ dryRun: true });
+    expect(dry).toMatchObject({ ok: false, dryRun: true, error: 'plan_declarations_invalid' });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('R-3: a not-applicable reason in each section passes the gate', async () => {
+    resolvePlanContent(planWith(reuseNotApplicable + librariesNotApplicable), 'draft');
+    const result = await run();
+    expect(result).toMatchObject({ ok: true, phase: 'activation' });
+    // D-013 #1: the stored audit records that it was gated, so every lifecycle door
+    // re-checks the sections on the plan's current content.
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({
+      activation: expect.objectContaining({
+        declarationsCheck: { enforced: true, reuse: 'not-applicable', libraries: 'not-applicable' },
+      }),
+    }));
+  });
+
+  it('R-3: an active plan re-audits without the sections (no retrofit)', async () => {
+    resolvePlanContent(planWith(''), 'active');
+    const result = await run();
+    expect(result).toMatchObject({ ok: true, phase: 'activation' });
+    // Not gated, so the lifecycle doors must not re-check it later either.
+    expect(mockRecordActivation).toHaveBeenCalled();
+    const recorded = mockRecordActivation.mock.calls.at(-1)?.[0] as unknown as { activation?: Record<string, unknown> };
+    expect(recorded.activation).not.toHaveProperty('declarationsCheck');
+  });
+
+  it('R-3: phase:shaping reports the same declaration problems as advice', async () => {
+    resolvePlanContent(planWith(''), 'draft');
+    const shaping = ((await tool.handler({ slug: 'plan-a', harness: 'papercusp', phase: 'shaping' } as never, ctx)) as { data: any }).data;
+    expect(shaping).toMatchObject({
+      ok: true,
+      phase: 'shaping',
+      planDeclarations: { ok: false, reuse: { status: 'missing' }, libraries: { status: 'missing' } },
+    });
+  });
+});
+
+// plan-reuse-and-library-declarations-2026-10-20 R-6 (D-013 #4): the completion ship
+// check's wiring. Its import read and decision are unit-tested in plan-library-ship-check.test.ts.
+describe('plans:audit completion ship check (R-6)', () => {
+  const mockShipCheck = vi.mocked(runLibraryShipCheck);
+  const mockFilesChanged = vi.mocked(readPlanCompletionFilesChanged);
+  const fence = (lang: string, value: unknown) => '```' + lang + '\n' + JSON.stringify(value) + '\n```';
+  const declaredPlan = () => [
+    '---', 'title: Plan A', 'slug: plan-a', 'status: active', 'created: 2026-10-20', 'updated: 2026-10-20', 'owner: test', '---', '',
+    '## Existing infrastructure reused', '',
+    fence('reuse', { searched: [{ where: 'src', how: 'grep', found: '' }], reused: [{ ref: 'src/gate.ts', kind: 'file', provides: 'the gate' }], newSurfaces: [], notApplicable: null }),
+    '', '## Third-party libraries', '',
+    fence('libraries', { needs: [{ need: 'parse yaml', decision: 'already-in-project', package: 'yaml', reason: '', existingUse: 'scripts' }], notApplicable: null }),
+    '', '## Items', '', '- **P-001** `todo` Implement the audit gate on staging.', '',
+  ].join('\n');
+  const mockBaselineFrom = vi.mocked(dependencyBaselineFrom);
+  const report = (over: Partial<LibraryShipCheckReport>): LibraryShipCheckReport => ({
+    status: 'pass', blockers: [], unverified: [], warnings: [], packages: [], inspected: ['src/gate.ts'],
+    notInspected: [], scope: 'scope', ...over,
+  });
+  const cite = [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }];
+
+  it('refuses an undeclared new third-party package and records nothing', async () => {
+    resolvePlanContent(declaredPlan());
+    mockBaselineFrom.mockReturnValueOnce({ packages: ['yaml'], manifests: 1, capturedAt: 'now' });
+    mockFilesChanged.mockResolvedValue(['src/changed.ts']);
+    mockShipCheck.mockResolvedValue(report({
+      status: 'refuse',
+      blockers: [{ code: 'undeclared_third_party_package', package: 'left-pad', files: ['src/gate.ts'] }],
+    }));
+
+    const result = await body(cite, { phase: 'completion', dryRun: false });
+
+    expect(result).toMatchObject({ ok: false, phase: 'completion', error: 'plan_undeclared_third_party_packages' });
+    expect(result.message).toContain('left-pad');
+    expect(mockRecord).not.toHaveBeenCalled();
+    // The baseline is read from the latest activation audit of THIS plan's harness.
+    expect(mockPreviousActivation).toHaveBeenCalledWith('plan-a', expect.objectContaining({ harnessSlug: 'papercusp' }));
+    expect(mockShipCheck).toHaveBeenCalledWith(expect.objectContaining({
+      files: expect.arrayContaining(['src/gate.ts', 'src/changed.ts']),
+      repoRoot: '/repo',
+      baseline: expect.objectContaining({ packages: ['yaml'] }),
+      libraries: expect.objectContaining({ needs: [expect.objectContaining({ package: 'yaml' })] }),
+      reuse: expect.objectContaining({ reused: [expect.objectContaining({ ref: 'src/gate.ts' })] }),
+    }));
+  });
+
+  it('records the audit and returns warnings and unverified notes without refusing', async () => {
+    resolvePlanContent(declaredPlan());
+    mockFilesChanged.mockResolvedValue(null);
+    mockShipCheck.mockResolvedValue(report({ warnings: [{ ref: 'plans:audit', kind: 'tool', detail: 'unreferenced' }] }));
+
+    const result = await body(cite, { phase: 'completion', dryRun: false });
+
+    expect(result).toMatchObject({ ok: true, libraryShipCheck: { status: 'unverified', warnings: [expect.objectContaining({ ref: 'plans:audit' })] } });
+    expect(result.libraryShipCheck.unverified).toEqual([expect.stringContaining('filesChanged could not be read')]);
+    expect(mockRecord).toHaveBeenCalled();
+  });
+
+  it('is not applicable to a plan with neither section and no activation baseline', async () => {
+    const result = await body(cite, { phase: 'completion', dryRun: false });
+
+    expect(result).toMatchObject({ ok: true, libraryShipCheck: { status: 'not-applicable' } });
+    expect(mockShipCheck).not.toHaveBeenCalled();
   });
 });

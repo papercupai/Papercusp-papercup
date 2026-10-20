@@ -136,7 +136,9 @@ afterEach(() => {
 
 describe('setWorkItemClaimHold (WI-2797)', () => {
   it.each(['work-item:claimable', 'release:deployed', 'release:deployed:abc123',
-    'coord:inbox-wake:park-owner', 'fleet:item-completed:test'])
+    'coord:inbox-wake:park-owner', 'fleet:item-completed:test',
+    // event-wait-settlement-2026-10-20 P-001: subject-bound CHANGE notifications are wakes too.
+    'work-item:status:WI-owner-grade-dependency', 'work-item:unblocked:WI-owner-grade-dependency'])
   ('does not mistake a broad fired wake for owner-grade clearance: %s', async (trigger) => {
     const id = 'WI-owner-grade-park';
     await seedIssue(id, { payload: { held_open_by: 'reviewer', held_open_reason: 'independent review' } });
@@ -154,9 +156,12 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
 
   it('refreshes a fired condition from the event ledger without changing the park, lease or assignment', async () => {
     const id = 'WI-event-park';
-    const trigger = `work-item:unblocked:${id}`;
+    // A completion key on the dependency: since event-wait-settlement-2026-10-20 P-001 a change
+    // notification such as work-item:unblocked:<id> is never stamped reachable at write time.
+    const trigger = `work-item:done:${id}-dependency`;
     await seedIssue(id, { takenBy: 'builder', payload: { held_open_by: 'reviewer', held_open_reason: 'independent review' } });
-    const releaseContract = await buildDurableParkReleaseContract({ condition: 'item becomes unblocked', trigger }, 'park-owner');
+    const releaseContract = await buildDurableParkReleaseContract(
+      { condition: `${id}-dependency reaches a terminal state`, trigger }, 'park-owner');
     expect(releaseContract.reachability).toBe('reachable');
     await wi.setWorkItemClaimHold(id, true, { harness: H, parkedBy: 'park-owner', releaseContract });
     const original = await readPayload(id);

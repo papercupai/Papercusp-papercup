@@ -1038,7 +1038,13 @@ async function clearQueuedGitSyncOwners(
   return owners;
 }
 
-async function releaseAll(cd: string, owner: string, acquired: GitSyncLockRequest[]): Promise<void> {
+async function releaseAll(
+  cd: string,
+  owner: string,
+  acquired: GitSyncLockRequest[],
+  onExclusiveResourceReleased: (resource: string) => void = (resource) =>
+    emitResourceReleasedEvent(resource, cd === '*' ? null : cd),
+): Promise<void> {
   // This fire is done with the lock either way — drop it from the in-flight set
   // FIRST, so that a release which fails below (TTL becomes the backstop, see the
   // warn) still leaves a row a later tick here can recognise as our orphan and
@@ -1059,9 +1065,7 @@ async function releaseAll(cd: string, owner: string, acquired: GitSyncLockReques
     // The bulk store release bypasses locks:release and its broadcast helper.
     // Emit only after the transaction has removed each exclusive row so a
     // held_exclusive caller can await the truthful exact-resource boundary.
-    for (const resource of released.exclusiveResources) {
-      emitResourceReleasedEvent(resource, cd === '*' ? null : cd);
-    }
+    for (const resource of released.exclusiveResources) onExclusiveResourceReleased(resource);
   } catch (error) {
     // The bulk release is transactional: either every owner-scoped row is gone
     // or none is. Keep the TTL as the final backstop, but make the missed release
@@ -1387,6 +1391,15 @@ export interface GitSyncPerInstallLease {
   assertHeld(): void;
 }
 
+export interface GitSyncPerInstallLeaseOptions {
+  /**
+   * Override the default release-boundary event publisher. The main git-sync
+   * action defers this callback until its terminal activity marker is durable;
+   * standalone callers retain the immediate exact-resource event by default.
+   */
+  onExclusiveResourceReleased?: (resource: string) => void;
+}
+
 /**
  * Run one post-local-sync operation under the existing per-install
  * `git-sync:<slug>` lease.
@@ -1417,6 +1430,7 @@ export async function runWithGitSyncPerInstallLease<T>(
   workspaceId: string,
   operation: (lease: GitSyncPerInstallLease) => Promise<T>,
   signal?: AbortSignal,
+  options?: GitSyncPerInstallLeaseOptions,
 ): Promise<GitSyncPerInstallLeaseResult<T>> {
   const coordinationDomain = workspaceId || '*';
   const resources: GitSyncLockRequest[] = [{ resource: gitSyncResourceName(slug), mode: 'exclusive' }];
@@ -1465,7 +1479,7 @@ export async function runWithGitSyncPerInstallLease<T>(
   } finally {
     signal?.removeEventListener('abort', onAbort);
     await stopHeartbeatOnce();
-    await releaseAll(coordinationDomain, owner, acquired);
+    await releaseAll(coordinationDomain, owner, acquired, options?.onExclusiveResourceReleased);
   }
 }
 
@@ -3674,6 +3688,20 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   };
   const writeActivity = (activity: GitSyncActivityFields): Promise<void> =>
     enqueueActivityWrite(() => writeGitSyncActivity(slug, workspaceId, withActivityOwner(activity)));
+  // The local resource lease is released before post-legs begin, but the
+  // activity marker remains active until every post-leg settles. Keep the
+  // exact resource wake pending across that gap so a waiter cannot restart the
+  // host while `safe_to_restart` is still false.
+  const deferredResourceReleaseEvents = new Set<string>();
+  const deferResourceReleaseEvent = (resource: string): void => {
+    deferredResourceReleaseEvents.add(resource);
+  };
+  const flushDeferredResourceReleaseEvents = (): void => {
+    for (const resource of deferredResourceReleaseEvents) {
+      emitResourceReleasedEvent(resource, workspaceId || null);
+    }
+    deferredResourceReleaseEvents.clear();
+  };
   // WI-10006724: a lower bound on every resource's acquisition time, so the lease
   // fence measures age conservatively (each row expires no earlier than this + TTL).
   const lockRequestedAt = Date.now();
@@ -3834,13 +3862,15 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
               updated_at: completedAt,
               completed_at: completedAt,
               outcome_status: null,
+            }).then(() => {
+              terminalActivityDurable = true;
             }).catch((error) => {
               console.warn(`[git-sync] ${slug}: could not record Git exit after error: ${String(error)}`);
             });
           }
           if (lock.state === 'acquired') {
             try {
-              await releaseAll(cd, lockOwner, acquired);
+              await releaseAll(cd, lockOwner, acquired, deferResourceReleaseEvent);
             } catch (error) {
               console.warn(
                 `[git-sync] ${slug}: lock release cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -3856,6 +3886,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   let timeoutActivity: Promise<void> | null = null;
   let activityHeartbeatWrite: Promise<void> = Promise.resolve();
   let activityTerminal = false;
+  let terminalActivityDurable = false;
   const recordTimeoutActivity = (error: GitSyncActionTimeoutError): Promise<void> => {
     if (timeoutActivity) return timeoutActivity;
     // Fence queued progress writes before recording the terminal timeout marker.
@@ -3880,7 +3911,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           outcome_status: null,
         }),
       }),
-    ).catch((metadataError) => {
+    ).then(() => {
+      if (!awaitingGitExit) terminalActivityDurable = true;
+    }).catch((metadataError) => {
       console.warn(
         `[git-sync] ${slug}: could not record action timeout metadata: ${
           metadataError instanceof Error ? metadataError.message : String(metadataError)
@@ -4327,6 +4360,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         updated_at: yieldedAt,
         completed_at: yieldedAt,
         outcome_status: null,
+      }).then(() => {
+        terminalActivityDurable = true;
+        flushDeferredResourceReleaseEvents();
       }).catch(() => {});
       await patchRoutineMetadata(slug, workspaceId, {
         last_yield: {
@@ -4359,11 +4395,14 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         updated_at: failedAt,
         completed_at: errorAwaitingGitExit ? null : failedAt,
         outcome_status: null,
+      }).then(() => {
+        if (!errorAwaitingGitExit) terminalActivityDurable = true;
       }).catch(() => {});
     }
     throw error;
   } finally {
     await cleanupLocks();
+    if (terminalActivityDurable) flushDeferredResourceReleaseEvents();
     await liveness.waitForTimeoutCleanup();
     liveness.stop();
   }
@@ -4718,7 +4757,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         return settlementTimeout;
       } finally {
         await stopSettlementLockHeartbeat();
-        await releaseAll(cd, settlementLockOwner, settlementAcquired);
+        await releaseAll(cd, settlementLockOwner, settlementAcquired, deferResourceReleaseEvent);
       }
     };
 
@@ -4783,6 +4822,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             workspaceId,
             (lease) => runBootstrapLeg(slug, workspaceId, { beforeGitCommand: () => lease.assertHeld() }),
             postLegsLiveness.signal,
+              { onExclusiveResourceReleased: deferResourceReleaseEvent },
           );
           if (bootstrap.state === 'lease-lost') {
             // WI-10006972: bootstrap is rewind-safe, so the next tick resumes from
@@ -4896,6 +4936,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // which leg hung.
     if (error instanceof GitSyncActionTimeoutError) {
       await recordTimeoutActivity(error);
+      if (terminalActivityDurable) flushDeferredResourceReleaseEvents();
     } else {
       activityTerminal = true;
       await activityHeartbeatWrite.catch(() => {});
@@ -4906,6 +4947,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         updated_at: Date.now(),
         completed_at: Date.now(),
         outcome_status: outcome.status,
+      }).then(() => {
+        terminalActivityDurable = true;
+        flushDeferredResourceReleaseEvents();
       }).catch(() => {});
     }
     throw error;
@@ -4984,6 +5028,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         updated_at: failedAt,
         completed_at: failedAt,
         outcome_status: outcome.status,
+      }).then(() => {
+        terminalActivityDurable = true;
+        flushDeferredResourceReleaseEvents();
       }).catch(() => {});
       throw error;
     }
@@ -5001,6 +5048,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       completed_at: completedAt,
       outcome_status: outcome.status,
     });
+    terminalActivityDurable = true;
+    flushDeferredResourceReleaseEvents();
   } catch (error) {
     // EI-22053184584978917: the preceding post-legs marker is active, so a
     // terminal-write failure must not leave this fire looking indefinitely in
@@ -5023,6 +5072,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         }`,
       );
     });
+    terminalActivityDurable = true;
+    flushDeferredResourceReleaseEvents();
     throw error;
   }
 

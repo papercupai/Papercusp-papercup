@@ -75,6 +75,7 @@ import {
   reserveScorecardMutexConnection,
   isScorecardMutexPoolAcquisitionError,
   scorecardMutexPoolAcquireTimeoutMs,
+  scorecardTimeoutLeadIn,
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
@@ -4215,7 +4216,9 @@ export async function emitScorecard(
         pgCode: error.pgCode,
         retryable: true as const,
         error:
-          `scorecards:emit write hit transient database contention (${error.pgCode}): ${error.message}. ` +
+          // The inner message names read vs write; a read 57014 (e.g. the grading-integrity
+          // lookup) is a slow query, not write contention (WI-6554700010018139).
+          `${scorecardTimeoutLeadIn(error, 'scorecards:emit')} (${error.pgCode}): ${error.message}. ` +
           'No scorecard was persisted by this attempt; retry shortly.',
       };
     }

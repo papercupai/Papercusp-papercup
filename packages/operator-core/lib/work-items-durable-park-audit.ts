@@ -22,7 +22,10 @@ import {
   pauseCompletionResumeContradiction,
   selfReleaseTriggerContradiction,
 } from './durable-park-release-contract';
-import { eventHasSpecificCondition } from './external-condition-reachability';
+import { eventHasSpecificCondition, fireCertifiesCondition } from './external-condition-reachability';
+import { activeExternalBlockers } from './external-blockers';
+import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
+import type { SystemClearedBlockerItem } from './work-item-ref-blocker-auto-clear';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
 /**
@@ -332,21 +335,22 @@ export function classifyDurableParkReleaseLiveness(
   // release:deployed, plan:acceptance:<slug> — reads as a met condition. Re-apply the
   // same guard the event settler uses: a broad catalogue trigger cannot prove the
   // condition, so the stamp is unverified rather than a "reconcile now" finding.
+  // P-001: a subject-bound CHANGE notification (work-item:status:<id>) is equally unable.
   const broadSatisfied = !contradiction && !selfRelease && trigger && reachabilityText === 'satisfied' &&
-    !eventHasSpecificCondition(trigger, true)
-    ? `stored reachability "satisfied" came from broad trigger "${trigger}", which can wake a consumer but cannot establish the release condition; verify the condition itself and repair the trigger to a subject-bound key`
+    !fireCertifiesCondition(trigger, true)
+    ? `stored reachability "satisfied" came from ${eventHasSpecificCondition(trigger, true) ? 'change-notification' : 'broad'} trigger "${trigger}", which can wake a consumer but cannot establish the release condition; verify the condition itself and repair the trigger to a subject-bound completion key`
     : null;
   // EI-25664119449929994: a stored 'satisfied' stamp is credible only when the fire it cites
-  // postdates THIS park and is not the parked item's own generic status event. Legacy writers read
-  // the key's lifetime latch at park time, so every live stamp measured 2026-10-11 cited a
-  // pre-park fire. Only the writer's own "event fired at <ts>" evidence is ordered here; free
-  // evidence keeps its stamp because nothing on record contradicts it.
+  // postdates THIS park (the parked item's own generic status event is already refused above,
+  // as a change notification). Legacy writers read the key's lifetime latch at park time, so
+  // every live stamp measured 2026-10-11 cited a pre-park fire. Only the writer's own "event
+  // fired at <ts>" evidence is ordered here; free evidence keeps its stamp because nothing on
+  // record contradicts it.
   const firedEvidence = /^event fired at (.+)$/.exec(textOrNull(rawContract.evidence) ?? '');
   const parkedAtMs = textOrNull(payload.claim_hold_at) ? Date.parse(String(payload.claim_hold_at)) : NaN;
   const uncertifiedFire = !contradiction && !selfRelease && !broadSatisfied && trigger && reachabilityText === 'satisfied'
     ? firedTriggerCannotCertify({
         trigger,
-        parkId,
         firedAt: firedEvidence?.[1] ?? null,
         parkedAtMs: firedEvidence && Number.isFinite(parkedAtMs) ? parkedAtMs : null,
       })
@@ -539,6 +543,9 @@ export interface EventDurableParkReconcileResult {
   cleared: number;
   skipped: number;
   preservedLeases: number;
+  /** Every released park, for the caller's post-commit follow-up (followUpSystemClears;
+   *  event-wait-settlement-2026-10-20 P-003). The agent that parked the item is told. */
+  items: SystemClearedBlockerItem[];
 }
 
 type EventDurableParkSql = OrgSql | TransactionSql;
@@ -547,6 +554,7 @@ type EventDurableParkRow = {
   workspace_id: string;
   harness_slug: string;
   feature_id: string;
+  item_kind: string | null;
   state: string;
   taken_by: string | null;
   payload: unknown;
@@ -570,27 +578,35 @@ export async function reconcileEventDurableParks(
   now = new Date().toISOString(),
 ): Promise<EventDurableParkReconcileResult> {
   const trigger = eventKey.trim();
-  if (!trigger) return { matched: 0, cleared: 0, skipped: 0, preservedLeases: 0 };
+  if (!trigger) return { matched: 0, cleared: 0, skipped: 0, preservedLeases: 0, items: [] };
   // The caller has just latched a producer announcement in this transaction.
-  // Even a declared broad notification is only a wake, not condition satisfaction.
-  const specificCondition = eventHasSpecificCondition(trigger, true);
+  // Even a declared broad notification is only a wake, not condition satisfaction; so is
+  // a change notification about one subject (P-001: only completion families certify).
+  const specificCondition = fireCertifiesCondition(trigger, true);
 
   const parsedNow = Date.parse(now);
   const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
   const settledBy = actor?.trim() || 'system:event-settlement';
+  // `payload ? 'claim_hold_release'` and `(payload -> 'claim_hold_release') ->> 'trigger'`
+  // are the predicate and expression of work_items_claim_hold_release_trigger_idx
+  // (migration 1539, event-wait-settlement-2026-10-20 P-002). Keep both written exactly
+  // so: a COALESCE(payload, …) wrapper selects the same rows but no index can serve it
+  // (measured: a parallel seq scan, 676.6 ms / 930,107 buffers on 404,825 rows).
   const rows = await tx<EventDurableParkRow[]>`
-    SELECT workspace_id, harness_slug, feature_id, status AS state, taken_by, payload
+    SELECT workspace_id, harness_slug, feature_id, item_kind, status AS state, taken_by, payload
       FROM harness_shared.work_items
-     WHERE COALESCE(payload, '{}'::jsonb) ->> '_claimHold' = 'true'
-       AND NULLIF(COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_by', '') IS NOT NULL
+     WHERE payload ? 'claim_hold_release'
+       AND (payload -> 'claim_hold_release') ->> 'trigger' = ${trigger}
+       AND payload ->> '_claimHold' = 'true'
+       AND NULLIF(payload ->> 'claim_hold_by', '') IS NOT NULL
        AND (taken_by IS NULL OR btrim(taken_by) = '')
-       AND COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'trigger' = ${trigger}
      FOR UPDATE
   `;
 
   let cleared = 0;
   let skipped = 0;
   let preservedLeases = 0;
+  const items: SystemClearedBlockerItem[] = [];
   for (const row of rows) {
     if (!specificCondition) {
       skipped += 1;
@@ -652,9 +668,22 @@ export async function reconcileEventDurableParks(
     }, updatedTs);
     cleared += 1;
     if (plan.preservedLease) preservedLeases += 1;
+    items.push({
+      workspaceId: row.workspace_id,
+      featureId: row.feature_id,
+      harnessSlug: row.harness_slug ?? null,
+      family: ['bug', 'change', 'task'].includes(String(row.item_kind)) ? 'issue' : 'feature',
+      status: row.state,
+      // The row is unclaimed (the SELECT requires it), so the agent that parked it is told.
+      holder: normalizeTakenBy(textOrNull(priorPayload.claim_hold_by)),
+      restored: true,
+      activeRemaining: activeExternalBlockers(plan.nextPayload).length,
+      cleared: [{ kind: 'durable-park', ref: trigger, evidence: `announcement trigger "${trigger}" fired` }],
+      clearedBy: settledBy,
+    });
   }
 
-  return { matched: rows.length, cleared, skipped, preservedLeases };
+  return { matched: rows.length, cleared, skipped, preservedLeases, items };
 }
 
 /** The same atomic receipt for explicit reconciliation and announced-event settlement. */

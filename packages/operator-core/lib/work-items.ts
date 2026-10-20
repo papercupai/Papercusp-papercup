@@ -64,6 +64,8 @@ import { featureRef, FEATURE_KIND, isQualifiedFeatureRef, implementsLinkScopes }
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
+// Type-only: the auto-clear module imports this one at runtime.
+import type { SystemClearedBlockerItem } from './work-item-ref-blocker-auto-clear';
 import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
 import { boundedPgReadTxn } from './pg-read-query';
 import type { ActiveOperationWorkerClaimRead } from './blueprint/operation-worker-binding';
@@ -78,8 +80,11 @@ import {
   admissionPromoterTickSec,
   admissionPromoterStall,
   admissionStallBasis,
+  asAdmissionFailOpenExclusion,
   autoPickableWhereSql,
+  type AdmissionFailOpenExclusion,
   type BornAdmission,
+  failOpenExclusionSql,
   isWorkItemDuplicateAdmitted,
   isAutoPickable,
   isIssueLocallyClaimable,
@@ -7369,42 +7374,61 @@ export function externalBlockersExclusionSql(sql: OrgSql) {
  * issue-family row that was auto-parked by `work_items:set_blocker` is restored
  * to `open` only after the last active blocker is gone; a durable claim park is
  * preserved while its temporary blocked lease is removed. Feature-family
- * lifecycle state is intentionally untouched here.
+ * lifecycle state is untouched inside the transaction: `items` describes every
+ * changed row so the caller can run the shared post-commit follow-up
+ * (followUpSystemClears — un-park the feature, refresh claimable views, message
+ * and wake the holder; event-wait-settlement-2026-10-20 P-003).
  */
 export async function reconcileEventExternalBlockers(
   tx: OrgSql | TransactionSql,
   eventKey: string,
   actor?: string,
   now = new Date().toISOString(),
-): Promise<{ cleared: number; restored: number }> {
+): Promise<{ cleared: number; restored: number; items: SystemClearedBlockerItem[] }> {
   const ref = eventKey.trim();
-  if (!ref) return { cleared: 0, restored: 0 };
+  if (!ref) return { cleared: 0, restored: 0, items: [] };
 
   const settledBy = actor?.trim() || 'system:event-settlement';
-  // `payload ? 'externalBlockers'` is the predicate of the partial index
-  // work_items_external_blockers_ws_idx (migration 1475); the containment test
-  // alone cannot prove it, so without this line the lookup reads the whole table.
-  const rows = await tx<LockedExternalBlockerRow[]>`
-    SELECT workspace_id, feature_id, item_kind, status, payload
+  // The containment is written on `payload -> 'externalBlockers'`, the expression of the
+  // GIN index work_items_external_blockers_gin_idx (migration 1539, plan
+  // event-wait-settlement-2026-10-20 P-002), whose partial predicate (that expression IS
+  // NOT NULL) the planner proves from the strict `@>` alone. Do NOT add 1475's
+  // `payload ? 'externalBlockers'` here: it makes 1475's btree a candidate too, which only
+  // filters every blocked payload, and the planner's costs for the two differ by ~1.6 —
+  // a fresh database picked the btree. `payload @> {externalBlockers:[…]}` selects the same
+  // rows but no index serves it (measured 89.7 ms / 25,429 buffers on live data).
+  const rows = await tx<Array<LockedExternalBlockerRow & { harness_slug: string | null; taken_by: string | null }>>`
+    SELECT workspace_id, feature_id, item_kind, status, payload, harness_slug, taken_by
       FROM harness_shared.work_items
-     WHERE payload ? 'externalBlockers'
-       AND COALESCE(payload, '{}'::jsonb) @> jsonb_build_object(
-       'externalBlockers',
-       jsonb_build_array(jsonb_build_object('kind', 'event', 'ref', ${ref}::text, 'status', 'active'))
-     )
+     WHERE (payload -> 'externalBlockers') @> jsonb_build_array(
+         jsonb_build_object('kind', 'event', 'ref', ${ref}::text, 'status', 'active')
+       )
      FOR UPDATE
   `;
 
   let cleared = 0;
   let restored = 0;
+  const items: SystemClearedBlockerItem[] = [];
   for (const row of rows) {
     const outcome = await clearExternalBlockersOnLockedRow(tx, row, [{ kind: 'event', ref }], settledBy, now);
     if (!outcome.changed) continue;
     cleared += 1;
     if (outcome.restored) restored += 1;
+    items.push({
+      workspaceId: row.workspace_id,
+      featureId: row.feature_id,
+      harnessSlug: row.harness_slug ?? null,
+      family: ['bug', 'change', 'task'].includes(String(row.item_kind)) ? 'issue' : 'feature',
+      status: outcome.restored ? 'open' : row.status,
+      holder: normalizeTakenBy(row.taken_by),
+      restored: outcome.restored,
+      activeRemaining: outcome.activeRemaining,
+      cleared: [{ kind: 'event', ref, evidence: `announced event "${ref}" settled` }],
+      clearedBy: settledBy,
+    });
   }
 
-  return { cleared, restored };
+  return { cleared, restored, items };
 }
 
 /** A work-item row read `FOR UPDATE` by a caller that is about to clear blockers on it. */
@@ -8709,6 +8733,14 @@ export interface ClaimFloorAttribution {
    */
   heldBy?: string | null;
   /**
+   * EI-25209690807142935 — present ONLY on an `admission-pending` refusal for a row the
+   * independent fail-open runner never admits (degraded dedup coverage, duplicate candidates,
+   * or a typed duplicate verdict). Such a row carries NO `retry` bound: only re-screening or
+   * adjudication clears it, so a caller should look for the twin rather than wait. Optional for
+   * the same shared-interface reason as `heldBy`.
+   */
+  failOpenExclusion?: AdmissionFailOpenExclusion;
+  /**
    * EI-21973318733042066 — present ONLY on a floor that clears with NOBODY ACTING, carrying the
    * bound it clears within.
    *
@@ -8850,6 +8882,7 @@ export function issueClaimBarFloorColumnsSql(
     (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
     (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
     (${admittedWhereSqlWi(sql)})                                           AS ok_admission,
+    (${failOpenExclusionSql(sql, 'wi')})                                   AS admission_fail_open_exclusion,
     (${liveGateOpsSelfSelectExclusionSql(sql)})                            AS ok_live_gate_ops,
     (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
     (${needsOwnerActionExclusionSql(sql)})                                 AS ok_needs_owner_action,
@@ -8928,6 +8961,10 @@ export async function explainIssueClaimFloors(
       ok_untaken: boolean;
       ok_origin: boolean;
       ok_admission: boolean;
+      /** EI-25209690807142935: which ADMISSION_FAIL_OPEN_EXCLUSIONS entry keeps the fail-open
+       *  runner from ever admitting this row (NULL = none) — when set, its bound does not apply. */
+      admission_fail_open_exclusion?: string | null;
+      duplicate_of?: string | null;
       ok_live_gate_ops: boolean;
       ok_observation: boolean;
       ok_needs_owner_action: boolean;
@@ -8947,6 +8984,7 @@ export async function explainIssueClaimFloors(
   >`
     SELECT wi.feature_id AS id,
            wi.taken_by                                                            AS taken_by,
+           wi.duplicate_of                                                        AS duplicate_of,
            (wi.status = ANY(${[...states]}::text[]))                              AS ok_status,
            ${issueClaimBarFloorColumnsSql(sql, {
              issueWs,
@@ -8999,6 +9037,7 @@ export async function explainIssueClaimFloors(
     ] : [['not-found', false]];
     const failedFloors = floorChecks.filter(([, passed]) => !passed).map(([label]) => label);
     const refusedBy = failedFloors[0] ?? null;
+    const failOpenExclusion = asAdmissionFailOpenExclusion(r?.admission_fail_open_exclusion);
     return {
       id,
       admissible: refusedBy === null,
@@ -9028,7 +9067,25 @@ export async function explainIssueClaimFloors(
             // bound — the bound was never the problem — but naming a deliberate
             // owner pause as a fault invites the reader to re-arm an LLM-spending
             // loop the owner deliberately stopped. The attribution is the fix.
-            retry: promoterStall.stalled
+            // WI-6554700010018098: a row carrying duplicate candidates is excluded from the
+            // fail-open backstop (work-queue-exclusion-alarm-duplicates-2026-10-16 P-002); only
+            // the promoter's model review admits it, and that has no fixed bound. Publishing the
+            // fail-open ceiling as `guaranteedWithinSec` for it was a false guarantee — so the
+            // row gets its own explanation and no `retry` bound at all.
+            // EI-25209690807142935: the same holds for EVERY row the runner excludes (degraded
+            // coverage, a typed duplicate verdict), read from the runner's own exclusion record.
+            ...(failOpenExclusion
+              ? {
+                  detail: admissionPendingExplanation(undefined, {
+                    failOpenExclusion,
+                    duplicateOf: r?.duplicate_of ?? null,
+                  }),
+                  failOpenExclusion,
+                }
+              : {}),
+            retry: failOpenExclusion
+              ? undefined
+              : promoterStall.stalled
               ? {
                   clearsOnItsOwn: true as const,
                   expectedWithinSec: admissionFailOpenSec(),

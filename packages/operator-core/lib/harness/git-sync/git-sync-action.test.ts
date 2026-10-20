@@ -2801,7 +2801,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(runGitSyncMock).not.toHaveBeenCalled();
   });
 
-  it('retries transient contention while releasing and completes all releases before the committed event', async () => {
+  it('retries transient contention and defers the resource wake until activity settles', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
     const contention = Object.assign(
       new Error('workspace "ws-42" contended while releasing (pg 57014: lock/statement timeout)'),
@@ -2823,6 +2823,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     });
     emitResourceReleasedEventMock.mockImplementation((resource) => {
       sequence.push(`resource-released:${resource}`);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'complete' });
     });
     emitGitSyncCommittedEventMock.mockImplementation(() => {
       sequence.push('committed-event');
@@ -2833,9 +2834,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(sequence).toEqual([
       'release-lock-set',
       'release-lock-set',
-      'resource-released:git-sync:papercup',
       'committed-event',
       'release-lock-set',
+      'resource-released:git-sync:papercup',
     ]);
     expect(emitResourceReleasedEventMock).toHaveBeenCalledExactlyOnceWith('git-sync:papercup', 'ws-42');
     expect(releaseAllResourcesForOwnerMock).toHaveBeenCalledTimes(3);

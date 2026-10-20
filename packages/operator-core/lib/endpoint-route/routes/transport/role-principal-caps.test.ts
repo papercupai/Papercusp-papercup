@@ -331,6 +331,9 @@ describe('loadRoleCapabilities', () => {
         { default: pgMutate },
         { default: lspQuery },
         { default: lspApply },
+        { default: graphQuery },
+        { default: codePack },
+        { default: codeStructural },
       ] = await Promise.all([
         import('../../../agent-tools/docs/get'),
         import('../../../agent-tools/plans/get-template-data'),
@@ -340,6 +343,9 @@ describe('loadRoleCapabilities', () => {
         import('../../../agent-tools/dev/pg_mutate'),
         import('../../../agent-tools/lsp/query'),
         import('../../../agent-tools/lsp/apply'),
+        import('../../../agent-tools/gitnexus/query'),
+        import('../../../agent-tools/lsp/pack'),
+        import('../../../agent-tools/lsp/astgrep'),
       ]);
       // Gate 1: the tool's role allowlist. Gate 2: the principal capability it requires.
       expect(docsGet.agentRoles).toContain('judge');
@@ -362,6 +368,13 @@ describe('loadRoleCapabilities', () => {
       expect(lspQuery.agentRoles).toContain('judge');
       expect(lspQuery.capability).toBe('intel:read');
       expect(caps.has('intel:read')).toBe(true);
+      // native-code-intelligence-ecosystem-and-dream-2026-10-09 P-040: every
+      // baseline code-intelligence refusal was the judge role. Pin BOTH gates
+      // for each read-only native code-intelligence tool, not just lsp:query.
+      for (const tool of [graphQuery, codePack, codeStructural]) {
+        expect(tool.agentRoles, tool.name).toContain('judge');
+        expect(tool.capability, tool.name).toBe('intel:read');
+      }
 
       // The evidence fallback remains read-only: the SQL and LSP writers need
       // intel:write, which the judge principal does not receive.

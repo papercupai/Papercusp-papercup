@@ -633,7 +633,7 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
         }
         const op = requireCoordOp(call.op);
         const parsed = op.argsSchema.parse(call.args);
-        return op.run(parsed, c);
+        return op.run(parsed, { ...c, effectId: `coord-program:${input.runId}:${call.label}` });
       },
       { name: call.label },
     );

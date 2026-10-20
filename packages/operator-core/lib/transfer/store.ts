@@ -182,9 +182,11 @@ export async function getLessonBySignature(
   return rows.length ? mapLesson(rows[0]) : null;
 }
 
-/** The tick's test queue: probationary lessons first (least-recently-tested,
- *  never-tested leading), then stale VALIDATED lessons for re-validation —
- *  the re-runnable memory unit test that makes demotion (gate.ts) live. */
+/** The tick's replayable test queue: probationary lessons first
+ *  (least-recently-tested, never-tested leading), then stale VALIDATED lessons
+ *  for re-validation — the re-runnable memory unit test that makes demotion
+ *  (gate.ts) live. Non-transcript lessons have no replay source and must be
+ *  filtered before LIMIT so they cannot starve replayable lessons. */
 export async function listLessonsForTesting(
   sql: Sql,
   q: { workspaceId: string; limit: number },
@@ -192,7 +194,10 @@ export async function listLessonsForTesting(
   const limit = Math.min(Math.max(q.limit, 1), 100);
   const rows = (await sql`
     SELECT * FROM harness_shared.transfer_lessons
-     WHERE workspace_id = ${q.workspaceId} AND tier IN ('probationary', 'validated')
+     WHERE workspace_id = ${q.workspaceId}
+       AND tier IN ('probationary', 'validated')
+       AND source_kind = 'transcript'
+       AND source_ref IS NOT NULL
      ORDER BY (tier = 'probationary') DESC, last_tested_at ASC NULLS FIRST, created_at ASC
      LIMIT ${limit}`) as Row[];
   return rows.map(mapLesson);

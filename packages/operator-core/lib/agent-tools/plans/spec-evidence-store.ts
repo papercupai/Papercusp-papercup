@@ -3285,6 +3285,44 @@ function completedTestRuntimeRecipe(row: EvidenceRow, recipe: RepoFilesEvidenceM
  * instead. This applies only to clean test receipts on their supported evidence
  * planes; it never certifies a serving/deployed production process.
  */
+function completedNativeMutationCalibration(row: EvidenceRow,
+  execution: ReturnType<typeof parseTestRunExecutionDetails>, currentFiles: readonly MeasuredRepoFile[]) {
+  const baseline = parseTestRunExecutionDetails(row.mutation_baseline_execution_details);
+  const mutation = execution?.mutation, calibration = baseline?.mutation;
+  const witness = stableRecordedRuntimeEnvironment(execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
+  const baselineWitness = stableRecordedRuntimeEnvironment(baseline?.runtimeEnvironmentBefore, baseline?.runtimeEnvironmentAfter);
+  if (!execution || !baseline || !mutation || !calibration || !witness || !baselineWitness
+    || row.evidence_kind !== 'mutation' || row.test_run_source !== 'mutation-probe'
+    || row.test_run_status !== 'fail' || !row.test_run_present
+    || !row.mutation_baseline_id || Number(row.mutation_baseline_id) === Number(row.test_run_id)
+    || row.mutation_baseline_status !== 'pass'
+    || mutation.mode !== 'copy-out' || mutation.leg !== 'mutant' || execution.mutationPhase !== 'mutant'
+    || calibration.leg !== 'copy-baseline' || baseline.mutationPhase !== 'copy-baseline'
+    || baseline.worktreeDirty || baseline.collectionFailed || baseline.failed !== 0 || baseline.skipped !== 0 || baseline.passed < 1
+    || execution.failed < 1 || execution.skipped !== 0 || execution.collectionFailed
+    || baseline.commitSha !== execution.commitSha || baseline.root !== execution.root
+    || baseline.filePath !== execution.filePath || baseline.testLayer !== execution.testLayer
+    || baseline.workspaceId !== execution.workspaceId || baseline.harnessSlug !== execution.harnessSlug
+    || baseline.testNamePattern !== execution.testNamePattern
+    || witness.fingerprint !== baselineWitness.fingerprint
+    || JSON.stringify([...witness.units].sort()) !== JSON.stringify([...baselineWitness.units].sort())
+    || mutation.subjectBeforeSha256 === mutation.subjectAfterSha256
+    || !currentFiles.some(file => file.dimension === 'source' && file.path === mutation.subjectPath
+      && file.sha256 === mutation.subjectBeforeSha256)
+    || !currentFiles.some(file => file.dimension === 'test' && file.path === execution.filePath
+      && file.sha256 === mutation.testFileSha256)
+    || Object.keys(mutation).some(key => key !== 'leg' && JSON.stringify(mutation[key as keyof typeof mutation])
+      !== JSON.stringify(calibration[key as keyof typeof calibration]))
+    || Object.keys(calibration).some(key => key !== 'leg' && !(key in mutation))
+    || execution.failedCaseTitles?.length !== execution.failed
+    || baseline.passedCaseTitles?.length !== baseline.passed
+    || execution.failedCaseTitles.some(title => !hasMatchingDeclaredCaseTitle(title, baseline.passedCaseTitles!))) return null;
+  const before = Date.parse(baseline.runtimeEnvironmentBefore!.observedAt);
+  const after = Date.parse(baseline.runtimeEnvironmentAfter!.observedAt);
+  const mutantBefore = Date.parse(execution.runtimeEnvironmentBefore!.observedAt);
+  return Number.isFinite(before) && before <= after && after <= mutantBefore ? baseline : null;
+}
+
 export async function measureCompletedTestRuntime(
   row: EvidenceRow,
   recipe: RepoFilesEvidenceMeasurement,
@@ -3306,6 +3344,11 @@ export async function measureCompletedTestRuntime(
   const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
   const witness = stableRecordedRuntimeEnvironment(
     execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
+  // A caught mutant is an expected failed assertion, never a passing test. Its
+  // original runtime can still be measured, but only with the same invocation's
+  // passing copy calibration, unchanged test/source pins and stable witnesses.
+  const mutationCalibration = directVerifier
+    ? completedNativeMutationCalibration(row, execution, currentFiles) : null;
   // Guarded fromTestRun adoption changes ledger attribution, not the original
   // captured receipt. The scoped join proves adoption; foreign, CI/admin and
   // still-unscoped rows cannot certify an originally NULL-harness LLM witness.
@@ -3313,11 +3356,11 @@ export async function measureCompletedTestRuntime(
     || (selector?.kind === 'llm-in-process' && execution?.harnessSlug === null
       && row.test_run_present
       && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
-  if (!selector || !recipe.runtimeUnits || !certifiesCompletedTestRow(row.evidence_kind)
+  if (!selector || !recipe.runtimeUnits || !(certifiesCompletedTestRow(row.evidence_kind) || mutationCalibration)
     // Direct native assertions can support tree clauses too. Their recorded
     // witness, immutable source and complete lifecycle must still certify them.
     || (row.details.evidencePlane !== 'live' && !(directVerifier && row.details.evidencePlane === 'tree'))
-    || row.test_run_status !== 'pass'
+    || (row.test_run_status !== 'pass' && !mutationCalibration)
     || !(selector.kind === 'llm-in-process' ? row.test_run_framework === 'llm-test'
       : selector.kind === 'verification-harness' ? ['vitest', 'playwright'].includes(row.test_run_framework ?? '')
       : row.test_run_framework === 'vitest')
@@ -3326,7 +3369,8 @@ export async function measureCompletedTestRuntime(
       ? row.test_run_framework === 'vitest' && ['integration', 'e2e'].includes(execution.testLayer ?? '')
       : execution.testLayer === (selector.kind === 'llm-in-process' ? 'llm' : 'e2e'))
     || execution.worktreeDirty
-    || execution.collectionFailed || execution.failed !== 0 || execution.skipped !== 0 || execution.passed < 1
+    || execution.collectionFailed || execution.skipped !== 0
+    || (!mutationCalibration && (execution.failed !== 0 || execution.passed < 1))
     || execution.workspaceId !== scope.workspaceId || !executionHarnessMatches
     || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
     || execution.commitSha !== row.test_run_commit_sha || !witness
@@ -3395,6 +3439,9 @@ export async function measureCompletedTestRuntime(
       return matches.length === 1 ? matches[0] : null;
     };
     const prepare = phase('prepare'), boot = phase('boot'), assertions = phase('assert');
+    if (mutationCalibration && (!boot || !assertions
+      || instant(boot.endedAt) > instant(mutationCalibration.runtimeEnvironmentBefore!.observedAt)
+      || instant(assertions.startedAt) > instant(mutationCalibration.runtimeEnvironmentBefore!.observedAt))) return null;
     // Reporter intervals derive from measured duration and can round before
     // the harness writes its completion receipt. The original paired runtime
     // observations bracket the actual test lifetime; use those exact bounds

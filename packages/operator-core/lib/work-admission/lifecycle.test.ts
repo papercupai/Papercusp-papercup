@@ -32,6 +32,35 @@ describe('planLifecycleWrites', () => {
     expect(planLifecycleWrites(item({ payload: { standingPr: { url: 'https://untrusted.example/pull/7' } } }), ON, none)).toEqual([]);
   });
 
+  it('owes a separate merge receipt after the tested link, but never repeats a recovered merge', () => {
+    const tested = { schemaVersion: 'admission-standing-pr-v1', number: 7,
+      url: 'https://github.com/acme/widgets/pull/7', testedSha: 'a'.repeat(40), targetSha: 'b'.repeat(40) };
+    const testedWrites = planLifecycleWrites(item({ state: 'done', closedAt: 'stamp', payload: { standingPr: tested } }), ON, none);
+    const testedKey = testedWrites[0]!.key;
+    expect(testedWrites[0]).toMatchObject({ action: 'comment', text: expect.stringContaining('Awaiting the PR merge') });
+    const sent = new Set(testedWrites.map((w) => w.key));
+
+    // The same PR merged after the tested link was posted: one follow-up, under its own key.
+    const upgraded = item({ state: 'done', closedAt: 'stamp', payload: {
+      standingPr: { ...tested, testedSha: 'c'.repeat(40), mergedSha: 'd'.repeat(40), mergeAfterTested: true },
+    } });
+    const follow = planLifecycleWrites(upgraded, ON, sent);
+    expect(follow).toEqual([{
+      key: `${testedKey}:merged`, action: 'comment',
+      text: `Merged fix for WI-1: https://github.com/acme/widgets/pull/7\nVerified the recorded fix in PR head ${'c'.repeat(40)} and merge ${'d'.repeat(40)}.`,
+    }]);
+    expect(planLifecycleWrites(upgraded, ON, new Set([...sent, `${testedKey}:merged`]))).toEqual([]);
+
+    // A merge recovered from history (no tested link before it) reports in its one comment, so a
+    // ledger that already holds that comment owes nothing more.
+    const recovered = item({ state: 'done', closedAt: 'stamp', payload: { standingPr: { ...tested, mergedSha: 'd'.repeat(40) } } });
+    expect(planLifecycleWrites(recovered, ON, none)[0]).toMatchObject({ key: testedKey, text: expect.stringContaining('Merged fix') });
+    expect(planLifecycleWrites(recovered, ON, sent)).toEqual([]);
+
+    // mergeAfterTested without a merge is not a valid receipt.
+    expect(planLifecycleWrites(item({ state: 'wip', payload: { standingPr: { ...tested, mergeAfterTested: true } } }), ON, none)).toEqual([]);
+  });
+
   it('moves the source to in-progress and comments the holder on claim, once per holder', () => {
     const claimed = item({ state: 'wip', assignee: 'su-a' });
     expect(planLifecycleWrites(claimed, ON, none)).toEqual([

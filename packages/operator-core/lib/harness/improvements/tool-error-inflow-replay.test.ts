@@ -10,7 +10,9 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import type { ImprovementCandidate } from './policy';
 import { replayToolErrorInflow, type InflowReplayRow } from './tool-error-inflow-replay';
+import { deriveToolErrorWatchdogKey, parseRepeatedToolErrorKey } from './watchdog-key-migration';
 
 interface Fixture {
   population: { workspace: string; fromUtc: string; toUtcExclusive: string; decision: string };
@@ -90,5 +92,21 @@ describe('R-9 same-input replay over the frozen D-009 population', () => {
     const afterMean = res.after / 7;
     expect(beforeMean).toBeCloseTo(288.1, 1);
     expect(afterMean).toBeLessThan(beforeMean / 2);
+  });
+
+  it('and still files at least one row per first-seen structural key (the lower floor)', () => {
+    // Counted straight from the fixture with the production deriver and key parser, NOT through
+    // the replay's gate branch: a gate that swallowed a structural class, or a replay that filed
+    // nothing, would pass the "fewer than half" bar above but fails this one.
+    const structuralKeys = new Set<string>();
+    for (const r of fixture.rows) {
+      const candidate = { id: r.id, body: r.body ?? undefined, watchdogKey: r.watchdogKey } as ImprovementCandidate;
+      const key = deriveToolErrorWatchdogKey(candidate, () => r.errorCode ?? null) ?? r.watchdogKey;
+      if (parseRepeatedToolErrorKey(key)?.klass === 'structural') structuralKeys.add(key);
+    }
+    expect(structuralKeys.size).toBeGreaterThan(0);
+    const res = replayToolErrorInflow(fixture.rows);
+    expect(res.after).toBeGreaterThanOrEqual(structuralKeys.size);
+    expect(res.afterByClass.structural).toBe(structuralKeys.size);
   });
 });

@@ -3,6 +3,8 @@ import type postgres from 'postgres';
 import { withPlanLock } from '../with-plan-lock';
 import { hashPlanContent } from '../content-hash';
 import { evaluateConversationActivationGate } from '../plan-activation-gate';
+import { resolveReuseReferences } from '../plan-declarations';
+import { defaultReuseReferenceResolvers } from '../plan-declaration-resolvers';
 import {
   cleanupPlans,
   registerHarnessProject,
@@ -416,5 +418,48 @@ describe('conversation activation audit gate', () => {
         FROM harness_shared.plan_audits
        WHERE workspace_id = ${fx.workspaceId} AND plan_slug = ${SLUG} AND audit_kind = 'activation'`;
     expect(auditRows).toEqual([{ n: 1, audited_seq: 1 }]);
+  });
+});
+
+// plan-reuse-and-library-declarations-2026-10-20 R-4: the production table lookup
+// against the real PG catalog — the same resolver pair plans:audit runs at activation.
+describe('reuse reference resolution against the PG catalog', () => {
+  const tableEntry = (ref: string) => ({
+    searched: [{ where: 'PG catalog', how: 'dev:pg_query describe', found: '' }],
+    reused: [{ ref, kind: 'table' as const, provides: 'audit rows', items: ['P-001'] }],
+    newSurfaces: [],
+    notApplicable: null,
+  });
+
+  it('R-4: activation refuses an unresolved table reference', async () => {
+    const resolvers = defaultReuseReferenceResolvers({ repoRoot: null, sql: fx.admin as never });
+    const planItemIds = new Set(['P-001']);
+
+    const missing = await resolveReuseReferences(tableEntry('harness_shared.zzz_no_such_table'), { resolvers, planItemIds });
+    expect(missing.ok).toBe(false);
+    expect(missing.checks[0]).toMatchObject({ status: 'not-found', detail: 'no such relation in the PG catalog' });
+    expect(missing.blockers).toEqual([expect.objectContaining({ code: 'reuse_reference_unresolved', ref: 'harness_shared.zzz_no_such_table' })]);
+
+    const present = await resolveReuseReferences(tableEntry('harness_shared.plan_audits'), { resolvers, planItemIds });
+    expect(present).toMatchObject({ ok: true, blockers: [], unverified: [] });
+    expect(present.checks[0]).toMatchObject({ status: 'found', detail: 'PG catalog' });
+
+    // A missing schema is a definitive not-found too, not a catalog error.
+    const noSchema = await resolveReuseReferences(tableEntry('zzz_no_schema.plan_audits'), { resolvers, planItemIds });
+    expect(noSchema.checks[0]?.status).toBe('not-found');
+  });
+
+  it('R-4: routine and doc lookups read the real registries', async () => {
+    const resolvers = defaultReuseReferenceResolvers({ repoRoot: null, sql: fx.admin as never });
+    const report = await resolveReuseReferences({
+      searched: [{ where: 'registries', how: 'name lookup', found: '' }],
+      reused: [
+        { ref: 'zzz-no-such-routine', kind: 'routine', provides: 'x' },
+        { ref: 'agent-insights/zzz-no-such-doc', kind: 'doc', provides: 'x' },
+      ],
+      newSurfaces: [],
+      notApplicable: null,
+    }, { resolvers, planItemIds: new Set() });
+    expect(report.checks.map((check) => check.status)).toEqual(['not-found', 'not-found']);
   });
 });

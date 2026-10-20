@@ -10,15 +10,54 @@
  *   AUTO-BAR-R-10-P-011 — when a work item referenced by another item's blocker reaches a
  *     terminal state, the blocker is cleared with history preserved.
  *   SPEC-P-011 — a blocker that references a non-terminal work item stays set.
+ *
+ * Plan event-wait-settlement-2026-10-20 P-003 — the second describe drives the REAL announced
+ * settlement (registerAnnouncement → stampAnnouncementsFired / retireAnnouncement) over the
+ * real work-items store and the production follow-up; only the coord transport ends
+ * (sendMessage, wakeRecipients) are spied:
+ *   AUTO-BAR-R-4-P-003 — a feature-family item returns from blocked to open when the system
+ *     clears its last blocker.
+ *   AUTO-BAR-R-5-P-003 — the holder receives a waking coord message when the system clears
+ *     the item's last blocker, on every settlement path.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import {
+  ADV_SESSIONS_CLAIM_MIN_DDL,
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  WORK_ITEM_DEPS_DDL,
+  applyClaimPathReadDeps,
+} from '../test/_work-items-schema';
 import { BLOCKER_AUTO_CLEAR_ACTOR, clearBlockersNamingFinishedWorkItems } from './work-item-ref-blocker-auto-clear';
+
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  sendMessage: vi.fn(async () => ({})),
+  wakeRecipients: vi.fn(async () => ({})),
+}));
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('./workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./workspace-registry')>()),
+  activeWorkspaceId: () => 'default',
+}));
+vi.mock('./agent-tools/coordination/messages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/messages')>()),
+  sendMessage: h.sendMessage,
+}));
+vi.mock('./agent-tools/coordination/inbox-wake', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/inbox-wake')>()),
+  wakeRecipients: h.wakeRecipients,
+}));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sqlDir = path.resolve(here, '../../../libs/papercusp/libs/db/sql');
@@ -224,5 +263,146 @@ describe('clearBlockersNamingFinishedWorkItems against Postgres', () => {
     });
     const text = plan.map((row) => String((row as Record<string, unknown>)['QUERY PLAN'])).join('\n');
     expect(text).toContain('work_items_external_blockers_ws_idx');
+  });
+});
+
+describe('announced settlement runs the shared follow-up (event-wait-settlement-2026-10-20 P-003)', () => {
+  const H = 'papercusp';
+  const WS_DEFAULT = 'default';
+  let db: FreshPgDb;
+  let store: typeof import('./events/await/store');
+
+  /** A complete stored event blocker record (readExternalBlockers drops incomplete ones). */
+  const eventBlocker = (ref: string) => ({
+    kind: 'event', capability: 'live-dependency', capabilitySource: 'explicit', ref, summary: `waits on ${ref}`,
+    status: 'active', createdAt: T0, createdBy: 'su-p003-holder', updatedAt: T0,
+  });
+
+  async function seed(row: { id: string; kind: string; status: string; takenBy: string | null; payload: unknown }) {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, ${row.id}, ${row.kind}, ${`title ${row.id}`}, ${row.status}, ${row.takenBy}, ${WS_DEFAULT}, 100, 0,
+              ${JSON.stringify(row.payload)}::text::jsonb)`;
+  }
+
+  async function rowOf(id: string) {
+    const [row] = await db.sql<{ status: string; payload: Record<string, unknown> }[]>`
+      SELECT status, payload FROM harness_shared.work_items WHERE workspace_id = ${WS_DEFAULT} AND feature_id = ${id}`;
+    return { status: row!.status, payload: row!.payload, blockers: (row!.payload.externalBlockers ?? []) as Array<Record<string, unknown>> };
+  }
+
+  /** The one coord message the follow-up sent, with its identity and options. */
+  function sentMessage() {
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    return h.sendMessage.mock.calls[0] as unknown as [
+      { ownerId: string; workspaceId: string },
+      { to: string[]; summary: string; body: string; harnessSlug: string },
+    ];
+  }
+
+  beforeAll(async () => {
+    db = await createFreshPgDb('ews-p003-follow-up');
+    h.sql = db.sql;
+    await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+    await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+    await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+    await db.sql.unsafe(ADV_SESSIONS_CLAIM_MIN_DDL);
+    await ensureCoordCapabilityTables(db.sql);
+    await applyEventSubstrateMigrationsForTest(db.sql, { label: 'work-item-ref-blocker-auto-clear.integration.test.ts' });
+    // Durable-park settlement writes its receipt here (writeDurableParkClearReceipt).
+    await db.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.audit_log (
+        id text PRIMARY KEY, ts bigint, actor text, action text, subject text,
+        details jsonb, workspace_id text)`).simple();
+    store = await import('./events/await/store');
+  }, 180_000);
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+  beforeEach(() => {
+    h.sendMessage.mockClear();
+    h.wakeRecipients.mockClear();
+  });
+
+  it('AUTO-BAR-R-4-P-003 + AUTO-BAR-R-5-P-003: a fired announced key returns the parked feature to open and wakes its holder', async () => {
+    const key = 'work-item:done:WI-p003-upstream';
+    await seed({ id: 'WI-p003-feature', kind: 'feature', status: 'blocked', takenBy: 'su-p003-holder',
+      payload: { externalBlockers: [eventBlocker(key)], sibling: 'kept' } });
+    await store.registerAnnouncement({ subscriberId: 'su-p003-producer', eventKey: key, scopeKind: 'global' });
+
+    expect(await store.stampAnnouncementsFired(key, { firedBy: 'su-p003-producer' })).toBe(1);
+
+    const after = await rowOf('WI-p003-feature');
+    expect(after.status).toBe('open');
+    expect(after.payload.sibling).toBe('kept');
+    expect(after.blockers).toEqual([expect.objectContaining({ ref: key, status: 'cleared', clearedBy: 'su-p003-producer' })]);
+
+    const [identity, opts] = sentMessage();
+    expect(identity).toMatchObject({ ownerId: BLOCKER_AUTO_CLEAR_ACTOR, workspaceId: WS_DEFAULT });
+    expect(opts).toMatchObject({ to: ['su-p003-holder'], harnessSlug: H });
+    expect(opts.summary).toContain('WI-p003-feature');
+    expect(opts.body).toContain('No active blocker remains on WI-p003-feature.');
+    expect(h.wakeRecipients).toHaveBeenCalledWith(['su-p003-holder'],
+      expect.objectContaining({ summary: opts.summary, workspaceId: WS_DEFAULT }));
+  });
+
+  it('AUTO-BAR-R-4-P-003: a feature with another active blocker stays blocked, and its holder still hears', async () => {
+    const key = 'work-item:done:WI-p003-first';
+    await seed({ id: 'WI-p003-two-waits', kind: 'feature', status: 'blocked', takenBy: 'su-p003-holder',
+      payload: { externalBlockers: [eventBlocker(key), eventBlocker('work-item:done:WI-p003-second')] } });
+    await store.registerAnnouncement({ subscriberId: 'su-p003-producer', eventKey: key, scopeKind: 'global' });
+
+    expect(await store.stampAnnouncementsFired(key, { firedBy: 'su-p003-producer' })).toBe(1);
+
+    const after = await rowOf('WI-p003-two-waits');
+    expect(after.status).toBe('blocked');
+    expect(after.blockers.map((b) => [b.ref, b.status])).toEqual([
+      [key, 'cleared'],
+      ['work-item:done:WI-p003-second', 'active'],
+    ]);
+    const [, opts] = sentMessage();
+    expect(opts.body).toContain('1 other active blocker(s) still hold WI-p003-two-waits');
+    expect(h.wakeRecipients).toHaveBeenCalledTimes(1);
+  });
+
+  it('AUTO-BAR-R-5-P-003: a fired park trigger releases the durable park and tells the agent that parked it', async () => {
+    const key = 'work-item:done:WI-p003-park-upstream';
+    await seed({ id: 'EI-p003-park', kind: 'bug', status: 'open', takenBy: null,
+      payload: { _claimHold: true, claim_hold_by: 'su-p003-parker', claim_hold_release: { trigger: key } } });
+    await store.registerAnnouncement({ subscriberId: 'su-p003-producer', eventKey: key, scopeKind: 'global' });
+
+    expect(await store.stampAnnouncementsFired(key, { firedBy: 'su-p003-producer' })).toBe(1);
+
+    const after = await rowOf('EI-p003-park');
+    expect(after.payload).not.toHaveProperty('claim_hold_by');
+    expect(after.payload).not.toHaveProperty('_claimHold');
+    const [, opts] = sentMessage();
+    expect(opts.to).toEqual(['su-p003-parker']);
+    expect(opts.summary.startsWith('Park released on EI-p003-park:')).toBe(true);
+    expect(h.wakeRecipients).toHaveBeenCalledWith(['su-p003-parker'], expect.objectContaining({ workspaceId: WS_DEFAULT }));
+  });
+
+  it('AUTO-BAR-R-5-P-003: retiring an announcement settles the auto-parked issue and wakes its holder', async () => {
+    const key = 'work-item:done:WI-p003-retired';
+    await seed({ id: 'EI-p003-retire', kind: 'bug', status: 'blocked', takenBy: 'su-p003-issue-holder',
+      payload: { externalBlockers: [eventBlocker(key)], held_open_reason: 'blocked', held_open_by: 'su-x' } });
+    const announcement = await store.registerAnnouncement({ subscriberId: 'su-p003-declarer', eventKey: key, scopeKind: 'global' });
+
+    const retired = await store.retireAnnouncement({ announcementId: Number(announcement.id), subscriberId: 'su-p003-declarer' });
+
+    expect(retired).toMatchObject({ retired: true, eventKey: key });
+    expect((await rowOf('EI-p003-retire')).status).toBe('open');
+    const [, opts] = sentMessage();
+    expect(opts.to).toEqual(['su-p003-issue-holder']);
+    expect(h.wakeRecipients).toHaveBeenCalledWith(['su-p003-issue-holder'], expect.anything());
+  });
+
+  it('a fire that waits on nothing sends nothing', async () => {
+    const key = 'work-item:done:WI-p003-nobody-waits';
+    await store.registerAnnouncement({ subscriberId: 'su-p003-producer', eventKey: key, scopeKind: 'global' });
+    expect(await store.stampAnnouncementsFired(key, { firedBy: 'su-p003-producer' })).toBe(1);
+    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(h.wakeRecipients).not.toHaveBeenCalled();
   });
 });

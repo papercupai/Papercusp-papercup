@@ -8,6 +8,12 @@
  * Mocks are stable at module scope: a per-test resetModules()+dynamic import
  * made the first assertion pay the entire cold transform graph and exceed
  * Vitest's 5-second test timeout before the handler even ran.
+ *
+ * Google and Facebook both connect through the descriptor connection adapter
+ * (`provider:<credentialGroup>`): the host resolves the account through the
+ * group's declared identity endpoint (`fetchProviderIdentity`) and upserts one
+ * source row per group member (`upsertOwnedExternalTriggerSource`). Google is
+ * the `google` credential group (provider-adapters-to-packages-2026-10-11 D-036).
  */
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,42 +22,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 import { createRequire } from 'node:module';
 import { providerRegistry } from '../../integrations/provider-registry';
-const facebookAdapter = createRequire(import.meta.url)('../../../../../libs/papercusp/plugins/facebook/index.cjs').providerAdapter;
+const requirePlugin = createRequire(import.meta.url);
+const facebookAdapter = requirePlugin('../../../../../libs/papercusp/plugins/facebook/index.cjs').providerAdapter;
+// Every package in the `google` credential group, so one consent provisions what it really would.
+const GOOGLE_GROUP_PACKAGES = ['gmail', 'google-calendar', 'google-contacts', 'youtube'] as const;
+const GOOGLE_GROUP_KINDS = ['contacts', 'gcal', 'gmail', 'youtube'];
+const googleAdapters = GOOGLE_GROUP_PACKAGES.map((pluginName) => ({
+  pluginName,
+  adapter: requirePlugin(`../../../../../libs/papercusp/plugins/${pluginName}/index.cjs`).providerAdapter,
+}));
 vi.mock('../../integrations/provider-registry', async (original) => {
   const actual = await original<typeof import('../../integrations/provider-registry')>();
   return { ...actual, readyProviderRegistry: async () => actual.providerRegistry() };
 });
 
+const OWNER = '22222222-2222-4222-8222-222222222222';
 
 const sourceMocks = vi.hoisted(() => ({
-  provision: vi.fn(async () => [
-    {
-      id: '11111111-1111-4111-8111-111111111111',
-      workspaceId: 'workspace-1',
-      kind: 'gmail',
-      ownerUserId: '22222222-2222-4222-8222-222222222222',
-      providerAccountId: 'owner@example.com',
-      credentialRef: 'google-workspace:owner',
-      status: 'connected',
-      config: { installSlug: 'papercusp' },
-      cursor: {},
-    },
-  ]),
-  provisionFacebook: vi.fn(async () => ({
+  upsertSource: vi.fn(async (_sql: unknown, input: { kind: string }) => ({
     id: '33333333-3333-4333-8333-333333333333',
     workspaceId: 'workspace-1',
-    kind: 'facebook',
+    kind: input.kind,
     ownerUserId: '22222222-2222-4222-8222-222222222222',
     credentialRef: 'provider:facebook:owner',
     status: 'connected',
     config: {},
     cursor: {},
   })),
-  resolveGoogleAccount: vi.fn(async () => ({
-    providerAccountId: 'owner@example.com',
-    displayName: 'owner@example.com',
-  })),
-  resolveFacebookAccount: vi.fn(async () => ({
+  resolveIdentity: vi.fn(async () => ({
     providerAccountId: 'facebook-user-1',
     displayName: 'Owner One',
   })),
@@ -71,18 +69,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sourceMocks.sql }),
 }));
-vi.mock('../../external-triggers/google-workspace', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../external-triggers/google-workspace')>()),
-  provisionOwnedGoogleWorkspaceSources: sourceMocks.provision,
-  resolveGoogleWorkspaceProviderAccount: sourceMocks.resolveGoogleAccount,
-}));
 vi.mock('../../external-triggers/source-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../external-triggers/source-store')>()),
   listOwnedExternalTriggerSources: sourceMocks.listOwned,
-  upsertOwnedExternalTriggerSource: sourceMocks.provisionFacebook,
+  upsertOwnedExternalTriggerSource: sourceMocks.upsertSource,
   renameOwnedExternalTriggerSourceAccount: sourceMocks.renameAccount,
 }));
-vi.mock('../../integrations/provider-identity', () => ({ fetchProviderIdentity: sourceMocks.resolveFacebookAccount }));
+vi.mock('../../integrations/provider-identity', () => ({ fetchProviderIdentity: sourceMocks.resolveIdentity }));
 vi.mock('../../oauth/state', () => ({
   verifyAndConsumeState: async (token: string) => {
     if (!token.includes('.') || token === 'garbage.sig') {
@@ -97,7 +90,7 @@ vi.mock('../../oauth/state', () => ({
     ) {
       const reconnectProviderAccountId =
         token === 'google.legacy'
-          ? 'google-workspace:legacy-field'
+          ? 'provider:google:legacy-field'
           : token === 'google.mismatch'
             ? 'owner@example.com'
             : undefined;
@@ -119,11 +112,11 @@ vi.mock('../../oauth/state', () => ({
               }),
         },
         claims: {
-          plugin: 'google-workspace',
+          plugin: 'provider:google',
           harness: 'papercusp',
           field: token === 'google.legacy' ? 'legacy-field' : 'owner-22222222-2222-4222-8222-222222222222',
           providerHost: 'accounts.google.com',
-          provider: 'google',
+          provider: 'provider:google',
         },
       };
     }
@@ -139,11 +132,11 @@ vi.mock('../../oauth/state', () => ({
           returnPath: token === 'google.integrations' ? '/settings/integrations' : 'https://evil.example/steal',
         },
         claims: {
-          plugin: 'google-workspace',
+          plugin: 'provider:google',
           harness: 'papercusp',
           field: 'owner-22222222-2222-4222-8222-222222222222',
           providerHost: 'accounts.google.com',
-          provider: 'google',
+          provider: 'provider:google',
         },
       };
     }
@@ -199,21 +192,42 @@ const CTX: RouteContext = {
 
 let TMP_HOME: string;
 
+/** A `provider:google` OAuth provider stub; the exchange is what each case varies. */
+function registerGoogleProvider(exchangeCode: providers.OAuthProvider['exchangeCode']): void {
+  providers.registerProvider({
+    id: 'provider:google',
+    config: {
+      clientId: 'cid',
+      clientSecret: 'sec',
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      redirectUri: 'http://localhost:3055/api/oauth/callback',
+    },
+    buildAuthorizeUrl: () => '',
+    exchangeCode,
+    refresh: async () => ({ accessToken: 'unused' }),
+  });
+}
+
+const googleConfigPath = () => join(TMP_HOME, 'harnesses/papercusp/plugin-configs/provider:google.json');
+
+/** The source kinds one Google consent upserted, in call order. */
+const upsertedKinds = () => sourceMocks.upsertSource.mock.calls.map(([, input]) => input.kind);
+
 beforeEach(async () => {
   TMP_HOME = await fs.mkdtemp(join(tmpdir(), 'paperhome-callback-'));
   process.env.PAPERCUSP_HOME = TMP_HOME;
   providers.__resetRegistryForTest();
   providerRegistry().unregister('facebook');
   await providerRegistry().register({ descriptor: await facebookAdapter.describe(), adapter: facebookAdapter, pluginName: 'facebook' });
-  sourceMocks.provision.mockClear();
-  sourceMocks.provisionFacebook.mockClear();
-  sourceMocks.resolveGoogleAccount.mockReset();
-  sourceMocks.resolveGoogleAccount.mockResolvedValue({
-    providerAccountId: 'owner@example.com',
-    displayName: 'owner@example.com',
-  });
-  sourceMocks.resolveFacebookAccount.mockReset();
-  sourceMocks.resolveFacebookAccount.mockResolvedValue({
+  for (const { pluginName, adapter } of googleAdapters) {
+    const descriptor = await adapter.describe();
+    providerRegistry().unregister(descriptor.id);
+    await providerRegistry().register({ descriptor, adapter, pluginName });
+  }
+  sourceMocks.upsertSource.mockClear();
+  sourceMocks.resolveIdentity.mockReset();
+  sourceMocks.resolveIdentity.mockResolvedValue({
     providerAccountId: 'facebook-user-1',
     displayName: 'Owner One',
   });
@@ -243,7 +257,7 @@ describe('GET /api/oauth/callback', () => {
     expect(r.headers.get('location') ?? '').toContain('oauth_error=access_denied');
   });
 
-  it('returns a cancelled Google Workspace consent to Personal Vault settings', async () => {
+  it('returns a cancelled Google consent to Personal Vault settings', async () => {
     const response = await GET(new Request('http://x/api/oauth/callback?error=access_denied&state=google.valid'));
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_error=access_denied');
@@ -316,12 +330,10 @@ describe('GET /api/oauth/callback', () => {
     expect(exchangeCode).toHaveBeenCalledWith('authorization-code', { codeVerifier: 'persisted-verifier' });
   });
 
-  it('provisions one Google account without replacing another account token', async () => {
-    const cfgDir = join(TMP_HOME, 'harnesses/papercusp/plugin-configs');
-    const cfgPath = join(cfgDir, 'google-workspace.json');
-    await fs.mkdir(cfgDir, { recursive: true });
+  it('provisions every Google group source for one account without replacing another account token', async () => {
+    await fs.mkdir(join(TMP_HOME, 'harnesses/papercusp/plugin-configs'), { recursive: true });
     await fs.writeFile(
-      cfgPath,
+      googleConfigPath(),
       JSON.stringify({
         'other-private-field': 'keep-other-access',
         'other-private-field_refresh': 'keep-other-refresh',
@@ -332,73 +344,61 @@ describe('GET /api/oauth/callback', () => {
         id: '44444444-4444-4444-8444-444444444444',
         workspaceId: 'workspace-1',
         kind: 'gmail',
-        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        ownerUserId: OWNER,
         providerAccountId: 'other@example.com',
-        credentialRef: 'google-workspace:other-private-field',
+        credentialRef: 'provider:google:other-private-field',
         status: 'connected',
         config: {},
         cursor: { historyId: 'keep-other-cursor' },
       },
     ]);
-    providers.registerProvider({
-      id: 'google',
-      config: {
-        clientId: 'cid',
-        clientSecret: 'sec',
-        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        redirectUri: 'http://localhost:3055/api/oauth/callback',
-      },
-      buildAuthorizeUrl: () => '',
-      exchangeCode: async () => ({
-        accessToken: 'google-access',
-        refreshToken: 'google-refresh',
-        expiresAt: Date.now() + 60 * 60 * 1000,
-        scopes: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/calendar.events'],
-      }),
-      refresh: async () => ({ accessToken: 'unused' }),
-    });
+    sourceMocks.resolveIdentity.mockResolvedValue({ providerAccountId: 'owner@example.com', displayName: 'owner@example.com' });
+    registerGoogleProvider(async () => ({
+      accessToken: 'google-access',
+      refreshToken: 'google-refresh',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/calendar.events'],
+    }));
 
     const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'));
     expect(response.status).toBe(307);
-    expect(sourceMocks.provision).toHaveBeenCalledWith(sourceMocks.sql, {
-      workspaceId: 'workspace-1',
-      ownerUserId: '22222222-2222-4222-8222-222222222222',
-      providerAccountId: 'owner@example.com',
-      field: 'owner-22222222-2222-4222-8222-222222222222',
-      createdBy: 'owner:22222222-2222-4222-8222-222222222222',
-    });
-    const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
-    expect(cfg['owner-22222222-2222-4222-8222-222222222222']).toBe('google-access');
-    expect(cfg['owner-22222222-2222-4222-8222-222222222222_refresh']).toBe('google-refresh');
-    expect(cfg['owner-22222222-2222-4222-8222-222222222222_scopes']).toEqual([
+    expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=provider%3Agoogle');
+    // One grant, one source row per group member, all on the same field-keyed credential.
+    expect(upsertedKinds()).toEqual(GOOGLE_GROUP_KINDS);
+    for (const kind of GOOGLE_GROUP_KINDS) {
+      expect(sourceMocks.upsertSource).toHaveBeenCalledWith(
+        sourceMocks.sql,
+        expect.objectContaining({
+          workspaceId: 'workspace-1',
+          kind,
+          ownerUserId: OWNER,
+          providerAccountId: 'owner@example.com',
+          credentialRef: `provider:google:owner-${OWNER}`,
+          status: 'connected',
+          config: { accountLabel: 'owner@example.com' },
+          createdBy: `owner:${OWNER}`,
+        }),
+      );
+    }
+    const cfg = JSON.parse(await fs.readFile(googleConfigPath(), 'utf8'));
+    expect(cfg[`owner-${OWNER}`]).toBe('google-access');
+    expect(cfg[`owner-${OWNER}_refresh`]).toBe('google-refresh');
+    expect(cfg[`owner-${OWNER}_scopes`]).toEqual([
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/calendar.events',
     ]);
     expect(cfg['other-private-field']).toBe('keep-other-access');
     expect(cfg['other-private-field_refresh']).toBe('keep-other-refresh');
-    expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=google-workspace');
   });
 
   it('renders a no-store completion page after a successful external-browser flow', async () => {
-    providers.registerProvider({
-      id: 'google',
-      config: {
-        clientId: 'cid',
-        clientSecret: 'sec',
-        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        redirectUri: 'http://localhost:3055/api/oauth/callback',
-      },
-      buildAuthorizeUrl: () => '',
-      exchangeCode: async () => ({
-        accessToken: 'google-access',
-        refreshToken: 'google-refresh',
-        expiresAt: Date.now() + 60 * 60 * 1000,
-        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-      }),
-      refresh: async () => ({ accessToken: 'unused' }),
-    });
+    sourceMocks.resolveIdentity.mockResolvedValue({ providerAccountId: 'owner@example.com', displayName: 'owner@example.com' });
+    registerGoogleProvider(async () => ({
+      accessToken: 'google-access',
+      refreshToken: 'google-refresh',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    }));
 
     const response = await GET(
       new Request(
@@ -416,7 +416,7 @@ describe('GET /api/oauth/callback', () => {
     expect(html).toContain('close this tab and return to Papercusp');
     expect(html).not.toContain('authorization-code');
     expect(html).not.toContain('google-access');
-    expect(sourceMocks.provision).toHaveBeenCalledTimes(1);
+    expect(upsertedKinds()).toEqual(GOOGLE_GROUP_KINDS);
   });
 
   it('renders an escaped error page when an external-browser flow is denied', async () => {
@@ -434,253 +434,127 @@ describe('GET /api/oauth/callback', () => {
     expect(html).not.toContain('<script>alert(1)</script>');
   });
 
-  it('WI-129473: fails closed when an ADD-account consent comes back with an already-connected account', async () => {
-    // The pre-existing mismatch guard compares against `reconnectProviderAccountId`,
-    // so it only protects a RECONNECT. An add-account flow has no expected account,
-    // and before this guard a consent screen answered with the already-connected
-    // mailbox was written under the fresh field oauth/start had just allocated —
-    // a second credential slot pointing at the SAME mailbox, reported to the owner
-    // as a successful connection. Nothing surfaced the collision.
+  it('WI-129473: fails closed when an ADD-account Google consent comes back with an already-connected account', async () => {
+    // The mismatch guard compares against `reconnectProviderAccountId`, so it only
+    // protects a RECONNECT. An add-account flow has no expected account; without
+    // this guard a consent screen answered with the already-connected mailbox
+    // would be written under the fresh field oauth/start had just allocated — a
+    // second credential slot pointing at the SAME account.
     sourceMocks.listOwned.mockResolvedValue([
       {
         id: '44444444-4444-4444-8444-444444444444',
         workspaceId: 'workspace-1',
         kind: 'gmail',
-        ownerUserId: '22222222-2222-4222-8222-222222222222',
-        // identical to what resolveGoogleAccount returns for this consent
+        ownerUserId: OWNER,
+        // identical to what the identity endpoint returns for this consent
         providerAccountId: 'owner@example.com',
-        credentialRef: 'google-workspace:already-connected-field',
+        credentialRef: 'provider:google:already-connected-field',
         status: 'connected',
         config: {},
         cursor: { historyId: 'existing-cursor' },
       },
     ]);
-    providers.registerProvider({
-      id: 'google',
-      config: {
-        clientId: 'cid',
-        clientSecret: 'sec',
-        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        redirectUri: 'http://localhost:3055/api/oauth/callback',
-      },
-      buildAuthorizeUrl: () => '',
-      // a full, healthy token response — the defect is the ACCOUNT, not the token
-      exchangeCode: async () => ({
-        accessToken: 'google-access',
-        refreshToken: 'google-refresh',
-        expiresAt: Date.now() + 60 * 60 * 1000,
-        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-      }),
-      refresh: async () => ({ accessToken: 'unused' }),
-    });
+    sourceMocks.resolveIdentity.mockResolvedValue({ providerAccountId: 'owner@example.com', displayName: 'owner@example.com' });
+    // a full, healthy token response — the defect is the ACCOUNT, not the token
+    registerGoogleProvider(async () => ({
+      accessToken: 'google-access',
+      refreshToken: 'google-refresh',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    }));
 
     const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'));
 
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_error=google_workspace_account_already_connected',
+      'http://x/settings/personal-vault?oauth_error=provider_google_account_already_connected',
     );
     // the decisive assertion: nothing was provisioned, so no duplicate slot exists
-    expect(sourceMocks.provision).not.toHaveBeenCalled();
-  });
-
-  it('reconciles an ADD-account callback with a legacy Gmail cursor before duplicate detection', async () => {
-    const legacySources = [
-      {
-        id: '44444444-4444-4444-8444-444444444444',
-        workspaceId: 'workspace-1',
-        kind: 'gmail',
-        ownerUserId: '22222222-2222-4222-8222-222222222222',
-        providerAccountId: 'google-workspace:owner',
-        credentialRef: 'google-workspace:legacy-owner',
-        status: 'disabled',
-        config: {},
-        cursor: { emailAddress: 'Owner@Example.com' },
-      },
-      {
-        id: '55555555-5555-4555-8555-555555555555',
-        workspaceId: 'workspace-1',
-        kind: 'gcal',
-        ownerUserId: '22222222-2222-4222-8222-222222222222',
-        providerAccountId: 'google-workspace:owner',
-        credentialRef: 'google-workspace:legacy-owner',
-        status: 'disabled',
-        config: {},
-        cursor: {},
-      },
-    ];
-    const reconciledSources = legacySources.map((source) => ({
-      ...source,
-      providerAccountId: 'owner@example.com',
-    }));
-    sourceMocks.listOwned.mockResolvedValueOnce(legacySources).mockResolvedValueOnce(reconciledSources);
-
-    providers.registerProvider({
-      id: 'google',
-      config: {
-        clientId: 'cid',
-        clientSecret: 'sec',
-        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        redirectUri: 'http://localhost:3055/api/oauth/callback',
-      },
-      buildAuthorizeUrl: () => '',
-      exchangeCode: async () => ({
-        accessToken: 'google-access',
-        refreshToken: 'google-refresh',
-        expiresAt: Date.now() + 60 * 60 * 1000,
-        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-      }),
-      refresh: async () => ({ accessToken: 'unused' }),
-    });
-
-    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'));
-
-    expect(response.status).toBe(307);
-    expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=google-workspace');
-    expect(sourceMocks.renameAccount).toHaveBeenCalledWith(sourceMocks.sql, {
-      workspaceId: 'workspace-1',
-      ownerUserId: '22222222-2222-4222-8222-222222222222',
-      previousProviderAccountId: 'google-workspace:owner',
-      providerAccountId: 'owner@example.com',
-    });
-    expect(sourceMocks.provision).toHaveBeenCalledWith(
-      sourceMocks.sql,
-      expect.objectContaining({ providerAccountId: 'owner@example.com' }),
-    );
+    expect(sourceMocks.upsertSource).not.toHaveBeenCalled();
   });
 
   it('WI-129473: fails closed when a NEW Google account arrives without a refresh token', async () => {
     // access_type=offline only yields a refresh_token on a genuine consent. If
     // Google satisfies the request from an existing grant, the response carries an
     // access token alone — which expires within the hour with nothing to renew it.
-    // Persisting that is strictly worse than refusing: the owner is told the
-    // account connected, and it stops working later for no visible reason.
-    sourceMocks.listOwned.mockResolvedValue([]);
-    providers.registerProvider({
-      id: 'google',
-      config: {
-        clientId: 'cid',
-        clientSecret: 'sec',
-        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        redirectUri: 'http://localhost:3055/api/oauth/callback',
-      },
-      buildAuthorizeUrl: () => '',
-      exchangeCode: async () => ({
-        accessToken: 'google-access',
-        // no refreshToken — the incremental-auth outcome
-        expiresAt: Date.now() + 60 * 60 * 1000,
-        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-      }),
-      refresh: async () => ({ accessToken: 'unused' }),
-    });
+    sourceMocks.resolveIdentity.mockResolvedValue({ providerAccountId: 'owner@example.com', displayName: 'owner@example.com' });
+    registerGoogleProvider(async () => ({
+      accessToken: 'google-access',
+      // no refreshToken — the incremental-auth outcome
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    }));
 
     const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'));
 
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_error=google_workspace_refresh_token_missing',
+      'http://x/settings/personal-vault?oauth_error=provider_google_refresh_token_missing',
     );
-    expect(sourceMocks.provision).not.toHaveBeenCalled();
+    expect(sourceMocks.upsertSource).not.toHaveBeenCalled();
   });
 
   it('adopts a canonical Google account identity in place for a provisional reconnect', async () => {
+    // A source adopted from the legacy plugin (D-037) can still carry a provisional
+    // `provider:google:<field>` account id; the first reconnect replaces it in place.
     sourceMocks.listOwned.mockResolvedValue([
       {
         id: '11111111-1111-4111-8111-111111111111',
         workspaceId: 'workspace-1',
         kind: 'gmail',
-        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        ownerUserId: OWNER,
         providerAccountId: 'owner@example.com',
-        credentialRef: 'google-workspace:legacy-field',
+        credentialRef: 'provider:google:legacy-field',
         status: 'connected',
         config: {},
         cursor: { historyId: 'keep-me' },
       },
     ]);
-    providers.registerProvider({
-      id: 'google',
-      config: {
-        clientId: 'cid',
-        clientSecret: 'sec',
-        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        redirectUri: 'http://localhost:3055/api/oauth/callback',
-      },
-      buildAuthorizeUrl: () => '',
-      exchangeCode: async () => ({ accessToken: 'google-access' }),
-      refresh: async () => ({ accessToken: 'unused' }),
-    });
+    sourceMocks.resolveIdentity.mockResolvedValue({ providerAccountId: 'owner@example.com', displayName: 'owner@example.com' });
+    registerGoogleProvider(async () => ({ accessToken: 'google-access' }));
 
     const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.legacy'));
     expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=provider%3Agoogle');
     expect(sourceMocks.renameAccount).toHaveBeenCalledWith(sourceMocks.sql, {
       workspaceId: 'workspace-1',
-      ownerUserId: '22222222-2222-4222-8222-222222222222',
-      previousProviderAccountId: 'google-workspace:legacy-field',
+      ownerUserId: OWNER,
+      previousProviderAccountId: 'provider:google:legacy-field',
       providerAccountId: 'owner@example.com',
     });
-    expect(sourceMocks.provision).toHaveBeenCalledWith(
+    expect(sourceMocks.upsertSource).toHaveBeenCalledWith(
       sourceMocks.sql,
-      expect.objectContaining({ providerAccountId: 'owner@example.com', field: 'legacy-field' }),
+      expect.objectContaining({ kind: 'gmail', providerAccountId: 'owner@example.com', credentialRef: 'provider:google:legacy-field' }),
     );
   });
 
   it('fails closed when a targeted Google reconnect authenticates a different canonical account', async () => {
-    sourceMocks.resolveGoogleAccount.mockResolvedValue({
+    sourceMocks.resolveIdentity.mockResolvedValue({
       providerAccountId: 'other@example.com',
       displayName: 'other@example.com',
     });
-    providers.registerProvider({
-      id: 'google',
-      config: {
-        clientId: 'cid',
-        clientSecret: 'sec',
-        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        redirectUri: 'http://localhost:3055/api/oauth/callback',
-      },
-      buildAuthorizeUrl: () => '',
-      exchangeCode: async () => ({ accessToken: 'must-not-store' }),
-      refresh: async () => ({ accessToken: 'unused' }),
-    });
+    registerGoogleProvider(async () => ({ accessToken: 'must-not-store' }));
 
     const response = await GET(
       new Request('http://x/api/oauth/callback?code=authorization-code&state=google.mismatch'),
     );
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_error=google_workspace_account_mismatch',
+      'http://x/settings/personal-vault?oauth_error=provider_google_account_mismatch',
     );
     expect(sourceMocks.renameAccount).not.toHaveBeenCalled();
-    expect(sourceMocks.provision).not.toHaveBeenCalled();
-    await expect(
-      fs.access(join(TMP_HOME, 'harnesses/papercusp/plugin-configs/google-workspace.json')),
-    ).rejects.toThrow();
+    expect(sourceMocks.upsertSource).not.toHaveBeenCalled();
+    await expect(fs.access(googleConfigPath())).rejects.toThrow();
   });
 
-  it('fails closed when a Google Workspace callback lacks server-owned identity context', async () => {
+  it('fails closed when a Google callback lacks server-owned identity context', async () => {
     const exchangeCode = vi.fn(async () => ({ accessToken: 'must-not-store' }));
-    providers.registerProvider({
-      id: 'google',
-      config: {
-        clientId: 'cid',
-        clientSecret: 'sec',
-        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        redirectUri: 'http://localhost:3055/api/oauth/callback',
-      },
-      buildAuthorizeUrl: () => '',
-      exchangeCode,
-      refresh: async () => ({ accessToken: 'unused' }),
-    });
+    registerGoogleProvider(exchangeCode);
 
     const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.missing'));
     expect(response.status).toBe(400);
     expect(exchangeCode).not.toHaveBeenCalled();
-    expect(sourceMocks.provision).not.toHaveBeenCalled();
+    expect(sourceMocks.upsertSource).not.toHaveBeenCalled();
   });
 
   it('stores one Facebook account without replacing another account token or source', async () => {
@@ -732,7 +606,7 @@ describe('GET /api/oauth/callback', () => {
     expect(response.headers.get('location')).toBe(
       'http://x/settings/personal-vault?oauth_connected=provider%3Afacebook',
     );
-    expect(sourceMocks.provisionFacebook).toHaveBeenCalledWith(sourceMocks.sql, {
+    expect(sourceMocks.upsertSource).toHaveBeenCalledWith(sourceMocks.sql, {
       workspaceId: 'workspace-1',
       ownerUserId: '22222222-2222-4222-8222-222222222222',
       providerAccountId: 'facebook-user-1',
@@ -763,7 +637,7 @@ describe('GET /api/oauth/callback', () => {
         workspaceId: 'workspace-1',
         kind: 'facebook',
         ownerUserId: '22222222-2222-4222-8222-222222222222',
-        // identical to what resolveFacebookAccount returns for this consent
+        // identical to what resolveIdentity returns for this consent
         providerAccountId: 'facebook-user-1',
         credentialRef: 'provider:facebook:already-connected-field',
         status: 'connected',
@@ -797,11 +671,11 @@ describe('GET /api/oauth/callback', () => {
     expect(response.headers.get('location')).toBe(
       'http://x/settings/personal-vault?oauth_error=provider_facebook_account_already_connected',
     );
-    expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();
+    expect(sourceMocks.upsertSource).not.toHaveBeenCalled();
   });
 
   it('fails closed when a targeted Facebook reconnect authenticates a different account', async () => {
-    sourceMocks.resolveFacebookAccount.mockResolvedValue({
+    sourceMocks.resolveIdentity.mockResolvedValue({
       providerAccountId: 'facebook-user-2',
       displayName: 'Owner Two',
     });
@@ -827,7 +701,7 @@ describe('GET /api/oauth/callback', () => {
       'http://x/settings/personal-vault?oauth_error=provider_facebook_account_mismatch',
     );
     expect(sourceMocks.renameAccount).not.toHaveBeenCalled();
-    expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();
+    expect(sourceMocks.upsertSource).not.toHaveBeenCalled();
     await expect(
       fs.access(join(TMP_HOME, 'harnesses/papercusp/plugin-configs/provider:facebook.json')),
     ).rejects.toThrow();
@@ -854,6 +728,6 @@ describe('GET /api/oauth/callback', () => {
     );
     expect(response.status).toBe(400);
     expect(exchangeCode).not.toHaveBeenCalled();
-    expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();
+    expect(sourceMocks.upsertSource).not.toHaveBeenCalled();
   });
 });

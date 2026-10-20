@@ -4,17 +4,16 @@
  * host.fetch.
  *
  * The connector sync driver failed every Google source with
- * `host.fetch: no access token for source "…"` because the google-workspace
- * connection adapter was registered only by the OAuth start/callback routes.
- * This file deliberately imports NO OAuth route module: importing one registers
- * the built-in adapters as a side effect, which is exactly what hid the defect
- * from connection-lifecycle.integration.test.ts.
+ * `host.fetch: no access token for source "…"` because the (since removed)
+ * first-party google-workspace connection adapter was registered only by the
+ * OAuth start/callback routes. Google is now the `provider:google` descriptor
+ * credential group (provider-adapters-to-packages-2026-10-11 D-036), whose
+ * adapter is derived from the registered packages. This file still deliberately
+ * imports NO OAuth route module, so a route-only registration would fail here.
  *
- * The second case covers the same defect one step later: once the adapter
- * resolved, an EXPIRED token failed with
- * `google_workspace_oauth_provider_not_registered`, because the `google` OAuth
- * provider was loaded from its client file only by OAuth routes and the
- * retired legacy Google poll routines.
+ * The second case covers the same defect one step later: an EXPIRED token must
+ * refresh even though no OAuth route has registered the `provider:google` OAuth
+ * provider in this process.
  */
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -26,7 +25,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { ProviderAdapter, ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../external-triggers/google-workspace';
 import { __resetRegistryForTest, getProvider } from '../oauth/providers';
 import { connectionAdapterForPlugin } from './connection-lifecycle';
 import { clearProviderCredential, providerSetupStoreKey, saveProviderCredentials } from './provider-credentials';
@@ -37,6 +35,8 @@ const WS = 'source-host-fetch-builtin-test';
 const HARNESS = 'papercusp';
 const PLUGIN_NAME = 'source-host-fetch-builtin-test-plugin';
 const PROVIDER_ID = 'gcal';
+/** The `google` credential group's OAuth plugin (provider-adapters-to-packages-2026-10-11 D-036). */
+const GOOGLE_PLUGIN = 'provider:google';
 const FIELD = 'owner-fixture-account';
 const STORED_TOKEN = 'stored-google-access-token';
 const EXPIRED_FIELD = 'expired-fixture-account';
@@ -55,6 +55,8 @@ const descriptor: ProviderDescriptor = {
     tokenUrl: 'https://oauth2.googleapis.com/token',
     scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
     pkce: true,
+    clientRegistrationRef: 'google',
+    credentialGroup: 'google',
   },
 };
 
@@ -82,19 +84,20 @@ beforeAll(async () => {
   previousRedirect = process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI;
   home = await fs.mkdtemp(join(tmpdir(), 'paperhome-source-host-fetch-builtin-'));
   process.env.PAPERCUSP_HOME = home;
-  // The Google Desktop client file lives under the OS home directory; point it
-  // at the fixture so the test never reads the developer's real credential.
+  // Point the OS home at the fixture too, so nothing can read the developer's real credentials.
   process.env.HOME = home;
   process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI = 'http://127.0.0.1:3070/api/oauth/callback';
-  await fs.mkdir(join(home, '.config', 'papercusp'), { recursive: true });
+  // The group's OAuth client registration, read host-side by clientRegistrationRef `google`.
   await fs.writeFile(
-    join(home, '.config', 'papercusp', 'google-oauth-client.json'),
-    JSON.stringify({ installed: { client_id: 'fixture-client', client_secret: 'fixture-secret', token_uri: GOOGLE_TOKEN_URL } }),
+    join(home, 'oauth-apps.json'),
+    JSON.stringify({
+      google: { clientId: 'fixture-client', clientSecret: 'fixture-secret', redirectUri: 'http://127.0.0.1:3070/api/oauth/callback' },
+    }),
   );
   const configDir = join(home, 'harnesses', HARNESS, 'plugin-configs');
   await fs.mkdir(configDir, { recursive: true });
   await fs.writeFile(
-    join(configDir, `${GOOGLE_WORKSPACE_OAUTH_PLUGIN}.json`),
+    join(configDir, `${GOOGLE_PLUGIN}.json`),
     JSON.stringify({
       [FIELD]: STORED_TOKEN,
       [`${FIELD}_expires_at`]: Date.now() + 3_600_000,
@@ -117,7 +120,7 @@ beforeAll(async () => {
       (workspace_id, id, kind, sync_mode, scope, status, credential_ref, owner_user_id, provider_account_id)
     VALUES
       (${WS}, ${sourceId}, ${PROVIDER_ID}, 'poll', 'personal', 'connected',
-       ${`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:${FIELD}`}, ${ownerUserId}, 'owner@example.com')`;
+       ${`${GOOGLE_PLUGIN}:${FIELD}`}, ${ownerUserId}, 'owner@example.com')`;
 
   expiredSourceId = randomUUID();
   await sql`
@@ -125,7 +128,7 @@ beforeAll(async () => {
       (workspace_id, id, kind, sync_mode, scope, status, credential_ref, owner_user_id, provider_account_id)
     VALUES
       (${WS}, ${expiredSourceId}, ${PROVIDER_ID}, 'poll', 'personal', 'connected',
-       ${`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:${EXPIRED_FIELD}`}, ${ownerUserId}, 'expired@example.com')`;
+       ${`${GOOGLE_PLUGIN}:${EXPIRED_FIELD}`}, ${ownerUserId}, 'expired@example.com')`;
 
   const registry = providerRegistry();
   registry.unregisterPlugin(PLUGIN_NAME);
@@ -146,10 +149,11 @@ afterAll(async () => {
 }, 300_000);
 
 describe('production host.fetch in a process that never served an OAuth route', () => {
-  it('injects the stored Google token for a google-workspace credential ref', async () => {
-    // Precondition: nothing in this process has registered the built-in
-    // adapters, so this reproduces the connector driver's fresh process.
-    expect(connectionAdapterForPlugin(GOOGLE_WORKSPACE_OAUTH_PLUGIN)).toBeNull();
+  it('injects the stored Google token for a provider:google credential ref', async () => {
+    // Precondition: no OAuth route module is imported, so the connection adapter
+    // exists only because it is derived from the registered package itself —
+    // exactly what the connector driver's fresh process has.
+    expect(connectionAdapterForPlugin(GOOGLE_PLUGIN)?.sourceKinds).toContain(PROVIDER_ID);
 
     const seen: Array<string | null> = [];
     const hostFetch = createSourceHostFetch(sql, {
@@ -172,10 +176,11 @@ describe('production host.fetch in a process that never served an OAuth route', 
   });
 
   it('refreshes an expired Google token without an OAuth route having loaded the provider', async () => {
-    // Precondition: the `google` OAuth provider is not registered, as in a
-    // bg-host that has never served an OAuth route.
+    // Precondition: no `provider:google` OAuth provider is registered, as in a
+    // bg-host that has never served an OAuth route; refresh must build it from the
+    // package descriptor and the host-side client registration.
     __resetRegistryForTest();
-    expect(getProvider('google')).toBeNull();
+    expect(getProvider(GOOGLE_PLUGIN)).toBeNull();
 
     const tokenRequests: string[] = [];
     vi.stubGlobal('fetch', (async (url: string | URL | Request, init?: RequestInit) => {
@@ -234,7 +239,7 @@ describe('production host.fetch for a provider offering OAuth and a pasted crede
 
   beforeAll(async () => {
     const configDir = join(home, 'harnesses', HARNESS, 'plugin-configs');
-    const tokenFile = join(configDir, `${GOOGLE_WORKSPACE_OAUTH_PLUGIN}.json`);
+    const tokenFile = join(configDir, `${GOOGLE_PLUGIN}.json`);
     const tokens = JSON.parse(await fs.readFile(tokenFile, 'utf8')) as Record<string, unknown>;
     await fs.writeFile(
       tokenFile,
@@ -255,7 +260,7 @@ describe('production host.fetch for a provider offering OAuth and a pasted crede
         (workspace_id, id, kind, sync_mode, scope, status, credential_ref, owner_user_id, provider_account_id)
       VALUES
         (${WS}, ${oauthSourceId}, ${PAT_PROVIDER_ID}, 'poll', 'personal', 'connected',
-         ${`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:${OWN_FIELD}`}, ${ownerUserId}, 'oauth@example.com'),
+         ${`${GOOGLE_PLUGIN}:${OWN_FIELD}`}, ${ownerUserId}, 'oauth@example.com'),
         (${WS}, ${pastedSourceId}, ${PAT_PROVIDER_ID}, 'poll', 'personal', 'connected',
          ${providerSetupStoreKey(PAT_PROVIDER_ID)}, ${ownerUserId}, 'pasted@example.com')`;
     const registry = providerRegistry();

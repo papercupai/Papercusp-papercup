@@ -24,7 +24,10 @@
  *      (clearExternalBlockersOnLockedRow, shared with event settlement).
  *   2. After commit, un-park a feature-family item that `set_blocker` parked
  *      and that now has no active blocker (the same restore set_blocker does on
- *      a manual clear), then message and wake the item's holder.
+ *      a manual clear), refresh the claimable views, then message and wake the
+ *      item's holder. That follow-up ({@link followUpSystemClears}) is shared by
+ *      every system clear: announced-event settlement, durable-park settlement
+ *      and the blocker re-check sweep call it too (event-wait-settlement-2026-10-20 P-003).
  *
  * Only `live-dependency` blockers are eligible. An owner-capability ask
  * (credential, device, external action, product decision) or an approval that
@@ -107,15 +110,40 @@ export function planWorkItemRefBlockerClears(
   return out;
 }
 
-export interface AutoClearedBlockerItem {
+/** One wait a system path cleared: a typed external blocker, or a durable claim park. */
+export interface SystemBlockerClear {
+  kind: ExternalBlockerKind | 'durable-park';
+  ref: string;
+  evidence: string;
+  /** Work items the ref named that ended without being finished (work-item-ref clears only). */
+  endedWithoutDone?: readonly string[];
+}
+
+/**
+ * An item a system path changed, described after its transaction committed: the input of
+ * the shared follow-up ({@link followUpAutoClearedBlockers}). Every path that clears a wait
+ * without an agent's call builds one — this module's work-item-ref auto-clear, announced
+ * event settlement (reconcileEventExternalBlockers), durable-park settlement
+ * (reconcileEventDurableParks) and the blocker re-check sweep (work-item-blocker-reaper.ts).
+ * Plan event-wait-settlement-2026-10-20 P-003 (Design 3).
+ */
+export interface SystemClearedBlockerItem {
   workspaceId: string;
   featureId: string;
   harnessSlug: string | null;
   family: 'feature' | 'issue';
+  /** Lifecycle state once the clear committed. */
   status: string | null;
+  /** Who is told: the claimant, or for an unclaimed durable park the agent that parked it. */
   holder: string | null;
   restored: boolean;
   activeRemaining: number;
+  cleared: SystemBlockerClear[];
+  /** The `clearedBy` stamped on the records. Absent means this module's work-item-ref clear. */
+  clearedBy?: string;
+}
+
+export interface AutoClearedBlockerItem extends SystemClearedBlockerItem {
   cleared: PlannedBlockerClear[];
 }
 
@@ -219,27 +247,43 @@ export interface BlockerAutoClearFollowUpDeps {
   }) => Promise<unknown>;
   /** Wake the holder's session so it takes a turn on the message. */
   wake: (input: { workspaceId: string; to: string; summary: string }) => Promise<unknown>;
+  /** Refresh the work views that show what is claimable (the item just changed claimability). */
+  invalidate: (input: { workspaceId: string; harnessSlug: string | null }) => Promise<unknown>;
 }
+
+/**
+ * The sync queries that list claimable work (the Work tab's item list and its counts).
+ * The work_items row trigger already bridges to these; the follow-up also pushes them from
+ * the producer side, as the admission routines do for their ledger, so an open panel
+ * converges on the release even where trigger delivery lags.
+ */
+export const CLAIMABLE_WORK_QUERY_NAMES = ['workItems.byHarness', 'workItems.summary'] as const;
 
 export interface BlockerAutoClearFollowUp {
   featureId: string;
   unparked: boolean | null;
+  invalidated: boolean;
   notified: boolean;
   woken: boolean;
   errors: string[];
 }
 
-function describeClear(item: AutoClearedBlockerItem): { summary: string; body: string } {
+function describeClear(item: SystemClearedBlockerItem): { summary: string; body: string } {
   const refs = item.cleared.map((c) => c.ref).join('; ');
-  const summary = `Blocker cleared on ${item.featureId}: ${refs} (${item.cleared.map((c) => c.evidence.replace(/^auto-cleared: /, '')).join('; ')})`;
+  const noun = item.cleared.every((c) => c.kind === 'durable-park') ? 'Park released' : 'Blocker cleared';
+  const summary = `${noun} on ${item.featureId}: ${refs} (${item.cleared.map((c) => c.evidence.replace(/^auto-cleared: /, '')).join('; ')})`;
+  const opening =
+    item.clearedBy === undefined
+      ? `A work item your blocker on ${item.featureId} was waiting on has reached a terminal state, so the blocker was cleared automatically (history kept on the item, clearedBy ${BLOCKER_AUTO_CLEAR_ACTOR}).`
+      : `The condition ${item.featureId} was waiting on has been met, so the system cleared the wait (history kept on the item, clearedBy ${item.clearedBy}).`;
   const lines = [
-    `A work item your blocker on ${item.featureId} was waiting on has reached a terminal state, so the blocker was cleared automatically (history kept on the item, clearedBy ${BLOCKER_AUTO_CLEAR_ACTOR}).`,
-    ...item.cleared.map((c) => `- ${c.kind} blocker "${c.ref}": ${c.evidence}`),
+    opening,
+    ...item.cleared.map((c) => `- ${c.kind === 'durable-park' ? 'durable park' : `${c.kind} blocker`} "${c.ref}": ${c.evidence}`),
     item.activeRemaining === 0
       ? `No active blocker remains on ${item.featureId}.`
       : `${item.activeRemaining} other active blocker(s) still hold ${item.featureId}; read them with work_items:get.`,
   ];
-  const endedWithoutDone = [...new Set(item.cleared.flatMap((c) => c.endedWithoutDone))];
+  const endedWithoutDone = [...new Set(item.cleared.flatMap((c) => c.endedWithoutDone ?? []))];
   if (endedWithoutDone.length > 0) {
     lines.push(
       `${endedWithoutDone.join(', ')} ended without being finished (dropped, deprecated or closed): check whether ${item.featureId} still makes sense before you continue.`,
@@ -249,13 +293,15 @@ function describeClear(item: AutoClearedBlockerItem): { summary: string; body: s
 }
 
 /**
- * The post-commit half: un-park feature-family items with nothing left to wait
- * on, then message and wake each holder. Every step is fail-soft per item —
- * the clear already committed, and the next terminal transition or the holder
- * reading the item is the backstop for anything that failed here.
+ * The post-commit half, shared by every system clear (event-wait-settlement-2026-10-20
+ * P-003): un-park feature-family items with nothing left to wait on, refresh the
+ * claimable views when an item's last wait is gone, then message and wake each holder.
+ * Every step is fail-soft per item — the clear already committed, and the next terminal
+ * transition, the re-check sweep or the holder reading the item is the backstop for
+ * anything that failed here.
  */
 export async function followUpAutoClearedBlockers(
-  items: readonly AutoClearedBlockerItem[],
+  items: readonly SystemClearedBlockerItem[],
   deps: BlockerAutoClearFollowUpDeps,
 ): Promise<BlockerAutoClearFollowUp[]> {
   const results: BlockerAutoClearFollowUp[] = [];
@@ -263,6 +309,7 @@ export async function followUpAutoClearedBlockers(
     const result: BlockerAutoClearFollowUp = {
       featureId: item.featureId,
       unparked: null,
+      invalidated: false,
       notified: false,
       woken: false,
       errors: [],
@@ -274,6 +321,14 @@ export async function followUpAutoClearedBlockers(
       } catch (err) {
         result.unparked = false;
         result.errors.push(`unpark: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (item.activeRemaining === 0) {
+      try {
+        await deps.invalidate({ workspaceId: item.workspaceId, harnessSlug: item.harnessSlug });
+        result.invalidated = true;
+      } catch (err) {
+        result.errors.push(`invalidate: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     if (item.holder) {
@@ -321,7 +376,31 @@ export function productionBlockerAutoClearFollowUpDeps(): BlockerAutoClearFollow
       const { wakeRecipients } = await import('./agent-tools/coordination/inbox-wake');
       return wakeRecipients([to], { summary, source: BLOCKER_AUTO_CLEAR_ACTOR, workspaceId });
     },
+    invalidate: async () => {
+      const { notifySyncInvalidate } = await import('./sync-sse');
+      await Promise.all(CLAIMABLE_WORK_QUERY_NAMES.map((name) => notifySyncInvalidate(name)));
+    },
   };
+}
+
+/**
+ * The follow-up as the settlement paths call it, after their transaction committed: never
+ * throws, so a failed message or wake can never fail the emit, retirement or sweep that
+ * cleared the wait.
+ */
+export async function followUpSystemClears(
+  items: readonly SystemClearedBlockerItem[],
+  deps: BlockerAutoClearFollowUpDeps = productionBlockerAutoClearFollowUpDeps(),
+): Promise<BlockerAutoClearFollowUp[]> {
+  if (items.length === 0) return [];
+  try {
+    return await followUpAutoClearedBlockers(items, deps);
+  } catch (err) {
+    console.warn(
+      `[system-clear-follow-up] ! ${items.map((i) => i.featureId).join(',')}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
 }
 
 /** Clear and follow up, for the `work-item.clearBlockersNamingFinished` built-in action. */

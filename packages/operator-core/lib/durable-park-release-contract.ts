@@ -56,26 +56,21 @@ export function parseEventInstantMs(text: string | null | undefined): number | n
 }
 
 /** EI-25664119449929994: a FIRED trigger certifies a release condition only when the fire
- * postdates the park and is not the parked item's own lifecycle event. Measured 2026-10-11:
- * all 9 live parks labelled satisfied-still-parked carried a latch that fired BEFORE the
- * park was written (the writer read the key's lifetime latch at park time), and 5 of them
- * were `work-item:status:<own id>`, which fires on any transition of the item, the parker's
- * own included. Returns why the fire cannot certify, or null when it can. `parkedAtMs` null
- * skips the ordering check (no park time on record). */
+ * postdates the park. Measured 2026-10-11: all 9 live parks labelled satisfied-still-parked
+ * carried a latch that fired BEFORE the park was written (the writer read the key's lifetime
+ * latch at park time). Returns why the fire cannot certify, or null when it can. `parkedAtMs`
+ * null skips the ordering check (no park time on record).
+ *
+ * Which KEYS can certify at all is not decided here: both callers first require
+ * `fireCertifiesCondition` (external-condition-reachability.ts), which refuses every change
+ * notification — the 5 measured `work-item:status:<own id>` parks included — so this only
+ * orders a completion key's fire against the park (event-wait-settlement-2026-10-20 P-001). */
 export function firedTriggerCannotCertify(input: {
   trigger: string;
-  parkId?: string | null;
   firedAt: string | null | undefined;
   parkedAtMs: number | null;
 }): string | null {
   const trigger = input.trigger.trim();
-  const id = input.parkId?.trim();
-  // Only the GENERIC status key is self-fulfilling: it fires on every transition of the item,
-  // the parker's own included. A specific transition (work-item:unblocked:<own id>) still names
-  // exactly one condition and keeps its stamp; the own terminal event is handled upstream.
-  if (id && trigger === `work-item:status:${id}`) {
-    return `trigger "${trigger}" is the parked item's own status event; it fires on any transition of the item (the park's own included), so it can wake a re-evaluation but cannot establish the release condition. Name a subject-bound trigger for the condition itself`;
-  }
   if (input.parkedAtMs == null) return null;
   const firedMs = parseEventInstantMs(input.firedAt);
   if (firedMs == null) {
@@ -132,7 +127,6 @@ export async function buildDurableParkReleaseContract(
   const uncertified = reachability.basis === 'fired'
     ? firedTriggerCannotCertify({
         trigger: input.trigger,
-        parkId: input.parkId,
         firedAt: reachability.firedAt,
         parkedAtMs: Number.isFinite(parsedParkedAt) ? parsedParkedAt : Date.now(),
       })

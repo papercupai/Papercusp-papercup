@@ -1049,6 +1049,18 @@ describe('ptool call deadlines', () => {
 
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-26150958178632417: resumeAdmission performs durable recovery before
+    // assignment/wake; both direct and deferred calls must outlive ptool's
+    // ordinary 30s cutoff so a typed refusal or queued receipt is observable.
+    const dispatchArgs = {
+      to: 'su-resume-target',
+      harness: 'papercusp',
+      workItemIds: ['EI-resume-timeout-regression'],
+      resumeAdmission: true,
+    };
+    expect(timeoutForTool('coord:dispatch', dispatchArgs)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'coord:dispatch', args: dispatchArgs }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-22598752399389413: coord:wake has no explicit timeoutSec and its
     // bounded roster + target phases can legitimately approach the MCP
     // transport floor. Cover both routes so it cannot regress to ptool's

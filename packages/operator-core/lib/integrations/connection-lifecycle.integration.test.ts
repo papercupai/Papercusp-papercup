@@ -3,8 +3,9 @@
  * generalized-integrations-google-migration-cupboard-workflows-2026-10-05).
  *
  * Drives the REAL OAuth callback route for a descriptor provider credential
- * group (two providers sharing one grant) and for the first-party Google
- * Workspace adapter. Only the network edge is faked: the token and identity
+ * group (two providers sharing one grant) and for the real Google package group
+ * (`provider:google`: gmail, gcal, contacts, youtube — provider-adapters-to-packages-2026-10-11
+ * D-036). Only the network edge is faked: the token and identity
  * endpoints answer through a stubbed global fetch, and the signed state store
  * is replaced by an in-memory map so each test controls its claims and
  * server-held flow context. Source rows, cursors, bindings and the token file
@@ -47,8 +48,8 @@ vi.mock('../oauth/state', async (orig) => ({
 
 import callbackRoute from '../endpoint-route/routes/oauth/callback';
 import { fsTokenStorage } from '../oauth/storage-fs';
-import { GOOGLE_WORKSPACE_SCOPES, __resetRegistryForTest, registerProvider } from '../oauth/providers';
-import { GOOGLE_GMAIL_PROFILE_ENDPOINT, GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../external-triggers/google-workspace';
+import { __resetRegistryForTest } from '../oauth/providers';
+import { createRequire } from 'node:module';
 /** An ordinary hive harness for the fixture; nothing here depends on its name. */
 const GMAIL_RESPOND_DRAFT_HARNESS = 'email';
 import { providerRegistry } from './provider-registry';
@@ -56,6 +57,7 @@ import { saveOAuthClientRegistration } from './oauth-client-registration';
 import { createSourceHostFetch } from './source-host-fetch';
 import { settableTicketConfigKeys, summarizeIntegrationProvider } from './ticket-integrations';
 import {
+  adoptLegacyProviderCredentials,
   connectionAdapterFor,
   connectionAdapterForPlugin,
   connectionAccessToken,
@@ -72,6 +74,16 @@ const PLUGIN = `provider:${GROUP}`;
 const PROVIDER_PLUGIN_NAME = 'fake-suite-plugin';
 const TOKEN_URL = 'https://auth.example-mail.test/token';
 const IDENTITY_URL = 'https://api.example-mail.test/me';
+const GOOGLE_PLUGIN = 'provider:google';
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const GOOGLE_REQUESTED_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/contacts.readonly',
+];
+/** Every package in the `google` credential group, loaded from the real package sources. */
+const GOOGLE_GROUP_PACKAGES = ['gmail', 'google-calendar', 'google-contacts', 'youtube'] as const;
+const requirePlugin = createRequire(import.meta.url);
 /** A GraphQL-shaped identity request (linear-asana-task-sync P-004): the host must POST this body. */
 const IDENTITY_BODY = JSON.stringify({ query: '{ viewer { id } }' });
 
@@ -95,7 +107,7 @@ interface SourceRow {
 
 const net = {
   account: { id: 'acct-1', name: 'Alpha' },
-  gmailEmail: 'owner@example.com',
+  googleEmail: 'owner@example.com',
   refreshError: null as string | null,
   tokenSeq: 0,
 };
@@ -153,7 +165,21 @@ async function fakeFetch(input: string | URL | Request, init?: RequestInit): Pro
     if (init?.method !== 'POST' || init?.body !== IDENTITY_BODY) return new Response('method not allowed', { status: 405 });
     return Response.json({ id: net.account.id, profile: { name: net.account.name } });
   }
-  if (href === GOOGLE_GMAIL_PROFILE_ENDPOINT) return Response.json({ emailAddress: net.gmailEmail });
+  if (href === GOOGLE_TOKEN_URL) {
+    net.tokenSeq += 1;
+    return Response.json({
+      access_token: `google-access-${net.tokenSeq}`,
+      refresh_token: `google-refresh-${net.tokenSeq}`,
+      expires_in: 3600,
+      scope: GOOGLE_REQUESTED_SCOPES.join(' '),
+    });
+  }
+  // The group's identity is read from the declared endpoint of whichever member holds it;
+  // every Google member that declares one resolves the same mailbox address here.
+  if (href === 'https://www.googleapis.com/calendar/v3/calendars/primary') {
+    return Response.json({ id: net.googleEmail, summary: net.googleEmail });
+  }
+  if (href === 'https://gmail.googleapis.com/gmail/v1/users/me/profile') return Response.json({ emailAddress: net.googleEmail });
   throw new Error(`unexpected fetch ${href}`);
 }
 
@@ -189,11 +215,12 @@ function descriptorConnect(field: string, reconnectProviderAccountId?: string) {
 
 function googleConnect(field: string, reconnectProviderAccountId?: string) {
   return runCallback(
-    { plugin: GOOGLE_WORKSPACE_OAUTH_PLUGIN, harness: HARNESS, field, provider: 'google', providerHost: 'accounts.google.com' },
+    { plugin: GOOGLE_PLUGIN, harness: HARNESS, field, provider: GOOGLE_PLUGIN, providerHost: 'accounts.google.com' },
     {
       ownerUserId: userId,
       workspaceId: WS,
-      requestedScopes: JSON.stringify([...GOOGLE_WORKSPACE_SCOPES]),
+      codeVerifier: 'verifier-'.padEnd(60, 'x'),
+      requestedScopes: JSON.stringify(GOOGLE_REQUESTED_SCOPES),
       ...(reconnectProviderAccountId ? { reconnectProviderAccountId } : {}),
     },
   );
@@ -249,10 +276,17 @@ beforeAll(async () => {
   ]) {
     await registry.register({ descriptor: d, adapter: adapter(d), pluginName: PROVIDER_PLUGIN_NAME });
   }
+  for (const pluginName of GOOGLE_GROUP_PACKAGES) {
+    const packageAdapter = requirePlugin(`../../../../libs/papercusp/plugins/${pluginName}/index.cjs`).providerAdapter as ProviderAdapter;
+    const d = await packageAdapter.describe();
+    registry.unregister(d.id);
+    await registry.register({ descriptor: d, adapter: packageAdapter, pluginName });
+  }
 }, 180_000);
 
 afterAll(async () => {
   providerRegistry().unregisterPlugin(PROVIDER_PLUGIN_NAME);
+  for (const pluginName of GOOGLE_GROUP_PACKAGES) providerRegistry().unregisterPlugin(pluginName);
   await org?.cleanup();
 }, 300_000);
 
@@ -263,26 +297,14 @@ beforeEach(async () => {
     join(home, 'oauth-apps.json'),
     JSON.stringify({
       [GROUP]: { clientId: 'client-1', clientSecret: 'secret-1', redirectUri: 'https://papercusp.example/api/oauth/callback' },
+      // The Google packages' clientRegistrationRef.
+      google: { clientId: 'google-client', clientSecret: 'google-secret', redirectUri: 'https://papercusp.example/api/oauth/callback' },
     }),
   );
   __resetRegistryForTest();
-  registerProvider({
-    id: 'google',
-    config: {
-      clientId: 'google-client',
-      clientSecret: '',
-      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-      tokenUrl: 'https://oauth2.googleapis.com/token',
-      redirectUri: 'https://papercusp.example/api/oauth/callback',
-    },
-    defaultScopes: GOOGLE_WORKSPACE_SCOPES,
-    buildAuthorizeUrl: () => 'https://accounts.google.com/o/oauth2/v2/auth',
-    exchangeCode: async () => ({ accessToken: 'google-access', refreshToken: 'google-refresh', expiresAt: Date.now() + 3_600_000 }),
-    refresh: async () => ({ accessToken: 'google-access-2' }),
-  });
   vi.stubGlobal('fetch', vi.fn(fakeFetch));
   net.account = { id: 'acct-1', name: 'Alpha' };
-  net.gmailEmail = 'owner@example.com';
+  net.googleEmail = 'owner@example.com';
   net.refreshError = null;
   net.tokenSeq = 0;
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
@@ -530,8 +552,8 @@ describe('instance-scoped providers through the real OAuth callback and source f
   });
 });
 
-describe('Google Workspace through the same lifecycle', () => {
-  const GOOGLE_KINDS = ['contacts', 'gcal', 'gmail'];
+describe('the Google package group through the same lifecycle', () => {
+  const GOOGLE_KINDS = ['contacts', 'gcal', 'gmail', 'youtube'];
 
   async function googleBindings(): Promise<Array<{ kind: string; armed: boolean }>> {
     return sql<Array<{ kind: string; armed: boolean }>>`
@@ -548,18 +570,19 @@ describe('Google Workspace through the same lifecycle', () => {
   // D-011 (meeting prep is submitted by the Calendar app itself; the built-in
   // launch-plan binding is retired, EI-25243055141955619). A binding count above
   // zero after connect or reconnect is the regression this guards.
-  it('shares one credential across Gmail, Calendar and Contacts and creates no binding on connect or reconnect', async () => {
-    await expect(googleConnect('owner-slot')).resolves.toEqual({ connected: GOOGLE_WORKSPACE_OAUTH_PLUGIN, error: null });
+  it('shares one credential across every Google package and creates no binding on connect or reconnect', async () => {
+    await expect(googleConnect('owner-slot')).resolves.toEqual({ connected: GOOGLE_PLUGIN, error: null });
     const first = await sources(GOOGLE_KINDS);
-    expect(first.map((row) => [row.kind, row.providerAccountId, row.credentialRef, row.status])).toEqual([
-      ['contacts', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
-      ['gcal', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
-      ['gmail', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
-    ]);
+    expect(first.map((row) => [row.kind, row.providerAccountId, row.credentialRef, row.status])).toEqual(
+      GOOGLE_KINDS.map((kind) => [kind, 'owner@example.com', 'provider:google:owner-slot', 'connected']),
+    );
     expect(await googleBindings()).toEqual([]);
+    const tokens = await fsTokenStorage.read(GOOGLE_PLUGIN, HARNESS);
+    expect(tokens['owner-slot']).toBe('google-access-1');
+    expect(tokens['owner-slot_refresh']).toBe('google-refresh-1');
 
     await expect(googleConnect('owner-slot', 'owner@example.com')).resolves.toEqual({
-      connected: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
+      connected: GOOGLE_PLUGIN,
       error: null,
     });
     const second = await sources(GOOGLE_KINDS);
@@ -569,10 +592,80 @@ describe('Google Workspace through the same lifecycle', () => {
 
   it('refuses a Google reconnect that signs in to a different mailbox', async () => {
     await googleConnect('owner-slot');
-    net.gmailEmail = 'someone-else@example.com';
+    net.googleEmail = 'someone-else@example.com';
     await expect(googleConnect('owner-slot', 'owner@example.com')).resolves.toEqual({
       connected: null,
-      error: 'google_workspace_account_mismatch',
+      error: 'provider_google_account_mismatch',
     });
+  });
+});
+
+// provider-adapters-to-packages-2026-10-11 D-037: the credentials the first-party
+// `google-workspace` connection stored move into the descriptor group plugin the Google
+// packages declare (`oauth.legacyCredentialPlugins`), and the source rows follow them.
+describe('legacy credential adoption into the descriptor group plugin', () => {
+  const LEGACY = 'google-workspace';
+  const OTHER_WS = `${WS}-other`;
+
+  async function sourceRow(workspaceId: string, kind: string, providerAccountId: string, credentialRef: string) {
+    const [row] = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.data_sources
+        (workspace_id, kind, owner_user_id, provider_account_id, status, credential_ref)
+      VALUES (${workspaceId}, ${kind}, ${userId}, ${providerAccountId}, 'connected', ${credentialRef})
+      RETURNING id`;
+    return row.id;
+  }
+
+  async function refs(ids: string[]) {
+    const rows = await sql<Array<{ id: string; credential_ref: string | null; provider_account_id: string | null }>>`
+      SELECT id, credential_ref, provider_account_id FROM harness_shared.data_sources WHERE id = ANY(${ids})`;
+    return ids.map((id) => {
+      const row = rows.find((candidate) => candidate.id === id)!;
+      return [row.credential_ref, row.provider_account_id];
+    });
+  }
+
+  it('copies tokens, rewrites refs and provisional ids, clears the legacy fields, and is idempotent', async () => {
+    await fsTokenStorage.update(LEGACY, HARNESS, {
+      'slot-l': 'legacy-access',
+      'slot-l_refresh': 'legacy-refresh',
+      'slot-l_expires_at': 1_700_000_000_000,
+    });
+    // A field the descriptor plugin already holds is never overwritten by the legacy copy.
+    await fsTokenStorage.update(GOOGLE_PLUGIN, HARNESS, { 'slot-l_refresh': 'descriptor-refresh' });
+    const gmail = await sourceRow(WS, 'gmail', 'owner@example.com', `${LEGACY}:slot-l`);
+    const contacts = await sourceRow(WS, 'contacts', `${LEGACY}:pending-1`, `${LEGACY}:slot-l`);
+    const unrelated = await sourceRow(WS, 'gcal', 'owner@example.com', `${PLUGIN}:slot-x`);
+    const foreign = await sourceRow(OTHER_WS, 'gmail', 'owner@example.com', `${LEGACY}:slot-l`);
+    try {
+      await expect(adoptLegacyProviderCredentials(sql, { workspaceId: WS, harness: HARNESS })).resolves.toEqual([
+        { legacyPlugin: LEGACY, plugin: GOOGLE_PLUGIN, fieldsCopied: 2, sourcesRewritten: 2 },
+      ]);
+      const adopted = await fsTokenStorage.read(GOOGLE_PLUGIN, HARNESS);
+      expect(adopted).toMatchObject({
+        'slot-l': 'legacy-access',
+        'slot-l_refresh': 'descriptor-refresh',
+        'slot-l_expires_at': 1_700_000_000_000,
+      });
+      const legacy = await fsTokenStorage.read(LEGACY, HARNESS);
+      for (const key of ['slot-l', 'slot-l_refresh', 'slot-l_expires_at']) expect(legacy[key] ?? null).toBeNull();
+      expect(await refs([gmail, contacts, unrelated, foreign])).toEqual([
+        [`${GOOGLE_PLUGIN}:slot-l`, 'owner@example.com'],
+        [`${GOOGLE_PLUGIN}:slot-l`, `${GOOGLE_PLUGIN}:pending-1`],
+        [`${PLUGIN}:slot-x`, 'owner@example.com'],
+        // Another workspace's rows are its own sync's to adopt.
+        [`${LEGACY}:slot-l`, 'owner@example.com'],
+      ]);
+
+      // A second pass has nothing left to move and changes nothing.
+      await expect(adoptLegacyProviderCredentials(sql, { workspaceId: WS, harness: HARNESS })).resolves.toEqual([]);
+      expect(await fsTokenStorage.read(GOOGLE_PLUGIN, HARNESS)).toEqual(adopted);
+      expect((await refs([gmail, contacts]))).toEqual([
+        [`${GOOGLE_PLUGIN}:slot-l`, 'owner@example.com'],
+        [`${GOOGLE_PLUGIN}:slot-l`, `${GOOGLE_PLUGIN}:pending-1`],
+      ]);
+    } finally {
+      await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${OTHER_WS}`;
+    }
   });
 });

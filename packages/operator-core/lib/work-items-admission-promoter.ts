@@ -42,7 +42,17 @@ import { selectCanonicalIssue, recordIssueOccurrence, type IssueOccurrenceCounts
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { isSufficientEvidence } from './work-item-completion-authority';
-import { DEFAULT_PROMOTER_TICK_MINUTES, ownNodeAuthoredRemoteIds } from './work-items-admission';
+import {
+  DEFAULT_PROMOTER_TICK_MINUTES,
+  failOpenDedupEligibleWhereSql,
+  ownNodeAuthoredRemoteIds,
+} from './work-items-admission';
+import {
+  rescreenDegradedPendingRows,
+  screenWorkItemForDuplicates,
+  type DedupRescreenScreen,
+  type DedupRescreenSummary,
+} from './work-items-admission-dedup-rescreen';
 import {
   activeWorkItemDependencyRefsSql,
   readWorkItemDependenciesForRefs,
@@ -478,6 +488,13 @@ export interface FailOpenRunResult {
   reviewDebt?: AdmissionReviewDebt;
   /** Reviews closed this tick because the item was already terminal (WI-10004725). */
   reviewMoot?: MootAdmissionReviewsResult;
+  /**
+   * WI-6554700010018098: the dedup re-screen of over-age degraded rows that ran BEFORE the
+   * admit step (work-items-admission-dedup-rescreen.ts). `skipped` when no screen is wired
+   * (vitest without an injected seam); `error` when the candidate read failed. The re-screen
+   * never blocks admission.
+   */
+  dedupRescreen?: DedupRescreenSummary | { skipped: true } | { error: string };
 }
 
 export type AdmissionReviewState = 'pending' | 'reviewed' | 'terminal';
@@ -3738,7 +3755,15 @@ function endpointProtection(
       detail: `promote ${snapshot.id} has admission ${snapshot.admission ?? 'legacy'}; expected pending or unreviewed`,
     };
   }
+  // WI-6554700010018134: claim, claim-hold and agent-review gate OPEN work. On a terminal
+  // twin they are residue that no later tick can lift (1,821 terminal papercusp rows still
+  // carried a pending/revision-requested review on 2026-10-20), so reading them as transient
+  // deferred the pending row behind that twin forever. A terminal endpoint is classified by
+  // the terminal rules below instead: terminal-loser, or terminal-canonical-without-completion
+  // (permanent), or — with applicable completion evidence — an ordinary judgeable twin.
+  const terminalTwin = role !== 'promote' && ALL_TERMINAL_STATUSES.has(snapshot.state);
   if (
+    !terminalTwin &&
     snapshot.assignee &&
     !(
       options.claimedReReviewAtMs !== undefined &&
@@ -3748,13 +3773,13 @@ function endpointProtection(
   ) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
-  if (String(payload._claimHold) === 'true') {
+  if (!terminalTwin && String(payload._claimHold) === 'true') {
     return { reason: 'claim-held', detail: `${role} ${snapshot.id} carries payload._claimHold` };
   }
   if (snapshot.state === 'blocked' || snapshot.state === 'needs-human') {
     return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
   }
-  const review = readAgentReviewState(snapshot.payload);
+  const review = terminalTwin ? null : readAgentReviewState(snapshot.payload);
   // Duplicate admission precedes the ordinary reproduction-validation claim. Reuse
   // that lane's predicate for screening/promotion only: changing or merging either
   // endpoint still requires its independent agent review to have cleared.
@@ -6007,6 +6032,12 @@ export async function runWorkItemAdmissionFailOpen(opts: {
   scope?: AdmissionFailOpenScope;
   /** Test seam; production emits the canonical claimable event after the admission update. */
   onNewlyAdmitted?: (rows: readonly { id: string; harness: string }[]) => Promise<void>;
+  /**
+   * WI-6554700010018098 test seam for the degraded-row dedup re-screen. Omitted ⇒ the real
+   * three-guard screen, except under vitest, where it is skipped (the guards are inert there
+   * anyway). `null` ⇒ skip explicitly.
+   */
+  dedupRescreen?: DedupRescreenScreen | null;
 }): Promise<FailOpenRunResult> {
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
@@ -6048,12 +6079,46 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // fail-open liveness backstop must never turn that uncertainty into scheduler work.
     // A row with a typed duplicate verdict (migration 1534, bug-inflow-one-problem-one-row-
     // 2026-10-18#D-001/#D-002) already HAS its row: fail-open never admits it either.
+    // EI-25209690807142935: those three exclusions come from ADMISSION_FAIL_OPEN_EXCLUSIONS,
+    // the SAME record the claim floor reads to decide whether it may promise this runner's
+    // bound — so the promise and the runner cannot drift apart again.
     const pendingEligibility = sql`admission = 'pending'
-      AND duplicate_of IS NULL
       AND (status IS NULL OR NOT harness_shared.work_item_status_is_terminal(status))
       AND created_ts < ${cutoffMs}
-      AND (payload -> 'dedupCandidates') IS NULL
-      AND lower(COALESCE(payload #>> '{dedupCoverage,degraded}', 'false')) <> 'true'`;
+      AND ${failOpenDedupEligibleWhereSql(sql)}`;
+    // WI-6554700010018098: the exclusion above is right (nothing unscreened is admitted) but,
+    // alone, it is a dead end — a create-time leg timeout parks a row behind a model promoter
+    // that reaches ~7 rows a tick, candidate rows first. Re-run the screen for the over-age
+    // degraded rows BEFORE the admit: a clean re-screen rewrites coverage as complete, so the
+    // admit below takes the row in this same run; found twins become promoter review work.
+    // Isolated: a re-screen failure must never cost the must-never-starve admit step.
+    const rescreenScreen =
+      opts.dedupRescreen === undefined
+        ? process.env.VITEST
+          ? null
+          : screenWorkItemForDuplicates
+        : opts.dedupRescreen;
+    let dedupRescreen: FailOpenRunResult['dedupRescreen'] = { skipped: true };
+    if (rescreenScreen) {
+      try {
+        dedupRescreen = await rescreenDegradedPendingRows({
+          sql,
+          workspaceId: opts.workspaceId,
+          harnessSlug: scope === 'workspace' ? null : opts.harnessSlug,
+          scopePredicate,
+          cutoffMs,
+          // One attempt per row per two ticks: a persistently failing leg rotates through the
+          // backlog (never-rescreened rows sort first) instead of pinning the same batch.
+          cooldownCutoffMs: startedAt - 2 * tickMinutes * 60_000,
+          nowMs: startedAt,
+          runId,
+          screen: rescreenScreen,
+          now,
+        });
+      } catch (error) {
+        dedupRescreen = { error: error instanceof Error ? error.message : String(error) };
+      }
+    }
     // Keep the pending predicate, workspace key, and (for harness scope) harness key on the
     // candidate read so it can use wi_admission_pending_idx. Oldest-first plus a hard cap keeps
     // this must-never-starve action quick when a workspace has a large pending backlog.
@@ -6216,9 +6281,10 @@ export async function runWorkItemAdmissionFailOpen(opts: {
         misHomedByScope,
         reviewDebt,
         reviewMoot,
+        dedupRescreen,
       },
     });
-    return { runId, autoPromoted, autoPromotedByHarness, heldByScope, scope, liveness, reviewDebt, reviewMoot };
+    return { runId, autoPromoted, autoPromotedByHarness, heldByScope, scope, liveness, reviewDebt, reviewMoot, dedupRescreen };
   } catch (error) {
     await failRun(sql, runId, 'fail-open', error, Math.max(0, now() - startedAt));
     throw error;

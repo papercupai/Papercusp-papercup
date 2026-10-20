@@ -769,7 +769,18 @@ export const ADV_SESSIONS_CLAIM_MIN_DDL = `
     ADD COLUMN IF NOT EXISTS cwd text,
     ADD COLUMN IF NOT EXISTS session_id text,
     ADD COLUMN IF NOT EXISTS exit_code integer,
-    ADD COLUMN IF NOT EXISTS ended_signal text`;
+    ADD COLUMN IF NOT EXISTS ended_signal text,
+    -- WI-6554700010018179: latestAdvSessionByCoordOwner and the launch listers select
+    -- these (retired_* from migration 1492). test/adv-sessions-fixture-columns.test.ts
+    -- fails, naming the column, when a reader selects one this DDL lacks.
+    ADD COLUMN IF NOT EXISTS display text,
+    ADD COLUMN IF NOT EXISTS launch_argv jsonb,
+    ADD COLUMN IF NOT EXISTS launched_at timestamptz,
+    ADD COLUMN IF NOT EXISTS resume_claim_key text,
+    ADD COLUMN IF NOT EXISTS resume_claimed_at timestamptz,
+    ADD COLUMN IF NOT EXISTS retired_at timestamptz,
+    ADD COLUMN IF NOT EXISTS retired_by text,
+    ADD COLUMN IF NOT EXISTS retired_reason text`;
 
 /**
  * `fleet_membership_events` — the append-only fleet membership fact the claim path's

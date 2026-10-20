@@ -97,6 +97,22 @@ import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { resolveActivationClassRef } from './activation-class-ref';
 import { previewPlanStartConsult } from './get-activation-readiness';
 import { previewProductShaping } from './product-shaping';
+import {
+  checkLibraryDeclarations,
+  evaluateActivationDeclarations,
+  previewPlanDeclarations,
+  resolveReuseReferences,
+  type LibraryCheckReport,
+  type ReuseReferenceReport,
+} from './plan-declarations';
+import {
+  captureDependencyBaseline,
+  defaultLibraryCheckDeps,
+  defaultReuseReferenceResolvers,
+  readPlanCompletionFilesChanged,
+  readWorkspacePackageNames,
+} from './plan-declaration-resolvers';
+import { dependencyBaselineFrom, runLibraryShipCheck } from './plan-library-ship-check';
 import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
 import { proposeAuditCitations } from './audit-derived-citations';
 
@@ -443,7 +459,8 @@ export default defineTool({
       const plan = await getPlanRow(args.slug, { harnessSlug });
       if (!plan) return { data: { ok: false, slug: args.slug, phase: 'shaping', error: 'plan_not_found' } };
       return { data: { ok: true, slug: args.slug, phase: 'shaping', dryRun: true, preview: true,
-        productShaping: previewProductShaping(plan.content) } };
+        productShaping: previewProductShaping(plan.content),
+        planDeclarations: previewPlanDeclarations(plan.content) } };
     }
 
     if (args.phase === 'activation') {
@@ -765,6 +782,115 @@ export default defineTool({
             ...(provenance.warning ? { warning: provenance.warning } : {}),
           }
         : null;
+
+      // plan-reuse-and-library-declarations-2026-10-20 R-3 / D-003: a draft or ready
+      // plan activates only with valid reuse and libraries sections (or a one-line
+      // notApplicable reason in each). Active and shipped plans are not retrofitted.
+      const declarationGate = currentPlan
+        ? evaluateActivationDeclarations(currentPlan.content, currentPlan.status)
+        : null;
+      if (declarationGate && !declarationGate.ok) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          ...(dryRun ? { dryRun: true as const, preview: true as const } : {}),
+          error: 'plan_declarations_invalid' as const,
+          problems: declarationGate.blockers,
+          diagnostics: declarationGate.preview.diagnostics,
+          message:
+            `${declarationGate.blockers.map((blocker) => `"## ${blocker.section}" is ${blocker.status}`).join('; ')}. ` +
+            'Fill in each section\'s JSON block, or set its notApplicable to a one-line reason; nothing was recorded.',
+        } };
+      }
+      // R-4 (D-002, D-004 #2, D-013 #2): every reuse entry must name something that
+      // exists, and its items must be this plan's P-NNN ids. Only a definitive
+      // not-found refuses; a lookup backend that is down leaves the entry unverified.
+      let reuseReferences: ReuseReferenceReport | null = null;
+      const reuseData = declarationGate?.applies && declarationGate.preview.reuse.status === 'declared'
+        ? declarationGate.preview.reuse.data
+        : null;
+      const librariesData = declarationGate?.applies && declarationGate.preview.libraries.status === 'declared'
+        ? declarationGate.preview.libraries.data
+        : null;
+      // An unresolvable citation root leaves file / symbol / package entries unverified,
+      // never falsely not-found against the wrong tree.
+      let declarationRepoRoot: string | null = null;
+      if (declarationGate?.applies) {
+        try {
+          const context = await repoCitationContextForHarness(harnessSlug);
+          if (context && !isCitationContextFailure(context)) declarationRepoRoot = context.repoRoot;
+        } catch {
+          declarationRepoRoot = null;
+        }
+      }
+      if (reuseData && currentPlan) {
+        reuseReferences = await resolveReuseReferences(reuseData, {
+          resolvers: defaultReuseReferenceResolvers({ repoRoot: declarationRepoRoot, sql: getOrgPg().sql as never, workspaceId }),
+          planItemIds: new Set(parsePlan(currentPlan.content, { filePath: `${args.slug}.md` }).items.map((item) => item.id)),
+        });
+        if (!reuseReferences.ok) {
+          return { data: {
+            ok: false as const,
+            slug: args.slug,
+            phase: 'activation' as const,
+            ...(dryRun ? { dryRun: true as const, preview: true as const } : {}),
+            error: 'plan_reuse_references_unresolved' as const,
+            problems: reuseReferences.blockers,
+            unverified: reuseReferences.unverified,
+            message:
+              `${reuseReferences.blockers.length} reuse entr${reuseReferences.blockers.length === 1 ? 'y does' : 'ies do'} not resolve: ` +
+              reuseReferences.blockers.map((blocker) => `${blocker.ref} (${blocker.detail})`).join('; ') +
+              '. Fix each reference in "## Existing infrastructure reused" (exact path, path#Symbol, tool, schema.table, package, routine or doc slug); nothing was recorded.',
+          } };
+        }
+      }
+      // R-5 (D-004 #4/#6, D-013 #3): already-in-project names a real dependency and an
+      // owner-specified row cites an owner-typed turn; unavailable lookups are unverified.
+      let libraryChecks: LibraryCheckReport | null = null;
+      if (librariesData) {
+        libraryChecks = await checkLibraryDeclarations(librariesData,
+          await defaultLibraryCheckDeps({ repoRoot: declarationRepoRoot, sql: getOrgPg().sql as never, workspaceId }));
+        if (!libraryChecks.ok) {
+          return { data: {
+            ok: false as const,
+            slug: args.slug,
+            phase: 'activation' as const,
+            ...(dryRun ? { dryRun: true as const, preview: true as const } : {}),
+            error: 'plan_library_rows_invalid' as const,
+            problems: libraryChecks.blockers,
+            unverified: libraryChecks.unverified,
+            message:
+              libraryChecks.blockers.map((blocker) => `needs.${blocker.row} (${blocker.need}): ${blocker.detail}`).join('; ') +
+              '. Fix each row in "## Third-party libraries"; nothing was recorded.',
+          } };
+        }
+      }
+      // D-013 #1: the lifecycle doors re-check the declarations on the plan's CURRENT
+      // content whenever the audit they rely on was itself gated on them.
+      // Server-written: a caller-supplied value is never trusted.
+      if (declarationGate?.applies) {
+        // R-6 (D-013 #4): the ship check's baseline is read from this row.
+        const dependencyBaseline = await captureDependencyBaseline(declarationRepoRoot);
+        activation.declarationsCheck = {
+          enforced: true,
+          ...(dependencyBaseline ? { dependencyBaseline } : {}),
+          reuse: declarationGate.preview.reuse.status,
+          libraries: declarationGate.preview.libraries.status,
+          ...(reuseReferences ? {
+            references: {
+              checked: reuseReferences.checks.length,
+              found: reuseReferences.checks.filter((check) => check.status === 'found').length,
+              unverified: reuseReferences.unverified,
+            },
+          } : {}),
+          ...(libraryChecks ? {
+            libraryChecks: { unverified: libraryChecks.unverified, advice: libraryChecks.advice },
+          } : {}),
+        };
+      } else {
+        delete activation.declarationsCheck;
+      }
 
       if (dryRun) {
         const targetProblems = validateActivationAuditPlanTargets(activation, currentPlan!.content);
@@ -1274,7 +1400,8 @@ export default defineTool({
     );
     const deps = { ...citationContext.deps, generic: genericLookup };
     // An unreadable plan row leaves the profile unknown, which resolves to coding (D-005).
-    const verificationProfile = (await getPlanRow(args.slug, { harnessSlug }))?.verificationProfile ?? null;
+    const planRow = await getPlanRow(args.slug, { harnessSlug });
+    const verificationProfile = planRow?.verificationProfile ?? null;
     const declaredDeliverable = new Map(planItems.map((item) => [item.itemId, item.deliverable ?? null]));
     const auditedSha = args.auditedSha ?? resolveHeadSha(citationContext.repoRoot);
     const problems: Problem[] = [];
@@ -1544,6 +1671,60 @@ export default defineTool({
       } };
     }
 
+    // R-6 (plan-reuse-and-library-declarations-2026-10-20, D-013 #4): read the JS/TS
+    // imports of every cited file plus the plan's work-item filesChanged; refuse a
+    // third-party package that is neither declared nor a dependency at activation.
+    const shipWorkspaceId = sctx.workspaceId ?? activeWorkspaceId();
+    const shipDeclarations = planRow?.content ? previewPlanDeclarations(planRow.content) : null;
+    const shipBaseline = dependencyBaselineFrom(
+      (await getLatestActivationAudit(args.slug, { workspaceId: shipWorkspaceId, harnessSlug: harnessSlug ?? undefined }))?.activation,
+    );
+    const declaresAnything = shipDeclarations !== null &&
+      (shipDeclarations.reuse.status === 'declared' || shipDeclarations.libraries.status === 'declared');
+    let libraryShipCheck: Awaited<ReturnType<typeof runLibraryShipCheck>> | { status: 'not-applicable'; reason: string };
+    const workspacePackages = declaresAnything || shipBaseline
+      ? await readWorkspacePackageNames(citationContext.repoRoot)
+      : null;
+    if (!declaresAnything && !shipBaseline) {
+      libraryShipCheck = { status: 'not-applicable', reason: 'the plan declares neither section and its activation recorded no dependency baseline' };
+    } else if (!workspacePackages) {
+      libraryShipCheck = { status: 'not-applicable', reason: 'workspace manifests could not be read, so first-party imports cannot be told apart' };
+    } else {
+      const filesChanged = harnessSlug
+        ? await readPlanCompletionFilesChanged({ sql: getOrgPg().sql as never, workspaceId: shipWorkspaceId, harnessSlug, planSlug: args.slug })
+        : null;
+      const citedFiles = effectiveEntries.flatMap((entry) =>
+        entry.citations.flatMap((citation) => (isRepoFileCitation(citation) && citation.path ? [citation.path] : [])));
+      const report = await runLibraryShipCheck({
+        files: [...citedFiles, ...(filesChanged ?? [])],
+        repoRoot: citationContext.repoRoot,
+        libraries: shipDeclarations?.libraries.status === 'declared' ? shipDeclarations.libraries.data ?? null : null,
+        reuse: shipDeclarations?.reuse.status === 'declared' ? shipDeclarations.reuse.data ?? null : null,
+        baseline: shipBaseline,
+        workspacePackages,
+      });
+      if (filesChanged === null) report.unverified.push('the plan\'s work-item filesChanged could not be read; only cited files were inspected');
+      if (report.status === 'pass' && report.unverified.length > 0) report.status = 'unverified';
+      libraryShipCheck = report;
+    }
+    if (libraryShipCheck.status === 'refuse') {
+      const blockers = libraryShipCheck.blockers;
+      return { data: {
+        ok: false as const,
+        slug: args.slug,
+        phase: 'completion' as const,
+        ...(dryRun ? { dryRun: true as const, preview: true as const } : {}),
+        error: 'plan_undeclared_third_party_packages' as const,
+        problems: blockers,
+        libraryShipCheck,
+        message:
+          `${blockers.length} third-party package(s) are imported but neither declared in "## Third-party libraries" ` +
+          `nor a dependency when the plan was activated: ` +
+          blockers.map((blocker) => `${blocker.package} (${blocker.files.slice(0, 3).join(', ')})`).join('; ') +
+          '. Declare each in the libraries section (amend the plan) or remove the import; nothing was recorded.',
+      } };
+    }
+
     const coverage = summarizeCoverage(effectiveEntries);
     const audited = new Set(effectiveEntries.map((e) => e.itemId));
     // Items with no current OR historical audit entry. Unlisted prior entries were
@@ -1575,6 +1756,18 @@ export default defineTool({
       : null;
     const resultNote = [partialNote, uncoveredNote, driftNote, classRefIgnoredNote]
       .filter((note): note is string => Boolean(note)).join(' ');
+    const libraryShipCheckSummary = libraryShipCheck.status === 'not-applicable'
+      ? libraryShipCheck
+      : {
+          status: libraryShipCheck.status,
+          unverified: libraryShipCheck.unverified,
+          warnings: libraryShipCheck.warnings,
+          thirdPartyPackages: libraryShipCheck.packages.map((entry) => `${entry.package} (${entry.admittedBy})`),
+          inspectedFiles: libraryShipCheck.inspected.length,
+          notInspected: libraryShipCheck.notInspected.slice(0, 20),
+          notInspectedCount: libraryShipCheck.notInspected.length,
+          scope: libraryShipCheck.scope,
+        };
 
     if (dryRun) {
       return { data: {
@@ -1601,6 +1794,7 @@ export default defineTool({
             }
           : {}),
         ...(resultNote ? { note: resultNote } : {}),
+        libraryShipCheck: libraryShipCheckSummary,
         message: 'Completion audit validation passed; no audit or plan-event writes were performed.',
       } };
     }
@@ -1651,6 +1845,7 @@ export default defineTool({
           }
         : {}),
       ...(resultNote ? { note: resultNote } : {}),
+      libraryShipCheck: libraryShipCheckSummary,
     } };
   },
 });

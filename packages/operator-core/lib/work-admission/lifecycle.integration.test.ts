@@ -221,7 +221,7 @@ beforeEach(async () => {
 
 describe('admission lifecycle (P-003)', () => {
   it.each(['merged', 'merged-after-comment', 'merged-after-default-change', 'wrong-fork', 'wrong-head', 'wrong-base', 'closed',
-    'base-already-fixed', 'merge-lacks-fix', 'reopened', 'completion-changed'])(
+    'base-already-fixed', 'merge-lacks-fix', 'reopened', 'completion-changed', 'tested-then-merged', 'tested-then-open'])(
     'reconciles completion after publication and merge, refusing unrelated evidence: %s', async (scenario) => {
       const root = mkdtempSync(join(tmpdir(), 'admission-late-completion-'));
       const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
@@ -284,6 +284,16 @@ describe('admission lifecycle (P-003)', () => {
         if (scenario === 'wrong-base') pr.base_ref = 'another-branch';
         if (scenario === 'closed') pr.state = 'closed';
         if (scenario === 'merge-lacks-fix') pr.merge_commit_sha = target;
+        if (scenario === 'tested-then-open') { pr.state = 'open'; pr.merge_commit_sha = null; }
+        if (scenario.startsWith('tested-then-')) {
+          // The normal order: promotion links the tested PR after completion, and the source is
+          // told the fix awaits the merge, before the PR merges.
+          expect(await correlateAdmissionStandingPr(sql, { ...publication, harnesses: ['repo-member'], workItemHarness: HARNESS }))
+            .toEqual({ linked: [id], failed: [] });
+          await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, { standingPr: { projects: async () => [] } });
+          expect(callsFor('LATE-PR').filter(([capability, text]) => capability === 'ticket.comment'
+            && String(text).includes('Awaiting the PR merge'))).toHaveLength(1);
+        }
         let changed = false;
         const host: Pick<PrHost, 'listPrs' | 'getPr'> = {
           listPrs: vi.fn(async () => ({ ok: true as const, data: [pr] })),
@@ -325,6 +335,25 @@ describe('admission lifecycle (P-003)', () => {
           expect(String(comments[0]![1])).toContain('Merged');
           expect(String(comments[0]![1])).not.toContain('Awaiting');
           expect(host.listPrs).toHaveBeenCalledTimes(1);
+        } else if (scenario === 'tested-then-merged') {
+          expect(receipt).toMatchObject({ url: publication.url, testedSha: head, targetSha: target, mergedSha: merge, mergeAfterTested: true });
+          const comments = callsFor('LATE-PR').filter(([capability, text]) => capability === 'ticket.comment'
+            && String(text).includes(publication.url)).map(([, text]) => String(text));
+          // The tested link stays as written; the verified merge follows once, across both passes.
+          expect(comments).toHaveLength(2);
+          expect(comments[0]).toContain('Awaiting the PR merge');
+          expect(comments[1]).toContain(`Merged fix for ${id}`);
+          expect(comments[1]).toContain(merge);
+          expect((await writeBacksForWorkItem(sql, WS, id)).map(w => w.lifecycleKey))
+            .toEqual(expect.arrayContaining([expect.stringMatching(/^standing-pr:[0-9a-f]{12}:merged$/)]));
+          // The receipt names its PR, so the merge is read directly, not from the closed-PR listing.
+          expect(host.listPrs).not.toHaveBeenCalled();
+          expect(host.getPr).toHaveBeenCalledWith({ remote: 'github.com/acme/widgets', number: 7 });
+        } else if (scenario === 'tested-then-open') {
+          expect(receipt).toMatchObject({ url: publication.url, testedSha: head });
+          expect(receipt).not.toHaveProperty('mergedSha');
+          expect(callsFor('LATE-PR').filter(([capability, text]) => capability === 'ticket.comment'
+            && String(text).includes(publication.url))).toHaveLength(1);
         } else expect(receipt).toBeUndefined();
         if (scenario === 'reopened') expect(callsFor('LATE-PR').some(([, text]) => String(text).includes('Completed'))).toBe(false);
       } finally { rmSync(root, { recursive: true, force: true }); }

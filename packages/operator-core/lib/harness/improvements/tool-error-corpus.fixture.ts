@@ -210,6 +210,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'six activity:report failures in EI-25561866963703669 carry PostgreSQL SQLSTATE 53100 (disk_full); shared filesystem exhaustion, not a per-tool defect',
   },
   {
+    n: 2, errorCode: 'handler_error', status: 'error',
+    message: 'pre-destructive backup requires a successful database dump: insufficient free space (38995595264 available; 120000000000 needed for a dump of 39600000000 bytes)',
+    expectedClass: 'transient',
+    note: 'EI-26151890657388960: the backup hook intentionally fails closed before pg_dump when measured free space is below its dump-sized reserve; capacity gate, not a structural backup-tool defect',
+  },
+  {
     n: 1, errorCode: 'sidecar_required_unavailable', status: 'degraded',
     message: 'sidecar_required_unavailable: semantic search sidecar at http://127.0.0.1:3384 aborted; lexical-only fallback returned',
     expectedClass: 'transient',

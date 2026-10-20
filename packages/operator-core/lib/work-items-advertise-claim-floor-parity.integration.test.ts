@@ -42,6 +42,7 @@ vi.mock('./workspace-registry', async () => {
 });
 
 const wi = await import('./work-items');
+const adm = await import('./work-items-admission');
 
 const H = 'papercup';
 const WS = 'default';
@@ -288,5 +289,83 @@ describe('EI-22172757071586188 — the oracle floor set is a SUPERSET of the rea
     expect(conditionVerdict.detail).toContain('BY ID');
     expect(changeVerdict).toMatchObject({ admissible: false, refusedBy: 'stop-line' });
     expect(changeVerdict.detail).toContain('stop-the-line');
+  });
+});
+
+/**
+ * EI-25209690807142935 / EI-26282407214531658 — the admission-pending floor promised the
+ * fail-open runner's ceiling (`retry.guaranteedWithinSec`) to rows that runner never admits.
+ * Measured live on EI-26277464744695494 (degraded dedup coverage): promised 90 min, still
+ * pending two days later. The guard is AGREEMENT against the runner's own eligibility fragment,
+ * evaluated by real Postgres: a bound is published for a row IFF the runner would admit it.
+ */
+describe('EI-25209690807142935 — admission-pending publishes the fail-open bound only for rows the runner admits', () => {
+  interface FailOpenCase {
+    id: string;
+    /** The runner exclusion this row must carry; undefined = the runner admits it. */
+    exclusion: string | undefined;
+    payload?: Record<string, unknown>;
+    duplicateOf?: string;
+    admission?: string;
+  }
+
+  async function seedPending(id: string, opts: Omit<FailOpenCase, 'id' | 'exclusion'>) {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, status, workspace_id, origin, created_ts, updated_ts,
+         title, admission, duplicate_of, payload)
+      VALUES (${H}, ${id}, 'bug', 'open', ${WS}, 'local', 0, 0, ${`title ${id}`},
+              ${opts.admission ?? 'pending'}, ${opts.duplicateOf ?? null},
+              ${opts.payload ? db.sql.json(opts.payload as unknown as Parameters<typeof db.sql.json>[0]) : null})`;
+  }
+
+  const CASES: readonly FailOpenCase[] = [
+    { id: 'WI-FO-CLEAN', exclusion: undefined },
+    { id: 'WI-FO-DEGRADED', exclusion: 'degraded-dedup-coverage', payload: { dedupCoverage: { degraded: true, lexical: 'unavailable' } } },
+    { id: 'WI-FO-CANDIDATES', exclusion: 'duplicate-candidates', payload: { dedupCandidates: [{ id: 'WI-FO-CLEAN', method: 'lexical' }] } },
+    // Candidates AND degraded: the record's ORDER decides, so the stronger signal is named.
+    { id: 'WI-FO-BOTH', exclusion: 'duplicate-candidates', payload: { dedupCandidates: [{ id: 'WI-FO-CLEAN' }], dedupCoverage: { degraded: true } } },
+    // An admitted row with a verdict is still floored by admission-pending (admittedWhereSql).
+    { id: 'WI-FO-VERDICT', exclusion: 'duplicate-verdict', duplicateOf: 'WI-FO-CLEAN', admission: 'admitted' },
+    // degraded:false is NOT an exclusion — the complement must be exact.
+    { id: 'WI-FO-NOT-DEGRADED', exclusion: undefined, payload: { dedupCoverage: { degraded: false } } },
+  ];
+
+  it('every case is refused by admission-pending, with a bound IFF the runner would admit it', async () => {
+    for (const c of CASES) await seedPending(c.id, c);
+    const ids = CASES.map((c) => c.id);
+    const verdicts = await wi.explainIssueClaimFloors(H, ids);
+
+    const sql = db.sql as unknown as Parameters<typeof adm.failOpenDedupEligibleWhereSql>[0];
+    const eligibleRows = await db.sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE feature_id = ANY(${ids}::text[]) AND ${adm.failOpenDedupEligibleWhereSql(sql)}`;
+    const runnerAdmits = new Set(eligibleRows.map((r) => r.feature_id));
+    // Positive controls: the agreement below is vacuous unless both populations are present.
+    expect([...runnerAdmits].sort()).toEqual(['WI-FO-CLEAN', 'WI-FO-NOT-DEGRADED']);
+
+    for (const c of CASES) {
+      const v = verdicts.find((x) => x.id === c.id)!;
+      expect(v, c.id).toMatchObject({ admissible: false, refusedBy: 'admission-pending' });
+      expect(v.failOpenExclusion, c.id).toBe(c.exclusion);
+      expect(v.retry !== undefined, `${c.id}: published a bound the runner does not honour (or withheld one it does)`).toBe(
+        runnerAdmits.has(c.id),
+      );
+      if (v.retry) expect(v.retry.guaranteedWithinSec).toBe(adm.admissionFailOpenGuaranteedSec());
+    }
+    const verdictRow = verdicts.find((x) => x.id === 'WI-FO-VERDICT')!;
+    expect(verdictRow.detail).toContain('(WI-FO-CLEAN)');
+    expect(verdicts.find((x) => x.id === 'WI-FO-DEGRADED')!.detail).toContain('could NOT RUN');
+  });
+
+  it('the re-screen selector predicate is exactly "degraded and nothing stronger"', async () => {
+    for (const c of CASES) await seedPending(c.id, c);
+    const sql = db.sql as unknown as Parameters<typeof adm.failOpenExclusionSql>[0];
+    const rows = await db.sql<{ feature_id: string; exclusion: string | null }[]>`
+      SELECT feature_id, ${adm.failOpenExclusionSql(sql)} AS exclusion
+        FROM harness_shared.work_items
+       WHERE feature_id = ANY(${CASES.map((c) => c.id)}::text[])`;
+    const got = Object.fromEntries(rows.map((r) => [r.feature_id, r.exclusion]));
+    expect(got).toEqual(Object.fromEntries(CASES.map((c) => [c.id, c.exclusion ?? null])));
   });
 });

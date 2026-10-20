@@ -129,8 +129,19 @@ describe('admission (D-006: free, probationary, signature-deduped)', () => {
 
 describe('the test queue + gate transitions', () => {
   it('orders probationary-first, never-tested leading; validated rows trail for re-validation', async () => {
-    const b = await admitTransferLesson(sql, { workspaceId: WS, signature: 'sig-b', lessonText: 'B' });
-    const c = await admitTransferLesson(sql, { workspaceId: WS, signature: 'sig-c', lessonText: 'C', potSlug: 'test-pot' });
+    const b = await admitTransferLesson(sql, {
+      workspaceId: WS,
+      signature: 'sig-b',
+      lessonText: 'B',
+      sourceRef: '/logs/b.jsonl',
+    });
+    const c = await admitTransferLesson(sql, {
+      workspaceId: WS,
+      signature: 'sig-c',
+      lessonText: 'C',
+      sourceRef: '/logs/c.jsonl',
+      potSlug: 'test-pot',
+    });
     expect(b.admitted && c.admitted).toBe(true);
     if (!b.admitted || !c.admitted) return;
 
@@ -154,6 +165,36 @@ describe('the test queue + gate transitions', () => {
     expect(promoted).toMatchObject({ tier: 'validated', status: 'passed', testCount: 1, lastBatteryId: `transfer:${c.lesson.id}:t1` });
     expect(promoted?.lastDelta).toBeCloseTo(1.2);
     expect(promoted?.lastTestedAt).toBeTruthy();
+  });
+
+  it('filters non-replayable pack candidates before the test limit', async () => {
+    const queueWorkspace = `${WS}-replayable-filter`;
+    for (let i = 0; i < 5; i += 1) {
+      const pack = await admitTransferLesson(sql, {
+        workspaceId: queueWorkspace,
+        signature: `pack-candidate-${i}`,
+        lessonText: `Pack candidate ${i}`,
+        sourceKind: 'pack-candidate',
+      });
+      expect(pack.admitted).toBe(true);
+    }
+
+    const transcript = await admitTransferLesson(sql, {
+      workspaceId: queueWorkspace,
+      signature: 'replayable-transcript',
+      lessonText: 'Replay this lesson',
+      sourceRef: '/logs/replayable.jsonl',
+    });
+    expect(transcript.admitted).toBe(true);
+    if (!transcript.admitted) return;
+
+    const queue = await listLessonsForTesting(sql, { workspaceId: queueWorkspace, limit: 5 });
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({
+      id: transcript.lesson.id,
+      sourceKind: 'transcript',
+      sourceRef: '/logs/replayable.jsonl',
+    });
   });
 
   it('a retire transition leaves the queue (retired rows are never re-tested)', async () => {

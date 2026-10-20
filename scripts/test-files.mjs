@@ -2844,6 +2844,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     const stderr = [];
     const completedFiles = new Set();
     const progressRemainders = { stdout: '', stderr: '' };
+    let lastOutputLine = null;
     let capturedBytes = 0;
     let spawnError = null;
     let captureError = null;
@@ -2866,7 +2867,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
           `elapsedMs=${Date.now() - startedAt} capturedBytes=${capturedBytes} ` +
           `completedFiles=${JSON.stringify([...completedFiles])} ` +
           `pendingFiles=${JSON.stringify(pendingFiles)} timeoutMs=${timeoutMs} ` +
-          `exitStatus=${outcome.exitStatus} signal=${outcome.signal}`,
+          `exitStatus=${outcome.exitStatus} signal=${outcome.signal} ` +
+          `lastOutputLine=${JSON.stringify(lastOutputLine)}`,
       );
     };
     const killOwned = (signal) => {
@@ -2958,7 +2960,14 @@ export function runCapturedTestProcess(command, args, options = {}) {
         return false;
       }
       const completeLines = combined.slice(0, lastNewline + 1);
-      progressRemainders[channel] = combined.slice(lastNewline + 1);
+      progressRemainders[channel] = combined.slice(lastNewline + 1).slice(-16_384);
+      // Captured stdout/stderr is returned only after close. Keep one bounded,
+      // complete line in the existing progress sink before a parent can reap
+      // this router. A partial line is never presented as completed output.
+      const lastCompleteLine = completeLines.trimEnd().split(/\r?\n/).at(-1);
+      if (lastCompleteLine) {
+        lastOutputLine = { channel, text: boundedDiagnosticText(lastCompleteLine, 1024) };
+      }
       // Vitest's own startup deadline can fail before our outer watchdog.
       // Retain the remaining owned tree while the runner is still alive;
       // missing child rows remain unknown, never a verdict about the stall.

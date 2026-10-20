@@ -96,6 +96,11 @@ type AdmissionStandingPr = {
   targetSha: string;
   /** Recovered from a verified historical merge, without claiming a new test run. */
   mergedSha?: string;
+  /**
+   * The merge was verified after a tested receipt for the same PR already existed,
+   * so the source was told "awaiting the merge" and is owed a separate merge receipt.
+   */
+  mergeAfterTested?: boolean;
 };
 
 function standingPrOf(payload: unknown): AdmissionStandingPr | null {
@@ -107,7 +112,8 @@ function standingPrOf(payload: unknown): AdmissionStandingPr | null {
     && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9]\d*$/.test(pr.url)
     && Number.isSafeInteger(pr.number) && pr.number > 0
     && /^[0-9a-f]{40}$/.test(pr.testedSha) && /^[0-9a-f]{40}$/.test(pr.targetSha)
-    && (pr.mergedSha === undefined || /^[0-9a-f]{40}$/.test(pr.mergedSha)) ? pr : null;
+    && (pr.mergedSha === undefined || /^[0-9a-f]{40}$/.test(pr.mergedSha))
+    && (pr.mergeAfterTested === undefined || (pr.mergeAfterTested === true && pr.mergedSha !== undefined)) ? pr : null;
 }
 
 /**
@@ -178,13 +184,17 @@ export async function correlateAdmissionStandingPr(
       });
       if (!matchesHead || !differsFromTarget) continue;
       const existing = standingPrOf(row.payload);
-      if (existing?.url === pr.url && existing.testedSha === pr.testedSha && existing.targetSha === pr.targetSha) continue;
+      // A merged receipt is final for its PR. An unmerged one is replaced only by a
+      // newer tested head or by the verified merge of that same PR.
+      if (existing?.url === pr.url && (existing.mergedSha
+        || (!pr.mergedSha && existing.testedSha === pr.testedSha && existing.targetSha === pr.targetSha))) continue;
+      const receipt: AdmissionStandingPr = existing?.url === pr.url && pr.mergedSha ? { ...pr, mergeAfterTested: true } : pr;
       // Git reads happen outside a DB transaction. Fence the exact completion
       // snapshot in the write so a reopened or re-completed issue cannot inherit
       // the earlier fix's PR during that window.
       const merged = await sql<{ feature_id: string }[]>`
         UPDATE harness_shared.work_items
-           SET payload = payload || ${sql.json({ standingPr: pr })}, updated_ts = ${Date.now()}
+           SET payload = payload || ${sql.json({ standingPr: receipt })}, updated_ts = ${Date.now()}
          WHERE workspace_id = ${input.workspaceId} AND feature_id = ${row.feature_id}
            AND harness_slug = ${row.harness_slug} AND item_kind = 'bug'
            AND status = ANY(${[...COMPLETED_STATES]}::text[]) AND authority = 'committed'
@@ -215,7 +225,7 @@ function lateStandingPrReconciler(sql: AdmissionDb, workspaceId: string, deps: S
   let host: Promise<StandingPrReconcileDeps['host']> | undefined;
   const listings = new Map<string, ReturnType<NonNullable<PrHost['listPrs']>>>();
   return async (workItemId: string, harness: string, item: LifecycleWorkItem): Promise<boolean> => {
-    if (!COMPLETED_STATES.has(item.state) || standingPrOf(item.payload)) return false;
+    if (!COMPLETED_STATES.has(item.state) || standingPrOf(item.payload)?.mergedSha) return false;
     const evidence = (item.payload as Record<string, unknown> | null)?.[TERMINAL_COMPLETION_EVIDENCE_KEY];
     const parsed = CompletionSettlementManifestSchema.safeParse((evidence as Record<string, unknown> | undefined)?.settlementManifest);
     if (!parsed.success) return false;
@@ -232,29 +242,40 @@ function lateStandingPrReconciler(sql: AdmissionDb, workspaceId: string, deps: S
       SELECT status, authority, payload FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId} AND feature_id = ${workItemId} AND harness_slug = ${physical}
          AND item_kind = 'bug' AND authority = 'committed' AND status = ANY(${[...COMPLETED_STATES]}::text[])`;
-    if (!row || standingPrOf(row.payload)) return false;
+    if (!row) return false;
+    // A tested receipt names its PR: only that PR's verified merge can complete it.
+    const tested = standingPrOf(row.payload);
+    if (tested?.mergedSha) return false;
     host ??= deps.host !== undefined ? Promise.resolve(deps.host)
       : import('../pr-host/github').then(m => m.createGitHubPrHost());
     const reader = await host;
-    if (!reader?.listPrs) throw new Error('PR host cannot reconcile historical standing PRs');
     const remote = `github.com/${upstream}`;
-    if (!listings.has(remote)) listings.set(remote, reader.listPrs({ remote, state: 'closed', per_page: 100 }));
-    const listed = await listings.get(remote)!;
-    if (!listed.ok) throw new Error(listed.error.message);
-    // A historical PR can target a branch that is no longer the default. The
-    // existing auditor verifies its actual target head and first-parent history.
-    const candidates = listed.data.filter(pr => pr.state === 'merged' && !pr.is_draft
-      && pr.head_ref === STANDING_PR_BRANCH && pr.head_repo?.toLowerCase() === fork.toLowerCase());
-    if (candidates.length > 100) throw new Error('Historical standing PR reconciliation exceeds its bounded candidate budget');
+    const isStandingMerge = (pr: { state: string; is_draft: boolean; head_ref: string; head_repo?: string | null }) =>
+      pr.state === 'merged' && !pr.is_draft
+      && pr.head_ref === STANDING_PR_BRANCH && pr.head_repo?.toLowerCase() === fork.toLowerCase();
+    let candidates: Array<{ number: number; headSha?: string }>;
+    if (tested) {
+      candidates = [{ number: tested.number }];
+    } else {
+      if (!reader?.listPrs) throw new Error('PR host cannot reconcile historical standing PRs');
+      if (!listings.has(remote)) listings.set(remote, reader.listPrs({ remote, state: 'closed', per_page: 100 }));
+      const listed = await listings.get(remote)!;
+      if (!listed.ok) throw new Error(listed.error.message);
+      // A historical PR can target a branch that is no longer the default. The
+      // existing auditor verifies its actual target head and first-parent history.
+      candidates = listed.data.filter(isStandingMerge).map(pr => ({ number: pr.ref.number, headSha: pr.head_sha }));
+      if (candidates.length > 100) throw new Error('Historical standing PR reconciliation exceeds its bounded candidate budget');
+    }
+    if (!reader) throw new Error('PR host cannot reconcile standing PR merges');
     const { auditGit, inspectPrDeliveryRow } = await import('./pr-delivery-audit');
     const git = deps.git ?? auditGit;
     for (const candidate of candidates) {
-      const current = await reader.getPr({ remote, number: candidate.ref.number });
+      const current = await reader.getPr({ remote, number: candidate.number });
       if (!current.ok) throw new Error(current.error.message);
       const pr = current.data;
-      if (pr.state !== 'merged' || pr.head_sha !== candidate.head_sha
-        || pr.url !== `https://github.com/${upstream}/pull/${pr.ref.number}`
-        || pr.ref.number !== candidate.ref.number || !/^[0-9a-f]{40}$/.test(pr.merge_commit_sha ?? '')) continue;
+      if (!isStandingMerge(pr) || (candidate.headSha !== undefined && pr.head_sha !== candidate.headSha)
+        || pr.url !== `https://github.com/${upstream}/pull/${pr.ref.number}` || (tested && pr.url !== tested.url)
+        || pr.ref.number !== candidate.number || !/^[0-9a-f]{40}$/.test(pr.merge_commit_sha ?? '')) continue;
       // The current base branch already includes the merge. Recover the pre-merge
       // target from the actual two-parent commit, never from getPrDetails.targetSha.
       const parents = await git(project.path, ['rev-list', '--parents', '-n', '1', pr.merge_commit_sha!]);
@@ -332,8 +353,11 @@ export function planLifecycleWrites(
   const writes: LifecycleWrite[] = [];
   const pr = standingPrOf(item.payload);
   if (pr && lifecycle.complete) {
+    // The tested link and a merge recovered from history share one key (one comment per PR).
+    // A merge verified after the tested link was posted is a separate event the source is owed.
+    const key = `standing-pr:${shortHash(pr.url)}`;
     writes.push({
-      key: `standing-pr:${shortHash(pr.url)}`, action: 'comment',
+      key: pr.mergedSha && pr.mergeAfterTested ? `${key}:merged` : key, action: 'comment',
       text: pr.mergedSha
         ? `Merged fix for ${item.id}: ${pr.url}\nVerified the recorded fix in PR head ${pr.testedSha} and merge ${pr.mergedSha}.`
         : `Tested fix for ${item.id}: ${pr.url}\nPassed the pot checks at ${pr.testedSha}. Awaiting the PR merge and its exact merge-result checks.`,
@@ -442,7 +466,7 @@ export async function reconcileAdmissionLifecycle(
     }
     if (!item) continue;
     if (resolveAdmissionLifecycle(entry.lifecycle).complete
-      && COMPLETED_STATES.has(item.state) && !standingPrOf(item.payload)) {
+      && COMPLETED_STATES.has(item.state) && !standingPrOf(item.payload)?.mergedSha) {
       try {
         await reconcilePr(workItemId, entry.harness, item);
         // Host/Git reads can overlap a reopen or a new completion. Plan provider

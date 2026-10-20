@@ -3,8 +3,9 @@
  * (EI-21592547181442895).
  *
  * The SELECT must run through the bounded READ ONLY transaction and shared
- * contention retry. Exhausted PG 55P03/57014 errors are normalized only after
- * the retry helper gives up; unrelated failures remain unchanged.
+ * contention retry. Lock contention (55P03) is retried and normalized after the
+ * helper gives up; a statement_timeout (57014) is a slow read and is normalized
+ * without a retry (WI-6554700010018139); unrelated failures remain unchanged.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,8 +32,25 @@ vi.mock('./issues-engineer', async (importOriginal) => ({
   issuesOutLinksMany: (ids: readonly string[]) => h.issuesOutLinksMany(ids),
 }));
 
-const { listScorecards } = await import('./scorecards');
+const {
+  listScorecards,
+  readScorecardEvidence,
+  isScorecardReadRetryable,
+  scorecardTimeoutLeadIn,
+  SCORECARD_READ_LOCK_TIMEOUT_MS,
+} = await import('./scorecards');
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
+
+const realRetry = await vi.importActual<typeof import('./agent-tools/locks/contention-retry')>(
+  './agent-tools/locks/contention-retry',
+);
+/** Delegate to the REAL retry helper (zero backoffs) so the caller's isRetryable decides. */
+const useRealRetry = (): void => {
+  h.acquireWithContentionRetry.mockImplementation(
+    (run: () => Promise<unknown>, opts: { isRetryable?: (e: unknown) => boolean } = {}) =>
+      realRetry.acquireWithContentionRetry(run, { ...opts, backoffsMs: [0, 0, 0] }),
+  );
+};
 
 const fakeTx = vi.fn(() => Promise.resolve([] as unknown[]));
 const pgError = (code: string): Error & { code: string } => Object.assign(new Error(`pg ${code}`), { code });
@@ -97,25 +115,79 @@ describe('listScorecards primary read contention handling', () => {
     expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(2);
   });
 
-  it('normalizes exhausted raw PG contention to OrgTxnTimeoutError', async () => {
+  // WI-6554700010018139: a lock_timeout below the statement_timeout makes lock waits
+  // surface as 55P03, so 57014 means a slow statement — which a retry only multiplies.
+  it('installs the lock timeout and the 57014-excluding retry predicate on the primary SELECT', async () => {
+    await listScorecards({ limit: 1 });
+
+    expect(h.boundedPgReadTxn).toHaveBeenCalledWith(expect.any(Function), {
+      lockTimeoutMs: SCORECARD_READ_LOCK_TIMEOUT_MS,
+    });
+    expect(h.acquireWithContentionRetry).toHaveBeenCalledWith(expect.any(Function), {
+      isRetryable: isScorecardReadRetryable,
+    });
+  });
+
+  it('does not retry a statement_timeout (57014) and labels it a slow read, not contention', async () => {
+    useRealRetry();
     const raw = pgError('57014');
     h.boundedPgReadTxn.mockRejectedValue(raw);
-    h.acquireWithContentionRetry.mockImplementation(async (run: () => Promise<unknown>) => {
-      let last: unknown;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          return await run();
-        } catch (error) {
-          last = error;
-        }
-      }
-      throw last;
-    });
 
     const error = await listScorecards({}).catch((caught) => caught);
     expect(error).toBeInstanceOf(OrgTxnTimeoutError);
     expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '57014', cause: raw });
-    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(3);
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+    expect((error as Error).message).toContain('operator read query');
+    expect((error as Error).message).toContain('listScorecards');
+    expect((error as Error).message).toContain('not lock contention');
+  });
+
+  it('retries lock contention (55P03) to exhaustion, then normalizes it as a read lock wait', async () => {
+    useRealRetry();
+    const raw = pgError('55P03');
+    h.boundedPgReadTxn.mockRejectedValue(raw);
+
+    const error = await listScorecards({}).catch((caught) => caught);
+    expect(error).toBeInstanceOf(OrgTxnTimeoutError);
+    expect(error).toMatchObject({ pgCode: '55P03', cause: raw });
+    // One attempt plus one retry per backoff slot.
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(4);
+    expect((error as Error).message).toContain('operator read query timed out waiting for a row/advisory lock');
+  });
+
+  it('applies the same lock timeout, predicate and normalization to the single-scorecard read', async () => {
+    useRealRetry();
+    const raw = pgError('57014');
+    h.boundedPgReadTxn.mockRejectedValue(raw);
+
+    const error = await readScorecardEvidence('EI-card').catch((caught) => caught);
+    expect(error).toBeInstanceOf(OrgTxnTimeoutError);
+    expect(error).toMatchObject({ pgCode: '57014', cause: raw });
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+    expect(h.boundedPgReadTxn).toHaveBeenCalledWith(expect.any(Function), {
+      lockTimeoutMs: SCORECARD_READ_LOCK_TIMEOUT_MS,
+    });
+    expect((error as Error).message).toContain('readScorecard(evidence)');
+  });
+
+  it('scorecardTimeoutLeadIn never labels a statement_timeout as contention', () => {
+    expect(scorecardTimeoutLeadIn(new OrgTxnTimeoutError('57014', pgError('57014')), 'scorecards:list read')).toBe(
+      'scorecards:list read exceeded its statement timeout (pg 57014: a slow query, not lock contention)',
+    );
+    expect(scorecardTimeoutLeadIn(new OrgTxnTimeoutError('55P03', pgError('55P03')), 'scorecards:emit')).toBe(
+      'scorecards:emit hit transient database contention',
+    );
+    expect(scorecardTimeoutLeadIn({ name: 'DbCallDeadlineError' }, 'scorecards:get read')).toBe(
+      'scorecards:get read hit transient database contention',
+    );
+  });
+
+  it('isScorecardReadRetryable keeps lock and pool contention, drops statement_timeout', () => {
+    expect(isScorecardReadRetryable(pgError('55P03'))).toBe(true);
+    expect(isScorecardReadRetryable({ name: 'DbCallDeadlineError', retryable: true })).toBe(true);
+    expect(isScorecardReadRetryable(pgError('57014'))).toBe(false);
+    expect(isScorecardReadRetryable({ pgCode: '57014' })).toBe(false);
+    expect(isScorecardReadRetryable(new Error('undefined column'))).toBe(false);
   });
 
   it('does not normalize unrelated database failures', async () => {

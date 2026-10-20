@@ -509,6 +509,60 @@ describe('completed isolated runtime certification', () => {
     await state.save();
     return { ...state, basis };
   }
+  async function setupDirectNativeMutation() {
+    const state = await setupDirectVerifier();
+    const files = state.receipt.files;
+    const caseTitle = 'native journey > creates and admits a candidate';
+    const descriptor = { schemaVersion: 1, probeInvocationId: 'native-invocation-001', mode: 'copy-out',
+      subjectPath: 'src/feature.ts', mutateExpression: 's/true/false/', againstCommit: null,
+      subjectBeforeSha256: files.find(file => file.dimension === 'source')!.sha256,
+      subjectAfterSha256: 'b'.repeat(64), mutantDiff: '-true\n+false', mutantDiffTruncated: false,
+      testCommandSha256: 'c'.repeat(64), testFileSha256: files.find(file => file.dimension === 'test')!.sha256 };
+    const baseline: any = { ...structuredClone(state.execution), mutationPhase: 'copy-baseline',
+      mutation: { ...descriptor, leg: 'copy-baseline' }, passedCaseTitles: [caseTitle],
+      runtimeEnvironmentBefore: { ...state.execution.runtimeEnvironmentBefore, observedAt: at(11) },
+      runtimeEnvironmentAfter: { ...state.execution.runtimeEnvironmentAfter, observedAt: at(20) } };
+    Object.assign(state.execution, { mutationPhase: 'mutant', mutation: { ...descriptor, leg: 'mutant' },
+      passed: 0, failed: 1, failedCaseTitles: [caseTitle],
+      runtimeEnvironmentBefore: { ...state.execution.runtimeEnvironmentBefore, observedAt: at(21) } });
+    Object.assign(state.row, { evidence_kind: 'mutation', test_run_source: 'mutation-probe', test_run_status: 'fail',
+      test_run_started_at: at(22), mutation_baseline_id: 41, mutation_baseline_status: 'pass',
+      mutation_baseline_execution_details: baseline });
+    return { ...state, baseline };
+  }
+  it('certifies a calibrated expected-failure native mutation without turning its ledger verdict into a pass', async () => {
+    const state = await setupDirectNativeMutation();
+    const original = JSON.stringify(state.row);
+    expect((await read()).currentness).toMatchObject({ overall: 'current', dimensions: { environment: 'current' } });
+    expect(JSON.stringify(state.row)).toBe(original);
+  });
+  it.each(['missing-baseline', 'failed-baseline', 'same-row', 'wrong-invocation', 'changed-command', 'wrong-source',
+    'changed-test', 'missing-failed-case', 'uncalibrated-case', 'dirty-baseline', 'skipped-baseline', 'wrong-commit',
+    'wrong-scope', 'changed-runtime', 'overlapping-legs', 'before-boot', 'failed-verifier', 'changed-source-receipt'])(
+    'refuses completed native mutation certification for %s', async failure => {
+      const state = await setupDirectNativeMutation();
+      const row: any = state.row;
+      if (failure === 'missing-baseline') delete row.mutation_baseline_execution_details;
+      if (failure === 'failed-baseline') row.mutation_baseline_status = 'fail';
+      if (failure === 'same-row') row.mutation_baseline_id = row.test_run_id;
+      if (failure === 'wrong-invocation') state.baseline.mutation.probeInvocationId = 'foreign-invocation';
+      if (failure === 'changed-command') state.baseline.mutation.testCommandSha256 = 'd'.repeat(64);
+      if (failure === 'wrong-source') row.test_run_source = 'local';
+      if (failure === 'changed-test') row.test_run_execution_details.mutation.testFileSha256 = 'e'.repeat(64);
+      if (failure === 'missing-failed-case') delete row.test_run_execution_details.failedCaseTitles;
+      if (failure === 'uncalibrated-case') state.baseline.passedCaseTitles = ['unrelated case'];
+      if (failure === 'dirty-baseline') state.baseline.worktreeDirty = true;
+      if (failure === 'skipped-baseline') state.baseline.skipped = 1;
+      if (failure === 'wrong-commit') state.baseline.commitSha = 'e'.repeat(40);
+      if (failure === 'wrong-scope') state.baseline.workspaceId = 'foreign';
+      if (failure === 'changed-runtime') state.baseline.runtimeEnvironmentAfter.fingerprint = 'e'.repeat(64);
+      if (failure === 'overlapping-legs') state.baseline.runtimeEnvironmentAfter.observedAt = at(22);
+      if (failure === 'before-boot') state.baseline.runtimeEnvironmentBefore.observedAt = at(9);
+      if (failure === 'failed-verifier') state.verifier.verdict = 'fail';
+      if (failure === 'changed-source-receipt') state.receipt.files[0].sha256 = 'e'.repeat(64);
+      await state.save();
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
   it.each([['integration', 'tree'], ['integration', 'live'], ['e2e', 'tree'], ['e2e', 'live']] as const)(
     'certifies directly executed native Vitest %s proof on the %s plane after its verifier exits', async (layer, plane) => {
       const state = await setupDirectVerifier(layer);

@@ -7,6 +7,7 @@ import { createImplementationReadiness, sealImplementationAcceptance, countWorkI
 import { getBuildInfo } from './build-info';
 import { readProcessIdentity } from './process-identity';
 import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
+import type { DedupRescreenRow, DedupRescreenVerdict } from './work-items-admission-dedup-rescreen';
 import { flushFallbackObservations, observeFallback } from './degradation/fallback-observations';
 import { configureRuntimeVintageStore, InMemoryRuntimeVintageStore, reportRuntimeVintage, resetRuntimeVintageStore } from './runtime-vintage';
 
@@ -4111,4 +4112,134 @@ describe('own-node rows stranded at origin=remote (WI-10006515)', () => {
       { feature_id: 'WI-peer', admission: 'pending' },
     ]);
   }, 60_000);
+});
+
+/**
+ * WI-6554700010018098 — a create-time dedup leg timeout used to park a row FOREVER: the
+ * fail-open runner (correctly) refuses unscreened rows, and the model promoter reaches only a
+ * few rows a tick, candidate rows first. The runner now re-screens its over-age degraded rows
+ * before admitting. These pin all three outcomes, the cooldown rotation, and the isolation.
+ */
+describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018098)', () => {
+  const ORIGINAL = { lexical: 'unavailable', semantic: 'ok', degraded: true };
+  const OLD = NOW - 61 * 60_000;
+  const clean: DedupRescreenVerdict = { lexical: 'ok', semantic: 'ok', candidates: [] };
+  const stillDown: DedupRescreenVerdict = { lexical: 'unavailable', semantic: 'ok', candidates: [] };
+  const screenWith = (verdicts: Record<string, DedupRescreenVerdict | Array<DedupRescreenVerdict>>) => {
+    const calls = new Map<string, number>();
+    return vi.fn(async (row: DedupRescreenRow): Promise<DedupRescreenVerdict> => {
+      const v = verdicts[row.id];
+      if (!v) throw new Error(`screen leg down for ${row.id}`);
+      const n = calls.get(row.id) ?? 0;
+      calls.set(row.id, n + 1);
+      return Array.isArray(v) ? v[Math.min(n, v.length - 1)]! : v;
+    });
+  };
+  const failOpenAt = (atMs: number, screen: ReturnType<typeof screenWith>, runId: string) =>
+    runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId,
+      sql: db.sql,
+      now: () => atMs,
+      dedupRescreen: screen,
+      onNewlyAdmitted: async () => {},
+    });
+  const readRow = async (id: string) =>
+    (await db.sql<Array<{ admission: string; coverage_type: string | null; payload: Record<string, any> }>>`
+      SELECT admission, jsonb_typeof(payload -> 'dedupCoverage') AS coverage_type, payload
+        FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${id}`)[0]!;
+
+  it('admits a clean re-screen in the same run, stamps found twins for the promoter, and records a still-degraded attempt', async () => {
+    await seedItem({ id: 'WI-rs-clean', createdAtMs: OLD - 3_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    await seedItem({ id: 'WI-rs-twin', createdAtMs: OLD - 2_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    await seedItem({ id: 'WI-rs-still', createdAtMs: OLD - 1_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    // Not over-age: the re-screen honours the same cutoff as admission.
+    await seedItem({ id: 'WI-rs-young', createdAtMs: NOW - 5 * 60_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    // Already carries candidates: promoter work, never re-screened.
+    await seedItem({
+      id: 'WI-rs-candidate', createdAtMs: OLD, vector: null,
+      payload: { dedupCoverage: ORIGINAL, dedupCandidates: [{ id: 'WI-x', similarity: 0.9, method: 'semantic-hard' }] },
+    });
+    await seedItem({ id: 'WI-rs-plain', createdAtMs: OLD, vector: null });
+    const screen = screenWith({
+      'WI-rs-clean': clean,
+      'WI-rs-twin': { lexical: 'ok', semantic: 'ok', candidates: [{ id: 'WI-canonical', similarity: 0.91, method: 'semantic-soft' }] },
+      'WI-rs-still': stillDown,
+    });
+
+    const result = await failOpenAt(NOW, screen, 'fail-open-rescreen-outcomes');
+
+    expect(screen.mock.calls.map(([row]) => row.id).sort()).toEqual(['WI-rs-clean', 'WI-rs-still', 'WI-rs-twin']);
+    expect(result.dedupRescreen).toMatchObject({
+      attempted: 3,
+      clean: ['WI-rs-clean'],
+      candidatesFound: ['WI-rs-twin'],
+      stillDegraded: ['WI-rs-still'],
+      raceSkipped: [],
+      errored: [],
+      budgetExhausted: false,
+    });
+    // The clean re-screen is admitted by the SAME run, beside the ordinary clean row.
+    expect(result.autoPromoted).toEqual(['WI-rs-clean', 'WI-rs-plain']);
+
+    const cleanRow = await readRow('WI-rs-clean');
+    expect(cleanRow.admission).toBe('unreviewed');
+    // An object, not a double-encoded jsonb string — `payload -> 'key'` predicates depend on it.
+    expect(cleanRow.coverage_type).toBe('object');
+    expect(cleanRow.payload.dedupCoverage).toMatchObject({
+      lexical: 'ok', semantic: 'ok', degraded: false,
+      rescreen: { attempts: 1, outcome: 'clean', runId: 'fail-open-rescreen-outcomes', prior: ORIGINAL },
+    });
+
+    const twinRow = await readRow('WI-rs-twin');
+    expect(twinRow.admission).toBe('pending');
+    expect(twinRow.payload.dedupCandidates).toEqual([{ id: 'WI-canonical', similarity: 0.91, method: 'semantic-soft' }]);
+    expect(twinRow.payload.dedupCoverage).toMatchObject({ degraded: false, rescreen: { outcome: 'candidates' } });
+
+    const stillRow = await readRow('WI-rs-still');
+    expect(stillRow.admission).toBe('pending');
+    expect(stillRow.payload.dedupCoverage).toMatchObject({ lexical: 'unavailable', degraded: true, rescreen: { attempts: 1, outcome: 'degraded' } });
+
+    expect((await readRow('WI-rs-young')).payload).toEqual({ dedupCoverage: ORIGINAL });
+    expect((await readRow('WI-rs-candidate')).admission).toBe('pending');
+
+    const [run] = await db.sql<Array<{ rescreen: Record<string, unknown> }>>`
+      SELECT detail -> 'dedupRescreen' AS rescreen FROM harness_shared.admission_runs
+       WHERE workspace_id = ${WS} AND id = 'fail-open-rescreen-outcomes'`;
+    expect(run!.rescreen).toMatchObject({ attempted: 3, clean: ['WI-rs-clean'] });
+  });
+
+  it('cools a still-degraded row down for two ticks, then retries it and keeps the ORIGINAL coverage as prior', async () => {
+    await seedItem({ id: 'WI-rs-flaky', createdAtMs: OLD, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    const screen = screenWith({ 'WI-rs-flaky': [stillDown, clean] });
+
+    const first = await failOpenAt(NOW, screen, 'fail-open-rescreen-cool-1');
+    expect(first.dedupRescreen).toMatchObject({ stillDegraded: ['WI-rs-flaky'] });
+
+    // Inside the cooldown: not re-screened, so a dead leg cannot pin the batch on one row.
+    const second = await failOpenAt(NOW + 10 * 60_000, screen, 'fail-open-rescreen-cool-2');
+    expect(second.dedupRescreen).toMatchObject({ attempted: 0 });
+    expect(screen).toHaveBeenCalledTimes(1);
+
+    const third = await failOpenAt(NOW + 61 * 60_000, screen, 'fail-open-rescreen-cool-3');
+    expect(screen).toHaveBeenCalledTimes(2);
+    expect(third.autoPromoted).toEqual(['WI-rs-flaky']);
+    const row = await readRow('WI-rs-flaky');
+    expect(row.payload.dedupCoverage).toMatchObject({ degraded: false, rescreen: { attempts: 2, outcome: 'clean', prior: ORIGINAL } });
+  });
+
+  it('a screen that throws never blocks admission, and the row is retried later rather than admitted unscreened', async () => {
+    await seedItem({ id: 'WI-rs-boom', createdAtMs: OLD, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    await seedItem({ id: 'WI-rs-ok', createdAtMs: OLD, vector: null });
+    const screen = screenWith({});
+
+    const result = await failOpenAt(NOW, screen, 'fail-open-rescreen-throws');
+
+    expect(result.autoPromoted).toEqual(['WI-rs-ok']);
+    expect(result.dedupRescreen).toMatchObject({ attempted: 1, errored: ['WI-rs-boom'] });
+    const row = await readRow('WI-rs-boom');
+    expect(row.admission).toBe('pending');
+    expect(row.payload.dedupCoverage).toMatchObject({ degraded: true, rescreen: { attempts: 1, outcome: 'error' } });
+  });
 });

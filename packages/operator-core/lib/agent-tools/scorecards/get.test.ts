@@ -1047,6 +1047,15 @@ describe('scorecards:get evidence-first projection', () => {
         },
       },
     });
+    // WI-6554700010018139: a statement_timeout is a slow query; the envelope must not
+    // call it contention (that label misdirected the EI-26502753767803422 reporters).
+    readScorecardEvidenceM.mockRejectedValueOnce(new OrgTxnTimeoutError('57014', new Error('statement timeout')));
+    const slowRead = await getTool.handler({ issueId: 'EI-card' } as never, makeDispatchContext());
+    expect(slowRead).toMatchObject({ data: { ok: false, error: 'timeout', pgCode: '57014' } });
+    const slowMessage = (slowRead as { data: { message: string } }).data.message;
+    expect(slowMessage).toContain('scorecards:get read exceeded its statement timeout');
+    expect(slowMessage).not.toContain('transient database contention');
+
     readScorecardEvidenceM.mockRejectedValueOnce(
       new DbCallDeadlineError('boundedPgReadTxn:acquire(admin)', 8000, 8000, 'org-admin'),
     );

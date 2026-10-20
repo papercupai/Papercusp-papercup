@@ -44,6 +44,7 @@ import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import { reconcileEventExternalBlockers } from '../../work-items';
 import { reconcileEventDurableParks } from '../../work-items-durable-park-audit';
+import { followUpSystemClears, type SystemClearedBlockerItem } from '../../work-item-ref-blocker-auto-clear';
 import { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 export { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 import type {
@@ -1114,7 +1115,9 @@ export async function retireAnnouncement(input: {
 }): Promise<RetireAnnouncementResult> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  return sql.begin(async (tx) => {
+  // Items the retirement settled; followed up only once the transaction has committed.
+  let settled: SystemClearedBlockerItem[] = [];
+  const outcome = (await sql.begin(async (tx) => {
     const candidates = await tx`
       SELECT event_key
         FROM harness_shared.event_awaits
@@ -1173,7 +1176,8 @@ export async function retireAnnouncement(input: {
     if (retired.length === 0) {
       return { ...base, reason: 'already_settled' as const };
     }
-    await reconcileEventExternalBlockers(tx, String(retired[0].event_key), input.subscriberId);
+    const reconciled = await reconcileEventExternalBlockers(tx, String(retired[0].event_key), input.subscriberId);
+    settled = reconciled?.items ?? [];
     return {
       retired: true,
       announcementId: input.announcementId,
@@ -1181,7 +1185,10 @@ export async function retireAnnouncement(input: {
       generation: retired[0].causal_generation != null ? Number(retired[0].causal_generation) : null,
       supersededAt: retired[0].superseded_at ? new Date(retired[0].superseded_at).toISOString() : null,
     };
-  }) as Promise<RetireAnnouncementResult>;
+  })) as RetireAnnouncementResult;
+  // P-003: un-park, refresh claimable views, message and wake each holder. Never throws.
+  await followUpSystemClears(settled);
+  return outcome;
 }
 
 /**
@@ -3677,7 +3684,9 @@ export async function stampAnnouncementsFired(
   // P-018: share registerAnnouncement's per-key advisory transaction lock.
   // Without this, an emit can commit a fired latch while a newer declaration
   // is between superseding the old generation and inserting its replacement.
-  return sql.begin(async (tx) => {
+  // Items the fire settled; followed up only once the transaction has committed.
+  let settled: SystemClearedBlockerItem[] = [];
+  const latched = (await sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + eventKey}, 0))`;
     const rows = await tx`
       UPDATE harness_shared.event_awaits
@@ -3704,11 +3713,17 @@ export async function stampAnnouncementsFired(
     // so it stays off the ordinary emit path, where stampAnnouncementsFired is called
     // for every key and this UPDATE matches nothing.
     if (rows.length > 0) {
-      await reconcileEventExternalBlockers(tx, eventKey, meta.firedBy ?? undefined);
-      await reconcileEventDurableParks(tx, eventKey, meta.firedBy ?? undefined);
+      const blockers = await reconcileEventExternalBlockers(tx, eventKey, meta.firedBy ?? undefined);
+      const parks = await reconcileEventDurableParks(tx, eventKey, meta.firedBy ?? undefined);
+      settled = [...(blockers?.items ?? []), ...(parks?.items ?? [])];
     }
     return rows.length;
-  }) as Promise<number>;
+  })) as number;
+  // event-wait-settlement-2026-10-20 P-003: one follow-up after every system clear —
+  // un-park the feature, refresh claimable views, message and wake each holder.
+  // After commit, and it never throws, so it cannot fail the emit that fired the key.
+  await followUpSystemClears(settled);
+  return latched;
 }
 
 /** ACTIVE announcements (not cancelled, not lapsed) — the discovery read for

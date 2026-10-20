@@ -27,7 +27,12 @@ import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import type { ExternalBlockerRecord } from '../external-blockers';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  // The system-clear follow-up's transport ends (event-wait-settlement-2026-10-20 P-003).
+  sendMessage: vi.fn(async () => ({})),
+  wakeRecipients: vi.fn(async () => ({})),
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -36,6 +41,14 @@ vi.mock('../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
+vi.mock('../agent-tools/coordination/messages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-tools/coordination/messages')>()),
+  sendMessage: h.sendMessage,
+}));
+vi.mock('../agent-tools/coordination/inbox-wake', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-tools/coordination/inbox-wake')>()),
+  wakeRecipients: h.wakeRecipients,
+}));
 
 const wi = await import('../work-items');
 const { sweepWorkItemBlockerDefaults, BLOCKER_DEFAULT_REAPER_ACTOR, defaultBlockerReapDeps } = await import('./work-item-blocker-reaper');
@@ -145,6 +158,35 @@ describe('sweepWorkItemBlockerDefaults against the real work-items store', () =>
     expect(after.payload.sibling).toBe('retained');
     expect(after.blockers[0]).toMatchObject({ status: 'cleared', recheckDisposition: 'cleared' });
     expect((await sweepWorkItemBlockerDefaults()).rechecked.cleared).toBe(0);
+  });
+
+  it('AUTO-BAR-R-4-P-003 + AUTO-BAR-R-5-P-003: a re-check that clears a held feature\'s last blocker returns it to open and wakes its holder', async () => {
+    h.sendMessage.mockClear();
+    h.wakeRecipients.mockClear();
+    const event = ask({ kind: 'event', capability: 'live-dependency', ref: 'work-item:done:WI-p003-recheck',
+      decideBy: undefined, defaultAction: undefined, recheckAt: PAST });
+    await db.sql`INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, 'WI-p003-recheck-feature', 'feature', 'held feature', 'blocked', 'su-p003-recheck-holder', ${WS}, 100, 0,
+        ${JSON.stringify({ externalBlockers: [event] })}::text::jsonb)`;
+
+    const result = await sweepWorkItemBlockerDefaults({ deps: { ...defaultBlockerReapDeps,
+      resolveCondition: async () => ({ verdict: 'reachable', basis: 'fired', authoritative: true,
+        evidence: 'current event generation fired', checkedAt: new Date().toISOString() }) } });
+
+    expect(result.rechecked.cleared).toBe(1);
+    expect((await rowOf('WI-p003-recheck-feature')).status).toBe('open');
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    const [identity, opts] = h.sendMessage.mock.calls[0] as unknown as [
+      { ownerId: string; workspaceId: string },
+      { to: string[]; summary: string; body: string },
+    ];
+    expect(identity).toMatchObject({ ownerId: 'system:blocker-auto-clear', workspaceId: WS });
+    expect(opts.to).toEqual(['su-p003-recheck-holder']);
+    expect(opts.summary).toContain('work-item:done:WI-p003-recheck');
+    expect(opts.body).toContain(`clearedBy ${BLOCKER_DEFAULT_REAPER_ACTOR}`);
+    expect(h.wakeRecipients).toHaveBeenCalledWith(['su-p003-recheck-holder'],
+      expect.objectContaining({ summary: opts.summary, workspaceId: WS }));
   });
 
   it('does not select settled legacy features even when they retain a due owner blocker', async () => {

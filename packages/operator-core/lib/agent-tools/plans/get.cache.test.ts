@@ -215,6 +215,9 @@ vi.mock('../../plan-audits', () => ({
 }));
 vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: M.previewPlanStartConsult,
+  activationDeclarationReadiness: () => ({
+    ready: false, applies: true, reuse: 'missing', libraries: 'missing', blockers: [], diagnostics: [],
+  }),
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-reader' }),
@@ -590,6 +593,7 @@ describe('plans:get — cache wiring', () => {
     expect(first.results[0]).toMatchObject({
       activationReadiness: {
         consult: { outcome: 'proceed', verdict: 'all_responders_paused' },
+        declarations: { ready: false, reuse: 'missing', libraries: 'missing' },
       },
     });
     expect(M.previewPlanStartConsult).toHaveBeenCalledWith({
