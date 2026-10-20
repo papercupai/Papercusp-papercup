@@ -172,16 +172,37 @@ export interface RadiusCaps {
 // green-main-ratchet-convergence-2026-10-17#D-030: the two count caps above are a proxy for
 // TIME and were wrong both ways on a 14-commit sample (they refused 588s radii and admitted a
 // ~1750s one). When the probe projects the radius's wall time, admission compares that
-// projection with 0.9 x the 25-minute affected leg (SYNC_DELTA_TIMEOUTS_MS.affected in the
-// deps module; a test pins the relation), and the count caps fall back to wide backstops.
+// projection with 0.9 x the affected leg budget (SYNC_DELTA_TIMEOUTS_MS.affected, derived
+// below), and the count caps fall back to wide backstops.
 // Without a projection the 32/26 count caps still apply.
+
+/** Per-leg subprocess budgets. Generous for a quiet box, but bounded so a wedged
+ *  child can never wedge the routines tick past the action's own deadline. They live here,
+ *  not in the deps module (which re-exports them), because admission (maxProjectedSec) and
+ *  the slot-credit deadline (COVERAGE_JUDGE_DEADLINE_MS) are DERIVED from them, and deps
+ *  already imports this module (green-main-ratchet-convergence-2026-10-17#D-031). */
+export const SYNC_DELTA_TIMEOUTS_MS = {
+  git: 60_000,
+  procGuard: 30_000,
+  /** `--print-affected --related` is an enumeration — no test execution — but the related
+   *  selector it runs (D-030, so the probe's AFFECTED_ETA describes the narrowed run) took
+   *  ~4.4 min for one operator-core path under load on 2026-10-20, so 5 min was too tight. */
+  probe: 10 * 60_000,
+  /** The actual affected run, bounded by task/guard cardinality and narrowed by
+   *  `--related` when the selector has positive evidence. */
+  affected: 25 * 60_000,
+  tsc: 10 * 60_000,
+  /** One file in its own invocation. */
+  confirm: 10 * 60_000,
+} as const;
+
 export const DEFAULT_RADIUS_CAPS = {
   maxWorkspaces: 10,
   maxPaths: 80,
   maxCommits: 40,
   maxTaskCommands: 32,
   maxGuards: 26,
-  maxProjectedSec: 1350,
+  maxProjectedSec: Math.round((0.9 * SYNC_DELTA_TIMEOUTS_MS.affected) / 1000),
   maxEtaTaskCommands: 96,
   maxEtaGuards: 80,
 } satisfies RadiusCaps;
@@ -879,12 +900,24 @@ export const COVERAGE_EXPECTED_INTERVAL_MS = 5 * 60_000;
 export const COVERAGE_ALARM_WINDOW_MS = 24 * 60 * 60_000;
 export const COVERAGE_ALARM_THRESHOLD = 0.95;
 export const COVERAGE_ALARM_MIN_TICKS = 144;
+/** One delta-check run's worst in-budget wall: probe, then tsc, then affected, in series
+ *  (runSyncBatchDeltaCheck), each killed at its SYNC_DELTA_TIMEOUTS_MS budget. The red-confirm
+ *  leg is excluded: it runs only after a red was found, and the 95% target absorbs those slots
+ *  (green-main-ratchet-convergence-2026-10-17#D-031 point 3). */
+export const SYNC_DELTA_RUN_BUDGET_MS =
+  SYNC_DELTA_TIMEOUTS_MS.probe + SYNC_DELTA_TIMEOUTS_MS.tsc + SYNC_DELTA_TIMEOUTS_MS.affected;
 /** A slot whose own run did not judge it still counts as evaluated when a later run
  *  judged its commits within this long (D-017 point 3). One completed run per slot caps
  *  coverage at runs/slots whenever a single affected-tests run outlasts five minutes
  *  (measured 104/291 = 36% before P-009), although those commits were judged minutes
- *  later. Slots judged later than this, or never, stay not evaluated. */
-export const COVERAGE_JUDGE_DEADLINE_MS = 30 * 60_000;
+ *  later. Slots judged later than this, or never, stay not evaluated.
+ *
+ *  DERIVED, not chosen (D-031, refining D-030 #3): runs go one at a time, so a slot that
+ *  arrives mid-run is judged by the NEXT run, which starts within one run plus one interval
+ *  and ends one run later. A check that is keeping up therefore judges every slot within
+ *  2 x SYNC_DELTA_RUN_BUDGET_MS + COVERAGE_EXPECTED_INTERVAL_MS (95 min today); the old fixed
+ *  30 minutes assumed a few-minute run and failed normal in-budget runs by construction. */
+export const COVERAGE_JUDGE_DEADLINE_MS = 2 * SYNC_DELTA_RUN_BUDGET_MS + COVERAGE_EXPECTED_INTERVAL_MS;
 
 /** Non-evaluated statuses whose commits a later run can still judge. `skipped` and
  *  `missed-opportunity` leave the cursor where it was; a lint-guard `partial` keeps each
@@ -1039,11 +1072,15 @@ export interface CoverageAlarmSubject {
   /** Where to read the coverage history. */
   stateHint: string;
   path: string;
+  /** This check's slot-credit deadline (the `deadlineMs` it passes to creditLateJudgedSlots),
+   *  so the alarm states the window the check is actually judged against (D-031). */
+  judgeDeadlineMs: number;
 }
 
 export const DELTA_COVERAGE_ALARM_SUBJECT: CoverageAlarmSubject = {
   conditionKey: COVERAGE_ALARM_CONDITION_KEY,
   label: 'sync-batch delta check',
+  judgeDeadlineMs: COVERAGE_JUDGE_DEADLINE_MS,
   filedBy: 'system:sync-batch-delta-check',
   stateHint:
     'Read metadata.sync_delta with a workspace-scoped dev:pg_query; routines:list does not return it ' +
@@ -1071,7 +1108,7 @@ export function buildCoverageAlarm(
     }
   }
   const breakdown = [...reasons.entries()].map(([s, n]) => `${s} x${n}`).join(', ') || '(none)';
-  const deadline = formatWindow(COVERAGE_JUDGE_DEADLINE_MS);
+  const deadline = formatWindow(subject.judgeDeadlineMs);
   return {
     conditionKey: subject.conditionKey,
     title: `${subject.label} coverage low: ${pct} of schedule slots judged over ${windowLabel}`,

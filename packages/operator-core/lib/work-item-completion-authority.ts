@@ -620,6 +620,15 @@ export interface CompletionEvidenceFindings {
    * silence. Like `deferred` above, this only ever DEMOTES.
    */
   residueUnowned?: readonly string[];
+  /**
+   * plan-verification-profiles-2026-10-17 R-13 (P-004): the server resolved every plan item this
+   * work item is linked to as a NON-code deliverable (a declared non-code kind, or the general
+   * profile's default). Tests-run evidence is required only of code deliverables, so a close
+   * that omits `testsRun`/`testResult` is not graded down for it. Never accepted from the
+   * caller: complete.ts derives it from the plan item rows, and anything it cannot read stays
+   * undefined, which keeps the tests requirement.
+   */
+  nonCodeDeliverable?: boolean;
 }
 
 /**
@@ -641,7 +650,11 @@ export function insufficientEvidenceReason(
 ): InsufficientEvidenceReason | undefined {
   if (!evidence) return 'no-evidence';
   if (!evidence.verifiedHow) return 'no-verified-how';
-  if (!evidence.testsRun?.trim() && !evidence.testResult?.trim()) return 'no-test-run-or-result';
+  // R-13: tests-run evidence is owed by code deliverables only. `verifiedHow` above still says
+  // how a non-code deliverable was checked.
+  if (!evidence.testsRun?.trim() && !evidence.testResult?.trim() && findings?.nonCodeDeliverable !== true) {
+    return 'no-test-run-or-result';
+  }
   // A close that claims it added/changed tests must say WHERE. Note this reads the
   // declared paths only — whether they EXIST is a separate detector (complete.ts,
   // EI-20093150500083378); this one refuses the record that names none at all.

@@ -1510,6 +1510,29 @@ const overlayWorks = (() => {
   }
 })();
 
+/**
+ * Write containment (WI-6554700010018048) needs one more capability than the subject bind: a
+ * kernel overlay mounted by uid 0 of a private user namespace. Probed with the probe's own
+ * shape so a host without it skips rather than fails.
+ */
+const containWorks = overlayWorks && (() => {
+  const probeDir = mkdtempSync(join(tmpdir(), 'mutation-probe-contain-check-'));
+  try {
+    const lower = join(probeDir, 'lower');
+    const work = join(probeDir, 'work');
+    mkdirSync(lower);
+    mkdirSync(work);
+    const script = `mount -t tmpfs tmpfs "$2" && mkdir "$2/u" "$2/w" && mount -t overlay overlay -o "lowerdir=$1,upperdir=$2/u,workdir=$2/w" "$1" && : > "$1/canary"`;
+    const r = spawnSync('bwrap', [
+      '--unshare-user', '--uid', '0', '--gid', '0', '--cap-add', 'ALL', '--dev-bind', '/', '/', '--',
+      'bash', '-c', script, '_', lower, work,
+    ], { encoding: 'utf8', timeout: 15_000 });
+    return r.status === 0 && !existsSync(join(lower, 'canary'));
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true });
+  }
+})();
+
 function makeSiblingRouteRepo(): { repo: string; subject: string } {
   const repo = join(dir, 'sibling-route-repo');
   mkdirSync(repo);
@@ -1606,6 +1629,92 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(code).toBe(0);
     expect(read()).toBe(ORIGINAL);
     expect(out).not.toContain('external-change-preserved');
+  });
+
+  /**
+   * WI-6554700010018048 — the subject bind isolated ONE file. A guard whose build step writes
+   * into the checkout (the papercusp.com site's vitest global-setup runs build.py into out/)
+   * left output built FROM THE MUTANT in the real tree for the whole probe, where a peer was
+   * deploying it, while tree integrity read VERIFIED. Every post-baseline overlay leg now sees
+   * the checkout copy-on-write and discards its writes. The fixture "builds" by copying {} into
+   * out/: the BASELINE runs outside the namespace and must land; the copy-baseline and mutant
+   * builds must not. The MUTATION_PROBE_CONTAIN_WRITES=0 run is the calibration: the same
+   * fixture really does leak the mutant build when containment is off.
+   */
+  function makeBuildOutputRepo(name: string): { repo: string; subject: string; guard: string } {
+    const repo = join(dir, name);
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    mkdirSync(join(repo, 'out'));
+    mkdirSync(join(repo, '.papercusp', 'scratch'), { recursive: true });
+    git(repo, ['init', '-q']);
+    const subjectPath = join(repo, 'src', 'subject.txt');
+    writeFileSync(subjectPath, 'keep\n');
+    writeFileSync(join(repo, 'out', 'index.html'), 'pre-probe\n');
+    const q = (p: string) => JSON.stringify(p);
+    const guard = [
+      `cp {} ${q(join(repo, 'out', 'index.html'))}`,
+      `printf x > ${q(join(repo, 'out'))}/built-by-$PAPERCUSP_MUTATION_PHASE`,
+      `printf x > ${q(join(repo, '.papercusp', 'scratch'))}/evidence-$PAPERCUSP_MUTATION_PHASE`,
+      `printf x > ${q(repo)}/rootlevel-$PAPERCUSP_MUTATION_PHASE`,
+      'grep -q "^keep$" {}',
+    ].join(' && ');
+    return { repo, subject: subjectPath, guard };
+  }
+
+  it.skipIf(!containWorks)('discards the build output a guard writes into the checkout during post-baseline legs', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-repo');
+    const { code, out } = runProbeIO(['--file', s, '--mutate', 's/keep/KEEP/', '--test', guard], process.env, repo);
+    expect(out).toContain('MUTATION_PROBE_CONTAINMENT status=contained overlays=1 uncovered=0 failed=0');
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(code).toBe(0);
+    // The baseline's (unmutated) build is the only one the real tree ever saw.
+    expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8')).toBe('keep\n');
+    expect(readdirSync(join(repo, 'out')).sort()).toEqual(['built-by-baseline', 'index.html']);
+    expect(existsSync(join(repo, 'rootlevel-mutant'))).toBe(false);
+    // Evidence written to .papercusp/scratch outlives every leg.
+    expect(readdirSync(join(repo, '.papercusp', 'scratch')).sort()).toEqual([
+      'evidence-baseline', 'evidence-copy-baseline', 'evidence-mutant',
+    ]);
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
+  });
+
+  it.skipIf(!containWorks)('splits a checkout with a mount point under it and names the root-level writes it could not contain', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-mounted-repo');
+    // A bind under the root, like the shared papercusp tree's .gitnexus: overlayfs will not take
+    // the root whole from a user namespace, so the probe overlays each subtree instead.
+    const empty = join(dir, 'empty-mount-source');
+    mkdirSync(empty);
+    mkdirSync(join(repo, 'mnt'));
+    const r = spawnSync('bwrap', [
+      '--dev-bind', '/', '/', '--bind', empty, join(repo, 'mnt'), '--die-with-parent', '--',
+      'bash', SCRIPT, '--file', s, '--mutate', 's/keep/KEEP/', '--test', guard,
+    ], { encoding: 'utf8', timeout: 60_000, cwd: repo });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    expect(out).toMatch(/MUTATION_PROBE_CONTAINMENT status=partial overlays=[1-9]\d* uncovered=\d+ failed=0/);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(r.status).toBe(0);
+    // Inside a covered subtree the mutant build is still discarded...
+    expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8')).toBe('keep\n');
+    expect(readdirSync(join(repo, 'out')).sort()).toEqual(['built-by-baseline', 'index.html']);
+    // ...while each write at the uncovered root level is named, per post-baseline leg.
+    expect(out).toContain(`MUTATION_PROBE_CONTAINMENT_LEAK phase=copy-baseline path=${join(repo, 'rootlevel-copy-baseline')}`);
+    expect(out).toContain(`MUTATION_PROBE_CONTAINMENT_LEAK phase=mutant path=${join(repo, 'rootlevel-mutant')}`);
+    expect(out).not.toContain('phase=baseline path=');
+  });
+
+  it.skipIf(!overlayWorks)('calibration: with MUTATION_PROBE_CONTAIN_WRITES=0 the same fixture leaks the mutant build', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-uncontained-repo');
+    const { code, out } = runProbeIO(
+      ['--file', s, '--mutate', 's/keep/KEEP/', '--test', guard],
+      { ...process.env, MUTATION_PROBE_CONTAIN_WRITES: '0' },
+      repo,
+    );
+    expect(out).toContain('MUTATION_PROBE_CONTAINMENT status=disabled');
+    expect(out).toMatch(/write containment: DISABLED .*lands in the REAL tree/);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(code).toBe(0);
+    expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8')).toBe('KEEP\n');
+    expect(existsSync(join(repo, 'out', 'built-by-mutant'))).toBe(true);
   });
 
   /**

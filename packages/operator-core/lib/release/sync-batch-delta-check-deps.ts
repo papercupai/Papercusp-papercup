@@ -45,6 +45,7 @@ import {
   parseSyncBatches,
   parseTscFailingFiles,
   SYNC_DELTA_MAX_LISTED_COMMITS,
+  SYNC_DELTA_TIMEOUTS_MS,
   type ConfirmVerdict,
   type EditorHit,
   type LoadReading,
@@ -60,22 +61,10 @@ import {
  *  (`metadata.sync_delta`) — the same row the seed script upserts. */
 export const SYNC_DELTA_ROUTINE_NAME = 'sync-batch-delta-check';
 
-/** Per-leg subprocess budgets. Generous for a quiet box, but bounded so a wedged
- *  child can never wedge the routines tick past the action's own deadline. */
-export const SYNC_DELTA_TIMEOUTS_MS = {
-  git: 60_000,
-  procGuard: 30_000,
-  /** `--print-affected --related` is an enumeration — no test execution — but the related
-   *  selector it runs (D-030, so the probe's AFFECTED_ETA describes the narrowed run) took
-   *  ~4.4 min for one operator-core path under load on 2026-10-20, so 5 min was too tight. */
-  probe: 10 * 60_000,
-  /** The actual affected run, bounded by task/guard cardinality and narrowed by
-   *  `--related` when the selector has positive evidence. */
-  affected: 25 * 60_000,
-  tsc: 10 * 60_000,
-  /** One file in its own invocation. */
-  confirm: 10 * 60_000,
-} as const;
+/** Per-leg subprocess budgets: defined in the logic module, which derives admission and the
+ *  slot-credit deadline from them (green-main-ratchet-convergence-2026-10-17#D-031), and
+ *  re-exported here for the call sites below and existing importers. */
+export { SYNC_DELTA_TIMEOUTS_MS };
 
 /** SGR escapes, built without a raw control byte in source (`lint:no-control-bytes`
  *  is a green-checkpoint leg — EI-19478121013052934). */

@@ -61,6 +61,20 @@
 #   auto     overlay when bwrap can bind here, else mirror (logged).
 # Every verdict line names the one used: relocation=overlay|mirror|flat.
 #
+# WRITE CONTAINMENT (WI-6554700010018048). Under the overlay, every post-
+# baseline guard run also sees the enclosing checkout (the outermost git root of
+# the subject and of the working directory) copy-on-write: whatever the guard
+# writes there — a build step's out/ or dist/, generated code, caches — lands in
+# a private tmpfs and is DISCARDED when the run exits, so no mutant-built
+# artifact is ever visible to git-sync, a deployer or a peer. The probe scratch
+# dir and each root's .papercusp/scratch stay real, so receipts and evidence
+# logs written there persist. A subtree with a mount point under it cannot be
+# overlaid; its own entries are reported as uncovered, and any of them that
+# change during a mutant leg are named (MUTATION_PROBE_CONTAINMENT_LEAK). The
+# status line reads MUTATION_PROBE_CONTAINMENT status=contained|partial|
+# uncontained|disabled|sandbox-root|n/a. MUTATION_PROBE_CONTAIN_WRITES=0 turns
+# containment off (leaks are still reported).
+#
 # HISTORICAL MODE — prove a guard catches the version that actually preceded a
 # fix, without guessing that HEAD is still pre-fix (git-sync commits the tree
 # continuously):
@@ -366,6 +380,19 @@ SANDBOX_TMPFS_ARGS=()
 RELOCATION="auto"
 RELOCATION_USED=""
 OVERLAY_DEST=""
+# Write containment (WI-6554700010018048; see WRITE CONTAINMENT above). Planned
+# once after relocation is chosen; read by run_guard for every post-baseline leg.
+CONTAIN_STATUS="n/a"
+CONTAIN_REASON=""
+CONTAIN_SETUP=""
+CONTAIN_WORK=""
+CONTAIN_MOUNTS=()
+CONTAIN_ROOTS=()
+CONTAIN_OVERLAYS=()
+CONTAIN_PASSTHROUGH=()
+CONTAIN_LEVELS=()
+CONTAIN_UNCOVERED=()
+CONTAIN_FAILED=()
 FAKE_BIN=""
 DESTRUCTIVE_LOG=""
 
@@ -1877,10 +1904,19 @@ run_guard() {
   guard_repo_root="$(git -C "$guard_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
   guard_repo_root="${guard_repo_root:-$RUNNER_ROOT}"
   local -a sandbox_lock_prefix=()
+  local contain_stamp contain_abort_reason
   for attempt in 1 2; do
     log "running $label: $cmd"
     # A retried attempt must not inherit the first attempt's receipts.
     rm -f "$(test_run_receipt_file "$phase")"
+    # WI-6554700010018048: a partially contained leg is checked afterwards for
+    # writes to the uncovered checkout entries, against this stamp.
+    rm -f "$SCRATCH/contain-abort"
+    contain_stamp=""
+    if [ -n "$CONTAIN_SETUP" ] && [ "$CONTAIN_STATUS" = "partial" ] && [ "$phase" != "baseline" ]; then
+      contain_stamp="$SCRATCH/contain-stamp.$phase"
+      : > "$contain_stamp"
+    fi
     (
       export PAPERCUSP_MUTATION_PHASE="$phase"
       export PAPERCUSP_TEST_RUN_RECEIPT_FILE="$(test_run_receipt_file "$phase")"
@@ -1992,6 +2028,14 @@ run_guard() {
           --chdir "$guard_cwd" --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
       fi
       if [ "${#overlay_args[@]}" -gt 0 ]; then
+        if [ -n "$CONTAIN_SETUP" ]; then
+          # WI-6554700010018048: the checkout is copy-on-write for this leg too.
+          # The outer namespace root mounts the overlays; the setup script then
+          # execs an inner bwrap as the caller's uid/gid, which binds the mutant.
+          exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
+            bwrap --unshare-user --uid 0 --gid 0 --cap-add ALL --dev-bind / / --die-with-parent -- \
+            bash "$CONTAIN_SETUP" "${overlay_args[@]}" --chdir "$guard_cwd" --die-with-parent -- bash -c "$cmd"
+        fi
         exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
           bwrap --dev-bind / / "${overlay_args[@]}" --die-with-parent -- bash -c "$cmd"
       fi
@@ -2006,6 +2050,18 @@ run_guard() {
     rc=$?
     CHILD=""
     guard_elapsed=$(( SECONDS - guard_started ))
+    # WI-6554700010018048: the containment setup never reached the guard, so rc
+    # is the setup's failure, not a measurement. Refuse before it can score.
+    if [ -e "$SCRATCH/contain-abort" ]; then
+      contain_abort_reason="$(head -1 "$SCRATCH/contain-abort" 2>/dev/null || true)"
+      cat "$output"
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=-1 guard_exit=%d containment_setup_failed=yes phase=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
+      die "write containment could not be set up for the $label run (${contain_abort_reason:-no reason recorded}). The guard never ran, so neither caught nor survived is established. Re-run, or set MUTATION_PROBE_CONTAIN_WRITES=0 to run uncontained."
+    fi
+    if [ -n "$contain_stamp" ]; then
+      contain_report_leaks "$phase" "$contain_stamp"
+    fi
     # The committed-source loader can replace the intentional overlay in a
     # test-spawned child with HEAD. Its router notice means this leg measured
     # different bytes, even when a parent module-load control sees the overlay.
@@ -2684,6 +2740,269 @@ else
   GUARD_SUBJECT="$TARGET"
 fi
 readonly GUARD_SUBJECT
+
+# ---------------------------------------------------------------------------
+# Write containment (WI-6554700010018048). The subject bind isolates exactly ONE
+# file. Observed 2026-10-20 on the papercusp.com site clone: the guard's vitest
+# global-setup ran build.py, which rebuilt out/ FROM THE MUTANT into the real
+# checkout for the length of the probe while a peer was deploying that out/ to
+# production; tree integrity still read VERIFIED because it hashes the subject
+# only. So every post-baseline overlay leg also sees the enclosing checkout
+# copy-on-write (kernel overlayfs, tmpfs upper), discarded when the leg exits.
+
+# Outermost checkout root containing directory $1: the git toplevel, walked up
+# through superprojects. Prints nothing outside a git worktree.
+contain_outer_root() {
+  local root parent
+  root="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null || true)"
+  while [ -n "$root" ]; do
+    parent="$(git -C "$root" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+    [ -n "$parent" ] || break
+    case "$root" in
+      "$parent"/*) root="$parent" ;;
+      *) break ;;
+    esac
+  done
+  [ -n "$root" ] || return 0
+  realpath -e -- "$root" 2>/dev/null || true
+}
+
+# True when path $1 is $2 or lies under it.
+contain_path_under() {
+  case "$1" in
+    "$2"|"$2"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Plan directory $1. With no mount point strictly below it, the whole directory
+# is overlaid. Overlayfs refuses, from a user namespace, a lower layer that has
+# mounts beneath it (measured 2026-10-20: EINVAL on the shared papercusp root,
+# whose .gitnexus and sandbox binds are such mounts; the site clone overlays
+# whole). Such a directory is split instead: each child directory is planned in
+# turn, and the directory's OWN entries stay uncovered (see the leak report).
+contain_plan_dir() {
+  local d="$1" mp e has_sub=0
+  for mp in ${CONTAIN_MOUNTS[@]+"${CONTAIN_MOUNTS[@]}"}; do
+    case "$mp" in
+      "$d"/*) has_sub=1; break ;;
+    esac
+  done
+  if [ "$has_sub" -eq 0 ]; then
+    case "$d" in
+      # Unrepresentable in overlay mount options: leave it visibly uncovered.
+      *,*|*:*|*\\*) CONTAIN_UNCOVERED+=("$d") ;;
+      *) CONTAIN_OVERLAYS+=("$d") ;;
+    esac
+    return 0
+  fi
+  CONTAIN_LEVELS+=("$d")
+  for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    if [ -d "$e" ] && [ ! -L "$e" ]; then
+      contain_plan_dir "$e"
+    else
+      CONTAIN_UNCOVERED+=("$e")
+    fi
+  done
+}
+
+# The setup script the outer namespace root (bwrap --uid 0 --cap-add ALL: the
+# capabilities are scoped to that private user namespace) runs before each
+# contained leg: one tmpfs for every upper/work dir, a hold-bind of each
+# passthrough dir, the overlays, the passthrough re-binds, then an inner bwrap
+# that drops back to the caller's uid/gid with NO capabilities to run the guard.
+# A failed overlay is recorded in contain-failed and skipped. A failed tmpfs
+# writes contain-abort and exits, which run_guard turns into a harness error:
+# a setup failure must never be scored as the guard catching the mutant.
+contain_write_setup() {
+  local f="$SCRATCH/contain-setup.sh" i p
+  {
+    printf '#!/usr/bin/env bash\n# Generated by mutation-probe.sh (WI-6554700010018048).\nset -u\n'
+    printf 'work=%q\nfail=%q\nabort=%q\n' "$CONTAIN_WORK" "$SCRATCH/contain-failed" "$SCRATCH/contain-abort"
+    printf ': > "$fail"\n'
+    printf 'mount -t tmpfs -o mode=0700 tmpfs "$work" || { printf "%%s\\n" "tmpfs mount on $work failed" > "$abort"; exit 97; }\n'
+    i=0
+    for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
+      printf 'h%d=0; mkdir -p "$work/h%d" && mount --bind %q "$work/h%d" && h%d=1\n' "$i" "$i" "$p" "$i" "$i"
+      i=$((i + 1))
+    done
+    i=0
+    for p in ${CONTAIN_OVERLAYS[@]+"${CONTAIN_OVERLAYS[@]}"}; do
+      printf 'mkdir -p "$work/u%d" "$work/w%d" && mount -t overlay overlay -o %q %q 2>/dev/null || printf "%%s\\n" %q >> "$fail"\n' \
+        "$i" "$i" "lowerdir=$p,upperdir=$CONTAIN_WORK/u$i,workdir=$CONTAIN_WORK/w$i" "$p" "$p"
+      i=$((i + 1))
+    done
+    i=0
+    for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
+      printf '{ [ "$h%d" = 1 ] && mount --bind "$work/h%d" %q; } || printf "%%s\\n" %q >> "$fail"\n' \
+        "$i" "$i" "$p" "passthrough:$p"
+      i=$((i + 1))
+    done
+    printf 'exec bwrap --unshare-user --uid %q --gid %q --dev-bind / / "$@"\n' "$(id -u)" "$(id -g)"
+  } > "$f" || return 1
+  CONTAIN_SETUP="$f"
+}
+
+# Plan, generate and positively control containment. Leaves CONTAIN_SETUP set
+# only when a real leg-shaped run proved both the subject bind and a discarded
+# canary write; otherwise the probe runs the plain overlay and says so.
+contain_preflight() {
+  local cand r o p canary="" canary_dir="" err_line mounted=0 line
+  local -a cands=()
+  CONTAIN_STATUS="uncontained"
+  cand="$(contain_outer_root "$(dirname "$FILE")")"
+  [ -n "$cand" ] && cands+=("$cand")
+  cand="$(contain_outer_root "$(pwd -P)")"
+  [ -n "$cand" ] && cands+=("$cand")
+  for cand in ${cands[@]+"${cands[@]}"}; do
+    for r in ${CONTAIN_ROOTS[@]+"${CONTAIN_ROOTS[@]}"}; do
+      contain_path_under "$cand" "$r" && continue 2
+    done
+    # A later root that contains an earlier one replaces it.
+    local -a kept=()
+    for r in ${CONTAIN_ROOTS[@]+"${CONTAIN_ROOTS[@]}"}; do
+      contain_path_under "$r" "$cand" || kept+=("$r")
+    done
+    CONTAIN_ROOTS=(${kept[@]+"${kept[@]}"} "$cand")
+  done
+  if [ "${#CONTAIN_ROOTS[@]}" -eq 0 ]; then
+    CONTAIN_STATUS="n/a"
+    CONTAIN_REASON="neither the subject nor the working directory is inside a git checkout"
+    return 0
+  fi
+  if [ "${MUTATION_PROBE_CONTAIN_WRITES:-1}" = "0" ]; then
+    CONTAIN_STATUS="disabled"
+    CONTAIN_REASON="MUTATION_PROBE_CONTAIN_WRITES=0"
+    return 0
+  fi
+  if [ "$RELOCATION_USED" != "overlay" ]; then
+    CONTAIN_REASON="relocation=$RELOCATION_USED has no private namespace to contain writes in"
+    return 0
+  fi
+  if [ "$DELETES_ACK" -eq 1 ]; then
+    CONTAIN_STATUS="sandbox-root"
+    CONTAIN_REASON="guard runs with / read-only; only --sandbox-root $SANDBOX_ROOT and the probe scratch are writable"
+    return 0
+  fi
+  for r in "${CONTAIN_ROOTS[@]}"; do
+    if contain_path_under "$SCRATCH" "$r"; then
+      CONTAIN_REASON="the probe scratch dir $SCRATCH lies inside the checkout $r (TMPDIR); set TMPDIR outside it"
+      return 0
+    fi
+  done
+  CONTAIN_WORK="$SCRATCH/contain"
+  case "$CONTAIN_WORK" in
+    *,*|*:*|*\\*)
+      CONTAIN_REASON="the scratch path $CONTAIN_WORK cannot be named in overlay mount options"
+      return 0 ;;
+  esac
+  mkdir -p "$CONTAIN_WORK" || { CONTAIN_REASON="could not create $CONTAIN_WORK"; return 0; }
+  # mountinfo field 5 is the mount point, octal-escaped (\040 for a space).
+  while read -r _ _ _ _ p _; do
+    CONTAIN_MOUNTS+=("$(printf '%b' "$p")")
+  done < /proc/self/mountinfo
+  for r in "${CONTAIN_ROOTS[@]}"; do
+    contain_plan_dir "$r"
+  done
+  # Evidence written to a root's .papercusp/scratch outlives the leg.
+  for r in "${CONTAIN_ROOTS[@]}"; do
+    p="$r/.papercusp/scratch"
+    [ -d "$p" ] && [ ! -L "$p" ] || continue
+    for o in ${CONTAIN_OVERLAYS[@]+"${CONTAIN_OVERLAYS[@]}"}; do
+      if contain_path_under "$p" "$o"; then
+        CONTAIN_PASSTHROUGH+=("$p")
+        break
+      fi
+    done
+  done
+  if [ "${#CONTAIN_OVERLAYS[@]}" -eq 0 ]; then
+    CONTAIN_REASON="no directory of the checkout can be overlaid"
+    return 0
+  fi
+  contain_write_setup || { CONTAIN_REASON="could not write $SCRATCH/contain-setup.sh"; CONTAIN_SETUP=""; return 0; }
+  # Positive control: the canary must be writable inside the namespace and
+  # ABSENT outside it afterwards, or a "contained" claim would be untested.
+  for o in "${CONTAIN_OVERLAYS[@]}"; do
+    if [ -w "$o" ]; then
+      canary_dir="$o"
+      break
+    fi
+  done
+  [ -n "$canary_dir" ] && canary="$canary_dir/.mutation-probe-contain-canary.$$"
+  if bwrap --unshare-user --uid 0 --gid 0 --cap-add ALL --dev-bind / / --die-with-parent -- \
+       bash "$CONTAIN_SETUP" --bind "$TARGET" "$OVERLAY_DEST" --die-with-parent -- \
+       bash -c '[ "$(stat -Lc %d:%i -- "$1")" = "$(stat -Lc %d:%i -- "$2")" ] || exit 3; [ -z "$3" ] || : > "$3"' \
+       _ "$TARGET" "$OVERLAY_DEST" "$canary" 2>"$SCRATCH/contain-preflight.err" \
+     && { [ -z "$canary" ] || [ ! -e "$canary" ]; }; then
+    :
+  else
+    [ -n "$canary" ] && rm -f -- "$canary"
+    err_line="$(head -1 "$SCRATCH/contain-preflight.err" 2>/dev/null || true)"
+    [ -n "$err_line" ] || err_line="${canary:+the canary write reached the real tree or failed}"
+    CONTAIN_REASON="the containment namespace failed its positive control${err_line:+: $err_line}"
+    CONTAIN_SETUP=""
+    return 0
+  fi
+  if [ -s "$SCRATCH/contain-failed" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && CONTAIN_FAILED+=("$line")
+    done < "$SCRATCH/contain-failed"
+  fi
+  # grep -c prints 0 AND exits 1 on no match, so never chain `|| echo 0` here.
+  line="$(grep -vc '^passthrough:' "$SCRATCH/contain-failed" 2>/dev/null)"
+  mounted=$(( ${#CONTAIN_OVERLAYS[@]} - ${line:-0} ))
+  if [ "$mounted" -le 0 ]; then
+    CONTAIN_REASON="no overlay could be mounted"
+    CONTAIN_SETUP=""
+    return 0
+  fi
+  if [ "${#CONTAIN_LEVELS[@]}" -eq 0 ] && [ "${#CONTAIN_UNCOVERED[@]}" -eq 0 ] && [ "${#CONTAIN_FAILED[@]}" -eq 0 ]; then
+    CONTAIN_STATUS="contained"
+  else
+    CONTAIN_STATUS="partial"
+  fi
+}
+
+# After a post-baseline leg that ran with uncovered levels, name each level
+# entry whose mtime moved during the leg (paths inside .git are skipped: they
+# are git's own bookkeeping, not artifacts anyone deploys). On a shared tree a
+# concurrent peer edit shows up too, so this is evidence to inspect, not proof.
+contain_report_leaks() {
+  local phase="$1" stamp="$2" level p n=0
+  [ "$CONTAIN_STATUS" = "partial" ] || return 0
+  [ -e "$stamp" ] || return 0
+  for level in ${CONTAIN_LEVELS[@]+"${CONTAIN_LEVELS[@]}"}; do
+    while IFS= read -r p; do
+      case "$p" in
+        */.git|*/.git/*) continue ;;
+      esac
+      n=$((n + 1))
+      [ "$n" -le 20 ] && printf 'MUTATION_PROBE_CONTAINMENT_LEAK phase=%s path=%s\n' "$phase" "$p"
+    done < <(find "$level" -mindepth 1 -maxdepth 1 -newer "$stamp" -print 2>/dev/null)
+  done
+  if [ "$n" -gt 0 ]; then
+    log "⚠️  write containment is PARTIAL: $n uncovered checkout entr$( [ "$n" -eq 1 ] && echo y || echo ies) changed during the $phase leg (listed above; a concurrent peer can cause this too). Anything the guard wrote there is in the REAL tree."
+  fi
+}
+
+contain_preflight
+readonly CONTAIN_STATUS CONTAIN_SETUP
+case "$CONTAIN_STATUS" in
+  contained)
+    log "write containment: CONTAINED — post-baseline guard runs see $(IFS=' '; printf '%s' "${CONTAIN_ROOTS[*]}") copy-on-write; their writes are discarded at exit (the probe scratch and each .papercusp/scratch stay real)" ;;
+  partial)
+    log "write containment: PARTIAL — ${#CONTAIN_OVERLAYS[@]} overlay(s) cover every subtree without a mount point under it. Entries directly in the ${#CONTAIN_LEVELS[@]} director$( [ "${#CONTAIN_LEVELS[@]}" -eq 1 ] && echo y || echo ies) that DO have one (${#CONTAIN_UNCOVERED[@]} now, plus any the guard creates) are not covered; each leg reports those that change"
+    for line in ${CONTAIN_FAILED[@]+"${CONTAIN_FAILED[@]}"}; do
+      log "⚠️  write containment could not cover: $line"
+    done ;;
+  uncontained|disabled)
+    log "⚠️  write containment: ${CONTAIN_STATUS^^} — $CONTAIN_REASON. Anything the guard writes into $(IFS=' '; printf '%s' "${CONTAIN_ROOTS[*]}") during a mutant leg (a build step's out/ or dist/, generated code) lands in the REAL tree, where a peer can deploy it. Rebuild such outputs from tracked sources after the probe." ;;
+  sandbox-root)
+    log "write containment: SANDBOX-ROOT — $CONTAIN_REASON" ;;
+esac
+printf 'MUTATION_PROBE_CONTAINMENT status=%s overlays=%d uncovered=%d failed=%d\n' \
+  "$CONTAIN_STATUS" "${#CONTAIN_OVERLAYS[@]}" "${#CONTAIN_UNCOVERED[@]}" "${#CONTAIN_FAILED[@]}"
 
 # Validate the expression and its exact output before either baseline guard.
 # Recheck the applied mutant below: stateful Perl expressions must not turn a

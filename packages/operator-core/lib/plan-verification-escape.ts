@@ -285,6 +285,62 @@ export function describeNonCodeDeliverableCodeEvidence(
   );
 }
 
+interface LinkedDeliverableRow {
+  item_id: string;
+  deliverable: string | null;
+  verification_profile: string | null;
+}
+
+/** The declared deliverable of each linked plan item, with its plan's stamped profile. */
+async function readLinkedDeliverableRows(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  planItemIds: readonly string[];
+}): Promise<LinkedDeliverableRow[]> {
+  const { withWorkspace } = await import('@papercusp/db-org');
+  return withWorkspace(input.workspaceId, (tx) =>
+    tx<LinkedDeliverableRow[]>`
+      SELECT i.item_id, i.deliverable, p.verification_profile
+        FROM harness_shared.plan_items i
+        JOIN harness_shared.harness_plans p
+          ON p.workspace_id = i.workspace_id AND p.harness_slug = i.harness_slug AND p.plan_slug = i.plan_slug
+       WHERE i.workspace_id = ${input.workspaceId}
+         AND i.harness_slug = ${input.harnessSlug}
+         AND i.plan_slug = ${input.planSlug}
+         AND i.item_id = ANY(${[...input.planItemIds]})
+       ORDER BY i.item_id`,
+  );
+}
+
+/**
+ * R-13: true only when at least one linked plan item exists and EVERY one resolves to a
+ * non-code deliverable under its plan's stamped profile. An empty or partial read is false, so
+ * a close keeps the tests-run requirement whenever the deliverable is not positively non-code.
+ */
+export function linkedDeliverablesAreNonCode(
+  rows: readonly { deliverable: string | null; verification_profile: string | null }[],
+): boolean {
+  return rows.length > 0 && rows.every((row) =>
+    !resolveVerification(
+      { verificationProfile: effectivePlanProfile(row.verification_profile) },
+      { deliverable: row.deliverable },
+    ).codeDeliverable);
+}
+
+/** R-13 at completion: whether every plan item a closing work item is linked to is non-code. */
+export async function readCloseDeliverablesAreNonCode(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  planItemIds: readonly string[];
+}): Promise<boolean> {
+  if (input.planItemIds.length === 0) return false;
+  const rows = await readLinkedDeliverableRows(input);
+  // Every requested item must be present: a missing row is an unknown deliverable, not non-code.
+  return rows.length === new Set(input.planItemIds).size && linkedDeliverablesAreNonCode(rows);
+}
+
 /**
  * R-15 at completion: read the declared deliverable of each plan item a closing work item is
  * linked to (plus the plan's stamped profile) and return the first item whose non-code
@@ -299,19 +355,7 @@ export async function readNonCodeDeliverableCloseEvidence(input: {
   workItemKind: string | null | undefined;
 }): Promise<{ itemId: string; evidence: NonCodeDeliverableCodeEvidence } | null> {
   if (input.planItemIds.length === 0) return null;
-  const { withWorkspace } = await import('@papercusp/db-org');
-  const rows = await withWorkspace(input.workspaceId, (tx) =>
-    tx<{ item_id: string; deliverable: string | null; verification_profile: string | null }[]>`
-      SELECT i.item_id, i.deliverable, p.verification_profile
-        FROM harness_shared.plan_items i
-        JOIN harness_shared.harness_plans p
-          ON p.workspace_id = i.workspace_id AND p.harness_slug = i.harness_slug AND p.plan_slug = i.plan_slug
-       WHERE i.workspace_id = ${input.workspaceId}
-         AND i.harness_slug = ${input.harnessSlug}
-         AND i.plan_slug = ${input.planSlug}
-         AND i.item_id = ANY(${[...input.planItemIds]})
-       ORDER BY i.item_id`,
-  );
+  const rows = await readLinkedDeliverableRows(input);
   for (const row of rows) {
     const evidence = nonCodeDeliverableCodeEvidence({
       profile: row.verification_profile,

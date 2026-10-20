@@ -25,6 +25,7 @@ import {
   SYNC_DELTA_MAX_LISTED_COMMITS,
   runSyncBatchDeltaCheck,
   STALE_BACKLOG_MS,
+  COVERAGE_JUDGE_DEADLINE_MS,
   unionBatchPaths,
   type AffectedProbe,
   type FailingFile,
@@ -1029,6 +1030,9 @@ describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
   const MIN = 60_000;
   const ADMISSION_MS = Date.parse('2000-01-01T00:00:00Z');
   const sha = (n: number) => n.toString(16).padStart(40, '0');
+  /** The credit (keep) window in minutes: the derived slot-credit deadline (D-031, 95 today).
+   *  Fixture ages "outside the window" are W + n, still younger than STALE_BACKLOG_MS. */
+  const W = COVERAGE_JUDGE_DEADLINE_MS / MIN;
   /** Newest first, one commit per `ages` entry (minutes before NOW). */
   const backlog = (ages: Array<number | null>): SyncBatch[] =>
     ages.map((age, i) =>
@@ -1038,10 +1042,12 @@ describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
   it('leaves a backlog younger than STALE_BACKLOG_MS to the normal oldest-first walk', () => {
     expect(planStaleBacklogSkip(backlog([1, 10, 60, 119]), NOW)).toBeNull();
     expect(STALE_BACKLOG_MS).toBe(120 * MIN);
+    // The fixtures below need room between the keep window and the stale threshold.
+    expect(W + 15).toBeLessThan(STALE_BACKLOG_MS / MIN);
   });
 
   it('keeps the commits inside the credit window and anchors on the newest one outside it', () => {
-    const batches = backlog([2, 20, 31, 90, 60 * 24 * 18]);
+    const batches = backlog([2, 20, W + 1, W + 15, 60 * 24 * 18]);
     const skip = planStaleBacklogSkip(batches, NOW);
     expect(skip?.remaining.map((b) => b.sha)).toEqual([sha(1), sha(2)]);
     expect(skip?.anchor.sha).toBe(sha(3));
@@ -1058,7 +1064,7 @@ describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
   });
 
   it('skips a listing that hit SYNC_DELTA_MAX_LISTED_COMMITS even when no listed commit is 2h old', () => {
-    const ages = [1, 2, 3, ...Array.from({ length: SYNC_DELTA_MAX_LISTED_COMMITS - 3 }, () => 60)];
+    const ages = [1, 2, 3, ...Array.from({ length: SYNC_DELTA_MAX_LISTED_COMMITS - 3 }, () => W + 10)];
     const batches = backlog(ages);
     // By age alone this backlog is fresh: the uncapped planner leaves it to the walk.
     expect(planStaleBacklogSkip(batches, NOW)).toBeNull();
@@ -1079,7 +1085,7 @@ describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
   });
 
   it('re-anchors from a capped listing without running a leg and records the cap in the reason', async () => {
-    const ages = Array.from({ length: SYNC_DELTA_MAX_LISTED_COMMITS }, (_, i) => (i < 2 ? i + 1 : 60));
+    const ages = Array.from({ length: SYNC_DELTA_MAX_LISTED_COMMITS }, (_, i) => (i < 2 ? i + 1 : W + 10));
     const batches = backlog(ages);
     let affectedRuns = 0;
     const { deps, state } = makeDeps(
@@ -1107,7 +1113,7 @@ describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
   });
 
   it('re-anchors the cursor, resets the learned window state, and records an unjudged slot', async () => {
-    const batches = backlog([3, 45, 60 * 24 * 18]);
+    const batches = backlog([3, W + 10, 60 * 24 * 18]);
     let affectedRuns = 0;
     const { deps, state } = makeDeps(
       {

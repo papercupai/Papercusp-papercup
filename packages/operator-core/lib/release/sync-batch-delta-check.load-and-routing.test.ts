@@ -74,7 +74,10 @@ import {
   COVERAGE_ALARM_MIN_TICKS,
   COVERAGE_ALARM_THRESHOLD,
   COVERAGE_ALARM_WINDOW_MS,
+  COVERAGE_EXPECTED_INTERVAL_MS,
   COVERAGE_JUDGE_DEADLINE_MS,
+  SYNC_DELTA_RUN_BUDGET_MS,
+  SYNC_DELTA_TIMEOUTS_MS,
   REDUCED_BUDGET,
   SOURCE_CHECK_SLICE,
   buildCoverageAlarm,
@@ -498,24 +501,37 @@ describe('coverage record + alarm (R-2)', () => {
 
 // green-main-ratchet-convergence-2026-10-17 P-009, R-8 falsifier (2): coverage is computed
 // per schedule slot over 24h at a 95% target, crediting a slot whose commits a later run
-// judged within 30 minutes, and never crediting slots whose commits nobody judged.
-describe('slot coverage with late-judgment crediting (P-009 / D-017)', () => {
+// judged within the derived deadline (D-031: 2 x one run's leg budget + the slot interval),
+// and never crediting slots whose commits nobody judged.
+describe('slot coverage with late-judgment crediting (P-009 / D-017 / D-031)', () => {
   const MIN = 60_000;
+  const D = COVERAGE_JUDGE_DEADLINE_MS;
   const slot = (atMs: number, status: CoverageTick['status'], evaluated = false): CoverageTick => ({ atMs, evaluated, status });
 
-  it('pins the target: 24h window, 95%, 144-slot minimum, 30-minute judge deadline', () => {
+  it('pins the target: 24h window, 95%, 144-slot minimum', () => {
     expect(COVERAGE_ALARM_WINDOW_MS).toBe(24 * 60 * MIN);
     expect(COVERAGE_ALARM_THRESHOLD).toBe(0.95);
     expect(COVERAGE_ALARM_MIN_TICKS).toBe(144);
-    expect(COVERAGE_JUDGE_DEADLINE_MS).toBe(30 * MIN);
   });
 
-  it('credits only skipped/missed slots at or before the judged point and within 30 minutes', () => {
+  it('derives the judge deadline from the run legs: 2 x (probe + tsc + affected) + interval (D-031)', () => {
+    const { probe, tsc, affected } = SYNC_DELTA_TIMEOUTS_MS;
+    expect(SYNC_DELTA_RUN_BUDGET_MS).toBe(probe + tsc + affected);
+    expect(COVERAGE_JUDGE_DEADLINE_MS).toBe(2 * (probe + tsc + affected) + COVERAGE_EXPECTED_INTERVAL_MS);
+    // Today's budgets: 10 + 10 + 25 min per run, so 95 min. A fixed number here would let the
+    // leg budgets move without the deadline (the D-030 #3 defect), so the literal is a tripwire.
+    expect(COVERAGE_JUDGE_DEADLINE_MS).toBe(95 * MIN);
+    // The property that matters: a slot arriving just after a run starts is judged by the NEXT
+    // in-budget run, which ends within one run + one interval + one run.
+    expect(SYNC_DELTA_RUN_BUDGET_MS + COVERAGE_EXPECTED_INTERVAL_MS + SYNC_DELTA_RUN_BUDGET_MS).toBeLessThanOrEqual(D);
+  });
+
+  it('credits only skipped/missed slots at or before the judged point and within the deadline', () => {
     const judgedAtMs = NOW;
     const coverage = {
       ticks: [
-        slot(NOW - 40 * MIN, 'missed-opportunity'), // judged 40 min later: too late
-        slot(NOW - 30 * MIN, 'skipped'), // exactly 30 min: credited
+        slot(NOW - D - 10 * MIN, 'missed-opportunity'), // judged 10 min past the deadline: too late
+        slot(NOW - D, 'skipped'), // exactly the deadline: credited
         slot(NOW - 25 * MIN, 'leg-timeout'), // cursor advanced past it unjudged: never
         slot(NOW - 20 * MIN, 'radius-too-wide'), // likewise never
         slot(NOW - 15 * MIN, 'missed-opportunity'), // credited
@@ -535,7 +551,7 @@ describe('slot coverage with late-judgment crediting (P-009 / D-017)', () => {
     ]);
     // Pure: the input is not mutated, and nothing to credit returns the same object.
     expect(coverage.ticks[1]!.evaluated).toBe(false);
-    const none = { ticks: [slot(NOW - 60 * MIN, 'skipped')] };
+    const none = { ticks: [slot(NOW - D - MIN, 'skipped')] };
     expect(creditLateJudgedSlots(none, { throughMs: NOW, judgedAtMs: NOW })).toBe(none);
   });
 
@@ -575,22 +591,35 @@ describe('slot coverage with late-judgment crediting (P-009 / D-017)', () => {
     slot(NOW - 5 * MIN, 'missed-opportunity'),
   ];
 
-  it('a later run that judged the whole backlog credits the slots it reached within 30 minutes', async () => {
+  it('a later run that judged the whole backlog credits the slots it reached within the deadline', async () => {
+    // Finishes D - 5 min after start, so the NOW-5 slot is judged exactly D after it arrived.
+    const end = NOW + COVERAGE_JUDGE_DEADLINE_MS - 5 * MIN;
     const { deps, state } = fakeDeps(
-      { now: clock(NOW, NOW + 25 * MIN) },
+      { now: clock(NOW, end) },
       { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: leftBehind() } },
     );
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res).toMatchObject({ status: 'green', judgedThrough: 'start' });
     const t = state.cursor?.coverage?.ticks ?? [];
     const at = (ms: number) => t.find((x) => x.atMs === ms);
-    // Finished 25 min after start: the NOW-5 slot was judged exactly 30 min later.
-    expect(at(NOW - 5 * MIN)).toMatchObject({ status: 'missed-opportunity', evaluated: true, judgedAtMs: NOW + 25 * MIN });
+    expect(at(NOW - 5 * MIN)).toMatchObject({ status: 'missed-opportunity', evaluated: true, judgedAtMs: end });
     expect(at(NOW - 10 * MIN)).toMatchObject({ evaluated: false });
     expect(at(NOW - 15 * MIN)).toMatchObject({ evaluated: false });
     // Slots that passed DURING this run were not judged by it.
     expect(t.filter((x) => x.atMs > NOW && x.status === 'missed-opportunity').every((x) => !x.evaluated)).toBe(true);
-    expect(evaluateCoverage(state.cursor?.coverage, NOW + 25 * MIN).lateCredited).toBe(1);
+    expect(evaluateCoverage(state.cursor?.coverage, end).lateCredited).toBe(1);
+  });
+
+  it('a normal in-budget run credits the slots it left behind (the old fixed 30 min did not, D-031)', async () => {
+    // A 22-minute run (probe ~4 min + affected ~18 min, inside the leg budgets) that judged a
+    // backlog the previous ~20-minute run left behind: NOW-15 is judged 37 min after it arrived.
+    const { deps, state } = fakeDeps(
+      { now: clock(NOW, NOW + 22 * MIN) },
+      { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: leftBehind() } },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    const credited = (state.cursor?.coverage?.ticks ?? []).filter((x) => x.judgedAtMs !== undefined);
+    expect(credited.map((x) => x.atMs)).toEqual([NOW - 15 * MIN, NOW - 10 * MIN, NOW - 5 * MIN]);
   });
 
   it('a quick later run credits every left-behind slot', async () => {
@@ -638,7 +667,8 @@ describe('slot coverage with late-judgment crediting (P-009 / D-017)', () => {
     expect(alarm.conditionKey).toBe(COVERAGE_ALARM_CONDITION_KEY);
     expect(alarm.title).toBe('sync-batch delta check coverage low: 0% of schedule slots judged over 24h');
     expect(alarm.body).toMatch(/below the 95% target/);
-    expect(alarm.body).toMatch(/within 30m \(0 of the judged slots/);
+    // The alarm states the subject's own deadline: 95 min for the delta check (D-031).
+    expect(alarm.body).toMatch(/within 95m \(0 of the judged slots/);
   });
 });
 

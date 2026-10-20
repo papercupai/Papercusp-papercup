@@ -472,10 +472,16 @@ export async function runSyncLintGuardTick(
 
 // ── coverage (P-009 / R-8) ───────────────────────────────────────────────────
 
+/** This routine's slot-credit deadline. It stays the original fixed 30 minutes (D-017 #3):
+ *  green-main-ratchet-convergence-2026-10-17#D-031 derives the DELTA check's deadline from
+ *  that check's own probe/tsc/affected leg budgets, which do not describe a guard tick. */
+export const LINT_GUARDS_JUDGE_DEADLINE_MS = 30 * 60_000;
+
 /** The lint-guard routine's coverage alarm: one open item, upserted by condition key. */
 export const LINT_GUARDS_COVERAGE_ALARM_SUBJECT: CoverageAlarmSubject = {
   conditionKey: 'sync-lint-guards-coverage-low',
   label: 'sync-batch lint guards',
+  judgeDeadlineMs: LINT_GUARDS_JUDGE_DEADLINE_MS,
   filedBy: SYNC_LINT_GUARDS_FILED_BY,
   stateHint:
     'Read metadata.sync_lint_guards with a workspace-scoped dev:pg_query; routines:list does not return it ' +
@@ -522,7 +528,13 @@ async function recordLintGuardCoverage(
   let coverage = recordCoverageOpportunities(state.coverage, tick, now);
   // A judged tick measured every guard at the tip it read after starting, so every
   // commit at or before its start was judged.
-  if (tick.evaluated) coverage = creditLateJudgedSlots(coverage, { throughMs: startedAtMs, judgedAtMs: now });
+  if (tick.evaluated) {
+    coverage = creditLateJudgedSlots(coverage, {
+      throughMs: startedAtMs,
+      judgedAtMs: now,
+      deadlineMs: LINT_GUARDS_JUDGE_DEADLINE_MS,
+    });
+  }
   const verdict = evaluateCoverage(coverage, now);
   if (verdict.low && coverage.alarmOpenSinceMs === undefined) {
     const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage, LINT_GUARDS_COVERAGE_ALARM_SUBJECT));

@@ -47,10 +47,15 @@ vi.mock('../../spec-conformance/closure-guard', () => ({
 // this file pins the wiring into work_items:complete.
 const nonCodeClose = vi.hoisted(() => ({
   read: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+  nonCode: vi.fn(async (..._args: unknown[]): Promise<boolean> => false),
 }));
 vi.mock('../../plan-verification-escape', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../plan-verification-escape')>(),
   readNonCodeDeliverableCloseEvidence: (...args: unknown[]) => nonCodeClose.read(...args),
+  // R-13: the linked-deliverable read is stubbed the same way (default: not positively
+  // non-code, so the tests-run requirement holds). Real PG coverage lives in
+  // complete-deliverable-fields.integration.test.ts.
+  readCloseDeliverablesAreNonCode: (...args: unknown[]) => nonCodeClose.nonCode(...args),
 }));
 vi.mock('../../external-condition-reachability', () => ({
   readEventConditionReachability: (...args: unknown[]) => parkReachability.read(...args),

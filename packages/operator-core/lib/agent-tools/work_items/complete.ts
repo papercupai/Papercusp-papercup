@@ -335,6 +335,7 @@ import { isNonCodeWorkItemKind } from '../../plan-verification-profile';
 import {
   describeNonCodeDeliverableCodeEvidence,
   readNonCodeDeliverableCloseEvidence,
+  readCloseDeliverablesAreNonCode,
 } from '../../plan-verification-escape';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 import { COMPLETE_RECEIPT, toWorkItemReceipt } from './receipt';
@@ -4416,6 +4417,7 @@ async function completeOne(
   // successfully with code-change evidence: a filesChanged list or the `bug` kind. That is
   // code work under a non-code label, which would skip the code verification module.
   // `feature` is not evidence: plan promotion gives every item that kind.
+  let nonCodeDeliverableClose = false;
   if (closeIntentRequested && successfulClose && !isAbandonedClose && !duplicateCloseCoverageException) {
     const link = conformanceClosurePlanLink(existing, finishPlanStamp(existing as unknown as Record<string, unknown>));
     if (link.planSlug && link.planItemIds.length > 0) {
@@ -4449,6 +4451,18 @@ async function completeOne(
           `Cannot check the linked plan item's declared deliverable at close: ${error instanceof Error ? error.message : String(error)}. No completion write was made.`,
           { nonCodeDeliverableRefusal: { code: 'deliverable_check_unavailable', retryable: true } },
         );
+      }
+      // R-13 (P-004): tests-run evidence is owed by code deliverables only. A read failure
+      // leaves the flag false, which keeps the tests requirement rather than refusing the close.
+      try {
+        nonCodeDeliverableClose = await readCloseDeliverablesAreNonCode({
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+          harnessSlug: link.harnessSlug,
+          planSlug: link.planSlug,
+          planItemIds: link.planItemIds,
+        });
+      } catch {
+        nonCodeDeliverableClose = false;
       }
     }
   }
@@ -4502,7 +4516,10 @@ async function completeOne(
   // (P-002 measured 4.2% of evidence-bearing rows carry no `verifiedHow`) both land
   // `proposed` — the partial case is rejected explicitly rather than assumed away,
   // because an "is the object present?" test passes every one of them.
-  const authorityByEvidence = authorityForCompletion(completionEvidenceForGate);
+  const authorityByEvidence = authorityForCompletion(
+    completionEvidenceForGate,
+    nonCodeDeliverableClose ? { nonCodeDeliverable: true } : undefined,
+  );
 
   // EI-19319623239777505: the object actually PERSISTED to the row additionally carries
   // the caller's free-text `completion.summary`. This is deliberately a SEPARATE object
@@ -4764,8 +4781,10 @@ async function completeOne(
   })();
 
   const completionEvidenceFindings: CompletionEvidenceFindings | undefined =
-    fabricatedPaths || untouchedPaths || testRunContradiction || requirementShortfall || claimsFalsified?.length || residueUnowned
+    fabricatedPaths || untouchedPaths || testRunContradiction || requirementShortfall || claimsFalsified?.length || residueUnowned ||
+    nonCodeDeliverableClose
       ? {
+          ...(nonCodeDeliverableClose ? { nonCodeDeliverable: true } : {}),
           ...(fabricatedPaths ? { filesChangedNeverExisted: fabricatedPaths.neverExisted } : {}),
           ...(untouchedPaths ? { filesChangedUntouched: untouchedPaths.untouched } : {}),
           ...(testRunContradiction ? { testRunContradictedByLedger: testRunContradiction } : {}),

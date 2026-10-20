@@ -12,6 +12,7 @@ import {
   diffGuardViolations,
   guardExcerpt,
   LINT_GUARDS_COVERAGE_ALARM_SUBJECT,
+  LINT_GUARDS_JUDGE_DEADLINE_MS,
   lintGuardCoverageTick,
   parseGuardOffenders,
   runSyncLintGuardTick,
@@ -487,6 +488,20 @@ describe('lint-guard coverage', () => {
     const f = fake({ head: 'h2', prior, now: () => T0 });
     await runSyncLintGuardTick(f.deps);
     expect(f.state.value?.coverage?.ticks).toHaveLength(11);
+  });
+
+  it('keeps its own fixed 30-minute credit deadline, not the delta check derived one (D-031)', async () => {
+    expect(LINT_GUARDS_JUDGE_DEADLINE_MS).toBe(30 * MIN);
+    expect(LINT_GUARDS_COVERAGE_ALARM_SUBJECT.judgeDeadlineMs).toBe(LINT_GUARDS_JUDGE_DEADLINE_MS);
+    const timedOut: GuardRun = { exitCode: null, output: 'timed out after 600000ms' };
+    const f = fake({ head: 'h2', prior: allPass('h1'), runs: { 'lint:guard-reachability': timedOut }, now: () => T0 });
+    await runSyncLintGuardTick(f.deps);
+    // Measured 40 minutes later: inside the delta check's 95 min, outside this routine's 30.
+    const late = fake({ head: 'h3', prior: f.state.value, now: () => T0 + 40 * MIN });
+    await runSyncLintGuardTick(late.deps);
+    const first = (late.state.value?.coverage?.ticks ?? [])[0];
+    expect(first).toMatchObject({ atMs: T0, status: 'partial', evaluated: false });
+    expect(first?.judgedAtMs).toBeUndefined();
   });
 
   it('a tick where a guard gave no verdict is partial (not judged), and a later full tick credits it', async () => {
