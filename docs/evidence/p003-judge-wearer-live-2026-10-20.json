@@ -8,8 +8,8 @@
     "docs/evidence/p003-judge-wearer-live-2026-10-20/run.sh"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-20T05:37:24Z",
-  "finishedAt": "2026-10-20T05:37:41Z",
+  "startedAt": "2026-10-20T05:53:54Z",
+  "finishedAt": "2026-10-20T05:54:07Z",
   "plan": "identity-system-everything-migration-2026-10-18",
   "planItem": "P-003",
   "workItemId": "WI-6554700010017314",
@@ -18,7 +18,7 @@
     "SPEC-P-003@1"
   ],
   "evidencePlane": "live",
-  "summary": "Two judges were launched through the live :3170 role door (POST /api/agent-mcp/console/bootstrap-role, role judge) on build a665ba3594, whose six P-003 source blobs equal HEAD. One wore a grant-bearing (governed) stack, domain:blueprint-operation-worker (adv_sessions 47818); the other wore a grant-free (ungoverned) stack, ideation:su.mode-ideate (adv_sessions 47819). Each signed judge MCP grant was then exercised at dispatch after the real first-turn path (turn-start-memory, then coord:orient), and the session was ended. 17 of 17 assertions passed and run.sh exited 0. Both judges rendered their worn layer into the prompt. The governed launch recorded role judge with the exact stack and the artifact grants. The ungoverned launch recorded no identity record, by the bootstrap-role.ts contract (it records only grant-bearing artifacts). Neither grant carried superuser, and neither tool list exposed su-only tools. Dispatch refused capability:bash and processes:kill in both runs. The ungoverned judge was refused by the judge role envelope (missing_capability, principal system:judge) and could read plans:get. The governed judge was granted nothing: the papercusp pot (.papercusp/blueprint.yaml fleet.workerRoles) declares capability ceilings for su, operator and researcher but none for judge, so readIdentityGrantPolicy refuses and the grant kernel fails closed with policy-unavailable on every call, the read included. That is no more than its role and pot ceiling.",
+  "summary": "Two judges were launched through the live :3170 role door (POST /api/agent-mcp/console/bootstrap-role, role judge) on build a665ba3594, whose six P-003 source blobs equal HEAD. One wore a grant-bearing (governed) stack, domain:blueprint-operation-worker (adv_sessions 47831); the other wore a grant-free (ungoverned) stack, ideation:su.mode-ideate (adv_sessions 47832). Each signed judge MCP grant was then exercised at dispatch after the real first-turn path (turn-start-memory, then coord:orient), and the session was ended. 17 of 17 assertions passed and run.sh exited 0. Both judges rendered their worn layer into the prompt. The governed launch recorded role judge with the exact stack and the artifact grants. The ungoverned launch recorded no identity record, by the bootstrap-role.ts contract (it records only grant-bearing artifacts). Neither grant carried superuser, and neither tool list exposed su-only tools. Dispatch refused capability:bash and processes:kill in both runs. The ungoverned judge was refused by the judge role envelope (missing_capability, principal system:judge) and could read plans:get. The governed judge was granted nothing: the papercusp pot (.papercusp/blueprint.yaml fleet.workerRoles) declares capability ceilings for su, operator and researcher but none for judge, so readIdentityGrantPolicy refuses and the grant kernel fails closed with policy-unavailable on every call, the read included. That is no more than its role and pot ceiling.",
   "assertions": [
     {
       "id": "governed:served-build-carries-p003-source",
@@ -33,12 +33,12 @@
     {
       "id": "governed:judge-prompt-renders-worn-layer",
       "passed": true,
-      "evidence": "/home/builduser/.papercusp/launch-context/session-47818.md (52052 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
+      "evidence": "/home/builduser/.papercusp/launch-context/session-47831.md (52012 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
     },
     {
       "id": "governed:governed-launch-record-names-judge-and-stack",
       "passed": true,
-      "evidence": "adv_sessions 47818: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-3511d86e-0b62-434c-b9da-c728caf374fc"
+      "evidence": "adv_sessions 47831: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-043d0927-0e1a-49b0-902f-0ac9a0b9931c"
     },
     {
       "id": "governed:grant-is-judge-scoped",
@@ -73,12 +73,12 @@
     {
       "id": "ungoverned:judge-prompt-renders-worn-layer",
       "passed": true,
-      "evidence": "/home/builduser/.papercusp/launch-context/session-47819.md (59161 chars) contains the worn layer text \"## IDEATE mode — the owner's switch\"; launch role=judge, compositionSource=blueprint"
+      "evidence": "/home/builduser/.papercusp/launch-context/session-47832.md (59090 chars) contains the worn layer text \"## IDEATE mode — the owner's switch\"; launch role=judge, compositionSource=blueprint"
     },
     {
       "id": "ungoverned:ungoverned-launch-writes-no-identity-record",
       "passed": true,
-      "evidence": "adv_sessions 47819: role=judge, launch_spec.role=null, launch_spec.stack=null, artifact grants present=false, owner=role-08241d6d-4bd9-4194-a54e-a8c6fa9549ca (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)"
+      "evidence": "adv_sessions 47832: role=judge, launch_spec.role=null, launch_spec.stack=null, artifact grants present=false, owner=role-f09e7ecb-fe67-4cfb-b997-3c85b99a8762 (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)"
     },
     {
       "id": "ungoverned:grant-is-judge-scoped",
@@ -103,7 +103,7 @@
     {
       "id": "ungoverned:dispatch-allows-read-inside-judge-ceiling",
       "passed": true,
-      "evidence": "plans:get through the judge grant: ok, 7584 chars, names the plan slug=true, policy-unavailable=false"
+      "evidence": "plans:get through the judge grant: ok, 7583 chars, names the plan slug=true, policy-unavailable=false"
     }
   ],
   "environment": {
@@ -125,15 +125,23 @@
   "artifacts": {
     "docs/evidence/p003-judge-wearer-live-2026-10-20/run.sh": "sha256:72086b5c157cfd07fe2540a4d735e72cf09013a5b1204b46e367646e711e6191",
     "docs/evidence/p003-judge-wearer-live-2026-10-20/stage1-launch.mjs": "sha256:6b7e5307e5c9649a259eee5e5b2cde36914360abb69b83c4faf2d3411e640305",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/stage2-exercise.mjs": "sha256:a599d1fc2e98d37e77c59a86cbc8b3aeb151e8e15f727a1337cba85e8209025d",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/governed-report.json": "sha256:7d4323322cd85cbece0a6a2b1b120b86884c5ca2a999aab0e27d7fa809565312",
-    "docs/evidence/p003-judge-wearer-live-2026-10-20/ungoverned-report.json": "sha256:0336a1d6e76cf95d5a4d617d1d34609932b7f793da4662b38ed4ce9e865bc1e2"
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/stage2-exercise.mjs": "sha256:d3711f427158e3e35a8349bc4ba5aa0cb96f205ee9edd43abd33d1b26c821fb8",
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/governed-report.json": "sha256:e47f6638a4e3a28752a3430d9bc04b3c83b8af71671998f785165769a07fe970",
+    "docs/evidence/p003-judge-wearer-live-2026-10-20/ungoverned-report.json": "sha256:d007fc527a02c42a3e3fe97fd3430d13485de0a41fc1afc89464ef25cad75de1",
+    "scripts/lib/judge-wearer-live-oracle.mjs": "sha256:21d69acf29a48afa4bede0960ff2a6c3158c0ad3857a49428d0f0ab7c385a123",
+    "scripts/lib/judge-wearer-live-oracle.test.ts": "sha256:78f211044dd02e9e0ef6f78188d6f27f1a116761ae050518f785fd093eb388bd"
   },
   "limitations": [
     "The governed judge could not exercise any tool, the in-ceiling read included, because the papercusp pot declares no capability ceiling for the judge role. That satisfies 'granted no more than its role and pot ceiling' but does not show a governed judge receiving a non-empty grant. Declaring a judge ceiling is an administrator pot-policy decision outside P-003, and this run did not make it.",
     "PROBE_GOVERNED is the probe operator's declared expectation for each stack, matching the bootstrap-role.ts recording contract. An earlier probe on build 3b9df0b66b (2026-10-20T05:06Z, adv_sessions 47796) first showed that domain:blueprint-operation-worker compiles to a grant-bearing artifact.",
     "Earlier iterations of this probe (2026-10-20T04:58Z-05:08Z, adv_sessions 47785-47797, scratch reports live-judge-probe-1..10) exited 1. Each failed only on an assertion this version replaces: one expected a launch record for the grant-free stack, which the code records by design only for grant-bearing artifacts; the other expected a positive read for the governed judge, which is refused by design without a pot judge ceiling. Two earlier stale-artifact denials (47786/47789) came from the probe skipping the first-turn hook. Its turn-start call is now part of stage 2.",
     "Wearer-authority role selection for host-run identity work (async reactions and the turn-start sink) is covered by the integration tests bound beside this artifact, not by this live run.",
-    "An identical run at 2026-10-20T05:18:50Z-05:19:06Z on build 3b9df0b66b (adv_sessions 47811/47812) also passed all 17 assertions, but its stage-2 reports carried absolute home-directory paths that the commit content guard (identity-leak) refuses. stage2-exercise.mjs now writes its report through scripts/lib/identity-leak-patterns.mjs serializeIdentitySafeJson, and this artifact records the re-run with that writer; no assertion logic changed."
-  ]
+    "An identical run at 2026-10-20T05:18:50Z-05:19:06Z on build 3b9df0b66b (adv_sessions 47811/47812) also passed all 17 assertions, but its stage-2 reports carried absolute home-directory paths that the commit content guard (identity-leak) refuses. stage2-exercise.mjs now writes its report through scripts/lib/identity-leak-patterns.mjs serializeIdentitySafeJson, and this artifact records the re-run with that writer; no assertion logic changed.",
+    "A run at 2026-10-20T05:37:24Z-05:37:41Z on the same build a665ba3594 (adv_sessions 47818/47819) also passed all 17 assertions, with the same predicates written inline in stage2-exercise.mjs. It was replaced by this run because stage2 now takes its verdicts from the committed, tested oracle scripts/lib/judge-wearer-live-oracle.mjs, so the instrument a binding cites is the program that produced this evidence. Two predicates were tightened in the move: dispatch-refuses-outside-judge-ceiling now also fails on an empty refusal set, and a read must contain its marker literally rather than by regex."
+  ],
+  "instrument": {
+    "path": "scripts/lib/judge-wearer-live-oracle.mjs",
+    "testPath": "scripts/lib/judge-wearer-live-oracle.test.ts",
+    "role": "Every pass/fail decision of stage2-exercise.mjs is taken by this committed oracle; stage2 only collects the observations it judges. The test covers each assertion with a passing and a violating fixture."
+  }
 }

@@ -830,7 +830,7 @@ describe('program child admission pins the root specification', () => {
     const cancelled = await runWithWorkspace(workspaceId, () => setWorkItemState(rootId, 'dropped', {
       harness: harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
       completionRef: `blueprint-program:cancelled:receipt:${accepted.receiptId}`,
-      completionAuthority: 'validated',
+      completionAuthority: 'committed',
       acceptedProgramAttempt: { ...attempt, requireUncancelled: false },
     }));
     expect(cancelled?.state).toBe('dropped');

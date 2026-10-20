@@ -1,11 +1,11 @@
 {
-  "startedAt": "2026-10-20T05:37:25.237Z",
+  "startedAt": "2026-10-20T05:53:55.735Z",
   "stage1": ".papercusp/scratch/p-identity/p003-live-run/governed-stage1.json",
   "stack": [
     "domain:blueprint-operation-worker"
   ],
   "governedDeclared": true,
-  "sessionId": 47818,
+  "sessionId": 47831,
   "assertions": [
     {
       "id": "served-build-carries-p003-source",
@@ -20,12 +20,12 @@
     {
       "id": "judge-prompt-renders-worn-layer",
       "passed": true,
-      "evidence": "/home/builduser/.papercusp/launch-context/session-47818.md (52052 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
+      "evidence": "/home/builduser/.papercusp/launch-context/session-47831.md (52012 chars) contains the worn layer text \"# Blueprint operation worker\"; launch role=judge, compositionSource=blueprint"
     },
     {
       "id": "governed-launch-record-names-judge-and-stack",
       "passed": true,
-      "evidence": "adv_sessions 47818: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-3511d86e-0b62-434c-b9da-c728caf374fc"
+      "evidence": "adv_sessions 47831: role=judge, launch_spec.role=judge, launch_spec.stack=[\"domain:blueprint-operation-worker\"], artifact grants present=true, owner=role-043d0927-0e1a-49b0-902f-0ac9a0b9931c"
     },
     {
       "id": "grant-is-judge-scoped",
@@ -49,13 +49,13 @@
     }
   ],
   "launchRecord": {
-    "owner": "role-3511d86e-0b62-434c-b9da-c728caf374fc",
+    "owner": "role-043d0927-0e1a-49b0-902f-0ac9a0b9931c",
     "role": "judge",
     "specRole": "judge",
     "stack": [
       "domain:blueprint-operation-worker"
     ],
-    "specRev": "ab8f1ba3971117db359b323dc09295d6bef18a10f3e337dd9a2c8f47d979cb38",
+    "specRev": "2ae496f93ae451c2f6d146f489426159b1d056eda28f23d4c50eb201295a22cf",
     "hasGrants": true
   },
   "potJudgeCeiling": null,
@@ -73,11 +73,11 @@
   "activationBefore": "desired applied=none",
   "turnStart": {
     "http": 200,
-    "body": "{\"ok\":true,\"text\":\"⟦CTRL:transition⟧ {\\\"state\\\":{\\\"modes\\\":[],\\\"activation\\\":{\\\"schemaVersion\\\":1,\\\"attribution\\\":{\\\"actorId\\\":\\\"role-3511d86e-0b62-434c-b9da-c728caf374fc\\\",\\\"principalId\\\":\\\"role-3511d86e-0b62-434c-b9da-c728caf374fc\\\",\\\"sessionId\\\":\\\"role-3511d86e-0b62-434c-b9da-c728caf374fc\\\"},\\\"desired\\\":{\\\"specificationRevision\\\":\\\"ab8f1ba3971117db359b323dc09295d6bef18a10f3e337dd9a2c8f47d979cb3"
+    "body": "{\"ok\":true,\"text\":\"⟦CTRL:transition⟧ {\\\"state\\\":{\\\"modes\\\":[],\\\"activation\\\":{\\\"schemaVersion\\\":1,\\\"attribution\\\":{\\\"actorId\\\":\\\"role-043d0927-0e1a-49b0-902f-0ac9a0b9931c\\\",\\\"principalId\\\":\\\"role-043d0927-0e1a-49b0-902f-0ac9a0b9931c\\\",\\\"sessionId\\\":\\\"role-043d0927-0e1a-49b0-902f-0ac9a0b9931c\\\"},\\\"desired\\\":{\\\"specificationRevision\\\":\\\"2ae496f93ae451c2f6d146f489426159b1d056eda28f23d4c50eb201295a22c"
   },
-  "activationAfterTurnStart": "applied applied=ab8f1ba39711",
+  "activationAfterTurnStart": "applied applied=2ae496f93ae4",
   "orient": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unavailable (tools:invoke) — lifts when: the identity policy for this pot and role can be read again, or a ceiling policy is published for it. Usually transient infrastructure: retry shortly; if it persists, escalate; who: host/owner\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":3}",
-  "activationAfter": "applied applied=ab8f1ba39711",
+  "activationAfter": "applied applied=2ae496f93ae4",
   "toolsListed": 29,
   "refusals": [
     {
@@ -98,8 +98,8 @@
   "allowedRead": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"authorization_denied: Kernel preflight denied tool \\\"tools:invoke\\\": Identity capability (unresolved): policy-unavailable (tools:invoke) — lifts when: the identity policy for this pot and role can be read again, or a ceiling policy is published for it. Usually transient infrastructure: retry shortly; if it persists, escalate; who: host/owner\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":20}",
   "sessionEnded": {
     "http": 200,
-    "body": "{\"ok\":true,\"ended\":true,\"endAttemptKey\":\"p003-live-probe-end-47818\"}"
+    "body": "{\"ok\":true,\"ended\":true,\"endAttemptKey\":\"p003-live-probe-end-47831\"}"
   },
-  "finishedAt": "2026-10-20T05:37:29.074Z",
+  "finishedAt": "2026-10-20T05:53:59.475Z",
   "exitCode": 0
 }

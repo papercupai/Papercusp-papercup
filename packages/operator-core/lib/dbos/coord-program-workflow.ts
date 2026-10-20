@@ -494,7 +494,10 @@ export async function settleAcceptedCoordProgram(
       return setWorkItemState(rootId, 'dropped', {
         harness: rootHarness, family: current.family, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
         completionRef: `blueprint-program:cancelled:receipt:${handle.receiptId}`,
-        completionAuthority: 'validated',
+        // WI-6554700010017006: a cancel is an audited system close, not a corroborated
+        // completion — it lands `committed` (D-006). Only the success settlement below,
+        // whose output passed the operation contract check, is `validated`.
+        completionAuthority: 'committed',
         acceptedProgramAttempt: { ...attempt, requireUncancelled: false },
       });
     };
@@ -526,7 +529,8 @@ export async function settleAcceptedCoordProgram(
           closed = await setWorkItemState(rootId, 'dropped', {
             harness: rootHarness, family: current.family, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
             completionRef: blueprintProgramCompletionRef(handle, 'failed'),
-            completionAuthority: 'validated', acceptedProgramAttempt: attempt,
+            // A failed/rejected settlement is a system close (D-006): `committed`.
+            completionAuthority: 'committed', acceptedProgramAttempt: attempt,
             ...(rejectedResult ? { completionEvidence: { summary: rejectedResult } } : {}),
           });
         }

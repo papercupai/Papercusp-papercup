@@ -58,6 +58,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from 'node:module';
 import { existsSync as fsExistsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, matchesGlob, relative, resolve, sep } from 'node:path';
+import { isInForeignHive } from './lib/foreign-hive-submodules.mjs';
 import { fileURLToPath } from 'node:url';
 import { satisfies, UnsupportedRange } from './check-peer-dep-conflicts.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
@@ -157,12 +158,20 @@ export function resolveWorkspaceDirs(repoRoot = REPO_ROOT, deps = {}) {
         }
       }
     }
-    return [...new Set(dirs)].filter(dir => !excludes.some(pattern => matchesGlob(dir, pattern))).sort();
+    return [...new Set(dirs)]
+      .filter(dir => !excludes.some(pattern => matchesGlob(dir, pattern)) && !isInForeignHive(dir))
+      .sort();
   }
 
   // Reuse the link guard's npm-compatible population, including ! exclusions.
   // Otherwise a root repair tries to reinstall explicitly excluded fixtures.
-  return (deps.expandWorkspaces ?? expandWorkspaces)(globs, repoRoot).sort();
+  // A registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs) matches `apps/*`
+  // but is another hive's code with its own lockfile and install, judged by that hive's gate
+  // (WI-6554700010009815). Judging its package-local nodes against our declarations flip-flops:
+  // its own `npm ci` restores what our repair removes (WI-6554700010018003).
+  return (deps.expandWorkspaces ?? expandWorkspaces)(globs, repoRoot)
+    .filter((dir) => !isInForeignHive(dir))
+    .sort();
 }
 
 function packageDirEntries(nodeModulesDir, deps = {}) {

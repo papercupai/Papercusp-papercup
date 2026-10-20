@@ -19,6 +19,18 @@ import { parse as parseYaml } from 'yaml';
 // The report is committed evidence: serialize it through the distribution guard's redactor so
 // machine paths (launch-context prompt files under the home directory) never reach the tree.
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
+// Every pass/fail decision is the committed, tested oracle (judge-wearer-live-oracle.test.ts);
+// this script only collects the observations it judges.
+import {
+  OUTSIDE_JUDGE_CEILING as OUTSIDE,
+  REFUSAL_PROBE_TOOLS,
+  classifyRefusal,
+  isPolicyUnavailable,
+  judgeDispatch,
+  judgeGrantScope,
+  judgeLaunchRecord,
+  judgeToolList,
+} from '../../../scripts/lib/judge-wearer-live-oracle.mjs';
 
 const [stage1Path, OUT] = process.argv.slice(2);
 if (!stage1Path || !OUT) throw new Error('usage: stage2-exercise.mjs <stage1-report.json> <report.json>');
@@ -30,9 +42,7 @@ const report = { startedAt: new Date().toISOString(), stage1: stage1Path, stack:
   sessionId: body.sessionId, assertions: [...stage1.assertions] };
 const assert = (id, passed, evidence) => { report.assertions.push({ id, passed: Boolean(passed), evidence }); };
 const psql = (sql) => execFileSync('sudo', ['-n', '-u', 'postgres', 'psql', '-d', 'papercusp', '-At', '-c', sql], { encoding: 'utf8' }).trim();
-const OUTSIDE = ['capability:bash', 'processes:kill', 'capability:grant_role', 'dev:restart', 'work_items:create'];
-const POLICY_UNAVAILABLE = /Identity capability \(unresolved\): policy-unavailable/;
-const JUDGE_MISSING_CAPABILITY = /missing_capability: Principal .{0,4}system:judge.{0,4} lacks capability/;
+const READ_MARKER = 'identity-system-everything-migration';
 
 try {
   if (stage1.exitCode !== 0) throw new Error(`stage 1 did not pass (exitCode ${stage1.exitCode}); refusing to exercise its launch`);
@@ -46,13 +56,9 @@ try {
   const row = JSON.parse(psql(`SELECT json_build_object('owner', coord_owner_id, 'role', role, 'specRole', launch_spec->>'role', 'stack', launch_spec->'stack', 'specRev', launch_spec->>'specificationRevision', 'hasGrants', (launch_spec->'specificationArtifact'->'configuration'->>'grants') IS NOT NULL) FROM harness_shared.adv_sessions WHERE id = ${id}`));
   report.launchRecord = row;
   const recordEvidence = `adv_sessions ${id}: role=${row.role}, launch_spec.role=${row.specRole}, launch_spec.stack=${JSON.stringify(row.stack)}, artifact grants present=${row.hasGrants}, owner=${row.owner}`;
-  if (GOVERNED) {
-    assert('governed-launch-record-names-judge-and-stack', row.specRole === 'judge' && row.hasGrants === true &&
-      JSON.stringify(row.stack) === JSON.stringify(stage1.stack), recordEvidence);
-  } else {
-    assert('ungoverned-launch-writes-no-identity-record', row.role === 'judge' && row.specRole === null && row.stack === null &&
-      row.hasGrants === false, `${recordEvidence} (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)`);
-  }
+  const recordVerdict = judgeLaunchRecord({ governed: GOVERNED, row, stack: stage1.stack });
+  assert(recordVerdict.id, recordVerdict.passed, GOVERNED ? recordEvidence
+    : `${recordEvidence} (bootstrap-role.ts records an identity launch only when the artifact carries configuration.grants)`);
 
   // The administrator pot's own ceiling for the judge role, read independently.
   const potRoles = parseYaml(readFileSync('.papercusp/blueprint.yaml', 'utf8'))?.fleet?.workerRoles ?? [];
@@ -65,7 +71,8 @@ try {
   const server = Object.values(mcp.mcpServers ?? {})[0];
   const url = new URL(server.url);
   report.grantUrl = { origin: url.origin, role: url.searchParams.get('role'), superuser: url.searchParams.get('superuser'), tools: url.searchParams.get('tools') };
-  assert('grant-is-judge-scoped', url.searchParams.get('role') === 'judge' && !url.searchParams.has('superuser'),
+  const grantVerdict = judgeGrantScope(url);
+  assert(grantVerdict.id, grantVerdict.passed,
     `signed MCP URL role=${url.searchParams.get('role')}, superuser param ${url.searchParams.has('superuser') ? 'PRESENT' : 'absent'}`);
   let sessionHeader = null;
   const rpc = async (method, params, rid) => {
@@ -97,37 +104,32 @@ try {
   const list = await rpc('tools/list', {}, 2);
   const names = (list.result?.tools ?? []).map((t) => t.name);
   report.toolsListed = names.length;
-  const leaked = OUTSIDE.filter((n) => names.some((x) => x === n || x.endsWith(n.replace(':', '_'))));
-  assert('judge-tool-list-excludes-su-tools', names.length > 0 && leaked.length === 0,
+  const toolVerdict = judgeToolList(names);
+  const { leaked } = toolVerdict;
+  assert(toolVerdict.id, toolVerdict.passed,
     `tools/list via the signed judge URL returned ${names.length} tools; su-only/outside-ceiling tools listed: ${leaked.length ? leaked.join(',') : 'none'} (checked ${OUTSIDE.join(',')})`);
   const refusals = [];
-  for (const [i, name] of ['capability:bash', 'processes:kill'].entries()) {
+  for (const [i, name] of REFUSAL_PROBE_TOOLS.entries()) {
     const out = await rpc('tools/call', { name: 'tools:invoke', arguments: { name, args: name === 'capability:bash' ? { command: 'true' } : { taskId: 'p003-probe-none' } } }, 10 + i);
-    const text = JSON.stringify(out).slice(0, 600);
-    refusals.push({ name, refused: /missing_capability|not permitted|denied|not allowed|outside|forbidden|unknown tool|not in (the )?allow/i.test(text),
-      policyUnavailable: POLICY_UNAVAILABLE.test(text), judgeMissingCapability: JUDGE_MISSING_CAPABILITY.test(text), text });
+    refusals.push(classifyRefusal(name, JSON.stringify(out).slice(0, 600)));
   }
   report.refusals = refusals;
-  assert('dispatch-refuses-outside-judge-ceiling', refusals.every((r) => r.refused),
-    refusals.map((r) => `${r.name}: ${r.refused ? 'refused' : 'NOT refused'} (${r.text.slice(0, 160)})`).join(' | '));
   const read = await rpc('tools/call', { name: 'tools:invoke', arguments: { name: 'plans:get', args: { slug: 'identity-system-everything-migration-2026-10-18', harness: 'papercusp', heading: 'Now' } } }, 20);
   const readFull = JSON.stringify(read);
   report.allowedRead = readFull.slice(0, 1200);
-  const readOk = !read.error && !(read.result?.isError) && !/missing_capability|not permitted|denied/i.test(readFull) &&
-    /identity-system-everything-migration/.test(readFull);
-  const readEvidence = `plans:get through the judge grant: ${read.result?.isError ? 'isError' : 'ok'}, ${readFull.length} chars, names the plan slug=${/identity-system-everything-migration/.test(readFull)}, policy-unavailable=${POLICY_UNAVAILABLE.test(readFull)}`;
-  if (GOVERNED && judgeCeiling === undefined) {
-    // No pot ceiling for judge: the grant kernel must fail closed on every call, the read included.
-    assert('governed-judge-without-pot-ceiling-is-granted-nothing',
-      refusals.every((r) => r.policyUnavailable) && !readOk && POLICY_UNAVAILABLE.test(readFull),
+  const readEvidence = `plans:get through the judge grant: ${read.result?.isError ? 'isError' : 'ok'}, ${readFull.length} chars, names the plan slug=${readFull.includes(READ_MARKER)}, policy-unavailable=${isPolicyUnavailable(readFull)}`;
+  const evidenceFor = {
+    'dispatch-refuses-outside-judge-ceiling':
+      refusals.map((r) => `${r.name}: ${r.refused ? 'refused' : 'NOT refused'} (${r.text.slice(0, 160)})`).join(' | '),
+    'governed-judge-without-pot-ceiling-is-granted-nothing':
       `pot .papercusp/blueprint.yaml declares worker-role ceilings for [${report.potRolesWithCeiling.join(', ')}] and none for judge; ` +
-      `${refusals.map((r) => `${r.name} policy-unavailable=${r.policyUnavailable}`).join(', ')}; ${readEvidence}`);
-  } else {
-    if (!GOVERNED) {
-      assert('ungoverned-dispatch-refuses-by-judge-envelope', refusals.every((r) => r.judgeMissingCapability),
-        refusals.map((r) => `${r.name}: judge missing_capability=${r.judgeMissingCapability}`).join(' | '));
-    }
-    assert('dispatch-allows-read-inside-judge-ceiling', readOk, readEvidence);
+      `${refusals.map((r) => `${r.name} policy-unavailable=${r.policyUnavailable}`).join(', ')}; ${readEvidence}`,
+    'ungoverned-dispatch-refuses-by-judge-envelope':
+      refusals.map((r) => `${r.name}: judge missing_capability=${r.judgeMissingCapability}`).join(' | '),
+    'dispatch-allows-read-inside-judge-ceiling': readEvidence,
+  };
+  for (const v of judgeDispatch({ governed: GOVERNED, judgeCeiling, refusals, readReply: read, readMarker: READ_MARKER })) {
+    assert(v.id, v.passed, evidenceFor[v.id]);
   }
 } catch (e) {
   report.fatal = String(e?.stack ?? e);

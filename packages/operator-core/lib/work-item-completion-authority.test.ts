@@ -93,13 +93,17 @@ describe('the authority state table', () => {
     }
   });
 
-  it('reaches `validated` only by corroboration — the reserved-value honesty check', () => {
-    // `validated` ships with no writer on purpose. If someone wires a gate edge into it,
-    // this fails and forces the decision to be made explicitly rather than by drift.
+  it('reaches `validated` only by corroboration or the contract-checked system settlement', () => {
+    // WI-6554700010017006: exactly two edges enter `validated`. The gate never mints it —
+    // an agent's own evidence is `committed` at best. If someone wires a gate or owner edge
+    // into it, this fails and forces the decision to be made explicitly, not by drift.
     const into = COMPLETION_AUTHORITY_TRANSITIONS.filter((t) => t.to === 'validated');
-    expect(into).toHaveLength(1);
-    expect(into[0]!.from).toBe('committed');
-    expect(into[0]!.by).toEqual(['corroboration']);
+    expect(into.map((t) => [t.from, [...t.by]])).toEqual([
+      [null, ['system']],
+      ['committed', ['corroboration']],
+    ]);
+    expect(canTransition(null, 'validated', 'gate')).toBe(false);
+    expect(canTransition(null, 'validated', 'system')).toBe(true);
   });
 
   it('lets any settled claim be contradicted', () => {

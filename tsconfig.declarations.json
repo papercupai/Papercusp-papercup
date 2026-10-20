@@ -182,6 +182,7 @@
     "scripts/lib/tsc-baseline-gate.mjs",
     "scripts/lib/tsc-service.mjs",
     "scripts/lib/identity-leak-patterns.mjs",
+    "scripts/lib/judge-wearer-live-oracle.mjs",
     "scripts/lib/agent-intent-comment-patterns.mjs",
     "scripts/lib/sql-comment-backtick-scan.mjs",
     "scripts/check-vacuous-negative-assertions.mjs",

@@ -71,11 +71,18 @@ import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
  *                 of `testsRun` / `testResult` (see {@link isSufficientEvidence}).
  *                 Counts toward burn-down. The normal path for a good close.
  *
- * `validated`     RESERVED. A `committed` claim additionally corroborated by a signal
- *                 INDEPENDENT of its closer — a green run located in the test-run
- *                 ledger, a cited commit that provably exists, an owner ratification.
- *                 Counts toward burn-down. **No writer ships in this phase**; see the
- *                 honesty note on {@link COMPLETION_AUTHORITY_TRANSITIONS}.
+ * `validated`     A claim corroborated by a signal INDEPENDENT of whoever produced the
+ *                 work — a green run located in the test-run ledger, a cited commit that
+ *                 provably exists, an owner ratification, or a declared output contract
+ *                 checked by the canonical completion path. Counts toward burn-down.
+ *                 Exactly ONE writer ships today (WI-6554700010017006): the
+ *                 blueprint-program SUCCESS settlement in `dbos/coord-program-workflow.ts`,
+ *                 stamped only after `blueprint/operation-service.ts` has checked the
+ *                 output against the operation's `acceptance.resultSchema`, its model
+ *                 attestation, and (when declared) a grader's rubric acceptance. Its
+ *                 cancel and failure closes land `committed`. See the note on
+ *                 {@link COMPLETION_AUTHORITY_TRANSITIONS}; the writer set is pinned by
+ *                 `doc-claims/completion-authority-validated-writer.test.ts`.
  *
  * `pending_human` The claim cannot be settled by agent or machine and awaits owner
  *                 ratification. Does NOT count toward burn-down.
@@ -120,8 +127,11 @@ export function isWorkItemCompletionAuthority(v: unknown): v is WorkItemCompleti
  *                 (KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES, completion-audit.ts).
  *                 A system close lands `committed`, never `proposed` — `proposed`
  *                 means "an agent owes evidence", and nagging a reaper is pure noise.
+ *                 The one exception upward is the blueprint-program success settlement,
+ *                 which lands `validated` because its output contract was checked first.
  * `owner`         owner or fleet-leader ratification.
- * `corroboration` an independent confirmation source. RESERVED — see below.
+ * `corroboration` an independent confirmation source upgrading a committed close.
+ *                 Declared, but no caller ships yet — see below.
  */
 export type CompletionAuthorityActor = 'gate' | 'system' | 'owner' | 'corroboration';
 
@@ -143,6 +153,7 @@ export interface CompletionAuthorityTransition {
  * Read it as a lattice with one entry point and one sink:
  *
  *      (null) ──gate/system──> committed ──corroboration──> validated
+ *         │  └──────system (contract-checked settlement)─────────>│
  *         │                        │                            │
  *         ├──gate──> proposed ─────┤                            │
  *         │             │          │                            │
@@ -168,14 +179,25 @@ export interface CompletionAuthorityTransition {
  *    manufacture a legacy row, and legacy rows are exempt from nagging (D-005). That
  *    exemption must not be reachable by a live code path.
  *
- * ── ON `validated` SHIPPING WITHOUT A WRITER ─────────────────────────────────
- * Every other value is minted by the gate at close time. `validated` needs a
- * corroboration source that does not exist yet, so no `corroboration` edge has a caller
- * in this phase. It is declared now so the migration's CHECK constraint does not need
- * rewriting later — but a value nothing can produce is dead surface, and dead surface
- * that sits in an enum acquires imaginary meaning. Its first writer is a P-013
- * deliverable; if P-013 does not land one, the honest move is to DROP it from the enum
- * and the constraint, not to leave it as decoration.
+ * ── WHO WRITES `validated` ───────────────────────────────────────────────────
+ * This note used to say `validated` shipped with no writer. That stopped being true
+ * on 2026-09-25 (5a8ba13ecf), when the blueprint-program settlement began stamping it,
+ * and the note went on claiming otherwise until WI-6554700010017006. The settlement
+ * stamped `validated` on cancelled and failed roots too, though nothing had
+ * corroborated them. Today:
+ *
+ *  · `null → validated` by `system` — the ONE live writer: a blueprint-program root
+ *    settled `done` after the canonical completion path checked its output against
+ *    the operation contract (result schema, model attestation, optional rubric
+ *    acceptance). The program produced the output; the contract check did not, so
+ *    the corroboration comes from outside the producer.
+ *  · `committed → validated` by `corroboration` — declared, no caller yet (a test-run
+ *    ledger or cited-commit upgrade of an ordinary agent close).
+ *
+ * Writers do not consult {@link canTransition} at write time, so this table cannot by
+ * itself stop a new writer from minting `validated`. The writer set is therefore pinned
+ * by a source-scanning test (doc-claims/completion-authority-validated-writer.test.ts):
+ * a new `validated` writer fails it until this table and that test both name it.
  */
 export const COMPLETION_AUTHORITY_TRANSITIONS: readonly CompletionAuthorityTransition[] = [
   // ── entry: the gate mints an authority at close time ───────────────────────
@@ -226,7 +248,13 @@ export const COMPLETION_AUTHORITY_TRANSITIONS: readonly CompletionAuthorityTrans
     when: 'the owner rejects the completion',
   },
 
-  // ── corroboration (RESERVED — no caller in this phase) ─────────────────────
+  // ── corroboration ──────────────────────────────────────────────────────────
+  {
+    from: null,
+    to: 'validated',
+    by: ['system'],
+    when: 'a blueprint-program root settled done after the canonical completion path checked its output against the operation contract (WI-6554700010017006)',
+  },
   {
     from: 'committed',
     to: 'validated',

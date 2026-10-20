@@ -55,14 +55,28 @@ export const PLAIN_CONFIG_EXEMPTIONS = new Set([
   // gate-silent by design: the arming-time classifier (resolveTaskReportExpectation) counts them
   // as noReportExpected (`unenrolled-config`), never noReportUnexpected. Decided on WI-10003808:
   // pass-proof reuse over their ~29 small test files is not worth reversing WI-4973.
-  // libs/generic/desktop-ipc (github.com/Papercusp/desktop-ipc) is the same class but has NO
-  // config file, so it never appears in this set: the classifier counts it `no-config`, expected.
   'libs/generic/card-stack/vitest.config.ts',
   'libs/generic/ipc-endpoint-server/vitest.config.ts',
   'libs/generic/search/vitest.config.ts',
   'libs/agent-chat/vitest.config.ts',
   'libs/generic/git-graph/vitest.config.ts',
   'libs/generic/ui-primitives/vitest.config.ts',
+  // Same class (WI-6554700010018003): standalone submodule repos that gained a plain config on
+  // 2026-10-16 (provide.papercuspTestLayer='unit' only). Each is its own Git repo (git -C <dir>
+  // rev-parse --show-toplevel is the submodule), so it cannot import the private test-config.
+  // The non-submodule libs/generic dirs from that same change enrolled via defineVitestConfig.
+  'libs/generic/cache/vitest.config.ts',
+  'libs/generic/control-mutation/vitest.config.ts',
+  'libs/generic/debounce-coalesce/vitest.config.ts',
+  'libs/generic/desktop-ipc/vitest.config.ts',
+  'libs/generic/embedded-pg-discovery/vitest.config.ts',
+  'libs/generic/ipc-framing/vitest.config.ts',
+  'libs/generic/memory/vitest.config.ts',
+  'libs/generic/model-pricing/vitest.config.ts',
+  'libs/generic/prospect-contract/vitest.config.ts',
+  'libs/generic/rate-limit/vitest.config.ts',
+  'libs/generic/rerank/vitest.config.ts',
+  'libs/generic/resumable-download/vitest.config.ts',
   // Same class (WI-6554700010009161): libs/generic/rrf is github.com/Papercusp/rrf and its config
   // deliberately follows @papercusp/search's standalone route.
   // A registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs, e.g. the drill

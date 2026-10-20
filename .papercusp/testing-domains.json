@@ -1436,7 +1436,8 @@
             "scripts/lib/**/*.test.mjs",
             "scripts/agent-capacity/**/*.test.ts",
             "scripts/relay/**/*.test.ts",
-            "scripts/bench-host/**/*.test.ts"
+            "scripts/bench-host/**/*.test.ts",
+            "scripts/cloud-prod/**/*.test.ts"
           ]
         },
         {

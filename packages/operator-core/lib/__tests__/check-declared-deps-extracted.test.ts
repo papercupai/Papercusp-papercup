@@ -175,6 +175,24 @@ describe('check-declared-deps-extracted detector (EI-18666853411437489)', () => 
     expect(await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm })).toBe(0);
     expect(runNpm).not.toHaveBeenCalled();
   });
+
+  it('does not judge a registered foreign-hive submodule that matches apps/* (WI-6554700010018003)', async () => {
+    // apps/slack-asana-bug-drill is registered in scripts/lib/foreign-hive-submodules.mjs: its own
+    // lockfile and install govern it, so its missing or stale package-local nodes are not ours.
+    const root = fixture({
+      workspaces: ['apps/*'],
+      packages: {
+        'apps/operator': { dependencies: { present: '^1' } },
+        'apps/slack-asana-bug-drill': { dependencies: { 'drill-only-missing': '^1' } },
+        'apps/slack-asana-bug-drill-x': { dependencies: {} },
+      },
+      extracted: { '': ['present'] },
+    });
+    // A sibling that merely shares the prefix is still ours.
+    expect(resolveWorkspaceDirs(root)).toEqual(['apps/operator', 'apps/slack-asana-bug-drill-x']);
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(findInvalidWorkspacePackageVersions({ repoRoot: root })).toEqual([]);
+  });
 });
 
 describe('retry absorbs a filesystem-sync race but not a real miss (WI-5769 retry8)', () => {

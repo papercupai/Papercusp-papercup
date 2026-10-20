@@ -4,7 +4,7 @@
  *
  * The harness lookup is injected, so every branch is pinned without a harness registry.
  * The DB stamp and the plans:new wiring are pinned in
- * __tests__/new-verification-profile.integration.test.ts.
+ * __tests__/verification-profile-declare.integration.test.ts (the R-4/R-5 check file).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { resolveNewPlanVerificationProfile } from './plan-verification-profile-stamp';

@@ -1,13 +1,24 @@
 /**
- * plans:new stamps the plan verification profile, and content writes preserve it
+ * plans:new stamps the plan verification profile, plans:add-item declares a deliverable
+ * kind, plans:get reads both back, and content writes preserve the stamp
  * (plan-verification-profiles-2026-10-17 P-002, R-4/R-5).
  *
  * Every case goes through the real projected dispatch (`lookupByMcpName` →
- * `dispatchProjectedTool`) against the integration-tier baseline PG, then reads the
+ * `dispatchProjectedTool`) against a private (isolated) integration PG, then reads the
  * `harness_plans.verification_profile` / `verification_profile_source` columns directly.
- * The throwaway harness is not in the harness registry, so the undeclared case exercises the
- * fail-safe default (coding, basis harness-unresolved).
+ *
+ * Three harnesses cover the R-5 default (D-005):
+ *   - HARNESS is registered as a project but has no harness-registry entry, so its blueprint
+ *     is unresolvable and an undeclared plan fails safe to coding (basis harness-unresolved).
+ *   - CODE_HARNESS has a registry entry whose checkout carries a coding blueprint
+ *     (`extends: coding-factory`), so an undeclared plan defaults to coding.
+ *   - WORK_HARNESS has a registry entry whose checkout carries the non-coding `work`
+ *     blueprint, so an undeclared plan defaults to general.
+ * The registry entries are written to the private DB only, so no other test file sees them.
  */
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
@@ -16,20 +27,25 @@ import '../set-content';
 import '../add-item';
 import '../get';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
+import { mutateHarnessRegistry } from '../../../harness-registry';
 import { stampNewPlanVerificationProfile } from '../plan-verification-profile-stamp';
 import { setupPlanPgFixture, cleanupPlans, registerHarnessProject, type PlanPgFixture } from './_pg-tool-fixture';
 
-const HARNESS = `zzz-vprofile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const HARNESS = `zzz-vprofile-${RUN}`;
+const CODE_HARNESS = `zzz-vprofile-code-${RUN}`;
+const WORK_HARNESS = `zzz-vprofile-work-${RUN}`;
 const WS = DEFAULT_WORKSPACE_ID;
 
 let fx: PlanPgFixture;
 let admin: postgres.Sql;
+const tmpDirs: string[] = [];
 
-function ctx(): never {
+function ctx(harnessSlug: string): never {
   return {
     workspaceId: WS,
-    harnessSlug: HARNESS,
-    runId: 'plans-new-verification-profile',
+    harnessSlug,
+    runId: 'plans-verification-profile-declare',
     role: 'su',
     gateBypass: { role: true, capability: true, quota: true },
     transport: 'mcp',
@@ -43,10 +59,11 @@ type Dispatched = Awaited<ReturnType<typeof dispatchProjectedTool>>;
 async function call(
   tool: string,
   args: Record<string, unknown>,
+  harnessSlug = HARNESS,
 ): Promise<{ d: Dispatched; payload: Record<string, unknown> | null }> {
   const projected = lookupByMcpName(tool);
   expect(projected, `${tool} must be registered in the projection registry`).toBeTruthy();
-  const d = await dispatchProjectedTool(projected!, tool, { harness: HARNESS, ...args }, ctx(), {});
+  const d = await dispatchProjectedTool(projected!, tool, { harness: harnessSlug, ...args }, ctx(harnessSlug), {});
   const content = (d.result as { content?: Array<{ text?: string }> } | undefined)?.content;
   const structured = (d.result as { structuredContent?: unknown } | undefined)?.structuredContent;
   let payload: Record<string, unknown> | null = null;
@@ -79,25 +96,53 @@ function findKey(x: unknown, key: string, depth = 0): unknown {
 
 async function profileRow(
   slug: string,
+  harnessSlug = HARNESS,
 ): Promise<{ verification_profile: string | null; verification_profile_source: string | null; content: string } | null> {
   const rows = await admin<{ verification_profile: string | null; verification_profile_source: string | null; content: string }[]>`
     SELECT verification_profile, verification_profile_source, content FROM harness_shared.harness_plans
-     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+     WHERE workspace_id = ${WS} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
   `;
   return rows[0] ?? null;
 }
 
+/** A throwaway checkout whose `.papercusp/blueprint.yaml` extends the named built-in blueprint. */
+function checkoutWithBlueprint(extendsId: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'vprofile-'));
+  tmpDirs.push(dir);
+  mkdirSync(join(dir, '.papercusp'), { recursive: true });
+  writeFileSync(join(dir, '.papercusp', 'blueprint.yaml'), `id: t\nextends: ${extendsId}\n`);
+  return dir;
+}
+
 beforeAll(async () => {
-  fx = await setupPlanPgFixture();
+  fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
-  // plans:new resolves the plan workspace from the registered harness; the registration carries
-  // no checkout path or blueprint, so the harness default stays unresolvable (fail-safe case).
+  // plans:new resolves the plan workspace from the registered harness. HARNESS gets no
+  // registry entry, so its harness default stays unresolvable (fail-safe case).
   await registerHarnessProject(admin, WS, HARNESS);
+  await registerHarnessProject(admin, WS, CODE_HARNESS);
+  await registerHarnessProject(admin, WS, WORK_HARNESS);
+  const codePath = checkoutWithBlueprint('coding-factory');
+  const workPath = checkoutWithBlueprint('work');
+  await mutateHarnessRegistry(
+    (reg) => ({
+      ...reg,
+      projects: [
+        ...reg.projects.filter((p) => p.slug !== CODE_HARNESS && p.slug !== WORK_HARNESS),
+        { slug: CODE_HARNESS, path: codePath },
+        { slug: WORK_HARNESS, path: workPath },
+      ],
+    }),
+    WS,
+  );
 }, 180_000);
 
 afterAll(async () => {
-  await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+  if (admin) {
+    for (const h of [HARNESS, CODE_HARNESS, WORK_HARNESS]) await cleanupPlans(admin, WS, h).catch(() => {});
+  }
   await fx?.dispose();
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
 describe('plans:new verification profile (R-4/R-5)', () => {
@@ -128,6 +173,48 @@ describe('plans:new verification profile (R-4/R-5)', () => {
     const row = await profileRow(slug);
     expect(row?.verification_profile).toBe('coding');
     expect(row?.verification_profile_source).toBe('harness-default');
+  });
+
+  it('defaults an undeclared plan in a code harness to coding (basis coding-harness)', async () => {
+    const slug = 'zzz-vprofile-undeclared-code-2026-10-20';
+    const { d, payload } = await call('plans:new', { slug, title: 'Vprofile code harness teal', force: true }, CODE_HARNESS);
+    expect(payload?.ok, brief({ ok: d.ok, payload, error: d.error })).toBe(true);
+    expect(payload?.verificationProfile).toEqual({ profile: 'coding', source: 'harness-default', basis: 'coding-harness' });
+    const row = await profileRow(slug, CODE_HARNESS);
+    expect(row?.verification_profile).toBe('coding');
+    expect(row?.verification_profile_source).toBe('harness-default');
+  });
+
+  it('defaults an undeclared plan in a non-code harness to general (basis non-coding-harness)', async () => {
+    const slug = 'zzz-vprofile-undeclared-work-2026-10-20';
+    const { d, payload } = await call('plans:new', { slug, title: 'Vprofile work harness amber', force: true }, WORK_HARNESS);
+    expect(payload?.ok, brief({ ok: d.ok, payload, error: d.error })).toBe(true);
+    expect(payload?.verificationProfile).toEqual({
+      profile: 'general',
+      source: 'harness-default',
+      basis: 'non-coding-harness',
+    });
+    const row = await profileRow(slug, WORK_HARNESS);
+    expect(row?.verification_profile).toBe('general');
+    expect(row?.verification_profile_source).toBe('harness-default');
+
+    const got = await call('plans:get', { slug }, WORK_HARNESS);
+    const verification = findKey(got.payload, 'verification') as Record<string, unknown> | undefined;
+    expect(verification, brief(got.payload)).toBeTruthy();
+    expect(verification?.profile).toBe('general');
+    expect(verification?.profileSource).toBe('harness-default');
+  });
+
+  it('a declared profile wins over the harness default', async () => {
+    const slug = 'zzz-vprofile-declared-in-work-2026-10-20';
+    const { d, payload } = await call(
+      'plans:new',
+      { slug, title: 'Vprofile declared in work harness slate', verificationProfile: 'coding', force: true },
+      WORK_HARNESS,
+    );
+    expect(payload?.ok, brief({ ok: d.ok, payload, error: d.error })).toBe(true);
+    expect(payload?.verificationProfile).toEqual({ profile: 'coding', source: 'declared', basis: 'declared' });
+    expect((await profileRow(slug, WORK_HARNESS))?.verification_profile).toBe('coding');
   });
 
   it('refuses an unknown profile at the args schema and creates nothing', async () => {
@@ -180,7 +267,7 @@ describe('plans:new verification profile (R-4/R-5)', () => {
       slug,
       phase: 'Phase 1',
       importance: 'normal',
-      items: [{ text: 'Ship the exporter' , deliverable: 'code' }, { text: 'Write the runbook' }],
+      items: [{ text: 'Ship the exporter', deliverable: 'code' }, { text: 'Write the runbook' }],
     });
     expect(added.payload?.ok, brief({ ok: added.d.ok, payload: added.payload, error: added.d.error })).toBe(true);
     expect((await profileRow(slug))?.content).toContain('Ship the exporter deliverable: code');
