@@ -1422,8 +1422,8 @@ export function claudeCompactToolNames(env?: NodeJS.ProcessEnv): string[];
  *  handoff successor ({@link healContextTrimmingEnv}).
  *  Why one place (WI-2140943 lane 2, 2026-09-02): the WI-38292 host-code handoff carried a
  *  hand-kept allowlist of child env keys that predated all three, so every headless fleet
- *  member that adopted updated host code re-booted with the whole ~581-tool papercusp-su
- *  catalog INLINE — measured 756k tokens on the successor's FIRST turn (vs 143k before the
+ *  member that adopted updated host code re-booted with the whole papercusp-su catalog
+ *  (581 tools at the time) INLINE — measured 756k tokens on the successor's FIRST turn (vs 143k before the
  *  adoption), 12 native sessions in 2h per member as the compaction watchdog respawned it
  *  against its 200k cap, 4 members re-reading ~800k cached tokens per turn.
  *  - ENABLE_TOOL_SEARCH: claude silently disables ToolSearch deferral whenever
@@ -4785,7 +4785,7 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES: string[];
  *  WI-37534 cuts that hurt. Those failed because native ToolSearch indexes ONLY the
  *  advertised subset, so an unseeded name answered "no matching deferred tools found",
  *  which reads as "this tool does not exist". With ToolSearch DENIED that mechanism is not
- *  in play at all: papercusp's OWN `tools:find` searches the FULL ~900-tool catalog and
+ *  in play at all: papercusp's OWN `tools:find` searches the FULL tool catalog and
  *  ACTIVATES matches into the live list, and `tools:invoke` dispatches any catalog tool by
  *  name, gated identically to a direct call. Root CLAUDE.md states this explicitly for
  *  agents. So the seed is a LATENCY budget (one round-trip to reach a tail tool), not a

@@ -3745,7 +3745,7 @@ export function looksLikeDiscoveryRecord(rec) {
  *  launcher's fresh path owns, so it DRIFTS: the list predated the context-trimming trio
  *  (ENABLE_TOOL_SEARCH / PAPERCUSP_TOOLS / PAPERCUSP_CONTEXT_TIER) and, on the first
  *  adoption after a pty-host edit, every headless fleet member re-booted with the whole
- *  ~581-tool catalog inline — 756k tokens on turn 1, respawned every ~10 min (WI-2140943
+ *  catalog inline (581 tools at the time) — 756k tokens on turn 1, respawned every ~10 min (WI-2140943
  *  lane 2, 2026-09-02). Two rails keep it honest now: the launcher's handoff successor
  *  re-derives that trio when absent (healContextTrimmingEnv), and
  *  psu-host-handoff-env.test.ts pins this list ⊇ contextTrimmingEnv's keys. */

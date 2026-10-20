@@ -210,7 +210,7 @@ export interface ShippingSeedCatalog {
  * This builds the tool set from the GENERATED delivery artifact instead — the
  * same file the launcher passes through as `PAPERCUSP_TOOLS_COMPACT` — so the
  * offered names are exactly the shipped names. DEFERRAL needs no simulation:
- * the other ~836 tools are absent from both arms by construction, so holding
+ * every other catalog tool is absent from both arms by construction, so holding
  * the set fixed and varying only `tier` isolates the one variable D-008 asks
  * about.
  *

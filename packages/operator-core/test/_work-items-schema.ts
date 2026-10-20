@@ -606,16 +606,19 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     importance text,
     phase text,
     owner_gate_marker text,
+    deliverable text,
     blocked_by text[] NOT NULL DEFAULT '{}'::text[],
     decision_refs text[] NOT NULL DEFAULT '{}'::text[],
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
   );
   -- Migration 675's index writer persists the owner-gate marker introduced by
-  -- the claim-floor contract.  Keep older/stub fixture applications
-  -- composable when the relation already exists without the column.
+  -- the claim-floor contract, and (migration 1536) the declared deliverable kind.
+  -- Keep older/stub fixture applications composable when the relation already
+  -- exists without the columns.
   ALTER TABLE harness_shared.plan_items
-    ADD COLUMN IF NOT EXISTS owner_gate_marker text;
+    ADD COLUMN IF NOT EXISTS owner_gate_marker text,
+    ADD COLUMN IF NOT EXISTS deliverable text;
   CREATE TABLE IF NOT EXISTS harness_shared.plan_decisions (
     workspace_id text NOT NULL DEFAULT 'default',
     harness_slug text NOT NULL DEFAULT 'papercup',

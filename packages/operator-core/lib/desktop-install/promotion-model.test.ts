@@ -17,9 +17,13 @@ describe('renderPromotionModelSection', () => {
     expect(out).toContain('`staging`');
     expect(out).toContain('`main`');
     expect(out).toContain('npm run test:affected');
-    // The contract: main is green-only; red holds; never push main; tests gate; watch /admin/git.
-    expect(out).toContain('GREEN-ONLY');
-    expect(out).toMatch(/red suite/i);
+    // The contract (ratchet model, green-main-ratchet-convergence-2026-10-17 R-10): main
+    // advances only with no BLOCKING failure; a blocking red holds; never push main; tests
+    // gate; watch /admin/git. The retired "green-only" wording must not come back.
+    expect(out).toContain('no BLOCKING failure');
+    expect(out).toContain('active downgrade record');
+    expect(out).not.toContain('GREEN-ONLY');
+    expect(out).toMatch(/red suite with a blocking failure HOLDS/i);
     expect(out).toMatch(/never .*push.*main|never `git push`/i);
     expect(out).toContain('/admin/git');
     // The cause→consequence reinforcement (D-005): a flaky/skipped test freezes the whole hive.

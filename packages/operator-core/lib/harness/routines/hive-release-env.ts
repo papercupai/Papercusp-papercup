@@ -71,6 +71,40 @@ export interface HiveReleaseGate {
  * judge where the work actually lands. Without it a working copy cloned from a `main`-default
  * repo judged `main` against release ref `main`: permanently up-to-date, never promoted.
  */
+/**
+ * THE "is this a code harness" predicate: the blueprint produces repo commits
+ * (`output.kind`, default `repo-commit`) and does not opt out of a repo
+ * (`knobs.requiresRepo !== false`). The release gate's default and the plan
+ * verification profile's harness default (plan-verification-profiles-2026-10-17
+ * R-5) both read it, so a harness is "code" for exactly one definition.
+ */
+export function isCodingBlueprint(blueprint: { output?: unknown; knobs?: unknown }): boolean {
+  const knobs = (blueprint.knobs ?? {}) as Record<string, unknown>;
+  const outputKind = ((blueprint.output as { kind?: string } | undefined)?.kind as string | undefined) ?? 'repo-commit';
+  return outputKind === 'repo-commit' && knobs.requiresRepo !== false;
+}
+
+/**
+ * {@link isCodingBlueprint} for a registered harness, read from its resolved
+ * `.papercusp/blueprint.yaml`. `null` when the harness is not registered or its
+ * blueprint is missing or invalid: the caller picks the fallback.
+ */
+export async function resolveHarnessIsCoding(slug: string, workspaceId: string): Promise<boolean | null> {
+  const reg = await loadHarnessRegistry(workspaceId);
+  const entry = reg.projects.find((p) => p.slug === slug);
+  if (!entry) return null;
+  const bpFile = join(entry.path, '.papercusp', 'blueprint.yaml');
+  if (!existsSync(bpFile)) return null;
+  try {
+    const childObj = (parseYaml(readFileSync(bpFile, 'utf8')) ?? {}) as Record<string, unknown>;
+    const validation = resolveAndValidate(childObj, operatorResolveExtends({ localDirs: [] }));
+    if (!validation.ok || !validation.blueprint) return null;
+    return isCodingBlueprint(validation.blueprint);
+  } catch {
+    return null;
+  }
+}
+
 export function resolveHiveReleaseGate(
   hivePath: string,
   registryDefaultBranch?: string,
@@ -95,9 +129,7 @@ export function resolveHiveReleaseGate(
   // repos, so they gate by default; explicit releaseGate.enabled:false (the non-coding `work`
   // blueprint) opts OUT. (per-hive-git-and-release-gate P-017 — gate code-in-member hives,
   // not just self_repo homes.)
-  const outputKind =
-    ((validation.blueprint as { output?: { kind?: string } }).output?.kind as string | undefined) ?? 'repo-commit';
-  const codingProfile = outputKind === 'repo-commit' && knobs.requiresRepo !== false;
+  const codingProfile = isCodingBlueprint(validation.blueprint);
   const enabled = gate.enabled === true || (gate.enabled !== false && codingProfile);
   const fromRepo = (knobs.fromRepo ?? {}) as Record<string, unknown>;
   // WI-2828 durable fix (opt-in polarity): default to SKIPPING the operator-SPA build leg

@@ -9,7 +9,7 @@
  * Two registries (see agent-insights/failed-tool-call-history):
  *   getCatalog()            → ~28 principal-gated BUILT-INS, each with a Zod
  *                             `args` schema → validate schema-level (no dispatch).
- *   listAllProjectedTools() → all ~217 tools as JSON `inputSchema` (no Zod, no
+ *   listAllProjectedTools() → every projected tool as JSON `inputSchema` (no Zod, no
  *                             name) → structural well-formedness checks.
  */
 import { describe, it, expect } from 'vitest';

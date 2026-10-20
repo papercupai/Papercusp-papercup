@@ -15,7 +15,7 @@
  * A fixture cannot answer that, because the failure mode is a schema SHAPE the
  * fixture author did not think of (an `allOf` sitting under `items`, a
  * `patternProperties` map whose keys are regexes, a property literally named
- * `default`). The catalog has ~900 tools and hits shapes no fixture enumerates,
+ * `default`). The catalog has hundreds of tools and hits shapes no fixture enumerates,
  * so the property has to be asserted over the population, not a sample.
  *
  * WHAT IS ASSERTED, and why it is a PROPERTY rather than a threshold:

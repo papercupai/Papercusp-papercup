@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-10-17T16:22:18.164Z",
+  "generatedAt": "2026-10-20T05:05:21.233Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 118900,
-      "sha256": "da61552891809cc4b127a8ae17f13c01655657caa6f4b6934423da97de8b7b7a",
+      "totalBytes": 119071,
+      "sha256": "064d320f1b5165028e96b6be667260c970aa64f995be38bb399be1148923f8e9",
       "sections": [
         {
           "heading": "(preamble)",
@@ -67,8 +67,14 @@
         {
           "heading": "## Git — a background routine owns commit + push",
           "origin": "base",
-          "bytes": 4258,
-          "sha256": "a4ac180562f473a39aa69668e6accca0aa91c68e683a18ffd5354ba9169e02ac"
+          "bytes": 4429,
+          "sha256": "1699635640b73fcdc4b902f5dc8c34a6152027030e86ff9f4cfbacdba664ba1e"
+        },
+        {
+          "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
+          "origin": "generated",
+          "bytes": 8900,
+          "sha256": "52dfed6bb8487b2760181db7518c28d7e4b4f8d43dd604d5e5964d8cddf89d05"
         },
         {
           "heading": "## Engineering discipline",
@@ -141,12 +147,6 @@
           "origin": "base",
           "bytes": 18,
           "sha256": "766f3f3d937780f9d9e3bed68270e0875c008f606a339b9e898d38db568c0c65"
-        },
-        {
-          "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
-          "origin": "generated",
-          "bytes": 8900,
-          "sha256": "52dfed6bb8487b2760181db7518c28d7e4b4f8d43dd604d5e5964d8cddf89d05"
         },
         {
           "heading": "## Waiting on something? Arm a self-wake LOOP — never sleep on an event that may never fire; if the blocker isn't progressing, OWN getting it unblocked",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 118900,
-      "sha256": "da61552891809cc4b127a8ae17f13c01655657caa6f4b6934423da97de8b7b7a",
+      "totalBytes": 119071,
+      "sha256": "064d320f1b5165028e96b6be667260c970aa64f995be38bb399be1148923f8e9",
       "sections": [
         {
           "heading": "(preamble)",
@@ -211,8 +211,14 @@
         {
           "heading": "## Git — a background routine owns commit + push",
           "origin": "base",
-          "bytes": 4258,
-          "sha256": "a4ac180562f473a39aa69668e6accca0aa91c68e683a18ffd5354ba9169e02ac"
+          "bytes": 4429,
+          "sha256": "1699635640b73fcdc4b902f5dc8c34a6152027030e86ff9f4cfbacdba664ba1e"
+        },
+        {
+          "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
+          "origin": "generated",
+          "bytes": 8900,
+          "sha256": "52dfed6bb8487b2760181db7518c28d7e4b4f8d43dd604d5e5964d8cddf89d05"
         },
         {
           "heading": "## Engineering discipline",
@@ -285,12 +291,6 @@
           "origin": "base",
           "bytes": 18,
           "sha256": "766f3f3d937780f9d9e3bed68270e0875c008f606a339b9e898d38db568c0c65"
-        },
-        {
-          "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
-          "origin": "generated",
-          "bytes": 8900,
-          "sha256": "52dfed6bb8487b2760181db7518c28d7e4b4f8d43dd604d5e5964d8cddf89d05"
         },
         {
           "heading": "## Waiting on something? Arm a self-wake LOOP — never sleep on an event that may never fire; if the blocker isn't progressing, OWN getting it unblocked",

@@ -5102,7 +5102,7 @@ export function parkRoleScopedMcpJson(cwd) {
  */
 // weak-model-tool-tier-2026-07-01: the UNIVERSAL core MCP spine handed to a weak/local
 // OMP model up-front (bootstrap + coordination + work + discovery — ~19 tools) instead of
-// the full ~580-tool superuser surface it cannot wield. The server honors `?tools=` as a
+// the full superuser surface (hundreds of tools) it cannot wield. The server honors `?tools=` as a
 // LISTING allowlist only, so everything omitted stays REACHABLE via `tools:find` (intent
 // search) → OMP's native `search_tool_bm25` activation. MIRROR of the orchestrator's
 // CORE_MCP_TOOL_NAMES (libs/papercusp/packages/orchestrator/src/invoke.ts) — kept in
@@ -5457,7 +5457,7 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
  *  WI-37534 cuts that hurt. Those failed because native ToolSearch indexes ONLY the
  *  advertised subset, so an unseeded name answered "no matching deferred tools found",
  *  which reads as "this tool does not exist". With ToolSearch DENIED that mechanism is not
- *  in play at all: papercusp's OWN `tools:find` searches the FULL ~900-tool catalog and
+ *  in play at all: papercusp's OWN `tools:find` searches the FULL tool catalog and
  *  ACTIVATES matches into the live list, and `tools:invoke` dispatches any catalog tool by
  *  name, gated identically to a direct call. Root CLAUDE.md states this explicitly for
  *  agents. So the seed is a LATENCY budget (one round-trip to reach a tail tool), not a
@@ -5478,7 +5478,7 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
  *  Deliberately OUT, reachable via tools:find/tools:invoke: every heavy above, plus the
  *  plans:* / events:* / work_items:create|update|set_state|complete families. */
 export const CLAUDE_MINIMAL_SEED_TOOL_NAMES = [
-  // (1) REACHABILITY FLOOR — 2,873 B buys the other ~870 tools. Never remove.
+  // (1) REACHABILITY FLOOR — 2,873 B buys every other catalog tool. Never remove.
   "tools:find", // 1,936 B
   "tools:invoke", // 937 B
   // (2) ROUTING-TABLE MANDATES (54,396 B) — the promoted set, minus the five entries that
@@ -5584,8 +5584,8 @@ export function claudeCompactToolNames(env = process.env) {
  *  handoff successor ({@link healContextTrimmingEnv}).
  *  Why one place (WI-2140943 lane 2, 2026-09-02): the WI-38292 host-code handoff carried a
  *  hand-kept allowlist of child env keys that predated all three, so every headless fleet
- *  member that adopted updated host code re-booted with the whole ~581-tool papercusp-su
- *  catalog INLINE — measured 756k tokens on the successor's FIRST turn (vs 143k before the
+ *  member that adopted updated host code re-booted with the whole papercusp-su catalog
+ *  (581 tools at the time) INLINE — measured 756k tokens on the successor's FIRST turn (vs 143k before the
  *  adoption), 12 native sessions in 2h per member as the compaction watchdog respawned it
  *  against its 200k cap, 4 members re-reading ~800k cached tokens per turn.
  *  - ENABLE_TOOL_SEARCH: claude silently disables ToolSearch deferral whenever
@@ -18510,7 +18510,7 @@ export async function launchFreshSu(selections, args, {
   // a faithful copy of the config+model-registry with a rewritten mcp.json (home-relative —
   // see writeOmpSessionConfigDir). ONE trigger now that 'full' is retired: every session
   // advertises ONLY the ~19-tool core spine (the rest via tools:find), so no model — weak or
-  // strong — is handed ~580 tools up front. Discovery is flipped OFF alongside it, which is
+  // strong — is handed the whole catalog up front. Discovery is flipped OFF alongside it, which is
   // NOT the old whole-catalog behaviour: it is required BECAUSE the surface is a seed (see the
   // launch-tail comment — with discovery ON, the seed's own front doors sit behind activation).
   // Fail-safe: null ⇒ OMP keeps its native default (no regression).
@@ -18719,7 +18719,7 @@ export async function launchFreshSu(selections, args, {
       // OMP treats that var as an agent-dir OVERRIDE that BEATS PI_CONFIG_DIR, and adv-console /
       // pty spawns export it (<stateDir>/pi-sessions — spawn-config.resolveContextEnv), so a psu
       // launched from such a shell silently ignored the per-session mcp.json + config.yml: the
-      // 04:53 ornith session got the FULL 592-tool catalog (inherited pi-sessions agent dir, no
+      // 04:53 ornith session got the FULL catalog, 592 tools then (inherited pi-sessions agent dir, no
       // tools= filter, no discovery flip) instead of the 20-tool spine. Pinning to the session's
       // own agent dir makes the relocation deterministic regardless of inherited env.
       ...(ompPiConfigDir

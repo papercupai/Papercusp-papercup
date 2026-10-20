@@ -48,6 +48,11 @@ export interface PlanIndexItem {
   phase: string | null;
   /** Optional marker parsed from plan prose for owner-gated items. */
   ownerGateMarker?: string | null;
+  /**
+   * Declared deliverable kind from the item-line `deliverable:` keyword
+   * (plan-verification-profiles-2026-10-17 P-002). Null when undeclared or unknown.
+   */
+  deliverable?: string | null;
 }
 
 /** A decision as stored in the derived `decisions` jsonb column (Stage 3 normalize). */
@@ -115,6 +120,8 @@ export function deriveIndexFromContent(content: string): PlanIndex {
       decisionRefs: i.decisionRefs,
       phase: i.phase,
       ownerGateMarker: ownerGateMarkers.get(i.id) ?? null,
+      // Only when declared: an undeclared item keeps its derived jsonb byte-identical.
+      ...(i.deliverable ? { deliverable: i.deliverable } : {}),
     })),
     decisions: p.decisions.map((d) => ({
       id: d.id,

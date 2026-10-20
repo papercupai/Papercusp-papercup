@@ -198,6 +198,7 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       decision_refs     TEXT[] NOT NULL DEFAULT '{}',
       updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
       owner_gate_marker TEXT,
+      deliverable       TEXT,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id),
       FOREIGN KEY (workspace_id, harness_slug, plan_slug)
         REFERENCES harness_shared.harness_plans (workspace_id, harness_slug, plan_slug) ON DELETE CASCADE

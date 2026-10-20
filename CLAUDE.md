@@ -368,9 +368,10 @@ quoted in prose. Qualify it yourself; do not rely on the detector to catch it.
   `staging` checked out**. Work on `staging` directly — **no `git worktree`, no
   feature branches**; coordinate via `locks:*` (per-edit hook is automatic) + `coord:*`
   (declare-intent), not tree isolation.
-- **`main` is the GREEN branch** — it only fast-forwards to a staging commit
-  that passed the green-checkpoint suite; nothing and no one pushes it directly
-  (a pre-push hook blocks you).
+- **`main` is the promoted branch** — it only fast-forwards to a staging commit
+  with no BLOCKING failure (the ratchet rule below); nothing and no one pushes it
+  directly (a pre-push hook blocks you).
+
 
 ## Commit discipline: git-sync owns commit + push — you do neither
 
@@ -445,6 +446,8 @@ value, the `cell` that re-answers it and a ready `reread` call. Copy the handle,
   'gate.greenCheckpoint.candidate', as: '<your path>' }`, a **blob containment** check against
   the candidate. Never read "the gate is red" as "the gate is red ABOUT MY CHANGE."
 - **Waiting for one to CHANGE** (a verdict, a deploy sha) → `state:subscribe`, not a poll loop.
+
+⛔ **`main` advances on a RATCHET, not on "fully green".** The gate promotes a candidate when no BLOCKING failure remains: every failing test blocks unless an ACTIVE downgrade record in `harness_shared.test_downgrades` covers its file and case (`decidePromotionRatchet` in `packages/operator-core/lib/release/promotion-ratchet.ts`). A red takes the ladder **fix → eject → downgrade**: fix it; else eject (revert) the change it is attributed to; only then downgrade it with `release:test-downgrade` (reason, owner, filed bug; a critical-area test also needs an acknowledgement and notifies the owner). Never hand-quarantine or skip a test to get past the gate.
 
 ⛔ **A RED CANDIDATE IS FROZEN ON PURPOSE — never "just re-run" the gate at tip.** The standard main-greening procedure is **freeze-and-converge** (`RELEASE_FREEZE_AND_CONVERGE_DEFAULT`, default ON): on the first real code red the gate opens ONE frozen repair queue, and every later run RESUMES that exact candidate rather than a newer tip.
 

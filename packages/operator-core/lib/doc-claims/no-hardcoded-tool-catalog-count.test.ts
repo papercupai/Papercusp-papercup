@@ -39,6 +39,21 @@ const CATALOG_COMMENT_SITES = [
   '../../../../libs/papercusp/packages/orchestrator/src/invoke.ts',
   '../../../../libs/papercusp/packages/orchestrator/src/invoke.test.ts',
   '../../../../libs/papercusp/packages/orchestrator/src/native-tool-search-deny.ts',
+  // WI-6554700010016923: whole-catalog figures with other numbers (~551/~606/~850/380/~226/~300/~581).
+  '../cupboard/tool-find.ts',
+  '../model-tier.ts',
+  '../agent-tools/_tool-reachability.ts',
+  '../cupboard/tools-search.ts',
+  '../llm-testing/targets/su-catalog.ts',
+  '../agent-tools/agent_chats/mcp-config.ts',
+  '../../../../libs/papercusp/packages/orchestrator/src/core-spine-inverses.test.ts',
+  // WI-6554700010016923, second batch: ~217 / ~836 / ~900 whole-catalog figures.
+  '../__tests__/tool-input-schema-rejection.test.ts',
+  '../llm-testing/targets/su-compact-catalog.ts',
+  '../agent-tools/compact-schema-catalog.test.ts',
+  // Incident figures in these two stay, dated as "N tools at the time", which the pattern skips.
+  '../../../../apps/operator/scripts/psu-launcher.mjs',
+  '../../../../apps/operator/scripts/psu-pty-host.mjs',
 ] as const;
 
 /** "~550-tool", "~ 550 tools", "(~550 tools)", or a bare "550-tool catalog/registry/surface". */
