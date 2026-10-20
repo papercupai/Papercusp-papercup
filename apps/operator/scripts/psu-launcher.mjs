@@ -8511,7 +8511,13 @@ export async function fetchWithResilience(
   const overloadDeadline = now() + MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS;
   let bootstrapReplayAttempts = 1;
   let announcedBootstrapReplay = false;
-  const bootstrapReplayDeadline = now() + bootstrapReplayBudgetMs;
+  // WI-6554700010018056: the replay window opens at the FIRST replay-eligible
+  // failure, not at request start. The proxy forwards bootstrap-su/-role as
+  // opaque (no proxy replay, no header timeout) and the route has no 30s
+  // deadline (WI-10006975), so an upstream reset can land at any point in a
+  // long bootstrap; a start-anchored window gave a reset after ~29s ZERO
+  // replays. BOOTSTRAP_REPLAY_MAX_ATTEMPTS still bounds the amplification.
+  let bootstrapReplayDeadline = null;
   let lastErr;
   for (;;) {
     try {
@@ -8568,6 +8574,7 @@ export async function fetchWithResilience(
       if (retryable && retryBootstrapFailures) {
         const directive = await bootstrapReplayDirective(response);
         if (directive) {
+          bootstrapReplayDeadline ??= now() + bootstrapReplayBudgetMs;
           const remaining = bootstrapReplayDeadline - now();
           if (
             bootstrapReplayAttempts < bootstrapReplayMaxAttempts &&

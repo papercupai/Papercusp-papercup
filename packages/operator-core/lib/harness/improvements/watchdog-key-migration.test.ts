@@ -206,6 +206,19 @@ describe('recomputeWatchdogKeys', () => {
     expect(d.writes).toEqual([]);
   });
 
+  it('R-7: two open EIs that ALREADY share an exact key — the later one is a collision held by the first', async () => {
+    const d = deps([
+      ei({ id: 'EI-1', watchdogKey: STRUCTURAL_KEY, body: structuralBody }),
+      ei({ id: 'EI-2', watchdogKey: STRUCTURAL_KEY, body: structuralBody }),
+      ei({ id: 'EI-3', watchdogKey: 'repeated-tool-error:memory:search:rate-limit', body: 'x.\n\nSample: rate limit reached' }),
+    ]);
+    const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d, { dryRun: false });
+    expect(res.changed).toEqual([]);
+    expect(res.collisions).toEqual([{ id: 'EI-2', oldKey: STRUCTURAL_KEY, newKey: STRUCTURAL_KEY, heldBy: 'EI-1' }]);
+    expect(res.unchanged).toBe(2);
+    expect(d.writes).toEqual([]);
+  });
+
   it('counts unchanged rows and ignores EIs without a watchdogKey', async () => {
     const d = deps([
       ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:memory:search:rate-limit', body: 'x.\n\nSample: rate limit reached' }),

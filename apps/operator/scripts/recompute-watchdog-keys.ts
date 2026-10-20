@@ -68,7 +68,14 @@ async function main(): Promise<void> {
           FROM harness_shared.engineer_issues
          WHERE state = 'open'
            AND payload ? 'watchdogKey'
-           AND payload->>'watchdogKey' LIKE ${REPEATED_TOOL_ERROR_PREFIX + '%'}`;
+           AND payload->>'watchdogKey' LIKE ${REPEATED_TOOL_ERROR_PREFIX + '%'}
+         -- The CANONICAL-ROW rule (recomputeWatchdogKeys: the first candidate holds a key):
+         -- a work-lane row before an observation row, a claimed row before an unclaimed
+         -- one, then the oldest, then the id. The fold drops later holders onto it.
+         ORDER BY (coalesce(lane, payload->>'lane', '') = 'observation') ASC,
+                  (assignee IS NULL) ASC,
+                  created_at ASC,
+                  issue_id ASC`;
       return rows.map((r) => ({
         id: r.issue_id,
         kind: 'bug',

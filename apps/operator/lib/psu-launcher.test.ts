@@ -16274,6 +16274,65 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
     expect(BOOTSTRAP_REPLAY_BUDGET_MS).toBe(30_000);
   });
 
+  it("WI-6554700010018056: opens the bootstrap replay window at the first failure, not at request start", async () => {
+    const upstreamSilent = () =>
+      new Response(
+        JSON.stringify({ error: "mcp_proxy_upstream_error", detail: "read ECONNRESET" }),
+        { status: 502, headers: { "content-type": "application/json" } },
+      );
+    // A long bootstrap reset after 45s (past the 30s budget measured from start)
+    // still gets its same-key replay.
+    const lateClock = fakeClock();
+    let lateAttempts = 0;
+    const late = await fetchWithResilience(
+      "http://op/api/agent-mcp/console/bootstrap-role",
+      { method: "POST", body: JSON.stringify({ bootstrap_idempotency_key: "late" }) },
+      {
+        fetchImpl: async () => {
+          lateAttempts += 1;
+          if (lateAttempts === 1) {
+            await lateClock.sleep(45_000);
+            return upstreamSilent();
+          }
+          return new Response(JSON.stringify({ status: "ok" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+        sleep: lateClock.sleep,
+        now: lateClock.now,
+        onNotice: () => {},
+        target: devTarget,
+        retryBootstrapFailures: true,
+      },
+    );
+    expect(late.status).toBe(200);
+    expect(lateAttempts).toBe(2);
+
+    // A sustained outage stays bounded: once the window that opened at the first
+    // failure has elapsed, the typed 502 is surfaced instead of replayed again.
+    const slowClock = fakeClock();
+    let slowAttempts = 0;
+    const exhausted = await fetchWithResilience(
+      "http://op/api/agent-mcp/console/bootstrap-role",
+      { method: "POST", body: JSON.stringify({ bootstrap_idempotency_key: "slow" }) },
+      {
+        fetchImpl: async () => {
+          slowAttempts += 1;
+          await slowClock.sleep(45_000);
+          return upstreamSilent();
+        },
+        sleep: slowClock.sleep,
+        now: slowClock.now,
+        onNotice: () => {},
+        target: devTarget,
+        retryBootstrapFailures: true,
+      },
+    );
+    expect(exhausted.status).toBe(502);
+    expect(slowAttempts).toBe(2);
+  });
+
   it("retries a typed in-progress bootstrap but never an arbitrary 502", async () => {
     let inProgressAttempts = 0;
     const recovered = await fetchWithResilience(

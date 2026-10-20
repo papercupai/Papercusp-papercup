@@ -158,7 +158,13 @@ export interface RecomputeDeps {
  * recomputed key already belongs to ANOTHER open EI (or to one migrated earlier
  * in this pass), the row is SKIPPED and reported as a collision rather than
  * minting a second open EI on the same key — a genuine duplicate the dedup /
- * auto-close path reconciles.
+ * auto-close path reconciles. Two open EIs that ALREADY share an exact key are
+ * reported the same way (the later one is the collision).
+ *
+ * Canonical-row rule: the FIRST candidate in `deps.listOpenKeyed()` order holds a
+ * key, so the caller's ordering IS the canonical rule. The production lister
+ * (apps/operator/scripts/recompute-watchdog-keys.ts) orders work-lane rows before
+ * observation rows, claimed before unclaimed, then oldest first, then by id.
  */
 export async function recomputeWatchdogKeys(
   deriveKey: (candidate: ImprovementCandidate) => string | null,
@@ -185,6 +191,14 @@ export async function recomputeWatchdogKeys(
     const oldKey = c.watchdogKey;
     const newKey = deriveKey(c);
     if (!newKey || newKey === oldKey) {
+      // bug-inflow-one-problem-one-row-2026-10-18 R-7: a row that keeps its key while an
+      // EARLIER candidate already holds that exact key is a pre-existing duplicate, not an
+      // unchanged row. Counting it `unchanged` hid every exact-key pair from the fold.
+      const exactHolder = ownerOfKey.get(oldKey);
+      if (exactHolder !== undefined && exactHolder !== c.id) {
+        collisions.push({ id: c.id, oldKey, newKey: oldKey, heldBy: exactHolder });
+        continue;
+      }
       unchanged += 1;
       continue;
     }

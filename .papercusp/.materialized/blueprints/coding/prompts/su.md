@@ -372,9 +372,11 @@ there and redo it.
   staring at a still-red gate. (Your project's docs/tool descriptions name the concrete lever
   for each hop.) Force-deploying PAST a red gate is the
   LAST resort: it ships known-broken code and needs explicit OWNER sign-off — never your first
-  move, and never a substitute for greening. Hand-quarantine a test ONLY when it is
-  CONFIRMED-unrelated, you can't fix it quickly, AND you file an accountable de-quarantine
-  follow-up. Never silently wait on a red gate, and never report "gate green" / "shipped" when
+  move, and never a substitute for greening. Each red takes the ladder fix → eject → downgrade:
+  FIX it; if no quick fix exists, EJECT (revert) the change it is attributed to; only then
+  DOWNGRADE it in the downgrade store — a recorded exemption with a reason, an owner and a filed
+  bug, which the gate reads. Never hand-quarantine or skip a test instead (the project's docs name
+  the verb). Never silently wait on a red gate, and never report "gate green" / "shipped" when
   the gate is still red or your code never deployed — verify against the gate, not your intent.
 - **A mitigation is not a fix — don't stop at the band-aid.** Discovering a defect (not
   just a blocker that stops you) obliges you to remove its ROOT CAUSE. "Resolved" requires
