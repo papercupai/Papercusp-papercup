@@ -406,6 +406,32 @@ export function estimateBudgetedTaskWallMs<Task>(
   },
 ): BudgetedTaskWallProjection;
 
+export const NARROWED_TASK_FLOOR_MS: number;
+
+export interface AffectedRunEta {
+  projectedSec: number;
+  workSec: number;
+  knownTasks: number;
+  tasks: number;
+  unknownTasks: number;
+  concurrency: number;
+  narrowedTasks: number;
+  heaviest: { key: string; sec: number } | null;
+}
+
+export function projectAffectedRunEta<Task>(
+  plan: AffectedTaskShardPlan<Task>,
+  options: TaskBudgetInput & {
+    estimateMs?: (task: Task, index: number) => number | null | undefined;
+    narrowedShare?: (task: Task, index: number) => number | null | undefined;
+    taskKey?: (task: Task, index: number) => string;
+  },
+): AffectedRunEta;
+
+export function formatAffectedEtaLine(
+  eta: AffectedRunEta | { error: string } | null | undefined,
+): string;
+
 export function formatAffectedTaskShardMarker(
   plan: AffectedTaskShardPlan<unknown>,
   taskCgroupMemoryMaxMb?: number | null,

@@ -65,8 +65,10 @@ export const SYNC_DELTA_ROUTINE_NAME = 'sync-batch-delta-check';
 export const SYNC_DELTA_TIMEOUTS_MS = {
   git: 60_000,
   procGuard: 30_000,
-  /** `--print-affected` is an enumeration — no test execution. */
-  probe: 5 * 60_000,
+  /** `--print-affected --related` is an enumeration — no test execution — but the related
+   *  selector it runs (D-030, so the probe's AFFECTED_ETA describes the narrowed run) took
+   *  ~4.4 min for one operator-core path under load on 2026-10-20, so 5 min was too tight. */
+  probe: 10 * 60_000,
   /** The actual affected run, bounded by task/guard cardinality and narrowed by
    *  `--related` when the selector has positive evidence. */
   affected: 25 * 60_000,
@@ -359,7 +361,9 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     async probeRadius(paths: readonly string[]): Promise<AffectedProbe | null> {
       const r = await heavy(
         'node',
-        [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--print-affected'],
+        // --related: the same narrowing the real run applies, so the AFFECTED_ETA line projects
+        // the run that would actually execute (green-main-ratchet-convergence-2026-10-17#D-030).
+        [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--print-affected', '--related'],
         { cwd: cfg.root, timeoutMs: SYNC_DELTA_TIMEOUTS_MS.probe },
       );
       if (!r || r.status !== 0) return null;

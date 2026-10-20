@@ -236,6 +236,7 @@ import {
   createCgroupMemoryObserver,
   durationEstimate,
   estimateBudgetedTaskWallMs,
+  formatAffectedEtaLine,
   formatAffectedTaskShardMarker,
   formatCgroupMemoryObservedMarker,
   formatTaskBudgetMarker,
@@ -243,6 +244,7 @@ import {
   mergeDurationHistory,
   planAffectedTaskShards,
   pidsEventRefusalDelta,
+  projectAffectedRunEta,
   readDurationHistory,
   readTaskCgroupMemoryMaxMb,
   readTaskCgroupPidsEventMax,
@@ -5370,6 +5372,8 @@ let checkpointMaterializationSelection = null;
 let checkpointTargetedReVerdictSelection = null;
 /** Why the exact radius was refused, when the admission rule (not a failed selection) refused it. */
 let checkpointTargetedReVerdictRefusal = null;
+/** Per-workspace related-selection result, kept for the print-mode AFFECTED_ETA projection (D-030). */
+const relatedSelectionByWorkspace = new Map();
 
 // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): the executed-source map. The
 // static closure the selector computes is a SUPERSET; a map of what each test file actually
@@ -5537,6 +5541,7 @@ if (relatedOnly) {
         }
       }
       byWorkspace.set(t.ws.name, { result, wsRoot });
+      relatedSelectionByWorkspace.set(t.ws.name, result);
       outSync(
         `RELATED_SELECTION ws=${t.ws.name} selected=${
           result.mode === "related" ? result.selected.length : result.total
@@ -5735,6 +5740,44 @@ if (printAffected) {
     outSync(
       `AFFECTED_GUARD\t${guard.workspace}\t${guard.script}\t${formatGuardCommand(guard)}`,
     );
+  }
+  // green-main-ratchet-convergence-2026-10-17#D-030: the projected wall time of THIS radius, so
+  // a caller (sync-batch-delta-check) can admit by time instead of by task count. Same shard
+  // plan, lane simulation and duration history as the run's own admission intent below; a
+  // narrowed (--related) task is scaled by its selection share. Disclosure, never a rail: a
+  // failure prints status=unavailable and the enumeration still exits 0.
+  {
+    let eta;
+    try {
+      const etaTaskKey = (task) => `${task.ws.name} :: ${task.script}`;
+      const etaPlan = planAffectedTaskShards(tasks, {
+        blastRadius: classifyAffectedBlastRadius({
+          changedPaths: invariantGuardChangedPaths(),
+          runAll,
+          derivationDegraded,
+        }),
+        maxTasksPerShard:
+          process.env.AFFECTED_MAX_TASKS_PER_SHARD ??
+          Math.max(8, SCHEDULER_CONFIG.maxConcurrentTasks * 4),
+        taskKey: etaTaskKey,
+      });
+      const etaHistory = readDurationHistory(TASK_DURATION_HISTORY_PATH);
+      eta = projectAffectedRunEta(etaPlan, {
+        ...SCHEDULER_CONFIG,
+        taskKey: etaTaskKey,
+        estimateMs: (task) => durationEstimate(etaHistory, etaTaskKey(task)),
+        narrowedShare: (task) => {
+          if (!Array.isArray(task.relatedFiles) || task.relatedFiles.length === 0) return null;
+          const total = relatedSelectionByWorkspace.get(task.ws.name)?.total;
+          return typeof total === "number" && total > 0
+            ? task.relatedFiles.length / total
+            : null;
+        },
+      });
+    } catch (err) {
+      eta = { error: (err && err.message) || String(err) };
+    }
+    outSync(formatAffectedEtaLine(eta));
   }
   if (relatedOnly) {
     if (checkpointMaterializationSelection) {

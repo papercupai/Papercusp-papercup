@@ -9,12 +9,24 @@ import { runInNewContext } from 'node:vm';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence,
-  nativeJourneyScope, nativeBootstrapBudgets, assertNativeMutationProof, NATIVE_BOOTSTRAP_TIMEOUT_MS } from './native-bootstrap-runtime';
+  nativeJourneyScope, nativeBootstrapBudgets, assertNativeMutationProof, assertNativeActionResponse, NATIVE_BOOTSTRAP_TIMEOUT_MS } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
 
 const repo = resolve(import.meta.dirname, '../../../..');
 
 describe('native bootstrap admission and lifecycle', () => {
+  it('retains failed product status and body assertions before throwing, including selected signer identity', () => {
+    const retained: object[] = [];
+    const refused = { status: 403, body: { ok: false, error: 'not_admin' }, request: { companyPersonId: 'PER-baseline' } };
+    expect(() => assertNativeActionResponse('prepare', refused, diagnostic => retained.push(diagnostic))).toThrow('Product response for prepare');
+    const failed = { status: 200, body: { ok: false, error: 'invalid_state' } };
+    expect(() => assertNativeActionResponse('prepare', failed, diagnostic => retained.push(diagnostic))).toThrow('Product result for prepare');
+    expect(retained).toEqual([{ op: 'prepare', response: refused }, { op: 'prepare', response: failed }]);
+    const success = { status: 200, body: { ok: true, value: 'contract' } };
+    expect(assertNativeActionResponse('prepare', success, diagnostic => retained.push(diagnostic))).toBe(success.body);
+    expect(retained).toHaveLength(2);
+  });
+
   it('keeps every calibrated native journey in distinct DAO and person scopes', () => {
     const scopes = [undefined, 'baseline', 'copy-baseline', 'mutant'].map(phase => nativeJourneyScope({
       ...(phase ? { PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: phase } : {}),

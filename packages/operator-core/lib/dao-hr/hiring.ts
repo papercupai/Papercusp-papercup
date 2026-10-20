@@ -197,7 +197,7 @@ export async function resolveHiringActor(input: DaoKey, deps: PeopleDeps = {}): 
 export interface HiringView {
   actorPersonId: string;
   nonBinding: boolean;
-  people: Array<{ personId: string; displayName: string }>;
+  people: Array<{ personId: string; displayName: string; isHrAdmin: boolean }>;
   roles: Array<{ roleId: string; title: string; level: string; managerPersonId: string | null; exclusive: boolean; candidates: string[] }>;
   offers: Array<HiringOffer & { approvedBy: string[]; preview: ReturnType<typeof offerPreview> | null }>;
   chain: { blockNumber: string; issuedShares: string; reservedShares: string } | null;
@@ -216,7 +216,9 @@ export async function readHiringView(input: DaoKey & { policy: HivePolicy | null
     sql<OfferRow[]>`SELECT * FROM harness_shared.dao_hr_offers WHERE workspace_id=${key.workspaceId} AND dao_slug=${key.daoSlug} ORDER BY created_at,offer_id`,
     sql<Array<{ offer_id: string; actor_person_id: string }>>`SELECT offer_id,actor_person_id FROM harness_shared.dao_hr_offer_approvals WHERE workspace_id=${key.workspaceId} AND dao_slug=${key.daoSlug} ORDER BY created_at`,
     sql<Array<{ id: string; subject_kind: string; subject_id: string; state: string; actor_person_id: string; at: string }>>`SELECT id::text,subject_kind,subject_id,state,actor_person_id,created_at::text AS at FROM harness_shared.dao_hr_hiring_history WHERE workspace_id=${key.workspaceId} AND dao_slug=${key.daoSlug} ORDER BY id DESC LIMIT 200`,
-    sql<Array<{ person_id: string; title: string }>>`SELECT feature_id AS person_id,title FROM harness_shared.work_items WHERE workspace_id=${key.workspaceId} AND item_kind='person' AND feature_id LIKE 'PER-%' AND COALESCE(payload->>'mergedInto','')='' ORDER BY title,feature_id`,
+    sql<Array<{ person_id: string; title: string; is_hr_admin: boolean }>>`SELECT p.feature_id AS person_id,p.title,
+      EXISTS (SELECT 1 FROM harness_shared.dao_hr_admins a WHERE a.workspace_id=p.workspace_id AND a.dao_slug=${key.daoSlug} AND a.person_id=p.feature_id) AS is_hr_admin
+      FROM harness_shared.work_items p WHERE p.workspace_id=${key.workspaceId} AND p.item_kind='person' AND p.feature_id LIKE 'PER-%' AND COALESCE(p.payload->>'mergedInto','')='' ORDER BY p.title,p.feature_id`,
     getIssuingEntity(key, { sql }),
     (async () => {
       try {
@@ -228,7 +230,7 @@ export async function readHiringView(input: DaoKey & { policy: HivePolicy | null
     })(),
   ]);
   const chain = chainRead.table ? { blockNumber: chainRead.table.blockNumber, issuedShares: chainRead.table.issuedShares, reservedShares: chainRead.table.reservedShares } : null;
-  return { actorPersonId, nonBinding: !entity, people: people.map(p => ({ personId: p.person_id, displayName: p.title })),
+  return { actorPersonId, nonBinding: !entity, people: people.map(p => ({ personId: p.person_id, displayName: p.title, isHrAdmin: p.is_hr_admin })),
     roles: roles.map(r => ({ roleId: r.role_id, title: r.title, level: r.level, managerPersonId: r.manager_person_id, exclusive: r.exclusive,
       candidates: candidates.filter(c => c.role_id === r.role_id).map(c => c.person_id) })),
     offers: offers.map(r => ({ ...project(r), approvedBy: approvals.filter(a => a.offer_id === r.offer_id).map(a => a.actor_person_id), preview: chain ? offerPreview(r.terms, chain) : null })),

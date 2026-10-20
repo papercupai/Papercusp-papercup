@@ -109,6 +109,19 @@ export async function reloadNativeWorkbench(native: (...args: string[]) => Promi
   }
 }
 
+/** Preserve failed action evidence before an assertion can close the native document. */
+export function assertNativeActionResponse<T extends { ok?: boolean }>(op: string,
+  response: { status: number; body: T; request?: Record<string, string> }, retain: (diagnostic: object) => void): T {
+  try {
+    assert.equal(response.status, 200, 'Product response for ' + op);
+    assert.equal(response.body.ok, true, 'Product result for ' + op);
+    return response.body;
+  } catch (error) {
+    retain({ op, response });
+    throw error;
+  }
+}
+
 /** Classify the whole HTTP operation, including body reads, without retaining URLs or secrets. */
 export async function nativeHttpPhase<T>(phase: 'wallet-rpc' | 'provider-completion-webhook' | 'sealed-document' | 'audit-certificate',
   action: () => Promise<T>, retain: (diagnostic: { phase: string; errorCode: string }) => void): Promise<T> {

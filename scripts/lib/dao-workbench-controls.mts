@@ -3,7 +3,7 @@ export const WORKBENCH_FIELD_SELECTOR = '[role="combobox"],input:not([type="hidd
 
 /** Retain each action's response across automatic refreshes; install only one observer. */
 export function captureWorkbenchResponses(): string {
-  return `(()=>{if(!window.__DAO_HR_CAPTURE__){const state={responses:{}};const original=window.fetch;window.fetch=async(...args)=>{const r=await original(...args);if(args[1]?.method==='POST'&&String(args[0]).includes('/api/pot/')){const request=JSON.parse(args[1].body);const op=request.action||request.op;state.responses[op]={op,status:r.status,body:await r.clone().json()}}return r};window.__DAO_HR_CAPTURE__=state}window.__DAO_HR_CAPTURE__.responses={};return true})()`;
+  return `(()=>{if(!window.__DAO_HR_CAPTURE__){const state={responses:{}};const original=window.fetch;window.fetch=async(...args)=>{const r=await original(...args);if(args[1]?.method==='POST'&&String(args[0]).includes('/api/pot/')){const request=JSON.parse(args[1].body);const op=request.action||request.op;state.responses[op]={op,status:r.status,body:await r.clone().json(),request:Object.fromEntries(['offerId','personId','companyPersonId'].filter(k=>typeof request[k]==='string').map(k=>[k,request[k]]))}}return r};window.__DAO_HR_CAPTURE__=state}window.__DAO_HR_CAPTURE__.responses={};return true})()`;
 }
 
 /** Match the verified record, accepting the API's canonical lowercase EVM address. */
@@ -62,8 +62,10 @@ export function openWorkbenchSelect(label: string, scope = '.dao-governance'): s
   return `(()=>{const e=[...document.querySelectorAll(${JSON.stringify(scope + ' [role="combobox"]')})].find(e=>e.getAttribute('aria-label')===${JSON.stringify(label)});if(!e||e.matches(':disabled,[aria-disabled="true"]'))throw Error('Missing enabled select '+${JSON.stringify(label)});e.focus();e.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));return true})()`;
 }
 
-export function chooseWorkbenchOption(label: string): string {
-  return `(()=>{const e=[...document.querySelectorAll('[role="option"]')].find(e=>e.textContent.trim()===${JSON.stringify(label)});if(!e||e.getAttribute('aria-disabled')==='true')throw Error('Missing enabled option '+${JSON.stringify(label)});e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));return true})()`;
+/** Names are presentation, while values identify a person across calibrated legs. */
+export function chooseWorkbenchOption(label: string, value?: string): string {
+  const identity = value === undefined ? '' : `&&e.getAttribute('data-value')===${JSON.stringify(value)}`;
+  return `(()=>{const matches=[...document.querySelectorAll('[role="option"]')].filter(e=>e.textContent.trim()===${JSON.stringify(label)}${identity});if(matches.length>1)throw Error('Ambiguous option '+${JSON.stringify(label)});const e=matches[0];if(!e||e.getAttribute('aria-disabled')==='true')throw Error('Missing enabled option '+${JSON.stringify(label)});e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));return true})()`;
 }
 
 export function reviewWorkbenchProposal(): string {

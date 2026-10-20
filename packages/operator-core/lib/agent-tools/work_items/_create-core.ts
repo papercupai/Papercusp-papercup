@@ -1611,9 +1611,24 @@ export async function stampCreateTimeDuplicate(input: {
   title?: string;
 }): Promise<{ id: string; confidence: number | null } | null> {
   if (input.force || input.severity === 'critical' || !input.workspaceId) return null;
-  const hard = (input.similarOpen ?? []).filter(
+  const screened = (input.similarOpen ?? []).filter(
     (c) => input.hardSemanticIds?.has(c.id) === true && c.id !== input.workItemId,
   );
+  if (screened.length === 0) return null;
+  const { sql } = getOrgPg();
+  // Workspace control (SPEC-P-005): the semantic screen is an index read, and duplicate_of has no
+  // foreign key, so a candidate qualifies only while it is an OPEN row of THIS workspace. A verdict
+  // must never point across tenants, at a missing row, or at an already-closed one.
+  const openHere = new Set(
+    (
+      await sql<{ feature_id: string }[]>`
+        SELECT feature_id FROM harness_shared.work_items
+         WHERE workspace_id = ${input.workspaceId}
+           AND feature_id = ANY(${screened.map((c) => c.id)}::text[])
+           AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))`
+    ).map((r) => r.feature_id),
+  );
+  const hard = screened.filter((c) => openHere.has(c.id));
   if (hard.length === 0) return null;
   const best = hard.reduce((a, b) => ((b.similarity ?? 0) > (a.similarity ?? 0) ? b : a));
   const confidence =
@@ -1621,7 +1636,6 @@ export async function stampCreateTimeDuplicate(input: {
       ? Math.min(1, Math.max(0, best.similarity))
       : null;
   const evidence = JSON.stringify({ matchedOn: 'semantic-hard', similarity: confidence, candidates: hard.map((c) => c.id) });
-  const { sql } = getOrgPg();
   const stamped = await sql`
     UPDATE harness_shared.work_items
        SET duplicate_of = ${best.id},

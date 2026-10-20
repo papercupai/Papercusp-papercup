@@ -269,6 +269,7 @@ export function Select({
                       <RS.Item
                         key={opt.value}
                         value={opt.value}
+                        data-value={opt.value}
                         disabled={opt.disabled}
                         style={ITEM_STYLE}
                         className="h-select-item"
@@ -284,6 +285,7 @@ export function Select({
                 <RS.Item
                   key={entry.value}
                   value={entry.value}
+                  data-value={entry.value}
                   disabled={entry.disabled}
                   style={ITEM_STYLE}
                   className="h-select-item"

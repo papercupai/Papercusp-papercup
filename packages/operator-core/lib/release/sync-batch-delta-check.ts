@@ -153,6 +153,12 @@ export interface RadiusCaps {
   maxTaskCommands?: number;
   /** Repo-wide invariant guards, a separately visible subset of task commands. */
   maxGuards?: number;
+  /** D-030: when the probe emits a usable AFFECTED_ETA, admit by projected wall time
+   *  instead of by task count. Seconds. */
+  maxProjectedSec?: number;
+  /** Count backstops that still apply on the projected-time path. */
+  maxEtaTaskCommands?: number;
+  maxEtaGuards?: number;
 }
 
 // Production coverage measured 2026-10-06 showed 15 of 17 radius refusals
@@ -163,13 +169,25 @@ export interface RadiusCaps {
 // and 52 guards; its affected child repeatedly hit the 25-minute timeout. Keep the
 // admitted prefix below half those task/guard counts, and use the existing related
 // selector in the runner to narrow test files when its evidence allows.
+// green-main-ratchet-convergence-2026-10-17#D-030: the two count caps above are a proxy for
+// TIME and were wrong both ways on a 14-commit sample (they refused 588s radii and admitted a
+// ~1750s one). When the probe projects the radius's wall time, admission compares that
+// projection with 0.9 x the 25-minute affected leg (SYNC_DELTA_TIMEOUTS_MS.affected in the
+// deps module; a test pins the relation), and the count caps fall back to wide backstops.
+// Without a projection the 32/26 count caps still apply.
 export const DEFAULT_RADIUS_CAPS = {
   maxWorkspaces: 10,
   maxPaths: 80,
   maxCommits: 40,
   maxTaskCommands: 32,
   maxGuards: 26,
+  maxProjectedSec: 1350,
+  maxEtaTaskCommands: 96,
+  maxEtaGuards: 80,
 } satisfies RadiusCaps;
+
+/** A projection is trusted only when history covers at least this share of its tasks. */
+export const ETA_MIN_KNOWN_SHARE = 0.75;
 
 /** Single-file re-runs spent CONFIRMING a red before anything is filed. Root
  *  CLAUDE.md: a multi-file vitest invocation can abort during collection, so a
@@ -392,6 +410,57 @@ export interface AffectedProbe extends RadiusProbe {
   taskCommands: AffectedTaskCommand[];
   /** null when the probe emitted no derivation header (older script, or a failed run). */
   derivation: AffectedDerivation | null;
+  /** The runner's own projected wall time for this radius (D-030); absent or null when
+   *  the probe printed no AFFECTED_ETA line (older script). */
+  eta?: AffectedEta | null;
+}
+
+/** One `AFFECTED_ETA status=… projectedSec=… …` line. A history-based prognosis, not a
+ *  bound: `unknownTasks` says how much of the radius it could not see. */
+export interface AffectedEta {
+  status: 'projected' | 'unavailable';
+  projectedSec: number | null;
+  knownTasks: number;
+  tasks: number;
+  unknownTasks: number;
+  heaviestTask: string | null;
+  heaviestSec: number | null;
+  raw: string;
+}
+
+/** Parse one AFFECTED_ETA line; null when the line is not one. */
+export function parseAffectedEtaLine(line: string): AffectedEta | null {
+  if (!line.startsWith('AFFECTED_ETA ')) return null;
+  const fields: Record<string, string> = {};
+  for (const field of line.slice('AFFECTED_ETA '.length).trim().split(/\s+/)) {
+    const eq = field.indexOf('=');
+    if (eq > 0) fields[field.slice(0, eq)] = field.slice(eq + 1);
+  }
+  const num = (key: string): number | null =>
+    fields[key] !== undefined && /^\d+$/.test(fields[key]!) ? Number(fields[key]) : null;
+  const projectedSec = num('projectedSec');
+  const status = fields.status === 'projected' && projectedSec !== null ? 'projected' : 'unavailable';
+  return {
+    status,
+    projectedSec: status === 'projected' ? projectedSec : null,
+    knownTasks: num('knownTasks') ?? 0,
+    tasks: num('tasks') ?? 0,
+    unknownTasks: num('unknownTasks') ?? 0,
+    heaviestTask: fields.heaviestTask ?? null,
+    heaviestSec: num('heaviestSec'),
+    raw: line.trim(),
+  };
+}
+
+/** Whether a projection covers enough of the radius to admit by time. */
+export function etaIsUsable(eta: AffectedEta | null | undefined): eta is AffectedEta & { projectedSec: number } {
+  return (
+    !!eta &&
+    eta.status === 'projected' &&
+    eta.projectedSec !== null &&
+    eta.tasks > 0 &&
+    eta.knownTasks >= Math.ceil(eta.tasks * ETA_MIN_KNOWN_SHARE)
+  );
 }
 
 /** Parse `affected-tests.mjs --print-affected` output. It is an ENUMERATION query
@@ -402,8 +471,14 @@ export function parseAffectedProbe(stdout: string): AffectedProbe {
   const guards: string[] = [];
   const taskCommands: AffectedTaskCommand[] = [];
   let derivation: AffectedDerivation | null = null;
+  let eta: AffectedEta | null = null;
   for (const raw of stdout.split('\n')) {
     const line = raw.replace(/\r$/, '');
+    const etaLine = parseAffectedEtaLine(line);
+    if (etaLine) {
+      eta = etaLine;
+      continue;
+    }
     // AFFECTED_WS_CMD is tested BEFORE AFFECTED_WS on purpose: `AFFECTED_WS\t(.+)`
     // does not match an `AFFECTED_WS_CMD\t…` line (the literal tab after `AFFECTED_WS`
     // is absent), but relying on that is a one-character-away trap, and mis-ordering
@@ -444,7 +519,7 @@ export function parseAffectedProbe(stdout: string): AffectedProbe {
       derivation = { source, counts, raw: line.trim() };
     }
   }
-  return { workspaces, guards, taskCommands, derivation };
+  return { workspaces, guards, taskCommands, derivation, eta };
 }
 
 export type RadiusVerdict =
@@ -495,7 +570,35 @@ export function evaluateRadius(input: {
         `exceeds maxWorkspaces=${caps.maxWorkspaces}`,
     };
   }
-  if (probe.taskCommands.length > maxTaskCommands) {
+  // D-030: a usable projection replaces the count proxy. The count caps widen to backstops;
+  // the projected wall time against the leg budget is what admits or refuses.
+  if (etaIsUsable(probe.eta)) {
+    const eta = probe.eta;
+    const maxProjectedSec = caps.maxProjectedSec ?? DEFAULT_RADIUS_CAPS.maxProjectedSec;
+    const maxEtaTasks = caps.maxEtaTaskCommands ?? DEFAULT_RADIUS_CAPS.maxEtaTaskCommands;
+    const maxEtaGuards = caps.maxEtaGuards ?? DEFAULT_RADIUS_CAPS.maxEtaGuards;
+    const counts =
+      `workspaces=${probe.workspaces.length}, tasks=${probe.taskCommands.length}, ` +
+      `guards=${probe.guards.length}`;
+    if (probe.taskCommands.length > maxEtaTasks || probe.guards.length > maxEtaGuards) {
+      return {
+        run: false,
+        reason: 'radius-too-wide',
+        detail: `affected radius has ${counts}; exceeds the projected-time backstops maxEtaTaskCommands=${maxEtaTasks}/maxEtaGuards=${maxEtaGuards}`,
+      };
+    }
+    if (eta.projectedSec > maxProjectedSec) {
+      const heaviest =
+        eta.heaviestTask !== null ? ` (heaviest ${eta.heaviestTask} ${eta.heaviestSec ?? '?'}s)` : '';
+      return {
+        run: false,
+        reason: 'radius-too-wide',
+        detail:
+          `affected radius has ${counts}; projected ${eta.projectedSec}s exceeds maxProjectedSec=${maxProjectedSec}s` +
+          `${heaviest}; projection from ${eta.knownTasks}/${eta.tasks} tasks with history`,
+      };
+    }
+  } else if (probe.taskCommands.length > maxTaskCommands) {
     return {
       run: false,
       reason: 'radius-too-wide',
@@ -503,8 +606,7 @@ export function evaluateRadius(input: {
         `affected radius has workspaces=${probe.workspaces.length}, tasks=${probe.taskCommands.length}, ` +
         `guards=${probe.guards.length}; exceeds maxTaskCommands=${maxTaskCommands}`,
     };
-  }
-  if (probe.guards.length > maxGuards) {
+  } else if (probe.guards.length > maxGuards) {
     return {
       run: false,
       reason: 'radius-too-wide',

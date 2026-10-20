@@ -94,11 +94,11 @@ beforeEach(async () => {
   await sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_occurrences, harness_shared.coord_links CASCADE`;
 });
 
-async function file(title: string, extra: Record<string, unknown> = {}) {
+async function file(title: string, extra: Record<string, unknown> = {}, workspace: string = WS) {
   const { createOneWorkItem } = await import('./_create-core');
   const res = await createOneWorkItem(
-    { kind: 'bug', title, harness: HARNESS, workspace: WS, ...extra } as Parameters<typeof createOneWorkItem>[0],
-    { ownerId: OWNER, workspaceId: WS, harnessSlug: HARNESS },
+    { kind: 'bug', title, harness: HARNESS, workspace, ...extra } as Parameters<typeof createOneWorkItem>[0],
+    { ownerId: OWNER, workspaceId: workspace, harnessSlug: HARNESS },
   );
   if (!res.ok) throw new Error(`create refused: ${JSON.stringify(res).slice(0, 600)}`);
   return res as typeof res & { workItem: { id: string }; duplicateOf?: { id: string; confidence: number | null } };
@@ -171,5 +171,37 @@ describe('work_items:create stamps the typed duplicate-of verdict at filing time
     expect((await verdict(critical.workItem.id))?.duplicate_of).toBeNull();
 
     expect(await occurrencesOn(id)).toEqual([]);
+  });
+
+  it('a HARD-band match on a row that is not OPEN in the filing workspace never sets the verdict (SPEC-P-005 workspace control)', async () => {
+    // The same problem filed in ANOTHER workspace: the screen names it, the verdict must not cross tenants.
+    const foreign = await file('Gateway drops SSE frames under load', {}, 'ws-foreign-tenant');
+    // Pin the fixture: the row must really live in the other tenant, whatever the create path resolved.
+    await sql`UPDATE harness_shared.work_items SET workspace_id = 'ws-foreign-tenant' WHERE feature_id = ${foreign.workItem.id}`;
+    const foreignRows = await sql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.work_items WHERE feature_id = ${foreign.workItem.id}`;
+    expect(foreignRows.map((r) => r.workspace_id)).toEqual(['ws-foreign-tenant']);
+    screen.next = { hard: [hardMatch(foreign.workItem.id, 0.97)], soft: [] };
+    const crossTenant = await file('SSE frames lost at the gateway when busy');
+    expect(crossTenant.duplicateOf).toBeUndefined();
+    expect((await verdict(crossTenant.workItem.id))?.duplicate_of).toBeNull();
+
+    // A CLOSED row of this workspace is not an open canonical either.
+    const closed = await file('Plan parser drops trailing decision');
+    await sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = ${closed.workItem.id} AND workspace_id = ${WS}`;
+    screen.next = { hard: [hardMatch(closed.workItem.id, 0.97)], soft: [] };
+    const afterClose = await file('Decision at end of plan is not parsed');
+    expect(afterClose.duplicateOf).toBeUndefined();
+    expect((await verdict(afterClose.workItem.id))?.duplicate_of).toBeNull();
+
+    // Positive control: the identical hard match on an OPEN row of this workspace stamps.
+    const open = await file('Tray icon flickers on wake');
+    screen.next = { hard: [hardMatch(open.workItem.id, 0.97)], soft: [] };
+    const twin = await file('Tray icon blinks after resume');
+    expect(twin.duplicateOf).toEqual({ id: open.workItem.id, confidence: 0.97 });
+    expect((await verdict(twin.workItem.id))?.duplicate_source).toBe('create-match');
+
+    expect(await occurrencesOn(foreign.workItem.id)).toEqual([]);
+    expect(await occurrencesOn(closed.workItem.id)).toEqual([]);
   });
 });

@@ -1868,6 +1868,83 @@ export function estimateBudgetedTaskWallMs(plan, options) {
   };
 }
 
+/**
+ * A narrowed suite is never projected below this: process start, transform and collection
+ * cost the same whether one file runs or ten (D-030 measurement, 2026-10-20).
+ */
+export const NARROWED_TASK_FLOOR_MS = 30_000;
+
+/**
+ * Projected wall time of a planned radius, for callers that must decide BEFORE running it
+ * whether it fits a budget (green-main-ratchet-convergence-2026-10-17#D-030: the sync-batch
+ * delta check admits by time, not by task count).
+ *
+ * The lane simulation is `estimateBudgetedTaskWallMs`, the same one the run's admission
+ * intent uses. The only difference is the per-task estimate: a `--related` run executes a
+ * narrowed suite, so a task with a narrowed share in (0, 1) is scaled by that share, floored
+ * at NARROWED_TASK_FLOOR_MS and never above its full history. That is a prognosis, not a
+ * bound: the history is an EWMA over full AND narrowed runs, and a lane's share of the
+ * selected files is approximated by the workspace's share.
+ *
+ * @param plan        a planAffectedTaskShards plan (shards run sequentially, as in the run)
+ * @param options     TaskBudgetInput plus
+ *   estimateMs(task)   full-suite history estimate in ms, or null when unknown
+ *   narrowedShare(task) fraction of the suite a narrowed run executes, or null when not narrowed
+ *   taskKey(task)      the history key, used to name the heaviest task
+ */
+export function projectAffectedRunEta(plan, options) {
+  const { estimateMs, narrowedShare, taskKey, ...budgetInput } = options ?? {};
+  const estimateFull = typeof estimateMs === "function" ? estimateMs : () => null;
+  const shareOf = typeof narrowedShare === "function" ? narrowedShare : () => null;
+  const keyOf = typeof taskKey === "function" ? taskKey : (_task, index) => String(index);
+  let narrowedTasks = 0;
+  let heaviest = null;
+  let tasks = 0;
+  const scaled = (task, index) => {
+    const full = finiteEstimate(estimateFull(task, index));
+    if (full == null) return null;
+    const share = shareOf(task, index);
+    let ms = full;
+    if (typeof share === "number" && Number.isFinite(share) && share >= 0 && share < 1) {
+      narrowedTasks += 1;
+      ms = Math.min(full, Math.max(full * share, NARROWED_TASK_FLOOR_MS));
+    }
+    if (!heaviest || ms > heaviest.ms) heaviest = { key: String(keyOf(task, index)), ms };
+    return ms;
+  };
+  for (const shard of plan?.shards ?? []) tasks += shard.tasks.length;
+  const projection = estimateBudgetedTaskWallMs(plan, { ...budgetInput, estimateMs: scaled });
+  return {
+    projectedSec: Math.round(projection.projectedWallMs / 1000),
+    workSec: Math.round(projection.knownWorkMs / 1000),
+    knownTasks: projection.knownTasks,
+    tasks,
+    unknownTasks: projection.unknownTasks,
+    concurrency: projection.maxConcurrentTasks,
+    narrowedTasks,
+    heaviest: heaviest ? { key: heaviest.key, sec: Math.round(heaviest.ms / 1000) } : null,
+  };
+}
+
+/**
+ * One greppable print-mode line. Every field is a space-free token so a consumer can split on
+ * whitespace; the heaviest task's history key loses its " :: " spacing for the same reason.
+ */
+export function formatAffectedEtaLine(eta) {
+  if (!eta || eta.error) {
+    const reason = String(eta?.error ?? "no-projection").replace(/\s+/g, "_").slice(0, 200);
+    return `AFFECTED_ETA status=unavailable reason=${reason}`;
+  }
+  const heaviest = eta.heaviest
+    ? ` heaviestSec=${eta.heaviest.sec} heaviestTask=${eta.heaviest.key.replace(/\s+/g, "")}`
+    : "";
+  return (
+    `AFFECTED_ETA status=projected projectedSec=${eta.projectedSec} workSec=${eta.workSec} ` +
+    `knownTasks=${eta.knownTasks} tasks=${eta.tasks} unknownTasks=${eta.unknownTasks} ` +
+    `concurrency=${eta.concurrency} narrowedTasks=${eta.narrowedTasks}${heaviest}`
+  );
+}
+
 /** Reuse one allocation policy for execution and its wall-clock projection. */
 function taskLanes(budget) {
   if (budget.mode !== "parallel") {

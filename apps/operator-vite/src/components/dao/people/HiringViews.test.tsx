@@ -12,7 +12,7 @@ vi.mock('@/app/harness/Checkbox', () => ({ Checkbox: ({ checked, onChange, ariaL
 
 const view: HiringView = {
   actorPersonId: 'PER-author', nonBinding: true,
-  people: [{ personId: 'PER-author', displayName: 'Author' }, { personId: 'PER-candidate', displayName: 'Candidate' }],
+  people: [{ personId: 'PER-author', displayName: 'Author', isHrAdmin: true }, { personId: 'PER-candidate', displayName: 'Candidate', isHrAdmin: false }],
   roles: [{ roleId: 'role', title: 'Engineer', level: 'L3', managerPersonId: 'PER-author', exclusive: true, candidates: ['PER-candidate'] }],
   offers: [{ workspaceId: 'ws', daoSlug: 'dao', offerId: 'offer', roleId: 'role', personId: 'PER-candidate', authoredBy: 'PER-author', approvalsRequired: 1, state: 'offered', approvedBy: [],
     terms: { engagementType: 'contractor', jurisdiction: 'US', employmentLike: true, pay: { amount: '5000', currency: 'USD', cadence: 'monthly' }, equity: { shares: 1000, vestingDays: 1460, cliffDays: 365, startRule: 'hire_passed', policyVersion: 2 } },

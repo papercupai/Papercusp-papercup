@@ -353,6 +353,10 @@ describe('reserved-capacity legs (green-main-ratchet P-009 / D-017)', () => {
       (c) => c.args.includes('--changed-paths') && !c.args.includes('--print-affected'),
     );
     expect(affectedRun?.args).toContain('--related');
+    // D-030: the probe narrows exactly as the run does, so its AFFECTED_ETA projects the run
+    // that would actually execute rather than every selected suite in full.
+    const probeRun = heavy.find((c) => c.args.includes('--print-affected'));
+    expect(probeRun?.args).toContain('--related');
     await deps.headSha();
     await deps.greenCheckpointRunning();
     expect(calls.map((c) => c.cmd)).toEqual(['git', 'node']);

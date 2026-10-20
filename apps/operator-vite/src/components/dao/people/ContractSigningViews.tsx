@@ -25,10 +25,11 @@ export default function ContractSigningViews({daoSlug,offer,people,onChanged}:{d
   // The first matching template is preselected, as the native select it replaces did; a stale choice falls back to it.
   const engagementValue=engagement.some(t=>t.templateKey===engagementKey)?engagementKey:engagement[0]?.templateKey??'';
   const equityValue=equity.some(t=>t.templateKey===equityKey)?equityKey:equity[0]?.templateKey??'';
-  const signers=people.filter(p=>p.personId!==offer.personId);
-  async function prepare(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!companyId)return;const fields=new FormData(event.currentTarget);
+  const signers=people.filter(p=>p.personId!==offer.personId&&p.isHrAdmin===true);
+  const companyValue=signers.some(p=>p.personId===companyId)?companyId:'';
+  async function prepare(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!companyValue)return;const fields=new FormData(event.currentTarget);
     const refs=[engagementValue,equityValue].map(key=>templates.find(t=>t.templateKey===key)).filter((t):t is Template=>!!t).map(t=>({templateKey:t.templateKey,version:t.latestVersion}));
-    await action({action:'prepare',offerId:offer.offerId,companyPersonId:companyId,startDate:fields.get('start'),templates:refs});
+    await action({action:'prepare',offerId:offer.offerId,companyPersonId:companyValue,startDate:fields.get('start'),templates:refs});
   }
   const pdfUrl=url+'/'+encodeURIComponent(offer.offerId)+'/document';
   return <section aria-label="Offer contract"><h4>Contract and signatures</h4>
@@ -52,9 +53,9 @@ export default function ContractSigningViews({daoSlug,offer,people,onChanged}:{d
       <p>Only registered templates matching this offer’s engagement and jurisdiction can be used.</p>
       <label>Engagement agreement<Select className="dao-select" ariaLabel="Engagement agreement" value={engagementValue} onChange={setEngagementKey} options={engagement.map(t=>({value:t.templateKey,label:`${t.title} · v${t.latestVersion}`}))}/></label>
       <label>Equity agreement<Select className="dao-select" ariaLabel="Equity agreement" value={equityValue} onChange={setEquityKey} options={equity.map(t=>({value:t.templateKey,label:`${t.title} · v${t.latestVersion}`}))}/></label>
-      <label>Company countersigner<Select className="dao-select" ariaLabel="Company countersigner" placeholder="Select an HR admin" value={companyId} onChange={setCompanyId} options={signers.map(p=>({value:p.personId,label:p.displayName}))}/></label>
+      <label>Company countersigner<Select className="dao-select" ariaLabel="Company countersigner" placeholder="Select an HR admin" value={companyValue} onChange={setCompanyId} options={signers.map(p=>({value:p.personId,label:p.displayName}))}/></label>
       <label>Start date<input name="start" type="date" required /></label>
-      <button type="submit" className="dao-action" disabled={busy||loading||!companyId}>Generate contract</button>
+      <button type="submit" className="dao-action" disabled={busy||loading||!companyValue}>Generate contract</button>
     </form>:<p>No registered engagement and equity templates match this offer. Add matching templates before generating the contract.</p>:<p>Internal approval is required before generating the contract.</p>}
   </section>;
 }

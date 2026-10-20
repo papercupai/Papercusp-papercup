@@ -64,6 +64,14 @@ describe('DAO finance actions', () => {
     expect(fetcher.mock.calls.filter(([, init]) => init?.body && JSON.parse(String(init.body)).op === 'wallet-verify')).toHaveLength(1);
     install(); expect((window as any).__DAO_HR_CAPTURE__.responses).toEqual({});
   });
+  it('retains a refused contract response with the selected person identity and omits signing secrets', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: false, error: 'not_admin' }, { status: 403 })));
+    new Function('window', 'return ' + captureWorkbenchResponses())(window);
+    await window.fetch('/api/pot/copy-dao/contracts', { method: 'POST', body: JSON.stringify({ action: 'prepare',
+      offerId: 'copy-offer', companyPersonId: 'PER-baseline', signature: 'private-signature' }) });
+    expect((window as any).__DAO_HR_CAPTURE__.responses.prepare).toEqual({ op: 'prepare', status: 403,
+      body: { ok: false, error: 'not_admin' }, request: { offerId: 'copy-offer', companyPersonId: 'PER-baseline' } });
+  });
   it('uses the reviewed policy version for unsigned preparation and never sends a wallet transaction', async () => {
     const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
       const body = init?.body ? JSON.parse(String(init.body)) : {};

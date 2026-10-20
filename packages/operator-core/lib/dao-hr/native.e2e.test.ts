@@ -23,7 +23,7 @@ import { getContractExecution } from './contracts-esign';
 import { DocumensoAdapter, DocumensoError } from './documenso';
 import type { DaoCapTable, DaoWorkspaceView } from '../dao-workspace-types';
 import type { EquityArtifacts } from '../equity/compile';
-import { nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence, nativeJourneyScope } from './native-bootstrap-runtime';
+import { nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence, nativeJourneyScope, assertNativeActionResponse } from './native-bootstrap-runtime';
 
 describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.env.DAO_HR_NATIVE_CONFIG)('P012 actual native hiring journey', () => {
   it('creates, approves, signs, votes, accepts and admits one candidate, then reads People, org and cap table', async () => {
@@ -69,16 +69,17 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         throw cause;
       }
     };
-    const select = async (label: string, option: string) => {
+    const select = async (label: string, option: string, optionValue?: string) => {
       await ev(openWorkbenchSelect(label, '[data-testid=dao-workspace]'));
-      await wait('[...document.querySelectorAll(\'[role=option]\')].some(e=>e.textContent.trim()===' + JSON.stringify(option) + ')');
-      await ev(chooseWorkbenchOption(option));
+      await wait('[...document.querySelectorAll(\'[role=option]\')].some(e=>e.textContent.trim()===' + JSON.stringify(option)
+        + (optionValue === undefined ? '' : '&&e.getAttribute(\'data-value\')===' + JSON.stringify(optionValue)) + ')');
+      await ev(chooseWorkbenchOption(option, optionValue));
     };
     const navigate = async (search: object) => {
       await ev("window.__TSR_ROUTER__.navigate({to:'/daos',search:" + JSON.stringify({ dao: slug, daoSection: 'members', ...search }) + "})");
       await wait("!!document.querySelector('[data-testid=dao-workspace]')");
     };
-    const response = async (op: string) => {
+    const response = async (op: string): Promise<any> => {
       const expression = 'window.__DAO_HR_CAPTURE__?.responses[' + JSON.stringify(op) + ']';
       try { await wait('!!' + expression); }
       catch (error) {
@@ -86,8 +87,8 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         throw error;
       }
       const result = await value(expression);
-      expect(result.status, 'Product response for ' + op).toBe(200);
-      expect(result.body.ok, 'Product result for ' + op).toBe(true); return result.body;
+      return assertNativeActionResponse(op, result, diagnostic =>
+        writeFileSync(config.resultPath + '.response-failure.json', JSON.stringify(diagnostic, null, 2), { mode: 0o600 }));
     };
     const captureResponses = async () => await ev(captureWorkbenchResponses());
     const rpc = async (method: string, params: unknown[] = []) => nativeHttpPhase('wallet-rpc', async () => {
@@ -182,13 +183,13 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       await ev(openWorkbenchDisclosure('Create a role', '[data-testid=dao-workspace]')); await textHas('Create role'); await captureResponses();
       await field('Role title', 'Native engineer'); await field('Level', 'L3'); await click('Create role'); await response('role');
       await textHas('Native engineer'); await click('Native engineer'); await textHas('Add candidate');
-      await select('Candidate', 'Native candidate'); await click('Add candidate'); await response('candidate');
+      await select('Candidate', 'Native candidate', person('candidate')); await click('Add candidate'); await response('candidate');
       await field('Jurisdiction', 'US-DE'); await field('Pay amount', '5000'); await field('Shares override', '1000'); await click('Create offer'); await response('offer');
       await textHas('Native candidate'); await click('Native candidate'); await textHas('Another HR admin must approve your offer.');
       expect(await value("[...document.querySelectorAll('button')].find(b=>b.textContent==='Approve offer').disabled")).toBe(true);
       const offerId = await value("new URLSearchParams(location.search).get('hiringOffer')") as string; expect(offerId).toBeTruthy();
       await browserActor('approver'); await textHas('Approve offer'); await captureResponses(); await click('Approve offer'); await response('approve'); await textHas('Generate contract');
-      await select('Company countersigner', 'Native approver'); await field('Start date', '2026-11-01'); await click('Generate contract'); await response('prepare');
+      await select('Company countersigner', 'Native approver', person('approver')); await field('Start date', '2026-11-01'); await click('Generate contract'); await response('prepare');
       await textHas('Non-binding sample.'); await click('Start signatures'); await response('start');
       const contract = await getContractExecution({ ...key, offerId }, { sql });
       expect(contract.can_bind).toBe(false);

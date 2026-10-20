@@ -9,10 +9,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { formatFailingFilesLine } from '../../../../scripts/lib/vitest-summary.mjs';
-import { knownGoodShaOf, parseConfirmOutput } from './sync-batch-delta-check-deps';
+import { knownGoodShaOf, parseConfirmOutput, SYNC_DELTA_TIMEOUTS_MS } from './sync-batch-delta-check-deps';
 import {
   conditionKeyForRed,
+  DEFAULT_RADIUS_CAPS,
+  etaIsUsable,
   evaluateRadius,
+  parseAffectedEtaLine,
   grownWindowCommitCap,
   UNDETERMINED_STREAK_LIMIT,
   parseAffectedProbe,
@@ -201,6 +204,109 @@ describe('parseAffectedProbe and evaluateRadius — production radius bounds', (
       batchCount: 1,
     });
     expect(verdict).toMatchObject({ run: false, reason: 'nothing-selected' });
+  });
+});
+
+// green-main-ratchet-convergence-2026-10-17#D-030 (WI-6554700010018036): admission by the
+// runner's projected wall time instead of by task count.
+describe('parseAffectedProbe and evaluateRadius — projected-time admission (D-030)', () => {
+  // The line affected-tests.mjs printed for one operator-core path on 2026-10-20.
+  const MEASURED_ETA =
+    'AFFECTED_ETA status=projected projectedSec=1435 workSec=2790 knownTasks=40 tasks=40 unknownTasks=0 ' +
+    'concurrency=2 narrowedTasks=1 heaviestSec=767 heaviestTask=@papercusp/operator-core::test:lane-stateful';
+
+  const etaLine = (projectedSec: number, tasks: number, unknownTasks = 0) =>
+    `AFFECTED_ETA status=projected projectedSec=${projectedSec} workSec=${projectedSec * 2} ` +
+    `knownTasks=${tasks - unknownTasks} tasks=${tasks} unknownTasks=${unknownTasks} concurrency=2 ` +
+    `narrowedTasks=1 heaviestSec=500 heaviestTask=@papercusp/web::test`;
+
+  /** A 40-task, 29-guard radius: over both count caps (32/26), like the measured commits. */
+  const wideProbe = (eta: string | null) =>
+    parseAffectedProbe(
+      [
+        ...Array.from({ length: 9 }, (_, i) => `AFFECTED_WS\tws-${i}`),
+        ...Array.from({ length: 40 }, (_, i) => `AFFECTED_WS_CMD\tws-${i % 9}\tnpm run task-${i}`),
+        ...Array.from({ length: 29 }, (_, i) => `AFFECTED_GUARD\tws-0\tguard-${i}\tnpm run guard-${i}`),
+        ...(eta ? [eta] : []),
+      ].join('\n'),
+    );
+  const union = unionBatchPaths([makeBatch()], 80);
+
+  it('parses the AFFECTED_ETA line the runner prints', () => {
+    expect(parseAffectedEtaLine(MEASURED_ETA)).toEqual({
+      status: 'projected',
+      projectedSec: 1435,
+      knownTasks: 40,
+      tasks: 40,
+      unknownTasks: 0,
+      heaviestTask: '@papercusp/operator-core::test:lane-stateful',
+      heaviestSec: 767,
+      raw: MEASURED_ETA,
+    });
+    expect(parseAffectedEtaLine('AFFECTED_ETA status=unavailable reason=boom')).toMatchObject({
+      status: 'unavailable',
+      projectedSec: null,
+    });
+    expect(parseAffectedEtaLine('AFFECTED_WS\tfoo')).toBeNull();
+    expect(parseAffectedProbe(MEASURED_ETA).eta?.projectedSec).toBe(1435);
+    expect(parseAffectedProbe('AFFECTED_WS\tfoo').eta).toBeNull();
+  });
+
+  it('admits a 40-task / 29-guard radius whose projection fits the leg budget', () => {
+    const verdict = evaluateRadius({ probe: wideProbe(etaLine(588, 40)), union, batchCount: 1 });
+    expect(verdict).toEqual({ run: true, workspaces: Array.from({ length: 9 }, (_, i) => `ws-${i}`) });
+  });
+
+  it('refuses a radius whose projection exceeds maxProjectedSec, naming the heaviest task', () => {
+    const verdict = evaluateRadius({ probe: wideProbe(MEASURED_ETA), union, batchCount: 1 });
+    expect(verdict).toMatchObject({ run: false, reason: 'radius-too-wide' });
+    if (!verdict.run) {
+      expect(verdict.detail).toContain('projected 1435s exceeds maxProjectedSec=1350s');
+      expect(verdict.detail).toContain('heaviest @papercusp/operator-core::test:lane-stateful 767s');
+      expect(verdict.detail).toContain('40/40 tasks with history');
+    }
+  });
+
+  it('keeps the 32/26 count caps when the probe printed no projection', () => {
+    const verdict = evaluateRadius({ probe: wideProbe(null), union, batchCount: 1 });
+    expect(verdict).toMatchObject({ run: false, reason: 'radius-too-wide' });
+    if (!verdict.run) expect(verdict.detail).toContain('maxTaskCommands=32');
+  });
+
+  it('keeps the count caps when history covers too little of the radius to trust the projection', () => {
+    const probe = wideProbe(etaLine(100, 40, 11));
+    expect(etaIsUsable(probe.eta)).toBe(false);
+    const verdict = evaluateRadius({ probe, union, batchCount: 1 });
+    expect(verdict).toMatchObject({ run: false, reason: 'radius-too-wide' });
+    if (!verdict.run) expect(verdict.detail).toContain('maxTaskCommands=32');
+    expect(etaIsUsable(wideProbe(etaLine(100, 40, 10)).eta)).toBe(true);
+  });
+
+  it('keeps the count caps when the projection is unavailable', () => {
+    const verdict = evaluateRadius({
+      probe: wideProbe('AFFECTED_ETA status=unavailable reason=history-unreadable'),
+      union,
+      batchCount: 1,
+    });
+    if (!verdict.run) expect(verdict.detail).toContain('maxTaskCommands=32');
+    expect(verdict.run).toBe(false);
+  });
+
+  it('still refuses past the count backstops on the projected-time path', () => {
+    const probe = parseAffectedProbe(
+      [
+        'AFFECTED_WS\tws-0',
+        ...Array.from({ length: 97 }, (_, i) => `AFFECTED_WS_CMD\tws-0\tnpm run task-${i}`),
+        etaLine(100, 97),
+      ].join('\n'),
+    );
+    const verdict = evaluateRadius({ probe, union, batchCount: 1 });
+    expect(verdict).toMatchObject({ run: false, reason: 'radius-too-wide' });
+    if (!verdict.run) expect(verdict.detail).toContain('maxEtaTaskCommands=96');
+  });
+
+  it('ties the default time budget to 0.9 x the affected leg timeout', () => {
+    expect(DEFAULT_RADIUS_CAPS.maxProjectedSec).toBe(Math.round((0.9 * SYNC_DELTA_TIMEOUTS_MS.affected) / 1000));
   });
 });
 
