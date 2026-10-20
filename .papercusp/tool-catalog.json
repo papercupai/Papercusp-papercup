@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 979,
+  "count": 980,
   "tools": [
     {
       "name": "ablation:report",
@@ -26076,6 +26076,80 @@
         "when": "Renaming the display title of an existing first-class plan without rewriting its whole document or using a raw string replacement.",
         "notWhen": "Converting a legacy (no valid slug/status frontmatter) plan — plans:set-frontmatter. Editing arbitrary custom frontmatter — plans:set-frontmatter-field. Flipping lifecycle status — plans:set-plan-status.",
         "chaining": "plans:get { slug } to inspect the current title → plans:set-title → plans:get or plans:list to confirm the rename."
+      }
+    },
+    {
+      "name": "plans:set-verification-profile",
+      "http": {
+        "path": "/api/agent-tools/plans/set-verification-profile",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Change a plan's verification profile (coding | general). Raising to coding is always allowed. Lowering an activated plan to general needs a recorded Decision (decisionId) and a fresh activation audit.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A plan was stamped with the wrong profile: its items are not code work (general) or are code work (coding).",
+        "notWhen": "Changing one item's deliverable: edit its `deliverable:` keyword instead (plans:edit).",
+        "chaining": "Lowering: plans:add-decision → plans:audit { phase:'activation' } → this verb with decisionId."
       }
     },
     {

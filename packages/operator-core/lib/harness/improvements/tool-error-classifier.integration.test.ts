@@ -222,12 +222,11 @@ describe('generated SQL key parts ↔ toolErrorKeyParts parity (bug-inflow-one-p
 describe('the FULL collectToolErrorSignals query embeds the generated fragments validly (P-011)', () => {
   it('runs against real PG without a syntax error and emits new-shape fingerprinted keys', async () => {
     const sql = db.adminSql;
-    // Two distinct caller modes + a timeout under the SAME tool — pre-P-012 these
-    // collapsed onto one `:caller` / `:transient` key; the generated SQL must now
-    // split the caller modes apart by fingerprint and run the whole CTE cleanly.
+    // Two distinct caller modes per tool + a timeout. bug-inflow D-010: the caller
+    // modes of one tool fold onto ONE `<tool>:caller` item whose per-argument
+    // counter names each mode's field; the timeout is one `<tool>:transient` row.
     // Counts are above the per-class FIRE bars (caller ≥10, transient ≥15) so the
-    // signals actually fire; the two caller modes share the SAME tool so only the
-    // fingerprint splits them (the P-012 win).
+    // signals actually fire, and the whole generated CTE must run cleanly on PG.
     const seed: { tool: string; status: string; code: string | null; msg: string; n: number }[] = [
       { tool: 'plans:new', status: 'error', code: null, msg: 'invalid_args: note: Too big: expected string to have <=400 characters', n: 11 },
       { tool: 'plans:new', status: 'error', code: 'handler_error', msg: 'invalid_args: status: Invalid option: expected one of "draft"|"ready"', n: 11 },
@@ -254,20 +253,33 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
     const signals = await collectToolErrorSignals(sql, { toolLatencyBudgets: SEED_LATENCY_BUDGETS });
     expect(Array.isArray(signals)).toBe(true);
     const keys = signals.map((s) => s.key);
-    // the caller / structural modes split by code + field, never by message digest
-    // (bug-inflow-one-problem-one-row-2026-10-18 D-004)…
-    const expectedStructuralKeys = seed.slice(0, 4).map((sample) => {
+    // bug-inflow-one-problem-one-row-2026-10-18 D-010: every caller mode of one tool
+    // is ONE item keyed by the tool, never split by field or message digest…
+    const callerSeeds = seed.slice(0, 4);
+    const expectedCallerKeys = callerSeeds.map((sample) => {
       const parts = toolErrorKeyParts(sample.code, sample.msg);
       return toolErrorSignalKey(sample.tool, classifyToolError(sample.code, sample.status, sample.msg), parts.errorCode, parts.fieldPath);
     });
-    expect(expectedStructuralKeys).toEqual(expect.arrayContaining([
-      'plans:new:caller:invalid_args:note',
-      'plans:new:caller:invalid_args:status',
-      'tools:invoke:caller:invalid_args:workspace',
-    ]));
-    for (const expected of expectedStructuralKeys) expect(keys).toContain(expected);
-    expect(new Set(expectedStructuralKeys).size).toBe(4);
+    expect([...new Set(expectedCallerKeys)].sort()).toEqual(['plans:new:caller', 'tools:invoke:caller']);
+    expect(keys.filter((k) => k === 'plans:new:caller')).toHaveLength(1);
+    expect(keys.filter((k) => k === 'tools:invoke:caller')).toHaveLength(1);
     expect(keys.some((k) => /md5-/.test(k))).toBe(false);
+    // …and the SQL collector's per-row field extraction feeds the per-argument
+    // counter with exactly the fields the TS key parts read from each message.
+    const expectedCounts = (tool: string) => {
+      const counts: Record<string, number> = {};
+      for (const s of seed.filter((x) => x.tool === tool && callerSeeds.includes(x))) {
+        const field = toolErrorKeyParts(s.code, s.msg).fieldPath;
+        counts[field] = (counts[field] ?? 0) + s.n;
+      }
+      return counts;
+    };
+    expect(expectedCounts('plans:new')).toEqual({ note: 11, status: 11 });
+    expect(expectedCounts('tools:invoke')).toEqual({ workspace: 11, 'field-unknown': 11 });
+    for (const tool of ['plans:new', 'tools:invoke']) {
+      const signal = signals.find((s) => s.key === `${tool}:caller`);
+      expect(signal?.payloadExtra?.callerArguments).toMatchObject({ total: 22, counts: expectedCounts(tool) });
+    }
     // …and the sustained timeout is ONE transient row for the tool (R-1).
     expect(keys.filter((k) => k.startsWith('plans:list:transient'))).toEqual(['plans:list:transient']);
     // The same two cancellation rows that met the structural count floor must not

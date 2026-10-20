@@ -300,15 +300,76 @@ export interface SourceTurn {
 }
 
 /**
- * Read a batch of canonical session_turn refs in ONE round trip over
+ * `order:<id>` — an owner directive (harness_shared.owner_directives) cited as a source
+ * (WI-6554700010017011). An owner prompt typed while the CLI is being carry-respawned is
+ * captured by the UserPromptSubmit hook but never reaches the transcript, so the order
+ * row is the ONLY durable record of what the owner asked. Without this ref kind a plan
+ * built on such a directive could trace nothing to the owner, and its blind review had
+ * no owner words to brief from.
+ */
+export const ORDER_SOURCE_REF_PREFIX = 'order:';
+const ORDER_SOURCE_REF = /^order:([1-9][0-9]{0,15})$/;
+
+/** The directive id an `order:<id>` ref names, or null when `ref` is not one. */
+export function parseOrderSourceRef(ref: string): number | null {
+  const match = ORDER_SOURCE_REF.exec(ref);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
+/**
+ * Read cited `order:<id>` refs in ONE round trip over harness_shared.owner_directives in
+ * the workspace. A row counts as owner speech (`owner-typed`) ONLY when `captured_by_hook`
+ * is true: `orders:capture` refuses every caller except a declared hook dispatch, and the
+ * hook captures only turns it classified OWNER (interactive). This is the same proof
+ * Personal Vault release relies on (personal-vault/release-authority.ts). A row an agent
+ * recorded with `orders:record` is a relay, so its origin is `unknown`. That does not
+ * qualify as owner backing, and it does not mean the row was fabricated. Missing ids are
+ * absent from the result.
+ */
+export async function fetchOrderSourceTurns(
+  sql: TurnSql,
+  workspaceId: string,
+  refs: readonly string[],
+  chars: number = TURN_ORIGIN_HEAD_CHARS,
+): Promise<Map<string, SourceTurn>> {
+  const out = new Map<string, SourceTurn>();
+  const keyed = [...new Set(refs)]
+    .map((ref) => ({ ref, id: parseOrderSourceRef(ref) }))
+    .filter((entry): entry is { ref: string; id: number } => entry.id != null);
+  if (keyed.length === 0) return out;
+  const wrap = (values: unknown[]) => (sql.array ? sql.array(values) : values);
+  const rows = await sql<Array<{ id: string | number; verbatim_head: string | null; captured_by_hook: boolean | null }>>`
+    SELECT directives.id, left(directives.verbatim_text, ${Math.max(chars, 1)}) AS verbatim_head,
+           directives.captured_by_hook
+      FROM harness_shared.owner_directives AS directives
+     WHERE directives.workspace_id = ${workspaceId}
+       AND directives.id = ANY(${wrap(keyed.map((entry) => entry.id))}::bigint[])`;
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  for (const { ref, id } of keyed) {
+    const row = byId.get(String(id));
+    if (!row) continue;
+    out.set(ref, {
+      speaker: 'user',
+      text: row.verbatim_head ?? null,
+      verdict: row.captured_by_hook === true ? 'owner-typed' : 'unknown',
+    });
+  }
+  return out;
+}
+
+/**
+ * Read a batch of cited source refs: canonical session_turn refs in ONE round trip over
  * harness_shared.session_turns, classifying each turn's HEAD with the same classifier
- * sessions:search uses (turn-origin.ts property 1: never an excerpt). Refs that do not
- * parse, or whose turn is absent, are simply missing from the result — never guessed.
- * Arrays go through sql.array() so each stays one SQL argument on getOrgPg.
+ * sessions:search uses (turn-origin.ts property 1: never an excerpt), plus any
+ * `order:<id>` refs (fetchOrderSourceTurns). Refs that do not parse, or whose turn is
+ * absent, are simply missing from the result — never guessed. Arrays go through
+ * sql.array() so each stays one SQL argument on getOrgPg.
  *
- * Shared by the audit-time origin lookup (P-002) and the provenance read model (P-004),
- * so the verdict a plan was audited against and the one the owner sees come from the
- * same query.
+ * Shared by the audit-time origin lookup (P-002), the provenance read model (P-004) and
+ * the blind-review brief, so the verdict a plan was audited against, the one the owner
+ * sees and the words a blind reviewer is briefed with come from the same query.
  */
 export async function fetchSourceTurns(
   sql: TurnSql,
@@ -316,7 +377,7 @@ export async function fetchSourceTurns(
   refs: readonly string[],
   chars: number = TURN_ORIGIN_HEAD_CHARS,
 ): Promise<Map<string, SourceTurn>> {
-  const out = new Map<string, SourceTurn>();
+  const out = await fetchOrderSourceTurns(sql, workspaceId, refs, chars);
   const keyed = [...new Set(refs)]
     .map((ref) => ({ ref, parsed: parseTurnRef(ref) }))
     .filter((entry): entry is { ref: string; parsed: NonNullable<ReturnType<typeof parseTurnRef>> } => entry.parsed != null);

@@ -73,7 +73,10 @@ import {
   currentPlanItemIds,
   dbRefOriginLookup,
   evaluateActivationItemProvenance,
+  fetchOrderSourceTurns,
   itemProvenanceMissingProblems,
+  parseOrderSourceRef,
+  type TurnSql,
 } from '../../activation-item-provenance';
 import { persistDerivedDraftClauses } from '../../derive-draft-spec-clauses';
 import { detectUnderReadFromSource } from '../../activation-under-read';
@@ -623,15 +626,23 @@ export default defineTool({
 
       const sourceProblems: Problem[] = [];
       const sourceRefs: string[] = [];
+      const orderRefs: string[] = [];
       for (const mapping of mappings) {
         for (const ref of mapping.sourceRefs) {
+          // WI-6554700010017011: an owner directive is cited by id. It belongs to no
+          // transcript, so no sourceRange can cover it; it resolves against the orders
+          // store below instead.
+          if (parseOrderSourceRef(ref) != null) {
+            orderRefs.push(ref);
+            continue;
+          }
           sourceRefs.push(ref);
           const parsed = parseTurnRef(ref);
           if (!parsed || !ref.startsWith('session_turn:')) {
             sourceProblems.push({
               itemId: mapping.id,
               code: 'invalid_session_turn_ref',
-              detail: `${mapping.id} source ref '${ref}' is not a canonical session_turn:<kind>:<session>:<turn> reference`,
+              detail: `${mapping.id} source ref '${ref}' is not a canonical session_turn:<kind>:<session>:<turn> or order:<id> reference`,
             });
             continue;
           }
@@ -667,11 +678,22 @@ export default defineTool({
       // Consequently ctx.tx is intentionally absent at runtime; resolve the
       // canonical session refs through the same org SQL surface as the writer.
       const { sql } = getOrgPg();
-      const resolutions = await resolveSessionTurnRefs(
-        sql as Parameters<typeof resolveSessionTurnRefs>[0],
-        workspaceId,
-        sourceRefs,
-      );
+      const orderTurns = await fetchOrderSourceTurns(sql as unknown as TurnSql, workspaceId, orderRefs);
+      const resolutions: Array<{
+        ref: string;
+        ok: boolean;
+        source?: 'index' | 'archive' | 'orders';
+        reason?: 'invalid_ref' | 'not_found' | 'order_not_found';
+      }> = [
+        ...(await resolveSessionTurnRefs(
+          sql as Parameters<typeof resolveSessionTurnRefs>[0],
+          workspaceId,
+          sourceRefs,
+        )),
+        ...[...new Set(orderRefs)].map((ref) => (orderTurns.has(ref)
+          ? { ref, ok: true, source: 'orders' as const }
+          : { ref, ok: false, reason: 'order_not_found' as const })),
+      ];
       const unresolved = resolutions.filter((resolution) => !resolution.ok);
       if (unresolved.length > 0) {
         return { data: {
@@ -679,10 +701,15 @@ export default defineTool({
           slug: args.slug,
           phase: 'activation' as const,
           error: 'source_refs_unresolved',
-          problems: unresolved.map((resolution) => ({
-            code: resolution.reason === 'invalid_ref' ? 'invalid_session_turn_ref' : 'session_turn_not_found',
-            detail: `'${resolution.ref}' could not be resolved through sessions:read's index/archive stores`,
-          })),
+          problems: unresolved.map((resolution) => (resolution.reason === 'order_not_found'
+            ? {
+                code: 'owner_directive_not_found',
+                detail: `'${resolution.ref}' is not an owner directive in this workspace (orders:get)`,
+              }
+            : {
+                code: resolution.reason === 'invalid_ref' ? 'invalid_session_turn_ref' : 'session_turn_not_found',
+                detail: `'${resolution.ref}' could not be resolved through sessions:read's index/archive stores`,
+              })),
           message:
             `${unresolved.length} source ref(s) are not directly readable. Refresh/repair the transcript source; no audit was recorded.`,
         } };

@@ -2,12 +2,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { startDaoHrWalletBindingFixture } from './wallet-binding-fixture';
-import { installIdentityFixture, prepareIdentityFixture } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
+import { identityFixtureHive, installIdentityFixture, prepareIdentityFixture } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { readWalletBinding, requestWalletBindingChallenge, submitWalletBinding } from '../cupboard/wallet-binding-io';
 
 afterEach(() => vi.unstubAllEnvs());
@@ -29,12 +30,23 @@ describe('native DAO HR hosted wallet fixture', () => {
       expect(await crypto.deriveEpochKey('workbench-native', 0)).toEqual(key);
       const lookup = (account: string) => promisify(execFile)('secret-tool',
         ['lookup', 'service', 'papercusp-hive-epoch-key', 'account', account]);
+      const publicKeys = new Set([identity.hive.publicKey]);
+      const epochKeys = new Set([identity.hiveEpoch0]);
       for (const phase of ['baseline', 'copy-baseline', 'mutant']) {
-        expect(Buffer.from(await crypto.deriveEpochKey('workbench-native-' + phase, 0)).toString('base64')).toBe(identity.hiveEpoch0);
+        const slug = 'workbench-native-' + phase;
+        const expected = identityFixtureHive(identity, slug);
+        const epoch = Buffer.from(await crypto.deriveEpochKey(slug, 0)).toString('base64');
+        expect(epoch).toBe(expected.epoch0);
+        expect(epochKeys.has(epoch)).toBe(false); epochKeys.add(epoch);
         const hive = await promisify(execFile)('secret-tool', ['lookup', 'service', 'papercusp-hive-keypair',
-          'account', 'hive:verify-tauri-isolated-123:workbench-native-' + phase]);
-        expect(hive.stdout).toBe(identity.hive.privateKeyDer);
+          'account', 'hive:verify-tauri-isolated-123:' + slug]);
+        const publicKey = createPublicKey(createPrivateKey({ key: Buffer.from(hive.stdout, 'base64'),
+          format: 'der', type: 'pkcs8' })).export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+        expect(publicKey).toBe(expected.publicKey);
+        expect(publicKeys.has(publicKey)).toBe(false); publicKeys.add(publicKey);
       }
+      expect(() => identityFixtureHive(identity, 'workbench-native-foreign')).toThrow('unknown hive scope');
+      expect(() => identityFixtureHive({ ...identity, hives: {} }, 'workbench-native-copy-baseline')).toThrow('no hive identity');
       await expect(lookup('workbench-native-foreign:0')).rejects.toThrow('unknown keychain identity');
       await expect(promisify(execFile)('secret-tool', ['lookup', 'service', 'papercusp-hive-keypair',
         'account', 'hive:live-workspace:workbench-native-mutant'])).rejects.toThrow('unknown keychain identity');

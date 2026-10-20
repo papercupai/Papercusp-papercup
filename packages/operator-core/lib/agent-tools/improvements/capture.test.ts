@@ -875,7 +875,8 @@ describe('improvements:capture tool envelope', () => {
       expect.objectContaining({
         kind: 'change',
         lane: 'observation',
-        watchdogKey: expect.stringMatching(/^repeated-tool-error:coord:send:caller:/),
+        // bug-inflow D-010: a caller failure keys ONCE per tool.
+        watchdogKey: 'repeated-tool-error:coord:send:caller',
         payloadExtra: {
           toolFailureProbation: expect.objectContaining({
             state: 'probation',
@@ -918,7 +919,8 @@ describe('improvements:capture tool envelope', () => {
     });
 
     const rowKeys = mockCapture.mock.calls.map(([input]) => input.watchdogKey);
-    expect(rowKeys[0]).toBe('repeated-tool-error:ptool:structural:md5-8627c9c6c1206235c21992a6dee757ef');
+    // bug-inflow D-004: a structural key is `<tool>:structural:<code>:<field>`, no message digest.
+    expect(rowKeys[0]).toBe('repeated-tool-error:ptool:structural:sdk_bootstrap_failed:field-unknown');
     expect(rowKeys[1]).toBe('tool-failure-signature:ptool:structural:enospc:tmp-pcv-fs-mutex-locks');
     expect(rowKeys[1]).not.toBe(rowKeys[0]);
     expect(rowKeys[2]).toBe(rowKeys[1]);
@@ -928,12 +930,12 @@ describe('improvements:capture tool envelope', () => {
       ?.toolFailureProbation as Record<string, unknown>;
     expect(firstProbation.watchdogKey).toBe(rowKeys[0]);
     expect(enospcProbation.watchdogKey).toBe(
-      'repeated-tool-error:ptool:structural:md5-7a7a4b4cbc261d5b0c59a376c9fb3f1a',
+      'repeated-tool-error:ptool:structural:error-code-unknown:field-unknown',
     );
     expect(enospcProbation.watchdogKey).not.toBe(firstProbation.watchdogKey);
   });
 
-  it('keeps distinct status-502 lock failures separate through the regular capture route', async () => {
+  it('folds differently-worded status-502 lock failures onto one per-tool transient row (bug-inflow R-1)', async () => {
     mockIdentity.mockReturnValue(identity('static-client', 'su-lock-filer'));
     const prefix = 'locks:acquire failed (502): read ECONNRESET while acquiring the file lock for ';
     const messages = [
@@ -955,7 +957,9 @@ describe('improvements:capture tool envelope', () => {
     }
 
     // 502 is not accepted by the narrower invocation-friction helper, so both
-    // reports must fall through to captureImprovement with their own full-message key.
+    // reports fall through to captureImprovement. bug-inflow R-1 / D-004: a
+    // transient failure keys by tool ALONE, so the two wordings coalesce onto one
+    // row; the per-reporter message fingerprint still records each wording.
     expect(mockCaptureToolInvocationFriction).not.toHaveBeenCalled();
     expect(mockCapture).toHaveBeenCalledTimes(2);
     const inputs = mockCapture.mock.calls.map(([input]) => input as {
@@ -963,12 +967,14 @@ describe('improvements:capture tool envelope', () => {
       payloadExtra?: { toolFailureProbation?: { watchdogKey?: string; messageFingerprint?: string | null } };
     });
     const rowKeys = inputs.map((input) => input.watchdogKey);
-    expect(rowKeys[0]).toMatch(/^repeated-tool-error:locks:acquire:transient:md5-[a-f0-9]{32}$/);
-    expect(rowKeys[1]).toMatch(/^repeated-tool-error:locks:acquire:transient:md5-[a-f0-9]{32}$/);
-    expect(rowKeys[1]).not.toBe(rowKeys[0]);
+    expect(rowKeys).toEqual([
+      'repeated-tool-error:locks:acquire:transient',
+      'repeated-tool-error:locks:acquire:transient',
+    ]);
     const probation = inputs.map((input) => input.payloadExtra?.toolFailureProbation);
     expect(probation[0]?.watchdogKey).toBe(rowKeys[0]);
     expect(probation[1]?.watchdogKey).toBe(rowKeys[1]);
+    expect(probation[0]?.messageFingerprint).toMatch(/^md5-[a-f0-9]{32}$/);
     expect(probation[1]?.messageFingerprint).not.toBe(probation[0]?.messageFingerprint);
   });
 
@@ -1047,7 +1053,12 @@ describe('improvements:capture tool envelope', () => {
       ?.toolFailureProbation as Record<string, unknown>;
     expect(firstProbation.watchdogKey).not.toBe(conditionKey);
     expect(secondProbation.watchdogKey).not.toBe(conditionKey);
-    expect(secondProbation.watchdogKey).not.toBe(firstProbation.watchdogKey);
+    // bug-inflow R-3 / D-010: a wording change does not split the probation
+    // identity (one caller key per tool); the wording is kept in the
+    // per-reporter correlation fingerprint instead.
+    expect(firstProbation.watchdogKey).toBe('repeated-tool-error:sessions:read:caller');
+    expect(secondProbation.watchdogKey).toBe(firstProbation.watchdogKey);
+    expect(secondProbation.correlationFingerprint).not.toBe(firstProbation.correlationFingerprint);
   });
 
   it('derives bounded title/body text for the canonical toolFailure-only shorthand', async () => {

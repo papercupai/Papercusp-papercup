@@ -3,7 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseRepairHeadRadius, shadowComposedProofAtRepairHead, type RepairHeadRadius } from "./green-checkpoint";
+import {
+  parseRepairHeadRadius,
+  shadowComposedProofAtRepairHead,
+  shadowNewRedEjectionAtCandidate,
+  type RepairHeadRadius,
+} from "./green-checkpoint";
 
 /** green-main-ratchet-convergence-2026-10-17 #D-025: the P-018 shadow reads a real lineage diff. */
 const dirs: string[] = [];
@@ -92,6 +97,94 @@ describe("shadowComposedProofAtRepairHead (P-018 shadow)", () => {
     const head = commit({ "src/a.ts": "export const a = 2;\n" });
     const s = await shadowComposedProofAtRepairHead({ root, queue: { candidate }, repairHead: head, nowMs: 1 });
     expect(s.record).toMatchObject({ status: "skipped" });
+  });
+});
+
+describe("shadowNewRedEjectionAtCandidate (P-007 shadow)", () => {
+  /** Radius by source file: src/x.ts selects src/x.test.ts. */
+  const radiusBySource = async (paths: readonly string[]) =>
+    new Set(paths.filter((p) => p.endsWith(".ts") && !p.endsWith(".test.ts")).map((p) => p.replace(/\.ts$/, ".test.ts")));
+
+  it("reads the commits since the green pin and attributes a failure to the one commit whose radius selects it", async () => {
+    const { root, candidate: base, commit } = repoWith({ "src/a.ts": "export const a = 1;\n", "src/b.ts": "export const b = 1;\n" });
+    const touchA = commit({ "src/a.ts": "export const a = 2;\n" });
+    const touchB = commit({ "src/b.ts": "export const b = 2;\n" });
+    const asked: string[][] = [];
+    const record = await shadowNewRedEjectionAtCandidate({
+      root,
+      candidateSha: touchB,
+      candidateLabel: touchB,
+      base,
+      newFailures: ["src/a.test.ts"],
+      radius: async (paths) => {
+        asked.push([...paths]);
+        return radiusBySource(paths);
+      },
+    });
+    expect(record).toMatchObject({
+      status: "planned",
+      candidate: touchB,
+      base,
+      commitCount: 2,
+      newFailureCount: 1,
+      plan: "eject",
+      attributions: [{ test: "src/a.test.ts", kind: "attributed", commit: touchA }],
+      blameCheck: "not-run",
+    });
+    // The selector was asked about the range's changed files, never about the base commit's.
+    expect(asked.length).toBeGreaterThan(0);
+    for (const paths of asked) expect(paths.every((p) => p === "src/a.ts" || p === "src/b.ts")).toBe(true);
+  });
+
+  it("records an over-long range as skipped with its commit count, without reading the log", async () => {
+    const { root, candidate: base, commit } = repoWith({ "src/a.ts": "export const a = 1;\n" });
+    commit({ "src/a.ts": "export const a = 2;\n" });
+    const head = commit({ "src/a.ts": "export const a = 3;\n" });
+    let calls = 0;
+    const lines: string[] = [];
+    const record = await shadowNewRedEjectionAtCandidate({
+      root,
+      candidateSha: head,
+      candidateLabel: head,
+      base,
+      newFailures: ["src/a.test.ts"],
+      radius: async () => {
+        calls += 1;
+        return new Set<string>();
+      },
+      maxCommits: 1,
+      log: (l) => lines.push(l),
+    });
+    expect(calls).toBe(0);
+    expect(record).toMatchObject({ status: "skipped", commitCount: 2, reason: "commit range too long (2 > 1)" });
+    expect(lines.join("\n")).toContain("2 commits since the green pin (cap 1)");
+  });
+
+  it("records an unreadable range as skipped instead of throwing", async () => {
+    const { root, candidate } = repoWith({ "src/a.ts": "export const a = 1;\n" });
+    const record = await shadowNewRedEjectionAtCandidate({
+      root,
+      candidateSha: candidate,
+      candidateLabel: candidate,
+      base: "0".repeat(40),
+      newFailures: ["src/a.test.ts"],
+      radius: async () => new Set<string>(),
+      log: () => {},
+    });
+    expect(record).toMatchObject({ status: "skipped", reason: "the commit range since the green pin is unreadable" });
+  });
+
+  it("records nothing-new when no file-level failure remains", async () => {
+    const { root, candidate } = repoWith({ "src/a.ts": "export const a = 1;\n" });
+    const record = await shadowNewRedEjectionAtCandidate({
+      root,
+      candidateSha: candidate,
+      candidateLabel: candidate,
+      base: candidate,
+      newFailures: [],
+      radius: async () => new Set<string>(),
+    });
+    expect(record.status).toBe("nothing-new");
   });
 });
 

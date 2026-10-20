@@ -7,6 +7,20 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 
+const nativeHiveSlugs = ['workbench-native', 'workbench-native-baseline', 'workbench-native-copy-baseline', 'workbench-native-mutant'];
+
+/** Resolve the same per-DAO identity for registration, signing and epoch lookup. */
+export function identityFixtureHive(fixture, slug) {
+  if (!nativeHiveSlugs.includes(slug)) throw new Error('Synthetic fixture refuses unknown hive scope');
+  const hive = slug === 'workbench-native'
+    ? { ...fixture.hive, epoch0: fixture.hiveEpoch0 }
+    : fixture.hives?.[slug];
+  if (!hive || typeof hive.publicKey !== 'string' || Buffer.from(hive.publicKey, 'base64').length !== 32
+    || typeof hive.privateKeyDer !== 'string' || typeof hive.epoch0 !== 'string' || Buffer.from(hive.epoch0, 'base64').length !== 32)
+    throw new Error('Synthetic fixture has no hive identity for ' + slug);
+  return hive;
+}
+
 /** Read the instance exported by the maintained verifier, never the caller's operator. */
 export async function readNativeHostHealth(env = process.env) {
   if (!env.VERIFY_TAURI_DEV_URL) throw new Error('Native health proof requires VERIFY_TAURI_DEV_URL');
@@ -35,7 +49,9 @@ export function prepareIdentityFixture(directory) {
   };
   // Keep the original top-level identity for the existing Workbench journey.
   const fixture = { kind: 'dao-workbench-synthetic-identity-v1', ...actors.admin, actors, hive: pair(),
-    hiveEpoch0: randomBytes(32).toString('base64') };
+    hiveEpoch0: randomBytes(32).toString('base64'),
+    hives: Object.fromEntries(nativeHiveSlugs.slice(1).map(slug => [slug,
+      { ...pair(), epoch0: randomBytes(32).toString('base64') }])) };
   const path = join(directory, 'identity.json');
   writeFileSync(path, JSON.stringify(fixture), { mode: 0o600 });
   writeAnnounce(directory, actors.admin);
@@ -96,13 +112,14 @@ export function installIdentityFixture(fixture, env = process.env) {
     const actor = actors.find(actor => actor.keychainId === account);
     if (actor && service === 'papercusp-device-keypair')
       return { stdout: actor.device.privateKeyDer, stderr: '' };
-    if (/^hive:verify-tauri-isolated-\d+:workbench-native(?:-(?:baseline|copy-baseline|mutant))?$/.test(account) && service === 'papercusp-hive-keypair')
-      return { stdout: fixture.hive.privateKeyDer, stderr: '' };
+    const hiveAccount = /^hive:verify-tauri-isolated-\d+:(workbench-native(?:-(?:baseline|copy-baseline|mutant))?)$/.exec(account);
+    if (hiveAccount && service === 'papercusp-hive-keypair')
+      return { stdout: identityFixtureHive(fixture, hiveAccount[1]).privateKeyDer, stderr: '' };
     // The owned hive's canonical scope is its home slug. Member admission
     // distributes its existing epoch zero; the request-only sidecar cannot mint it.
-    if (/^workbench-native(?:-(?:baseline|copy-baseline|mutant))?:0$/.test(account) && service === 'papercusp-hive-epoch-key'
-      && typeof fixture.hiveEpoch0 === 'string' && Buffer.from(fixture.hiveEpoch0, 'base64').length === 32)
-      return { stdout: fixture.hiveEpoch0, stderr: '' };
+    const epochAccount = /^(workbench-native(?:-(?:baseline|copy-baseline|mutant))?):0$/.exec(account);
+    if (epochAccount && service === 'papercusp-hive-epoch-key')
+      return { stdout: identityFixtureHive(fixture, epochAccount[1]).epoch0, stderr: '' };
     throw new Error('Synthetic fixture refuses unknown keychain identity');
   };
   const replacement = function(file, args = [], ...rest) {

@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { HitTurnOriginVerdict } from './agent-tools/sessions/turn-origin';
 import {
+  fetchOrderSourceTurns,
   fetchSourceTurns,
   isOwnerTurnVerdict,
+  parseOrderSourceRef,
   itemProvenanceLabelText,
   resolveItemProvenance,
   validateItemProvenanceDeclarations,
   type ProvenanceMappingInput,
   type TurnSql,
 } from './activation-item-provenance';
+import { buildBlindReviewBrief } from './blind-review-brief';
 
 const OWNER = 'session_turn:claude:s1:0';
 const OWNER_DIALOG = 'session_turn:claude:s1:4';
@@ -227,5 +230,84 @@ describe('fetchSourceTurns — WI-10004510: an unproven clean turn is not owner 
     expect(unproven.items[0]).toMatchObject({ itemId: 'P-001', label: 'unresolved', reason: 'no_owner_ref' });
     const proven = resolveItemProvenance({ itemIds: ['P-001'], mappings: [mapping('M-001', [UNENROLLED, PROVEN], ['P-001'])], originOf: lookup });
     expect(proven.items[0]).toMatchObject({ itemId: 'P-001', label: 'owner' });
+  });
+});
+
+describe('order:<id> source refs — WI-6554700010017011: an owner directive with no transcript turn', () => {
+  const HOOK_CAPTURED = 'order:1970';
+  const AGENT_RECORDED = 'order:1971';
+  const ABSENT = 'order:1972';
+  const OWNER_WORDS = 'can we make an interactive diagram as well for the cupboard page?';
+  const directives: Record<string, { verbatim: string; captured_by_hook: boolean }> = {
+    1970: { verbatim: OWNER_WORDS, captured_by_hook: true },
+    1971: { verbatim: 'relayed: the owner wants a cupboard diagram', captured_by_hook: false },
+  };
+  /** Serves owner_directives by id (emulating left(verbatim_text, width)) and records every query. */
+  const makeSql = () => {
+    const queries: string[] = [];
+    const sql: TurnSql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push(text);
+      if (!text.includes('harness_shared.owner_directives')) return [];
+      expect(text).toMatch(/directives\.workspace_id = \?/);
+      const [width, workspace, ids] = values as [number, string, number[]];
+      if (workspace !== 'ws') return [];
+      return ids
+        .filter((id) => directives[id])
+        .map((id) => ({
+          id: String(id),
+          verbatim_head: directives[id]!.verbatim.slice(0, width),
+          captured_by_hook: directives[id]!.captured_by_hook,
+        }));
+    }) as TurnSql;
+    return { sql, queries };
+  };
+
+  it('parses only a positive integer directive id', () => {
+    expect(parseOrderSourceRef(HOOK_CAPTURED)).toBe(1970);
+    for (const bad of ['order:0', 'order:', 'order:abc', 'order:1970x', 'order:-3', ' order:1970', 'directive:1970', 'session_turn:claude:s1:0']) {
+      expect(parseOrderSourceRef(bad)).toBeNull();
+    }
+  });
+
+  it('a hook-captured directive is owner speech carrying the verbatim words; an agent relay is not', async () => {
+    const { sql } = makeSql();
+    const turns = await fetchSourceTurns(sql, 'ws', [HOOK_CAPTURED, AGENT_RECORDED, ABSENT]);
+    expect(turns.get(HOOK_CAPTURED)).toEqual({ speaker: 'user', text: OWNER_WORDS, verdict: 'owner-typed' });
+    expect(isOwnerTurnVerdict(turns.get(HOOK_CAPTURED)?.verdict)).toBe(true);
+    // orders:record rows have no hook provenance: unknown, never owner and never "fabricated".
+    expect(turns.get(AGENT_RECORDED)?.verdict).toBe('unknown');
+    expect(isOwnerTurnVerdict(turns.get(AGENT_RECORDED)?.verdict)).toBe(false);
+    expect(turns.has(ABSENT)).toBe(false);
+  });
+
+  it('is workspace-scoped: the same id in another workspace does not resolve', async () => {
+    const { sql } = makeSql();
+    expect((await fetchOrderSourceTurns(sql, 'other-ws', [HOOK_CAPTURED])).size).toBe(0);
+  });
+
+  it('issues no owner_directives query when no order ref is cited', async () => {
+    const { sql, queries } = makeSql();
+    await fetchSourceTurns(sql, 'ws', ['session_turn:claude:s1:0', 'order:abc']);
+    expect(queries.some((query) => query.includes('owner_directives'))).toBe(false);
+  });
+
+  it('backs a plan item and reaches the blind-review brief as an owner turn', async () => {
+    const { sql } = makeSql();
+    const turns = await fetchSourceTurns(sql, 'ws', [HOOK_CAPTURED, AGENT_RECORDED], 4000);
+    const provenance = resolveItemProvenance({
+      itemIds: ['P-001', 'P-002'],
+      mappings: [mapping('M-001', [HOOK_CAPTURED], ['P-001']), mapping('M-002', [AGENT_RECORDED], ['P-002'])],
+      originOf: (ref) => turns.get(ref)?.verdict,
+    });
+    expect(provenance.items.map((item) => [item.itemId, item.label])).toEqual([['P-001', 'owner'], ['P-002', 'unresolved']]);
+    const brief = buildBlindReviewBrief({
+      planSlug: 'plan-a',
+      activation: { auditSeq: 3, mappings: [{ sourceRefs: [HOOK_CAPTURED, AGENT_RECORDED] }] },
+      turns,
+    });
+    expect(brief.ownerTurns).toEqual([{ ref: HOOK_CAPTURED, text: OWNER_WORDS }]);
+    expect(brief.excludedRefs).toEqual([{ ref: AGENT_RECORDED, reason: 'not-owner' }]);
+    expect(brief.text).toContain(OWNER_WORDS);
   });
 });

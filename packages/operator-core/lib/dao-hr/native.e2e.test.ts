@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 import { decodeFunctionResult, encodeFunctionData, stringToHex, type Address, type Hex } from 'viem';
 import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
-import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
+import { identityFixtureHive, readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { assertCompletionResponse, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 import { workbenchTextField, workbenchTextFieldReady, workbenchButtonReady, workbenchControlDiagnostics, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, workbenchEquitySnapshot, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
@@ -145,7 +145,8 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       expect(health.health.sha).toBe(receipt.sourceCommit.slice(0, 12));
       chainSnapshot = await rpc('evm_snapshot');
       const home = join(process.env.PAPERCUSP_HOME!, slug); mkdirSync(home, { recursive: true });
-      await insertHiveIfAbsent({ workspaceId: ws, homeSlug: slug, pubkeyBase64: fixture.hive.publicKey, keychainId: 'hive:' + ws + ':' + slug,
+      const hive = identityFixtureHive(fixture, slug);
+      await insertHiveIfAbsent({ workspaceId: ws, homeSlug: slug, pubkeyBase64: hive.publicKey, keychainId: 'hive:' + ws + ':' + slug,
         title: 'Native DAO HR', description: 'Non-binding isolated hiring verification' }, sql);
       const registry = await loadHarnessRegistry(ws);
       await saveHarnessRegistry({ ...registry, projects: [...registry.projects, { slug, path: home, harness_kind: 'hive' }] }, ws);

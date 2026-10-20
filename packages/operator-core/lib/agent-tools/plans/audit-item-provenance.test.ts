@@ -438,3 +438,89 @@ describe('plans:audit activation — re-audits', () => {
       'itemProvenance for P-002 retired: P-002 is dropped or absent from the current plan revision');
   });
 });
+
+describe('plans:audit activation — order:<id> owner directives (WI-6554700010017011)', () => {
+  // 1970: captured by the UserPromptSubmit hook (owner-typed). 1971: an agent's orders:record
+  // relay. 1972 does not exist. Served only for the tool's own workspace.
+  const DIRECTIVES: Record<number, { verbatim_head: string; captured_by_hook: boolean }> = {
+    1970: { verbatim_head: 'Also add a GUI badge per item.', captured_by_hook: true },
+    1971: { verbatim_head: 'relayed: the owner wants a badge', captured_by_hook: false },
+  };
+  const orderMapping = (id: string, refs: string[], targets: string[]) => ({
+    id,
+    sourceRefs: refs,
+    requirement: `requirement ${id}`,
+    planTargets: targets,
+    disposition: 'covered' as const,
+  });
+
+  beforeEach(() => {
+    const base = mockOrgSql.getMockImplementation()!;
+    mockOrgSql.mockImplementation((...args: unknown[]) => {
+      const first = args[0];
+      if (Array.isArray(first) && 'raw' in first &&
+        (first as unknown as string[]).join('?').includes('harness_shared.owner_directives')) {
+        const [, , workspace, ids] = args as [unknown, number, string, number[]];
+        if (workspace !== 'test-workspace') return Promise.resolve([]);
+        return Promise.resolve(ids.filter((id) => DIRECTIVES[id]).map((id) => ({ id: String(id), ...DIRECTIVES[id] })));
+      }
+      return base(...args);
+    });
+  });
+
+  it('accepts a hook-captured order outside every sourceRange as owner backing, and stores its verdict', async () => {
+    const result = await run(activationArgs({
+      mappings: [mapping('M-001', [3], ['P-001']), orderMapping('M-002', ['order:1970'], ['P-002'])],
+    }));
+
+    expect(result).toMatchObject({
+      ok: true,
+      itemProvenance: { enforced: true, unresolved: [], counts: { owner: 2, unresolved: 0 } },
+    });
+    // The order ref never went to the transcript resolver; only the session_turn ref did.
+    expect(mockResolveSourceRefs.mock.calls[0]?.[2]).toEqual([ref(3)]);
+    expect(storedActivation()?.itemProvenanceCheck.refOrigins).toMatchObject({ 'order:1970': 'owner-typed' });
+    expect(storedActivation()?.mappings.map((m: { sourceRefs: string[] }) => m.sourceRefs)).toEqual([[ref(3)], ['order:1970']]);
+  });
+
+  it('does not let an agent-recorded order back an item', async () => {
+    const result = await run(activationArgs({
+      mappings: [mapping('M-001', [3], ['P-001']), orderMapping('M-002', ['order:1971'], ['P-002'])],
+    }));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'item_provenance_missing',
+      unresolvedItems: ['P-002'],
+      problems: [expect.objectContaining({ itemId: 'P-002', code: 'no_owner_ref' })],
+    });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('refuses an order id that is not an owner directive in this workspace', async () => {
+    const result = await run(activationArgs({
+      mappings: [mapping('M-001', [3], ['P-001']), orderMapping('M-002', ['order:1972'], ['P-002'])],
+    }));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'source_refs_unresolved',
+      problems: [expect.objectContaining({ code: 'owner_directive_not_found' })],
+    });
+    expect(result.problems[0].detail).toContain('order:1972');
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed order ref and names both accepted forms', async () => {
+    const result = await run(activationArgs({
+      mappings: [mapping('M-001', [3], ['P-001']), orderMapping('M-002', ['order:abc'], ['P-002'])],
+    }));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'activation_audit_invalid',
+      problems: [expect.objectContaining({ itemId: 'M-002', code: 'invalid_session_turn_ref' })],
+    });
+    expect(result.problems[0].detail).toContain('order:<id>');
+  });
+});

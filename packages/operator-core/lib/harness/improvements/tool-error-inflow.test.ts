@@ -5,7 +5,8 @@
  * hermetic tick proving the cap is applied where rows are minted.
  *
  *   R-1  transient failures are COUNTED, not filed, unless sustained; one row per tool.
- *   R-2  caller failures key by tool + field (+ code), whatever the value/ids.
+ *   R-2  caller failures key ONCE per tool (D-010); a per-argument counter names
+ *        which fields agents get wrong, whatever the value/ids.
  *   R-3  structural failures key without a message fingerprint; a tool mints at
  *        most N new rows a day (capped signals are deferred, never dropped).
  */
@@ -75,27 +76,28 @@ describe('R-3: structural failures that differ only in ids/paths are ONE row', (
   });
 });
 
-describe('R-2: caller failures key by tool + field', () => {
-  it('different values / indices under the same field share one usability item', () => {
+describe('R-2 (D-010): caller failures are ONE usability item per tool, with a per-argument counter', () => {
+  it('different values / indices under the same field share one item and one counter entry', () => {
     const failures = [
       ...Array.from({ length: 6 }, (_, i) => ({ code: 'invalid_input', message: `invalid_input: invalid_args: items.${i}.status: Invalid option: expected one of "todo"|"done", received "x${i}"` })),
       ...Array.from({ length: 6 }, (_, i) => ({ code: 'invalid_input', message: `invalid_args: items.${i + 10}.status: Required (call ${i})` })),
     ];
     const signals = toolErrorSignalsFromRows(rowsFrom('plans:set-status', failures, 30));
-    expect(signals.map((s) => s.key)).toEqual(['plans:set-status:caller:invalid_args:items.n.status']);
+    expect(signals.map((s) => s.key)).toEqual(['plans:set-status:caller']);
     expect(signals[0].kind).toBe('change');
+    expect(signals[0].payloadExtra?.callerArguments).toMatchObject({ total: 12, counts: { 'items.n.status': 12 } });
   });
 
-  it('a different field is a different usability item', () => {
+  it('a different field is NOT a different item: the one item counts each argument agents get wrong', () => {
     const failures = [
       ...Array.from({ length: 10 }, () => ({ code: 'invalid_input', message: 'invalid_input: invalid_args: Unrecognized key: "request_key"' })),
-      ...Array.from({ length: 10 }, () => ({ code: 'invalid_input', message: 'invalid_input: invalid_args: Unrecognized key: "summary"' })),
+      ...Array.from({ length: 4 }, () => ({ code: 'invalid_input', message: 'invalid_input: invalid_args: Unrecognized key: "summary"' })),
     ];
-    const keys = toolErrorSignalsFromRows(rowsFrom('coord:send', failures, 50)).map((s) => s.key).sort();
-    expect(keys).toEqual([
-      'coord:send:caller:invalid_args:request_key',
-      'coord:send:caller:invalid_args:summary',
-    ]);
+    const signals = toolErrorSignalsFromRows(rowsFrom('coord:send', failures, 50));
+    expect(signals.map((s) => s.key)).toEqual(['coord:send:caller']);
+    expect(signals[0].payloadExtra?.callerArguments).toMatchObject({ total: 14, counts: { request_key: 10, summary: 4 } });
+    // Most-wrong argument first, each with its count.
+    expect(signals[0].body).toContain('Arguments agents get wrong (failures in the window): request_key ×10, summary ×4.');
   });
 });
 

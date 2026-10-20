@@ -85,6 +85,7 @@ import {
   planComposedProofShadow,
   planNewRedEjectionShadow,
   type ComposedProofShadow,
+  type NewRedEjectionShadowRecord,
   type RadiusQuery,
   type RatchetShadowHealth,
 } from "@papercusp/operator-core/lib/release/ratchet-shadow";
@@ -7603,6 +7604,63 @@ export async function shadowComposedProofAtRepairHead(input: {
     radius,
     nowMs: input.nowMs,
   });
+}
+
+/**
+ * green-main-ratchet-convergence-2026-10-17 #D-025: plan the P-007 new-red ejection in SHADOW
+ * beside a red verdict. Reads the commits since the green pin (base..candidateSha, oldest first,
+ * capped at `maxCommits`) and attributes each blocking failure to the commit whose radius selects
+ * it. The record is only stored in gate_health; no decision reads it. Never throws: an unreadable
+ * or over-long range is recorded as `skipped` with the reason.
+ */
+export async function shadowNewRedEjectionAtCandidate(input: {
+  root: string;
+  /** The resolved candidate sha; null/undefined when it could not be resolved. */
+  candidateSha: string | null | undefined;
+  /** What the record names as the candidate (the sha, or the run's label when unresolved). */
+  candidateLabel: string;
+  base: string | null;
+  newFailures: readonly string[];
+  radius: RadiusQuery;
+  maxCommits?: number;
+  maxQueries?: number;
+  budgetMs?: number;
+  log?: (line: string) => void;
+}): Promise<NewRedEjectionShadowRecord> {
+  const maxCommits = input.maxCommits ?? RATCHET_SHADOW_MAX_COMMITS;
+  let commits: ReturnType<typeof parseCommitPathLog> | null = null;
+  let overCap: number | null = null;
+  if (input.candidateSha && input.base && input.newFailures.length) {
+    try {
+      const count = Number(await git(input.root, ["rev-list", "--count", `${input.base}..${input.candidateSha}`]));
+      if (Number.isSafeInteger(count) && count <= maxCommits) {
+        commits = parseCommitPathLog(
+          await git(input.root, [
+            "log", "--reverse", "--no-merges", "--format=%x1e%H", "--name-only", `${input.base}..${input.candidateSha}`,
+          ]),
+        );
+      } else {
+        overCap = Number.isSafeInteger(count) ? count : null;
+        input.log?.(`RATCHET_SHADOW new-red-ejection: ${count} commits since the green pin (cap ${maxCommits})`);
+      }
+    } catch (e) {
+      input.log?.(`RATCHET_SHADOW new-red-ejection: commit range unreadable: ${e instanceof Error ? e.message : String(e)}`);
+      commits = null;
+    }
+  }
+  const record = await planNewRedEjectionShadow({
+    candidate: input.candidateLabel,
+    base: input.base,
+    newFailures: input.newFailures,
+    commits,
+    radius: input.radius,
+    maxQueries: input.maxQueries ?? RATCHET_SHADOW_MAX_QUERIES,
+    budgetMs: input.budgetMs ?? RATCHET_SHADOW_BUDGET_MS,
+    maxCommits,
+  });
+  return overCap !== null && record.status === "skipped"
+    ? { ...record, commitCount: overCap, reason: `commit range too long (${overCap} > ${maxCommits})` }
+    : record;
 }
 
 /** Is this `failingTests` entry something the tip rescue can re-run on its own?
@@ -22919,19 +22977,6 @@ export function realCheckpointDeps(
             .map(repoPathOf);
           const candidateSha = resolveCandidateSha(treeDir);
           const base = await revParse(cfg.integrationRoot, cfg.releaseRef).catch(() => null);
-          let commits: ReturnType<typeof parseCommitPathLog> | null = null;
-          if (candidateSha && base && newFailures.length) {
-            const count = Number(await git(cfg.integrationRoot, ["rev-list", "--count", `${base}..${candidateSha}`]));
-            commits =
-              Number.isSafeInteger(count) && count <= RATCHET_SHADOW_MAX_COMMITS
-                ? parseCommitPathLog(
-                    await git(cfg.integrationRoot, [
-                      "log", "--reverse", "--no-merges", "--format=%x1e%H", "--name-only", `${base}..${candidateSha}`,
-                    ]),
-                  )
-                : null;
-            if (commits === null) log(`RATCHET_SHADOW new-red-ejection: ${count} commits since the green pin (cap ${RATCHET_SHADOW_MAX_COMMITS})`);
-          }
           const radius: RadiusQuery = async (paths) => {
             const probe = await exec(
               process.execPath,
@@ -22943,15 +22988,14 @@ export function realCheckpointDeps(
             if (!r || (r.widenedTasks ?? 0) > 0 || r.coverageComplete === false) return null;
             return new Set(r.files.map(repoPathOf));
           };
-          const record = await planNewRedEjectionShadow({
-            candidate: candidateSha ?? execution?.candidate ?? "unknown",
+          const record = await shadowNewRedEjectionAtCandidate({
+            root: cfg.integrationRoot,
+            candidateSha,
+            candidateLabel: candidateSha ?? execution?.candidate ?? "unknown",
             base,
             newFailures,
-            commits,
             radius,
-            maxQueries: RATCHET_SHADOW_MAX_QUERIES,
-            budgetMs: RATCHET_SHADOW_BUDGET_MS,
-            maxCommits: RATCHET_SHADOW_MAX_COMMITS,
+            log,
           });
           ratchetShadow = { newRedEjection: record };
           log(

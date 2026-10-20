@@ -423,24 +423,56 @@ describe('native bootstrap admission and lifecycle', () => {
         expect(call, `real ${phase} section boundary`).not.toBeNull();
         return call![0];
       };
+      // The clock measures controller deadlines, not shell scheduling latency.
+      // Hold the real shell at each boundary until its marker has been consumed,
+      // then advance 2s: total elapsed time exceeds any one 3s phase budget.
+      const release = (phase: string) => join(dir, phase + '.release');
+      const waitForRelease = (phase: string) =>
+        `while [ ! -f ${JSON.stringify(release(phase))} ]; do sleep 0.01; done`;
       const program = ['set -eu', shell.slice(start, end),
         'printf "OPTIONAL_DISABLED=%s\\n" "${VH_DISABLED:-missing}"',
-        'sleep 2', section('boot'), 'sleep 2', section('assert'), 'sleep 2'].join('\n');
+        waitForRelease('prepare'), section('boot'), waitForRelease('boot'),
+        section('assert'), waitForRelease('assert')].join('\n');
+      let outcome: Promise<number | null | Error> | undefined;
+      let result: number | null | Error | undefined;
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       try {
-        await expect(runNativeVerifier('bash', ['-c', program], {
+        outcome = runNativeVerifier('bash', ['-c', program], {
           signal: controller.signal, timeoutMs: 15_000, killGraceMs: 25, logFd: fd,
           phaseBudgetsMs: { prepare: 3000, boot: 3000, assert: 3000 },
           env: { ...process.env, REPO_DIR: mode === 'missing' ? dir : repo,
             VH_DISABLE: mode === 'disabled' ? '1' : '0', VH_FAIL_OPEN: '1',
             VH_TSX: '/bin/false', VERIFY_TAURI_EVIDENCE_ROOT: join(dir, 'evidence'),
             VERIFY_TAURI_SOURCE_REF: '' },
-        })).resolves.toBe(0);
+        }).then(code => (result = code), error => (result = error as Error));
+        const waitForOutput = async (text: string) => {
+          const started = Date.now();
+          while (!readFileSync(log, 'utf8').includes(text)) {
+            if (result instanceof Error) throw result;
+            if (Date.now() - started >= 8000)
+              throw new Error('Verifier boundary missing: ' + text + '\n' + readFileSync(log, 'utf8'));
+            await delay(10);
+          }
+        };
+        await waitForOutput('OPTIONAL_DISABLED=');
+        for (const phase of ['prepare', 'boot', 'assert']) {
+          await waitForOutput(`VH_BEGIN phase=${phase}`);
+          await vi.advanceTimersByTimeAsync(2000);
+          writeFileSync(release(phase), 'release');
+        }
+        expect(await outcome, readFileSync(log, 'utf8')).toBe(0);
         const output = readFileSync(log, 'utf8');
         for (const phase of ['prepare', 'boot', 'assert']) expect(output).toContain(`VH_BEGIN phase=${phase}`);
         expect(output).toContain(`OPTIONAL_DISABLED=${mode === 'missing' ? 'missing' : '1'}`);
         expect(output).not.toMatch(/^HARNESS_RESULT(?:\s|$)/m);
         if (mode === 'retention-failed') expect(output).toContain('reason=retention-command-failed');
-      } finally { controller.abort(); closeSync(fd); rmSync(dir, { recursive: true, force: true }); }
+      } finally {
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(25);
+        await outcome;
+        vi.useRealTimers();
+        closeSync(fd); rmSync(dir, { recursive: true, force: true });
+      }
     }, 20_000);
 });
 
