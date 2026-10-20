@@ -2764,8 +2764,16 @@ export async function runCanary(
 export const DEPENDENCY_SNAPSHOT_SCHEMA = 'graph-dependency-snapshot-v1';
 /** The selector's own ceiling — DEFAULT_MAX_AGE_MS in scripts/lib/graph-dependency-suggestions.mjs. */
 export const DEPENDENCY_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60_000;
-/** Refresh before the ceiling, so an unchanged index never lets the file age out between hourly ticks. */
-export const DEPENDENCY_SNAPSHOT_REFRESH_AGE_MS = 20 * 60 * 60_000;
+/**
+ * Refresh on every hourly tick. The snapshot is no longer only the test selector's input: native
+ * code-intelligence answers (graph:query callers, lsp:query definitions) and hook-path pushes are
+ * served from it only when their source hashes still match disk (P-040,
+ * native-code-intelligence-ecosystem-and-dream-2026-10-09). At the former 20h refresh age the file
+ * was ~10h old on average, so on this continuously edited tree most answers failed corroboration and
+ * fell back to the compiler (measured 2026-10-20: 627 min old; mismatches on 6 of 10 probe symbols
+ * vanished on a fresh snapshot). The first-party producer takes ~3.5 min for ~82k edges.
+ */
+export const DEPENDENCY_SNAPSHOT_REFRESH_AGE_MS = 45 * 60_000;
 /** The direct-mode producer took ~2 min for 59,067 edge rows (2026-10-06); bounded well inside the routine budget. */
 export const DEPENDENCY_SNAPSHOT_PRODUCER_TIMEOUT_MS = 10 * 60_000;
 

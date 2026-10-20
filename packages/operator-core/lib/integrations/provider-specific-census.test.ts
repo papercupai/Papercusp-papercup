@@ -125,14 +125,15 @@ export const CENSUS: readonly CensusEntry[] = [
   // Slack has no entries: cupboard-distributable-integrations-2026-10-10 P-008, P-020 and P-021
   // moved every Slack module into the slack and bug-triage packages (D-019, D-024..D-026).
 
-  // Google Workspace leftovers (Gmail and Calendar already ship as packages).
-  p('packages/operator-core/lib/external-triggers/google-workspace.ts', 'google-workspace'),
+  // Google Workspace left app code in P-004: the gmail, google-calendar and google-contacts
+  // packages share the `google` credential group, and legacy credentials are adopted by the
+  // provider-neutral host step (D-036/D-037).
 
   // Discord left app code in P-005: the libs/papercusp/plugins/discord package (D-034/D-035).
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 1;
+export const CENSUS_HIGH_WATERMARK = 0;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.

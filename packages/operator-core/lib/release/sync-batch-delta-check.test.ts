@@ -258,11 +258,21 @@ describe('parseAffectedProbe and evaluateRadius — projected-time admission (D-
     expect(verdict).toEqual({ run: true, workspaces: Array.from({ length: 9 }, (_, i) => `ws-${i}`) });
   });
 
-  it('refuses a radius whose projection exceeds maxProjectedSec, naming the heaviest task', () => {
+  it('admits the measured 1435s single-commit radius that the 25-min leg refused (D-034)', () => {
+    // Under the 25-min affected leg (admission 1350s) this commit was refused unjudged; single
+    // commits measured 1176-1750s, so most slots went unjudged. 0.9 x 45 min = 2430s admits it.
+    expect(DEFAULT_RADIUS_CAPS.maxProjectedSec).toBe(2430);
     const verdict = evaluateRadius({ probe: wideProbe(MEASURED_ETA), union, batchCount: 1 });
+    expect(verdict).toEqual({ run: true, workspaces: Array.from({ length: 9 }, (_, i) => `ws-${i}`) });
+  });
+
+  it('refuses a radius whose projection exceeds maxProjectedSec, naming the heaviest task', () => {
+    const over = DEFAULT_RADIUS_CAPS.maxProjectedSec + 1;
+    const overEta = MEASURED_ETA.replace('projectedSec=1435', `projectedSec=${over}`);
+    const verdict = evaluateRadius({ probe: wideProbe(overEta), union, batchCount: 1 });
     expect(verdict).toMatchObject({ run: false, reason: 'radius-too-wide' });
     if (!verdict.run) {
-      expect(verdict.detail).toContain('projected 1435s exceeds maxProjectedSec=1350s');
+      expect(verdict.detail).toContain(`projected ${over}s exceeds maxProjectedSec=2430s`);
       expect(verdict.detail).toContain('heaviest @papercusp/operator-core::test:lane-stateful 767s');
       expect(verdict.detail).toContain('40/40 tasks with history');
     }
@@ -1030,7 +1040,7 @@ describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
   const MIN = 60_000;
   const ADMISSION_MS = Date.parse('2000-01-01T00:00:00Z');
   const sha = (n: number) => n.toString(16).padStart(40, '0');
-  /** The credit (keep) window in minutes: the derived slot-credit deadline (D-031, 95 today).
+  /** The credit (keep) window in minutes: the derived slot-credit deadline (D-031, 135 today).
    *  Fixture ages "outside the window" are W + n, still younger than STALE_BACKLOG_MS. */
   const W = COVERAGE_JUDGE_DEADLINE_MS / MIN;
   /** Newest first, one commit per `ages` entry (minutes before NOW). */
@@ -1041,7 +1051,10 @@ describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
 
   it('leaves a backlog younger than STALE_BACKLOG_MS to the normal oldest-first walk', () => {
     expect(planStaleBacklogSkip(backlog([1, 10, 60, 119]), NOW)).toBeNull();
-    expect(STALE_BACKLOG_MS).toBe(120 * MIN);
+    // D-034: derived from the credit deadline (135 min with the 45-min affected leg) plus 5
+    // slot intervals, not a fixed 2 h that the deadline could outgrow. The literal is a tripwire.
+    expect(STALE_BACKLOG_MS).toBe(COVERAGE_JUDGE_DEADLINE_MS + 25 * MIN);
+    expect(STALE_BACKLOG_MS).toBe(160 * MIN);
     // The fixtures below need room between the keep window and the stale threshold.
     expect(W + 15).toBeLessThan(STALE_BACKLOG_MS / MIN);
   });

@@ -178,6 +178,22 @@ export async function upsertOwnedExternalTriggerSource(
   return rows[0];
 }
 
+/** Drop one datatype's routing from a source's destination policy (no-op when absent). */
+export async function removeExternalTriggerSourceDestination(
+  sql: postgres.Sql,
+  workspaceId: string,
+  sourceId: string,
+  datatype: string,
+): Promise<void> {
+  await sql`
+    UPDATE harness_shared.data_sources
+       SET destination_policy = destination_policy - ${datatype}::text,
+           updated_at = now()
+     WHERE workspace_id = ${workspaceId}
+       AND id = ${sourceId}::uuid
+       AND jsonb_exists(destination_policy, ${datatype}::text)`;
+}
+
 /** Read one source and its persisted local principal. */
 export async function getExternalTriggerSource(
   sql: postgres.Sql,

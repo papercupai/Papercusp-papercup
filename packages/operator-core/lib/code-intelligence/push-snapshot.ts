@@ -18,6 +18,11 @@ import { versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelSourceFile
 
 export const PUSH_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60_000;
 const REFRESH_MS = 60_000;
+/** Hook-path pushes verify at most this many files inside their tight per-turn budget. */
+export const PUSH_PROOF_MAX_SOURCES = 64;
+/** Read queries keep their 250 ms wall bound but may verify a widely used symbol's full proof;
+ * the producer already caps captured callers per symbol at 500 (P-040). */
+export const QUERY_PROOF_MAX_SOURCES = 512;
 export const safeSnapshotPath = (value: unknown): value is string => typeof value === 'string'
   && value.length > 0 && value.length <= 4096 && !value.startsWith('/')
   && !/[\\\r\n\0]/.test(value) && !value.split('/').some(part => part === '..' || part === '.');
@@ -178,8 +183,9 @@ export async function parsePushSnapshotStream(input: AsyncIterable<string>, now 
  * A large proof, changed forwarding module or unreadable source suppresses the answer.
  */
 export async function corroboratePushSources(root: string | undefined,
-  sources: readonly { path: string; sha256: string }[], signal: AbortSignal): Promise<boolean> {
-  if (!root || !sources.length || sources.length > 64 || signal.aborted) return false;
+  sources: readonly { path: string; sha256: string }[], signal: AbortSignal,
+  maxSources = PUSH_PROOF_MAX_SOURCES): Promise<boolean> {
+  if (!root || !sources.length || sources.length > maxSources || signal.aborted) return false;
   let cursor = 0;
   let valid = true;
   await Promise.all(Array.from({ length: Math.min(8, sources.length) }, async () => {
@@ -268,15 +274,23 @@ export async function queryPushSnapshot(query: {
     if (query.op === 'callers' && callers.length === 0) return null;
     const limit = Math.min(500, Math.max(1, query.limit ?? 100));
     const reported = query.op === 'definition' ? [symbol] : callers.slice(0, limit);
+    // P-040: a name-only definition that matched the declaration's OWN name rests on the
+    // declaration file alone — no caller edit or forwarding module can move it. Requiring
+    // every caller file to be unchanged refused those answers whenever any caller anywhere
+    // was edited, and always for symbols with more than 64 source files. Alias, cursor and
+    // callers answers keep the full forwarding + caller proof.
+    const declarationOnly = query.op === 'definition' && !cursorPath && symbol.name === query.name;
+    const proofInputs = declarationOnly ? [{ path: symbol.path, sha256: symbol.sha256 }]
+      : [...symbol.sources, { path: symbol.path, sha256: symbol.sha256 },
+        ...symbol.callers.map(site => ({ path: site.path, sha256: site.sha256 }))];
     const sourceMap = new Map<string, string>();
-    for (const source of [...symbol.sources, { path: symbol.path, sha256: symbol.sha256 },
-      ...symbol.callers.map(site => ({ path: site.path, sha256: site.sha256 }))]) {
+    for (const source of proofInputs) {
       if (sourceMap.has(source.path) && sourceMap.get(source.path) !== source.sha256) return null;
       sourceMap.set(source.path, source.sha256);
     }
     if (cursorPath && !sourceMap.has(cursorPath)) return null;
     const proof = [...sourceMap].map(([path, sha256]) => ({ path, sha256 }));
-    if (!await corroboratePushSources(root, proof, signal)) return null;
+    if (!await corroboratePushSources(root, proof, signal, QUERY_PROOF_MAX_SOURCES)) return null;
     const sources: CodeIntelSourceFile[] = proof.sort((a, b) => a.path.localeCompare(b.path)).map(source => ({
       path: source.path, contentHash: source.sha256, representation: 'full-source',
       language: /\.[cm]?jsx?$/.test(source.path) ? 'javascript' : /\.[cm]?tsx?$/.test(source.path) ? 'typescript' : 'json',
@@ -290,7 +304,9 @@ export async function queryPushSnapshot(query: {
     }));
     const limitations = [
       'Positive syntax-bound snapshot matches only; compiler binding, dynamic dispatch, shadowed/unresolved calls and current resolver configuration remain unmeasured.',
-      'Definition, forwarding and captured caller source hashes match current disk. Other source files and repository-wide completeness are unverified.',
+      declarationOnly
+        ? 'The declaration source hash matches current disk; forwarding modules and callers do not affect this answer and were not checked. Other source files and repository-wide completeness are unverified.'
+        : 'Definition, forwarding and captured caller source hashes match current disk. Other source files and repository-wide completeness are unverified.',
       'Caller sites are a lower bound; an empty snapshot never establishes absence. Runtime execution is unknown.',
     ];
     const coverage = { basis: 'syntax' as const, sourceCompleteness: 'unverified' as const, limitations };

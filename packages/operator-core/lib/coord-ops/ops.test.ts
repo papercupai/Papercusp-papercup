@@ -28,6 +28,25 @@ test('registry — all expected ops registered', () => {
   }
 });
 
+test('durable coordination effects reuse thread/member identities and isolate new runs', async () => {
+  const { caps, calls } = makeFakeCaps();
+  const thread = requireCoordOp('coord:thread-open');
+  const spawn = requireCoordOp('orchestrator:spawn-roles');
+  const ctx = { ...makeCtx(caps), effectId: 'coord-program:run-1:step' };
+  await thread.run(thread.argsSchema.parse({ title: 'A decision' }), ctx);
+  await thread.run(thread.argsSchema.parse({ title: 'A decision' }), ctx);
+  assert.equal(calls.openThread[0].id, calls.openThread[1].id);
+  assert.ok(calls.openThread[0].id?.startsWith('conv-'));
+  await thread.run(thread.argsSchema.parse({ title: 'A decision' }), { ...ctx, effectId: 'coord-program:run-2:step' });
+  assert.notEqual(calls.openThread[0].id, calls.openThread[2].id);
+  const args = spawn.argsSchema.parse({ conversation_id: 'c', roles: [{ role: 'voter', count: 2 }] });
+  await spawn.run(args, ctx);
+  await spawn.run(args, ctx);
+  const first = calls.spawnRoles[0].map((s) => s.idempotencyKey);
+  assert.deepEqual(calls.spawnRoles[1].map((s) => s.idempotencyKey), first);
+  assert.equal(new Set(first).size, 2);
+});
+
 test('coord:thread-open opens a thread + returns ids', async () => {
   const { caps, calls } = makeFakeCaps();
   const op = requireCoordOp('coord:thread-open');

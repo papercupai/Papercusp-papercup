@@ -859,6 +859,50 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked', reason: 'first-turn-rejected', evidence: text });
     });
 
+  describe('a reviewer whose turn ended on a transient provider error (WI-6554700010018125)', () => {
+    const midResponse = 'API Error: Server error mid-response. The response above may be incomplete.';
+    // The measured record shape from the stranded 2026-10-20 reviewer.
+    const errored = () => analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'Reading the preview.' } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'server_error',
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: midResponse }] } }),
+    ].join('\n'));
+
+    it('reports it as blocked at launch instead of a first reply', async () => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()), analyzeTranscript: vi.fn(errored) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({
+        state: 'blocked', reason: 'provider-error', evidence: midResponse, taskId: 'task-1', ownerId: 'judge-1',
+      });
+      expect(d.stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-1' });
+    });
+
+    it('replaces a retained reviewer parked after the error even though it still has a wake source', async () => {
+      const launch = vi.fn().mockResolvedValueOnce(retainedLaunch(true))
+        .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2' }] } } });
+      let reads = 0;
+      const readTaskState = vi.fn(async () => reads++ === 0 ? 'running' as const : 'ended_unobserved' as const);
+      const stopFailedLaunch = vi.fn(async () => 'stopped task task-1');
+      const d = deps({ launch, readTaskState, stopFailedLaunch, analyzeTranscript: vi.fn(errored) });
+      const result = await launchFreshAmendmentReviewer(input, d as never);
+
+      expect(d.hasReviewerAnswer).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42', authorId: 'judge-1' });
+      expect(stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-1' });
+      expect(launch).toHaveBeenCalledTimes(2);
+      const firstKey = (launch.mock.calls[0]![0] as { idempotencyKey: string }).idempotencyKey;
+      expect((launch.mock.calls[1]![0] as { idempotencyKey: string }).idempotencyKey).toBe(`${firstKey}:after:task-1`);
+      expect(result).toMatchObject({ state: 'launched', taskId: 'task-2', relaunchedAfter: ['task-1'] });
+    });
+
+    it('keeps a retained reviewer that answered after the error', async () => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch(true)), analyzeTranscript: vi.fn(errored),
+        hasReviewerAnswer: vi.fn(async () => true) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', taskId: 'task-1', firstReply: 'observed' });
+      expect(d.launch).toHaveBeenCalledTimes(1);
+      expect(d.stopFailedLaunch).not.toHaveBeenCalled();
+    });
+  });
+
   it('keeps an unreadable transcript as uncertainty', async () => {
     const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()), analyzeTranscript: vi.fn(() => null) });
     expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'unreadable' });

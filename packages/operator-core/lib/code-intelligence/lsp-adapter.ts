@@ -816,13 +816,31 @@ export function evictIfLanguageServiceDead(
  * `--max-old-space-size=<N>` on the tsserver fork (`getExecArgv`). Passing null
  * omits the key entirely, so an explicit opt-out really does restore node's
  * default rather than pinning it to some other number.
+ *
+ * `useSyntaxServer: 'never'` (WI-6554700010018131). With the wrapper's default
+ * ('auto'), typescript-language-server 6.0.0 runs a second, syntax-only
+ * tsserver and routes `syntaxAllowedCommands` (Navto, Definition, References,
+ * Implementation, Quickinfo, Rename, ...) to it while the semantic project is
+ * still loading. The syntax server knows only the OPEN files, so it answers
+ * fast and wrong: `workspace/symbol` with a directory anchor returned an empty
+ * list for every symbol not defined in the one opened file. That held for about
+ * 50s on packages/operator-core and then filled in (measured 2026-10-20: 0, 0,
+ * 0, then 6 sites at +100s, same anchor, same client). It is also the mechanism
+ * behind the "definition returns the import site for ~4.7s after didOpen" false
+ * positive the readiness machinery below works around. A slow correct answer
+ * beats a fast partial one that looks complete, so every request waits on the
+ * semantic server instead.
  */
 export function typescriptInitializationOptions(
   tsserverPath: string,
   maxTsServerMemoryMb?: number | null,
   rootPath?: string,
   semanticPlugin?: SemanticCompletionPluginDeclaration,
-): { tsserver: { path: string }; maxTsServerMemory?: number; plugins?: { name: string; location: string }[] } {
+): {
+  tsserver: { path: string; useSyntaxServer: 'never' };
+  maxTsServerMemory?: number;
+  plugins?: { name: string; location: string }[];
+} {
   const setting = process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB?.trim();
   const override = setting ? Number(setting) : undefined;
   const memoryMb = maxTsServerMemoryMb === undefined
@@ -832,7 +850,7 @@ export function typescriptInitializationOptions(
     throw new Error('TypeScript server memory must be a positive integer in MB');
   }
   return {
-    tsserver: { path: tsserverPath },
+    tsserver: { path: tsserverPath, useSyntaxServer: 'never' },
     ...(memoryMb ? { maxTsServerMemory: memoryMb } : {}),
     ...(semanticPlugin ? { plugins: semanticCompletionPlugins(semanticPlugin) } : {}),
   };

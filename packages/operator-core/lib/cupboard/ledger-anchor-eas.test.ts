@@ -63,6 +63,17 @@ describe('ledger anchor EAS backend against a chain', () => {
     await chain.close();
   });
 
+  it('reconciles a prepared transaction after a lost caller result without another attestation', async () => {
+    const cfg = { chain: baseSepolia, transport: http(url), pollingIntervalMs: 10 };
+    const backend = easAnchorBackend({ ...cfg, privateKey: generatePrivateKey() });
+    const prepared = await backend.prepare!(PUB);
+    expect(chain.calls.filter((c) => c.fn === 'attest')).toHaveLength(0);
+    const first = await backend.publish(PUB, prepared);
+    expect(await backend.publish(PUB, prepared)).toEqual(first);
+    expect(chain.calls.filter((c) => c.fn === 'attest')).toHaveLength(1);
+    await expect(backend.publish({ ...PUB, treeSize: PUB.treeSize + 1 }, prepared)).rejects.toThrow(/identity mismatch/);
+  });
+
   it('registers the schema once, attests, and the public reader recovers the anchored root', async () => {
     const cfg = { chain: baseSepolia, transport: http(url), pollingIntervalMs: 10 };
     const backend = easAnchorBackend({ ...cfg, privateKey: generatePrivateKey() });

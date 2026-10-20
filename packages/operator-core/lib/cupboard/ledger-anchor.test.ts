@@ -145,6 +145,47 @@ describe('ledger anchor: inclusion against an anchored root (R-29)', () => {
 });
 
 describe('ledger anchor: cadence, idempotence and append-only consistency', () => {
+  it('recovers a saved publication receipt after losing the final anchor write', async () => {
+    const { store, chain, tick } = await setup();
+    const write = vi.spyOn(store, 'recordAnchor').mockRejectedValueOnce(new Error('host stopped before anchor record'));
+    await expect(tick(T0 + 60)).rejects.toThrow(/host stopped/);
+    expect(chain.records.size).toBe(1);
+    write.mockRestore();
+    await expect(tick(T0 + 120)).resolves.toMatchObject({ status: 'anchored' });
+    expect(chain.records.size).toBe(1);
+  });
+
+  it('halts an uncertain non-replayable publication instead of submitting again', async () => {
+    const { store, chain, l } = await setup();
+    const real = chain.backend.publish.bind(chain.backend);
+    const publish = vi.spyOn(chain.backend, 'publish').mockImplementationOnce(async (...args) => {
+      await real(...args); throw new Error('receipt lost');
+    });
+    const tick = () => runAnchorTick({ workspaceId: WS, logId: LOG_ID, nowSeconds: T0 + 60, store, feed: l.feed, backend: chain.backend });
+    await expect(tick()).rejects.toThrow(/receipt lost/);
+    await expect(tick()).rejects.toThrow(/needs reconciliation/);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(chain.records.size).toBe(1);
+  });
+
+  it('reuses the prepared transaction and pinned root after interrupted receipt persistence', async () => {
+    const { store, chain, l } = await setup();
+    chain.backend.prepare = vi.fn(async () => ({ rawTransaction: 'signed', txHash: 'stable-hash',
+      chainId: 84532, attester: ATTESTER, nonce: 1 }));
+    const physical = chain.backend.publish.bind(chain.backend);
+    let receipt: Awaited<ReturnType<typeof physical>> | undefined;
+    const publish = vi.spyOn(chain.backend, 'publish').mockImplementation(async (p) => receipt ??= await physical(p));
+    const save = vi.spyOn(store, 'recordPublicationReceipt').mockRejectedValueOnce(new Error('process lost'));
+    const tick = () => runAnchorTick({ workspaceId: WS, logId: LOG_ID, nowSeconds: T0 + 60, store, feed: l.feed, backend: chain.backend });
+    await expect(tick()).rejects.toThrow(/process lost/);
+    l.add('money-journal', [{ amountCents: 5 }]);
+    save.mockRestore();
+    await expect(tick()).resolves.toMatchObject({ status: 'anchored', anchor: { treeSize: 3 } });
+    expect(chain.backend.prepare).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[1]).toEqual(publish.mock.calls[0]);
+    expect(chain.records.size).toBe(1);
+  });
+
   it('a repeated tick inside the same hour publishes nothing', async () => {
     const { chain, tick } = await setup();
     await tick(T0 + 60);

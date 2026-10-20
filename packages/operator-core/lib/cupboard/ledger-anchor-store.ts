@@ -12,7 +12,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import type { AnchorLeaf, AnchorLinkFeed, LedgerAnchorStore, StoredAnchor, StoredAnchorLeaf } from './ledger-anchor';
+import type { AnchorLeaf, AnchorLinkFeed, AnchorPublicationAttempt, LedgerAnchorStore, StoredAnchor, StoredAnchorLeaf } from './ledger-anchor';
 
 /** The log id published with every anchor of a workspace's log. */
 export function ledgerAnchorLogId(workspaceId: string): string {
@@ -59,6 +59,39 @@ interface AnchorRow {
 export function pgLedgerAnchorStore(sql?: Sql): LedgerAnchorStore {
   const db = (): Sql => sql ?? getOrgPg().sql;
   return {
+    async pendingPublication(workspaceId) {
+      const [row] = await db()<Array<{ attempt: AnchorPublicationAttempt }>>`
+        SELECT p.attempt FROM harness_shared.ledger_anchor_publications p
+         WHERE p.workspace_id = ${workspaceId} AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.ledger_anchors a
+            WHERE a.workspace_id = p.workspace_id AND a.window_end = p.window_end)
+         ORDER BY p.window_end LIMIT 1
+      `;
+      return row?.attempt ?? null;
+    },
+    async beginPublication(workspaceId, attempt) {
+      const inserted = await db()`
+        INSERT INTO harness_shared.ledger_anchor_publications (workspace_id, window_end, attempt)
+        VALUES (${workspaceId}, ${attempt.publication.windowEnd}, ${db().json(attempt as never)})
+        ON CONFLICT (workspace_id, window_end) DO NOTHING RETURNING window_end
+      `;
+      const [row] = await db()<Array<{ attempt: AnchorPublicationAttempt }>>`
+        SELECT attempt FROM harness_shared.ledger_anchor_publications
+         WHERE workspace_id = ${workspaceId} AND window_end = ${attempt.publication.windowEnd}
+      `;
+      if (!row) throw new Error('ledger anchor publication intent readback failed');
+      return { attempt: row.attempt, fresh: inserted.length > 0 };
+    },
+    async recordPublicationReceipt(workspaceId, windowEnd, receipt) {
+      const rows = await db()`
+        UPDATE harness_shared.ledger_anchor_publications
+           SET attempt = jsonb_set(attempt, '{receipt}', ${db().json(receipt as never)})
+         WHERE workspace_id = ${workspaceId} AND window_end = ${windowEnd}
+           AND (attempt->'receipt' IS NULL OR attempt->'receipt' = ${db().json(receipt as never)})
+        RETURNING window_end
+      `;
+      if (!rows.length) throw new Error('ledger anchor publication receipt missing or conflicting');
+    },
     async leaves(workspaceId) {
       const rows = (await db().unsafe(
         `SELECT leaf_index, stream_id, seq, entry_hash, leaf_hash

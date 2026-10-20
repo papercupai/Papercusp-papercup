@@ -1538,8 +1538,9 @@ describe('constant budget B + slot audit (P-011)', () => {
     for (const req of ['identity', 'sessionMode', 'planItems', 'asks', 'tail', 'continuation', 'brief']) {
       expect(slots.has(req)).toBe(true);
     }
-    // The shed ladder sheds the re-injectable brief first, the blocking asks last.
-    expect([...CARRY_DOC_SHED_LADDER]).toEqual(['brief', 'tail', 'planState', 'asks']);
+    // The shed ladder sheds the fully re-derivable code working set first, then the
+    // re-injectable brief, and the blocking asks last.
+    expect([...CARRY_DOC_SHED_LADDER]).toEqual(['codeWorkingSet', 'brief', 'tail', 'planState', 'asks']);
   });
 });
 

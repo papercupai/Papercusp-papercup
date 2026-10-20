@@ -89,6 +89,47 @@ describe('Claude resume tool-reference recovery', () => {
     });
   });
 
+  describe('transient provider failure ending the turn (WI-6554700010018125)', () => {
+    const midResponse = 'API Error: Server error mid-response. The response above may be incomplete.';
+    // The measured record: a BAR-amendment reviewer's turn, 2026-10-20T13:24:21Z.
+    const serverError = JSON.stringify({ ...JSON.parse(apiError(midResponse, 500)), error: 'server_error' });
+    const kickoff = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment.' } });
+
+    it('reports the measured server_error record after real work as a trailing provider error', () => {
+      expect(analyzeClaudeResumeTranscript([kickoff, assistant('Reading the preview.'), serverError].join('\n'))).toMatchObject({
+        trailingProviderErrorTurns: 1,
+        lastProviderErrorEvidence: midResponse,
+        assistantTurnsSinceLastPrompt: 2,
+        trailingAccountWallTurns: 0,
+        trailingContextLimitTurns: 0,
+        trailingMissingToolReferenceTurns: 0,
+      });
+    });
+
+    it.each(['API Error: 529 Overloaded', 'API Error: Internal server error'])('recognizes the 5xx wording %s', (text) => {
+      expect(analyzeClaudeResumeTranscript([kickoff, apiError(text, 500)].join('\n')))
+        .toMatchObject({ trailingProviderErrorTurns: 1, lastProviderErrorEvidence: text });
+    });
+
+    it('does not count prose that quotes the error, or a turn after it', () => {
+      for (const lines of [[kickoff, assistant(midResponse)], [kickoff, serverError, assistant('Recovered; reviewing now.')]]) {
+        expect(analyzeClaudeResumeTranscript(lines.join('\n')))
+          .toMatchObject({ trailingProviderErrorTurns: 0, lastProviderErrorEvidence: null });
+      }
+    });
+
+    it('a new prompt (a wake) clears it', () => {
+      expect(analyzeClaudeResumeTranscript([kickoff, serverError, kickoff].join('\n')))
+        .toMatchObject({ trailingProviderErrorTurns: 0, lastProviderErrorEvidence: null, assistantTurnsSinceLastPrompt: 0 });
+    });
+
+    it('stays disjoint from the account-wall, context-limit and missing-tool classes', () => {
+      for (const rejected of [apiError('Credit balance is too low'), apiError('Prompt is too long'), apiError(missing('mcp__papercusp__x'))]) {
+        expect(analyzeClaudeResumeTranscript([kickoff, rejected].join('\n'))).toMatchObject({ trailingProviderErrorTurns: 0 });
+      }
+    });
+  });
+
   it('keeps copied billing errors and ordinary model discussion out of current account-wall evidence', () => {
     const kickoff = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Answer the current consult.' } });
     for (const recovery of [kickoff, assistant('Credit balance is too low')]) {

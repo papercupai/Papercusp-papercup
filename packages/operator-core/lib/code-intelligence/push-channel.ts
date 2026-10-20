@@ -12,6 +12,12 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushSnapshot } from './push-snapshot';
+import { FACT_FILE_ANCHOR_PREFIX, foldCodeNotesForPaths, isCodeNoteKey, isFactFileAnchor, type AgentFact } from '../agent-facts/store';
+import type { FactDependencyStaleness } from '../agent-tools/facts/dependency-staleness';
+import {
+  deriveCodeWorkingSet, readForeignWorkingSets, readSessionEpoch, readWorkingSetSignals,
+  type EpochRow, type ForeignWorkingSet, type WorkingSetQuery, type WorkingSetReason, type WorkingSetSignals,
+} from './working-set';
 
 export const CODE_INTEL_PUSH_TURN_CHARS = 1_500;
 export const CODE_INTEL_PUSH_WALL_MS = 250;
@@ -19,6 +25,7 @@ export const PUSH_LEG_FLAGS = {
   grep: FLAGS.CODE_INTEL_PUSH_GREP, 'first-touch': FLAGS.CODE_INTEL_PUSH_FIRST_TOUCH,
   interface: FLAGS.CODE_INTEL_PUSH_INTERFACE, incident: FLAGS.CODE_INTEL_PUSH_INCIDENT,
   completion: FLAGS.CODE_INTEL_PUSH_COMPLETION, intent: FLAGS.CODE_INTEL_PUSH_INTENT,
+  resume: FLAGS.CODE_INTEL_PUSH_RESUME, notes: FLAGS.CODE_INTEL_PUSH_NOTES,
 } as const;
 export type PushLegId = keyof typeof PUSH_LEG_FLAGS;
 export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; incidentResult?: unknown; interfaceEdit?: unknown; interfaceEdits?: unknown[] }
@@ -29,6 +36,10 @@ export interface PushInput {
   firstTouchContext?: FirstTouchContext;
   /** Optional bounded ledger attribution for the incident leg. */
   incidentAttribution?: IncidentAttribution;
+  /** Carried working-set files, read before the resume leg runs. */
+  resumeContext?: ResumeContext;
+  /** Code notes anchored to first-touched files, read before the notes leg runs. */
+  notesContext?: NotesContext;
   calls: readonly PushCall[];
 }
 export interface FirstTouchContext {
@@ -159,9 +170,11 @@ export async function readPushSourceLinks(input: PushInput, paths: string[], sql
 }
 
 /** P-036: reverse static imports are a lower bound; stop instead of running a compiler. */
-export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) => {
-  const facts: PushFact[] = [];
-  for (const path of firstTouchPaths(input)) {
+/** The first-touch brief for ONE path, computed from the CURRENT snapshot. Shared
+ * with the resume leg so a carried file gets exactly the facts a fresh touch would
+ * (code-intel-epoch-carry-2026-10-20 D-001: recompute, never replay). */
+export function firstTouchFact(input: PushInput, snapshot: PushSnapshot, path: string): PushFact | null {
+  {
     const consumers = snapshot.importers.get(path) ?? [];
     const symbols = [...new Map([...(snapshot.symbols?.values() ?? [])].flat().filter(symbol => symbol.path === path)
       .map(symbol => [symbol.id, symbol])).values()];
@@ -176,7 +189,7 @@ export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) => {
         if (seen.size >= 500) break;
       }
     }
-    if (!consumers.length && !symbols.length) continue;
+    if (!consumers.length && !symbols.length) return null;
     const context = input.firstTouchContext;
     const sourceLinks = context?.byPath?.[path] ?? context;
     const locks = context?.locks?.filter(lock => lock.owner !== input.owner && lock.coordinationDomain === input.root && seen.has(lock.path));
@@ -184,17 +197,202 @@ export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) => {
     const exports = symbols.slice(0, 3).map(symbol => `${symbol.name}:${symbol.line} >=${symbol.callers.length} static calls`
       + (symbol.callers.some(site => site.workspace) ? ` [${[...new Set(symbol.callers.map(site => site.workspace ?? 'workspace unknown'))].slice(0, 2).join(', ')}]` : ' [workspace unknown]'));
     const links = (values: readonly string[] | null | undefined) => values?.length ? values.slice(0, 2).join(', ') : 'unknown';
-    facts.push({ leg: 'first-touch', subject: path, citedPaths: [path, ...consumers.slice(0, 2), ...tests.slice(0, 2)], suggestedCall,
+    return { leg: 'first-touch', subject: path, citedPaths: [path, ...consumers.slice(0, 2), ...tests.slice(0, 2)], suggestedCall,
       text: `${path}: ${consumers.length} static file importers in this snapshot; examples: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
         + `\nExports (up to 3): ${exports.join('; ') || 'unknown'}.`
         + `\nTests with static import reach${queue.length ? ' (bounded search)' : ''}: ${suggestedCall || 'unknown'}.`
         + `\nAnchored docs: ${links(sourceLinks?.docs)}. Spec evidence links: ${links(sourceLinks?.specs)} (currentness unknown).`
         + `\nLive consumer locks/claims: ${locks?.length ? locks.slice(0, 2).map(lock => `${lock.path}: ${lock.owner}${lock.goalRef ? ' ' + lock.goalRef : ''}`).join('; ') : 'unknown'}.`
-        + '\nSnapshot lower bounds only; current source hashes, unindexed exports, dynamic dispatch, untracked anchors, source completeness and runtime execution are unknown.' });
+        + '\nSnapshot lower bounds only; current source hashes, unindexed exports, dynamic dispatch, untracked anchors, source completeness and runtime execution are unknown.' };
+  }
+}
+export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) =>
+  firstTouchPaths(input).flatMap(path => { const fact = firstTouchFact(input, snapshot, path); return fact ? [fact] : []; });
+registerCodeIntelPushLeg('first-touch', snapshotFirstTouchLeg);
+
+/** code-intel-epoch-carry-2026-10-20 P-003/P-004: working-set files a NEW epoch (or
+ * a new holder) has not been pushed yet. Read before the resume leg runs. */
+export interface ResumeContext {
+  entries: readonly ResumeEntry[];
+}
+export interface ResumeEntry {
+  path: string;
+  /** Why the file was in the carried set (`held` = from a work-item stamp). */
+  reason: WorkingSetReason | 'held';
+  from: 'previous-epoch' | 'work-item';
+  itemId?: string;
+  previousOwner?: string;
+  epoch?: number;
+}
+export const RESUME_FACTS_PER_BATCH = 2;
+
+/** P-003: fresh first-touch facts for carried files, from the CURRENT snapshot. The
+ * subject is `resume:<path>`, so the existing (owner, epoch, leg, subject) dedupe
+ * and per-turn budget apply unchanged and each file is resumed once per epoch. */
+export const snapshotResumeLeg: PushLeg = (input, snapshot) => {
+  const touched = new Set(firstTouchPaths(input));
+  const facts: PushFact[] = [];
+  for (const entry of input.resumeContext?.entries ?? []) {
+    if (facts.length >= RESUME_FACTS_PER_BATCH) break;
+    // A file touched in this very batch gets its ordinary first-touch brief.
+    if (touched.has(entry.path) || !safeSnapshotPath(entry.path)) continue;
+    const base = firstTouchFact(input, snapshot, entry.path);
+    if (!base) continue;
+    const origin = entry.from === 'work-item'
+      ? `Carried from ${entry.itemId ?? 'a held work item'}'s working set (stamped by ${entry.previousOwner ?? 'its previous holder'})`
+      : `Carried from your previous epoch's working set${entry.epoch !== undefined ? ` (epoch ${entry.epoch})` : ''} (${entry.reason})`;
+    facts.push({ ...base, leg: 'resume', subject: `resume:${entry.path}`,
+      text: `${origin}; recomputed from the current snapshot, not replayed.\n${base.text}` });
   }
   return facts;
 };
-registerCodeIntelPushLeg('first-touch', snapshotFirstTouchLeg);
+registerCodeIntelPushLeg('resume', snapshotResumeLeg);
+
+export interface ReadResumeContextDeps {
+  epoch(owner: string): Promise<EpochRow>;
+  signals(query: WorkingSetQuery): Promise<WorkingSetSignals>;
+  foreign(owner: string, workspace: string): Promise<ForeignWorkingSet[]>;
+  /** Subjects already pushed to this owner in its CURRENT epoch on the first-touch / resume legs. */
+  pushed(input: PushInput, epoch: number): Promise<string[]>;
+}
+
+async function readPushedResumeSubjects(input: PushInput, epoch: number, sql = getOrgPg().sql): Promise<string[]> {
+  return (sql as any).begin(async (tx: any) => {
+    await tx`SELECT set_config('statement_timeout', '75ms', true)`;
+    const rows: { subject: string }[] = await tx`SELECT subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${input.workspace} AND owner_id = ${input.owner} AND epoch = ${epoch}
+        AND leg IN ('first-touch', 'resume') ORDER BY pushed_at DESC LIMIT 200`;
+    return rows.map(row => row.subject);
+  });
+}
+
+const resumeDefaults: ReadResumeContextDeps = {
+  epoch: owner => readSessionEpoch(owner),
+  signals: query => readWorkingSetSignals(query, undefined, 75),
+  foreign: (owner, workspace) => readForeignWorkingSets(owner, workspace),
+  pushed: (input, epoch) => readPushedResumeSubjects(input, epoch),
+};
+
+/** Previous-epoch working set first (in rank order), then sets stamped on held
+ * items by a different owner; minus anything already pushed this epoch. */
+export async function readPushResumeContext(input: PushInput, deps: ReadResumeContextDeps = resumeDefaults): Promise<ResumeContext> {
+  if (!input.owner || !input.workspace || !input.harness) return { entries: [] };
+  const epoch = await deps.epoch(input.owner);
+  const [previous, foreign, pushed] = await Promise.all([
+    deriveCodeWorkingSet({ workspace: input.workspace, harness: input.harness, owner: input.owner, which: 'previous', root: input.root },
+      { epoch: async () => epoch, signals: deps.signals }).catch(() => null),
+    deps.foreign(input.owner, input.workspace).catch(() => [] as ForeignWorkingSet[]),
+    deps.pushed(input, epoch.epoch).catch(() => [] as string[]),
+  ]);
+  const done = new Set(pushed.map(subject => subject.startsWith('resume:') ? subject.slice('resume:'.length) : subject));
+  const entries: ResumeEntry[] = [];
+  const add = (entry: ResumeEntry) => {
+    if (entries.length >= 8 || done.has(entry.path) || !safeSnapshotPath(entry.path)) return;
+    done.add(entry.path);
+    entries.push(entry);
+  };
+  for (const file of previous?.files ?? []) add({ path: file.path, reason: file.reason, from: 'previous-epoch', epoch: previous!.epoch });
+  for (const set of foreign) for (const path of set.stamp.paths) {
+    add({ path, reason: 'held', from: 'work-item', itemId: set.itemId, previousOwner: set.stamp.owner });
+  }
+  return { entries };
+}
+
+/** code-intel-epoch-carry-2026-10-20 P-005: code notes (`code-note:` facts) anchored
+ * to the files this batch first-touched, split by whether every `file:` anchor still
+ * hashes to what it did when the note was written. Read before the notes leg runs. */
+export interface NotesContext {
+  fresh: readonly NoteEntry[];
+  withheld: readonly WithheldNote[];
+}
+export interface NoteEntry { key: string; body: string; paths: readonly string[]; scope: string; scopeRef: string | null }
+export interface WithheldNote {
+  key: string;
+  path: string;
+  /** `changed` = an anchored file's content moved; `unverifiable` = it could not be hashed now. */
+  reason: 'changed' | 'unverifiable';
+}
+export const NOTES_FACTS_PER_PATH = 2;
+export const NOTE_BODY_PUSH_CHARS = 360;
+
+/** P-005 (R-7/R-8): deliver fresh code notes on first touch; never push a note whose
+ * anchored code changed — name how many were withheld and their keys instead. */
+export const snapshotNotesLeg: PushLeg = input => {
+  const context = input.notesContext;
+  if (!context) return [];
+  const facts: PushFact[] = [];
+  for (const path of firstTouchPaths(input)) {
+    for (const note of context.fresh.filter(entry => entry.paths.includes(path)).slice(0, NOTES_FACTS_PER_PATH)) {
+      const body = note.body.length > NOTE_BODY_PUSH_CHARS ? `${note.body.slice(0, NOTE_BODY_PUSH_CHARS - 1)}…` : note.body;
+      facts.push({ leg: 'notes', subject: `note:${note.key}`, citedPaths: [path],
+        suggestedCall: `facts:list ${JSON.stringify({ scope: note.scope, ...(note.scopeRef ? { scopeRef: note.scopeRef } : {}), key: note.key })}`,
+        text: `Code note ${note.key} on ${path} — its file anchors still match the content it was written against:\n${body}` });
+    }
+    const withheld = context.withheld.filter(entry => entry.path === path);
+    if (withheld.length) {
+      const keys = [...new Set(withheld.map(entry => entry.key))];
+      facts.push({ leg: 'notes', subject: `notes-withheld:${path}:${keys.join(',')}`.slice(0, 1000), citedPaths: [path],
+        text: `${keys.length} code note(s) on ${path} withheld because the code changed since they were written`
+          + ` (or could not be re-hashed): ${keys.slice(0, 4).join(', ')}${keys.length > 4 ? ', …' : ''}.`
+          + ' Re-verify against the current file, then re-assert the note or facts:retract it.' });
+    }
+  }
+  return facts;
+};
+registerCodeIntelPushLeg('notes', snapshotNotesLeg);
+
+export interface ReadNotesContextDeps {
+  /** Live code notes with a `file:` anchor on any of `paths`. */
+  fold(input: PushInput, paths: readonly string[]): Promise<AgentFact[]>;
+  /** Re-hash the notes' file anchors against `input.root` (dependency-staleness). */
+  staleness(facts: AgentFact[], input: PushInput): Promise<Array<AgentFact & { depsStale?: FactDependencyStaleness }>>;
+}
+/** The production anchor check: the SAME `file:` resolver checkpoints and facts:list
+ * use, against the registered harness root the snapshot set on `input.root`. Only
+ * file anchors reach it (see {@link readPushNotesContext}), so no cell is dispatched. */
+// Prefetched at module load (still a dynamic import, so no static cycle through the
+// cell-read graph): a cold import inside the 120ms notes bound would make the
+// FIRST touch in a process time out and silently deliver nothing.
+let stalenessModule: Promise<typeof import('../agent-tools/facts/dependency-staleness')> | null = null;
+const loadStaleness = () => (stalenessModule ??= import('../agent-tools/facts/dependency-staleness'));
+void loadStaleness().catch(() => { stalenessModule = null; });
+export const readNoteAnchorStaleness: ReadNotesContextDeps['staleness'] = async (facts, input) => {
+  const { markStaleDependencyFacts } = await loadStaleness();
+  return markStaleDependencyFacts(facts, { ownerId: input.owner, ...(input.harness ? { harnessSlug: input.harness } : {}) },
+    { workspaceId: input.workspace, harnessSlug: input.harness ?? null, role: 'su' },
+    input.root ? { fileRepoRoot: input.root } : undefined);
+};
+const notesDefaults: ReadNotesContextDeps = {
+  fold: (input, paths) =>
+    foldCodeNotesForPaths(
+      [{ scope: 'workspace' }, ...(input.harness ? [{ scope: 'harness' as const, scopeRef: input.harness }] : [])],
+      paths, { workspaceId: input.workspace }),
+  staleness: readNoteAnchorStaleness,
+};
+
+/** Fail-closed on staleness: a note is FRESH only when every one of its `file:`
+ * anchors re-hashed to its stored digest. Non-file dependencies are not consulted
+ * here (they need a cell dispatch the 250ms push wall cannot afford). */
+export async function readPushNotesContext(input: PushInput, paths: readonly string[], deps: ReadNotesContextDeps = notesDefaults): Promise<NotesContext> {
+  if (!paths.length) return { fresh: [], withheld: [] };
+  const notes = (await deps.fold(input, paths)).filter(fact => isCodeNoteKey(fact.key));
+  if (!notes.length) return { fresh: [], withheld: [] };
+  const anchorsOnly = notes.map(fact => ({ ...fact, dependsOn: (fact.dependsOn ?? []).filter(dep => isFactFileAnchor(dep.cell)) }));
+  const marked = await deps.staleness(anchorsOnly, input);
+  const fresh: NoteEntry[] = [];
+  const withheld: WithheldNote[] = [];
+  for (const fact of marked) {
+    const anchors = (fact.dependsOn ?? []).map(dep => dep.cell.slice(FACT_FILE_ANCHOR_PREFIX.length));
+    const touched = anchors.filter(path => paths.includes(path));
+    if (!touched.length) continue;
+    const verdicts = fact.depsStale?.deps ?? [];
+    const allFresh = anchors.length > 0 && verdicts.length === anchors.length && verdicts.every(verdict => verdict.status === 'fresh');
+    if (allFresh) { fresh.push({ key: fact.key, body: fact.body, paths: touched, scope: fact.scope, scopeRef: fact.scopeRef ?? null }); continue; }
+    const reason = verdicts.some(verdict => verdict.status === 'changed') ? 'changed' : 'unverifiable';
+    for (const path of touched) withheld.push({ key: fact.key, path, reason });
+  }
+  return { fresh, withheld };
+}
 
 /** P-037: one note for local interface/strand triggers plus static snapshot reach.
  * The edited file intentionally no longer hashes to the pre-edit snapshot: all
@@ -412,6 +610,8 @@ export interface PushChannelDeps {
   legs(): ReadonlyMap<PushLegId, PushLeg>;
   context?(input: PushInput, paths: string[]): Promise<FirstTouchContext>;
   incidentContext?(input: PushInput, paths: string[]): Promise<IncidentAttribution>;
+  resumeContext?(input: PushInput): Promise<ResumeContext>;
+  notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
   commit(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[], requestBudget: number, signal: AbortSignal): Promise<string>;
 }
 
@@ -475,6 +675,8 @@ const defaults: PushChannelDeps = {
   },
   commit: commitPushFacts,
   incidentContext: readPushIncidentAttribution,
+  resumeContext: input => readPushResumeContext(input),
+  notesContext: (input, paths) => readPushNotesContext(input, paths),
 };
 
 /** A failed optional push never drops memory, worn rules, or the failure hint. */
@@ -485,6 +687,19 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
   const result = await withBoundedTimeout(async signal => {
     const snapshot = await deps.snapshot(input);
     if (!snapshot || signal.aborted) return '';
+    // The resume read does not depend on any other leg, so it overlaps with them
+    // instead of adding its own wait to the 250ms wall (P-003).
+    const resumeContext = deps.resumeContext && deps.legs().has('resume') && await deps.enabled(PUSH_LEG_FLAGS.resume)
+      ? withBoundedTimeout(() => deps.resumeContext!(input), { timeoutMs: 100, fallback: undefined, label: 'code-intel-resume-context' })
+        .catch(() => ({ value: undefined }))
+      : null;
+    // P-005: same overlap for the code-note read (a fact fold plus a re-hash of the
+    // notes' file anchors), started only when this batch first-touched a file.
+    const touchedPaths = firstTouchPaths(input);
+    const notesContext = deps.notesContext && touchedPaths.length && deps.legs().has('notes') && await deps.enabled(PUSH_LEG_FLAGS.notes)
+      ? withBoundedTimeout(() => deps.notesContext!(input, touchedPaths), { timeoutMs: 120, fallback: undefined, label: 'code-intel-notes-context' })
+        .catch(() => ({ value: undefined }))
+      : null;
     const facts: PushFact[] = [];
     // Consequences take precedence over a first-touch brief for the same edit.
     for (const [id, leg] of [...deps.legs()].sort(([a], [b]) => Number(b === 'interface') - Number(a === 'interface'))) {
@@ -494,6 +709,22 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
           const context = await withBoundedTimeout(() => deps.context!(input, firstTouchPaths(input)),
             { timeoutMs: 100, fallback: undefined, label: 'code-intel-first-touch-context' });
           input.firstTouchContext = context.value;
+        }
+        if (id === 'notes') {
+          if (!notesContext) continue;
+          // A timed-out read delivers nothing rather than an unverified note.
+          input.notesContext = (await notesContext).value ?? { fresh: [], withheld: [] };
+        }
+        if (id === 'resume') {
+          if (!resumeContext) continue;
+          input.resumeContext = (await resumeContext).value ?? { entries: [] };
+          // A resume needs the same source links a first touch would carry.
+          const paths = input.resumeContext.entries.map(entry => entry.path).slice(0, RESUME_FACTS_PER_BATCH + 2);
+          if (deps.context && paths.length && !input.firstTouchContext) {
+            const context = await withBoundedTimeout(() => deps.context!(input, paths),
+              { timeoutMs: 100, fallback: undefined, label: 'code-intel-resume-links' });
+            input.firstTouchContext = context.value;
+          }
         }
         let candidates = leg(input, snapshot);
         if (id === 'incident' && candidates.length && deps.incidentContext) {

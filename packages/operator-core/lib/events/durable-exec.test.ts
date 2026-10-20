@@ -6,6 +6,9 @@ vi.mock('./reaction-dedup', () => ({
   claimReaction: vi.fn(async () => true),
   releaseReaction: vi.fn(async () => {}),
   markReactionFailed: vi.fn(async () => {}),
+  reactionOutcome: vi.fn(async () => 'completed'),
+  completeReaction: vi.fn(async () => {}),
+  markReactionUncertain: vi.fn(async () => {}),
 }));
 vi.mock('./dispatch-reaction', () => ({
   fireReactionInProcess: vi.fn(async () => ({ ok: true })),
@@ -63,10 +66,10 @@ describe('executeDurableReaction', () => {
     warn.mockRestore();
   });
 
-  it('releases the claim and rethrows when dispatch fails (so DBOS retries)', async () => {
+  it('preserves the uncertain claim when dispatch fails', async () => {
     fire.mockResolvedValue({ ok: false, error: 'unknown reaction tool' });
     await expect(executeDurableReaction(payload())).rejects.toThrow(/unknown reaction tool/);
-    expect(release).toHaveBeenCalledWith('reaction:root:r1');
+    expect(release).not.toHaveBeenCalled();
   });
 
   it('rebuilds the reaction parent from the serializable payload', async () => {

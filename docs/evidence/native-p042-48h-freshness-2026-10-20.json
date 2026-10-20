@@ -1,0 +1,43 @@
+{
+  "schema": "native-p042-48h-freshness-v1",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "item": "P-042",
+  "governingDecisions": ["native-code-intelligence-ecosystem-and-dream-2026-10-09#D-023", "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-025"],
+  "measuredAt": "2026-10-20T14:27:00Z",
+  "measuredBy": "su-72d15d1c-d166-4e31-bcab-c47f2377f1f2",
+  "instrument": {
+    "tool": "dev:pg_query (read-only transaction, operator database)",
+    "join": "Same DBOS join as packages/operator-core/lib/agent-tools/routines/routine-last-fire.ts readRoutineLastFires: dbos.operation_outputs JOIN dbos.workflow_status ON workflow_uuid, w.name='routineFire', o.function_name='system:gitnexus-reindex', first superjson input = 'rt_papercusp_gitnexus_reindex'.",
+    "windowSql": "SELECT count(*), count(*) FILTER (WHERE (o.output::jsonb->'json'->'diagnostics'->'dependencySnapshot'->>'status')='fresh'), count(*) FILTER (WHERE (...status) IS DISTINCT FROM 'fresh'), string_agg(DISTINCT w.executor_id, ','), string_agg(DISTINCT w.application_version, ','), string_agg(DISTINCT o.output::jsonb->'json'->'diagnostics'->>'maintenanceMode', ',') FROM dbos.operation_outputs o JOIN dbos.workflow_status w ON w.workflow_uuid=o.workflow_uuid WHERE o.completed_at_epoch_ms >= epoch('2026-10-18 07:30Z')*1000 AND o.function_name='system:gitnexus-reindex' AND w.name='routineFire' AND (w.inputs::jsonb->'json'->>0)='rt_papercusp_gitnexus_reindex'",
+    "gapSql": "lag() over completion time across the last 96h; rows with gap > 90 minutes listed."
+  },
+  "result": {
+    "continuousWindow": { "firstFire": "2026-10-18T07:35Z", "lastFire": "2026-10-20T13:35Z", "hours": 54 },
+    "fires": 55,
+    "fresh": 55,
+    "notFreshOrAbsent": 0,
+    "partitionSums": true,
+    "errored": 0,
+    "executors": ["bg-host-3270"],
+    "applicationVersions": ["bg-host-v1"],
+    "maintenanceMode": ["first-party-snapshot"],
+    "snapshotBackend": "first-party-imports",
+    "analyzeEnabled": false,
+    "selectorCeilingMs": 86400000,
+    "maxObservedAgeMinutes96h": 1199,
+    "producerRanFires96h": 3,
+    "gapsOver90MinutesLast96h": [
+      { "prev": "2026-10-17T00:35Z", "next": "2026-10-17T02:35Z", "minutes": 119 },
+      { "prev": "2026-10-17T02:35Z", "next": "2026-10-17T05:35Z", "minutes": 180 },
+      { "prev": "2026-10-17T10:35Z", "next": "2026-10-17T17:35Z", "minutes": 419 },
+      { "prev": "2026-10-18T01:35Z", "next": "2026-10-18T07:35Z", "minutes": 360 }
+    ],
+    "receiptsSinceFirstDiagnostic": { "since": "2026-10-17T02:35Z", "withSnapshot": 71, "fresh": 71, "notFresh": 0 }
+  },
+  "conclusion": "Genuine 48h deployed freshness is demonstrated: 55 consecutive hourly routine fires over 54h on the deployed bg-host, every one reporting the first-party import snapshot fresh against its recorded 24h selector ceiling, with GitNexus analyze disabled and no errors. This closes the D-023 '48h deployed freshness' gap; it is not a benefit or usefulness claim.",
+  "limits": [
+    "Fresh means within the 24h test-selector ceiling. Observed ages reach ~20h because the deployed refresh age is 20h. That age is too stale for snapshot-served code-intel answers (P-040 root cause); the in-tree change to a 45-minute refresh age is not yet deployed and is not measured here.",
+    "Earlier gaps (2026-10-17, 2026-10-18 up to 07:35Z) are outside the claimed window and are not explained here.",
+    "The real gate-selector log, the finished-distribution exclusion and final shipment remain separate P-042 obligations under D-023."
+  ]
+}

@@ -30,12 +30,19 @@
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { SYNC_DELTA_RUN_BUDGET_MS, SYNC_DELTA_TIMEOUTS_MS } from '../../release/sync-batch-delta-check';
 
-/** Generous ceiling for one tick (probe + one bounded affected run + tsc + up to
- *  3 single-file confirms); the per-leg spawnSync budgets in the deps module are
- *  the real bound. concurrency:'skip' on the routine row means an overrunning
- *  fire simply absorbs the next tick(s). */
-export const SYNC_BATCH_DELTA_ROUTINE_TIMEOUT_MS = 45 * 60_000;
+/** Up to this many single-file red-confirm legs run after the affected leg. */
+export const SYNC_BATCH_DELTA_MAX_CONFIRM_LEGS = 3;
+
+/** Ceiling for one tick: probe + tsc + one bounded affected run + up to
+ *  SYNC_BATCH_DELTA_MAX_CONFIRM_LEGS single-file confirms, plus a 5-minute margin for git
+ *  and bookkeeping. The per-leg spawnSync budgets in the deps module are the real bound.
+ *  concurrency:'skip' on the routine row means an overrunning fire simply absorbs the next
+ *  tick(s). DERIVED (green-main-ratchet-convergence-2026-10-17#D-034): it was a fixed 45 min
+ *  that equalled the run budget, so a red-confirm after a full-budget run was cut off. */
+export const SYNC_BATCH_DELTA_ROUTINE_TIMEOUT_MS =
+  SYNC_DELTA_RUN_BUDGET_MS + SYNC_BATCH_DELTA_MAX_CONFIRM_LEGS * SYNC_DELTA_TIMEOUTS_MS.confirm + 5 * 60_000;
 
 registerSystemAction(
   'sync-batch-delta-check',

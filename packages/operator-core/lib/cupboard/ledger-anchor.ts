@@ -68,7 +68,23 @@ export interface AnchorReceipt {
 /** The open-core anchoring hook. */
 export interface AnchorBackend {
   readonly kind: string;
-  publish(publication: AnchorPublication): Promise<AnchorReceipt>;
+  /** Sign without broadcasting; the store persists this before any submission. */
+  prepare?(publication: AnchorPublication): Promise<PreparedAnchorTransaction>;
+  publish(publication: AnchorPublication, prepared?: PreparedAnchorTransaction): Promise<AnchorReceipt>;
+}
+
+export interface PreparedAnchorTransaction {
+  readonly rawTransaction: string;
+  readonly txHash: string;
+  readonly chainId: number;
+  readonly attester: string;
+  readonly nonce: number;
+}
+
+export interface AnchorPublicationAttempt {
+  readonly publication: AnchorPublication;
+  readonly prepared?: PreparedAnchorTransaction;
+  readonly receipt?: AnchorReceipt;
 }
 
 /** What a reader recovers from public chain data for a published ref. */
@@ -89,6 +105,9 @@ export interface StoredAnchor extends AnchorPublication, AnchorReceipt {
 }
 
 export interface LedgerAnchorStore {
+  pendingPublication(workspaceId: string): Promise<AnchorPublicationAttempt | null>;
+  beginPublication(workspaceId: string, attempt: AnchorPublicationAttempt): Promise<{ attempt: AnchorPublicationAttempt; fresh: boolean }>;
+  recordPublicationReceipt(workspaceId: string, windowEnd: number, receipt: AnchorReceipt): Promise<void>;
   leaves(workspaceId: string): Promise<readonly StoredAnchorLeaf[]>;
   /** All-or-nothing append starting at `leaves[0].leafIndex`; a lost race reports `conflict`. */
   appendLeaves(workspaceId: string, leaves: readonly StoredAnchorLeaf[]): Promise<'ok' | 'conflict'>;
@@ -197,20 +216,34 @@ export async function runAnchorTick(input: {
   const hashes = [...existing, ...fresh].map((l) => l.leafHash);
   const treeSize = hashes.length;
   const consistencyFrom = last?.treeSize ?? 0;
-  const publication: AnchorPublication = {
+  let publication: AnchorPublication = {
     logId: input.logId,
     logRoot: rootHash(hashes),
     treeSize,
     windowStart: last ? last.windowEnd : window.windowStart,
     windowEnd: window.windowEnd,
   };
-  const receipt = await input.backend.publish(publication);
+  let attempt = await store.pendingPublication(workspaceId);
+  let freshAttempt = false;
+  if (!attempt) {
+    const prepared = await input.backend.prepare?.(publication);
+    const admitted = await store.beginPublication(workspaceId, { publication, ...(prepared ? { prepared } : {}) });
+    attempt = admitted.attempt;
+    freshAttempt = admitted.fresh;
+  }
+  // A pending attempt pins its original root/window even if new leaves arrived.
+  publication = attempt.publication;
+  if (!attempt.receipt && !attempt.prepared && !freshAttempt) {
+    throw new Error('ledger anchor needs reconciliation: publication outcome unknown; backend has no replayable transaction');
+  }
+  const receipt = attempt.receipt ?? await input.backend.publish(publication, attempt.prepared);
+  if (!attempt.receipt) await store.recordPublicationReceipt(workspaceId, publication.windowEnd, receipt);
   const anchor: StoredAnchor = {
     ...publication,
     ...receipt,
     anchorSeq: (last?.anchorSeq ?? -1) + 1,
     consistencyFrom,
-    consistencyProof: consistencyProof(hashes, consistencyFrom, treeSize),
+    consistencyProof: consistencyProof(hashes.slice(0, publication.treeSize), consistencyFrom, publication.treeSize),
   };
   if ((await store.recordAnchor(workspaceId, anchor)) === 'conflict') return { status: 'conflict', stage: 'anchor' };
   return { status: 'anchored', anchor, newLeaves: fresh.length };
@@ -378,7 +411,27 @@ export async function verifyInclusionBundle(
 export function memoryLedgerAnchorStore(): LedgerAnchorStore {
   const leaves = new Map<string, StoredAnchorLeaf[]>();
   const anchors = new Map<string, StoredAnchor[]>();
+  const attempts = new Map<string, AnchorPublicationAttempt>();
   return {
+    async pendingPublication(ws) {
+      const recorded = anchors.get(ws) ?? [];
+      return [...attempts.entries()].filter(([key, a]) => key.startsWith(`${ws}:`)
+        && !recorded.some((r) => r.windowEnd === a.publication.windowEnd))
+        .map(([, a]) => a).sort((a, b) => a.publication.windowEnd - b.publication.windowEnd)[0] ?? null;
+    },
+    async beginPublication(ws, attempt) {
+      const key = `${ws}:${attempt.publication.windowEnd}`;
+      const previous = attempts.get(key);
+      if (previous) return { attempt: previous, fresh: false };
+      attempts.set(key, attempt);
+      return { attempt, fresh: true };
+    },
+    async recordPublicationReceipt(ws, end, receipt) {
+      const key = `${ws}:${end}`;
+      const attempt = attempts.get(key);
+      if (!attempt) throw new Error('publication intent missing');
+      attempts.set(key, { ...attempt, receipt });
+    },
     async leaves(ws) {
       return [...(leaves.get(ws) ?? [])];
     },

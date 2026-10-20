@@ -469,9 +469,11 @@ export default defineTool({
         },
       };
     }
+    // code-intel-epoch-carry P-005: facts:list is the explicit read, so it shows
+    // code notes; only the general standing-facts folds exclude them (R-9).
     const facts = await listFacts(
       { scope: args.scope, scopeRef: scopeRef ?? null },
-      { limit: factsListEffectiveLimit(args.limit, args.all === true) },
+      { limit: factsListEffectiveLimit(args.limit, args.all === true), includeCodeNotes: true },
     );
     // EI-10947: flag facts whose source work-item has CLOSED — facts:list is where an
     // agent goes "hunting a stale fact to retract" (see guidance), so this is exactly
@@ -518,7 +520,7 @@ export default defineTool({
     try {
       const total = await countLiveFacts(
         { scope: args.scope, scopeRef: scopeRef ?? null },
-        { audiences: 'all' },
+        { audiences: 'all', includeCodeNotes: true },
       );
       census = { total };
     } catch {

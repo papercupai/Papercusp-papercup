@@ -57,7 +57,8 @@ export const coordSpawnRunner: CoordSpawnRunner = async (specs, opts) => {
     // global prompts/<role>.md). Mirrors the CONVERSATION_ID / LENS extras.
     if (s.blueprintId) extras.push(`BLUEPRINT_ID=${s.blueprintId}`);
     const extraEnv: Record<string, string | undefined> = {
-      ...buildPipelineExtraEnv({ harnessSlug: opts.harnessSlug!, workspaceId: opts.workspaceId }),
+      ...buildPipelineExtraEnv({ harnessSlug: opts.harnessSlug!, workspaceId: opts.workspaceId,
+        idempotencyKey: s.idempotencyKey }),
       PAPERCUSP_COORD_INJECT: JSON.stringify(s.inject),
     };
     let ok = false;

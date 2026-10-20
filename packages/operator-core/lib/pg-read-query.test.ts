@@ -344,6 +344,37 @@ describe('boundedPgReadTxn — bounded internal loop reads', () => {
     expect(taggedCalls).toBe(2);
   });
 
+  // WI-6554700010018139: an opt-in lock_timeout lets a caller tell a lock wait (55P03)
+  // from a slow statement (57014). It must stay below statement_timeout to do that.
+  it('installs an opt-in transaction-local lock_timeout, clamped below statement_timeout', async () => {
+    const settings = async (opts: { timeoutMs: number; lockTimeoutMs?: number }): Promise<string[]> => {
+      const seen: string[] = [];
+      const tx = Object.assign(
+        async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          const text = strings.join('?');
+          if (text.includes('set_config(')) seen.push(`${text.match(/set_config\('(\w+)'/)?.[1]}=${String(values[0])}`);
+          return [];
+        },
+        { unsafe: async () => [] },
+      );
+      await boundedPgReadTxn(async () => 'ok', {
+        client: { begin: async (fn: (t: unknown) => Promise<unknown>) => fn(tx) } as never,
+        ...opts,
+      });
+      return seen;
+    };
+
+    expect(await settings({ timeoutMs: 5000, lockTimeoutMs: 2000 })).toEqual([
+      'statement_timeout=5000ms',
+      'lock_timeout=2000ms',
+    ]);
+    expect(await settings({ timeoutMs: 1000, lockTimeoutMs: 9000 })).toEqual([
+      'statement_timeout=1000ms',
+      'lock_timeout=999ms',
+    ]);
+    expect(await settings({ timeoutMs: 5000 })).toEqual(['statement_timeout=5000ms']);
+  });
+
   it('fails a hung connection acquisition before invoking the callback', async () => {
     vi.useFakeTimers();
     try {

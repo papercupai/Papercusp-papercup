@@ -5,6 +5,7 @@
  * `collect` op reads. Binds `{ thread_id, conversation_id }` into the spine scope.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import type { CoordOp } from '../types.js';
 import { registerCoordOp } from '../registry.js';
 
@@ -28,6 +29,7 @@ export const threadOpenOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
   resultSchema: result,
   async run(a, ctx) {
     const r = await ctx.caps.openThread({
+      ...(ctx.effectId ? { id: `conv-${createHash('sha256').update(ctx.effectId).digest('hex')}` } : {}),
       title: a.title,
       body: a.body ?? a.title ?? 'Coordination thread',
       kind: a.kind,

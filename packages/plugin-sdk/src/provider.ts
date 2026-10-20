@@ -57,6 +57,20 @@ export interface ProviderOAuthDescriptor {
   /** Optional shared-credential group (e.g. one Google Workspace grant serving mail + calendar). */
   credentialGroup?: string;
   /**
+   * Email domains of consumer (personal) accounts on this provider, lower-case, no `@`
+   * (e.g. `gmail.com`). An account whose identity is an address in one of these domains is
+   * personal: the host never routes its `person` records into the relationship graph, at
+   * provisioning or at participant delivery, whatever `defaultDestinations` says.
+   */
+  personalAccountDomains?: string[];
+  /**
+   * Token-store plugin ids of first-party connections that predate this package (e.g.
+   * `google-workspace`). The host adopts them into this provider's own credential plugin: it
+   * copies the stored token fields, then rewrites every source's `<legacy>:<field>` credential
+   * ref and provisional account id, then clears the legacy fields. Lower-case, never `provider:*`.
+   */
+  legacyCredentialPlugins?: string[];
+  /**
    * Account-identity endpoint. The HOST fetches it with the fresh access token
    * after consent (the provider never sees the token) and reads the stable
    * account id at `idField` (dot path). Must be https and inside `egressHosts`.
@@ -1298,6 +1312,20 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
     if (oauth.refreshPolicy !== undefined && oauth.refreshPolicy !== 'refresh-token' && oauth.refreshPolicy !== 'reauthorize') {
       issues.push('provider.oauth.refreshPolicy must be refresh-token or reauthorize');
+    }
+    if (oauth.personalAccountDomains !== undefined) {
+      const domains = oauth.personalAccountDomains as unknown;
+      if (!Array.isArray(domains) || domains.length === 0 ||
+        !domains.every((domain) => typeof domain === 'string' && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(domain))) {
+        issues.push('provider.oauth.personalAccountDomains must be a non-empty list of lower-case domain names');
+      }
+    }
+    if (oauth.legacyCredentialPlugins !== undefined) {
+      const plugins = oauth.legacyCredentialPlugins as unknown;
+      if (!Array.isArray(plugins) || plugins.length === 0 ||
+        !plugins.every((plugin) => typeof plugin === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(plugin))) {
+        issues.push('provider.oauth.legacyCredentialPlugins must be a non-empty list of lower-case plugin ids (never provider:*)');
+      }
     }
     for (const key of Object.keys(oauth)) {
       if (/secret/i.test(key)) issues.push(`provider.oauth.${key} must not carry a secret; use clientRegistrationRef`);

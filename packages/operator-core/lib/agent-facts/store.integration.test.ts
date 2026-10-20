@@ -17,7 +17,7 @@
  * The capture trigger FUNCTION is stubbed no-op (its real body drags the whole
  * outbox dependency chain in; the wire SHAPE is asserted via to_jsonb directly).
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
 
 // These tests exercise the store's SQL and eviction ranking against a throwaway
@@ -65,6 +65,7 @@ import {
   factCitationRef,
   listFactEvictionDisclosures,
   previewFactCapImpact,
+  foldCodeNotesForPaths,
   type FactDependency,
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
@@ -3630,5 +3631,60 @@ describe('P-003 retraction cascade hooks (real PG)', () => {
     cascadeCalls.length = 0;
     await assertFact({ ttlSec: 3600, ...base, key: 'cascade-fresh', body: 'new' }, db.sql);
     expect(cascadeCalls).toEqual([]);
+  });
+});
+
+describe('code-intel-epoch-carry P-005 code notes (R-9 / R-10) against real SQL', () => {
+  const ref = 'code-note-harness';
+  const anchor = (path: string): FactDependency => ({
+    cell: `file:${path}`,
+    observedAt: '2026-10-20T00:00:00.000Z',
+    digest: 'sha256:0123456789abcdef',
+    observed: 'sha256:0123456789abcdef',
+  });
+  const base = { scope: 'harness' as const, scopeRef: ref, createdBy: 'su-int', workspaceId: WS, ttlSec: 3600 };
+
+  // The suite's top-level afterEach TRUNCATEs agent_facts, so seed per test.
+  beforeEach(async () => {
+    await assertFact({ ...base, key: 'code-note:retry-loop', body: 'the retry loop is deliberate', dependsOn: [anchor('lib/a.ts')] }, db.sql);
+    await assertFact({ ...base, key: 'code-note:two-files', body: 'b and c share a lock order', dependsOn: [anchor('lib/b.ts'), anchor('lib/c.ts')] }, db.sql);
+    await assertFact({ ...base, key: 'ordinary-conclusion', body: 'tests need Docker' }, db.sql);
+  });
+
+  it('R-9: the general fold and its census omit code notes', async () => {
+    const { facts, census } = await foldFactsWithCensus([{ scope: 'harness', scopeRef: ref }], { workspaceId: WS }, db.sql);
+    expect(facts.map((f) => f.key)).toEqual(['ordinary-conclusion']);
+    expect(census[0]).toMatchObject({ shown: 1, total: 1 });
+    expect(await countLiveFacts({ scope: 'harness', scopeRef: ref }, { workspaceId: WS }, db.sql)).toBe(1);
+  });
+
+  it('R-9: an explicit read (facts:list) and a code-note prefix both see them', async () => {
+    const listed = await listFacts({ scope: 'harness', scopeRef: ref }, { workspaceId: WS, includeCodeNotes: true }, db.sql);
+    expect(listed.map((f) => f.key).sort()).toEqual(['code-note:retry-loop', 'code-note:two-files', 'ordinary-conclusion']);
+    expect(await countLiveFacts({ scope: 'harness', scopeRef: ref }, { workspaceId: WS, includeCodeNotes: true }, db.sql)).toBe(3);
+    const prefixed = await foldFacts([{ scope: 'harness', scopeRef: ref }], { workspaceId: WS, keyPrefixes: ['code-note:'] }, db.sql);
+    expect(prefixed.map((f) => f.key).sort()).toEqual(['code-note:retry-loop', 'code-note:two-files']);
+    // A prefix that merely CONTAINS the namespace is not an opt-in.
+    const broad = await foldFacts([{ scope: 'harness', scopeRef: ref }], { workspaceId: WS, keyPrefixes: ['code-'] }, db.sql);
+    expect(broad).toEqual([]);
+  });
+
+  it('foldCodeNotesForPaths returns only notes anchored to a requested file (jsonb filter in SQL)', async () => {
+    const sel = [{ scope: 'harness' as const, scopeRef: ref }];
+    expect((await foldCodeNotesForPaths(sel, ['lib/a.ts'], { workspaceId: WS }, db.sql)).map((f) => f.key)).toEqual(['code-note:retry-loop']);
+    expect((await foldCodeNotesForPaths(sel, ['lib/c.ts'], { workspaceId: WS }, db.sql)).map((f) => f.key)).toEqual(['code-note:two-files']);
+    expect(await foldCodeNotesForPaths(sel, ['lib/unrelated.ts'], { workspaceId: WS }, db.sql)).toEqual([]);
+    expect(await foldCodeNotesForPaths(sel, [], { workspaceId: WS }, db.sql)).toEqual([]);
+  });
+
+  it('R-10: the store refuses a code note with no resolved file anchor', async () => {
+    await expect(assertFact({ ...base, key: 'code-note:unanchored', body: 'no anchor' }, db.sql)).rejects.toThrow(/file anchor/);
+    await expect(
+      assertFact({ ...base, key: 'code-note:unresolved', body: 'anchor never resolved',
+        dependsOn: [{ cell: 'file:lib/missing.ts', observedAt: '2026-10-20T00:00:00.000Z', unknown: 'absent' }] }, db.sql),
+    ).rejects.toThrow(/file anchor/);
+    const stored = await listFacts({ scope: 'harness', scopeRef: ref }, { workspaceId: WS, includeCodeNotes: true }, db.sql);
+    expect(stored.map((f) => f.key)).not.toContain('code-note:unanchored');
+    expect(stored.map((f) => f.key)).not.toContain('code-note:unresolved');
   });
 });

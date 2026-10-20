@@ -18,6 +18,16 @@ const CONTEXT_LIMIT_RE =
   /^\s*(?:Prompt is too long|Context limit reached(?:\s*·\s*\/clear to continue)?)\s*$/i;
 const ACCOUNT_WALL_RE =
   /\b(?:credit balance is too low|insufficient credits)\b|^\s*API Error:\s*Request rejected \(429\)[^\r\n]{0,300}\b(?:your\s+)?account(?:['’]s)?\s+rate\s+limit\b/i;
+/**
+ * WI-6554700010018125: a transient provider failure that ended the turn, e.g.
+ * `API Error: Server error mid-response. The response above may be incomplete.`
+ * (measured 2026-10-20 on a BAR-amendment reviewer: `error:'server_error'`,
+ * `isApiErrorMessage:true`, model `<synthetic>`). The session then parks waiting
+ * for input, so a launcher that counts any assistant turn as a reply strands it.
+ */
+const PROVIDER_ERROR_RE =
+  /^\s*API Error(?::\s*|\s+)(?:5\d\d\b|\(5\d\d\)|Request rejected \(5\d\d\)|Server error\b|Internal server error\b|Overloaded\b)/i;
+const PROVIDER_ERROR_CODES = new Set(['server_error', 'overloaded', 'overloaded_error', 'api_error']);
 
 export const CLAUDE_TOOL_REFERENCE_POISON_TURNS = 3;
 /**
@@ -141,6 +151,8 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
   let lastContextLimitEvidence = null;
   let trailingAccountWallTurns = 0;
   let lastAccountWallEvidence = null;
+  let trailingProviderErrorTurns = 0;
+  let lastProviderErrorEvidence = null;
   let assistantTurnsSinceLastPrompt = 0;
 
   for (const line of String(jsonl ?? '').split(/\r?\n/)) {
@@ -166,6 +178,9 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
       // history: a new prompt can use a different funded account/backend.
       trailingAccountWallTurns = 0;
       lastAccountWallEvidence = null;
+      // A new prompt (a wake) gives the session another provider attempt.
+      trailingProviderErrorTurns = 0;
+      lastProviderErrorEvidence = null;
       continue;
     }
     const text = assistantText(record);
@@ -186,6 +201,12 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
       ? text.trim().slice(0, 200) : null;
     trailingAccountWallTurns = accountEvidence ? trailingAccountWallTurns + 1 : 0;
     lastAccountWallEvidence = accountEvidence;
+    // Disjoint from the classes above, so each failure has exactly one reading.
+    const providerEvidence = synthetic && !evidence && !contextEvidence && !accountEvidence
+      && (PROVIDER_ERROR_CODES.has(record.error) || PROVIDER_ERROR_RE.test(text))
+      ? text.trim().slice(0, 200) : null;
+    trailingProviderErrorTurns = providerEvidence ? trailingProviderErrorTurns + 1 : 0;
+    lastProviderErrorEvidence = providerEvidence;
   }
 
   const toolReferences = maxReferences === 0
@@ -200,6 +221,8 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     lastContextLimitEvidence,
     trailingAccountWallTurns,
     lastAccountWallEvidence,
+    trailingProviderErrorTurns,
+    lastProviderErrorEvidence,
     assistantTurnsSinceLastPrompt,
     needsFreshContext: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
     poisoned: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_POISON_TURNS,

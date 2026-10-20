@@ -26,6 +26,9 @@ function deps() {
     claim: vi.fn<ReactionStore['claim']>(async () => true),
     release: vi.fn<ReactionStore['release']>(async () => {}),
     markFailed: vi.fn<ReactionStore['markFailed']>(async () => {}),
+    outcome: vi.fn(async (): Promise<'completed' | 'uncertain'> => 'completed'),
+    complete: vi.fn(async () => {}),
+    uncertain: vi.fn(async () => {}),
   };
   const fire = vi.fn<(p: DurableReactionPayload<TestParent>) => Promise<{ ok: boolean; error?: string }>>(
     async () => ({ ok: true }),
@@ -78,10 +81,38 @@ describe('executeDurableReaction', () => {
     expect(d.log).toHaveBeenCalledWith(expect.stringContaining('no workspace'));
   });
 
-  it('releases the claim and rethrows when dispatch fails (so the runner retries)', async () => {
+  it('retains the claim for reconciliation when dispatch reports failure', async () => {
     d.fire.mockResolvedValue({ ok: false, error: 'unknown reaction tool' });
     await expect(executeDurableReaction(payload(), d)).rejects.toThrow(/unknown reaction tool/);
-    expect(d.store.release).toHaveBeenCalledWith('reaction:root:r1');
+    expect(d.store.release).not.toHaveBeenCalled();
+    expect(d.store.uncertain).toHaveBeenCalled();
+  });
+
+  it('does not silently succeed or dispatch after a crash following the claim', async () => {
+    d.store.claim.mockResolvedValue(false);
+    d.store.outcome.mockResolvedValue('uncertain');
+    await expect(executeDurableReaction(payload(), d)).rejects.toThrow(/needs reconciliation/);
+    expect(d.fire).not.toHaveBeenCalled();
+    expect(d.store.uncertain).toHaveBeenCalled();
+  });
+
+  it('records a thrown dispatch as uncertain and never releases its identity', async () => {
+    d.fire.mockRejectedValue(new Error('connection lost after dispatch'));
+    await expect(executeDurableReaction(payload(), d)).rejects.toThrow(/needs reconciliation/);
+    expect(d.store.release).not.toHaveBeenCalled();
+    expect(d.store.complete).not.toHaveBeenCalled();
+    expect(d.store.uncertain).toHaveBeenCalled();
+  });
+
+  it('replays a completed receipt without dispatching after the DBOS checkpoint was lost', async () => {
+    let claimed = false;
+    let completed = false;
+    d.store.claim.mockImplementation(async () => { const fresh = !claimed; claimed = true; return fresh; });
+    d.store.complete.mockImplementation(async () => { completed = true; });
+    d.store.outcome.mockImplementation(async () => completed ? 'completed' : 'uncertain');
+    await executeDurableReaction(payload(), d);
+    await executeDurableReaction(payload(), d);
+    expect(d.fire).toHaveBeenCalledTimes(1);
   });
 
   it('passes the serializable parent + cause through to the fire port', async () => {

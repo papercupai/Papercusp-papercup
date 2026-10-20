@@ -184,7 +184,8 @@ describe('shared snapshot-backed push channel', () => {
   });
 
   it('keeps every registered leg ON by default', () => {
-    expect(Object.values(PUSH_LEG_FLAGS).map(flag => FLAG_DEFAULTS[flag])).toEqual(Array(6).fill(true));
+    // 6 original legs + resume and notes (code-intel-epoch-carry-2026-10-20).
+    expect(Object.values(PUSH_LEG_FLAGS).map(flag => FLAG_DEFAULTS[flag])).toEqual(Array(8).fill(true));
   });
 
   it('renders a first-touch snapshot witness while naming unmeasured symbol and runtime evidence', () => {

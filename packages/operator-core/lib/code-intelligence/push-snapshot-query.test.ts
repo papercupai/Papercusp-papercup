@@ -106,6 +106,29 @@ describe('source-corroborated snapshot queries', () => {
     expect(await query({ op: 'definition', name: 'target' })).toBeNull();
   });
 
+  it('serves a declaration-name definition despite caller or forwarding drift, never an alias match (P-040)', async () => {
+    await load();
+    for (const path of ['lib/barrel.ts', 'app/use.ts', 'other/use.ts'] as const) {
+      await writeFile(join(state.root, path), files[path] + '// changed\n');
+      expect(await query({ op: 'definition', name: 'target' })).toMatchObject({
+        backend: 'first-party-snapshot', sites: [{ path: 'lib/target.ts', line1: 1, name: 'target' }],
+        evidence: { sourceScope: { supportingFiles: [{ path: 'lib/target.ts', contentHash: hash(files['lib/target.ts']) }] } },
+      });
+      // An alias resolves through the forwarding chain, so its drift still goes to the compiler.
+      expect(await query({ op: 'definition', name: 'forwarded' })).toBeNull();
+      expect(await query()).toBeNull();
+      await writeFile(join(state.root, path), files[path]);
+    }
+    // A caller population past the bounded proof no longer blocks the declaration-name answer.
+    vi.resetModules(); module = await import('./push-snapshot');
+    await load([{ ...symbols[0]!, sources: [...symbols[0]!.sources!, ...Array.from({ length: 80 }, (_, i) => ({
+      path: `extra/proof${i}.ts`, sha256: 'a'.repeat(64),
+    }))] }]);
+    expect((await query({ op: 'definition', name: 'target' }))!.coverage!.limitations.join(' ')).toContain('were not checked');
+    expect(await query({ op: 'definition', name: 'forwarded' })).toBeNull();
+    expect(await query()).toBeNull();
+  });
+
   it('falls through when forwarding, declaration or caller bytes drift', async () => {
     await load();
     for (const path of ['lib/barrel.ts', 'lib/target.ts', 'app/use.ts'] as const) {
@@ -164,9 +187,26 @@ describe('source-corroborated snapshot queries', () => {
   });
 
   it('falls back rather than verifying an unbounded source proof', async () => {
-    await load([{ ...symbols[0]!, sources: Array.from({ length: 65 }, (_, i) => ({
+    await load([{ ...symbols[0]!, sources: Array.from({ length: module.QUERY_PROOF_MAX_SOURCES + 1 }, (_, i) => ({
       path: `extra/proof${i}.ts`, sha256: 'a'.repeat(64),
     })) }]);
     expect(await query()).toBeNull();
+  });
+
+  it('verifies a widely used symbol past the hook-path cap within the query bound (P-040)', async () => {
+    const extra = Array.from({ length: 100 }, (_, i) => [`wide/use${i}.ts`, `import { target } from '../lib/target';\ntarget();\n// ${i}\n`] as const);
+    await mkdir(join(state.root, 'wide'), { recursive: true });
+    for (const [path, text] of extra) await writeFile(join(state.root, path), text);
+    const wide = extra.map(([path, text]) => ({ path, line: 2, column: 1, sha256: hash(text), spelling: 'target' }));
+    await load([{ ...symbols[0]!, sources: [...symbols[0]!.sources!, ...wide.map(({ path, sha256 }) => ({ path, sha256 }))],
+      callers: [...symbols[0]!.callers, ...wide] }]);
+    expect(module.PUSH_PROOF_MAX_SOURCES).toBeLessThan(wide.length);
+    const answer = await query({ paths: ['wide'], limit: 500 });
+    expect(answer).toMatchObject({ backend: 'first-party-snapshot', truncation: { truncated: false } });
+    expect(answer!.sites).toHaveLength(100);
+    // The hook path keeps its own tighter bound.
+    const proof = wide.map(({ path, sha256 }) => ({ path, sha256 }));
+    expect(await module.corroboratePushSources(state.root, proof, AbortSignal.timeout(5_000))).toBe(false);
+    expect(await module.corroboratePushSources(state.root, proof, AbortSignal.timeout(5_000), module.QUERY_PROOF_MAX_SOURCES)).toBe(true);
   });
 });

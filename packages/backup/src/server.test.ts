@@ -32,7 +32,7 @@ describe.skipIf(!installed)('embedded Kopia explorer retention boundary', () => 
       workspacesRoot: () => root, ensureSchema: async () => {},
       getHarnessAdminUrl: () => ({ url: 'postgres://test', source: 'test' }) });
     kopia(['repository', 'create', 'filesystem', '--path', join(backups, 'repo')]);
-  });
+  }, 60_000);
 
   afterEach(async () => {
     stopKopiaServer('ws');

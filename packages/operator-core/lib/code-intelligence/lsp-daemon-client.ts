@@ -15,6 +15,29 @@ import type { lspRenameWorkspaceEdit } from './lsp-adapter.ts';
 
 type LspRenameResult = Awaited<ReturnType<typeof lspRenameWorkspaceEdit>>;
 
+/** The client-side deadline error. Exported so callers can tell a slow answer from a dead daemon. */
+export const LSP_DAEMON_DEADLINE_MESSAGE = 'LSP daemon RPC deadline elapsed';
+
+/**
+ * Describe a failed daemon call (WI-6554700010018147). A deadline elapse is NOT
+ * "daemon unavailable". Measured 2026-10-20 on a cold private daemon: the first
+ * directory-anchored workspace_symbols for packages/operator-core hit the 90s
+ * deadline, a definition issued right after refused on readiness at 60s, and a
+ * retry at +153s answered (6 sites) in 9.5s — tsserver keeps loading the project
+ * after the request is dropped. So the honest answer is degraded "probably still
+ * loading, retry", and only a genuine transport/spawn failure is unhealthy.
+ */
+export function describeLspDaemonFailure(error: unknown, elapsedMs: number): { health: 'degraded' | 'unhealthy'; error: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message !== LSP_DAEMON_DEADLINE_MESSAGE) return { health: 'unhealthy', error: `LSP daemon unavailable: ${message}` };
+  return {
+    health: 'degraded',
+    error: `LSP daemon did not answer within ${Math.round(elapsedMs / 1000)}s. A cold language server is usually still loading the project `
+      + '(about 150s measured for packages/operator-core); that load continues after this timeout, so a retry in 1-2 minutes usually answers. '
+      + 'If retries against a warm daemon keep timing out, the daemon is stuck rather than loading.',
+  };
+}
+
 let starting: Promise<void> | null = null;
 
 async function ensureLspDaemon(): Promise<void> {
@@ -91,7 +114,7 @@ async function callLspDaemonFrame<T>(
       if (error) reject(error);
       else resolveAnswer(answer!);
     };
-    const timer = setTimeout(() => finish(new Error('LSP daemon RPC deadline elapsed')), timeoutMs);
+    const timer = setTimeout(() => finish(new Error(LSP_DAEMON_DEADLINE_MESSAGE)), timeoutMs);
     socket.setEncoding('utf8');
     socket.once('connect', () => socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`));
     socket.on('data', (chunk: string) => {
@@ -168,12 +191,14 @@ export async function queryLspDaemon(request: LspDaemonRequest): Promise<CodeInt
     await ensureLspDaemon();
     return await callLspDaemonRpc(resolveLspDaemonSocketPath(), request, Math.max(1, (request.deadlineAtMs ?? startedAt + 90_000) - Date.now()));
   } catch (error) {
+    const latencyMs = Date.now() - startedAt;
+    const failure = describeLspDaemonFailure(error, latencyMs);
     return {
       backend: 'lsp-adapter', intent: 'diagnostics', query: request.args.file ?? request.args.name ?? request.op,
       sites: [], truncation: { truncated: false, totalAvailable: null, continuation: null },
-      freshness: { health: 'unhealthy', indexedAt: null, staleVsDisk: null, indexedCommit: null },
-      latencyMs: Date.now() - startedAt,
-      error: `LSP daemon unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      freshness: { health: failure.health, indexedAt: null, staleVsDisk: null, indexedCommit: null },
+      latencyMs,
+      error: failure.error,
     };
   }
 }

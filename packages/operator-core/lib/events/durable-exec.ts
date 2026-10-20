@@ -15,7 +15,7 @@ import {
   type DurableReactionPayload as GenericDurableReactionPayload,
 } from '@papercusp/event-reaction';
 import { fireReactionInProcess } from './dispatch-reaction';
-import { claimReaction, releaseReaction, markReactionFailed } from './reaction-dedup';
+import { claimReaction, releaseReaction, markReactionFailed, reactionOutcome, completeReaction, markReactionUncertain } from './reaction-dedup';
 import type { SerializableReactionParent } from './reaction-id';
 
 /** The JSON-serializable workflow payload for one durable reaction. */
@@ -24,7 +24,8 @@ export type DurableReactionPayload = GenericDurableReactionPayload<SerializableR
 export async function executeDurableReaction(payload: DurableReactionPayload): Promise<void> {
   await genericExecuteDurableReaction(payload, {
     // The PG idempotency ledger (migration 153) — `harness_shared.event_reactions`.
-    store: { claim: claimReaction, release: releaseReaction, markFailed: markReactionFailed },
+    store: { claim: claimReaction, release: releaseReaction, markFailed: markReactionFailed,
+      outcome: reactionOutcome, complete: completeReaction, uncertain: markReactionUncertain },
     // Rebuild the reaction's scope from the serializable parent and dispatch.
     fire: (p) =>
       fireReactionInProcess({

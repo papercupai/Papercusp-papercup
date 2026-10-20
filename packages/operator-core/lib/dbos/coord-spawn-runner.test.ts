@@ -35,6 +35,7 @@ vi.mock('./orchestrator-runner.js', async (importOriginal) => ({
 
 const { coordSpawnRunner } = await import('./coord-spawn-runner.js');
 const { resolveProject } = await import('../harness-core.js');
+const { spawnInvokeOnce } = await import('./orchestrator-runner.js');
 
 const SPECS = [
   { role: 'voter', inject: { conversation_id: 'c1', lens: 'risk' }, blueprintId: 'vote' },
@@ -61,6 +62,16 @@ test('claude backend → all voters + advocate spawn in PARALLEL', async () => {
   expect(res.launched).toBe(3);
   expect(res.spawned.map((s) => s.ok)).toEqual([true, true, true]);
   expect(spawnState.maxLive).toBe(3); // all three in flight at once
+});
+
+test('replayed fan-out forwards each member identity to completed-run reuse', async () => {
+  process.env.AGENT_CMD = 'claude -p';
+  const specs = SPECS.map((s, i) => ({ ...s, idempotencyKey: `program:run:step:member:${i}` }));
+  await coordSpawnRunner(specs, OPTS);
+  await coordSpawnRunner(specs, OPTS);
+  const keys = vi.mocked(spawnInvokeOnce).mock.calls.map((call) => call[3]?.IDEMPOTENCY_KEY);
+  expect(keys.slice(0, 3)).toEqual(specs.map((s) => s.idempotencyKey));
+  expect(keys.slice(3)).toEqual(keys.slice(0, 3));
 });
 
 test('codex backend → PARALLEL (per-spawn CODEX_HOME isolates config)', async () => {

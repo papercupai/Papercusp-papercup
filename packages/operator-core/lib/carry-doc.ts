@@ -42,6 +42,7 @@ import {
   type CarryBrief,
 } from './carry-brief';
 import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
+import type { CodeWorkingSet } from './code-intelligence/working-set';
 import { overlappingFacts } from './facts/fact-text-overlap';
 import { modeImpliesAutonomy } from './modes/registry';
 import type { RecordedTurnClass } from './turn-provenance/turn-ref';
@@ -318,6 +319,10 @@ export interface CarryDoc {
   /** Still-running background shells this agent owns. Optional keeps legacy/test
    *  literals readable; absence renders nothing (never an empty header). */
   backgroundTasks?: CarryDocBackgroundTask[];
+  /** code-intel-epoch-carry-2026-10-20 P-002: files and symbols this epoch was
+   *  working in, DERIVED from ledgers — handles to re-run, never answers. Optional
+   *  keeps legacy/test literals readable; absence or an empty set renders nothing. */
+  codeWorkingSet?: CodeWorkingSet | null;
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
@@ -420,6 +425,10 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   getClosedDirectivesFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocClosedDirective[]>;
   getTailFn?: (ownerId: string) => Promise<CarryDocTailTurn[]>;
   getBackgroundTasksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocBackgroundTask[]>;
+  /** P-002 seam: derive the current epoch's code working set. */
+  getCodeWorkingSetFn?: (ownerId: string, workspaceId: string, harness: string | null) => Promise<CodeWorkingSet | null>;
+  /** P-004 seam: stamp the set onto the owner's held non-terminal work items. */
+  stampCodeWorkingSetFn?: (ownerId: string, workspaceId: string, set: CodeWorkingSet, itemIds: readonly string[]) => Promise<readonly string[]>;
   /** Test seam for the live projected-tool catalog used by role-feasibility checks. */
   projectedToolsFn?: () => readonly ProjectedTool[];
 }
@@ -772,6 +781,23 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     () => [] as CarryDocBackgroundTask[],
   );
 
+  // code-intel-epoch-carry-2026-10-20 P-002/P-004: also wired at the BUILDER so
+  // every carry boundary names the code this epoch was in, and the set rides on
+  // the held work items for whoever holds them next. Both legs are fail-soft: a
+  // missing working set must never cost the successor its carry document.
+  const getCodeWorkingSet =
+    opts.getCodeWorkingSetFn ??
+    (async (id: string, workspaceId: string, harness: string | null) =>
+      (await import('./code-intelligence/working-set')).deriveCarryWorkingSet(id, workspaceId, harness));
+  const codeWorkingSet = await getCodeWorkingSet(ownerId, ws, opts.harness ?? null).catch(() => null);
+  if (codeWorkingSet && codeWorkingSet.files.length > 0 && brief.heldItems.length > 0) {
+    const stamp =
+      opts.stampCodeWorkingSetFn ??
+      (async (id: string, workspaceId: string, set: CodeWorkingSet, itemIds: readonly string[]) =>
+        (await import('./code-intelligence/working-set')).stampCodeWorkingSet(id, workspaceId, set, itemIds));
+    await stamp(ownerId, ws, codeWorkingSet, brief.heldItems.map((item) => item.id)).catch(() => []);
+  }
+
   const getTail = opts.getTailFn ? () => opts.getTailFn!(ownerId) : () => defaultGetTail(opts);
   const tail = (await getTail().catch(() => [] as CarryDocTailTurn[])).slice(-CARRY_DOC_MAX_TAIL_TURNS);
   // Consult the ledger ONLY when the tail reader actually reports a bounded history: a
@@ -826,6 +852,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     planItems: planItems.slice(0, CARRY_DOC_MAX_PLAN_ITEMS),
     asks: asks.slice(0, CARRY_DOC_MAX_ASKS),
     backgroundTasks,
+    codeWorkingSet,
     tail,
     continuation,
     ...(retractedContinuationRefs.length > 0 ? { retractedContinuationRefs } : {}),
@@ -1283,6 +1310,11 @@ export const CARRY_DOC_SLOTS: readonly CarryDocSlotAudit[] = Object.freeze([
   { slot: 'retractionGuard', kind: 'snapshot', boundedBy: 'work-item ids from the bounded machine-turn tail' },
   { slot: 'brief', kind: 'top-k', boundedBy: 'carry-brief top-K legs; per-item text bounded by the budget fit' },
   {
+    slot: 'codeWorkingSet',
+    kind: 'top-k',
+    boundedBy: 'WORKING_SET_MAX_FILES=8 files + WORKING_SET_MAX_SYMBOLS=6 symbols, handles only (overflow renders as a count)',
+  },
+  {
     slot: 'backgroundTasks',
     kind: 'top-k',
     boundedBy: `CARRY_DOC_MAX_BACKGROUND_TASKS=${CARRY_DOC_MAX_BACKGROUND_TASKS} (overflow renders as a count)`,
@@ -1300,7 +1332,10 @@ export const CARRY_DOC_SLOTS: readonly CarryDocSlotAudit[] = Object.freeze([
  * spend first and almost always survive. The always-keep head/continuation/
  * self-recall are the successor's minimum viable orientation and never shed.
  */
-export const CARRY_DOC_SHED_LADDER = Object.freeze(['brief', 'tail', 'planState', 'asks'] as const);
+export const CARRY_DOC_SHED_LADDER = Object.freeze(['codeWorkingSet', 'brief', 'tail', 'planState', 'asks'] as const);
+// codeWorkingSet sheds before everything (code-intel-epoch-carry-2026-10-20 D-001):
+// it is fully re-derivable, and the resume push re-delivers fresh facts for the
+// same files on the successor's first tool batch, so its pointer loses nothing.
 
 // ── Render (pure) ──────────────────────────────────────────────────────────────
 
@@ -1919,6 +1954,34 @@ function renderTail(tail: CarryDocTailTurn[], cont: CarryDocContinuation): strin
     : null;
 }
 
+/**
+ * code-intel-epoch-carry-2026-10-20 P-002 (Tier 1 of the plan: no raw answers
+ * cross an epoch). Paths, symbol names and the calls that recompute them — never
+ * a caller count, definition or other code-intelligence RESULT, which goes stale
+ * within minutes on the shared tree. Pure; exported for direct testing.
+ */
+export function renderCodeWorkingSet(set: CodeWorkingSet | null | undefined): string | null {
+  if (!set || (set.files.length === 0 && set.symbols.length === 0)) return null;
+  const q = (value: string) => JSON.stringify(value);
+  const lines = [
+    CODE_WORKING_SET_HEADING,
+    `Derived from your ledgers for epoch ${set.epoch} (${set.window.start} → ${set.window.end}). These are handles to ` +
+      'RE-RUN, not answers to trust; fresh code intelligence for these files is pushed on your first tool batch.',
+  ];
+  for (const file of set.files) {
+    lines.push(`- \`${file.path}\` — ${file.reason} · capability:read { file_path: ${q(file.path)} }`);
+  }
+  if (set.truncated.files > 0) lines.push(`- (+${set.truncated.files} more file(s) not carried)`);
+  if (set.symbols.length > 0) {
+    lines.push('Symbols:');
+    for (const symbol of set.symbols) {
+      lines.push(`- \`${symbol.name}\`${symbol.path ? ` (${symbol.path})` : ''} · graph:query { op: "context", name: ${q(symbol.name)} }`);
+    }
+    if (set.truncated.symbols > 0) lines.push(`- (+${set.truncated.symbols} more symbol(s) not carried)`);
+  }
+  return lines.join('\n');
+}
+
 export interface RenderCarryDocOpts {
   /** Hard char budget for the whole document (the P-011 constant budget B). When
    *  set AND the full render exceeds it, the aging ladder ({@link CARRY_DOC_SHED_LADDER})
@@ -1934,7 +1997,11 @@ const SECTION_SEP = '\n\n';
 /** The drop-to-pointer stand-ins the aging ladder swaps a full section for. Each
  *  keeps its section HEADER (so the successor sees the slot existed) + a one-line
  *  recovery route — the shed content is never summarized, only pointered (D-004). */
+const CODE_WORKING_SET_HEADING = '## Code you were working in (derived — re-run, do not trust)';
 const SHED_POINTERS = Object.freeze({
+  codeWorkingSet:
+    `${CODE_WORKING_SET_HEADING}\n(dropped to fit the carry budget — fresh code intelligence for these files is ` +
+    'pushed on your first tool batch; your held work items carry the paths in payload.codeWorkingSet.)',
   brief:
     '## Standing carry\n(dropped to fit the carry budget — your held checkpoints, facts, walls and ' +
     'directives are re-injected mechanically on your next wake/pickup; recover the rest via the self-recall pointer below.)',
@@ -1947,6 +2014,7 @@ const SHED_POINTERS = Object.freeze({
     '## Open owner asks (BLOCKING — do not self-answer)\n(dropped to fit the carry budget — re-read open asks via coord:orient.)',
 });
 const JUDGE_SAFE_SHED_POINTERS = Object.freeze({
+  codeWorkingSet: `${CODE_WORKING_SET_HEADING}\n(dropped to fit the carry budget — use the supplied evaluation context.)`,
   brief:
     '## Standing carry\n(dropped to fit the carry budget — use the supplied evaluation context and permitted evidence.)',
   tail:
@@ -2017,6 +2085,7 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   const briefText = briefBody ? `## Standing carry\n${briefBody}` : null;
   const planText = renderPlanState(doc.planItems);
   const asksText = renderAsks(doc.asks);
+  const codeText = renderCodeWorkingSet(doc.codeWorkingSet);
   const continuationText = renderContinuation(doc.continuation);
   const selfRecall = judgeSafe
     ? `## Evaluation recovery\n${JUDGE_SAFE_SELF_RECALL_POINTER}`
@@ -2025,11 +2094,18 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   // Fixed render order; a null slot is simply omitted. The always-keep sections
   // (head, continuation, self-recall) are the successor's minimum viable
   // orientation and are never shed.
-  const assemble = (brief: string | null, plan: string | null, asks: string | null, tail: string | null): string => {
+  const assemble = (
+    brief: string | null,
+    plan: string | null,
+    asks: string | null,
+    tail: string | null,
+    code: string | null,
+  ): string => {
     const s = [...head];
     if (brief) s.push(brief);
     if (plan) s.push(plan);
     if (asks) s.push(asks);
+    if (code) s.push(code);
     s.push(continuationText);
     if (tail) s.push(tail);
     s.push(selfRecall);
@@ -2037,7 +2113,7 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   };
 
   const fullTail = renderTail(doc.tail, doc.continuation);
-  const full = assemble(briefText, planText, asksText, fullTail);
+  const full = assemble(briefText, planText, asksText, fullTail, codeText);
   if (!opts.budgetChars || full.length <= opts.budgetChars) return full;
 
   // Over budget: spend B across the sheddable slots in KEEP order (the reverse of
@@ -2084,6 +2160,8 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   }
 
   const briefOut = chargeOrPointer(briefText, shedPointers.brief);
+  // Spent LAST so it sheds FIRST (CARRY_DOC_SHED_LADDER): fully re-derivable.
+  const codeOut = chargeOrPointer(codeText, shedPointers.codeWorkingSet);
 
-  return assemble(briefOut, planOut, asksOut, tailOut);
+  return assemble(briefOut, planOut, asksOut, tailOut, codeOut);
 }

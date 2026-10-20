@@ -38,6 +38,8 @@ import {
   FACT_VOLATILE_MAX_TTL_SEC,
   validateFactLifetime,
   isFactFileAnchor,
+  validateCodeNoteAnchor,
+  CODE_NOTE_KEY_PREFIX,
   validateConventionEnforcement,
   type AgentFact,
   type FactDependency,
@@ -559,7 +561,8 @@ export default defineTool({
     notWhen:
       `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form docs (agent-insights), or fuzzy recall (memory:remember). Body cap ${FACT_BODY_MAX_CHARS} chars; per-scope cap ${FACTS_PER_SCOPE_CAP}. A fact is not a live measurement: never pin a changing count/status — store the invariant conclusion plus where to remeasure. A moving sample needs measuredAt (subjectVolatile, ≤15-min SNAPSHOT); label history as historical.`,
     chaining:
-      'facts:list { scope } for what stands (re-assert refreshes, never duplicates); dryRun:true before a saturated write; facts:retract the moment one stops being true — a stale fact folded verbatim is worse than none.',
+      'facts:list { scope } for what stands (re-assert refreshes, never duplicates); dryRun:true before a saturated write; facts:retract the moment one stops being true. ' +
+      `Code notes: key ${CODE_NOTE_KEY_PREFIX}<x> + dependsOn file:<path>; pushed on first touch, withheld once it changes.`,
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
   },
   requirePrincipal: false,
@@ -1007,6 +1010,16 @@ export default defineTool({
           const path = lifetimeError.includes('permanent:true') ? ['permanent'] : ['ttlSec'];
           ctx.addIssue({ code: 'custom', path, message: lifetimeError });
         }
+        // code-intel-epoch-carry P-005 (R-10): mirror the store's code-note anchor
+        // rule so safeParse / dryRun refuse the same write assertFact would.
+        const codeNoteError = validateCodeNoteAnchor(
+          normalizedKey,
+          Array.isArray(candidate.dependsOn) &&
+            candidate.dependsOn.some((d: unknown) =>
+              isFactFileAnchor(typeof d === 'string' ? d : String((d as { cell?: unknown } | null)?.cell ?? '')),
+            ),
+        );
+        if (codeNoteError) ctx.addIssue({ code: 'custom', path: ['dependsOn'], message: codeNoteError });
       })
       .meta({ 'x-papercusp-call-constraint': FACT_LIFETIME_CALL_CONSTRAINT }),
       );

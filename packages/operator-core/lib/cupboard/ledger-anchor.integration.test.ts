@@ -3,7 +3,7 @@
  * migrations, the real ledger_chain_links feed, and an in-memory stand-in for
  * the public chain.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { appendLinks, entryDigest, type ChainLink } from '@papercusp/hash-chain';
 import { verifyConsistency } from '@papercusp/merkle-log';
 import type { OrgTestDb } from '../../test/_org-test-db';
@@ -62,6 +62,23 @@ async function chainEntries(ws: string, streamId: string, head: ChainLink | null
 }
 
 describe('ledger anchoring on Postgres (P-041, R-29)', () => {
+  it('retains the original publication receipt across a fresh store after interruption', async () => {
+    const workspaceId = 'anchor-receipt-recovery';
+    await chainEntries(workspaceId, 'recovery-stream', null, [{ value: 1 }]);
+    const store = pgLedgerAnchorStore(db.adminSql);
+    const chain = publicChain();
+    const publish = vi.spyOn(chain.backend, 'publish');
+    vi.spyOn(store, 'recordAnchor').mockRejectedValueOnce(new Error('interrupted after receipt commit'));
+    const args = { workspaceId, logId: ledgerAnchorLogId(workspaceId), nowSeconds: T0 + 60,
+      store, feed: pgAnchorLinkFeed(db.adminSql), backend: chain.backend };
+    await expect(runAnchorTick(args)).rejects.toThrow(/interrupted/);
+    const recoveredStore = pgLedgerAnchorStore(db.adminSql);
+    expect((await recoveredStore.pendingPublication(workspaceId))?.receipt).toBeDefined();
+    await expect(runAnchorTick({ ...args, store: recoveredStore })).resolves.toMatchObject({ status: 'anchored' });
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(await recoveredStore.pendingPublication(workspaceId)).toBeNull();
+  });
+
   it('records a completed quiet hour with the same root and size and an unchanged prefix', async () => {
     const ws = `ws-anchor-quiet-${Date.now()}`;
     const store = pgLedgerAnchorStore(db.adminSql);

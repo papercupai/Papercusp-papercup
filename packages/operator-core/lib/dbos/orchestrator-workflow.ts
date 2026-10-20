@@ -287,8 +287,10 @@ function codingSpine(): BlueprintSpine {
   return (_codingSpine ??= loadBuiltinBlueprint('coding-solo').blueprint.spine);
 }
 
-const key = (slug: string, feature: string, role: string, turn: number): string =>
-  `${slug}:${feature}:${role}:t${turn}`;
+// Preserve epoch zero's historical keys so pre-upgrade results remain reusable.
+// Later pipeline lifetimes must never reuse an earlier lifetime's agent output.
+const key = (slug: string, feature: string, role: string, turn: number, epoch = 0): string =>
+  `${slug}:${feature}:${epoch === 0 ? '' : `e${epoch}:`}${role}:t${turn}`;
 
 async function featurePipelineImpl(input: PipelineInput): Promise<string> {
   const spine = input.spine ?? codingSpine();
@@ -338,7 +340,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
               input.harnessSlug,
               orchestratorRole,
               input.featureId,
-              key(input.harnessSlug, input.featureId, orchestratorRole, turn),
+              key(input.harnessSlug, input.featureId, orchestratorRole, turn, input.epoch),
               [`FEATURE_ID=${input.featureId}`],
               input.workspaceId,
             ),
@@ -456,7 +458,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
           input.harnessSlug,
           action.role,
           action.feature,
-          key(input.harnessSlug, action.feature, action.role, turn),
+          key(input.harnessSlug, action.feature, action.role, turn, input.epoch),
           dispatchExtras,
           input.workspaceId,
         ),

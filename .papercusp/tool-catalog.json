@@ -12327,7 +12327,7 @@
       "guidance": {
         "when": "A durable CONCLUSION that should shape future turns — yours or your role's: \"X is owner-residue, exclude it\", \"this harness's tests need Docker\". Scope as narrowly as true: workspace (global), role, owner, harness, or work_item.",
         "notWhen": "Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form docs (agent-insights), or fuzzy recall (memory:remember). Body cap 1200 chars; per-scope cap 5000. A fact is not a live measurement: never pin a changing count/status — store the invariant conclusion plus where to remeasure. A moving sample needs measuredAt (subjectVolatile, ≤15-min SNAPSHOT); label history as historical.",
-        "chaining": "facts:list { scope } for what stands (re-assert refreshes, never duplicates); dryRun:true before a saturated write; facts:retract the moment one stops being true — a stale fact folded verbatim is worse than none."
+        "chaining": "facts:list { scope } for what stands (re-assert refreshes, never duplicates); dryRun:true before a saturated write; facts:retract the moment one stops being true. Code notes: key code-note:<x> + dependsOn file:<path>; pushed on first touch, withheld once it changes."
       }
     },
     {
@@ -24017,9 +24017,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Starting a plan: plans:new { slug, title, content }. Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only consequential product choices, never engineering methodology. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner's approval ask with the ownerWalkthrough, not the requirements. Save edits with plans:set-content. Full verification remains unchanged. Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design \"### Bar-to-work map for this plan\". See /internal/docs/spec/plan-format.",
+        "when": "Starting a plan: plans:new { slug, title, content }. Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only consequential product choices, never engineering methodology. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner's approval ask with the ownerWalkthrough, not the requirements. Save edits with plans:set-content. Full verification remains unchanged. Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design \"### Bar-to-work map for this plan\". Fill \"## Existing infrastructure reused\" and \"## Third-party libraries\" (scaffolded; or notApplicable).",
         "notWhen": "Editing an existing plan: plans:set-content / set-now / add-decision / add-item. Never hand-write docs/plans/*.md.",
-        "chaining": "Shape the product → requirement JSON + Bar-to-work map for this plan + P-NNN items → activation audit/spec quality → plans:start. Incremental edits use plans:set-content or structured item/decision verbs."
+        "chaining": "Shape the product → reuse + libraries → requirement JSON + Bar-to-work map for this plan + P-NNN items → activation audit/spec quality → plans:start."
       }
     },
     {

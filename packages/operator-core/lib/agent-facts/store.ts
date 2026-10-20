@@ -483,6 +483,56 @@ export const WALL_DEFAULT_TTL_SEC = 90 * 24 * 3600;
 export const GUARD_RAIL_KEY_PREFIX = 'guard-rail:';
 
 /**
+ * code-intel-epoch-carry-2026-10-20 P-005 — a CODE NOTE is an interpretation of
+ * one or more files ("this retry loop is deliberate: X"), anchored to their
+ * content with at least one `file:` dependsOn entry (facts:assert refuses one
+ * without, R-10). Code notes are delivered by the code-intelligence `notes` push
+ * leg on FIRST TOUCH of an anchored file, never by the general standing-facts
+ * fold: there can be many per harness and each is relevant to one file, so
+ * folding them into every agent's brief would crowd out the facts that ARE
+ * relevant to everyone (R-9). {@link liveFactPredicate} therefore excludes this
+ * prefix unless the caller asks for it explicitly.
+ */
+export const CODE_NOTE_KEY_PREFIX = 'code-note:';
+
+/** True when `key` names a code note (see {@link CODE_NOTE_KEY_PREFIX}). PURE. */
+export function isCodeNoteKey(key: string | null | undefined): boolean {
+  return (key ?? '').trim().startsWith(CODE_NOTE_KEY_PREFIX);
+}
+
+/**
+ * Should a fold over `keyPrefixes` see code notes? Only when the caller opted in
+ * explicitly (`includeCodeNotes`, the facts:list read) or named a key prefix
+ * inside the code-note namespace (the `notes` push leg). A prefix that merely
+ * CONTAINS the namespace (e.g. `code-`) does not count: the exclusion exists so
+ * that no general-purpose read picks code notes up by accident. PURE.
+ */
+export function foldIncludesCodeNotes(
+  keyPrefixes: readonly string[],
+  includeCodeNotes: boolean | undefined,
+): boolean {
+  if (includeCodeNotes === true) return true;
+  return keyPrefixes.some((p) => p.startsWith(CODE_NOTE_KEY_PREFIX));
+}
+
+/**
+ * R-10 — refuse a code note with no file anchor. `fileAnchored` is the caller's
+ * reading of the declared `dependsOn`: the store passes "has a `file:` entry with
+ * a resolved digest", the tool preflight passes "declared a `file:` entry" (the
+ * digest does not exist yet at preflight). Returns the refusal text, or null. PURE.
+ */
+export function validateCodeNoteAnchor(key: string | null | undefined, fileAnchored: boolean): string | null {
+  if (!isCodeNoteKey(key) || fileAnchored) return null;
+  return (
+    `facts:assert — a '${CODE_NOTE_KEY_PREFIX}' fact must declare at least one resolvable file anchor: ` +
+    `dependsOn: ['file:<repo-relative path>'] naming the file(s) the note interprets. The anchor stores the ` +
+    `file's content hash, so the note stops being delivered the moment that code changes; a code note ` +
+    `without one would keep asserting an interpretation of code that may no longer exist. If the path did ` +
+    `not resolve, check it is repo-relative and the file exists in this harness's tree.`
+  );
+}
+
+/**
  * P-007 (coord-authority-hardening): the platform-VERIFIED stamp for a TYPED
  * sourceRef (`msg:<id>` / `wi:<id>`/WI-/EI- / `session_turn:<source>:<session>:<idx>` / `owner-turn`), captured
  * server-side AT ASSERT TIME (H2-tier reuse — see
@@ -1877,6 +1927,12 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     fileAnchored,
   });
   if (lifetimeError) throw new InvalidInputError(lifetimeError);
+  // code-intel-epoch-carry P-005 (R-10): a code note must carry a RESOLVED file
+  // anchor, so the notes push leg can withhold it the moment its code changes.
+  // Enforced here, not only in facts:assert, for the same every-writer reason as
+  // the lifetime rule above.
+  const codeNoteError = validateCodeNoteAnchor(input.key, fileAnchored);
+  if (codeNoteError) throw new InvalidInputError(codeNoteError);
   const lifetime = resolveFactLifetime({
     key: input.key,
     kind: input.kind ?? null,
@@ -3139,6 +3195,7 @@ function liveFactPredicate(
   ref: string,
   keyPrefixes: readonly string[],
   audiences: readonly string[] | 'all',
+  includeCodeNotes?: boolean,
 ) {
   return sql`workspace_id = ${ws} AND scope = ${scope}
          AND coalesce(scope_ref,'') = ${ref}
@@ -3155,6 +3212,13 @@ function liveFactPredicate(
            keyPrefixes.length > 0
              ? sql`key LIKE ANY(${keyPrefixes.map((p) => p + '%')})`
              : sql`TRUE`
+         }
+         -- code-intel-epoch-carry P-005 (R-9): code notes reach an agent through the
+         -- notes push leg on first touch of the anchored file, not through every fold.
+         AND ${
+           foldIncludesCodeNotes(keyPrefixes, includeCodeNotes)
+             ? sql`TRUE`
+             : sql`key NOT LIKE ${`${CODE_NOTE_KEY_PREFIX}%`}`
          }
          AND ${
            audiences === 'all'
@@ -3176,7 +3240,13 @@ function liveFactPredicate(
  */
 export async function countLiveFacts(
   sel: FactSelector,
-  opts: { workspaceId?: string; audiences?: readonly string[] | 'all'; keyPrefixes?: readonly string[] } = {},
+  opts: {
+    workspaceId?: string;
+    audiences?: readonly string[] | 'all';
+    keyPrefixes?: readonly string[];
+    /** Count code notes too — pass whatever the page read passed (facts:list: true). */
+    includeCodeNotes?: boolean;
+  } = {},
   inject?: Sql,
 ): Promise<number> {
   const sql = sqlOf(inject);
@@ -3191,7 +3261,7 @@ export async function countLiveFacts(
   const rows = await sql<{ n: string }[]>`
     SELECT count(*)::text AS n
       FROM harness_shared.agent_facts
-     WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences)}`;
+     WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences, opts.includeCodeNotes)}`;
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -3250,6 +3320,12 @@ export async function foldFactsWithCensus(
      *  monitor tick and must not pay a round-trip per slot. Empty/omitted ⇒ no
      *  key filter. Used by {@link foldDeadEndFacts} + {@link foldNeverDropFacts}. */
     keyPrefixes?: readonly string[];
+    /** Fold `code-note:` facts too. Off by default — see {@link CODE_NOTE_KEY_PREFIX};
+     *  a `keyPrefixes` entry inside that namespace opts in as well. */
+    includeCodeNotes?: boolean;
+    /** Keep only facts that declare a `file:` anchor on ANY of these repo-relative
+     *  paths (applied IN SQL, before the LIMIT). Used by {@link foldCodeNotesForPaths}. */
+    dependsOnFiles?: readonly string[];
   } = {},
   inject?: Sql,
 ): Promise<{ facts: AgentFact[]; census: FactFoldCensus[] }> {
@@ -3262,6 +3338,14 @@ export async function foldFactsWithCensus(
     opts.audiences === 'all'
       ? 'all'
       : (opts.audiences ?? []).map((a) => a.trim()).filter(Boolean);
+  const anchorCells = [
+    ...new Set(
+      (opts.dependsOnFiles ?? [])
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((p) => `${FACT_FILE_ANCHOR_PREFIX}${p}`),
+    ),
+  ];
   const out: AgentFact[] = [];
   const census: FactFoldCensus[] = [];
   for (const sel of selectors) {
@@ -3284,7 +3368,15 @@ export async function foldFactsWithCensus(
              -- facts" reads as the corpus rather than the newest 12 of it.
              count(*) OVER () AS fold_total
         FROM harness_shared.agent_facts
-       WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences)}
+       WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences, opts.includeCodeNotes)}
+         AND ${
+           anchorCells.length > 0
+             ? sql`CASE WHEN jsonb_typeof(depends_on) = 'array'
+                        THEN EXISTS (SELECT 1 FROM jsonb_array_elements(depends_on) d
+                                      WHERE d->>'cell' = ANY(${anchorCells}))
+                        ELSE false END`
+             : sql`TRUE`
+         }
        ORDER BY updated_at DESC
        LIMIT ${limit}`;
     out.push(...rows.map(rowToFact));
@@ -3310,6 +3402,10 @@ export async function foldFacts(
     audiences?: readonly string[] | 'all';
     /** See {@link foldFactsWithCensus}. */
     keyPrefixes?: readonly string[];
+    /** See {@link foldFactsWithCensus}. */
+    includeCodeNotes?: boolean;
+    /** See {@link foldFactsWithCensus}. */
+    dependsOnFiles?: readonly string[];
   } = {},
   inject?: Sql,
 ): Promise<AgentFact[]> {
@@ -3330,6 +3426,37 @@ export async function foldDeadEndFacts(
   inject?: Sql,
 ): Promise<AgentFact[]> {
   return foldFacts(selectors, { ...opts, keyPrefixes: [DEAD_END_KEY_PREFIX] }, inject);
+}
+
+/** Per-selector bound for {@link foldCodeNotesForPaths}: a first-touch batch names at
+ *  most 4 paths, so this is the candidate set for one push, not a brief budget. */
+export const CODE_NOTES_FOLD_LIMIT = 24;
+
+/**
+ * code-intel-epoch-carry P-005 — the LIVE code notes anchored to any of `paths`,
+ * for the `notes` push leg. Same liveness + audience predicate as every other
+ * fold; narrowed IN SQL to the code-note namespace and to facts whose `dependsOn`
+ * carries a `file:` anchor on one of the paths, so a harness with many notes
+ * never spends the limit on notes about other files. Staleness of the anchors is
+ * the CALLER's job (dependency-staleness), because only it knows the repo root.
+ */
+export async function foldCodeNotesForPaths(
+  selectors: readonly FactSelector[],
+  paths: readonly string[],
+  opts: { workspaceId?: string; limitPerSelector?: number; audiences?: readonly string[] | 'all' } = {},
+  inject?: Sql,
+): Promise<AgentFact[]> {
+  if (paths.length === 0) return [];
+  return foldFacts(
+    selectors,
+    {
+      ...opts,
+      limitPerSelector: opts.limitPerSelector ?? CODE_NOTES_FOLD_LIMIT,
+      keyPrefixes: [CODE_NOTE_KEY_PREFIX],
+      dependsOnFiles: paths,
+    },
+    inject,
+  );
 }
 
 /**
@@ -3455,12 +3582,17 @@ export async function listLapsedWallFacts(
  *  manageable/retractable; only the automatic FOLDS filter by recipient. */
 export async function listFacts(
   sel: FactSelector,
-  opts: { workspaceId?: string; limit?: number } = {},
+  opts: { workspaceId?: string; limit?: number; includeCodeNotes?: boolean } = {},
   inject?: Sql,
 ): Promise<AgentFact[]> {
   return foldFacts(
     [sel],
-    { workspaceId: opts.workspaceId, limitPerSelector: opts.limit ?? 50, audiences: 'all' },
+    {
+      workspaceId: opts.workspaceId,
+      limitPerSelector: opts.limit ?? 50,
+      audiences: 'all',
+      includeCodeNotes: opts.includeCodeNotes,
+    },
     inject,
   );
 }

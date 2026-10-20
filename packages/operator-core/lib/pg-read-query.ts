@@ -3738,12 +3738,23 @@ export async function boundedPgReadTxn<T>(
      * opt in to attribution explicitly.
      */
     acquirePool?: string;
+    /**
+     * Optional transaction-local `lock_timeout`, clamped below `timeoutMs`.
+     * Without it a read blocked behind a lock (DDL, a row lock) burns the whole
+     * statement_timeout and surfaces as 57014 — indistinguishable from a query
+     * that is simply slow. With it, a lock wait surfaces as 55P03, so a caller
+     * can retry lock contention while treating 57014 as a slow plan that a retry
+     * cannot fix (WI-6554700010018139).
+     */
+    lockTimeoutMs?: number;
   } = {},
 ): Promise<T> {
   const timeoutMs = Math.max(
     100,
     Math.min(PG_READ_QUERY_HARD_TIMEOUT_MS, Math.trunc(opts.timeoutMs ?? PG_READ_TXN_DEFAULT_TIMEOUT_MS)),
   );
+  const lockTimeoutMs =
+    opts.lockTimeoutMs === undefined ? null : Math.max(1, Math.min(timeoutMs - 1, Math.trunc(opts.lockTimeoutMs)));
   const acquireTimeoutMs = Math.max(
     100,
     Math.min(DEFAULT_TX_ACQUIRE_DEADLINE_MS, Math.trunc(opts.acquireTimeoutMs ?? PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS)),
@@ -3767,6 +3778,9 @@ export async function boundedPgReadTxn<T>(
           // READ ONLY must be the first transaction setting before the query.
           await tx.unsafe('SET TRANSACTION READ ONLY');
           await tx`SELECT set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`;
+          if (lockTimeoutMs !== null) {
+            await tx`SELECT set_config('lock_timeout', ${`${lockTimeoutMs}ms`}, true)`;
+          }
           await tx.unsafe(SET_LOCAL_UTC);
           // A connection can arrive after the acquisition deadline's timer wins
           // the race. Never invoke the caller's callback in that late transaction.

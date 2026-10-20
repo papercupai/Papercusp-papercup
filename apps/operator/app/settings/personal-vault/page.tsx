@@ -305,8 +305,10 @@ export function googleWorkspaceConnectHref(
   providerAccountId?: string,
 ): string {
   const params = new URLSearchParams({
-    provider: "google",
-    plugin: "google-workspace",
+    // The `google` descriptor credential group: one consent for the gmail,
+    // google-calendar and google-contacts packages (D-036).
+    provider: "provider:google",
+    plugin: "provider:google",
     harness: "papercusp",
     field: "owner",
   });

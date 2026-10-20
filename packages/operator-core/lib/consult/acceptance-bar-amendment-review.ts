@@ -339,7 +339,7 @@ export type FreshAmendmentReviewerResult =
       answerOn: FreshReviewerAnswerTarget;
       ownerId?: string;
       nativeRef: string;
-      reason: 'account-walled' | 'first-turn-rejected' | 'reviewer-ended';
+      reason: 'account-walled' | 'first-turn-rejected' | 'provider-error' | 'reviewer-ended';
       evidence: string;
       /** A replacement is safe only after the rejected task is confirmed terminal. */
       recovery?: { state: 'stopped' | 'unverified'; evidence: string };
@@ -382,6 +382,24 @@ async function readReviewerLiveness(
     // Liveness is an enrichment. An unreadable oracle cannot authorize killing
     // or replacing a reviewer that may still be able to answer.
     return null;
+  }
+}
+
+/**
+ * WI-6554700010018125: true only when the reviewer's own native transcript is
+ * readable and its turns since the latest submitted prompt end on a synthetic
+ * transient provider failure (5xx, "Server error mid-response"). A missing or
+ * unreadable transcript stays unknown and never authorizes a replacement.
+ */
+function reviewerEndedOnProviderError(
+  nativeRef: unknown,
+  analyze: typeof analyzeClaudeResumeTranscriptFile | undefined,
+): boolean {
+  if (typeof nativeRef !== 'string' || !nativeRef.endsWith('.jsonl')) return false;
+  try {
+    return ((analyze ?? analyzeClaudeResumeTranscriptFile)(nativeRef)?.trailingProviderErrorTurns ?? 0) > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -616,14 +634,19 @@ export async function launchFreshAmendmentReviewer(
       ? await readReviewerLiveness(authorId, deps.resolveSessionStates)
       : null;
     const stranded = liveness?.sessionState === 'parked' && liveness.selfWake === 'none';
-    if (!state || (!isTerminalState(state) && !stranded)) break;
+    // WI-6554700010018125: a reviewer whose latest turn ended on a transient
+    // provider failure has parked waiting for input. A wake source alone does
+    // not make it answer, so replace it exactly like a stranded one.
+    const providerErrored = state !== null && !isTerminalState(state) && !stranded
+      && reviewerEndedOnProviderError(deadTask?.kickoffProof?.nativeRef, deps.analyzeTranscript);
+    if (!state || (!isTerminalState(state) && !stranded && !providerErrored)) break;
     // A missing reviewer identity cannot establish custody of a re-review verdict.
     if (input.reviewEvidence && !authorId) break;
     if (await hasReviewerAnswer({ workspaceId: input.workspaceId, previewPostRef,
       ...(authorId ? { authorId } : {}),
       ...(input.reviewEvidence ? { afterPostRef: input.reviewEvidence.postRef } : {}),
     })) break;
-    if (stranded) {
+    if (stranded || providerErrored) {
       let stopped: string;
       try {
         stopped = await (deps.stopFailedLaunch ?? defaultStopFailedLaunch)(deadTaskId,
@@ -635,7 +658,7 @@ export async function launchFreshAmendmentReviewer(
       if (!stoppedState || !isTerminalState(stoppedState)) {
         return {
           state: 'not-launched',
-          reason: `deduped reviewer task ${deadTaskId} is parked without a self-wake source and could not be safely replaced: ${stopped}`,
+          reason: `deduped reviewer task ${deadTaskId} is ${providerErrored ? 'parked after a provider error' : 'parked without a self-wake source'} and could not be safely replaced: ${stopped}`,
         };
       }
     }
@@ -728,7 +751,9 @@ export async function launchFreshAmendmentReviewer(
       if (!analysis) return { state: 'launched', ...retained, firstReply: 'unreadable' };
       if (analysis.assistantTurnsSinceLastPrompt > 0) {
         const accountWall = (analysis.trailingAccountWallTurns ?? 0) > 0;
+        const providerError = !accountWall && (analysis.trailingProviderErrorTurns ?? 0) > 0;
         const evidence = accountWall ? analysis.lastAccountWallEvidence
+          : providerError ? analysis.lastProviderErrorEvidence
           : (analysis.trailingContextLimitTurns ?? 0) > 0 ? analysis.lastContextLimitEvidence
           : analysis.trailingMissingToolReferenceTurns > 0 ? analysis.lastMissingToolReferenceEvidence : null;
         if (accountWall || evidence) {
@@ -751,7 +776,7 @@ export async function launchFreshAmendmentReviewer(
             recovery = { state: 'unverified', evidence: `reviewer containment unreadable: ${String(error)}` };
           }
           return { state: 'blocked', ...retained, nativeRef,
-            reason: accountWall ? 'account-walled' : 'first-turn-rejected',
+            reason: accountWall ? 'account-walled' : providerError ? 'provider-error' : 'first-turn-rejected',
             evidence: evidence ?? 'provider billing rejection', recovery };
         }
         return { state: 'launched', ...retained, firstReply: 'observed' };
@@ -920,7 +945,7 @@ export async function openAcceptanceBarAmendmentReview(
         (freshReviewer.relaunchedAfter?.length
           ? `Earlier reviewer task(s) ${freshReviewer.relaunchedAfter.join(', ')} ended without answering${reviewEvidence ? ' the new evidence' : ''}, so this one replaces them. `
           : '') +
-        'Re-running this dry run reuses a live reviewer, and relaunches one if the last ended without answering. To re-review after an objection, post new verification evidence on the same thread and pass reviewEvidencePost with the retained reviewPreviewPost; do not post a duplicate preview.'
+        'Re-running this dry run reuses a live reviewer, and relaunches one if the last ended, or parked after a provider error, without answering. If no answer arrives, re-run it rather than waiting. To re-review after an objection, post new verification evidence on the same thread and pass reviewEvidencePost with the retained reviewPreviewPost; do not post a duplicate preview.'
       : freshReviewer.state === 'blocked' && freshReviewer.reason === 'reviewer-ended'
         ? `Every fresh reviewer launched for ${previewPostRef} ended without answering: ${freshReviewer.evidence}. ` +
           'No decision was obtained. Fix the launch failure those task logs show before re-running this dry run; posting another preview only adds another dying reviewer.'

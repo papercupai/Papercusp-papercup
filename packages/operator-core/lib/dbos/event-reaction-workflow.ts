@@ -6,9 +6,9 @@
  * and must be idempotent under at-least-once delivery. So when the durable path
  * is enabled (`PAPERCUSP_DBOS_REACTIONS=1`), a matched reaction is ENQUEUED as a
  * DBOS workflow (concurrency-capped queue) instead of fired in-process. The
- * single checkpointed step claims the dedup id (idempotency) then dispatches the
- * reaction tool — a crash mid-fire resumes and the dedup claim makes a
- * re-delivery a no-op.
+ * single checkpointed step uses independent reaction completion receipts.
+ * Recovery reuses completed effects; uncertain claims require reconciliation
+ * instead of silently skipping or repeating the action.
  *
  * Flag-gated like the other fresh DBOS capabilities: registered only when the
  * bootstrap imports it (opt-in). The enqueue runner is INJECTED into `lib/events`
@@ -25,8 +25,7 @@ import { setDurableReactionRunner, type DurableReactionInput } from '../events/d
 import { serializeParent, computeDedupId } from '../events/reaction-id';
 
 async function reactionImpl(payload: DurableReactionPayload): Promise<void> {
-  // One checkpointed step: claim-dedup + dispatch. Retried by DBOS on failure;
-  // the dedup claim (released on failure) keeps a successful fire from repeating.
+  // Retries may re-read completion receipts, but never repeat an uncertain fire.
   await DBOS.runStep(() => executeDurableReaction(payload), {
     name: `react:${payload.fire}`,
     retriesAllowed: true,

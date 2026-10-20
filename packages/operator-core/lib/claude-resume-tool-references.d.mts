@@ -15,6 +15,13 @@ export interface ClaudeResumeTranscriptAnalysis {
   trailingAccountWallTurns?: number;
   lastAccountWallEvidence?: string | null;
   /**
+   * Synthetic transient provider failures (5xx, "Server error mid-response",
+   * overloaded) ending the turns after the current submitted prompt; disjoint
+   * from the three rejection classes above (WI-6554700010018125).
+   */
+  trailingProviderErrorTurns?: number;
+  lastProviderErrorEvidence?: string | null;
+  /**
    * Assistant records (model output or the provider's synthetic error) written
    * after the most recent submitted prompt. A fork's file carries the source's
    * copied history, so "any assistant record exists" cannot say whether the

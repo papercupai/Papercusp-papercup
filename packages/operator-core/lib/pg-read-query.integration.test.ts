@@ -266,6 +266,30 @@ describe('boundedPgReadTxn (real PG)', () => {
     ).rejects.toMatchObject({ code: '57014' });
     expect(Date.now() - startedAt).toBeLessThan(2000);
   });
+
+  // WI-6554700010018139: the operator role's lock_timeout (15s, measured 2026-10-20)
+  // sits ABOVE this seam's statement_timeout, so without lockTimeoutMs a read blocked
+  // behind a lock burns the whole budget and reports 57014, exactly like a slow plan.
+  // With it, the same wait fails fast as 55P03, which callers may retry.
+  it('surfaces a lock wait as 55P03 under lockTimeoutMs, and as 57014 without it', async () => {
+    await db.adminSql`CREATE TABLE IF NOT EXISTS public.lock_timeout_probe (id int)`;
+    const read = (lockTimeoutMs?: number) =>
+      boundedPgReadTxn(async (tx) => tx`SELECT count(*) AS n FROM public.lock_timeout_probe`, {
+        client: db.adminSql,
+        timeoutMs: 1500,
+        acquireTimeoutMs: 2000,
+        ...(lockTimeoutMs === undefined ? {} : { lockTimeoutMs }),
+      });
+    // The holder occupies one adminSql connection; the reads use the other (max: 2).
+    await db.adminSql.begin(async (holder) => {
+      await holder`LOCK TABLE public.lock_timeout_probe IN ACCESS EXCLUSIVE MODE`;
+      const startedAt = Date.now();
+      await expect(read(200)).rejects.toMatchObject({ code: '55P03' });
+      expect(Date.now() - startedAt).toBeLessThan(1500);
+      await expect(read()).rejects.toMatchObject({ code: '57014' });
+    });
+    await expect(read(200)).resolves.toEqual([expect.objectContaining({ n: expect.anything() })]);
+  });
 });
 
 /**

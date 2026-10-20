@@ -521,9 +521,9 @@ describe('slot coverage with late-judgment crediting (P-009 / D-017 / D-031)', (
     const { probe, tsc, affected } = SYNC_DELTA_TIMEOUTS_MS;
     expect(SYNC_DELTA_RUN_BUDGET_MS).toBe(probe + tsc + affected);
     expect(COVERAGE_JUDGE_DEADLINE_MS).toBe(2 * (probe + tsc + affected) + COVERAGE_EXPECTED_INTERVAL_MS);
-    // Today's budgets: 10 + 10 + 25 min per run, so 95 min. A fixed number here would let the
-    // leg budgets move without the deadline (the D-030 #3 defect), so the literal is a tripwire.
-    expect(COVERAGE_JUDGE_DEADLINE_MS).toBe(95 * MIN);
+    // Today's budgets: 10 + 10 + 45 min per run (D-034), so 135 min. A fixed number here would let
+    // the leg budgets move without the deadline (the D-030 #3 defect), so the literal is a tripwire.
+    expect(COVERAGE_JUDGE_DEADLINE_MS).toBe(135 * MIN);
     // The property that matters: a slot arriving just after a run starts is judged by the NEXT
     // in-budget run, which ends within one run + one interval + one run.
     expect(SYNC_DELTA_RUN_BUDGET_MS + COVERAGE_EXPECTED_INTERVAL_MS + SYNC_DELTA_RUN_BUDGET_MS).toBeLessThanOrEqual(D);
@@ -670,8 +670,8 @@ describe('slot coverage with late-judgment crediting (P-009 / D-017 / D-031)', (
     expect(alarm.conditionKey).toBe(COVERAGE_ALARM_CONDITION_KEY);
     expect(alarm.title).toBe('sync-batch delta check coverage low: 0% of schedule slots judged over 24h');
     expect(alarm.body).toMatch(/below the 95% target/);
-    // The alarm states the subject's own deadline: 95 min for the delta check (D-031).
-    expect(alarm.body).toMatch(/within 95m \(0 of the judged slots/);
+    // The alarm states the subject's own deadline: 135 min for the delta check (D-031, D-034).
+    expect(alarm.body).toMatch(/within 135m \(0 of the judged slots/);
   });
 });
 

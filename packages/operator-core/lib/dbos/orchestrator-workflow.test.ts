@@ -159,6 +159,22 @@ describe('featurePipelineWorkflow — happy path', () => {
     expect(settledHook).toHaveBeenCalledWith('sheets', 'ws-1');
   });
 
+  it('keeps invocation keys stable on replay and distinct across pipeline lifetimes', async () => {
+    const keysFor = async (epoch: number) => {
+      runnerCalls = [];
+      directorIdx = 0;
+      directorOutputs = ['NEXT_WORKER F-1', 'DONE'];
+      await featurePipelineWorkflow(input({ epoch }));
+      return runnerCalls.map((c) => c.key);
+    };
+    const original = await keysFor(0);
+    const reopened = await keysFor(1);
+    expect(reopened).toEqual(await keysFor(1));
+    expect(reopened).toEqual(['sheets:F-1:e1:director:t0', 'sheets:F-1:e1:worker:t0', 'sheets:F-1:e1:director:t1']);
+    expect(reopened.some((k) => original.includes(k))).toBe(false);
+    expect((await keysFor(2)).some((k) => reopened.includes(k))).toBe(false);
+  });
+
   it('threads workspaceId and replay-stable idempotency keys into every agent run', async () => {
     directorOutputs = ['NEXT_WORKER F-1', 'DONE'];
 

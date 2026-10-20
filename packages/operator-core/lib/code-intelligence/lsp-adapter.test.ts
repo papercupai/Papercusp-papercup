@@ -1458,9 +1458,22 @@ describe('typescriptInitializationOptions — the tsserver memory ceiling (WI-21
    */
   it('passes maxTsServerMemory, so tsserver does not run at the ceiling it dies at', () => {
     expect(typescriptInitializationOptions('/x/tsserver.js', 6144)).toEqual({
-      tsserver: { path: '/x/tsserver.js' },
+      tsserver: { path: '/x/tsserver.js', useSyntaxServer: 'never' },
       maxTsServerMemory: 6144,
     });
+  });
+
+  /**
+   * WI-6554700010018131. typescript-language-server's default ('auto') answers
+   * Navto/Definition/References from a syntax-only server that knows only the
+   * OPEN files while the project loads, so a directory-anchored symbol search
+   * returned a confident-looking empty for ~50s on packages/operator-core.
+   * Every option set must pin the semantic server, whatever else it carries.
+   */
+  it('routes every TypeScript request to the semantic server, never the open-files-only syntax server', () => {
+    for (const memory of [6144, null, undefined] as const) {
+      expect(typescriptInitializationOptions('/x/tsserver.js', memory).tsserver.useSyntaxServer).toBe('never');
+    }
   });
 
   it('carries a default that clears the measured 4314MB abort point', () => {
@@ -1472,7 +1485,7 @@ describe('typescriptInitializationOptions — the tsserver memory ceiling (WI-21
 
   it('OMITS the key when null, so an opt-out restores node default rather than pinning another number', () => {
     const opts = typescriptInitializationOptions('/x/tsserver.js', null);
-    expect(opts).toEqual({ tsserver: { path: '/x/tsserver.js' } });
+    expect(opts).toEqual({ tsserver: { path: '/x/tsserver.js', useSyntaxServer: 'never' } });
     expect('maxTsServerMemory' in opts).toBe(false);
   });
 

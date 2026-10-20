@@ -33,6 +33,13 @@ describe('fireCertifiesCondition (event-wait-settlement-2026-10-20 P-001)', () =
     }
   });
 
+  it('does not certify a work-item:status key naming a concrete work item (SPEC-P-001)', () => {
+    expect(fireCertifiesCondition('work-item:status:WI-1')).toBe(false);
+    expect(fireCertifiesCondition('work-item:status:WI-1', false)).toBe(false);
+    // Same subject, completion family: the subject is not what blocks certification.
+    expect(fireCertifiesCondition('work-item:done:WI-1')).toBe(true);
+  });
+
   it.each([
     'work-item:done', 'work-item:done:', 'work-item:done: ', 'plan-item:done:my-plan:', 'plan-item:done::P-001',
     'work-item:done:*', 'work-item:done:<id>', '  ', 'release:deployed', 'work-item:claimable',

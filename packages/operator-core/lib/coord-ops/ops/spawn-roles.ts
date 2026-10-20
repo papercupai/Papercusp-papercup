@@ -74,6 +74,11 @@ export const spawnRolesOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         }
       }
     }
+    // A completed member must remain reusable when a later member interrupts
+    // the batch before DBOS can checkpoint its aggregate result.
+    if (ctx.effectId) specs.forEach((spec, index) => {
+      spec.idempotencyKey = `${ctx.effectId}:member:${index}:${spec.role}`;
+    });
     ctx.log?.(`spawn-roles: launching ${specs.length} agents (${specs.map((s) => s.role).join(', ')})`);
     return ctx.caps.spawnRoles(specs);
   },

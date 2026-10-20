@@ -23,16 +23,18 @@ import path from 'node:path';
 import {
   decodeAbiParameters,
   encodeAbiParameters,
+  encodeFunctionData,
   encodePacked,
   keccak256,
   parseAbi,
   parseAbiParameters,
   parseEventLogs,
+  parseTransaction,
 } from 'viem/utils';
 import type { Address, Chain, Hex, Transport } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base, baseSepolia } from 'viem/chains';
-import type { AnchoredRoot, AnchorBackend, AnchorPublication, AnchorReader, AnchorReceipt } from './ledger-anchor';
+import type { AnchoredRoot, AnchorBackend, AnchorPublication, AnchorReader, AnchorReceipt, PreparedAnchorTransaction } from './ledger-anchor';
 
 // Keep the synchronous client factories while deferring viem's client graph.
 // Internal dynamic imports alone are hoisted by the single-file HOST bundler.
@@ -225,13 +227,7 @@ export function easAnchorBackend(cfg: EasBackendConfig): AnchorBackend & { reado
     schemaReady = true;
   };
 
-  return {
-    kind: 'eas',
-    attester: account.address,
-    async publish(publication: AnchorPublication): Promise<AnchorReceipt> {
-      await ensureSchema();
-      const hash = await walletClient.writeContract({
-        address: eas,
+  const transactionData = (publication: AnchorPublication) => encodeFunctionData({
         abi: EAS_ABI,
         functionName: 'attest',
         args: [
@@ -248,7 +244,45 @@ export function easAnchorBackend(cfg: EasBackendConfig): AnchorBackend & { reado
           },
         ],
       });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout });
+  const prepare = async (publication: AnchorPublication): Promise<PreparedAnchorTransaction> => {
+    await ensureSchema();
+    const request = await walletClient.prepareTransactionRequest({ account, chain: cfg.chain,
+      to: eas, data: transactionData(publication) });
+    const rawTransaction = await walletClient.signTransaction(request);
+    return { rawTransaction, txHash: keccak256(rawTransaction), chainId: cfg.chain.id,
+      attester: account.address.toLowerCase(), nonce: request.nonce };
+  };
+
+  return {
+    kind: 'eas',
+    attester: account.address,
+    prepare,
+    async publish(publication: AnchorPublication, prepared?: PreparedAnchorTransaction): Promise<AnchorReceipt> {
+      const tx = prepared ?? await prepare(publication);
+      const hash = tx.txHash as Hex;
+      const decoded = parseTransaction(tx.rawTransaction as Hex);
+      if (tx.chainId !== cfg.chain.id || tx.attester !== account.address.toLowerCase()
+        || keccak256(tx.rawTransaction as Hex) !== hash || decoded.to?.toLowerCase() !== eas.toLowerCase()
+        || decoded.data !== transactionData(publication) || decoded.nonce !== tx.nonce) {
+        throw new Error('anchor transaction identity mismatch');
+      }
+      // A mined transaction is reconciled first. An unknown submission can only
+      // rebroadcast the SAME signed bytes, never choose a fresh nonce/payment.
+      const findReceipt = () => publicClient.getTransactionReceipt({ hash }).catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'TransactionReceiptNotFoundError') return null;
+        throw error;
+      });
+      let receipt = await findReceipt();
+      if (!receipt) {
+        try {
+          const submitted = await walletClient.sendRawTransaction({ serializedTransaction: tx.rawTransaction as Hex });
+          if (submitted.toLowerCase() !== hash.toLowerCase()) throw new Error('anchor broadcast hash mismatch');
+        } catch (error) {
+          receipt = await findReceipt();
+          if (!receipt) throw error;
+        }
+        receipt ??= await publicClient.waitForTransactionReceipt({ hash, timeout });
+      }
       if (receipt.status !== 'success') throw new Error(`easAnchorBackend: attest transaction ${hash} reverted`);
       const attested = parseEventLogs({ abi: EAS_ABI, eventName: 'Attested', logs: receipt.logs }).find(
         (l) =>

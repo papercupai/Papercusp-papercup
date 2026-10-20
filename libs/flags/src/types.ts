@@ -13,6 +13,10 @@ export const FLAGS = {
   CODE_INTEL_PUSH_INCIDENT: "papercusp-code-intel-push-incident",
   CODE_INTEL_PUSH_COMPLETION: "papercusp-code-intel-push-completion",
   CODE_INTEL_PUSH_INTENT: "papercusp-code-intel-push-intent",
+  // code-intel-epoch-carry-2026-10-20: re-push fresh facts for the previous epoch's
+  // (or previous holder's) working set, and file-anchored code notes on first touch.
+  CODE_INTEL_PUSH_RESUME: "papercusp-code-intel-push-resume",
+  CODE_INTEL_PUSH_NOTES: "papercusp-code-intel-push-notes",
   // reports-library-2026-09-15 P-004: owner-facing publishing, browsing and reading.
   // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the shared
   // tools/UI kill-switch, not a hidden rollout of otherwise finished work.

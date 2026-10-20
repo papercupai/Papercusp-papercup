@@ -18,7 +18,7 @@ export type { ReactionClaim };
  * `'budget_denied'` is a deliberate policy drop, kept distinct from `'failed'`
  * so the two never debounce or count against each other.
  */
-export type ReactionOutcomeStatus = 'fired' | 'failed' | 'budget_denied';
+export type ReactionOutcomeStatus = 'fired' | 'failed' | 'budget_denied' | 'completed' | 'needs_reconciliation';
 
 /**
  * Atomically claim a reaction's dedup id. Returns true if THIS call won the claim
@@ -54,6 +54,32 @@ export async function markReactionFailed(dedupId: string, error: string): Promis
     UPDATE harness_shared.event_reactions
        SET status = 'failed', error_message = ${error}
      WHERE dedup_id = ${dedupId}
+  `;
+}
+
+/** Legacy `fired` means presumed dispatching, so it is deliberately uncertain. */
+export async function reactionOutcome(dedupId: string): Promise<'completed' | 'uncertain'> {
+  const { sql } = getOrgPg();
+  const [row] = await sql<Array<{ status: string }>>`
+    SELECT status FROM harness_shared.event_reactions WHERE dedup_id = ${dedupId}
+  `;
+  return row?.status === 'completed' ? 'completed' : 'uncertain';
+}
+
+export async function completeReaction(dedupId: string): Promise<void> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    UPDATE harness_shared.event_reactions SET status = 'completed', error_message = NULL
+     WHERE dedup_id = ${dedupId} RETURNING dedup_id
+  `;
+  if (!rows.length) throw new Error(`reaction completion receipt missing: ${dedupId}`);
+}
+
+export async function markReactionUncertain(dedupId: string, reason: string): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.event_reactions SET status = 'needs_reconciliation', error_message = ${reason}
+     WHERE dedup_id = ${dedupId} AND status <> 'completed'
   `;
 }
 

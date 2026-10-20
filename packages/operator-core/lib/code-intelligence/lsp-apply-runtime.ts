@@ -20,7 +20,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
 import { guardFileLock, type FileLockCtx } from '../agent-tools/locks/file-lock-guard';
-import { computeLspDaemonRename, countLspDaemonDiagnostics, resyncLspDaemonDocument } from './lsp-daemon-client.ts';
+import { computeLspDaemonRename, countLspDaemonDiagnostics, describeLspDaemonFailure, resyncLspDaemonDocument } from './lsp-daemon-client.ts';
 import { activeWorkspaceId } from '../workspace-registry.ts';
 import { readIdentity } from '../agent-tools/locks/identity.ts';
 import type { ApplyDeps, LockOutcome } from './lsp-apply.ts';
@@ -89,6 +89,7 @@ export function defaultApplyDeps(ctx: FileLockCtx): ApplyDeps {
   return {
     flagsEnabled: bothFlagsEnabled,
     computeEdit: async (req) => {
+      const startedAt = Date.now();
       try {
         const r = await computeLspDaemonRename({
           file: req.file,
@@ -109,7 +110,7 @@ export function defaultApplyDeps(ctx: FileLockCtx): ApplyDeps {
             }
           : { ok: false, error: r.error };
       } catch (error) {
-        return { ok: false, error: `LSP daemon unavailable: ${error instanceof Error ? error.message : String(error)}` };
+        return { ok: false, error: describeLspDaemonFailure(error, Date.now() - startedAt).error };
       }
     },
     realpath: realpathSync,

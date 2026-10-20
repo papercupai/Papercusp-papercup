@@ -40,6 +40,8 @@ export interface CollectedPost {
 /** One resolved agent to spawn (spawn-roles expands per-lens / counts into these). */
 export interface ResolvedSpawn {
   role: string;
+  /** Stable program-step/member identity, reused after an interrupted fan-out. */
+  idempotencyKey?: string;
   /** The context injected into the agent run (question, options, thread, lens, …). */
   inject: Record<string, unknown>;
   /**
@@ -74,6 +76,7 @@ export interface RunProgramInput {
 export interface CoordOpCaps {
   /** Open a thread (a conversation thread). Wraps `conversations.openConversation`. */
   openThread(input: {
+    id?: string;
     title?: string;
     body?: string;
     kind?: 'question' | 'discussion';
@@ -158,6 +161,8 @@ export interface CoordOpCaps {
 
 /** The execution context handed to every op. */
 export interface CoordOpCtx {
+  /** Present for a durable program effect; never supplied by interpolated args. */
+  effectId?: string;
   identity: { ownerId: string; ownerLabel?: string };
   workspaceId?: string;
   harnessSlug?: string;

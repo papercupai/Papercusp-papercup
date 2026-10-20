@@ -45,7 +45,8 @@ const snapshotText = (o: { generatedAt?: string; lastCommit?: string; edges?: nu
   JSON.stringify({
     schema: o.schema ?? DEPENDENCY_SNAPSHOT_SCHEMA,
     index: { lastCommit: o.lastCommit ?? COMMIT, indexedAt: '2026-10-06T00:37:35.367Z', backend: 'gitnexus', backendVersion: '1.6.9' },
-    generatedAt: o.generatedAt ?? new Date(NOW - HOUR).toISOString(),
+    // A fresh snapshot is younger than the refresh age, which is now under one hourly tick (P-040).
+    generatedAt: o.generatedAt ?? new Date(NOW - HOUR / 4).toISOString(),
     edges: Array.from({ length: o.edges ?? 2 }, (_, i) => ({ importer: `a/${i}.ts`, imported: 'a/s.ts', importerSha256: 'x' })),
   });
 
@@ -71,8 +72,8 @@ describe('judgeDependencySnapshot', () => {
     expect(judgeDependencySnapshot(snapshotText({ edges: 5 }), NOW, { currentIndexCommit: COMMIT })).toEqual({
       status: 'fresh',
       reason: null,
-      generatedAt: new Date(NOW - HOUR).toISOString(),
-      ageMs: HOUR,
+      generatedAt: new Date(NOW - HOUR / 4).toISOString(),
+      ageMs: HOUR / 4,
       indexCommit: COMMIT,
       edges: 5,
     });
@@ -98,6 +99,15 @@ describe('judgeDependencySnapshot', () => {
     expect(aging.status).toBe('fresh');
     expect(dependencySnapshotNeedsRefresh(young)).toBe(false);
     expect(dependencySnapshotNeedsRefresh(aging)).toBe(true);
+  });
+
+  it('every hourly tick regenerates the snapshot that native queries and pushes corroborate against (P-040)', () => {
+    // The routine fires hourly; the previous tick's file is just under an hour old when the next one runs.
+    const lastTick = judgeDependencySnapshot(snapshotText({ generatedAt: new Date(NOW - HOUR + 2 * 60_000).toISOString() }), NOW, { currentIndexCommit: COMMIT });
+    expect(lastTick.status).toBe('fresh');
+    expect(dependencySnapshotNeedsRefresh(lastTick)).toBe(true);
+    expect(DEPENDENCY_SNAPSHOT_REFRESH_AGE_MS).toBeLessThan(HOUR - 5 * 60_000);
+    expect(DEPENDENCY_SNAPSHOT_REFRESH_AGE_MS).toBeGreaterThan(DEPENDENCY_SNAPSHOT_PRODUCER_TIMEOUT_MS);
   });
 });
 

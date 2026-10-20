@@ -19,7 +19,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { claimReaction, releaseReaction, markReactionFailed } = await import('./reaction-dedup');
+const { claimReaction, releaseReaction, markReactionFailed, reactionOutcome, completeReaction,
+  markReactionUncertain, countRecentReactionFailures } = await import('./reaction-dedup');
 
 const claim = (dedupId: string) => ({ dedupId, workspaceId: 'w1', ruleId: 'rule-1', fire: 'plans:set-status', depth: 0 }) as never;
 let rootSql: postgres.Sql;
@@ -71,6 +72,18 @@ beforeEach(async () => {
 });
 
 describe('reaction-dedup ledger (PG)', () => {
+  it('distinguishes intent from completion and preserves terminal proof on a late uncertainty report', async () => {
+    await claimReaction(claim('recover'));
+    expect(await reactionOutcome('recover')).toBe('uncertain');
+    await markReactionUncertain('recover', 'dispatch outcome unknown');
+    expect(await countRecentReactionFailures({ workspaceId: 'w1', ruleId: 'rule-1', windowMinutes: 60,
+      status: 'needs_reconciliation' })).toBe(1);
+    await completeReaction('recover');
+    await markReactionUncertain('recover', 'late concurrent report');
+    expect(await reactionOutcome('recover')).toBe('completed');
+    await expect(completeReaction('missing-receipt')).rejects.toThrow(/receipt missing/);
+  });
+
   it('the first claim wins (true); a re-delivery of the same dedup_id is a no-op (false)', async () => {
     expect(await claimReaction(claim('d1'))).toBe(true);
     expect(await claimReaction(claim('d1'))).toBe(false); // ON CONFLICT DO NOTHING → no row returned

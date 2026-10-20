@@ -496,7 +496,7 @@ describe('lint-guard coverage', () => {
     const timedOut: GuardRun = { exitCode: null, output: 'timed out after 600000ms' };
     const f = fake({ head: 'h2', prior: allPass('h1'), runs: { 'lint:guard-reachability': timedOut }, now: () => T0 });
     await runSyncLintGuardTick(f.deps);
-    // Measured 40 minutes later: inside the delta check's 95 min, outside this routine's 30.
+    // Measured 40 minutes later: inside the delta check's 135 min, outside this routine's 30.
     const late = fake({ head: 'h3', prior: f.state.value, now: () => T0 + 40 * MIN });
     await runSyncLintGuardTick(late.deps);
     const first = (late.state.value?.coverage?.ticks ?? [])[0];

@@ -189,8 +189,14 @@ export const SYNC_DELTA_TIMEOUTS_MS = {
    *  ~4.4 min for one operator-core path under load on 2026-10-20, so 5 min was too tight. */
   probe: 10 * 60_000,
   /** The actual affected run, bounded by task/guard cardinality and narrowed by
-   *  `--related` when the selector has positive evidence. */
-  affected: 25 * 60_000,
+   *  `--related` when the selector has positive evidence.
+   *  green-main-ratchet-convergence-2026-10-17#D-034: 25 min was shorter than ONE commit's
+   *  radius (measured 2026-10-20: single commits project 1176-1750s, one ran 25.6 min, one
+   *  was killed at 1500s, one was refused at 1453s > 1350s), so most slots were never judged.
+   *  Runs go back to back either way, so a longer budget does not raise the duty cycle; it
+   *  stops discarding work that would have finished. Admission (maxProjectedSec), the
+   *  slot-credit deadline, the stale-backlog cutoff and the routine timeout all derive from it. */
+  affected: 45 * 60_000,
   tsc: 10 * 60_000,
   /** One file in its own invocation. */
   confirm: 10 * 60_000,
@@ -1756,8 +1762,13 @@ function selectOldestBoundedPrefix(
  *  warning: the green-checkpoint gate has judged those commits since, and no coverage
  *  slot can be credited for them (COVERAGE_JUDGE_DEADLINE_MS). WI-6554700010018028: a
  *  cursor ~9,800 commits behind walked one commit per tick and could never reach a
- *  current slot, so R-17 (95% of slots judged) could not pass however often it ran. */
-export const STALE_BACKLOG_MS = 2 * 60 * 60_000;
+ *  current slot, so R-17 (95% of slots judged) could not pass however often it ran.
+ *  DERIVED (green-main-ratchet-convergence-2026-10-17#D-034): it was a fixed 2 h, which would
+ *  drop commits a run could still have credited once the deadline grew past it. The skip is
+ *  triggered this far past the credit deadline (the keep window) so a backlog merely at the
+ *  deadline is walked normally: 5 slot intervals, the 25-minute gap the fixed 2 h left over
+ *  the 95-minute deadline. */
+export const STALE_BACKLOG_MS = COVERAGE_JUDGE_DEADLINE_MS + 5 * COVERAGE_EXPECTED_INTERVAL_MS;
 
 /** Most commits one `listBatches` window may list. A cursor left OFF the first-parent
  *  chain (a side-lineage commit persisted before the first-parent walk, or any reset)
