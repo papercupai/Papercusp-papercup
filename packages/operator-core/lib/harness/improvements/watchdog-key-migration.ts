@@ -41,8 +41,9 @@ const TOOL_ERROR_CLASSES: readonly ToolErrorClass[] = ['structural', 'transient'
 /**
  * A parsed repeated-tool-error key. Current shape
  * (bug-inflow-one-problem-one-row-2026-10-18 D-004):
- *   `<tool>:<class>` (transient / rate-limit) or
- *   `<tool>:<class>:<errorCode>:<fieldPath>` (structural / caller).
+ *   `<tool>:<class>` (transient / rate-limit / caller — caller per D-010) or
+ *   `<tool>:<class>:<errorCode>:<fieldPath>` (structural). A caller row minted
+ *   before D-010 still carries the 4-part shape until the migration re-keys it.
  * LEGACY open rows still carry `<tool>:<class>:<fingerprint>` (one remainder
  * segment) until the key migration re-keys them; those parse with `fingerprint`
  * set and `errorCode`/`fieldPath` null.
@@ -89,8 +90,10 @@ export function extractSampleFromBody(body: string | null | undefined): string |
  * segment, or a structural/caller key with no code/field), recompute the current
  * structural key (bug-inflow-one-problem-one-row-2026-10-18 D-004) so it keeps
  * matching what the live collector emits:
- *   - transient / rate-limit → `<tool>:<class>` (no sample needed);
- *   - structural / caller → `<tool>:<class>:<errorCode>:<fieldPath>` derived from
+ *   - transient / rate-limit / caller → `<tool>:<class>` (no sample needed; a
+ *     pre-D-010 caller key `<tool>:caller:<code>:<field>` re-keys here too, so
+ *     several caller rows of one tool fold onto one key via watchdog-key-fold);
+ *   - structural → `<tool>:<class>:<errorCode>:<fieldPath>` derived from
  *     the stored sample plus the failure's `error_code` column, which the body
  *     does not carry: `errorCodeOf` supplies it (the CLI looks it up in the
  *     invocation ledger). Without it only a code carried IN the message is used.

@@ -268,14 +268,33 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
       { tool_name: 'coord:thread', class: 'caller' as const, code_key: 'invalid_args', field_key: 'root_msg_id', n: 13, total: 22, sample: 'invalid_args: root_msg_id: Required' }, // ≥10
       { tool_name: 'rare:tool', class: 'caller' as const, code_key: 'invalid_args', field_key: 'slug', n: 3, total: 5, sample: 'invalid_args: slug: Required' }, // <10
     ]);
-    expect(signals.map((s) => s.key)).toEqual(['coord:thread:caller:invalid_args:root_msg_id']);
-    expect(signals[0].title).toContain('(invalid_args @ root_msg_id)');
+    expect(signals.map((s) => s.key)).toEqual(['coord:thread:caller']);
+    expect(signals[0].title).toBe('Tool coord:thread repeatedly rejecting caller input');
+    expect(signals[0].body).toContain('Arguments agents get wrong (failures in the window): root_msg_id ×13.');
     expect(signals[0].kind).toBe('change');
     expect(signals[0].severity).toBe('minor');
   });
 
+  it('folds every caller argument of one tool onto ONE signal with a per-argument counter (bug-inflow D-010)', () => {
+    const signals = toolErrorSignalsFromRows([
+      { tool_name: 'plans:new', class: 'caller' as const, code_key: 'invalid_args', field_key: 'note', n: 4, total: 40, sample: 'invalid_args: note: Too big' },
+      { tool_name: 'plans:new', class: 'caller' as const, code_key: 'invalid_args', field_key: 'status', n: 9, total: 40, sample: 'invalid_args: status: Invalid option' },
+      { tool_name: 'plans:new', class: 'caller' as const, code_key: 'claim_conflict', field_key: null, n: 2, total: 40, sample: 'claim_conflict: held' },
+      // A structural failure of the same tool keeps its own row.
+      { tool_name: 'plans:new', class: 'structural' as const, code_key: 'undefined_column', field_key: 'x', n: 3, total: 40, sample: 'column "x" does not exist' },
+    ]);
+    expect(signals.map((s) => s.key).sort()).toEqual(['plans:new:caller', 'plans:new:structural:undefined_column:x']);
+    const caller = signals.find((s) => s.key === 'plans:new:caller')!;
+    // 4 + 9 + 2 = 15 crosses the caller bar (10) only because the arguments fold together.
+    expect(caller.body).toContain('rejected caller input 15×');
+    expect(caller.body).toContain('status ×9, note ×4, field-unknown ×2.');
+    expect(caller.payloadExtra).toEqual({
+      callerArguments: { window: '24h', total: 15, counts: { status: 9, note: 4, 'field-unknown': 2 } },
+    });
+  });
+
   it('the SQL collector keeps qualifying caller groups beyond the former top-30 cap', async () => {
-    const targetKey = 'capability:read:caller:superuser_native_session_verifier_unavailable:field-unknown';
+    const targetKey = 'capability:read:caller';
     const rows = Array.from({ length: 30 }, (_, index) => ({
       tool_name: 'other:tool-' + index,
       class: 'caller' as const,
@@ -425,7 +444,7 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     const signals = toolErrorSignalsFromRows(rows, {}, new Set(['coord:inbox']));
     expect(signals.map((signal) => signal.key)).toEqual([
       'docs:get:structural:error-code-unknown:field-unknown',
-      'plans:new:caller:invalid_args:status',
+      'plans:new:caller',
       'memory:search:rate-limit',
     ]);
   });

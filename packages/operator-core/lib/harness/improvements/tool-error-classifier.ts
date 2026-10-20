@@ -509,9 +509,12 @@ export function toolErrorFingerprintSqlCase<T>(sql: SqlTag<T>): T {
 // The watchdog's repeated-tool-error key used to embed an MD5 of the message
 // skeleton, so one defect whose message carried an id, a path or a value split
 // into one row per wording (R-3). The key is now STRUCTURAL: tool + class, plus
-// error code + field path for the classes that name a fixable shape (structural,
-// caller). Transient and rate-limit failures key by tool alone (R-1): they are a
-// load/capacity reading about the tool, not distinct defects.
+// error code + field path for structural failures (each names a fixable shape).
+// Transient and rate-limit failures key by tool alone (R-1): they are a
+// load/capacity reading about the tool, not distinct defects. Caller failures key
+// by tool alone too (D-010): the fix for repeated misuse is ONE ease-of-use item
+// per tool, and the arguments agents get wrong are a counter on that item
+// (`callerArgumentCounts`), not one row per argument.
 //
 // Every pattern below obeys the dual-engine constraint documented at the top of
 // this file: each is valid POSIX ERE for Postgres and valid JS, applied to the
@@ -520,7 +523,7 @@ export function toolErrorFingerprintSqlCase<T>(sql: SqlTag<T>): T {
 
 /** Classes whose signal key names one row per TOOL (no code / field segments). */
 export const TOOL_KEYED_TOOL_ERROR_CLASSES: ReadonlySet<ToolErrorClass> =
-  new Set<ToolErrorClass>(['transient', 'rate-limit']);
+  new Set<ToolErrorClass>(['transient', 'rate-limit', 'caller']);
 
 /**
  * Error codes that name the dispatch envelope rather than the failure. A more
@@ -642,8 +645,8 @@ export function toolErrorKeyPartsSql<T>(sql: SqlTag<T>): T {
 }
 
 /**
- * The dedup key for a repeated-tool-error signal. Transient and rate-limit:
- * `<tool>:<class>` (one row per tool). Structural and caller:
+ * The dedup key for a repeated-tool-error signal. Transient, rate-limit and
+ * caller: `<tool>:<class>` (one row per tool; D-010 for caller). Structural:
  * `<tool>:<class>:<errorCode>:<fieldPath>`. Single source for the live
  * collector, agent-report normalization, the structural verifier and the
  * key-migration routine, so every reader and writer agrees on one identity.

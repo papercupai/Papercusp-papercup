@@ -68,6 +68,7 @@ import { processAutoClose as runAutoCloseSweep, type AutoCloseOutcome } from './
 import { refreshBugInflowDaily } from './bug-inflow';
 import {
   classifyToolError,
+  FIELD_UNKNOWN,
   toolErrorSignalKey,
   toolErrorClassSqlCase,
   toolErrorKeyPartsSql,
@@ -291,6 +292,13 @@ export interface WatchdogSignal {
   kind?: ImprovementKind;
   /** Repo-relative paths involved, when the signal knows them (feeds the path gate). */
   paths?: string[];
+  /**
+   * Structured fields written onto the captured row's payload, on mint AND on
+   * every re-fire refresh (capture-core merges `payloadExtra` there). A value set
+   * here is the LATEST reading, replaced each tick — never an accumulator.
+   * bug-inflow D-010: the caller signal carries `callerArguments` here.
+   */
+  payloadExtra?: Record<string, unknown>;
   /**
    * Capture scope — 'operator' (default) or 'harness:<slug>' when the signal is
    * about one Hive. Passed through to the capture so the D-005 triage taxonomy
@@ -2083,6 +2091,29 @@ export function isImprovementLoopTool(toolName: string): boolean {
 /** A classified row folded onto its structural signal key. */
 export interface KeyedToolErrorRow extends ClassifiedToolErrorRow {
   key: string;
+  /**
+   * Caller rows only (bug-inflow D-010): failures per field path folded onto the
+   * tool's one caller key — which argument agents keep getting wrong, and how
+   * often. A row without a readable field path counts under `field-unknown`.
+   */
+  field_counts?: Record<string, number>;
+}
+
+/** Pure: add `n` failures for `field` to a copy of `counts`. */
+function addFieldCount(
+  counts: Readonly<Record<string, number>> | undefined,
+  field: string | null | undefined,
+  n: number,
+): Record<string, number> {
+  const out = { ...(counts ?? {}) };
+  const k = field || FIELD_UNKNOWN;
+  out[k] = (out[k] ?? 0) + n;
+  return out;
+}
+
+/** Pure: field counts ranked most-failed first (ties by name), as `[field, n]` pairs. */
+export function rankFieldCounts(counts: Readonly<Record<string, number>> | undefined): Array<[string, number]> {
+  return Object.entries(counts ?? {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
 /**
@@ -2098,8 +2129,11 @@ export function aggregateToolErrorRowsByKey(rows: readonly ClassifiedToolErrorRo
   for (const r of rows) {
     const key = toolErrorSignalKey(r.tool_name, r.class, r.code_key, r.field_key);
     const prior = byKey.get(key);
+    const fieldCounts = r.class === 'caller'
+      ? addFieldCount(prior?.field_counts, r.field_key, r.n)
+      : prior?.field_counts;
     if (!prior) {
-      byKey.set(key, { ...r, key });
+      byKey.set(key, { ...r, key, ...(fieldCounts ? { field_counts: fieldCounts } : {}) });
       continue;
     }
     const priorMs = prior.latest_at ? new Date(prior.latest_at).getTime() : 0;
@@ -2112,6 +2146,7 @@ export function aggregateToolErrorRowsByKey(rows: readonly ClassifiedToolErrorRo
       active_hours: (prior.active_hours ?? 0) + (r.active_hours ?? 0),
       sample: newer ? r.sample ?? prior.sample : prior.sample ?? r.sample,
       latest_at: newer ? r.latest_at : prior.latest_at,
+      ...(fieldCounts ? { field_counts: fieldCounts } : {}),
     });
   }
   return [...byKey.values()];
@@ -2200,13 +2235,14 @@ export function toolErrorSignalsFromRows(
     const sample = (r.sample ?? '').slice(0, 800) || '(no message)';
     const latestAt = toIsoOrUndefined(r.latest_at);
     // The dedup key is STRUCTURAL (bug-inflow-one-problem-one-row-2026-10-18
-    // D-003/D-004): tool + class, plus error code + field path for structural and
-    // caller. Message wording never enters it, so a defect whose message carries an
-    // id or a value stays ONE row whose repeatCount climbs (R-3). Transient and
-    // rate-limit key by tool alone (R-1). toolErrorSignalKey is the single source,
-    // shared with agent-report normalization and the key migration.
+    // D-003/D-004): tool + class, plus error code + field path for structural.
+    // Message wording never enters it, so a defect whose message carries an id or
+    // a value stays ONE row whose repeatCount climbs (R-3). Transient and
+    // rate-limit key by tool alone (R-1); caller keys by tool alone too (D-010),
+    // with the per-argument counts on the signal. toolErrorSignalKey is the single
+    // source, shared with agent-report normalization and the key migration.
     const key = r.key;
-    const shape = r.class === 'structural' || r.class === 'caller'
+    const shape = r.class === 'structural'
       ? ` (${r.code_key ?? 'error-code-unknown'} @ ${r.field_key ?? 'field-unknown'})`
       : '';
 
@@ -2263,17 +2299,34 @@ export function toolErrorSignalsFromRows(
       });
     } else {
       if (r.n < callerMin) continue;
+      // D-010: ONE ease-of-use item per tool, naming the arguments agents keep
+      // getting wrong with a counter. The title stays stable (no counts); the
+      // window's per-argument counts ride the body and `payload.callerArguments`.
+      const ranked = rankFieldCounts(r.field_counts);
+      const argList = ranked.length > 0
+        ? ranked.slice(0, 10).map(([f, n]) => `${f} ×${n}`).join(', ') +
+          (ranked.length > 10 ? `, +${ranked.length - 10} more` : '')
+        : FIELD_UNKNOWN;
       out.push({
         source: 'repeated-tool-error',
         key,
-        title: `Tool ${r.tool_name} repeatedly rejecting caller input${shape}`,
+        title: `Tool ${r.tool_name} repeatedly rejecting caller input`,
         body:
           `Watchdog signal (caller/DX tool-error): ${r.tool_name} rejected caller input ${r.n}× ` +
           `(${pct}% of ${r.total} calls) — a sustained pattern suggests a confusing schema or a ` +
-          `mis-scoped gate, not a tool bug.\n\nSample: ${sample}`,
+          `mis-scoped gate, not a tool bug.\n\nArguments agents get wrong (failures in the window): ` +
+          `${argList}.\n\nSample: ${sample}`,
         severity: 'minor',
         kind: 'change',
         latestAt,
+        payloadExtra: {
+          callerArguments: {
+            window: '24h',
+            total: r.n,
+            counts: Object.fromEntries(ranked),
+            ...(latestAt ? { at: latestAt } : {}),
+          },
+        },
       });
     }
   }
@@ -5528,6 +5581,8 @@ async function runWatchdogTickBody(
         origin: s.origin,
         // Frontier P-044: the taxonomy slug graduation counts clean passes by.
         findingClass: s.findingClass,
+        // bug-inflow D-010: latest-reading structured fields (caller argument counts).
+        ...(s.payloadExtra ? { payloadExtra: s.payloadExtra } : {}),
       });
     } catch (e) {
       console.warn(`[improvement-watchdog] capture failed for ${s.source}:${s.key}: ${e instanceof Error ? e.message : e}`);

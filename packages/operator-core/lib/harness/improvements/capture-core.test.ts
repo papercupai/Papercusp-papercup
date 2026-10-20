@@ -860,7 +860,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(d.created[0].payload).not.toHaveProperty('toolFailureProbation.report.reproduced');
   });
 
-  it('keys agent reports that differ only in wording onto one tool+class+code+field row (bug-inflow D-004/D-005)', async () => {
+  it('keys caller agent reports onto ONE row per tool, whatever the wording, code or argument (bug-inflow D-005/D-010)', async () => {
     const firstReport: SuspectedToolFailure = {
       toolName: 'coord:send', errorCode: 'invalid_args', status: 'error',
       message: 'invalid_args: first body value was rejected',
@@ -873,11 +873,15 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(incoming.classKey).toBe(first.classKey);
     // Wording alone never splits a key (bug-inflow-one-problem-one-row-2026-10-18#D-004 item 1).
     expect(incoming.watchdogKey).toBe(first.watchdogKey);
-    // A real dimension still does: a different error code, or a different field, keys a different row.
+    // Caller keys once per TOOL (bug-inflow-one-problem-one-row-2026-10-18#D-010): a different
+    // error code or a different argument is a counter on the same ease-of-use row, not a new row.
+    expect(first.watchdogKey).toBe('repeated-tool-error:coord:send:caller');
     expect(normalizeSuspectedToolFailure({ ...firstReport, errorCode: 'unknown_recipient' }).watchdogKey)
-      .not.toBe(first.watchdogKey);
-    // The field comes from the measured message (never the reporter's own fieldPath).
+      .toBe(first.watchdogKey);
     expect(normalizeSuspectedToolFailure({ ...firstReport, message: 'invalid_args: Unrecognized key: "bodyx"' }).watchdogKey)
+      .toBe(first.watchdogKey);
+    // A real dimension still splits: another tool keys another row.
+    expect(normalizeSuspectedToolFailure({ ...firstReport, toolName: 'coord:dispatch' }).watchdogKey)
       .not.toBe(first.watchdogKey);
     const prior = existing({ id: 'EI-INCOMPLETE-CLASS', title: 'first report', scope: 'harness:papercusp',
       payload: { lane: 'observation', watchdogKey: first.watchdogKey,

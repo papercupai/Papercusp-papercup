@@ -803,6 +803,9 @@ describe('author routing (R-3)', () => {
       exec: async () => ({ status: 0, stdout: '', stderr: '' }) });
     deps.hostLoad = () => ({ load1: 2, cores: 128 });
     deps.greenCheckpointRunning = async () => false;
+    // The fixture's commits are dated relative to NOW; on the wall clock they would be a
+    // decades-old backlog, which the stale-backlog rule skips (WI-6554700010018028).
+    deps.now = () => NOW;
     deps.headSha = async () => SHA_B;
     deps.readCursor = async () => JSON.parse(JSON.stringify(state.cursor)) as SyncDeltaCursor | null;
     deps.writeCursor = async next => { state.cursor = JSON.parse(JSON.stringify(next)) as SyncDeltaCursor; };

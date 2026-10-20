@@ -1172,16 +1172,18 @@ describe('toolErrorFingerprint (P-012) — mirrors the SQL skeleton', () => {
     expect(toolErrorFingerprint('429 — 500 (#3)')).toBeNull();
   });
 
-  it('still separates two DISTINCT caller modes under one tool — by field path, not wording', () => {
+  it('reads two DISTINCT caller modes under one tool as distinct field paths, keyed onto ONE row per tool (D-010)', () => {
     const aMsg = 'invalid_args: note: Too big: expected string to have <=400 characters';
     const bMsg = 'invalid_args: status: Invalid option: expected one of "draft"|"ready"';
     expect(toolErrorFingerprint(aMsg)).not.toBe(toolErrorFingerprint(bMsg));
     const a = toolErrorKeyParts('invalid_input', aMsg);
     const b = toolErrorKeyParts('invalid_input', bMsg);
+    // The field paths stay distinct — they feed the per-argument counter…
     expect(a).toEqual({ errorCode: 'invalid_args', fieldPath: 'note' });
     expect(b).toEqual({ errorCode: 'invalid_args', fieldPath: 'status' });
-    expect(toolErrorSignalKey('plans:new', 'caller', a.errorCode, a.fieldPath))
-      .not.toBe(toolErrorSignalKey('plans:new', 'caller', b.errorCode, b.fieldPath));
+    // …but the key is one ease-of-use item per tool (approved proposal, D-010).
+    expect(toolErrorSignalKey('plans:new', 'caller', a.errorCode, a.fieldPath)).toBe('plans:new:caller');
+    expect(toolErrorSignalKey('plans:new', 'caller', b.errorCode, b.fieldPath)).toBe('plans:new:caller');
   });
 
   it('folds transient failures with different wording onto ONE row per tool (R-1, EI-25714783883986261)', () => {
@@ -1202,11 +1204,11 @@ describe('toolErrorFingerprint (P-012) — mirrors the SQL skeleton', () => {
 });
 
 describe('toolErrorSignalKey — structural identity (bug-inflow-one-problem-one-row-2026-10-18 D-004)', () => {
-  it('keys structural and caller by tool + class + error code + field path', () => {
+  it('keys structural by tool + class + error code + field path', () => {
     expect(toolErrorSignalKey('memory:search', 'structural', 'handler_error', 'field-unknown'))
       .toBe('memory:search:structural:handler_error:field-unknown');
-    expect(toolErrorSignalKey('plans:new', 'caller', 'invalid_args', 'items.n.id'))
-      .toBe('plans:new:caller:invalid_args:items.n.id');
+    expect(toolErrorSignalKey('plans:new', 'structural', 'invalid_args', 'items.n.id'))
+      .toBe('plans:new:structural:invalid_args:items.n.id');
   });
 
   it('keys transient and rate-limit by tool alone (one capacity reading per tool)', () => {
@@ -1216,10 +1218,18 @@ describe('toolErrorSignalKey — structural identity (bug-inflow-one-problem-one
     expect(toolErrorSignalKey('memory:search', 'rate-limit', 'rate_limited', null)).toBe('memory:search:rate-limit');
   });
 
+  it('keys caller by tool alone: one ease-of-use item per tool whatever the code or argument (D-010)', () => {
+    expect(TOOL_KEYED_TOOL_ERROR_CLASSES.has('caller')).toBe(true);
+    expect(TOOL_KEYED_TOOL_ERROR_CLASSES.has('structural')).toBe(false);
+    expect(toolErrorSignalKey('plans:new', 'caller', 'invalid_args', 'items.n.id')).toBe('plans:new:caller');
+    expect(toolErrorSignalKey('plans:new', 'caller', 'claim_conflict', 'field-unknown')).toBe('plans:new:caller');
+    expect(toolErrorSignalKey('coord:thread', 'caller', undefined, '')).toBe('coord:thread:caller');
+  });
+
   it('names unknown code / field explicitly instead of dropping the segments', () => {
     expect(toolErrorSignalKey('docs:get', 'structural', null, null))
       .toBe('docs:get:structural:error-code-unknown:field-unknown');
-    expect(toolErrorSignalKey('coord:thread', 'caller', undefined, '')).toBe('coord:thread:caller:error-code-unknown:field-unknown');
+    expect(toolErrorSignalKey('coord:thread', 'structural', undefined, '')).toBe('coord:thread:structural:error-code-unknown:field-unknown');
   });
 
   it('never carries an md5 message digest', () => {
@@ -1281,7 +1291,7 @@ describe('normalizeSuspectedToolFailure — correlated probation identity (P-013
       runtimeVersion: 'codex-1.2.4',
     });
     expect(a.watchdogKey).toBe(b.watchdogKey);
-    expect(a.watchdogKey).toMatch(/^repeated-tool-error:coord:send:caller:/);
+    expect(a.watchdogKey).toBe('repeated-tool-error:coord:send:caller');
     expect(a.correlationFingerprint).not.toBe(b.correlationFingerprint);
     expect(a.direct).toBe(false);
   });

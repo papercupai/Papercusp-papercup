@@ -18,7 +18,9 @@ import {
   parseAffectedProbe,
   parseFailingFilesLine,
   parseSyncBatches,
+  planStaleBacklogSkip,
   runSyncBatchDeltaCheck,
+  STALE_BACKLOG_MS,
   unionBatchPaths,
   type AffectedProbe,
   type FailingFile,
@@ -912,6 +914,79 @@ describe('runSyncBatchDeltaCheck — P-011 typecheck-first and budget-exhaustion
     expect(second.status).toBe('red');
     expect(state.filed).toHaveLength(2);
     expect(state.cursor?.openReds?.map((r) => r.path)).toEqual([TYPE_ERROR_FILE]);
+  });
+});
+
+describe('stale backlog skip-ahead (WI-6554700010018028)', () => {
+  const NOW = 1_800_000_000_000;
+  const MIN = 60_000;
+  const ADMISSION_MS = Date.parse('2000-01-01T00:00:00Z');
+  const sha = (n: number) => n.toString(16).padStart(40, '0');
+  /** Newest first, one commit per `ages` entry (minutes before NOW). */
+  const backlog = (ages: Array<number | null>): SyncBatch[] =>
+    ages.map((age, i) =>
+      makeBatch({ sha: sha(i + 1), committedAtMs: age === null ? null : NOW - age * MIN, paths: [`p/${i}.ts`] }),
+    );
+
+  it('leaves a backlog younger than STALE_BACKLOG_MS to the normal oldest-first walk', () => {
+    expect(planStaleBacklogSkip(backlog([1, 10, 60, 119]), NOW)).toBeNull();
+    expect(STALE_BACKLOG_MS).toBe(120 * MIN);
+  });
+
+  it('keeps the commits inside the credit window and anchors on the newest one outside it', () => {
+    const batches = backlog([2, 20, 31, 90, 60 * 24 * 18]);
+    const skip = planStaleBacklogSkip(batches, NOW);
+    expect(skip?.remaining.map((b) => b.sha)).toEqual([sha(1), sha(2)]);
+    expect(skip?.anchor.sha).toBe(sha(3));
+    expect(skip?.skippedCount).toBe(3);
+    expect(skip?.oldestMs).toBe(NOW - 60 * 24 * 18 * MIN);
+  });
+
+  it('never judges age from an admission commit date or an unparseable time', () => {
+    const admission = makeBatch({ sha: sha(9), committedAtMs: ADMISSION_MS });
+    // A fresh backlog that merely contains a synthetic 2000-01-01 commit is not stale.
+    expect(planStaleBacklogSkip([...backlog([1, 5]), admission], NOW)).toBeNull();
+    // Nothing dated at all: nothing proves the backlog stale.
+    expect(planStaleBacklogSkip(backlog([null, null]), NOW)).toBeNull();
+  });
+
+  it('re-anchors the cursor, resets the learned window state, and records an unjudged slot', async () => {
+    const batches = backlog([3, 45, 60 * 24 * 18]);
+    let affectedRuns = 0;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => sha(1),
+        listBatches: async () => batches,
+        runAffected: async () => {
+          affectedRuns += 1;
+          return { ok: true, failing: [] };
+        },
+        now: () => NOW,
+      },
+      { sha: SHA_A, updatedAtMs: 1, windowCommitCap: 1, undeterminedStreak: { windowHead: sha(3), count: 2 } },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('backlog-skipped');
+    expect(res.batchCount).toBe(2);
+    expect(affectedRuns).toBe(0);
+    expect(state.cursor?.sha).toBe(sha(2));
+    expect(state.cursor?.windowCommitCap).toBeUndefined();
+    expect(state.cursor?.undeterminedStreak).toBeUndefined();
+    expect(state.cursor?.lastSkipReason).toMatch(/^backlog-skipped: 2 commit\(s\) through 0{12} skipped unjudged/);
+    const tick = state.cursor?.coverage?.ticks.at(-1);
+    expect(tick).toMatchObject({ evaluated: false, status: 'backlog-skipped' });
+
+    // The next tick judges only the kept window from the re-anchored cursor.
+    const seenSince: string[] = [];
+    deps.listBatches = async (since) => {
+      seenSince.push(since);
+      return batches.slice(0, 1);
+    };
+    const next = await runSyncBatchDeltaCheck(deps);
+    expect(seenSince).toEqual([sha(2)]);
+    expect(next.status).toBe('green');
+    expect(affectedRuns).toBe(1);
+    expect(state.cursor?.sha).toBe(sha(1));
   });
 });
 

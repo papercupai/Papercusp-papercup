@@ -31,7 +31,9 @@ const structuralBody =
   'the shape that recurs identically (a bug/misconfig), not transient load.\n\n' +
   'Sample error: column "initiative" does not exist';
 
-const CALLER_KEY = 'repeated-tool-error:plans:new:caller:invalid_args:note';
+// bug-inflow D-010: caller keys once per tool, so the code + field re-key mechanics are
+// exercised on a STRUCTURAL key (same sample, same parts); CALLER_KEY keeps its name.
+const CALLER_KEY = 'repeated-tool-error:plans:new:structural:invalid_args:note';
 const STRUCTURAL_KEY = 'repeated-tool-error:plans:list:structural:error-code-unknown:initiative';
 const LEGACY_MD5 = 'md5-0123456789abcdef0123456789abcdef';
 
@@ -41,7 +43,7 @@ describe('parseRepeatedToolErrorKey', () => {
       tool: 'plans:list', klass: 'transient', errorCode: null, fieldPath: null, fingerprint: null,
     });
     expect(parseRepeatedToolErrorKey(CALLER_KEY)).toEqual({
-      tool: 'plans:new', klass: 'caller', errorCode: 'invalid_args', fieldPath: 'note', fingerprint: null,
+      tool: 'plans:new', klass: 'structural', errorCode: 'invalid_args', fieldPath: 'note', fingerprint: null,
     });
     expect(parseRepeatedToolErrorKey('repeated-tool-error:a:b:c:structural:handler_error:items.n.id')).toEqual({
       tool: 'a:b:c', klass: 'structural', errorCode: 'handler_error', fieldPath: 'items.n.id', fingerprint: null,
@@ -76,8 +78,22 @@ describe('extractSampleFromBody', () => {
 });
 
 describe('deriveToolErrorWatchdogKey', () => {
-  it('re-keys a bare legacy caller key to tool + class + code + field', () => {
-    expect(deriveToolErrorWatchdogKey(ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody })))
+  it('re-keys a pre-D-010 caller key (any code / field / fingerprint) to ONE key per tool (bug-inflow D-010)', () => {
+    for (const old of [
+      'repeated-tool-error:plans:new:caller:invalid_args:note',
+      'repeated-tool-error:plans:new:caller:invalid_args:status',
+      `repeated-tool-error:plans:new:caller:${LEGACY_MD5}`,
+    ]) {
+      expect(deriveToolErrorWatchdogKey(ei({ id: 'EI-c', watchdogKey: old, body: callerBody })))
+        .toBe('repeated-tool-error:plans:new:caller');
+    }
+    // Already per tool: left alone.
+    expect(deriveToolErrorWatchdogKey(ei({ id: 'EI-c', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody })))
+      .toBeNull();
+  });
+
+  it('re-keys a bare legacy structural key to tool + class + code + field', () => {
+    expect(deriveToolErrorWatchdogKey(ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:structural', body: callerBody })))
       .toBe(CALLER_KEY);
   });
 
@@ -85,7 +101,7 @@ describe('deriveToolErrorWatchdogKey', () => {
     for (const fp of [LEGACY_MD5, 'invalid-args-note-too-big-expected']) {
       expect(deriveToolErrorWatchdogKey(ei({
         id: `EI-${fp}`,
-        watchdogKey: `repeated-tool-error:plans:new:caller:${fp}`,
+        watchdogKey: `repeated-tool-error:plans:new:structural:${fp}`,
         body: callerBody,
       }))).toBe(CALLER_KEY);
     }
@@ -137,16 +153,16 @@ describe('recomputeWatchdogKeys', () => {
   }
 
   it('dry-run (default) reports changes but writes nothing', async () => {
-    const d = deps([ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody })]);
+    const d = deps([ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:structural', body: callerBody })]);
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d);
     expect(res.dryRun).toBe(true);
-    expect(res.changed).toEqual([{ id: 'EI-1', oldKey: 'repeated-tool-error:plans:new:caller', newKey: CALLER_KEY }]);
+    expect(res.changed).toEqual([{ id: 'EI-1', oldKey: 'repeated-tool-error:plans:new:structural', newKey: CALLER_KEY }]);
     expect(d.writes).toEqual([]);
   });
 
   it('execute mode persists each recomputed key', async () => {
     const d = deps([
-      ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody }),
+      ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:structural', body: callerBody }),
       ei({ id: 'EI-2', watchdogKey: 'repeated-tool-error:plans:list:structural', body: structuralBody }),
     ]);
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d, { dryRun: false });
@@ -159,14 +175,14 @@ describe('recomputeWatchdogKeys', () => {
 
   it('two legacy rows that fold onto ONE structural key: the first migrates, the second is a collision', async () => {
     const d = deps([
-      ei({ id: 'EI-1', watchdogKey: `repeated-tool-error:plans:new:caller:${LEGACY_MD5}`, body: callerBody }),
-      ei({ id: 'EI-2', watchdogKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected', body: callerBody }),
+      ei({ id: 'EI-1', watchdogKey: `repeated-tool-error:plans:new:structural:${LEGACY_MD5}`, body: callerBody }),
+      ei({ id: 'EI-2', watchdogKey: 'repeated-tool-error:plans:new:structural:invalid-args-note-too-big-expected', body: callerBody }),
     ]);
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d, { dryRun: false });
     expect(res.changed.map((c) => c.id)).toEqual(['EI-1']);
     expect(res.collisions).toEqual([{
       id: 'EI-2',
-      oldKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected',
+      oldKey: 'repeated-tool-error:plans:new:structural:invalid-args-note-too-big-expected',
       newKey: CALLER_KEY,
       heldBy: 'EI-1',
     }]);
@@ -176,14 +192,14 @@ describe('recomputeWatchdogKeys', () => {
   it('skips + reports a collision when the new key already belongs to another open EI', async () => {
     const d = deps([
       // EI-1 would migrate INTO the key EI-2 already holds.
-      ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody }),
+      ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:structural', body: callerBody }),
       ei({ id: 'EI-2', watchdogKey: CALLER_KEY, body: callerBody }),
     ]);
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d, { dryRun: false });
     expect(res.changed).toEqual([]);
     expect(res.collisions).toEqual([{
       id: 'EI-1',
-      oldKey: 'repeated-tool-error:plans:new:caller',
+      oldKey: 'repeated-tool-error:plans:new:structural',
       newKey: CALLER_KEY,
       heldBy: 'EI-2',
     }]);
@@ -203,7 +219,7 @@ describe('recomputeWatchdogKeys', () => {
   });
 
   it('running twice is a no-op (idempotent backfill)', async () => {
-    const first = deps([ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody })]);
+    const first = deps([ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:structural', body: callerBody })]);
     await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, first, { dryRun: false });
     // After the first pass the live store holds the new key; a second pass sees it migrated.
     const second = deps([ei({ id: 'EI-1', watchdogKey: first.writes[0]!.newKey, body: callerBody })]);

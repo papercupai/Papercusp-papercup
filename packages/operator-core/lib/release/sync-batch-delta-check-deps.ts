@@ -322,6 +322,14 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     },
 
     async listBatches(sinceSha: string): Promise<SyncBatch[] | null> {
+      // FIRST-PARENT, not `--no-merges` (WI-6554700010018028). A merged frozen lineage
+      // carries repair-queue admission commits dated 2000-01-01 (ADMISSION_GIT_DATE).
+      // `--no-merges` listed them, git's date order put them LAST (oldest), the
+      // oldest-prefix walk judged one first and moved the cursor onto a side-lineage
+      // commit. From there `cursor..staging` was ~9,800 commits. The first-parent chain
+      // is the order staging actually moved in, so the cursor can only land on it. An
+      // absorbing merge's own first-parent diff is listed too (--diff-merges), so no
+      // content that reached staging through a merge is dropped.
       const r = await exec(
         'git',
         [
@@ -329,7 +337,8 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
           cfg.root,
           'log',
           `${sinceSha}..${cfg.branch}`,
-          '--no-merges',
+          '--first-parent',
+          '--diff-merges=first-parent',
           '--name-only',
           '--format=%x00%H %ct%n%(trailers:key=Papercusp-Agent)',
         ],

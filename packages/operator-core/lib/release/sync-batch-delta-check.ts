@@ -108,6 +108,7 @@
  */
 
 import type { KnownGoodPoint } from './known-good-freeze';
+import { isAdmissionSyntheticCommitDate } from './admission-commit-date';
 import { SCOPE_LAUNCH_FAILURE_RE, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
 
 // ── tunables (every default fails toward doing less work) ────────────────────
@@ -1418,6 +1419,10 @@ export type SyncBatchDeltaStatus =
   /** A single commit's affected run stayed undetermined (non-zero exit, no file named)
    *  UNDETERMINED_STREAK_LIMIT times in a row: explicitly skipped, cursor advanced. */
   | 'undetermined'
+  /** The oldest unjudged commit was older than STALE_BACKLOG_MS: that backlog was skipped
+   *  unjudged and the cursor re-anchored near the tip (WI-6554700010018028). NOT evaluated,
+   *  and never late-credited: its slot's commits were not judged. */
+  | 'backlog-skipped'
   | 'nothing-selected'
   | 'green'
   | 'red';
@@ -1606,6 +1611,100 @@ function selectOldestBoundedPrefix(
   return { commits };
 }
 
+/** A backlog whose OLDEST unjudged commit is older than this is no longer an early
+ *  warning: the green-checkpoint gate has judged those commits since, and no coverage
+ *  slot can be credited for them (COVERAGE_JUDGE_DEADLINE_MS). WI-6554700010018028: a
+ *  cursor ~9,800 commits behind walked one commit per tick and could never reach a
+ *  current slot, so R-17 (95% of slots judged) could not pass however often it ran. */
+export const STALE_BACKLOG_MS = 2 * 60 * 60_000;
+
+export interface StaleBacklogSkip {
+  /** Newest commit skipped unjudged; the cursor moves here. */
+  anchor: SyncBatch;
+  /** Commits skipped unjudged, the anchor included. */
+  skippedCount: number;
+  /** Commit time (epoch ms) of the oldest dated commit in the backlog. */
+  oldestMs: number;
+  /** Commits left for later ticks to judge, newest first. */
+  remaining: SyncBatch[];
+}
+
+/** A commit time that says something about age: parseable, and not the synthetic
+ *  2000-01-01 date repair-queue admission commits carry. */
+function datedMs(batch: SyncBatch): number | null {
+  const t = batch.committedAtMs;
+  if (typeof t !== 'number' || !Number.isFinite(t) || isAdmissionSyntheticCommitDate(t)) return null;
+  return t;
+}
+
+/** Decide whether the backlog behind the cursor is stale and where to re-anchor. Pure.
+ *
+ *  Trigger: the oldest DATED commit is older than `staleAfterMs`. Keep: the newest-first
+ *  run of commits dated within `keepWindowMs` of now (the coverage credit window); the
+ *  first commit outside it (or undated) ends the run, becomes the anchor, and it and
+ *  everything older are skipped unjudged. A backlog with no dated commit is never
+ *  skipped: nothing proves it is stale. */
+export function planStaleBacklogSkip(
+  batchesNewestFirst: readonly SyncBatch[],
+  nowMs: number,
+  opts: { staleAfterMs?: number; keepWindowMs?: number } = {},
+): StaleBacklogSkip | null {
+  const staleAfterMs = opts.staleAfterMs ?? STALE_BACKLOG_MS;
+  const keepWindowMs = opts.keepWindowMs ?? COVERAGE_JUDGE_DEADLINE_MS;
+  let oldestMs: number | null = null;
+  for (const batch of batchesNewestFirst) {
+    const t = datedMs(batch);
+    if (t !== null && (oldestMs === null || t < oldestMs)) oldestMs = t;
+  }
+  if (oldestMs === null || nowMs - oldestMs <= staleAfterMs) return null;
+  const keepFrom = nowMs - keepWindowMs;
+  let keep = 0;
+  while (keep < batchesNewestFirst.length) {
+    const t = datedMs(batchesNewestFirst[keep]!);
+    if (t === null || t < keepFrom) break;
+    keep += 1;
+  }
+  const anchor = batchesNewestFirst[keep];
+  if (!anchor) return null;
+  return {
+    anchor,
+    skippedCount: batchesNewestFirst.length - keep,
+    oldestMs,
+    remaining: batchesNewestFirst.slice(0, keep),
+  };
+}
+
+/** Re-anchor the cursor past a stale backlog. The skipped commits are recorded as
+ *  UNJUDGED (status `backlog-skipped`, never evaluated or late-credited); the kept
+ *  window is judged by the next tick from a fresh cursor. A learned commit cap or an
+ *  undetermined streak describes the skipped window, not the kept one, so both reset. */
+async function recordStaleBacklogSkip(
+  deps: SyncBatchDeltaDeps,
+  cursor: SyncDeltaCursor,
+  skip: StaleBacklogSkip,
+  stillOpen: OpenRed[],
+  filed: SyncBatchDeltaFiling[],
+): Promise<SyncBatchDeltaResult> {
+  const now = deps.now();
+  const ageMin = Math.round((now - skip.oldestMs) / 60_000);
+  const reason =
+    `${skip.skippedCount} commit(s) through ${skip.anchor.sha.slice(0, 12)} skipped unjudged: ` +
+    `oldest is ${ageMin} min old (> ${Math.round(STALE_BACKLOG_MS / 60_000)} min); ` +
+    `${skip.remaining.length} recent commit(s) kept for the next tick`;
+  const { windowCommitCap: _cap, undeterminedStreak: _streak, ...rest } = cursor;
+  const next: SyncDeltaCursor = {
+    ...rest,
+    sha: skip.anchor.sha,
+    updatedAtMs: now,
+    lastSkipReason: `backlog-skipped: ${reason}`,
+    lastSkipMs: now,
+    openReds: stillOpen,
+  };
+  await deps.writeCursor(next);
+  deps.log(`[sync-batch-delta] backlog-skipped: ${reason}`);
+  return { ...emptyResult('backlog-skipped', reason), batchCount: skip.skippedCount, filed, cursor: next };
+}
+
 /** A single commit that cannot fit the path or workspace radius — or that exhausts
  * a leg's time budget on its own — is a bounded, non-evaluated disposition. Advance
  * only over that commit and preserve the rest of the backlog for the next tick. */
@@ -1786,6 +1885,10 @@ async function runSyncBatchDeltaTick(
     await deps.writeCursor(next);
     return { ...emptyResult('up-to-date'), filed, cursor: next, judgedThrough: 'start' };
   }
+
+  // A backlog too old to warn about or to earn coverage is skipped, never walked.
+  const staleSkip = planStaleBacklogSkip(batches, deps.now());
+  if (staleSkip) return recordStaleBacklogSkip(deps, cursor, staleSkip, stillOpen, filed);
 
   // A cap learned from earlier leg timeouts narrows the window below the static one.
   const learnedCap = cursor.windowCommitCap;
