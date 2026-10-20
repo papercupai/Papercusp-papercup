@@ -739,6 +739,9 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
           "@papercusp/operator-core :: test:lane-pure",
           "@papercusp/operator-core :: test:lane-stateful",
         ],
+        // #D-025: the widened-task count is carried on the radius so the P-018 shadow can refuse
+        // a composed proof over a widened (non-exact) radius.
+        widenedTasks: 2,
         summary: "0 exact related file(s), 2 widened affected test task(s), 0 guard/task leg(s)",
       });
 
@@ -774,6 +777,7 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
         files: [{ workspace: "@papercusp/operator-core", file: "lib/x.test.ts" }],
         gateIds: [],
         coverageComplete: false,
+        widenedTasks: 0,
         summary: "1 exact related file(s), 0 widened affected test task(s), 0 guard/task leg(s)",
       });
     });

@@ -4,16 +4,28 @@
  *
  * Runs the real tool handler against real Postgres. The class rubric comes from the
  * bundled first-party library (rubrics/plan-class-general), seeded by the ordinary
- * lazy seed pass — nothing here inserts it by hand, so removing or renaming the bundled
- * rubric makes the general case refuse exactly like an unknown class.
+ * first-party seed pass (ensureFirstPartyRubricsSeeded, driven explicitly because the
+ * lazy on-read hook is off under vitest). Nothing here inserts it by hand, so removing
+ * or renaming the bundled rubric makes the general case refuse exactly like an unknown class.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 
-const h = vi.hoisted(() => ({ sql: null as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: null as unknown as postgres.Sql,
+  appSql: null as unknown as postgres.Sql,
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...await orig<typeof import('@papercusp/db-org')>(),
   getOrgPg: () => ({ sql: h.sql }),
+  // proposeRubric and the first-party seed both WRITE through withPlanLock → withWorkspace.
+  // Without this mock those writes escape the testcontainer onto the real org PG (the
+  // _org-test-db.ts pattern, as in rubrics-first-party-seed.integration.test.ts).
+  withWorkspace: <T,>(ws: string, cb: (tx: unknown) => Promise<T>): Promise<T> =>
+    h.appSql.begin(async (tx) => {
+      await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+      return cb(tx);
+    }) as Promise<T>,
 }));
 vi.mock('../coordination/identity', async (orig) => ({
   ...await orig<typeof import('../coordination/identity')>(),
@@ -22,7 +34,7 @@ vi.mock('../coordination/identity', async (orig) => ({
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
-const { getRubric } = await import('../../rubrics');
+const { getRubric, ensureFirstPartyRubricsSeeded, __resetRubricSeedStateForTests } = await import('../../rubrics');
 const proposeTool = (await import('./propose')).default;
 let db: Awaited<ReturnType<typeof createOrgTestDb>>;
 
@@ -53,6 +65,13 @@ async function propose(rubricRef: string, subjectPlan: string, classRef: string)
 beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
+  h.appSql = db.appSql;
+  // In a real process the loadAllRubrics choke point seeds the bundled library on the
+  // first read; under vitest that auto-hook is guarded off, so drive the ordinary seed
+  // pass explicitly. It still reads the bundled rubrics/ dirs, so removing or renaming
+  // rubrics/plan-class-general makes the general case refuse like an unknown class.
+  __resetRubricSeedStateForTests();
+  await ensureFirstPartyRubricsSeeded();
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 

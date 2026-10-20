@@ -149,6 +149,10 @@ import { RUNNER_PROCESS_BOOTED_AT_MS } from "@papercusp/operator-core/lib/releas
 // P-007 / D-004: the fail-closed predicate that replaced D-001's staging-join veto.
 import { assessFrozenLineagePromotion } from "@papercusp/operator-core/lib/release/frozen-lineage-promotion";
 import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-head-admission";
+import {
+  parseRepairTickLegs,
+  partitionSameHeadContradictions,
+} from "@papercusp/operator-core/lib/release/repair-tick-legs-snapshot";
 import type { LineageLedgerReconcileResult } from "@papercusp/operator-core/lib/release/frozen-lineage-ledger-reconcile";
 import {
   describeRetriageTarget,
@@ -17070,6 +17074,21 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
 }
 
 /**
+ * Same-head tick passes stay in the durable queue signature for a retest, but they are not
+ * actionable repair work. Exclude them from the per-leg condition routing for this tick.
+ */
+export function failingRepairLegsForRouting(
+  queue: Pick<FrozenCandidateRepairQueue, "repairHead" | "failingTests">,
+  repairTickLegs: RepairTickLegs | undefined,
+): string[] {
+  return partitionSameHeadContradictions(
+    queue.failingTests ?? [],
+    parseRepairTickLegs(repairTickLegs),
+    queue.repairHead,
+  ).actionable;
+}
+
+/**
  * WI-10005728: fold one hold tick's leg measurement into the queue's per-leg lifecycle
  * (`queue.legs`) and persist it, so a leg measured red is admitted as `failing` and a later
  * pass at a newer head marks it `fixed`. Before this, `recordFrozenRepairLegMeasurement` had
@@ -17553,6 +17572,14 @@ export async function runGreenCheckpoint(
   ) {
     const q = finalResult.green ? null : (finalResult.repairQueue ?? null);
     const routeLegs = deps.routeFrozenRepairLegsToAgents;
+    const queueForRouting =
+      q && q.candidate && q.repairHead
+        ? {
+            candidate: q.candidate,
+            repairHead: q.repairHead,
+            failingTests: failingRepairLegsForRouting(q, finalResult.repairTickLegs),
+          }
+        : null;
     // WI-6554700010009547: bounded and entry-logged, like the disposition write above. A
     // failure or a deadline is non-fatal: the held candidate stays correctly held.
     await runPostVerdictStepWithDeadline(
@@ -17560,14 +17587,7 @@ export async function runGreenCheckpoint(
       () =>
         routeLegs({
           pipeline: pipelineName(cfg.integrationRoot),
-          queue:
-            q && q.candidate && q.repairHead
-              ? {
-                  candidate: q.candidate,
-                  repairHead: q.repairHead,
-                  failingTests: q.failingTests ?? [],
-                }
-              : null,
+          queue: queueForRouting,
         }),
       deps.log,
       FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS,
