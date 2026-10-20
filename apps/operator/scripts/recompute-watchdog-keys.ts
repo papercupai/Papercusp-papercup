@@ -38,6 +38,10 @@ import {
   type RecomputeDeps,
 } from '@papercusp/operator-core/lib/harness/improvements/watchdog-key-migration';
 import type { ImprovementCandidate } from '@papercusp/operator-core/lib/harness/improvements/policy';
+import {
+  backfillDuplicateOfFromLinks,
+  foldWatchdogKeyCollisions,
+} from '@papercusp/operator-core/lib/harness/improvements/watchdog-key-fold';
 
 const url =
   process.env.HARNESS_ADMIN_DATABASE_URL ??
@@ -133,8 +137,27 @@ async function main(): Promise<void> {
     }
     if (res.changed.length > 50) process.stdout.write(`    … +${res.changed.length - 50} more\n`);
     for (const c of res.collisions) {
-      process.stdout.write(`    COLLISION ${c.id} → ${c.newKey} (already held by ${c.heldBy}) — left as-is\n`);
+      process.stdout.write(`    COLLISION ${c.id} → ${c.newKey} (already held by ${c.heldBy})\n`);
     }
+
+    // bug-inflow-one-problem-one-row-2026-10-18 P-008: fold each collision onto the row
+    // holding the key (duplicate_of + dropped), then backfill duplicate_of from the
+    // `duplicates` edges written before migration 1534. Same dry-run switch.
+    const fold = await foldWatchdogKeyCollisions(res.collisions, { sql }, { dryRun: !execute });
+    process.stdout.write(
+      `\nwatchdog-key fold — ${mode}\n` +
+        `  shared keys: ${fold.groups.length}\n` +
+        `  ${fold.dryRun ? 'would fold' : 'folded'}: ${fold.folded}\n` +
+        `  skipped (not open, claimed, already a duplicate, or another workspace): ${fold.skipped.length}\n`,
+    );
+    for (const g of fold.groups) {
+      process.stdout.write(`    FOLD ${g.folded.length} → ${g.canonical}  ${g.key}\n`);
+    }
+    const links = await backfillDuplicateOfFromLinks({ sql }, { dryRun: !execute });
+    process.stdout.write(
+      `\nduplicates-link backfill — ${mode}\n` +
+        `  ${links.dryRun ? 'would stamp' : 'stamped'} duplicate_of: ${links.stamped} (still open: ${links.open})\n`,
+    );
   } catch (e) {
     process.stdout.write(`⚠ recompute-watchdog-keys: skipped (${e instanceof Error ? e.message : String(e)})\n`);
   } finally {

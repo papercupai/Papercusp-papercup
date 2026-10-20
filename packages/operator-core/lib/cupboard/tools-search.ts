@@ -5,7 +5,7 @@
  *
  * The base plan's Tools view (`tools-discovery.ts`) answered *who provides
  * each tool?* and let the UI substring-filter the name. This adds the missing
- * half: **search the 380-tool catalog by capability** — match a query against
+ * half: **search the tool catalog by capability** — match a query against
  * each tool's name, its category (namespace), its capability gate, the
  * providing unit, and the tool/unit description, then rank by relevance so the
  * best provider for "pack a repo" / "send a message" surfaces first.

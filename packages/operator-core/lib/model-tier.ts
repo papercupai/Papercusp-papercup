@@ -3,7 +3,7 @@
  * (large hosted). The SINGLE gate for the weak-model lite tooling tier
  * (weak-model-tool-tier-2026-07-01).
  *
- * Weak/local models can't parse the full ~606-tool / ~185K-token catalog, so
+ * Weak/local models can't parse the full tool catalog and its schemas, so
  * every lite lever (catalog trim, lite-schema, named-JSON convention,
  * grammar-constrained decoding, in-context examples) is gated on THIS — never
  * on agent-type (`agent === 'omp'`) and never on a manual flag (D-001). OMP

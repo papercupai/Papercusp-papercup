@@ -79,7 +79,7 @@ function readSuperuserToken(): string {
  * `?tools=` seeds `tools/list` to exactly `AGENT_CHATS_MCP_TOOLS` (a LISTING
  * hint — see tool-allowlist.ts — paired with the spawn's `--allowed-tools`,
  * which is the actual call gate) so the agent sees a small, focused surface
- * instead of the full ~300-tool operator catalog. `?harness=` scopes the
+ * instead of the full operator catalog. `?harness=` scopes the
  * session's default harness (when known) so `work_items:get/list` /
  * `plans:get` / `docs:search` calls don't need an explicit `harness` arg —
  * mirrors the claim-path cup's own harness-scoped session.

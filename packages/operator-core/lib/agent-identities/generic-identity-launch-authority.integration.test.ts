@@ -29,6 +29,11 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import * as currentRoleLaunchSpec from '../role-launch-spec';
 import { resolveProjectDir } from '../spawn-config';
 import recipeGetTool from '../agent-tools/recipes/get';
+import { writeOperatorState } from '../operator-state-pg';
+import { recordSuLaunchSpec } from '../adv-sessions';
+import { readIdentityReactionCeiling } from '../capability-envelope/identity-grants-port';
+import { readWearerLaunchRecord } from './wearer-launch-record';
+import { identityCeilingRefusal, identityWearerRole } from './wearer-authority';
 
 const pg = vi.hoisted(() => ({ sql: null as Sql | null, appSql: null as Sql | null }));
 const assembleRolePromptMock = vi.hoisted(() => vi.fn());
@@ -232,6 +237,85 @@ describe('generic identity launch confers no SU authority and leaves SU records 
       ]);
     } finally {
       vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  // identity-system-everything-migration-2026-10-18 P-003 / R-1 (#D-017): a NON-su wearer.
+  // A judge launch naming an identity stack renders the stack's layers, its launch record
+  // names role judge (the receipt the role door writes for a grant-bearing identity), and the
+  // identity work the host runs for that wearer is bounded by the host-computed JUDGE role and
+  // pot ceiling, never su's. Same pot, same readers: a role-less (SU) record keeps su's ceiling.
+  it('bounds a judge wearing an identity stack by the judge role and pot ceiling, not su (P-003, R-1)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'judge-wearer-authority-'));
+    const potDir = join(root, 'pot');
+    const launchDir = join(root, 'launch');
+    const identityDir = join(launchDir, '.papercusp', 'blueprints', 'judge-wearer-lens');
+    const judgeOwner = 'judge-wearer-fixture-owner';
+    const suOwner = 'su-wearer-fixture-owner';
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      mkdirSync(join(potDir, '.papercusp'), { recursive: true });
+      // The administrator pot grants the judge role a narrow capability set and names no su role.
+      writeFileSync(join(potDir, '.papercusp', 'blueprint.yaml'), stringifyYaml({
+        id: HARNESS, version: '1.0.0',
+        workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } },
+        fleet: { workerRoles: [{ id: 'judge', capabilities: ['plans:read', 'scorecards:emit'] }] },
+      }));
+      writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
+        id: 'judge-wearer-lens', extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }], grants: {},
+      }));
+      writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'JUDGE WEARER LENS LAYER\n');
+      await writeOperatorState('harness_registry', { projects: [{ slug: HARNESS, path: potDir }] }, WORKSPACE);
+
+      // 1. The role door renders the worn layers into a judge-scoped launch.
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(launchDir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'JUDGE KERNEL',
+        meta: { role: 'judge', promptFile: '/h/prompts/judge.md', projectDir: launchDir,
+          stateDir: join(launchDir, '.papercusp'), harnessDir: '/h', runId: 'judge-wearer-authority-1' },
+      });
+      const judge = await subject.buildRoleLaunchSpec({
+        role: 'judge', workspaceId: WORKSPACE, harnessSlug: HARNESS,
+        operatorBaseUrl: 'http://localhost:3070', stack: ['domain:judge-wearer-lens'],
+      });
+      expect(judge.role).toBe('judge');
+      expect(judge.promptText).toContain('JUDGE KERNEL');
+      expect(judge.promptText).toContain('JUDGE WEARER LENS LAYER');
+      expect(judge.stack).toEqual(['domain:judge-wearer-lens']);
+      const url = new URL(judge.mcpUrl);
+      expect(url.searchParams.get('role')).toBe('judge');
+      expect(url.searchParams.has('superuser')).toBe(false);
+
+      // 2. The launch record carries the role, recorded the way bootstrap-role records it.
+      const [session] = await db.adminSql<{ id: number }[]>`
+        INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id)
+        VALUES (${WORKSPACE}, 'console', ${judgeOwner}) RETURNING id`;
+      expect(await recordSuLaunchSpec(session!.id, judgeOwner, {
+        v: 1, workspaceId: WORKSPACE, harnessSlug: HARNESS, role: judge.role, stack: judge.stack,
+        specificationRevision: judge.specificationRevision, stateRevision: judge.stateRevision,
+        specificationArtifact: judge.specificationArtifact,
+      })).toBe(true);
+      const judgeRole = identityWearerRole(await readWearerLaunchRecord(judgeOwner));
+      expect(judgeRole).toBe('judge');
+
+      // 3. Identity work for the judge is bounded by the judge envelope AND the pot's judge ceiling.
+      const judgeCeiling = await readIdentityReactionCeiling({ workspaceId: WORKSPACE, harnessSlug: HARNESS, role: judgeRole });
+      expect(identityCeilingRefusal('capability:bash', judgeCeiling)).toMatch(/denied by the pot\/role ceiling/);
+      expect(identityCeilingRefusal('work_items:create', judgeCeiling)).toMatch(/outside the pot\/role ceiling/);
+      expect(identityCeilingRefusal('plans:read', judgeCeiling)).toBeNull();
+
+      // 4. A role-less (SU) record in the same pot is judged at su: neither bound applies.
+      await db.adminSql`
+        INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec)
+        VALUES (${WORKSPACE}, 'console', ${suOwner},
+          ${db.adminSql.json({ v: 1, workspaceId: WORKSPACE, harnessSlug: HARNESS, stack: judge.stack })})`;
+      const suRole = identityWearerRole(await readWearerLaunchRecord(suOwner));
+      expect(suRole).toBe('su');
+      const suCeiling = await readIdentityReactionCeiling({ workspaceId: WORKSPACE, harnessSlug: HARNESS, role: suRole });
+      expect(identityCeilingRefusal('capability:bash', suCeiling)).toBeNull();
+      expect(identityCeilingRefusal('work_items:create', suCeiling)).toBeNull();
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }, 120_000);

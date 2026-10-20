@@ -17,7 +17,7 @@
  *     ranked by cosine and gated by a minimum-similarity floor.
  *
  * The embedder + corpus embeddings are INJECTED (a one-time boot index over the
- * ~551-tool catalog). With neither, it degrades gracefully to lexical-only — the
+ * full tool catalog). With neither, it degrades gracefully to lexical-only — the
  * exact behavior of `searchTools` — so the tool is always functional.
  *
  * Pure + unit-testable; the route/tool wiring does the IO (corpus assembly via

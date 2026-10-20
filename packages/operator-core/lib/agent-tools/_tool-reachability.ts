@@ -3,7 +3,7 @@
  *
  * A refusal that says "do X first with <other verb>" is only actionable if the
  * caller can REACH that verb. On a trimmed client surface it often cannot: the
- * ~850-tool catalog is exposed to a session as a seed, so a client-side
+ * full tool catalog is exposed to a session as a seed, so a client-side
  * `select:`-style lookup for a perfectly real tool resolves NOTHING, which reads
  * as "that verb does not exist" rather than "it is not on your surface yet".
  * Measured 2026-09-05: `work_items:set_blocker` — named verbatim by the

@@ -1,7 +1,7 @@
 /**
  * Curated `papercusp-su` tool catalog for the in-process `su` target.
  *
- * The real SU surface is the full ~226-tool superuser catalog
+ * The real SU surface is the full superuser catalog
  * (`listMcpProjections()` over the populated projection registry). We do
  * NOT enumerate it live here, on purpose:
  *

@@ -34,6 +34,7 @@ import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics'
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
+import { RATCHET_METRICS_INSTRUMENT_KEY, RATCHET_METRICS_WINDOW_MS } from './release/ratchet-metrics';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
@@ -687,6 +688,8 @@ export function platformComputedInstrumentKeys(): string[] {
     ...Object.values(NATIVE_ADOPTION_INSTRUMENT_KEYS),
     ...Object.values(NATIVE_PUSH_INSTRUMENT_KEYS),
     ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS),
+    // green-main-ratchet-convergence-2026-10-17 P-010 (R-9): the ratchet debt alarm.
+    RATCHET_METRICS_INSTRUMENT_KEY,
   ];
 }
 
@@ -766,6 +769,16 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
           const metrics = await measureNativePushOutcomesWindow(window);
           const rating = rateNativePushOutcomes(metrics, pushCriterion);
           return { verdict: rating.verdict, detail: `${window.windowStart}..${window.windowEnd}: ${rating.reason}` };
+        },
+      } } : key === RATCHET_METRICS_INSTRUMENT_KEY ? { rescore: {
+        windowMs: RATCHET_METRICS_WINDOW_MS, unit: 'count' as const, scope: 'harness' as const,
+        resolve: async window => {
+          if (!window.harnessSlug?.trim()) return { verdict: 'unknown' as const, detail: 'Canonical harness required.' };
+          const [{ getOrgPg }, { measureRatchetMetrics, ratchetMetricsVerdict }] = await Promise.all([
+            import('@papercusp/db-org'), import('./release/ratchet-metrics'),
+          ]);
+          const sql = getOrgPg().sql as unknown as Parameters<typeof measureRatchetMetrics>[0];
+          return ratchetMetricsVerdict(await measureRatchetMetrics(sql, { ...window, harnessSlug: window.harnessSlug }));
         },
       } } : overheadCriterion ? { rescore: {
         windowMs: 24 * 60 * 60_000,

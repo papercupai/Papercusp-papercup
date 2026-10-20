@@ -11,11 +11,12 @@ import * as nativeAdoption from './code-intelligence/native-adoption';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
+import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
-import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
+import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
   NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
@@ -205,6 +206,8 @@ describe('the registry seed set', () => {
       ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_PUSH_INSTRUMENT_KEYS),
+      RATCHET_METRICS_INSTRUMENT_KEY,
+      POSTGRES_RETENTION_INSTRUMENT_KEY,
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
@@ -222,10 +225,13 @@ describe('the registry seed set', () => {
         const criterion = nativeAdoption.nativeAdoptionCriterionForInstrument(key);
         if (!criterion) {
           const harnessFamilies = [COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
-            DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS)];
+            DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS), RATCHET_METRICS_INSTRUMENT_KEY,
+            POSTGRES_RETENTION_INSTRUMENT_KEY];
           if (harnessFamilies.includes(key) || Object.values(nativeAdoption.NATIVE_PUSH_INSTRUMENT_KEYS).some(k => k === key)) {
             expect(instrument.rescore?.windowMs).toBe(key === NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY ? 90 * 60_000
-              : Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS).some(k => k === key) ? 24 * 60 * 60_000 : 72 * 60 * 60_000);
+              : key === POSTGRES_RETENTION_INSTRUMENT_KEY ? 30 * 24 * 60 * 60_000
+              : Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS).some(k => k === key) || key === RATCHET_METRICS_INSTRUMENT_KEY
+                ? 24 * 60 * 60_000 : 72 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');
             if (harnessFamilies.includes(key)) expect(instrument.rescore?.scope).toBe('harness');
           } else expect(instrument.rescore).toBeUndefined();
