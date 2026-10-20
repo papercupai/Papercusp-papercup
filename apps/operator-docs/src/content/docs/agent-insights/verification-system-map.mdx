@@ -168,6 +168,9 @@ From `PlanAcceptanceGateCode` (`packages/operator-core/lib/plan-acceptance-gate.
 | `audit_coverage_stale` | The code-truth audit no longer covers the current items or the files it cited. Re-audit. |
 | `audit_citations_unresolved` | Audit citations do not resolve to repository paths. Only `code`/`test` citations with resolvable paths verify. |
 | `requirement_unrealized` | A requirement recorded `covered` at activation maps to an item audited with no verifying citation. |
+| `code_deliverable_unverified` | A code deliverable (declared, or the verification profile default) has no `code`/`test` audit citation that resolves against the tree. This holds in both profiles. Re-audit the item citing the files that implement it, or pass `force:{ reason }`, which waives it as a code-truth check and records the waiver. |
+| `non_code_deliverable_code_evidence` | A closed work item carries code-change evidence (a `filesChanged` list, or the `bug` kind) while its plan item now resolves to a non-code deliverable. `force` does not waive it. |
+| `non_code_deliverable_check_unavailable` | The ship-time read behind `non_code_deliverable_code_evidence` failed, so the check refuses instead of passing. Retry the ship; `force` does not waive it. |
 | `ephemeral_deliverable_unbacked` | The plan ships a report that exists only on a session- or account-local surface. Publish it durably first. |
 | `spec_proof_stale` | A spec clause's evidence was bound against an older clause revision or changed source. Re-bind. |
 | `spec_clause_unproven` | A spec clause has no evidence binding at any revision. Bind evidence with `plans:bind-spec-evidence`. |

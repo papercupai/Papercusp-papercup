@@ -38,6 +38,8 @@ interface Emitted {
   stdout: string;
   stderr: string;
   cmds: Array<{ workspace: string; command: string }>;
+  /** `<workspace>::<script>` of every repo-wide invariant guard (AFFECTED_GUARD lines). */
+  guards: Set<string>;
 }
 
 function runPrintAffected(extra: string[]): Emitted {
@@ -62,6 +64,13 @@ function runPrintAffected(extra: string[]): Emitted {
       .filter((l) => l.startsWith('AFFECTED_WS_CMD\t'))
       .map((l) => l.split('\t'))
       .map(([, workspace, command]) => ({ workspace, command })),
+    guards: new Set(
+      stdout
+        .split('\n')
+        .filter((l) => l.startsWith('AFFECTED_GUARD\t'))
+        .map((l) => l.split('\t'))
+        .map(([, workspace, script]) => `${workspace}::${script}`),
+    ),
   };
 }
 
@@ -114,11 +123,15 @@ describe('affected-tests.mjs --coverage passthrough (P-009 part a)', () => {
       const parsed = parseCommand(command);
       expect(parsed, `unparseable AFFECTED_WS_CMD for ${workspace}: ${command}`).not.toBeNull();
       const carries = command.includes('-- --coverage');
-      const shouldCarry = scriptRunsVitestDirectly(parsed!.dir, parsed!.script);
+      // Both runner rules: a repo-wide invariant guard is never instrumented (it would
+      // clobber the workspace's real lcov), even when its script is a direct `vitest run`.
+      const isGuard = run.guards.has(`${workspace}::${parsed!.script}`);
+      const shouldCarry = !isGuard && scriptRunsVitestDirectly(parsed!.dir, parsed!.script);
       expect(
         carries,
         `${workspace} :: ${parsed!.script} — coverage forwarding disagrees with whether the ` +
-          `script invokes vitest directly (command: ${command})`,
+          `script invokes vitest directly and is not a repo-wide invariant guard ` +
+          `(guard=${isGuard}; command: ${command})`,
       ).toBe(shouldCarry);
       if (carries) instrumented += 1;
     }
