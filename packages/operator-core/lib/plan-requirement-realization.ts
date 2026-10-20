@@ -53,7 +53,7 @@
  * item LIVENESS, which is what this does.
  */
 import {
-  isVerifyingCitation,
+  entryHasVerifyingCitation,
   type ActivationAuditMapping,
   type EffectiveItemAudit,
   type PlanItemStatus,
@@ -397,7 +397,7 @@ export function judgeRequirementRealization(
           requirement: mapping.requirement,
           disposition: mapping.disposition,
           planTarget: trimmed,
-          vouchedByStaleAudit: audit?.entry.citations.some(isVerifyingCitation) ?? false,
+          vouchedByStaleAudit: audit ? entryHasVerifyingCitation(audit.entry) : false,
         });
       }
 
@@ -420,7 +420,8 @@ export function judgeRequirementRealization(
         input.nonCodeItemProofs?.some((proof) =>
           proof.planItemId === trimmed &&
           ((proof.barKeys.length > 0 && proof.evidenceRefs.length > 0) || Boolean(proof.exemptionRefs?.length)));
-      if (!audit.entry.citations.some(isVerifyingCitation) && !nonCodeProven) {
+      // P-003: a generic citation verifies an item audited as a non-code deliverable.
+      if (!entryHasVerifyingCitation(audit.entry) && !nonCodeProven) {
         unrealized.push({
           mappingId: mapping.id,
           requirement: mapping.requirement,

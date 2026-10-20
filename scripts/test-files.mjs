@@ -467,7 +467,15 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
     const configs = configsIn(dir);
     const integration = configs.find((name) => INTEGRATION_CONFIG_RE.test(name));
     const unit = configs.find((name) => UNIT_CONFIG_RE.test(name));
-    if (wantsIntegration && integration) return { cwd: dir, config: integration, absolute, requested: relative(dir, absolute) };
+    // The repository-root integration config is a narrow fallback for non-workspace trees
+    // (its include names them explicitly). It must not take an integration suite away from a
+    // nearer package that owns it through its own unit config or plain `vitest run`: that
+    // made packages/omp-plugin's suite UNRUNNABLE once the root config appeared
+    // (WI-6554700010018003). A nearer integration config still wins at its own level.
+    const nearerOwner = dir === root && (unitFallback !== null || packageFallback !== null);
+    if (wantsIntegration && integration && !nearerOwner) {
+      return { cwd: dir, config: integration, absolute, requested: relative(dir, absolute) };
+    }
     const e2e = wantsE2e && !packageFallback ? configs.find((name) => E2E_CONFIG_RE.test(name)) : undefined;
     if (e2e) return { cwd: dir, config: e2e, absolute, requested: relative(dir, absolute) };
     // Keep walking after an already-discovered config-less package so an ancestor's

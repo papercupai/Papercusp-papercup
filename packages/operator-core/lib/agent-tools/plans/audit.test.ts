@@ -47,6 +47,8 @@ vi.mock('../../plan-audits', async (orig) => {
     recordPlanAudit: vi.fn(),
     recordCurrentActivationAudit: vi.fn(),
     previewCurrentActivationAudit: vi.fn(),
+    // P-003: the real loader reads report_library / work_items / … through getOrgPg.
+    loadGenericCitationLookupForWorkspace: vi.fn(),
   };
 });
 vi.mock('./activation-audit-repair', () => ({
@@ -97,6 +99,7 @@ import {
   getEffectiveItemAudits,
   getLatestActivationAudit,
   getPlanItemStatuses,
+  loadGenericCitationLookupForWorkspace,
   recordCurrentActivationAudit,
   previewCurrentActivationAudit,
   recordPlanAudit,
@@ -121,6 +124,7 @@ import tool from './audit';
 const mockItems = vi.mocked(getPlanItemStatuses);
 const mockResolveHome = vi.mocked(resolvePlanItemHomeHarness);
 const mockPrevious = vi.mocked(getEffectiveItemAudits);
+const mockGenericLookup = vi.mocked(loadGenericCitationLookupForWorkspace);
 const mockPreviousActivation = vi.mocked(getLatestActivationAudit);
 const mockContext = vi.mocked(repoCitationContextForHarness);
 const mockRecord = vi.mocked(recordPlanAudit);
@@ -161,6 +165,7 @@ beforeEach(() => {
     contentHash: 'c'.repeat(64),
   });
   mockPrevious.mockResolvedValue([]);
+  mockGenericLookup.mockResolvedValue(new Map());
   mockPreviousActivation.mockResolvedValue(null);
   mockContext.mockResolvedValue({
     repoRoot: '/repo',
@@ -471,6 +476,80 @@ describe('plans:audit D-008 writer contract', () => {
       expect.objectContaining({ properties: expect.objectContaining({ kind: expect.objectContaining({ const: 'code' }) }), required: expect.arrayContaining(['path']) }),
       expect.objectContaining({ properties: expect.objectContaining({ kind: expect.objectContaining({ const: 'test' }) }), required: expect.arrayContaining(['path']) }),
     ]));
+  });
+
+  // plan-verification-profiles P-003 (R-7, R-8, D-006).
+  describe('generic citations for non-code deliverables', () => {
+    const REPORT_HASH = 'f'.repeat(64);
+    const docItem = (deliverable: string | null) =>
+      mockItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'write the report', deliverable }]);
+
+    it('verifies a declared non-code item on a resolving artifact and stamps the store content hash', async () => {
+      docItem('doc');
+      mockGenericLookup.mockResolvedValue(new Map([['report:rpt_abc', { found: true, contentHash: REPORT_HASH, settled: true }]]));
+
+      const result = await body([
+        { itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'artifact', ref: 'rpt_abc', contentHash: '0'.repeat(64) }] },
+      ]);
+
+      expect(result).toMatchObject({ ok: true, coverage: { verifiedItems: 1, unverifiedItemIds: [] } });
+      expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({
+        itemId: 'P-001',
+        deliverable: 'doc',
+        codeDeliverable: false,
+        // The wire value is stripped by the schema; the stored hash is the store's.
+        citations: [expect.objectContaining({ kind: 'artifact', ref: 'rpt_abc', contentHash: REPORT_HASH })],
+      })] }));
+    });
+
+    it('refuses the same artifact citation for a code deliverable', async () => {
+      docItem(null);
+      mockGenericLookup.mockResolvedValue(new Map([['report:rpt_abc', { found: true, contentHash: REPORT_HASH, settled: true }]]));
+
+      const result = await body([{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'artifact', ref: 'rpt_abc' }] }]);
+
+      expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+      expect(result.problems).toEqual([expect.objectContaining({ itemId: 'P-001', code: 'implemented_without_code' })]);
+      expect(mockRecord).not.toHaveBeenCalled();
+    });
+
+    it('refuses an artifact that does not resolve in the store', async () => {
+      docItem('doc');
+
+      const result = await body([{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'work-item', ref: 'WI-42' }] }]);
+
+      expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+      expect(result.problems).toEqual(
+        expect.arrayContaining([expect.objectContaining({ itemId: 'P-001', code: 'citation_target_unmeasured' })]),
+      );
+    });
+
+    it('refuses a not-code verdict on an item that declares a code deliverable', async () => {
+      docItem('code');
+
+      const result = await body([{ itemId: 'P-001', verdict: 'not-code', citations: [], note: 'process only' }]);
+
+      expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+      expect(result.problems).toEqual([expect.objectContaining({ itemId: 'P-001', code: 'not_code_contradicts_deliverable' })]);
+      expect(mockRecord).not.toHaveBeenCalled();
+    });
+
+    it('accepts all four generic kinds at the live input schema', () => {
+      const parsed = tool.args.safeParse({
+        slug: 'plan-a',
+        items: [{ itemId: 'P-001', verdict: 'implemented', citations: [
+          { kind: 'artifact', ref: 'plan:plan-a' },
+          { kind: 'work-item', ref: 'WI-1' },
+          { kind: 'measurement', ref: 'test-run:7' },
+          { kind: 'external', url: 'https://example.com/a', snapshotHash: 'a'.repeat(64) },
+        ] }],
+      });
+      expect(parsed.success).toBe(true);
+      expect(tool.args.safeParse({
+        slug: 'plan-a',
+        items: [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'external', url: 'https://example.com/a' }] }],
+      }).success).toBe(false);
+    });
   });
 
   it('records a resolving code citation with blob provenance and reports it verified', async () => {

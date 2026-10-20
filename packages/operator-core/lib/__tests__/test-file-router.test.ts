@@ -426,6 +426,50 @@ describe('test-files router', () => {
     }
   });
 
+  // WI-6554700010018003: a root vitest.integration.config.ts scoped to a non-workspace tree
+  // must not take a package's integration suite away from the package's own config.
+  it('keeps a package integration suite on its own config when the repository root has an integration config', () => {
+    const root = mkdtempSync(join(tmpdir(), 'test-file-router-root-integration-'));
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+      writeFileSync(join(root, 'vitest.config.ts'), 'export default {};\n');
+      writeFileSync(join(root, 'vitest.integration.config.ts'), 'export default {};\n');
+      const plain = join(root, 'packages', 'plain');
+      const owned = join(root, 'packages', 'owned');
+      const bare = join(root, 'packages', 'bare');
+      for (const pkg of [plain, owned, bare]) {
+        mkdirSync(join(pkg, 'lib'), { recursive: true });
+        writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: basename(pkg), scripts: { test: 'vitest run' } }));
+        writeFileSync(join(pkg, 'lib', 'x.integration.test.ts'), '');
+      }
+      writeFileSync(join(plain, 'vitest.config.ts'), 'export default {};\n');
+      writeFileSync(join(owned, 'vitest.config.ts'), 'export default {};\n');
+      writeFileSync(join(owned, 'vitest.integration.config.ts'), 'export default {};\n');
+      mkdirSync(join(root, 'tools', 'probe'), { recursive: true });
+      writeFileSync(join(root, 'tools', 'probe', 'y.integration.test.ts'), '');
+
+      expect(discoverVitestRoute('packages/plain/lib/x.integration.test.ts', root)).toMatchObject({
+        cwd: plain,
+        config: 'vitest.config.ts',
+      });
+      expect(discoverVitestRoute('packages/owned/lib/x.integration.test.ts', root)).toMatchObject({
+        cwd: owned,
+        config: 'vitest.integration.config.ts',
+      });
+      expect(discoverVitestRoute('packages/bare/lib/x.integration.test.ts', root)).toMatchObject({
+        cwd: bare,
+        config: null,
+      });
+      // A tree with no nearer owner still reaches the root integration config.
+      expect(discoverVitestRoute('tools/probe/y.integration.test.ts', root)).toMatchObject({
+        cwd: root,
+        config: 'vitest.integration.config.ts',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // EI-24442044145393058: the recorded test layer is the ROUTED config's runtime label, so a
   // `*.e2e.test.*` file must reach the package's e2e config or it records as 'unit'.
   it('routes *.e2e.test.* files to the package e2e config, and everything else stays on unit', () => {

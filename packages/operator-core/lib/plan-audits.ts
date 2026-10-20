@@ -40,6 +40,16 @@
  */
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { isNonCodeAuditVerdict } from './plan-verification-profile';
+import type { DeliverableKind } from '@papercusp/plan-parser';
+import {
+  GENERIC_CITATION_KINDS,
+  genericCitationVerifies,
+  isGenericCitationKind,
+  loadGenericCitationLookup,
+  resolveGenericCitation,
+  type GenericCitationFailureReason,
+  type GenericCitationLookup,
+} from './plan-audits-generic-citations';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -118,7 +128,7 @@ export type AuditVerdict = (typeof AUDIT_VERDICTS)[number];
  *  proof that code exists is circular — exactly the "documentation or memory" the owner's
  *  founding instruction excludes. It survives only on `AuditFinding.ref`, where pointing at
  *  a filed out-of-scope bug is the correct use. */
-export const CITATION_KINDS = ['code', 'test', 'doc', 'none'] as const;
+export const CITATION_KINDS = ['code', 'test', 'doc', 'none', ...GENERIC_CITATION_KINDS] as const;
 export type CitationKind = (typeof CITATION_KINDS)[number];
 
 /** The kinds that count as verification against the code. Everything not in this set is
@@ -128,6 +138,35 @@ export const VERIFYING_CITATION_KINDS: ReadonlySet<CitationKind> = new Set<Citat
 
 export function isVerifyingCitation(c: AuditCitation): boolean {
   return VERIFYING_CITATION_KINDS.has(c.kind);
+}
+
+/**
+ * Item-level verification (P-003, R-7). `code`/`test` verify any item; a generic citation
+ * (`artifact`, `work-item`, `measurement`, `external`) verifies only an item the audit
+ * stamped as a non-code deliverable. An entry without that stamp is treated as code.
+ */
+export function entryHasVerifyingCitation(entry: Pick<AuditItemEntry, 'citations' | 'codeDeliverable'>): boolean {
+  return entry.citations.some((c) => isVerifyingCitation(c) || genericCitationVerifies(c, entry));
+}
+
+/**
+ * Load the current store state for every generic citation, workspace-scoped. `plans:audit`
+ * (to stamp `contentHash`) and the ship gate (to compare it, R-8) both call this, so the
+ * two hashes are computed by the same query. A cited plan is matched in any harness.
+ */
+export async function loadGenericCitationLookupForWorkspace(
+  citations: readonly AuditCitation[],
+  workspaceId: string | null,
+): Promise<GenericCitationLookup> {
+  const generic = citations.filter((c) => isGenericCitationKind(c.kind));
+  if (generic.length === 0) return new Map();
+  const { sql } = getOrgPg();
+  return loadGenericCitationLookup(generic, {
+    query: async (text, params) => ({
+      rows: (await sql.unsafe(text, params as never[])) as unknown as Array<Record<string, unknown>>,
+    }),
+    workspaceId,
+  });
 }
 
 /** A repository-file citation is checked for durability even when it is not verification.
@@ -158,12 +197,24 @@ export interface AuditCitation {
    *  the wire from the auditor. D-007 compares this with the current blob so a rewritten
    *  file is stale even when its path and symbol still resolve. */
   blobSha?: string;
+  /** `external` only: the captured snapshot's URL (P-003). */
+  url?: string;
+  /** `external` only: sha256 hex of the captured snapshot, supplied by the auditor. */
+  snapshotHash?: string;
+  /** Generic kinds: the target's content hash, stamped by `plans:audit` from the store and
+   *  never accepted on the wire. A changed hash makes the audit stale (R-8). */
+  contentHash?: string;
 }
 
 export interface AuditItemEntry {
   itemId: string;
   verdict: AuditVerdict;
   citations: AuditCitation[];
+  /** The deliverable the item was audited against, resolved by `resolveVerification` at
+   *  audit time (P-003). Null when non-code signals exist but no kind was declared. */
+  deliverable?: DeliverableKind | null;
+  /** Stamped with `deliverable`; `false` lets generic citations verify the item. */
+  codeDeliverable?: boolean;
   /** REQUIRED when verdict is `dropped` — the intentional-departure reason (D-002). */
   note?: string;
   /** Per-item provenance (D-006). Optional only for legacy rows written before the
@@ -539,7 +590,7 @@ export type CitationFailureReason =
   | 'line_out_of_range'
   | 'symbol_not_found'
   | 'reason_missing'
-  | 'ref_missing';
+  | GenericCitationFailureReason;
 
 /** A commit-scoped Git read failed after the request reached Git. This is distinct from
  * a missing commit/path: callers must report it as unavailable and retry, rather than
@@ -558,6 +609,8 @@ export interface CitationDeps {
   statFile: (rel: string) => { isFile: boolean } | null;
   /** Repo-relative → file contents, or null when unreadable. */
   readFile: (rel: string) => string | null;
+  /** Store state for generic citations (P-003), loaded by `loadGenericCitationLookup`. */
+  generic?: GenericCitationLookup;
   /**
    * Repo-relative → whether Git tracks the file.
    *
@@ -737,6 +790,11 @@ function missDetail(rel: string, deps: CitationDeps): string {
  * no "external path" skip — a citation that needs either of those is not evidence.
  */
 export function resolveCitation(citation: AuditCitation, deps: CitationDeps): CitationResolution {
+  // P-003: a generic citation resolves against platform storage, never the tree.
+  if (isGenericCitationKind(citation.kind)) {
+    const resolved = resolveGenericCitation(citation, deps.generic ?? new Map());
+    return resolved.ok ? { ok: true } : { ok: false, reason: resolved.reason, ...(resolved.detail ? { detail: resolved.detail } : {}) };
+  }
   if (citation.kind === 'none') {
     return citation.reason && citation.reason.trim().length > 0
       ? { ok: true }
@@ -1746,8 +1804,9 @@ export function summarizeCoverage(items: AuditItemEntry[]): AuditCoverage {
   for (const it of items) {
     const kinds = it.citations.map((c) => c.kind);
     // Verification is decided by CITATION KIND, never by the verdict the auditor typed —
-    // the verdict is the claim, the resolving code citation is the evidence for it.
-    if (it.citations.some(isVerifyingCitation)) verified += 1;
+    // the verdict is the claim, the resolving code citation is the evidence for it. A
+    // generic citation counts only for an item audited as a non-code deliverable (P-003).
+    if (entryHasVerifyingCitation(it)) verified += 1;
     else unverifiedIds.push(it.itemId);
     if (kinds.some((k) => k !== 'none')) cited += 1;
     if (kinds.length > 0 && kinds.every((k) => k === 'none')) none += 1;
@@ -2040,6 +2099,8 @@ export interface PlanItemStatus {
   itemId: string;
   status: string;
   itemText: string;
+  /** The item's declared deliverable kind (P-002 mirror), when it declares one. */
+  deliverable?: string | null;
 }
 
 /**
@@ -2144,14 +2205,14 @@ export async function getPlanItemStatuses(
   try {
     const { sql } = getOrgPg();
     const harnessSlug = scope.harnessSlug?.trim() || null;
-    const rows = await sql<{ item_id: string; status: string; item_text: string }[]>`
-      SELECT item_id, status, item_text
+    const rows = await sql<{ item_id: string; status: string; item_text: string; deliverable: string | null }[]>`
+      SELECT item_id, status, item_text, deliverable
         FROM harness_shared.plan_items
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
          AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
        ORDER BY seq`;
-    return rows.map((r) => ({ itemId: r.item_id, status: r.status, itemText: r.item_text }));
+    return rows.map((r) => ({ itemId: r.item_id, status: r.status, itemText: r.item_text, deliverable: r.deliverable ?? null }));
   } catch {
     return [];
   }

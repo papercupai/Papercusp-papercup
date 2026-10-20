@@ -22,7 +22,8 @@ import { z } from 'zod';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { isNonCodeAuditVerdict } from '../../plan-verification-profile';
+import { isNonCodeAuditVerdict, resolveVerification } from '../../plan-verification-profile';
+import { isGenericCitationKind, resolveGenericCitation } from '../../plan-audits-generic-citations';
 import { execFileSync } from 'node:child_process';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
@@ -36,7 +37,9 @@ import {
   citationBlobSha,
   citationBlobShaAt,
   CitationGitReadError,
+  entryHasVerifyingCitation,
   getEffectiveItemAudits,
+  loadGenericCitationLookupForWorkspace,
   getLatestActivationAudit,
   getPlanItemStatuses,
   isRepoFileCitation,
@@ -127,6 +130,21 @@ const citationSchema = z.union([
     ),
     path: citationPathSchema.optional(),
     ...citationOptionalFields,
+  }),
+  // P-003 (R-7): platform-held evidence. Verifies a non-code deliverable only; the server
+  // stamps the target's content hash, so any wire `contentHash` is stripped.
+  z.object({
+    kind: z.enum(['artifact', 'work-item', 'measurement']).describe(
+      'Non-code evidence; verifies only a non-code deliverable. `ref`: rpt_… / plan:<slug> / doc:<id> | a done WI-/EI-/F- | test-run:<id> (pass).',
+    ),
+    ref: z.string().min(1),
+    reason: citationOptionalFields.reason,
+  }),
+  z.object({
+    kind: z.literal('external'),
+    url: z.string().url(),
+    snapshotHash: z.string().regex(/^[0-9a-fA-F]{64}$/).describe('sha256 hex of the snapshot you captured.'),
+    reason: citationOptionalFields.reason,
   }),
 ]);
 
@@ -1220,7 +1238,17 @@ export default defineTool({
           `citations against a different checkout.`,
       } };
     }
-    const deps = citationContext.deps;
+    // P-003: generic citations resolve against platform storage. Their content hashes are
+    // stamped from the store here, and each entry records the deliverable it was audited
+    // against so a generic citation verifies only a non-code item (R-7).
+    const genericLookup = await loadGenericCitationLookupForWorkspace(
+      submittedCitations,
+      sctx.workspaceId ?? activeWorkspaceId(),
+    );
+    const deps = { ...citationContext.deps, generic: genericLookup };
+    // An unreadable plan row leaves the profile unknown, which resolves to coding (D-005).
+    const verificationProfile = (await getPlanRow(args.slug, { harnessSlug }))?.verificationProfile ?? null;
+    const declaredDeliverable = new Map(planItems.map((item) => [item.itemId, item.deliverable ?? null]));
     const auditedSha = args.auditedSha ?? resolveHeadSha(citationContext.repoRoot);
     const problems: Problem[] = [];
     const entries: AuditItemEntry[] = [];
@@ -1249,6 +1277,11 @@ export default defineTool({
       }
 
       const citations = (it.citations ?? []) as AuditCitation[];
+      const itemDeliverable = declaredDeliverable.get(it.itemId) ?? null;
+      const verification = resolveVerification(
+        { verificationProfile },
+        { deliverable: itemDeliverable, auditVerdict: it.verdict },
+      );
 
       if (it.verdict === 'implemented' && citations.length === 0) {
         problems.push({
@@ -1256,19 +1289,37 @@ export default defineTool({
           code: 'uncited_verdict',
           detail: `verdict 'implemented' needs at least one citation — that claim is the whole point of the audit`,
         });
-      } else if (it.verdict === 'implemented' && !citations.some(isVerifyingCitation)) {
+      } else if (
+        it.verdict === 'implemented' &&
+        !entryHasVerifyingCitation({ citations, codeDeliverable: verification.codeDeliverable })
+      ) {
         // D-008. Requiring "at least one citation" was not enough: `doc` satisfied it, so
         // `implemented` — whose documented meaning is "traced to as-built code the auditor
         // READ" — could be claimed on a document asserting completion. Only code/test are
-        // evidence; a doc says where a non-source deliverable lives, never that code exists.
+        // evidence for a code deliverable; a doc says where a deliverable lives, never that
+        // code exists. P-003: a NON-code deliverable may instead cite generic evidence.
         problems.push({
           itemId: it.itemId,
           code: 'implemented_without_code',
+          detail: verification.codeDeliverable
+            ? `verdict 'implemented' requires at least one \`code\` or \`test\` citation resolving against the ` +
+              `tree — a \`doc\` or generic citation cannot support it for a code deliverable. Read the CODE and ` +
+              `cite the file that implements '${it.itemId}'; do not rely on a doc, a work-item, or your memory ` +
+              `of writing it. If the item's deliverable genuinely is not source, declare it (plans:add-item ` +
+              `deliverable) or use the verdict 'not-code' (with \`note\`).`
+            : `verdict 'implemented' for the non-code deliverable '${verification.deliverable ?? 'undeclared'}' ` +
+              `requires a \`code\`/\`test\` citation or a resolving generic citation (artifact, work-item, ` +
+              `measurement, external) — a \`doc\` citation records a location, not evidence.`,
+        });
+      }
+      if (isNonCodeAuditVerdict(it.verdict) && itemDeliverable === 'code') {
+        // D-004 / D-006: a declared code deliverable cannot be audited out of code checks.
+        problems.push({
+          itemId: it.itemId,
+          code: 'not_code_contradicts_deliverable',
           detail:
-            `verdict 'implemented' requires at least one \`code\` or \`test\` citation resolving against the ` +
-            `tree — a \`doc\` citation cannot support it. Read the CODE and cite the file that implements ` +
-            `'${it.itemId}'; do not rely on a doc, a work-item, or your memory of writing it. If the item's ` +
-            `deliverable genuinely is not source, the verdict is 'not-code' (with \`note\`), not 'implemented'.`,
+            `'${it.itemId}' declares deliverable 'code', so verdict 'not-code' cannot exempt it from code ` +
+            `verification. Cite the code, or change the declared deliverable with a recorded plan Decision first.`,
         });
       }
       if (isNonCodeAuditVerdict(it.verdict) && !it.note) {
@@ -1362,6 +1413,11 @@ export default defineTool({
             continue;
           }
           storedCitations.push({ ...c, blobSha });
+        } else if (isGenericCitationKind(c.kind)) {
+          // R-8: stamp the store's current content hash — never the auditor's — so a later
+          // change to the cited artifact makes this audit stale.
+          const generic = resolveGenericCitation(c, genericLookup);
+          storedCitations.push(generic.ok ? { ...c, contentHash: generic.contentHash } : c);
         } else {
           storedCitations.push(c);
         }
@@ -1374,6 +1430,8 @@ export default defineTool({
           itemId: it.itemId,
           verdict: it.verdict,
           citations: storedCitations,
+          deliverable: verification.deliverable,
+          codeDeliverable: verification.codeDeliverable,
           ...(it.note ? { note: it.note } : {}),
         });
       }

@@ -69,6 +69,7 @@ import {
   isRepoFileCitation,
   isVerifyingCitation,
   isCitationContextFailure,
+  loadGenericCitationLookupForWorkspace,
   planItemTextHash,
   planItemTextHashCandidates,
   repoCitationContextForHarness,
@@ -85,6 +86,7 @@ import {
   type NonCodeItemProof,
 } from './plan-requirement-realization';
 import { isReasonedNonCodeAudit, unfinishedItemsAreAuditedNonCode } from './plan-verification-profile';
+import { genericCitationStaleReason, isGenericCitationKind, resolveGenericCitation } from './plan-audits-generic-citations';
 import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
@@ -500,6 +502,15 @@ const DURABLE_COMPANION_LABEL_RE =
   /(?:durable\s+(?:companion|source)|source(?:\s+path)?|persisted\s+(?:at|in)|stored\s+(?:at|in)|committed\s+(?:at|in)|repository\s+(?:path|file)|work[- ]item(?:\s+(?:record|comment|source))?)\s*[:=]?\s*(?:`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|([^\s,;)>]+))/gi;
 
 /**
+ * plan-verification-profiles P-003 (R-9): a report in the report library (`rpt_…`) or a
+ * PG-canonical doc (`doc:<id>`) is held by the platform, so it is a durable companion —
+ * but only once the gate has confirmed it exists (`evaluateEphemeralDeliverableDurabilityInStore`).
+ */
+export function isPlatformArtifactCompanion(candidate: string): boolean {
+  return /^rpt_[A-Za-z0-9_-]+$/.test(candidate) || /^doc:\S+$/.test(candidate);
+}
+
+/**
  * Extract explicit durable companion references from plan prose. This is
  * intentionally narrower than “does the plan contain any repo path?” — code
  * citations elsewhere in a plan do not prove that the cited deliverable was
@@ -521,6 +532,7 @@ export function findDurableDeliverableCompanions(content: string): string[] {
       candidate.startsWith('plan:') ||
       candidate.includes('/') ||
       candidate.includes('\\') ||
+      isPlatformArtifactCompanion(candidate) ||
       /\.(?:md|mdx|html?|csv|txt|pdf)$/i.test(candidate);
     if (!isDurableLocator) continue;
     const key = candidate.toLowerCase();
@@ -540,6 +552,27 @@ export function evaluateEphemeralDeliverableDurability(content: string): {
   const references = detectEphemeralDeliverableReferences(content);
   const companions = findDurableDeliverableCompanions(content);
   return { references, companions, satisfied: references.length === 0 || companions.length > 0 };
+}
+
+/**
+ * R-9 — the gate's durability check. Platform-held companions (`rpt_…`, `doc:<id>`) count
+ * only when they resolve in the store (a live, non-retired row in this workspace); one that
+ * does not is reported in `unresolvedCompanions` and does not satisfy the check. Every other
+ * companion keeps the pure rule above.
+ */
+export async function evaluateEphemeralDeliverableDurabilityInStore(
+  content: string,
+  workspaceId: string | null,
+  load: typeof loadGenericCitationLookupForWorkspace = loadGenericCitationLookupForWorkspace,
+): Promise<ReturnType<typeof evaluateEphemeralDeliverableDurability> & { unresolvedCompanions: string[] }> {
+  const pure = evaluateEphemeralDeliverableDurability(content);
+  const platform = pure.companions.filter(isPlatformArtifactCompanion);
+  if (pure.references.length === 0 || platform.length === 0) return { ...pure, unresolvedCompanions: [] };
+  const citations = platform.map((ref) => ({ kind: 'artifact' as const, ref }));
+  const lookup = await load(citations, workspaceId).catch(() => new Map());
+  const unresolvedCompanions = platform.filter((ref) => !resolveGenericCitation({ kind: 'artifact', ref }, lookup).ok);
+  const companions = pure.companions.filter((companion) => !unresolvedCompanions.includes(companion));
+  return { references: pure.references, companions, unresolvedCompanions, satisfied: companions.length > 0 };
 }
 
 /**
@@ -991,18 +1024,22 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // presentation surface. This is intentionally NOT part of `force`: force is
   // scoped to code-truth evidence waivers, while this guard protects the grader's
   // ability to inspect the promised deliverable at all.
-  const deliverableDurability = evaluateEphemeralDeliverableDurability(planContent ?? '');
+  const deliverableDurability = await evaluateEphemeralDeliverableDurabilityInStore(planContent ?? '', activeWorkspaceId());
   if (!deliverableDurability.satisfied) {
     const listed = locateEphemeralDeliverableReferences(planContent ?? '', deliverableDurability.references).join(', ');
+    const unresolved = deliverableDurability.unresolvedCompanions.length > 0
+      ? ` The cited platform artifact(s) ${deliverableDurability.unresolvedCompanions.join(', ')} do not exist ` +
+        `(or are retired) in this workspace.`
+      : '';
     if (refuse({
       satisfied: false,
       code: 'ephemeral_deliverable_unbacked',
       message:
         `plan '${planSlug}' cannot be marked shipped: its content cites ${listed} without an explicit durable ` +
-        `companion/source reference. Persist the report in committed repository, plan, or work-item storage, then ` +
-        `record it in the plan as \`durable source: <path>\` (or \`work-item: EI-/WI-id\`). An Artifact URL, ` +
-        `scratch path, or loopback preview alone is not a grader-readable deliverable. This refusal is not waived by ` +
-        `force: { reason }.`,
+        `companion/source reference.${unresolved} Persist the report in committed repository, plan, or work-item ` +
+        `storage, or publish it with reports:publish, then record it in the plan as \`durable source: <path>\`, ` +
+        `\`durable source: rpt_…\` (or \`work-item: EI-/WI-id\`). An Artifact URL, scratch path, or loopback preview ` +
+        `alone is not a grader-readable deliverable. This refusal is not waived by force: { reason }.`,
     })) return collectedRefusal();
   }
 
@@ -1105,6 +1142,14 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
             citationContext.deps,
           ).catch(() => null)
         : null;
+      // plan-verification-profiles P-003 (R-8): a generic citation is fresh only while its
+      // target still hashes to the value plans:audit stamped. Same loader as the audit, so
+      // both hashes come from one query. A failed load leaves every target unmeasured,
+      // which reads stale, never fresh.
+      const genericLookup = await loadGenericCitationLookupForWorkspace(
+        effectiveAudits.flatMap(({ entry }) => entry.citations),
+        activeWorkspaceId(),
+      ).catch(() => new Map());
 
       for (const item of items) {
         // A deliberate drop is the recorded exit supplied by D-002. It does not need
@@ -1129,6 +1174,12 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           reasons.push(`item-text fingerprint is missing from audit #${auditSeq}`);
         } else if (!planItemTextHashCandidates(item.itemText).includes(entry.itemTextHash)) {
           reasons.push(`item text changed since audit #${auditSeq}`);
+        }
+
+        for (const citation of entry.citations) {
+          if (!isGenericCitationKind(citation.kind)) continue;
+          const staleReason = genericCitationStaleReason(citation, genericLookup, auditSeq);
+          if (staleReason) reasons.push(staleReason);
         }
 
         if (citationContext) {
