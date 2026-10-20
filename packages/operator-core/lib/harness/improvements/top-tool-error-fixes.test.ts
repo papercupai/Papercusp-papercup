@@ -20,11 +20,48 @@
  *     in 7 days were exit 1/2 test and typecheck runs). Fix: bash_output.ts
  *     ledgerRecordedCommandExit — a recorded exit reads like the live path
  *     (status + exit_code), with the live path's dead-typecheck verdict.
+ *   - session:request-compaction no_live_pty_host (1,934/7d, 93% from 3 owners
+ *     retired by fleet:kill:pc-admin-coord-ui on 2026-10-15): the deployed
+ *     build predated the retirement fence, so each work-item:claimable wake
+ *     resume-headless'd a killed owner whose over-limit transcript then asked
+ *     to self-compact with no host. The refusal itself is correct. Fix (staging
+ *     since 32ed5dd2b9, WI-6554700010010429): executeWake drops a wake for a
+ *     retired owner before any resume channel claims or spawns.
+ *   - capability:launch-agent handler_refusal (D-008 tie at #5; 90 of 104
+ *     watchdog rows were "source session is still LIVE"): the compaction
+ *     watchdog dispatched an identity-preserving successor for a live source
+ *     and launch-agent correctly refused it. Fix: compaction-force-successor.ts
+ *     reconcileHostlessSource refuses a live source before the launch-agent
+ *     dispatch, so no refusal row is minted.
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskRow } from '../../task-manager/types';
+import { executeWake, type ExecuteWakeDeps } from '../../events/await/wake-executor';
+import { MultiSessionTestbed, advSessionHandle, makeDelivery } from '../../../test/_multi-session-testbed';
+
+// Class-5a seam: hand compaction-force-successor a stand-in launch-agent tool and
+// count projected dispatches. Both wrappers pass through to the real exports
+// unless a test opts in, so a mock reset in another suite cannot break them.
+const forceSuccessorSeam = vi.hoisted(() => ({ tool: null as unknown, dispatched: 0 }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@papercusp/agent-mcp')>();
+  const lookupByMcpName = ((...args: Parameters<typeof real.lookupByMcpName>) =>
+    forceSuccessorSeam.tool && args[0] === 'capability:launch-agent'
+      ? forceSuccessorSeam.tool
+      : real.lookupByMcpName(...args)) as typeof real.lookupByMcpName;
+  return { ...real, lookupByMcpName };
+});
+vi.mock('@papercusp/tooldef-mcp', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@papercusp/tooldef-mcp')>();
+  const dispatchProjectedToolToMcp = ((...args: Parameters<typeof real.dispatchProjectedToolToMcp>) => {
+    forceSuccessorSeam.dispatched++;
+    return real.dispatchProjectedToolToMcp(...args);
+  }) as typeof real.dispatchProjectedToolToMcp;
+  return { ...real, dispatchProjectedToolToMcp };
+});
 
 const ledger = vi.hoisted(() => ({ getTask: vi.fn(), getTaskByBashJobId: vi.fn() }));
 const registry = vi.hoisted(() => ({ getJob: vi.fn(), startBackground: vi.fn() }));
@@ -261,5 +298,78 @@ describe('class: capability:bash_output job_process_gone on a ledger-recorded ex
     );
     expect(result.isError).toBeUndefined();
     expect(payload).toMatchObject({ ok: true, status: 'failed', exit_code: 1, recovered_from_ledger: true });
+  });
+});
+
+describe('class 1: session:request-compaction no_live_pty_host from retired owners', () => {
+  let tb: MultiSessionTestbed;
+  let provDir: string;
+  let prevProvDir: string | undefined;
+  beforeEach(() => {
+    prevProvDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    provDir = mkdtempSync(join(tmpdir(), 'top-err-prov-'));
+    process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provDir;
+    tb = MultiSessionTestbed.create();
+  });
+  afterEach(async () => {
+    if (prevProvDir === undefined) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = prevProvDir;
+    rmSync(provDir, { recursive: true, force: true });
+    await tb.destroy();
+  });
+
+  it('a claimable-event wake for a fleet-killed codex owner is dropped before any resume claim or spawn', async () => {
+    const s = tb.session('retired-codex');
+    let spawned = 0;
+    let claimed = 0;
+    const raw: ExecuteWakeDeps = {
+      findPsuHost: tb.findPsuHostDep(),
+      getSession: async () => ({
+        pid: null, endedAt: null, retiredAt: '2026-10-15T20:01:25.851Z', retiredBy: 'fleet:kill:pc-admin-coord-ui',
+        agent: 'codex', sessionId: 'native-retired-codex', coordOwnerId: s.ownerId, cwd: s.cwd,
+      }) as never,
+      findPty: () => null,
+      write: () => true,
+      presence: async () => null,
+      alive: () => false,
+      spawnDetached: () => { spawned++; return 4242; },
+      sendCoordMessage: async () => ({}) as never,
+      claimResume: async () => { claimed++; return true; },
+      accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
+    };
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'codex', sessionId: 'native-retired-codex', pid: null }),
+    });
+
+    const out = await executeWake(d, { ...raw, ...tb.ownerElectionDeps(raw) });
+
+    expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('retired by deliberate kill') });
+    expect(claimed).toBe(0);
+    expect(spawned).toBe(0);
+  });
+});
+
+describe('class 5a: capability:launch-agent handler_refusal for a live compaction source', () => {
+  afterEach(() => {
+    forceSuccessorSeam.tool = null;
+    forceSuccessorSeam.dispatched = 0;
+  });
+
+  it('the watchdog force-successor refuses a live source locally and never dispatches launch-agent', async () => {
+    forceSuccessorSeam.tool = { name: 'capability:launch-agent' };
+    const { dispatchCompactionForceSuccessor } = await import('../../system-health/compaction-force-successor');
+
+    const res = await dispatchCompactionForceSuccessor({
+      brief: 'over-limit recovery',
+      target: {
+        ownerId: 'su-live-source', workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp',
+        advSessionId: 33944, live: true, endedAt: null, endedBy: null, display: 'console', headless: true,
+        pid: 4242, binding: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+      } as never,
+    });
+
+    expect(res).toMatchObject({ verified: false, detail: expect.stringContaining('still live') });
+    expect(forceSuccessorSeam.dispatched).toBe(0);
   });
 });
