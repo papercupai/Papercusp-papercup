@@ -23,7 +23,7 @@ import { getContractExecution } from './contracts-esign';
 import { DocumensoAdapter, DocumensoError } from './documenso';
 import type { DaoCapTable, DaoWorkspaceView } from '../dao-workspace-types';
 import type { EquityArtifacts } from '../equity/compile';
-import { nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence } from './native-bootstrap-runtime';
+import { nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence, nativeJourneyScope } from './native-bootstrap-runtime';
 
 describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.env.DAO_HR_NATIVE_CONFIG)('P012 actual native hiring journey', () => {
   it('creates, approves, signs, votes, accepts and admits one candidate, then reads People, org and cap table', async () => {
@@ -33,7 +33,8 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const profile = JSON.parse(readFileSync(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE!, 'utf8'));
     const privateEnv = nativeChildEnvironment(profile);
     const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, onnotice: () => {} });
-    const ws = profile.workspaceId, slug = 'workbench-native', key = { workspaceId: ws, daoSlug: slug };
+    const { daoSlug: slug, personId: person } = nativeJourneyScope(process.env);
+    const ws = profile.workspaceId, key = { workspaceId: ws, daoSlug: slug };
     const retainHttpFailure = (diagnostic: object) => writeFileSync(config.resultPath + '.http-failure.json', JSON.stringify(diagnostic), { mode: 0o600 });
     const browser = await chromium.launch({ headless: true });
     const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN || 'tauri-agent-tools';
@@ -136,11 +137,13 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       await field('Action arguments (JSON array)', JSON.stringify(args)); await click('Prepare unsigned wallet transaction');
       return signWallet((await response('prepare-equity')).unsignedTransaction);
     };
+    let chainSnapshot: string | undefined;
     try {
       expect(/^verify-tauri-isolated-\d+$/.test(ws)).toBe(true);
       const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
       const health = await readNativeHostHealth(privateEnv);
       expect(health.health.sha).toBe(receipt.sourceCommit.slice(0, 12));
+      chainSnapshot = await rpc('evm_snapshot');
       const home = join(process.env.PAPERCUSP_HOME!, slug); mkdirSync(home, { recursive: true });
       await insertHiveIfAbsent({ workspaceId: ws, homeSlug: slug, pubkeyBase64: fixture.hive.publicKey, keychainId: 'hive:' + ws + ':' + slug,
         title: 'Native DAO HR', description: 'Non-binding isolated hiring verification' }, sql);
@@ -148,7 +151,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       await saveHarnessRegistry({ ...registry, projects: [...registry.projects, { slug, path: home, harness_kind: 'hive' }] }, ws);
       const scope = await resolveFederatedPotScope(ws, slug, { sql });
       for (const name of ['admin', 'approver', 'candidate']) {
-        const a = fixture.actors[name], personId = 'PER-native-' + name;
+        const a = fixture.actors[name], personId = person(name);
         await sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,title,payload)
           VALUES (${ws},'papercusp',${personId},'person',${name === 'candidate' ? 'Native candidate' : 'Native ' + name},${sql.json({ email: a.email })})`;
         if (name === 'candidate') continue;
@@ -163,13 +166,16 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         await linkMemberIdentity({ ...key, personId, member: { githubUserId: a.githubUserId } }, { sql });
       }
       actor('admin');
-      await grantDaoHrAdmin({ ...key, personId: 'PER-native-admin', bootstrapOperator: 'isolated-native-fixture' }, { sql });
-      await grantDaoHrAdmin({ ...key, personId: 'PER-native-approver', grantedBy: 'PER-native-admin' }, { sql });
-      await installSampleTemplates({ ...key, actorPersonId: 'PER-native-admin' }, { sql });
-      await updateEquityPolicy({ ...key, actorPersonId: 'PER-native-admin', changes: { startRule: 'hire_passed' } }, { sql });
+      await grantDaoHrAdmin({ ...key, personId: person('admin'), bootstrapOperator: 'isolated-native-fixture' }, { sql });
+      await grantDaoHrAdmin({ ...key, personId: person('approver'), grantedBy: person('admin') }, { sql });
+      await installSampleTemplates({ ...key, actorPersonId: person('admin') }, { sql });
+      await updateEquityPolicy({ ...key, actorPersonId: person('admin'), changes: { startRule: 'hire_passed' } }, { sql });
       const signed = await authorHivePolicy({ workspaceId: ws, potHomeSlug: slug, policy: { membership: 'open',
         finance: { equity: { chainId: 1, equity: config.equity, governor: config.governor, timelock: config.timelock } } } });
       expect(signed.ok).toBe(true);
+      // A previous calibrated leg may finish as the candidate. Read the new
+      // admin scope before navigating to this leg's freshly registered DAO.
+      await reload();
       await native('navigate', '/daos', '--json'); await wait("!!document.querySelector('[data-testid=dao-workspace]')");
       await bindFinanceWallet(config.accounts[0]);
       await navigate({ peopleTab: 'hiring' }); await textHas('Create a role');
@@ -283,7 +289,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         balances.push({ wallet, displayed: row[2], chain: shares });
       }
       const candidatePosition = capDto.positions.find(position => position.wallet.toLowerCase() === config.accounts[1].toLowerCase())!;
-      expect(candidatePosition).toMatchObject({ personId: 'PER-native-candidate', displayName: 'Native candidate', committed: '1000' });
+      expect(candidatePosition).toMatchObject({ personId: person('candidate'), displayName: 'Native candidate', committed: '1000' });
       await browserActor('candidate'); await navigate({ peopleTab: 'my' });
       const mine = await equitySnapshot('My equity'), myDto = await workspaceDto();
       expect(mine.marker).toBe('test chain - non-binding');
@@ -296,6 +302,12 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         capTableVerified: true, myEquityVerified: true, nonBindingVisible: true,
         equityObservation: { blockNumber: cap.blockNumber, balances, capRows: cap.rows, myRows: mine.rows, capDto, myDto } };
       writeFileSync(config.resultPath, JSON.stringify(final), { mode: 0o600 });
-    } finally { await browser.close(); await sql.end(); }
+    } finally {
+      try {
+        if (chainSnapshot !== undefined)
+          expect(await rpc('evm_revert', [chainSnapshot]), 'Restore the owned test chain between native probe legs').toBe(true);
+      }
+      finally { await browser.close(); await sql.end(); }
+    }
   }, 600_000);
 });

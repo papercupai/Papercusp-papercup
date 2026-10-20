@@ -29,6 +29,15 @@ describe('native DAO HR hosted wallet fixture', () => {
       expect(await crypto.deriveEpochKey('workbench-native', 0)).toEqual(key);
       const lookup = (account: string) => promisify(execFile)('secret-tool',
         ['lookup', 'service', 'papercusp-hive-epoch-key', 'account', account]);
+      for (const phase of ['baseline', 'copy-baseline', 'mutant']) {
+        expect(Buffer.from(await crypto.deriveEpochKey('workbench-native-' + phase, 0)).toString('base64')).toBe(identity.hiveEpoch0);
+        const hive = await promisify(execFile)('secret-tool', ['lookup', 'service', 'papercusp-hive-keypair',
+          'account', 'hive:verify-tauri-isolated-123:workbench-native-' + phase]);
+        expect(hive.stdout).toBe(identity.hive.privateKeyDer);
+      }
+      await expect(lookup('workbench-native-foreign:0')).rejects.toThrow('unknown keychain identity');
+      await expect(promisify(execFile)('secret-tool', ['lookup', 'service', 'papercusp-hive-keypair',
+        'account', 'hive:live-workspace:workbench-native-mutant'])).rejects.toThrow('unknown keychain identity');
       await expect(lookup('workbench-native:1')).rejects.toThrow('unknown keychain identity');
       await expect(lookup('foreign-' + identity.keychainId + ':0')).rejects.toThrow('unknown keychain identity');
       await expect(keychainStore('workbench-native:0', Buffer.alloc(32), 'papercusp-hive-epoch-key'))

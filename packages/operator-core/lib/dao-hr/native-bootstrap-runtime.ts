@@ -16,6 +16,39 @@ export const NATIVE_BOOTSTRAP_TIMEOUT_MS = 5 * 60_000
 
 const execNativeFile = promisify(execFile);
 
+/** Each calibrated leg gets independent app rows; the test chain is reverted too. */
+export function nativeJourneyScope(env: NodeJS.ProcessEnv) {
+  const phase = env.PAPERCUSP_MUTATION_PROBE === '1' ? env.PAPERCUSP_MUTATION_PHASE : undefined;
+  assert.ok(env.PAPERCUSP_MUTATION_PROBE !== '1' || ['baseline', 'copy-baseline', 'mutant'].includes(phase ?? ''), 'Unknown native mutation leg');
+  const suffix = phase ? '-' + phase : '';
+  return { daoSlug: 'workbench-native' + suffix, personId: (name: string) => 'PER-native-' + name + suffix };
+}
+
+/** Calibrated native assertions need three journeys, within a separately admitted budget. */
+export function nativeBootstrapBudgets(env: NodeJS.ProcessEnv) {
+  const phaseBudgetsMs = { ...NATIVE_VERIFIER_PHASE_BUDGETS,
+    assert: NATIVE_VERIFIER_PHASE_BUDGETS.assert * (env.PAPERCUSP_DAO_HR_NATIVE_MUTATION === '1' ? 3 : 1) };
+  return { phaseBudgetsMs, timeoutMs: 5 * 60_000 + NATIVE_BOOTSTRAP_TEARDOWN_MS
+    + Object.values(phaseBudgetsMs).reduce((sum, value) => sum + value, 0) };
+}
+
+/** A caught mutant is distinct from a successful hire. Never reuse its baseline result file. */
+export function assertNativeMutationProof(log: string) {
+  const lines = log.split('\n').filter(line => line.startsWith('MUTATION_PROBE_EVIDENCE_JSON='));
+  assert.equal(lines.length, 1, 'Exactly one completed native mutation receipt required');
+  const proof = JSON.parse(lines[0].slice('MUTATION_PROBE_EVIDENCE_JSON='.length));
+  assert.equal(proof.schemaVersion, 1);
+  const result = proof.result;
+  assert.equal(result?.verdict, 'caught'); assert.equal(result.expected, 'caught');
+  assert.equal(result.target, 'copy-out'); assert.equal(result.relocation, 'overlay');
+  assert.equal(result.baselineExit, 0); assert.equal(result.guardExit, 1);
+  assert.equal(result.mutantParse, 'ok');
+  assert.ok(['test-file-assertion-failure', 'vitest-failed-tests'].includes(result.assertionEvidence), 'Native assertion failure required');
+  for (const field of ['baselineLedger', 'copyBaselineLedger', 'mutantLedger'])
+    assert.match(result[field] ?? '', /^test_runs:\d+(?:,\d+)*$/, 'Persisted native mutation ledger leg required: ' + field);
+  return proof;
+}
+
 /** Bind the retained native evidence to independently downloaded provider artifacts. */
 export function nativeContractEvidence(input: {
   envelopeId: string; storedDocumentHash: string | null; storedDocument: Uint8Array | null;

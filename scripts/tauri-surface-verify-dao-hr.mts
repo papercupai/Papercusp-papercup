@@ -9,7 +9,14 @@ const result = await runHarness({
   evidenceRoot: defaultEvidenceRoot('dao-hr-tauri'), selection, reuseFrom: selection.reuse,
   async runPhase(ctx) {
     ctx.markStep('isolated-native-DAO-HR');
-    await runNativeE2e(['packages/operator-core/lib/dao-hr/native.e2e.test.ts'], { runtimeUnit: 'dao-hr-native-desktop' });
+    await runNativeE2e(['packages/operator-core/lib/dao-hr/native.e2e.test.ts'], { runtimeUnit: 'dao-hr-native-desktop',
+      ...(process.env.PAPERCUSP_DAO_HR_NATIVE_MUTATION === '1' ? { mutationProbe: {
+        subject: 'scripts/lib/dao-workbench-controls.mts',
+        // Falsifier: the driver pretends the Create role click happened. The
+        // real native journey must fail waiting for the product's role response.
+        expression: 's/^(export function clickWorkbenchButton[^\\n]+\\{)$/$1 if (label === "Create role") return "true";/',
+      } } : {}),
+    });
     return { ok: true };
   },
 });

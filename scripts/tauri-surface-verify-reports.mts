@@ -158,7 +158,8 @@ export function runNativeChild(profile: NativeLiveProfile, sourceRoot: string, s
 
 /** Run with --e2e inside verify-tauri-headless, before Vitest relocates TMPDIR. */
 export async function runNativeE2e(testFiles = ['packages/operator-core/lib/reports-library-native.e2e.test.ts'],
-  options: { runtimeUnit?: string; nativeScripts?: string[] } = {}) {
+  options: { runtimeUnit?: string; nativeScripts?: string[];
+    mutationProbe?: { subject: string; expression: string } } = {}) {
   assert.ok(testFiles.length > 0 && testFiles.every(file => /^packages\/operator-core\/lib\/(?:[\w-]+\/)*[\w-]+(?:\.[\w-]+)*\.(?:e2e|integration)\.test\.ts$/.test(file)),
     'Use maintained operator-core native E2E or integration test files');
   assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier');
@@ -173,6 +174,16 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
   verifyVerifierSourceSync(sourceRoot, receipt, { runtimeArtifacts: true });
   assert.ok(testFiles.every(file => receipt.files.some((entry: { path: string }) => entry.path === file)),
     'Native test selection must belong to the verified source snapshot');
+  const probe = options.mutationProbe;
+  if (probe) {
+    assert.ok(/^scripts\/(?:[\w-]+\/)*[\w.-]+\.[cm]?[jt]s$/.test(probe.subject)
+      && !probe.subject.split('/').includes('..')
+      && receipt.files.some((entry: { path: string }) => entry.path === probe.subject),
+    'Native mutation subject must be an existing frozen helper');
+    assert.ok(probe.expression.trim() && probe.expression.length <= 2000, 'Native mutation expression required');
+    assert.ok(receipt.files.some((entry: { path: string }) => entry.path === 'scripts/mutation-probe.sh'),
+      'Native mutation runner must belong to the verified source snapshot');
+  }
   const nativeScripts = options.nativeScripts ?? [];
   assert.ok(new Set(nativeScripts).size === nativeScripts.length && nativeScripts.every(script =>
     /^scripts\/[\w-]+\.mts$/.test(script) && receipt.files.some((entry: { path: string }) => entry.path === script)),
@@ -231,9 +242,22 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
     // The archive is already verified against its independent commit receipt.
     // Its maintained recorder checks source integrity at both test boundaries;
     // lint:as-committed would wrongly require Git inside this archive.
-    execFileSync('npm', ['run', 'test:file', '--', ...testFiles],
-    { cwd: sourceRoot, stdio: 'inherit', env: { ...testEnv,
-      PAPERCUSP_TEST_RUN_COMMIT: receipt.sourceCommit, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath } });
+    const env = { ...testEnv, PAPERCUSP_TEST_RUN_COMMIT: receipt.sourceCommit,
+      PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath };
+    if (probe) {
+      // Apply the probe INSIDE the final frozen runtime. Wrapping the exporter
+      // would overlay its donor while Git materialized unmutated child sources.
+      // The existing reporter admits exactly the probe subject; every other
+      // source byte remains checked against the unchanged independent receipt.
+      execFileSync('bash', [join(sourceRoot, 'scripts/mutation-probe.sh'), '--file', probe.subject,
+        '--relocation', 'overlay', '--mutate', probe.expression,
+        '--test', 'test -f {} && node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs ' + testFiles.join(' ')],
+      { cwd: sourceRoot, stdio: 'inherit', env });
+      verifyVerifierSourceSync(sourceRoot, receipt, { runtimeArtifacts: true });
+    } else {
+      execFileSync('npm', ['run', 'test:file', '--', ...testFiles],
+        { cwd: sourceRoot, stdio: 'inherit', env });
+    }
   } finally { rmSync(profileDir, { recursive: true, force: true }); }
 }
 

@@ -96,11 +96,11 @@ export function installIdentityFixture(fixture, env = process.env) {
     const actor = actors.find(actor => actor.keychainId === account);
     if (actor && service === 'papercusp-device-keypair')
       return { stdout: actor.device.privateKeyDer, stderr: '' };
-    if (/^hive:verify-tauri-isolated-\d+:workbench-native$/.test(account) && service === 'papercusp-hive-keypair')
+    if (/^hive:verify-tauri-isolated-\d+:workbench-native(?:-(?:baseline|copy-baseline|mutant))?$/.test(account) && service === 'papercusp-hive-keypair')
       return { stdout: fixture.hive.privateKeyDer, stderr: '' };
     // The owned hive's canonical scope is its home slug. Member admission
     // distributes its existing epoch zero; the request-only sidecar cannot mint it.
-    if (account === 'workbench-native:0' && service === 'papercusp-hive-epoch-key'
+    if (/^workbench-native(?:-(?:baseline|copy-baseline|mutant))?:0$/.test(account) && service === 'papercusp-hive-epoch-key'
       && typeof fixture.hiveEpoch0 === 'string' && Buffer.from(fixture.hiveEpoch0, 'base64').length === 32)
       return { stdout: fixture.hiveEpoch0, stderr: '' };
     throw new Error('Synthetic fixture refuses unknown keychain identity');

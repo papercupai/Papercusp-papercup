@@ -8,12 +8,44 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { runInNewContext } from 'node:vm';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence } from './native-bootstrap-runtime';
+import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence,
+  nativeJourneyScope, nativeBootstrapBudgets, assertNativeMutationProof, NATIVE_BOOTSTRAP_TIMEOUT_MS } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
 
 const repo = resolve(import.meta.dirname, '../../../..');
 
 describe('native bootstrap admission and lifecycle', () => {
+  it('keeps every calibrated native journey in distinct DAO and person scopes', () => {
+    const scopes = [undefined, 'baseline', 'copy-baseline', 'mutant'].map(phase => nativeJourneyScope({
+      ...(phase ? { PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: phase } : {}),
+    }));
+    expect(new Set(scopes.map(scope => scope.daoSlug)).size).toBe(4);
+    expect(new Set(scopes.map(scope => scope.personId('candidate'))).size).toBe(4);
+    expect(scopes[0].daoSlug).toBe('workbench-native');
+    expect(() => nativeJourneyScope({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: '../foreign' })).toThrow('Unknown native mutation leg');
+    expect(() => nativeJourneyScope({ PAPERCUSP_MUTATION_PROBE: '1' })).toThrow('Unknown native mutation leg');
+    expect(nativeJourneyScope({ PAPERCUSP_MUTATION_PHASE: 'mutant' }).daoSlug).toBe('workbench-native');
+  });
+
+  it('admits the three native probe legs without changing ordinary boot budgets', () => {
+    const ordinary = nativeBootstrapBudgets({}), probe = nativeBootstrapBudgets({ PAPERCUSP_DAO_HR_NATIVE_MUTATION: '1' });
+    expect(ordinary.timeoutMs).toBe(NATIVE_BOOTSTRAP_TIMEOUT_MS);
+    expect(probe.phaseBudgetsMs).toEqual({ ...ordinary.phaseBudgetsMs, assert: ordinary.phaseBudgetsMs.assert * 3 });
+    expect(probe.timeoutMs - ordinary.timeoutMs).toBe(2 * ordinary.phaseBudgetsMs.assert);
+  });
+
+  it('accepts only caught, assertion-backed, ledger-recorded native mutation proof', () => {
+    const result = { verdict: 'caught', expected: 'caught', target: 'copy-out', relocation: 'overlay', baselineExit: 0,
+      guardExit: 1, mutantParse: 'ok', assertionEvidence: 'test-file-assertion-failure',
+      baselineLedger: 'test_runs:101', copyBaselineLedger: 'test_runs:102', mutantLedger: 'test_runs:103' };
+    const log = (patch = {}) => 'MUTATION_PROBE_EVIDENCE_JSON=' + JSON.stringify({ schemaVersion: 1, result: { ...result, ...patch } });
+    expect(assertNativeMutationProof(log()).result).toEqual(result);
+    for (const patch of [{ verdict: 'survived' }, { baselineExit: 1 }, { guardExit: 2 }, { mutantParse: 'broken' },
+      { assertionEvidence: 'no-assertion-failure-evidence' }, { copyBaselineLedger: 'none' }, { mutantLedger: 'unconfirmed:timeout' }])
+      expect(() => assertNativeMutationProof(log(patch))).toThrow();
+    expect(() => assertNativeMutationProof('DAO_HR_NATIVE_RESULT={"memberAdmitted":true}')).toThrow();
+    expect(() => assertNativeMutationProof(log() + '\n' + log())).toThrow();
+  });
   const artifactFixture = () => {
     const document = Buffer.from('%PDF-1.7\nsigned native contract');
     const certificate = Buffer.from('%PDF-1.7\nDocumenso audit certificate');

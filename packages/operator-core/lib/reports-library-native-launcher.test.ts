@@ -96,7 +96,8 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     const source = 'a'.repeat(40);
     sourceRoot = join(root, 'source');
     const files = ['packages/operator-core/lib/reports-library-native.e2e.test.ts',
-      'packages/operator-core/lib/blueprint/morning-ai-intelligence.native.e2e.test.ts', 'scripts/native.mts'];
+      'packages/operator-core/lib/blueprint/morning-ai-intelligence.native.e2e.test.ts', 'scripts/native.mts',
+      'scripts/lib/native-controls.mts', 'scripts/mutation-probe.sh'];
     for (const file of files) {
       mkdirSync(join(sourceRoot, file, '..'), { recursive: true });
       writeFileSync(join(sourceRoot, file), '// committed native test fixture\n');
@@ -243,6 +244,36 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     expect(options.cwd).toBe(sourceRoot);
     expect(seams.execute.mock.calls[0][0]).toBe(process.execPath);
     expect(existsSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)).toBe(false);
+  });
+
+  it('runs the maintained overlay probe inside the final native source root with the same app and ledger scope', async () => {
+    const probe = { subject: 'scripts/lib/native-controls.mts', expression: 's/true/false/' };
+    await runNativeE2e(undefined, { mutationProbe: probe });
+    const [command, args, options] = seams.execute.mock.calls[1];
+    expect(command).toBe('bash');
+    expect(args.slice(0, 7)).toEqual([join(sourceRoot, 'scripts/mutation-probe.sh'), '--file', probe.subject,
+      '--relocation', 'overlay', '--mutate', probe.expression]);
+    expect(args.at(-1)).toContain('scripts/test-files.mjs packages/operator-core/lib/reports-library-native.e2e.test.ts');
+    expect(options.cwd).toBe(sourceRoot);
+    expect(options.env.PAPERCUSP_TEST_RUN_COMMIT).toBe('a'.repeat(40));
+    expect(options.env.HARNESS_ADMIN_DATABASE_URL).toBe('postgresql://fixture@localhost:37461/papercusp');
+    expect(options.env.PAPERCUSP_TEST_RUNS_DB_URL).toBe('postgresql://fixture/ledger');
+    expect(existsSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)).toBe(false);
+  });
+
+  it('refuses an out-of-source mutation before recording a runtime or executing tests', async () => {
+    await expect(runNativeE2e(undefined, { mutationProbe: { subject: '../outside.mts', expression: 's/true/false/' } }))
+      .rejects.toThrow('Native mutation subject');
+    expect(seams.execute).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the original source receipt after a successful probe command', async () => {
+    seams.execute.mockImplementation(command => {
+      if (command === 'bash') writeFileSync(join(sourceRoot, 'scripts/native.mts'), '// unexpected source drift');
+      return '';
+    });
+    await expect(runNativeE2e(undefined, { mutationProbe: { subject: 'scripts/lib/native-controls.mts', expression: 's/true/false/' } }))
+      .rejects.toThrow('tampered verification source archive');
   });
 
   it('prepares and hashes the frozen child before launching the test runner', async () => {
