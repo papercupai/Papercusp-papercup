@@ -80,6 +80,10 @@ export const RECORDED_INCONCLUSIVE_STATUSES = [
   // P-006: sibling of the above on the same exit-74 contract — the selected generation exists but
   // is corrupt, superseded mid-validation, or gone. Also standing: it does not self-repair.
   'dependency-generation-unusable',
+  // EI-26520203347017584: the third exit-74 cause — the integration checkout cannot produce one of
+  // the candidate's dependency inputs (an unavailable submodule, a missing gitlink, an absent ref).
+  // Recorded under its own name so the advice points at the checkout, not the generation store.
+  'integration-checkout-defective',
   // WI-10002039: the suite verdict was reached and the promotion push was then refused as
   // UNAUTHORIZED (HTTP 401/403). Recorded for the same reason as its neighbours — so a reader is
   // advised about a NAMED access problem instead of reading an anonymous crash. Before it had its
@@ -164,6 +168,13 @@ const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 
    * is repaired, so "nothing is blocking a re-fire" would be false here too.
    */
   'dependency-generation-unusable': 'standing-condition',
+  /**
+   * EI-26520203347017584 — 'standing-condition'. The selector already tried to hydrate a missing
+   * submodule from its own remote before refusing, so the next run reads the same defective
+   * checkout and refuses identically until someone repairs it. Measured on the drill pot
+   * 2026-10-20: 24 of 24 runs refused this way.
+   */
+  'integration-checkout-defective': 'standing-condition',
   /**
    * WI-10002039 — 'standing-condition', and this classification IS the fix.
    *
