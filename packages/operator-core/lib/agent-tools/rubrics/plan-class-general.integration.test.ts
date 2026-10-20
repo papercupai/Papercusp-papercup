@@ -10,6 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import type { SpecClauseRevision } from '../plans/spec-clauses-store';
 
 const h = vi.hoisted(() => ({
   sql: null as unknown as postgres.Sql,
@@ -36,6 +37,8 @@ const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
 const { getRubric, ensureFirstPartyRubricsSeeded, __resetRubricSeedStateForTests } = await import('../../rubrics');
 const proposeTool = (await import('./propose')).default;
+const { evaluatePlanSpecQuality } = await import('../plans/spec-quality');
+const { isPlanClassRubricRef } = await import('../../plan-class-refs');
 let db: Awaited<ReturnType<typeof createOrgTestDb>>;
 
 async function insertSubjectPlan(slug: string): Promise<void> {
@@ -98,5 +101,75 @@ describe('rubrics:propose with the general plan class', () => {
     await expect(propose('acceptance-unknown-class-subject', 'unknown-class-subject', 'plan-class-unknown'))
       .rejects.toThrow(/references classRef 'plan-class-unknown', but no rubric carries that id/);
     expect(await getRubric('acceptance-unknown-class-subject')).toBeNull();
+  });
+});
+
+/**
+ * plan-verification-profiles-2026-10-17 SPEC-P-006 (D-007): the general variant of
+ * spec-quality lives in the plan-class-specialization branch of the evaluator. A general
+ * plan's non-code deliverables are verified by generic citations, not test runs, so a
+ * clause that declares no test layer must not fail the class fit. The class ref is read
+ * back from the seeded store, so the evaluation runs against the class that actually
+ * ships, not a hand-typed string.
+ */
+describe('spec-quality under the general plan class', () => {
+  function noLayerClause(specId: string, planItemId: string): SpecClauseRevision {
+    return {
+      planSlug: 'general-quality-plan',
+      specId,
+      sourceValId: null,
+      currentRevision: 1,
+      revision: 1,
+      planItemId,
+      behavior: 'The quarterly vendor review report lists every active vendor with its renewal date.',
+      behaviorClass: 'happy-path',
+      requiredEvidence: [],
+      requiredTestLayers: [],
+      mutationRequired: false,
+      lifecycleStatus: 'active',
+      supersedes: null,
+      exemption: null,
+      falsifier: null,
+      contentHash: `sha256:${specId}`,
+      createdBy: 'author',
+      createdAt: '2026-10-20T00:00:00.000Z',
+      acceptedBy: 'reviewer',
+      acceptedAt: '2026-10-20T00:01:00.000Z',
+      acceptanceRef: 'D-001',
+    };
+  }
+
+  it('passes plan-class-specialization for a clause that declares no test layer', async () => {
+    const cls = await getRubric('plan-class-general');
+    expect(cls?.kind).toBe('standard');
+    const classRef = cls?.rubricId;
+    expect(isPlanClassRubricRef(classRef)).toBe(true);
+    if (!isPlanClassRubricRef(classRef)) throw new Error('seeded general class is not a plan class ref');
+
+    const clause = noLayerClause('SPEC-GENERAL-P-001', 'P-001');
+    expect(clause.requiredTestLayers).toEqual([]);
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'general-quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause],
+      classRef,
+    });
+
+    expect(result.ratings['plan-class-specialization']).toMatchObject({ rating: 'pass' });
+    expect(result.ratings['plan-class-specialization'].evidence).toContain('no test layer is required of a general plan');
+    expect(result.wouldBlock).not.toContain('plan-class-specialization');
+  });
+
+  it('still fails plan-class-specialization when the general plan has no active clause and no exemption', async () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'general-quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [],
+      classRef: 'plan-class-general',
+    });
+
+    expect(result.ratings['plan-class-specialization']).toMatchObject({ rating: 'fail' });
   });
 });
