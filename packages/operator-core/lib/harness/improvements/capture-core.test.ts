@@ -3348,6 +3348,35 @@ describe('P-007 — symptom-first containment lookup', () => {
     expect(res.possibleDuplicates?.[0].similarity).toBeGreaterThanOrEqual(CONTAINMENT_THRESHOLD);
   });
 
+  it('surfaces a measured 80% shorter-title overlap when the new report adds context words', async () => {
+    const priorTitle =
+      'turn-provenance: grading-audit fleet-kickoff stamped UNVERIFIED ORIGIN CLAIM although its dispatch lease is live';
+    const reportTitle =
+      'turn-provenance hook: grading-audit fleet-kickoff flagged UNVERIFIED ORIGIN CLAIM (no ledger row for nonce) despite matching live dispatch lease';
+    const jaccard = titleSimilarity(reportTitle, priorTitle);
+    const overlap = titleContainment(reportTitle, priorTitle);
+    expect(jaccard).toBeLessThan(DUP_THRESHOLD);
+    expect(overlap).toBeCloseTo(0.8);
+    expect(overlap).toBeGreaterThanOrEqual(CONTAINMENT_THRESHOLD);
+
+    const d = deps({ found: [existing({ id: 'EI-26277722062357373', title: priorTitle })] });
+    d.findSemanticDupes = async () => healthySemanticResult();
+    const res = await captureImprovement(
+      {
+        title: reportTitle,
+        body: 'Suspected false alarm from the turn-provenance UserPromptSubmit hook (unconfirmed cause).',
+        kind: 'bug',
+        checkDuplicatesOnly: true,
+      },
+      d,
+    );
+
+    expect(res.possibleDuplicates).toMatchObject([
+      { id: 'EI-26277722062357373', lexical: 'containment', similarity: 0.8 },
+    ]);
+    expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+  });
+
   it('SAFETY: a containment-only hit NEVER declines a capture — surfacing is widened, blocking is not', async () => {
     // The asymmetry matters: containment says "your short title is covered by this broad
     // one", which is true for many genuinely-distinct narrow items. Missing a duplicate

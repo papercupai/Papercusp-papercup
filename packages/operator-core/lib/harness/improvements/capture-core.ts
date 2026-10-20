@@ -184,7 +184,7 @@ export const CAPTURE_CONTENTION_BACKOFFS_MS = [500] as const;
  * containment hit (knowledge-at-symptom-time-2026-08-09 P-007). Advisory-only: a
  * containment hit is never eligible to carry a blocking dedup verdict — see `blockEligible`.
  */
-export const CONTAINMENT_THRESHOLD = 0.9;
+export const CONTAINMENT_THRESHOLD = 0.8;
 
 export type CaptureDependencyTimingOutcome = 'fulfilled' | 'rejected';
 
