@@ -612,7 +612,7 @@ const SCRATCH_REFERENCE_RE =
 const SCRATCH_URI_REFERENCE_RE =
   /(?:^|[\s"'`(<\[])(papercusp:\/\/scratch\/[A-Za-z0-9._~:@%+,-]+(?:\/[A-Za-z0-9._~:@%+,-]+)*)/gi;
 const CLAUDE_ARTIFACT_REFERENCE_RE =
-  /(?:^|[\s"'`(<\[])((?:https?:\/\/)?claude\.ai\/(?:code\/)?artifacts?\/[A-Za-z0-9][A-Za-z0-9._~:\/?#@!$&+,;=%-]*)/gi;
+  /(?:^|[\s"'`(<\[])((?:https?:\/\/)?claude\.ai\/(?:code\/|public\/)?artifacts?\/[A-Za-z0-9][A-Za-z0-9._~:\/?#@!$&+,;=%-]*)/gi;
 /**
  * A loopback presentation URL is reachable only while the local serving
  * process remains alive. Keep this deliberately to HTTP(S) presentation

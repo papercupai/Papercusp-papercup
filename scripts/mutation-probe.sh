@@ -306,8 +306,21 @@ RUNNER_ROOT="$(git -C "$(dirname "$RUNNER_SOURCE_ABSOLUTE")" rev-parse --show-to
 # Reuse the live kernel observer before that boundary, across every probe leg.
 # Re-enter this same frozen script so runner provenance and argv stay intact.
 if [ -n "${VERIFY_TAURI_PID:-}" ] && [ -z "${PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET:-}" ]; then
-  exec node --import tsx "$OPERATOR_SOURCE_ROOT/packages/operator-core/lib/testing-native-runtime.ts" \
-    --with-native-observer -- bash "$MUTATION_PROBE_FROZEN_SOURCE" "${ORIGINAL_ARGS[@]}"
+  node --import tsx "$OPERATOR_SOURCE_ROOT/packages/operator-core/lib/testing-native-runtime.ts" \
+    --with-native-observer -- bash "$MUTATION_PROBE_FROZEN_SOURCE" "${ORIGINAL_ARGS[@]}" &
+  native_observer_pid=$!
+  # Keep this shell's EXIT cleanup even if observer preparation refuses before
+  # the frozen script is re-entered. Forward cancellation while waiting too.
+  native_observer_signal() {
+    kill -s "$1" "$native_observer_pid" 2>/dev/null || true
+    wait "$native_observer_pid" 2>/dev/null || true
+    exit "$2"
+  }
+  trap 'native_observer_signal TERM 143' TERM
+  trap 'native_observer_signal INT 130' INT
+  trap 'native_observer_signal HUP 129' HUP
+  wait "$native_observer_pid"
+  exit "$?"
 fi
 RUNNER_SOURCE_PATH="$RUNNER_SOURCE_ABSOLUTE"
 REPLAY_CWD="$ORIGINAL_CWD"

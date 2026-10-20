@@ -56,6 +56,30 @@ export interface VerdictFlipQuarantineHealth {
   errors: string[];
 }
 
+/**
+ * Re-validate a `verdictFlipQuarantine` value read back out of JSON (the result marker) before
+ * release-actions stores it in gate_health (WI-6554700010018008). A malformed value is dropped.
+ */
+export function parseVerdictFlipQuarantineHealth(value: unknown): VerdictFlipQuarantineHealth | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const strings = (x: unknown) => Array.isArray(x) && x.every((s) => typeof s === 'string');
+  if (typeof v.flips !== 'number' || typeof v.alreadyCovered !== 'number') return null;
+  if (!strings(v.unowned) || !strings(v.errors) || !Array.isArray(v.quarantined)) return null;
+  const quarantined = (v.quarantined as unknown[]).filter(
+    (q): q is VerdictFlipQuarantineHealth['quarantined'][number] =>
+      typeof q === 'object' && q !== null &&
+      ['testFile', 'testCase', 'owner', 'workItemId'].every((k) => typeof (q as Record<string, unknown>)[k] === 'string'),
+  );
+  return {
+    flips: v.flips,
+    quarantined,
+    alreadyCovered: v.alreadyCovered,
+    unowned: v.unowned as string[],
+    errors: v.errors as string[],
+  };
+}
+
 export async function runVerdictFlipQuarantine(
   input: { candidateSha: string; retries: readonly IsolationRetry[]; workspaceDirOf: (ws: string) => string | null },
   deps: VerdictFlipGateDeps,

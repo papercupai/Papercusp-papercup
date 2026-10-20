@@ -79,6 +79,17 @@ import {
 } from "@papercusp/operator-core/lib/release/promotion-ratchet";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
+  compactRatchetShadow,
+  compareComposedProofShadow,
+  parseCommitPathLog,
+  planComposedProofShadow,
+  planNewRedEjectionShadow,
+  type ComposedProofShadow,
+  type RadiusQuery,
+  type RatchetShadowHealth,
+} from "@papercusp/operator-core/lib/release/ratchet-shadow";
+import type { ChangedFile } from "@papercusp/operator-core/lib/release/composed-promotion-proof";
+import {
   buildRedLegsAtR1,
   decideKnownGoodFreezeCut,
   formatFreezeCutLine,
@@ -842,6 +853,9 @@ export interface CheckpointDeps {
     /** green-main-ratchet-convergence-2026-10-17 P-008 (R-7): what the same-commit verdict-flip
      *  quarantine did this run. ABSENT ⇒ it did not run (no gate target, a build failure). */
     verdictFlipQuarantine?: VerdictFlipQuarantineHealth;
+    /** green-main-ratchet-convergence-2026-10-17 #D-025: the P-007 new-red ejection planned in
+     *  SHADOW beside a red (radius attribution + plan only; never acts). ABSENT ⇒ not run. */
+    ratchetShadow?: RatchetShadowHealth;
     /** P-008 (#D-015): failing entries this run removed from its count (quarantine.txt, a flaky
      *  quarantine, an active downgrade), recorded on the repair round it produces. */
     excludedFromCount?: string[];
@@ -1810,8 +1824,13 @@ export interface CheckpointResult {
    *  persists it as `gate_health.promotionRatchet` (blocking-failure count, downgraded-failing
    *  count, whether the red was promoted because every failure was downgraded). */
   promotionRatchet?: PromotionRatchetHealth;
-  /** P-008 (R-7): carried from `runGreen`; persisted as `gate_health.verdictFlipQuarantine`. */
+  /** P-008 (R-7): carried from `runGreen`; persisted as `gate_health.verdictFlipQuarantine`
+   *  (release-actions.ts, WI-6554700010018008). */
   verdictFlipQuarantine?: VerdictFlipQuarantineHealth;
+  /** #D-025: the P-007 / P-018 planners' shadow records (what they WOULD have done, and for
+   *  P-018 whether the composed verdict agreed with the full run). Persisted as
+   *  `gate_health.ratchetShadow`. Never changes the verdict. */
+  ratchetShadow?: RatchetShadowHealth;
   /** P-008 (#D-015): carried from `runGreen` onto the repair round this verdict produces. */
   excludedFromCount?: string[];
   /** P-014: exact inputs/decision for the suite interpretation replay canary. */
@@ -4250,6 +4269,15 @@ export function checkpointResultMarkerPayload(
     if (JSON.stringify(compact) !== JSON.stringify(r)) {
       out.promotionRatchet = compact;
       omitted.push("promotionRatchet(samples)");
+    }
+  }
+  // #D-025: the shadow records carry samples; the marker keeps counts, the comparison and 3
+  // short samples. The full records stay in the stderr result.
+  if (result.ratchetShadow) {
+    const compact = compactRatchetShadow(result.ratchetShadow);
+    if (JSON.stringify(compact) !== JSON.stringify(result.ratchetShadow)) {
+      out.ratchetShadow = compact;
+      omitted.push("ratchetShadow(samples)");
     }
   }
   const maxPayloadBytes =
@@ -7350,6 +7378,9 @@ export interface RepairHeadRadius {
   /** All producer-declared task/guard/workspace rows were received. Legacy responses
    * still support conservative verification but cannot mint a reusable receipt. */
   coverageComplete?: boolean;
+  /** Affected test tasks the selector widened to a whole lane (status=full): their file-level
+   *  radius is unknown. 0 on an exact selection. */
+  widenedTasks?: number;
 }
 
 /** Turn the selector's `--changed-paths … --related --print-affected` output into the bounded
@@ -7495,10 +7526,79 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
     files,
     gateIds: [...gateIds],
     coverageComplete,
+    widenedTasks,
     summary:
       `${files.length} exact related file(s), ${widenedTasks} widened affected test task(s), ` +
       `${gateIds.size - widenedTasks} guard/task leg(s)`,
   };
+}
+
+/** #D-025 P-007 shadow bounds: selector runs, wall clock, and the longest commit range read. */
+const RATCHET_SHADOW_MAX_QUERIES = 12;
+const RATCHET_SHADOW_BUDGET_MS = 5 * 60_000;
+const RATCHET_SHADOW_MAX_COMMITS = 2_000;
+/** Most lineage files the P-018 shadow reads before it records the lineage as unreadable. */
+const COMPOSED_PROOF_SHADOW_FILE_CAP = 500;
+const SHADOW_SCRIPT_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+
+/**
+ * green-main-ratchet-convergence-2026-10-17 #D-025: plan the P-018 composed promotion proof in
+ * SHADOW beside a green selective verification of a frozen repair head. Reads the lineage diff
+ * (candidate..repairHead) and the frozen candidate's round-1 failing set from the queue, and asks
+ * the selector at the repair head for the radius of the runtime-changing files. The returned plan
+ * is only recorded and later compared with the full run; no decision reads it. Never throws.
+ */
+export async function shadowComposedProofAtRepairHead(input: {
+  root: string;
+  queue: Pick<FrozenCandidateRepairQueue, "candidate" | "convergenceRounds">;
+  repairHead: string;
+  affectedTestsAtRef?: (ref: string, paths: string[]) => Promise<RepairHeadRadius | null>;
+  nowMs: number;
+}): Promise<ComposedProofShadow> {
+  const round1Row = (input.queue.convergenceRounds ?? []).find((r) => r.head === input.queue.candidate);
+  const round1 = round1Row?.failingTests
+    ? { failingTests: round1Row.failingTests, failingCount: round1Row.failingCount }
+    : null;
+  let changedFiles: ChangedFile[] | null = null;
+  try {
+    const names = (
+      await git(input.root, ["diff", "--name-only", "--no-renames", input.queue.candidate, input.repairHead])
+    )
+      .split("\n")
+      .filter(Boolean);
+    if (names.length <= COMPOSED_PROOF_SHADOW_FILE_CAP) {
+      const read = (sha: string, p: string) => git(input.root, ["show", `${sha}:${p}`]).catch(() => null);
+      changedFiles = [];
+      for (const p of names) {
+        // Only script files have an emit to compare; every other file is a runtime change.
+        changedFiles.push(
+          SHADOW_SCRIPT_FILE.test(p)
+            ? { path: p, before: await read(input.queue.candidate, p), after: await read(input.repairHead, p) }
+            : { path: p, before: "", after: "" },
+        );
+      }
+    }
+  } catch {
+    changedFiles = null;
+  }
+  const radius: RadiusQuery = async (paths) => {
+    if (!input.affectedTestsAtRef) return null;
+    try {
+      const r = await input.affectedTestsAtRef(input.repairHead, [...paths]);
+      if (!r || (r.widenedTasks ?? 0) > 0 || r.coverageComplete === false) return null;
+      return new Set(r.files.map((f) => f.file));
+    } catch {
+      return null;
+    }
+  };
+  return planComposedProofShadow({
+    candidate: input.queue.candidate,
+    repairHead: input.repairHead,
+    round1,
+    changedFiles,
+    radius,
+    nowMs: input.nowMs,
+  });
 }
 
 /** Is this `failingTests` entry something the tip rescue can re-run on its own?
@@ -12205,6 +12305,9 @@ async function runGreenCheckpointInner(
   // green / full-run-required verdict). A full-gate red at a repair head with this still null is
   // recorded with no trigger — the unexplained fallthrough the targeted-radius invariant flags.
   let repairFullGateTrigger: FrozenRepairFullGateTrigger | null = null;
+  // #D-025: the P-018 composed proof planned beside a green selective verification; compared with
+  // the full run at the same head once it returns. Shadow only: never read by any decision.
+  let composedProofShadow: ComposedProofShadow | null = null;
   let initialCandidateVerification = false;
   const withRepairIdentity = <T extends CheckpointResult>(result: T): T => {
     let next = result;
@@ -13480,6 +13583,23 @@ async function runGreenCheckpointInner(
       // head) below — that run, not the selective pass, is the promotion proof (P-007).
       repairFullGateTrigger =
         verification.kind === "green" ? "promotion-proof" : "full-run-required";
+      // #D-025 (P-018 shadow): what a composed proof would re-run instead of this full run.
+      // Recorded and compared after the full run; the full run still decides.
+      if (verification.kind === "green") {
+        composedProofShadow = await shadowComposedProofAtRepairHead({
+          root: cfg.integrationRoot,
+          queue: repairQueue,
+          repairHead: candidate,
+          affectedTestsAtRef: deps.affectedTestsAtRef?.bind(deps),
+          nowMs: Date.now(),
+        });
+        deps.log(
+          `RATCHET_SHADOW composed-proof status=${composedProofShadow.record.status} ` +
+            `mode=${composedProofShadow.record.mode ?? "-"} rerun=${composedProofShadow.record.rerunCount ?? "-"} ` +
+            `typeOnly=${composedProofShadow.record.typeOnlyFileCount ?? "-"}` +
+            (composedProofShadow.record.reason ? ` reason=${composedProofShadow.record.reason}` : ""),
+        );
+      }
     }
   }
 
@@ -14399,8 +14519,31 @@ async function runGreenCheckpointInner(
     testPassReuse,
     promotionRatchet,
     verdictFlipQuarantine,
+    ratchetShadow: runnerRatchetShadow,
     excludedFromCount,
   } = candidateSuiteResult;
+  // #D-025: the runner's P-007 shadow plus the P-018 comparison against THIS full run (the run a
+  // composed proof would have replaced). Recorded only; nothing below reads it.
+  const ratchetShadow: RatchetShadowHealth | undefined =
+    runnerRatchetShadow || composedProofShadow
+      ? {
+          ...(runnerRatchetShadow ?? {}),
+          ...(composedProofShadow
+            ? {
+                composedProof: suiteMeasured
+                  ? compareComposedProofShadow(composedProofShadow, { green, failingTests: failingTests ?? [] })
+                  : { ...composedProofShadow.record, comparisonSkipped: "the full run did not measure the suite" },
+              }
+            : {}),
+        }
+      : undefined;
+  if (ratchetShadow?.composedProof?.comparison) {
+    const c = ratchetShadow.composedProof.comparison;
+    deps.log(
+      `RATCHET_SHADOW composed-proof-vs-full agree=${c.agree} composedGreen=${c.composedGreen} ` +
+        `fullGreen=${c.fullGreen} missed=${c.missedByComposed.length} extra=${c.extraInComposed.length}`,
+    );
+  }
   // P-013: what this round observed about itself, attached once to every result that carries
   // the suite's verdict. `roundPhaseStamps` is a carrier only: runGreenCheckpoint turns it into
   // `roundPhases` against the whole pass's measured time and drops it from the public result.
@@ -14411,11 +14554,12 @@ async function runGreenCheckpointInner(
   const roundObservations: Pick<
     CheckpointResult,
     | "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1" | "promotionRatchet"
-    | "verdictFlipQuarantine" | "excludedFromCount"
+    | "verdictFlipQuarantine" | "excludedFromCount" | "ratchetShadow"
   > = {
     ...(testPassReuse ? { testPassReuse } : {}),
     ...(promotionRatchet ? { promotionRatchet } : {}),
     ...(verdictFlipQuarantine ? { verdictFlipQuarantine } : {}),
+    ...(ratchetShadow ? { ratchetShadow } : {}),
     ...(excludedFromCount?.length ? { excludedFromCount } : {}),
     roundPhaseStamps: [...setupStretch.stamps],
     ...(freezeCut ? { freezeCut } : {}),
@@ -22735,6 +22879,71 @@ export function realCheckpointDeps(
           }
         }
       }
+      // green-main-ratchet-convergence-2026-10-17 #D-025 (P-007 shadow): which commit since the
+      // green pin each remaining blocking test failure would be attributed to by radius, and the
+      // ejection that would follow. Planning only: no build, no routing, the verdict above stands.
+      // Bounded by query count and wall clock; any failure records a skipped/error status.
+      let ratchetShadow: RatchetShadowHealth | undefined;
+      if (!green && buildOk && failingTests.length) {
+        try {
+          const dirByName = npmWorkspaceDirsByName(treeDir);
+          const repoPathOf = (f: { workspace: string; file: string }) => {
+            const dir = dirByName[f.workspace];
+            return dir ? path.posix.join(dir, f.file) : f.file;
+          };
+          const newFailures = inferFailingFilesFromEntries(
+            failingTests,
+            parseFailingFilesByWorkspace(signatureOutput),
+          )
+            .filter((f) => !quarantinedFileLabels.has(`${f.workspace}::${f.file}`))
+            .map(repoPathOf);
+          const candidateSha = resolveCandidateSha(treeDir);
+          const base = await revParse(cfg.integrationRoot, cfg.releaseRef).catch(() => null);
+          let commits: ReturnType<typeof parseCommitPathLog> | null = null;
+          if (candidateSha && base && newFailures.length) {
+            const count = Number(await git(cfg.integrationRoot, ["rev-list", "--count", `${base}..${candidateSha}`]));
+            commits =
+              Number.isSafeInteger(count) && count <= RATCHET_SHADOW_MAX_COMMITS
+                ? parseCommitPathLog(
+                    await git(cfg.integrationRoot, [
+                      "log", "--reverse", "--no-merges", "--format=%x1e%H", "--name-only", `${base}..${candidateSha}`,
+                    ]),
+                  )
+                : null;
+            if (commits === null) log(`RATCHET_SHADOW new-red-ejection: ${count} commits since the green pin (cap ${RATCHET_SHADOW_MAX_COMMITS})`);
+          }
+          const radius: RadiusQuery = async (paths) => {
+            const probe = await exec(
+              process.execPath,
+              [path.join(treeDir, "scripts/affected-tests.mjs"), "--changed-paths", paths.join(","), "--related", "--print-affected"],
+              { cwd: treeDir, allowNonZero: true, timeoutMs: 120_000, killProcessGroupOnTimeout: true },
+            );
+            if (probe.code !== 0) return null;
+            const r = parseRepairHeadRadius(probe.stdout);
+            if (!r || (r.widenedTasks ?? 0) > 0 || r.coverageComplete === false) return null;
+            return new Set(r.files.map(repoPathOf));
+          };
+          const record = await planNewRedEjectionShadow({
+            candidate: candidateSha ?? execution?.candidate ?? "unknown",
+            base,
+            newFailures,
+            commits,
+            radius,
+            maxQueries: RATCHET_SHADOW_MAX_QUERIES,
+            budgetMs: RATCHET_SHADOW_BUDGET_MS,
+            maxCommits: RATCHET_SHADOW_MAX_COMMITS,
+          });
+          ratchetShadow = { newRedEjection: record };
+          log(
+            `RATCHET_SHADOW new-red-ejection status=${record.status} plan=${record.plan ?? "-"} ` +
+              `commits=${record.commitCount ?? "-"} failures=${record.newFailureCount ?? "-"} ` +
+              `ejected=${record.ejected?.length ?? 0} queries=${record.radiusQueries ?? 0}` +
+              (record.reason ? ` reason=${record.reason}` : ""),
+          );
+        } catch (e) {
+          log(`RATCHET_SHADOW new-red-ejection failed (verdict unchanged): ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
       // P-008 (#D-015): what quarantine and downgrades removed from this run's count. The repair
       // round records it, so the convergence trajectory compares rounds over one population.
       const excludedFromCount = green
@@ -22830,6 +23039,7 @@ export function realCheckpointDeps(
         ...(testPassReuse ? { testPassReuse } : {}),
         ...(promotionRatchet ? { promotionRatchet } : {}),
         ...(verdictFlipQuarantine ? { verdictFlipQuarantine } : {}),
+        ...(ratchetShadow ? { ratchetShadow } : {}),
         ...(excludedFromCount.length ? { excludedFromCount } : {}),
       };
     },

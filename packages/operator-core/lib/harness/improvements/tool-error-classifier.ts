@@ -247,6 +247,9 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'tenant_scope_required', 'positive_control_tenant_scope_required',
       'scratch_line_window_too_large', 'mixed_window_modes', 'client_id_required', 'client_not_found',
       'owner_not_found', 'owner_ambiguous',
+      // capability:read found the one real spill a hand-retyped scratch cursor meant
+      // and returned it as did_you_mean (scratch-path-recovery.ts, plan bug-inflow R-8).
+      'scratch_path_mistyped',
     ],
     statuses: ['role-not-allowed', 'scratch_line_window_too_large', 'mixed_window_modes'],
     messagePattern: CALLER_MESSAGE_PATTERN,

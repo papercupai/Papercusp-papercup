@@ -18,6 +18,7 @@ import { resolveCapabilityBaseDir, resolveCapabilityIntegrationRoot } from './ba
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
+import { findMistypedScratchSpill, type RecoveredScratchSpill } from '../../scratch-path-recovery';
 import {
   QUERY_DEFAULT_CONTEXT,
   QUERY_DEFAULT_MAX_MATCHES,
@@ -853,6 +854,13 @@ export const capabilityReadDefinition = {
       if (fileStat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      if ((e as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+        // A missing result-door spill is usually a cursor retyped by hand; point
+        // the caller at the one real spill instead of a bare ENOENT (R-8, D-008).
+        const recovered = await trackScratchAsync('mistyped-path-recovery', async () =>
+          (await findMistypedScratchSpill(filePath)) ?? (abs !== filePath ? await findMistypedScratchSpill(abs) : null));
+        if (recovered) return mistypedScratchPathErr(args, filePath, recovered);
+      }
       return err('read_failed', msg);
     }
 
@@ -1392,6 +1400,37 @@ function isProjectRelativeReadPath(filePath: string): boolean {
 function err(reason: string, message: string) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, reason, message }) }],
+    isError: true,
+  };
+}
+
+/**
+ * Refuse a retyped scratch cursor with the exact cursor it most likely meant.
+ * The caller's other arguments are carried over unchanged, under the same path
+ * key (`uri` or `file_path`) the caller used. The other file is NOT read here:
+ * the caller re-issues the read, so it always sees which path it is reading.
+ */
+function mistypedScratchPathErr(
+  args: Record<string, unknown>,
+  requested: string,
+  recovered: RecoveredScratchSpill,
+) {
+  const pathKey = args.uri !== undefined && args.file_path === undefined ? 'uri' : 'file_path';
+  const target = pathKey === 'uri' ? recovered.uri : recovered.path;
+  const { uri: _uri, file_path: _filePath, ...rest } = args;
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        ok: false,
+        reason: 'scratch_path_mistyped',
+        message:
+          `${requested} does not exist, but a saved result with the same name exists at ${target}. ` +
+          'The path was most likely retyped by hand (a changed character in the run id, workspace or root). ' +
+          'Re-run did_you_mean, which carries your arguments with the exact path. Copy cursors from the result instead of retyping them.',
+        did_you_mean: { tool: 'capability:read', args: { [pathKey]: target, ...rest } },
+      }),
+    }],
     isError: true,
   };
 }

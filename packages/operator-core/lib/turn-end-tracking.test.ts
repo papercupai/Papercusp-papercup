@@ -262,16 +262,21 @@ describe('deliverable detection', () => {
 });
 
 describe('ephemeral terminal-deliverable reference detection', () => {
-  it('finds scratch paths and both Claude artifact URL forms, in text order', () => {
+  it('finds scratch paths and every Claude artifact URL form, in text order', () => {
     const refs = detectEphemeralDeliverableReferences(
       'source .papercusp/scratch/report.md; published https://claude.ai/code/artifact/abc; ' +
-        'also https://claude.ai/artifacts/def.',
+        'also https://claude.ai/artifacts/def; shared https://claude.ai/public/artifacts/0b1c-2d3e.',
     );
     expect(refs).toEqual([
       { kind: 'scratch-path', reference: '.papercusp/scratch/report.md' },
       { kind: 'artifact-url', reference: 'https://claude.ai/code/artifact/abc' },
       { kind: 'artifact-url', reference: 'https://claude.ai/artifacts/def' },
+      { kind: 'artifact-url', reference: 'https://claude.ai/public/artifacts/0b1c-2d3e' },
     ]);
+  });
+
+  it('does not treat a non-artifact claude.ai page as an artifact URL', () => {
+    expect(detectEphemeralDeliverableReferences('see https://claude.ai/public/settings/abc')).toEqual([]);
   });
 
   it('finds loopback presentation URLs but not lookalike hostnames', () => {

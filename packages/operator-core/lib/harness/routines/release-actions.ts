@@ -50,6 +50,11 @@ import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposit
 import type { FreezeCutRecord, RedLegsAtR1 } from '../../release/known-good-freeze';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from '../../release/test-pass-reuse-report';
 import { parsePromotionRatchetHealth, type PromotionRatchetHealth } from '../../release/promotion-ratchet';
+import {
+  parseVerdictFlipQuarantineHealth,
+  type VerdictFlipQuarantineHealth,
+} from '../../release/verdict-flip-quarantine-gate';
+import { parseRatchetShadowHealth, type RatchetShadowHealth } from '../../release/ratchet-shadow';
 import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
@@ -1472,6 +1477,12 @@ export interface CheckpointVerdict {
    *  CheckpointResult.promotionRatchet — blocking-failure and downgraded-failing counts.
    *  Re-validated with parsePromotionRatchetHealth before it is stored. */
   promotionRatchet?: PromotionRatchetHealth;
+  /** P-008 (R-7): structural mirror of CheckpointResult.verdictFlipQuarantine, re-validated with
+   *  parseVerdictFlipQuarantineHealth before it is stored (WI-6554700010018008). */
+  verdictFlipQuarantine?: VerdictFlipQuarantineHealth;
+  /** #D-025: structural mirror of CheckpointResult.ratchetShadow (the P-007/P-018 shadow records),
+   *  re-validated with parseRatchetShadowHealth before it is stored. */
+  ratchetShadow?: RatchetShadowHealth;
   suiteVerdictReplay?: GateSuiteVerdictReplay;
   suiteReplayCanary?: { status: 'passed' | 'bootstrap' | 'mismatch' | 'unreadable'; detail: string };
   /** P-013: structural mirror of CheckpointResult.roundPhases — where this round's time went.
@@ -2521,6 +2532,8 @@ export async function recordCheckpointVerdict(
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
       promotionRatchet: verdict.promotionRatchet,
+      verdictFlipQuarantine: verdict.verdictFlipQuarantine,
+      ratchetShadow: verdict.ratchetShadow,
       roundPhases: verdict.roundPhases,
       repairQueue: verdict.repairQueue,
       repairTickLegs: verdict.repairTickLegs,
@@ -2605,6 +2618,8 @@ export async function recordPendingCheckpointVerdict(
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
       promotionRatchet: verdict.promotionRatchet,
+      verdictFlipQuarantine: verdict.verdictFlipQuarantine,
+      ratchetShadow: verdict.ratchetShadow,
       roundPhases: verdict.roundPhases,
       repairQueue: verdict.repairQueue,
     },
@@ -3201,6 +3216,8 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         postSuiteLegs: parsed?.postSuiteLegs,
         testPassReuse: parsed?.testPassReuse,
         promotionRatchet: parsed?.promotionRatchet,
+        verdictFlipQuarantine: parsed?.verdictFlipQuarantine,
+        ratchetShadow: parsed?.ratchetShadow,
         roundPhases: parsed?.roundPhases,
         repairQueue: parsed?.repairQueue,
         repairTickLegs: parsed?.repairTickLegs,
@@ -4405,6 +4422,10 @@ export async function trackGateStall(
     testPassReuse?: unknown;
     /** P-004: the round's promotion-ratchet counts; shape-checked here like testPassReuse. */
     promotionRatchet?: unknown;
+    /** P-008 (R-7): the round's verdict-flip quarantine record; shape-checked like testPassReuse. */
+    verdictFlipQuarantine?: unknown;
+    /** #D-025: the round's P-007/P-018 shadow records; shape-checked like testPassReuse. */
+    ratchetShadow?: unknown;
     /** P-013: the round's phase breakdown; shape-checked here like testPassReuse. */
     roundPhases?: unknown;
     alarm?: import('../../alarm-attention').AlarmAttentionDeps;
@@ -5043,6 +5064,9 @@ export async function trackGateStall(
   // round beside `observedCandidate`, so an unreported round CLEARS it (explicit null) rather
   // than leaving an older round's counts next to a newer candidate.
   const promotionRatchetRecord = parsePromotionRatchetHealth(options.promotionRatchet);
+  // P-008 / #D-025: per-round records like promotionRatchet; an unreported round clears them.
+  const verdictFlipQuarantineRecord = parseVerdictFlipQuarantineHealth(options.verdictFlipQuarantine);
+  const ratchetShadowRecord = parseRatchetShadowHealth(options.ratchetShadow) ?? null;
   // P-013: unlike testPassReuse, the phase breakdown carries no sha of its own — it describes the
   // round beside `observedCandidate` — so an unmeasured round CLEARS it (explicit null) instead of
   // leaving an older round's phases next to a newer candidate.
@@ -5132,7 +5156,7 @@ export async function trackGateStall(
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
           ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
-          promotionRatchet: promotionRatchetRecord,
+          promotionRatchet: promotionRatchetRecord, verdictFlipQuarantine: verdictFlipQuarantineRecord, ratchetShadow: ratchetShadowRecord,
           roundPhases: roundPhasesRecord,
           candidateSnapshot: verdictCandidateSnapshot,
           retriageStaleTip: null,
@@ -5176,7 +5200,7 @@ export async function trackGateStall(
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
           ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
-          promotionRatchet: promotionRatchetRecord,
+          promotionRatchet: promotionRatchetRecord, verdictFlipQuarantine: verdictFlipQuarantineRecord, ratchetShadow: ratchetShadowRecord,
           roundPhases: roundPhasesRecord,
           retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
           retriageDetail: retriageBlocked ? retriage!.detail : null,
@@ -5631,7 +5655,7 @@ export async function trackGateStall(
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
       ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
-      promotionRatchet: promotionRatchetRecord,
+      promotionRatchet: promotionRatchetRecord, verdictFlipQuarantine: verdictFlipQuarantineRecord, ratchetShadow: ratchetShadowRecord,
       roundPhases: roundPhasesRecord,
       candidateSnapshot: verdictCandidateSnapshot,
       retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
