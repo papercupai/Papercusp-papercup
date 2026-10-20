@@ -280,6 +280,24 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     });
   });
 
+  it('EI-26470881603162340: disables pc-heavy coalescing on every guard leg, even when the caller enabled it', () => {
+    // A leg's identity reaches the guard by ENV (PAPERCUSP_MUTATION_PHASE, the
+    // descriptor, the receipt file). pc-heavy coalesces on cwd + argv, so a
+    // pc-heavy-wrapped guard with the same argv as an earlier leg replays that
+    // leg's output and no reporter runs: 6 of 9 cupboard probes on 2026-10-20
+    // recorded baseline_ledger=none, and spec-test-adequacy could not link their
+    // mutants to a baseline. Each leg is a measurement, so none may be replayed.
+    const marker = join(dir, 'guard-coalesce');
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/',
+      '--test', `printf '%s=%s\\n' "$PAPERCUSP_MUTATION_PHASE" "\${PC_HEAVY_COALESCE:-unset}" >> ${JSON.stringify(marker)}; grep -q '^beta$' {}`,
+    ], { ...process.env, PC_HEAVY_COALESCE: '1' });
+    expect(code, out).toBe(0);
+    expect(readFileSync(marker, 'utf8').trim().split('\n'))
+      .toEqual(['baseline=0', 'copy-baseline=0', 'mutant=0']);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('replays descriptor export settings even when the next caller disables export', () => {
     const args = ['--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}"];
     const env = { ...process.env,

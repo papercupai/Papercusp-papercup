@@ -1877,6 +1877,14 @@ run_guard() {
       else
         unset PAPERCUSP_MUTATION_DESCRIPTOR
       fi
+      # EI-26470881603162340: every leg is a MEASUREMENT whose test_runs row is the
+      # evidence, so no leg may replay another run's output. The leg's identity
+      # (phase, descriptor, receipt file) reaches the guard by env, while
+      # pc-heavy coalesces on cwd + argv: a pc-heavy-wrapped guard whose argv
+      # matches an earlier leg (this probe's baseline, or another probe's) was
+      # replayed with no reporter run, and 6 of 9 probes on 2026-10-20 recorded
+      # baseline_ledger=none. Forced, not defaulted: a caller's 1 must not win.
+      export PC_HEAVY_COALESCE=0
       # WI-10004898: a copy-out guard records from the .git-less mirror, so the
       # test_runs reporter could never prove the run clean (every row landed
       # commit=NULL, worktree_dirty=true, which spec freshness rates unknown).

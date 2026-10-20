@@ -428,6 +428,26 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     // pausing it stops only the checks themselves.
     why: 'Runs bounded per-sync-batch affected-tests/typecheck legs and files deduped work-items — no agent spawn or wake',
   },
+  'system:periodic-full-run': {
+    spend: 'none',
+    // Verified against periodic-full-run-action.ts before classifying (P-013): it runs the
+    // whole suite and bounded bisection probes in clean trees and files condition-keyed bugs
+    // via createOneWorkItem — no agent spawn, no session wake, no pipeline dispatch.
+    why: 'Runs the full suite of main and bounded bisection probes, files deduped work-items — no agent spawn or wake',
+  },
+  'system:spec-conformance-sweep': {
+    spend: 'none',
+    // Verified against spec-conformance/sweep-action.ts: it reads plans + work_items past a
+    // watermark and records conformance verdicts — no agent spawn, session wake or dispatch.
+    // (Registered 2026-10-14 without a classification; this registry test was red since.)
+    why: 'Reads plan/work-item state past a watermark and records conformance verdicts — no agent spawn or wake',
+  },
+  'system:spec-conformance-review': {
+    spend: 'none',
+    // Verified against spec-conformance/conformance-review.ts: it files one deduped review
+    // work-item per plan via upsertConditionWorkItem — no agent spawn, session wake or dispatch.
+    why: 'Files one deduped conformance-review work-item per plan — no agent spawn or wake',
+  },
   'system:sync-batch-lint-guards': {
     spend: 'llm',
     // Checks are deterministic; a new attributed red also queues its holder's
@@ -872,7 +892,7 @@ const DOCS_FAMILY = /doc|^knowledge-pack-/i;
 const WAKE_FAMILY = /(^|-)wake($|-)/i;
 const LEARNING_FAMILY =
   /^improvement-|^bp-singleton-|^gym|^template-gym$|^pot-eval-battery$|^scout|^dream|prospector|^oddsmith-|^scan$/i;
-const GIT_RELEASE_FAMILY = /git-sync|checkpoint|release|deploy|^pr-poll$|^cargo-test$|^gate-|^sync-batch-delta-check$/i;
+const GIT_RELEASE_FAMILY = /git-sync|checkpoint|release|deploy|^pr-poll$|^cargo-test$|^gate-|^sync-batch-delta-check$|^periodic-full-run$/i;
 const CLEANUP_FAMILY = /gc$|^gc-|reaper|retention|precompute|^knowledge-pack-/i;
 const FEDERATION_FAMILY = /^p2p-|hive|foreign|outbox|federation/i;
 
