@@ -1,6 +1,5 @@
 /** P-034: read the maintained first-party dependency snapshot, never a live compiler. */
-import { readFile, stat } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { open, readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative } from 'node:path';
 import { realpath } from 'node:fs/promises';
@@ -203,22 +202,46 @@ export async function corroboratePushSources(root: string | undefined,
   return valid && !signal.aborted;
 }
 
-type Entry = { snapshot: PushSnapshot | null; checkedAt: number; loading: Promise<void> | null };
+type Entry = { snapshot: PushSnapshot | null; checkedAt: number; loading: Promise<void> | null; fileIdentity: string | null };
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-snapshots', () => ({ entries: new Map<string, Entry>() }));
+
+/** Identity of the opened snapshot file. The producer replaces it by atomic rename, so a
+ * regeneration always changes the inode; an in-place rewrite changes size or mtime. */
+const snapshotFileIdentity = (st: { dev: number; ino: number; size: number; mtimeMs: number }) =>
+  `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`;
+
+/** Re-read the snapshot only when the file changed. The serving file is ~185 MB, so an
+ * unconditional re-parse every REFRESH_MS kept a full stream parse running whenever
+ * queries arrived (WI-6554700010018175). The warm snapshot keeps serving meanwhile. */
+async function refreshPushSnapshot(entry: Entry, path: string): Promise<void> {
+  const handle = await open(path, 'r');
+  let streaming = false;
+  try {
+    const identity = snapshotFileIdentity(await handle.stat());
+    if (entry.snapshot && entry.fileIdentity === identity) return;
+    // The stream owns the handle from here (autoClose on end, error or destroy).
+    const stream = handle.createReadStream({ encoding: 'utf8', highWaterMark: 8192 });
+    streaming = true;
+    const snapshot = await parsePushSnapshotStream(stream);
+    entry.snapshot = snapshot;
+    entry.fileIdentity = snapshot ? identity : null;
+  } finally {
+    if (!streaming) await handle.close().catch(() => {});
+  }
+}
 
 /** Cold reads return immediately. One async load per repository; no timer or polling service. */
 export function peekPushSnapshot(repo: string, now = Date.now()): PushSnapshot | null {
   let entry = state.entries.get(repo);
   if (!entry) {
     if (state.entries.size >= 8) state.entries.delete(state.entries.keys().next().value!);
-    entry = { snapshot: null, checkedAt: -Infinity, loading: null }; state.entries.set(repo, entry);
+    entry = { snapshot: null, checkedAt: -Infinity, loading: null, fileIdentity: null }; state.entries.set(repo, entry);
   }
   if (!entry.loading && now - entry.checkedAt >= REFRESH_MS) {
     entry.checkedAt = now;
     const current = entry;
-    current.loading = parsePushSnapshotStream(createReadStream(dependencySnapshotPath(repo), { encoding: 'utf8', highWaterMark: 8192 }))
-      .then(snapshot => { current.snapshot = snapshot; })
-      .catch(error => { current.snapshot = null; if (error?.code !== 'ENOENT') console.warn('[code-intel-push] snapshot unavailable:', String(error).slice(0, 200)); })
+    current.loading = refreshPushSnapshot(current, dependencySnapshotPath(repo))
+      .catch(error => { current.snapshot = null; current.fileIdentity = null; if (error?.code !== 'ENOENT') console.warn('[code-intel-push] snapshot unavailable:', String(error).slice(0, 200)); })
       .finally(() => { current.loading = null; });
   }
   return entry.snapshot && now - entry.snapshot.generatedMs <= PUSH_SNAPSHOT_MAX_AGE_MS ? entry.snapshot : null;

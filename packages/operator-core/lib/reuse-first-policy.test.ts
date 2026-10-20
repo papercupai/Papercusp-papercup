@@ -21,4 +21,17 @@ describe('renderReuseFirstNudge', () => {
     expect(nudge).toMatch(/briefly note what you reused/);
     expect(nudge).toMatch(/top review smell/);
   });
+
+  // plan-reuse-and-library-declarations-2026-10-20 R-8 / D-013 #6.
+  it('R-8: points plans at the reuse section and names the same lookups as the declaration guidance', async () => {
+    const { REUSE_SECTION_DESCRIPTION, REUSE_SECTION_HEADING } = await import('./agent-tools/plans/plan-declarations');
+    const nudge = renderReuseFirstNudge();
+    expect(nudge).toContain(`## ${REUSE_SECTION_HEADING}`);
+    for (const lookup of ['lsp:query', 'graph:query', 'tools:find']) {
+      expect(nudge).toContain(lookup);
+      expect(REUSE_SECTION_DESCRIPTION).toContain(lookup);
+    }
+    // gitnexus.query fails closed before dispatch, so the nudge must not send agents there.
+    expect(nudge).not.toMatch(/gitnexus/);
+  });
 });

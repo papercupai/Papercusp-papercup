@@ -128,7 +128,9 @@ describe('facts:list distinguishes the page from the census (WI-38910)', () => {
     expect(data.total).toBe(500);
     expect(listFactsSpy).toHaveBeenCalledWith(
       { scope: 'workspace', scopeRef: null },
-      { limit: FACTS_LIST_ALL_LIMIT },
+      // facts:list is an EXPLICIT read, so it includes `code-note:*` facts that
+      // the ambient fold excludes (code-intel-epoch-carry P-005).
+      { limit: FACTS_LIST_ALL_LIMIT, includeCodeNotes: true },
     );
   });
 

@@ -30,7 +30,11 @@ import {
   markFrozenRepairAdmitted,
   markFrozenRepairFixerDead,
   markFrozenRepairFixerDispatched,
+  markFrozenRepairUnmeasuredRetest,
   markFrozenRepairVerificationGreen,
+  frozenRepairHeadOwesVerification,
+  frozenRepairHeadAwaitsVerification,
+  settleFrozenRepairRetestRequest,
 } from './frozen-candidate-repair-queue';
 import {
   CHECKPOINT_ELIGIBILITY_PREDICATES,
@@ -1569,6 +1573,67 @@ describe('logical checkpoint qualification transaction', () => {
         ],
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+  });
+
+  // WI-6554700010018169 — measured on slack-asana-bug-drill 2026-10-15 → 2026-10-20: the
+  // once-per-head unmeasured retest (WI-10003213) moved the queue to ready-to-verify at the SAME
+  // head (repairHead === candidate, already in convergenceRounds); the requesting run then
+  // skipped the suite as unchanged-since-verdict and went terminal inconclusive, and every later
+  // successor was refused `queue-not-safe-unstarted` — 24 verdictless fires a day for five days.
+  it('preserves a same-head unmeasured retest left pending by an inconclusive predecessor', () => {
+    const terminal = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'unchanged-since-verdict',
+      green: null,
+      nowMs: 400,
+    }).transaction;
+    const redCandidate = markFrozenCandidateVerificationRed(
+      createFrozenCandidateQueue({
+        candidate: 'candidate-1',
+        qualificationAttemptId: 'attempt-1',
+        base: null,
+        nowMs: 200,
+      }),
+      { failingTests: [], nowMs: 300 },
+    );
+    const retest = markFrozenRepairUnmeasuredRetest(redCandidate, { nowMs: 350 });
+    // The exact wedged shape: verification owed at a head the suite already judged.
+    expect(retest).toMatchObject({
+      phase: 'ready-to-verify',
+      repairHead: 'candidate-1',
+      candidate: 'candidate-1',
+      unmeasuredRetestHead: 'candidate-1',
+      retestRequested: { repairHead: 'candidate-1' },
+    });
+    expect(frozenRepairHeadAwaitsVerification(retest)).toBe(false);
+    expect(frozenRepairHeadOwesVerification(retest)).toBe(true);
+
+    const successor = { attemptId: 'attempt-2', declaredPaths: [], candidate: 'candidate-2', nowMs: 500 };
+    expect(assessTerminalRepairQueueReconciliation(terminal, successor, retest)).toMatchObject({
+      status: 'preserved',
+      reason: 'matching-untested-repair-head',
+      predecessorAttemptId: 'attempt-1',
+      successorAttemptId: 'attempt-2',
+      candidate: 'candidate-1',
+    });
+
+    // Narrow on purpose: once a pass at that head settles the marker, the same row is an
+    // already-judged head again and stays blocked; a live dispatch lease still fences it.
+    const settled = settleFrozenRepairRetestRequest(retest, 'candidate-1');
+    expect(settled.kind).toBe('settled');
+    expect(frozenRepairHeadOwesVerification(settled.queue)).toBe(false);
+    expect(assessTerminalRepairQueueReconciliation(terminal, successor, settled.queue)).toMatchObject({
+      status: 'blocked',
+      reason: 'queue-not-safe-unstarted',
+    });
+    expect(
+      assessTerminalRepairQueueReconciliation(terminal, successor, {
+        ...retest,
+        dispatchReservation: { token: 'fixer-1', claimedAtMs: 450, expiresAtMs: 9_999_999 },
+      }),
+    ).toMatchObject({ status: 'blocked' });
+    // A marker naming an OLDER head does not vouch for the current one.
+    expect(frozenRepairHeadOwesVerification({ ...retest, unmeasuredRetestHead: 'older-head' })).toBe(false);
   });
 
   it('preserves a completed-fixer repair head whose spawn id is retained as provenance', () => {

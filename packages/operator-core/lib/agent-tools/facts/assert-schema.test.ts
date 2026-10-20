@@ -394,6 +394,8 @@ describe('facts:assert TTL spelling contract', () => {
 
     const schema = schemaToText(z.toJSONSchema(assertTool.args as never)) ?? '';
     expect(schema).toContain('permanent:true is allowed only for conventions/typed keys');
+    expect(schema).toContain('ordinary cap refuses at its ceiling instead of evicting an incumbent');
+    expect(schema).not.toContain('LEAST evictable row');
   });
 
   it('mirrors the store lifetime exceptions and slot normalization', () => {

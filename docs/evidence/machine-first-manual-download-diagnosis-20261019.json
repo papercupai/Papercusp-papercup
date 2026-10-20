@@ -126,6 +126,304 @@
     "isolation": { "providerAccountsAdmitted": 0, "productionRebuilds": 0, "fullSignupJourneys": 0, "standaloneBoot": "Owned private database and hosted TEST configuration; no account creation or session admission. Adapter injects a non-credential cookie solely for the optimistic middleware presence gate.", "applicationChildrenExitCode": 0, "privateHomeRemoved": true, "privateRuntimeAndPgDataRemoved": true, "nativeHandlesDrained": true },
     "remainingDifference": "Original configured real-session and acceptance-harness path remains unisolated. The fixture session bypasses hosted account validation and tutorial state; prior-context control does not reproduce the full earlier reload/GUI/defer sequence."
   },
+  "navigationInitiatorFollowup": {
+    "observedAt": "2026-10-20T11:39:26.690Z",
+    "scope": "One maintained configured-browser fixture journey against retained immutable0600 Portal. No real AuthKit signup, provider account admission, product repair, current archive acceptance or shipment claim.",
+    "test": {
+      "harness": "portal",
+      "path": "e2e/portal-utility-welcome.spec.ts",
+      "sha256": "63098a81ded05534c11d706321523b637d9b90d4f5589ad10f2e6b7668dd64e6",
+      "title": "immutable production utility acceptance browser journey"
+    },
+    "immutable": {
+      "release": "oJ0h0_To5R7LOMBgrKJIn-20261019060105140-1246394-6cb54ba0",
+      "sourceRootDigest": "3ac45b985ae5528675a456e78ac0a7075aec5b9843593109a430f7d01dfecfcc",
+      "compiledRouteSha256": "14c41ca77a1a2e34bddd22905de661b3ecbaee4d6b9e335c1b3db5aff55f17ed",
+      "routeServer": "standalone-route",
+      "servedDocument": true
+    },
+    "verification": {
+      "typecheckExit": 0,
+      "listSelectedCases": 1,
+      "browserExit": 0,
+      "stats": {
+        "startTime": "2026-10-20T11:39:26.690Z",
+        "duration": 31533.817,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "launcherExit": 0,
+      "sourceUnchangedAfterRun": true
+    },
+    "priorJourney": {
+      "previousJourney": [
+        {
+          "phase": "initial",
+          "expected": {
+            "inDocument": 1,
+            "total": 1
+          },
+          "actual": {
+            "inDocument": 1,
+            "total": 1
+          }
+        },
+        {
+          "phase": "destination-reload",
+          "expected": {
+            "inDocument": 0,
+            "total": 1
+          },
+          "actual": {
+            "inDocument": 0,
+            "total": 1
+          }
+        },
+        {
+          "phase": "ordinary-gui-navigation",
+          "expected": {
+            "inDocument": 0,
+            "total": 1
+          },
+          "actual": {
+            "inDocument": 0,
+            "total": 1
+          }
+        }
+      ],
+      "guiRendered": true,
+      "guideDisposition": "skipped",
+      "browser": "Playwright configured browser fixture",
+      "cookieAttributes": {
+        "secure": true,
+        "httpOnly": true,
+        "sameSite": "Lax",
+        "hostPrefix": true
+      }
+    },
+    "manualDownload": {
+      "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+      "url": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz",
+      "failure": null,
+      "bytes": 69542264,
+      "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6"
+    },
+    "manualRedirect302Observed": true,
+    "navigationObservation": {
+      "documentScriptReloads": 2,
+      "selectionRequestsObserved": 3,
+      "initiator": {
+        "chunk": ".next-build/static/chunks/6040-5bd19cd37d9f1431.js",
+        "chunkPathBase": "portal app root in the immutable candidate release",
+        "sha256": "f9d768a84e6c9cc6aa51b75164a71728ce9a058192e0b2a2133eb707f59ee527",
+        "lineNumberZeroBased": 1,
+        "columnNumberZeroBased": 139876
+      },
+      "sourceRefs": [
+        "portal/packages/ui/src/shell.tsx:4035",
+        "portal/packages/ui/src/workspaces.tsx:492",
+        "portal/packages/ui/src/workspaces.tsx:828",
+        "portal/e2e/portal-utility-welcome.spec.ts:434"
+      ],
+      "traceAttribution": "The recorded script Document initiator is the immutable shell effect that reloads after selectExistingWorkspace resolves true. Compiled aK/a3 match maintained selectExistingWorkspace/portalJson: JSON parse failure becomes null, and an HTTP-success response resolves true. The fixture has no select-workspace route, so it falls through to its generic HTML200 handler while its session workspaceId stays null. This explains the recorded fixture reloads.",
+      "qualification": "The earlier0703 ordinary-navigation ERR_ABORTED has no initiator trace, so assigning it this cause remains a hypothesis. Original real-session zero-byte cancellation remains unconfirmed and unrepaired. A passing attachment download may still emit a navigation ERR_ABORTED; the download result, bytes and hash establish completion."
+    },
+    "cleanup": {
+      "allOwnedPidsGone": true,
+      "pids": [
+        872287,
+        872583,
+        911823,
+        911858
+      ],
+      "applicationChildren": [
+        {
+          "pid": 872583,
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "pid": 911823,
+          "exitCode": 0,
+          "signal": null
+        }
+      ],
+      "privateHomeRemoved": true,
+      "privateRuntimeRemoved": true,
+      "privatePgDataRemoved": true,
+      "nativeHandleDrained": true,
+      "providerAccountsAdmitted": 0,
+      "productionRebuilds": 0
+    },
+    "next": "Correct the existing acceptanceJourney fixture workspace-selection contract to return the established404/no_workspace response for this new-account null-workspace session, record/assert that response and reject unexpected script reloads. Preserve all original case titles, prior proof, and child2/parent12/loop12 checks. Do not treat this passing diagnostic as resolution of the original incident, and do not repeat full signup/rebuild/provider admission.",
+    "artifacts": [
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run01-inputs.json",
+        "sha256": "683352b67459504e07b0f6dfde826de8ee315003b05792f15dc139becc4eef99"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run01-launcher.mjs",
+        "sha256": "10559cfccc2c9ecdc182b5ff34febc14212373b7ecbae649ceb04fc069a2bd62"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run01-supervisor.log",
+        "sha256": "ffc5b79ce919c95d9a919cbfe77c500ab7a1cf4dfcaa6ccca956795841eadc72"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run01-runtime.json",
+        "sha256": "4f7ba33cc9eabd14625dd2f19f30c1fa2c799055d649afffcd06f472be2273a2"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run01-browser.json",
+        "sha256": "0a0f374b116c9cf39a74234d41bdaadad45c64cbbc14656102a5192b33904566"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run01-browser-console.log",
+        "sha256": "817655e4a70acd0a86cb4b8d356b8ea5178f25b527a098fb08ab689e179e0362"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run01-transport.json",
+        "sha256": "4ba338d2f1114a7834bbbc79b2ccaac93fead071bb21ed67338a9b80f3fd2ec4"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run01-custody-preflight.json",
+        "sha256": "e793dcce8eef651cbc24d9a11b5ad43ff9861ee6d92fc9e73be375ef8b33f0c8"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-tsc.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-list.log",
+        "sha256": "c11623a9d809c937e584950e904e8632a28458fdbb1ab7347aef3302ce1f9bca"
+      }
+    ]
+  },
+  "nullWorkspaceFollowup": {
+    "observedAt": "2026-10-20T15:10:29.256Z",
+    "scope": "Maintained null-workspace fixture correction; browser run stopped at resolver preflight and does not verify the new journey assertions or original cancellation repair.",
+    "test": {
+      "harness": "portal",
+      "path": "e2e/portal-utility-welcome.spec.ts",
+      "sha256": "defb44c582e9203e26328b43864e10e00e847f148d9b2e3d83fd7c49e8bd2266",
+      "sourceUnchangedAfterRun": true,
+      "changes": [
+        "Existing acceptanceJourney adapter returns404/no_workspace for select-workspace instead of fallback HTML200",
+        "Browser records exact POST/body/status/response and asserts no script-initiated Document requests before ordinary navigation and after context closure"
+      ],
+      "contractRef": "portal/tests/a-returning-member-lands-in-their-workspace.test.ts"
+    },
+    "verification": {
+      "nonincrementalTscExit": 0,
+      "maintainedTypecheckExit": 0,
+      "maintainedTypecheckVerdict": "TYPECHECK_RESULT status=clean exit=0 errors=0 files=3228",
+      "listSelectedCases": 1,
+      "browserExit": 1,
+      "stats": {
+        "startTime": "2026-10-20T13:04:03.253Z",
+        "duration": 19209.228,
+        "expected": 0,
+        "skipped": 0,
+        "unexpected": 1,
+        "flaky": 0
+      },
+      "firstRequest": {
+        "path": "/api/downloads/utility?target=linux-x86_64&resolve=1",
+        "status": 503,
+        "redirect": null
+      },
+      "journeyReached": false
+    },
+    "resolverMeasurement": {
+      "observedAt": "2026-10-20T15:10:15.615Z",
+      "compiledRouteSha256": "14c41ca77a1a2e34bddd22905de661b3ecbaee4d6b9e335c1b3db5aff55f17ed",
+      "status": 503,
+      "body": {
+        "error": "utility_unavailable"
+      },
+      "publisherStatus": 403,
+      "publisherElapsedMs": 148,
+      "publisherRefusal": "Cloudflare HTML: This bucket cannot be viewed; This bucket does not exist or is not publicly accessible at this URL",
+      "underlyingCause": "Unconfirmed; this later direct measurement does not establish why the earlier runtime request returned503.",
+      "ownedFollowup": "WI-6554700010018171"
+    },
+    "cleanup": {
+      "nativeHandleDrained": true,
+      "allOwnedPidsGone": true,
+      "pids": [
+        1391142,
+        1391322,
+        1432665,
+        1432845
+      ],
+      "applicationChildren": [
+        {
+          "pid": 1391322,
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "pid": 1432665,
+          "exitCode": 0,
+          "signal": null
+        }
+      ],
+      "privateHomeRemoved": true,
+      "privateRuntimeRemoved": true,
+      "privatePgDataRemoved": true,
+      "providerAccountsAdmitted": 0,
+      "productionRebuilds": 0
+    },
+    "next": "Investigate owned publisher403 follow-up before another expensive journey. Keep defb44c5 fixture repair browser-unverified and preserve all historical checks and original cancellation evidence.",
+    "artifacts": [
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run02-inputs.json",
+        "sha256": "f2caa67a24c7c342f4333ab10e75b27ff517b1e841be23dfc20f69265b242706"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run02-launcher.mjs",
+        "sha256": "3b990a00b68bbde150c6e00be7f66c5b07b5e4178ae2a4d58f6899cb6c08618b"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run02-runtime.json",
+        "sha256": "9bbb71415f97fe9eaa8e6377449b78b90ed406ff70e4dd5fe1a06cfacfef0d77"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run02-browser.json",
+        "sha256": "a078bfb5a0e867758488e92a9460888a6396f5d87c68b157b9c35539c572e6d7"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run02-browser-console.log",
+        "sha256": "b36ac2e4004968be478e0af46f11fb70ff527a3a794e746e16f65b527bee2ea6"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run02-transport.json",
+        "sha256": "1aa3d3107766ef417d713adff2a180be7b3f78f087be3101d5e3e6cbc7fbaf2b"
+      },
+      {
+        "path": "/tmp/machine-first-nav-initiator-20261020-run02-custody-preflight.json",
+        "sha256": "036d9475f6d6fcbfc728bae7b088d1810bae717efa3a40274b232fe64f1b1a9d"
+      },
+      {
+        "path": "/tmp/machine-first-null-workspace-20261020-resolver-preflight.json",
+        "sha256": "8ddd14e23a7b0cd615dbc757a55a2a21dee750dfc75f8115e987e9056200bb3e"
+      },
+      {
+        "path": "/tmp/machine-first-null-workspace-20261020-publisher-refusal.json",
+        "sha256": "2c889c135712432c860a37eed93e6526f797b7be2a627c488f0898d8a3a56517"
+      },
+      {
+        "path": "/tmp/machine-first-null-workspace-20261020-tsc-v2.log",
+        "sha256": "79f217edc56003e5efc4726d74bea4b8dad60504fd0361e5062ed98a88d00a4d"
+      },
+      {
+        "path": "/tmp/machine-first-null-workspace-20261020-list-v2.log",
+        "sha256": "c11623a9d809c937e584950e904e8632a28458fdbb1ab7347aef3302ce1f9bca"
+      }
+    ]
+  },
   "rootCause": "Original served cancellation UNCONFIRMED; diagnostic field defect fixed and guarded. Controlled compiled-route, standalone-route and production-document experiments pass. Do not claim the original issue repaired or classify it as a flake.",
   "next": "Preserve the passing matrix; do not rerun it only for reconstruction, repeat the full configured signup journey, rebuild merely for diagnosis, or admit provider accounts. Inspect the remaining real-session and acceptance-harness differences with evidence before the next bounded experiment. Capture request arrival, exact redirect and corrected Chrome lastReasonText on any reproducer. No product change is justified yet.",
   "rawArtifacts": [
@@ -156,5 +454,55 @@
     { "path": "/tmp/machine-first-route-guards-final-20261019.err", "sha256": "6327afa3c7eba5f0d0c05e35fd6a7df21e58dba96dc95397d8368d090bae8535" },
     { "path": "/tmp/machine-first-route-diagnostic-typecheck-final-20261019.log", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
   ],
+  "publisherEnablementFollowup": {
+    "date": "2026-10-20",
+    "workItem": "WI-6554700010018171",
+    "scope": "Current publisher refusal and maintained prerequisite detector only; does not verify the original cancellation cause, corrected fixture browser journey, current archive or shipment.",
+    "configuration": {
+      "portalMatchesMaintainedPublisher": true,
+      "portalIndexSha256": "ce95e26ef3f2ec725113f88391a58ad49d7f9880ff165d1a85007e924ab39dc8",
+      "manifestUrlSha256": "6aedc60f67f3046a8efacc74d5f70ba06fbde0bdee43278f272cf96ec70659e8",
+      "permanentReleasePrefixChanged": false
+    },
+    "publicRead": {
+      "nativeStatus": 403,
+      "curlUserAgentStatus": 403,
+      "browserUserAgentStatus": 403,
+      "allThreeResponseBodiesSha256": "cb0daf1f5b86bb7a94ab2d000a064bdb5355bbc73140d16e5da1dccec345e6e8",
+      "bucketCannotBeViewed": true,
+      "qualification": "The documented user-agent-only refusal does not explain these identical native, curl and browser results."
+    },
+    "authenticatedReads": {
+      "s3GetObject": { "exit": 254, "errorCode": "NotEntitled" },
+      "s3HeadObject": { "exit": 254, "httpStatus": 403 },
+      "cloudflareManagedDomain": {
+        "httpStatus": 403,
+        "success": false,
+        "errorCode": 10042,
+        "message": "Please enable R2 through the Cloudflare Dashboard."
+      },
+      "qualification": "Cloudflare requires R2 enablement before object/domain inspection succeeds. Why this account reached that state and when it changed remain unconfirmed."
+    },
+    "maintainedPreflight": {
+      "implementation": "portal/e2e/served-artifact.ts:probeUtilityPublisher",
+      "integration": "portal/e2e/portal-utility-welcome.spec.ts:beforeAll",
+      "behavior": "Explicit served/immutable/signup download runs attach a masked status/manifest receipt and fail before local fixture servers and browser fixtures when the publisher prerequisite fails. The exported probe can also run before an external private-runtime launcher.",
+      "directProbe": { "ok": false, "status": 403, "reason": "publisher-http-error", "manifestSha256": null },
+      "noPrivateRuntimeOrBrowserLaunchedForDirectProbe": true,
+      "testCommand": "npx vitest run tests/served-artifact.test.ts tests/utility-download-route.test.ts",
+      "testResult": { "filesPassed": 2, "testsPassed": 74, "exit": 0 },
+      "typecheckCommand": "npx tsc --noEmit --incremental false",
+      "typecheckExit": 0,
+      "diffCheckExit": 0,
+      "sourceAtVerification": {
+        "e2e/served-artifact.ts": "b60a80ecac7a557ed0c19cb48afedb59aa38120f61c12ebf4379b5940e50ad08",
+        "tests/served-artifact.test.ts": "d7db328547723adc0ebd55b83154338cad5f32d9fed07b7856f0f8f3d16e5da5",
+        "e2e/portal-utility-welcome.spec.ts": "23ed076ece2f28a8c1ff0cf163a1a674a543c567758de7942d17bd04f92fd9cd"
+      },
+      "qualification": "Unit prerequisites and live publisher refusal verified; the new Playwright hook and corrected browser journey have not run against an available publisher."
+    },
+    "externalMutations": 0,
+    "next": "Resolve the Cloudflare R2 enablement requirement with Avi; account/billing changes require explicit authorization. Preserve the permanent release address. After availability is restored, run the maintained probe and exact Portal resolver before one focused corrected-fixture browser case."
+  },
   "authorization": "SELF/AUTO continues. Owner turn11, plan D-003 and current R7 authorize required compatible archive publication and verified shipment; additional blanket publication approval was retracted in post1191208. Preserve artifact-specific controls. No implementation fanout or peer/live-gate monitoring."
 }

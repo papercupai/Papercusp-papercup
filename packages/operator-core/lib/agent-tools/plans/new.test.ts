@@ -12,7 +12,63 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import newPlan from './new';
+import newPlan, { buildTemplate } from './new';
+import {
+  LIBRARIES_SECTION_DESCRIPTION,
+  REUSE_SECTION_DESCRIPTION,
+  planDeclarationsWriteAdvisory,
+  previewPlanDeclarations,
+} from './plan-declarations';
+
+// plan-reuse-and-library-declarations-2026-10-20 R-1.
+describe('plans:new declaration scaffolds', () => {
+  const base = { slug: 'plan-a-2026-10-20', title: 'Plan A', status: 'draft', owner: null, date: '2026-10-20' };
+
+  it('R-1: plans:new scaffolds the reuse and libraries sections with guidance', () => {
+    const content = buildTemplate(base);
+    expect(content).toContain('## Existing infrastructure reused');
+    expect(content).toContain('## Third-party libraries');
+    expect(content).toContain(REUSE_SECTION_DESCRIPTION);
+    expect(content).toContain(LIBRARIES_SECTION_DESCRIPTION);
+    expect(content).toMatch(/```reuse\n\{[\s\S]*?\n```/);
+    expect(content).toMatch(/```libraries\n\{[\s\S]*?\n```/);
+    // The sections sit after Product shaping and before the item phase.
+    expect(content.indexOf('## Product shaping')).toBeLessThan(content.indexOf('## Existing infrastructure reused'));
+    expect(content.indexOf('## Third-party libraries')).toBeLessThan(content.indexOf('## Phase 1'));
+    // The scaffold is found (it is a draft to fill in, so it is not yet valid).
+    const preview = previewPlanDeclarations(content);
+    expect(preview.reuse.status).not.toBe('missing');
+    expect(preview.libraries.status).not.toBe('missing');
+  });
+
+  it('R-1: a caller-supplied body without the sections lands with an advisory and the scaffold', () => {
+    const body = '# Plan A\n\n## Items\n\n- **P-001** `todo` Do the thing.\n';
+    const content = buildTemplate({ ...base, body });
+    expect(content).not.toContain('## Existing infrastructure reused');
+    const advisory = planDeclarationsWriteAdvisory(content);
+    expect(advisory).toMatchObject({
+      advisory: true,
+      sections: [
+        { heading: 'Existing infrastructure reused', status: 'missing' },
+        { heading: 'Third-party libraries', status: 'missing' },
+      ],
+    });
+    expect(advisory?.scaffold).toContain('```reuse');
+    expect(advisory?.scaffold).toContain('```libraries');
+  });
+
+  // R-8 / D-013 #6: the plans:new guidance names both sections in one line, and the
+  // libraries guidance names the three cases that need no research.
+  it('R-8: plans:new guidance names both sections; libraries guidance names the no-research cases', () => {
+    const when = (newPlan as unknown as { guidance: { when: string } }).guidance.when;
+    const line = when.split(/(?<=\.)\s+/).find((sentence) => sentence.includes('## Existing infrastructure reused'));
+    expect(line).toBeDefined();
+    expect(line).toContain('## Third-party libraries');
+    for (const decision of ['owner-specified', 'already-in-project', 'skip-research']) {
+      expect(LIBRARIES_SECTION_DESCRIPTION).toContain(decision);
+    }
+  });
+});
 
 describe('plans:new idempotent-completion opt-in (EI-11507)', () => {
   it('declares idempotent:true so a committed-but-slow create surfaces success, not a false timeout', () => {

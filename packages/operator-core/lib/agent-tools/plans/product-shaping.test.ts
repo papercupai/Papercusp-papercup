@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { previewProductShaping, productShapingScaffold, renderOwnerWalkthrough, type ProductShaping } from './product-shaping';
+import { LIBRARIES_SECTION_HEADING, REUSE_SECTION_HEADING } from './plan-declarations';
 
 const source = 'session_turn:codex:original-request:1';
 function brief(outcome = 'The user can retry without losing their draft.'): ProductShaping {
@@ -159,6 +160,51 @@ describe('product shaping', () => {
     it('yields no walkthrough for missing or malformed shaping', () => {
       expect(previewProductShaping('# Legacy\n## Build\n- **P-001** `todo` Work').ownerWalkthrough).toBeNull();
       expect(previewProductShaping('## Product shaping\n```product-shaping\n{oops\n```').ownerWalkthrough).toBeNull();
+      expect(renderOwnerWalkthrough(null)).toBeNull();
+    });
+
+    it('R-7: walkthrough lists reuse entries and library rows', () => {
+      const reuse = {
+        searched: [{ where: 'lib/drafts', how: 'grep for draft stores', found: 'drafts.ts' }],
+        reused: [
+          { ref: 'lib/drafts.ts#saveDraft', kind: 'symbol', provides: 'local draft persistence', items: ['P-001'] },
+          { ref: 'harness_shared.bug_reports', kind: 'table', provides: 'report storage', items: ['P-001'] },
+        ],
+        newSurfaces: [{ name: 'retry-queue.ts', kind: 'module', nearestExisting: 'lib/outbox.ts', whyNotReused: 'outbox is email-only' }],
+        notApplicable: null,
+      };
+      const libraries = {
+        needs: [
+          { need: 'schema validation', decision: 'already-in-project', package: 'zod', reason: '', existingUse: 'product-shaping.ts' },
+          { need: 'backoff timing', decision: 'skip-research', package: '', reason: 'three lines of arithmetic' },
+          { need: 'url state', decision: 'owner-specified', package: 'nuqs', reason: '', sourceRef: 'session_turn:claude:abc:3' },
+        ],
+        notApplicable: null,
+      };
+      const content = plan(brief())
+        + `\n\n## ${REUSE_SECTION_HEADING}\n\n\`\`\`reuse\n${JSON.stringify(reuse)}\n\`\`\``
+        + `\n\n## ${LIBRARIES_SECTION_HEADING}\n\n\`\`\`libraries\n${JSON.stringify(libraries)}\n\`\`\``;
+      const walk = previewProductShaping(content).ownerWalkthrough!;
+      // The brief still leads; the declarations follow it.
+      expect(walk.indexOf('**After this ships:**')).toBeLessThan(walk.indexOf('**Reuses:**'));
+      for (const entry of reuse.reused) expect(walk).toContain(entry.ref);
+      expect(walk).toContain('retry-queue.ts (module) — nearest existing: lib/outbox.ts; not reused because: outbox is email-only');
+      for (const row of libraries.needs) expect(walk).toContain(`${row.need}: ${row.decision}`);
+      expect(walk).toContain('`zod`');
+
+      // A plan without the sections says so rather than silently omitting them.
+      const bare = previewProductShaping(plan(brief())).ownerWalkthrough!;
+      expect(bare).toContain('**Reuses:** not declared (missing)');
+      expect(bare).toContain('**Libraries:** not declared (missing)');
+
+      // D-013 #5: with no Product shaping brief, the declarations still render.
+      const sectionsOnly = content.slice(content.indexOf(`## ${REUSE_SECTION_HEADING}`));
+      const noBrief = renderOwnerWalkthrough(null, sectionsOnly)!;
+      expect(noBrief).toContain('**Reuses:**');
+      for (const entry of reuse.reused) expect(noBrief).toContain(entry.ref);
+      for (const row of libraries.needs) expect(noBrief).toContain(`${row.need}: ${row.decision}`);
+      // No brief and no sections: nothing to walk through.
+      expect(renderOwnerWalkthrough(null, '# Plan\n')).toBeNull();
       expect(renderOwnerWalkthrough(null)).toBeNull();
     });
 

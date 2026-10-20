@@ -34,10 +34,12 @@ import {
   disconnectOwnedExternalTriggerSources,
   listOwnedExternalTriggerSources,
   markExternalTriggerSourcesReconnectRequired,
+  removeExternalTriggerSourceDestination,
   renameOwnedExternalTriggerSourceAccount,
   upsertOwnedExternalTriggerSource,
   type OwnedExternalTriggerSourceRow,
 } from '../external-triggers/source-store';
+import { isPersonalProviderAccount, PERSON_DESTINATION_DATATYPE } from './personal-account';
 import { assertProviderOwnerUnblocked, ProviderVerificationError, providerRegistry, readyProviderRegistry, type RegisteredProvider } from './provider-registry';
 import { fetchProviderIdentity } from './provider-identity';
 
@@ -349,8 +351,8 @@ export async function connectionAccessToken(
   const ref = input.credentialRef;
   if (!ref) return { accessToken: null };
   // A credential ref is `<token-store plugin>:<field>`. Descriptor plugins are
-  // themselves `provider:<group>`; first-party adapters (google-workspace,
-  // whose refs existing Gmail and Calendar sources carry) use a bare plugin id.
+  // themselves `provider:<group>`; a first-party adapter (none remain after
+  // provider-adapters-to-packages-2026-10-11 D-036) would use a bare plugin id.
   const descriptorRef = ref.startsWith(DESCRIPTOR_OAUTH_PLUGIN_PREFIX);
   const fieldSeparator = ref.indexOf(':', descriptorRef ? DESCRIPTOR_OAUTH_PLUGIN_PREFIX.length : 0);
   if (fieldSeparator < 0) {
@@ -467,7 +469,7 @@ export function descriptorConnectionAdapter(plugin: string): ConnectionAdapter |
       // One credential per group: every provider in the group gets its own
       // source row pointing at the same credentialRef.
       for (const entry of members) {
-        await upsertOwnedExternalTriggerSource(sql, {
+        const source = await upsertOwnedExternalTriggerSource(sql, {
           workspaceId: input.owner.workspaceId,
           kind: entry.descriptor.id,
           ownerUserId: input.owner.ownerUserId,
@@ -482,10 +484,80 @@ export function descriptorConnectionAdapter(plugin: string): ConnectionAdapter |
           ...(entry.descriptor.defaultDestinations ? { destinationPolicy: entry.descriptor.defaultDestinations } : {}),
           createdBy: input.createdBy,
         });
+        // A personal (consumer) account never receives the relationship-graph grant, whatever
+        // the kind default or an older row's policy routes (personal-account.ts).
+        if (isPersonalProviderAccount(entry.descriptor, input.account.providerAccountId)) {
+          await removeExternalTriggerSourceDestination(sql, input.owner.workspaceId, source.id, PERSON_DESTINATION_DATATYPE);
+        }
       }
     },
   };
   return adapter;
+}
+
+/* ─── Legacy credential adoption (provider-adapters-to-packages-2026-10-11 D-037) ─── */
+
+export interface LegacyCredentialAdoption {
+  legacyPlugin: string;
+  plugin: string;
+  fieldsCopied: number;
+  sourcesRewritten: number;
+}
+
+/**
+ * Adopt the credentials a first-party connection stored before its provider moved into a
+ * package (`oauth.legacyCredentialPlugins`). Ordered so no reader ever meets a ref without its
+ * token: copy the token fields into the descriptor plugin, then rewrite the source rows'
+ * `<legacy>:` credential refs and provisional account ids, then clear the legacy fields. Every
+ * step is idempotent, and a field the descriptor plugin already holds is never overwritten. It
+ * runs where the connector sync runs, so the process that refreshes these tokens moves them.
+ */
+export async function adoptLegacyProviderCredentials(
+  sql: postgres.Sql,
+  input: { workspaceId: string; harness: string },
+): Promise<LegacyCredentialAdoption[]> {
+  const targets = new Map<string, string>();
+  for (const entry of (await readyProviderRegistry()).list()) {
+    const oauth = entry.descriptor.oauth;
+    if (!oauth || oauth.instance) continue;
+    const plugin = descriptorOAuthPlugin(entry.descriptor);
+    for (const legacyPlugin of oauth.legacyCredentialPlugins ?? []) {
+      const claimed = targets.get(legacyPlugin);
+      if (claimed && claimed !== plugin) throw new Error(`legacy_credential_plugin_conflict:${legacyPlugin}`);
+      targets.set(legacyPlugin, plugin);
+    }
+  }
+  const adopted: LegacyCredentialAdoption[] = [];
+  for (const [legacyPlugin, plugin] of targets) {
+    const legacyPrefix = `${legacyPlugin}:`;
+    const pluginPrefix = `${plugin}:`;
+    const legacy = await fsTokenStorage.read(legacyPlugin, input.harness);
+    const held = Object.entries(legacy).filter(([, value]) => value !== null && value !== undefined);
+    let fieldsCopied = 0;
+    if (held.length > 0) {
+      const current = await fsTokenStorage.read(plugin, input.harness);
+      const patch = Object.fromEntries(held.filter(([key]) => current[key] === null || current[key] === undefined));
+      fieldsCopied = Object.keys(patch).length;
+      if (fieldsCopied > 0) await fsTokenStorage.update(plugin, input.harness, patch);
+    }
+    const rewritten = await sql<{ id: string }[]>`
+      UPDATE harness_shared.data_sources
+         SET credential_ref = CASE WHEN starts_with(credential_ref, ${legacyPrefix})
+               THEN ${pluginPrefix} || substr(credential_ref, ${legacyPrefix.length + 1}) ELSE credential_ref END,
+             provider_account_id = CASE WHEN starts_with(provider_account_id, ${legacyPrefix})
+               THEN ${pluginPrefix} || substr(provider_account_id, ${legacyPrefix.length + 1}) ELSE provider_account_id END,
+             updated_at = now()
+       WHERE workspace_id = ${input.workspaceId}
+         AND (starts_with(credential_ref, ${legacyPrefix}) OR starts_with(provider_account_id, ${legacyPrefix}))
+       RETURNING id`;
+    if (held.length > 0) {
+      await fsTokenStorage.update(legacyPlugin, input.harness, Object.fromEntries(held.map(([key]) => [key, null])));
+    }
+    if (held.length > 0 || rewritten.length > 0) {
+      adopted.push({ legacyPlugin, plugin, fieldsCopied, sourcesRewritten: rewritten.length });
+    }
+  }
+  return adopted;
 }
 
 function base64Url(buffer: Buffer): string {

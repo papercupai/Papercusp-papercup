@@ -39,6 +39,7 @@ import { getSystemAction } from './system-actions';
 import {
   composeHumanQueueDigest,
   composeStaleNeedsHumanReminder,
+  digestCadenceLabel,
   filterResolvedConversationAsks,
   staleNeedsHumanDeliveryKey,
 } from './human-queue-digest-action';
@@ -176,6 +177,41 @@ describe('composeHumanQueueDigest', () => {
     const composed = composeHumanQueueDigest([ranked({ id: 'EI-8', title: 'x'.repeat(300) })]);
     expect(composed!.body).toContain('…');
     expect(composed!.body).not.toContain('x'.repeat(150));
+  });
+
+  it('derives daily and weekly labels from the configured cron and stays neutral otherwise', () => {
+    expect(digestCadenceLabel('0 0 9 * * *')).toBe('Daily');
+    expect(digestCadenceLabel('0 30 13 * * 1')).toBe('Weekly');
+    expect(digestCadenceLabel('0 0 9 1 * *')).toBeNull();
+
+    const daily = composeHumanQueueDigest([ranked({ id: 'EI-daily' })], { cadence: 'Daily' });
+    expect(daily!.summary).toContain('Daily review-queue digest');
+    expect(daily!.summary).not.toContain('Weekly');
+
+    const neutral = composeHumanQueueDigest([ranked({ id: 'EI-neutral' })]);
+    expect(neutral!.summary).toContain('Review-queue digest');
+    expect(neutral!.summary).not.toContain('Weekly');
+  });
+});
+
+describe('scheduled digest cadence wiring', () => {
+  it('uses the live daily cron for both notification rails', async () => {
+    const queue = [ranked({ id: 'EI-daily-wiring' })];
+    h.readImprovementItems.mockResolvedValue(queue);
+    h.applyHumanQueueRanking.mockResolvedValue({ humanQueue: queue });
+
+    await getSystemAction('improvement-human-digest')!({
+      ...ctx,
+      triggerConfig: { cron: '0 0 9 * * *' },
+    });
+
+    expect(h.sendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ summary: expect.stringContaining('Daily review-queue digest') }),
+    );
+    expect(h.notifyAttention).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Daily review-queue digest' }),
+    );
   });
 });
 

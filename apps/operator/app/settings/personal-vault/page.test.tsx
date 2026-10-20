@@ -611,13 +611,13 @@ describe("PersonalVaultSettingsPage", () => {
       screen.getByRole("button", { name: "Add Google account" }),
     ).toBeTruthy();
     expect(googleWorkspaceConnectHref()).toBe(
-      "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events",
+      "/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events",
     );
     expect(googleWorkspaceConnectHref(false)).toBe(
-      "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner",
+      "/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner",
     );
     expect(googleWorkspaceConnectHref(true, "owner@example.com")).toBe(
-      "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&account=owner%40example.com&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events",
+      "/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner&account=owner%40example.com&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events",
     );
     const googleCard = screen
       .getByRole("heading", { name: "Google Workspace" })
@@ -684,7 +684,7 @@ describe("PersonalVaultSettingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add Google account" }));
 
     const startUrl =
-      "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events&response=json";
+      "/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events&response=json";
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(startUrl, { cache: "no-store" });
       expect(desktop.invoke).toHaveBeenCalledWith("plugin:shell|open", {
@@ -731,7 +731,7 @@ describe("PersonalVaultSettingsPage", () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&account=owner%40example.com&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events&response=json",
+        "/api/oauth/start?provider=provider%3Agoogle&plugin=provider%3Agoogle&harness=papercusp&field=owner&account=owner%40example.com&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events&response=json",
         { cache: "no-store" },
       );
       expect(desktop.invoke).toHaveBeenCalledWith("plugin:shell|open", {

@@ -113,7 +113,14 @@ describe('native headroom acceptance evidence', () => {
 
 // Other alarm legs must not read the live host's census during unit tests.
 function runStorageGrowthAlarmOnce(deps: Parameters<typeof runStorageGrowthAlarmWithDefaults>[0] = {}) {
-  return runStorageGrowthAlarmWithDefaults({ readDiskCensus: async () => [], ...deps });
+  return runStorageGrowthAlarmWithDefaults({
+    readDiskCensus: async () => [],
+    // Unit tests must never fall through to defaultCountExemptSubsets(), which
+    // opens the live org PG connection. Keep the exempt-table leg measured and
+    // deterministic unless a test explicitly overrides it.
+    countExemptSubsets: healthySubsetCounts,
+    ...deps,
+  });
 }
 
 describe('disk durable headroom (P-011 / R-9)', () => {

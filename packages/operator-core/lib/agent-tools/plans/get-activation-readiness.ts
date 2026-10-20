@@ -2,6 +2,43 @@ import { getBuildInfo } from '../../build-info';
 import { recordExpertiseRoutingInvocation } from '../../endpoint-route/telemetry';
 import { CONSULT_DEFAULT_POLICY } from '../../consult/selection-policies';
 import { previewProductShaping } from './product-shaping';
+import {
+  evaluateActivationDeclarations,
+  type ActivationDeclarationBlocker,
+  type DeclarationStatus,
+  type PlanDeclarationDiagnostic,
+} from './plan-declarations';
+
+export interface ActivationDeclarationReadiness {
+  /** False only when the activation audit would refuse plan_declarations_invalid. */
+  ready: boolean;
+  /** False for an active/shipped plan, which the gate does not retrofit. */
+  applies: boolean;
+  reuse: DeclarationStatus;
+  libraries: DeclarationStatus;
+  blockers: ActivationDeclarationBlocker[];
+  diagnostics: PlanDeclarationDiagnostic[];
+}
+
+/**
+ * Readiness view of the declaration gate (R-3): the same verdict plans:audit
+ * phase:activation enforces, so a missing section shows up as a blocker before
+ * the audit is attempted. Pure; no consult, no database.
+ */
+export function activationDeclarationReadiness(
+  planContent: string,
+  planStatus: string | null | undefined,
+): ActivationDeclarationReadiness {
+  const gate = evaluateActivationDeclarations(planContent, planStatus);
+  return {
+    ready: gate.ok,
+    applies: gate.applies,
+    reuse: gate.preview.reuse.status,
+    libraries: gate.preview.libraries.status,
+    blockers: gate.applies ? gate.blockers : [],
+    diagnostics: gate.preview.diagnostics,
+  };
+}
 
 /**
  * Side-effect-free activation-readiness consult preview.

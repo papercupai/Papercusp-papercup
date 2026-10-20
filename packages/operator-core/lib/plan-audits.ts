@@ -273,6 +273,10 @@ export interface ActivationAuditPayload {
    *  audit. `enforced:false` marks a plan whose earlier audits predate item provenance
    *  (recorded with a warning); the lifecycle gate enforces only `enforced:true`. */
   itemProvenanceCheck?: StoredItemProvenanceCheck;
+  /** Server-written only (plan-reuse-and-library-declarations-2026-10-20 D-013 #1): this
+   *  audit was gated on the reuse and libraries sections, so every lifecycle door re-checks
+   *  them on the plan's current content. Absent on audits recorded before that gate. */
+  declarationsCheck?: { enforced: true; reuse: string; libraries: string };
   /** Server-written only. Repeated re-audits must stay pending until the
    * reviewed BAR amendment advances the stale subject pin. */
   barSeedPendingAmendment?: {

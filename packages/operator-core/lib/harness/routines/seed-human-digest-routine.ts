@@ -1,10 +1,9 @@
 /**
- * Seed the `improvement-human-digest` routine — the weekly owner drain ritual
+ * Seed the `improvement-human-digest` routine — the daily owner drain ritual
  * over the human review queue (self-improvement-consume-edges-2026-06-12
  * P-022 / B-08; handler in `human-queue-digest-action.ts`).
  *
- *   - `improvement-human-digest` (weekly, Monday 13:30 UTC — offset from the
- *     Monday 13:00 token report so the two owner digests don't interleave):
+ *   - `improvement-human-digest` (daily, 09:00 UTC):
  *     send the top-5 human-lane items ranked by blocking impact to the owner
  *     via the coord inbox + attention rails.
  *
@@ -27,7 +26,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.IMPROVEMENT_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
-const CRON = '0 30 13 * * 1'; // weekly, Monday 13:30 UTC
+const CRON = '0 0 9 * * *'; // daily, 09:00 UTC
 
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');

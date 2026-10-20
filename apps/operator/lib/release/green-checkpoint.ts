@@ -235,6 +235,7 @@ import {
   decideFrozenRepairDispatchInfeasible,
   decideFrozenConvergenceCycleEntry,
   frozenRepairHeadAwaitsVerification,
+  frozenRepairHeadOwesVerification,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAgeEscalated,
   markFrozenRepairExhausted,
@@ -13821,11 +13822,15 @@ async function runGreenCheckpointInner(
     // gate-level so nothing is selectively re-runnable, the full gate is asked to decide, and
     // this block declines — 20 verdictless runs in one day. The one authority on whether a
     // frozen head has been judged is the queue; when it says "not yet", judge it.
+    // WI-6554700010018169: the queue also says "judge it again" — a requested same-head
+    // unmeasured retest (WI-10003213) on a head the marker already calls red. Declining that
+    // here skipped the retest in the very run that requested it and wedged the qualification
+    // (slack-asana-bug-drill, 2026-10-15 → 2026-10-20). "Owes" covers both routes.
     const frozenHeadUnjudged =
       repairVerification &&
       repairQueue !== null &&
       repairQueue.repairHead === candidate &&
-      frozenRepairHeadAwaitsVerification(repairQueue);
+      frozenRepairHeadOwesVerification(repairQueue);
     if (judgedRed && judgedRed === candidate && frozenHeadUnjudged) {
       deps.log(
         `unchanged-since-verdict: ${candidate.slice(0, 8)} carries a judged-red marker but the frozen ` +

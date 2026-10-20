@@ -212,7 +212,10 @@ const circuitOpenDrill: DrillClass = {
       expectedWatchdogKey: `fire-circuit-open:circuit:${SANDBOX_HARNESS_SLUG}:${DRILL_ROLE}`,
       expectedKind: 'bug',
       expectedSeverity: 'major',
-      expectedDecision: 'place',
+      // Circuit-open is an infra-environment signal. The policy deliberately
+      // routes it to the owner gate because a worker cannot repair the runtime
+      // fire path; keep the drill oracle aligned with triageIdea (D-002/D-005).
+      expectedDecision: 'gate',
       artifacts: { table: 'autoloop_state', harness_slug: SANDBOX_HARNESS_SLUG, role: DRILL_ROLE },
     };
   },
@@ -260,7 +263,9 @@ const engineDeathDrill: DrillClass = {
     expectedWatchdogKey: `routine-engine-death:engine:${SANDBOX_WORKSPACE_ID}`,
     expectedKind: 'bug',
     expectedSeverity: 'critical',
-    expectedDecision: 'place',
+    // The detector points at the DBOS routines engine, a protected runtime
+    // surface. Policy therefore yields a human gate rather than auto-place.
+    expectedDecision: 'gate',
     artifacts: {},
     payload: { snapshot: engineDeathSnapshot(Date.now()) },
   }),

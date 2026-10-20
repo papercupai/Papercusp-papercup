@@ -19,10 +19,10 @@
  * Upsert identity: (workspace, scope, coalesce(ref,''), key). Soft-retract.
  * Hygiene: ordinary facts require an explicit lifetime (typed slots and confidence
  * tiers may supply their documented defaults), per-scope cap, expiry sweep on the
- * routines tick. The cap evicts by the ranking at the ORDER BY around L1221 —
+ * routines tick. Ordinary writes at the ceiling are refused without evicting an
+ * incumbent; volatile snapshots use the ranking at the ORDER BY around L1221 —
  * confidence, then the remaining fraction of declared TTL, with
- * `updated_at DESC` only as a tiebreak. An ordinary write that would evict
- * another author's `verified` fact is refused before insertion. It is NOT
+ * `updated_at DESC` only as a tiebreak. That volatile ranking is NOT
  * "LRU-ish / oldest-updated", which is what this line said until 2026-08-04
  * and which stopped being true at WI-7292; two agents chased that stale
  * sentence to opposite wrong conclusions about a live eviction. Read the
@@ -681,9 +681,9 @@ export function isFactFileAnchor(cell: string): boolean {
  *
  * The anchor, not the clock, is what tells a reader the fact went stale, so the
  * caller may omit `ttlSec`. The row still gets a FINITE bound rather than
- * `infinity`: an unbounded row has the maximal remaining-TTL fraction and would be
- * the least evictable row in the capped population (the reason `permanent:true` is
- * refused outside the cap-exempt kinds). 90 days is the schema's own `ttlSec` max.
+ * `infinity`: an unbounded ordinary row would never release its cap slot and could
+ * cause later writes to be refused when the per-scope ceiling is reached. 90 days is
+ * the schema's own `ttlSec` max.
  */
 export const FILE_ANCHORED_DEFAULT_TTL_SEC = 90 * 24 * 3600;
 
@@ -1039,10 +1039,10 @@ export interface AssertFactInput {
   /**
    * P-002 — the other half: permanence stated SEMANTICALLY rather than as a magic
    * number. Accepted ONLY where {@link isFactCapExempt} already holds
-   * (kind:'convention', or a wall:/dead-end:/guard-rail: key), because eviction ranks
-   * by remaining-TTL-fraction DESC — so an unbounded row in the RANKED population is
-   * the LEAST evictable row there and becomes an unevictable squatter that crowds out
-   * live observations. Refused outright for a volatile subject: a snapshot of a moving
+   * (kind:'convention', or a wall:/dead-end:/guard-rail: key), because an unbounded
+   * ordinary row would never release its cap slot; once the ceiling is reached, later
+   * ordinary writes are refused rather than evicting an incumbent. Refused outright
+   * for a volatile subject: a snapshot of a moving
    * subject is never a standing fact.
    */
   permanent?: boolean;
@@ -1131,13 +1131,10 @@ export interface FactLifetimeInput {
  * NOT the ~22,000 writes a week that already pass an explicit ttlSec, and not the
  * high-frequency system writers, all of which are already compliant by construction.
  *
- * ⚠ WHY PERMANENCE IS GATED ON CAP-EXEMPTION rather than offered freely: eviction ranks
- * by confidence, then REMAINING TTL FRACTION DESC. An unbounded row has the maximal
- * remaining fraction, so inside the ranked population it is the LEAST evictable thing
- * there. Free permanence would therefore not make facts durable — it would fill a
- * capped, contended pool with near-unevictable rows, converting a legible failure ("my
- * fact expired") into a silent one ("my fact was evicted immediately, or crowded out a
- * real convention"). {@link isFactCapExempt} is REUSED rather than re-spelled as
+ * ⚠ WHY PERMANENCE IS GATED ON CAP-EXEMPTION rather than offered freely: an unbounded
+ * ordinary row would never release its cap slot. At the ceiling, later ordinary writes
+ * are refused rather than evicting an incumbent, so permanent ordinary rows could
+ * eventually block new observations. {@link isFactCapExempt} is REUSED rather than re-spelled as
  * `kind === 'convention'` so the exempt population keeps exactly one definition.
  *
  * Validated in the STORE and not only in the tool, for the same reason as
@@ -1175,9 +1172,9 @@ export function validateFactLifetime(input: FactLifetimeInput): string | null {
       return (
         'facts:assert — permanent:true is accepted only for a fact EXEMPT from the per-scope cap: ' +
         `kind:'convention', or a key under '${WALL_KEY_PREFIX}' / '${DEAD_END_KEY_PREFIX}' / ` +
-        `'${GUARD_RAIL_KEY_PREFIX}'. An unbounded row in the ranked population has the maximal remaining-TTL ` +
-        'fraction, which makes it the LEAST evictable row there: it would never expire AND would crowd out live ' +
-        "observations. If this is a standing rule, declare kind:'convention' — that makes it permanent on its " +
+        `'${GUARD_RAIL_KEY_PREFIX}'. An unbounded ordinary row would never release its cap slot; ` +
+        'later ordinary writes at the ceiling are refused rather than evicting an incumbent. ' +
+        "If this is a standing rule, declare kind:'convention' — that makes it permanent on its " +
         'own. If it is a finding about current code, it SHOULD expire: pass ttlSec and a recheck.'
       );
     }

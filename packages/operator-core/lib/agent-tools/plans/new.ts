@@ -33,6 +33,7 @@ import { emitPlanAuthored } from '../../harness/usage-emitters';
 import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-context';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { productShapingScaffold, productShapingWriteAdvisory, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
+import { planDeclarationsScaffold, planDeclarationsWriteAdvisory } from './plan-declarations';
 import {
   parseBarMappings,
   parseRequirementBars,
@@ -209,6 +210,8 @@ export function buildTemplate(args: {
 (Why this plan exists; what problem it addresses.)
 
 ${productShapingScaffold()}
+
+${planDeclarationsScaffold()}
 
 ## Phase 1 — TODO
 
@@ -412,11 +415,11 @@ export default defineTool({
   description:
     'Create a plan in the plan STORE; never write a plan file. Pass `content` for the body or omit it for an empty starter. Slug uniqueness is lock-enforced. See /internal/docs/spec/plan-format.',
   guidance: {
-    when: 'Starting a plan: plans:new { slug, title, content }. ' + PRODUCT_SHAPING_GUIDANCE + ' Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design "### Bar-to-work map for this plan". See /internal/docs/spec/plan-format.',
+    when: 'Starting a plan: plans:new { slug, title, content }. ' + PRODUCT_SHAPING_GUIDANCE + ' Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design "### Bar-to-work map for this plan". Fill "## Existing infrastructure reused" and "## Third-party libraries" (scaffolded; or notApplicable).',
     notWhen:
       'Editing an existing plan: plans:set-content / set-now / add-decision / add-item. Never hand-write docs/plans/*.md.',
     chaining:
-      'Shape the product → requirement JSON + Bar-to-work map for this plan + P-NNN items → activation audit/spec quality → plans:start. Incremental edits use plans:set-content or structured item/decision verbs.',
+      'Shape the product → reuse + libraries → requirement JSON + Bar-to-work map for this plan + P-NNN items → activation audit/spec quality → plans:start.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',
@@ -808,6 +811,7 @@ export default defineTool({
       .catch(() => {});
 
     const shapingAdvisory = body != null && body.trim().length > 0 ? productShapingWriteAdvisory(body) : null;
+    const declarationsAdvisory = body != null && body.trim().length > 0 ? planDeclarationsWriteAdvisory(body) : null;
     return {
       content: [
         {
@@ -824,6 +828,9 @@ export default defineTool({
             // response carries the advisory preview + scaffold. The default
             // template already embeds the scaffold, so it never triggers this.
             ...(shapingAdvisory ? { productShaping: shapingAdvisory } : {}),
+            // plan-reuse-and-library-declarations R-1: same rule for the two
+            // declaration sections (the default template embeds both scaffolds).
+            ...(declarationsAdvisory ? { planDeclarations: declarationsAdvisory } : {}),
           }),
         },
       ],

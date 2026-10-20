@@ -15,10 +15,22 @@ import {
   setPersonalVaultEnabled,
   upsertPersonalDocuments,
 } from './store';
-import {
-  createPersonalVaultExternalSinkForSource,
-  syncGoogleContacts,
-} from './live-sink';
+import { createRequire } from 'node:module';
+import { createPersonalVaultExternalSinkForSource } from './live-sink';
+
+// Google Contacts is the `google-contacts` provider package (provider-adapters-to-packages-2026-10-11 D-036).
+const googleContactsAdapter = createRequire(import.meta.url)(
+  '../../../../libs/papercusp/plugins/google-contacts/index.cjs',
+).providerAdapter as {
+  syncPage(
+    request: { source: string; cursor: string | null },
+    host: { fetch(input: { source: string; request: { url: string } }): Promise<{ status: number; body: string }> },
+  ): Promise<{
+    records: Array<{ datatype: string; nativeId: string; event: string; payload: Record<string, unknown> }>;
+    nextCursor: string | null;
+    hasMore: boolean;
+  }>;
+};
 
 let org: OrgTestDb;
 let userId: string;
@@ -33,25 +45,29 @@ beforeAll(async () => {
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${'personal-test-' + Date.now()}, 'Personal Test') RETURNING id`;
   userId = user.id;
-  const emailType = await getDatatype(org.adminSql, 'papercusp-workspace', 'email-message');
-  if (!emailType) throw new Error('personal_vault_test_email_datatype_missing');
-  await upsertDatatype(org.adminSql, {
-    id: emailType.id,
-    workspaceId: WS,
-    potSlug: emailType.potSlug,
-    title: emailType.title,
-    description: emailType.description,
-    tier: emailType.tier,
-    nature: emailType.nature,
-    audience: emailType.audience,
-    workItemKind: emailType.workItemKind,
-    payloadSchema: emailType.payloadSchema,
-    authoritativeWriter: emailType.authoritativeWriter,
-    selfImprovement: emailType.selfImprovement,
-    published: emailType.published,
-    tags: emailType.tags,
-    createdBy: 'personal-vault-integration',
-  });
+  // The datatypes the live-sink case ingests through ingestExternalTriggerEvent (Gmail mail and
+  // the google-contacts package's `contact` records), copied from the seeded workspace.
+  for (const datatypeId of ['email-message', 'contact']) {
+    const seeded = await getDatatype(org.adminSql, 'papercusp-workspace', datatypeId);
+    if (!seeded) throw new Error(`personal_vault_test_datatype_missing:${datatypeId}`);
+    await upsertDatatype(org.adminSql, {
+      id: seeded.id,
+      workspaceId: WS,
+      potSlug: seeded.potSlug,
+      title: seeded.title,
+      description: seeded.description,
+      tier: seeded.tier,
+      nature: seeded.nature,
+      audience: seeded.audience,
+      workItemKind: seeded.workItemKind,
+      payloadSchema: seeded.payloadSchema,
+      authoritativeWriter: seeded.authoritativeWriter,
+      selfImprovement: seeded.selfImprovement,
+      published: seeded.published,
+      tags: seeded.tags,
+      createdBy: 'personal-vault-integration',
+    });
+  }
 });
 
 afterAll(async () => {
@@ -406,31 +422,58 @@ describe('Personal Vault core', () => {
     expect(ingested.deliveries).toEqual(expect.arrayContaining([
       expect.objectContaining({ sinkKind: 'personal-vault', outcome: 'delivered' }),
     ]));
-    const fakeFetch = async () => new Response(JSON.stringify({
-      connections: [{ resourceName: 'people/1', names: [{ displayName: 'Ada' }], emailAddresses: [{ value: 'ada@example.com' }] }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } });
-    const synced = await syncGoogleContacts(org.adminSql, {
-      workspaceId: WS,
-      userId,
-      sourceId: contactsSource.id,
-      providerAccountId: 'contacts@example.com',
-      accessToken: 'local-test-token',
-      fetchImpl: fakeFetch as typeof fetch,
+    // One People API page read by the real package through host.fetch, then delivered
+    // through the source's Personal Vault sink — the connector runtime's path.
+    const page = await googleContactsAdapter.syncPage({ source: contactsSource.id, cursor: null }, {
+      fetch: async () => ({
+        status: 200,
+        body: JSON.stringify({
+          connections: [{ resourceName: 'people/1', names: [{ displayName: 'Ada' }], emailAddresses: [{ value: 'ada@example.com' }] }],
+        }),
+      }),
     });
-    expect(synced).toMatchObject({ contacts: 1, pages: 1, nextPageToken: null });
+    expect(page).toMatchObject({ nextCursor: null, hasMore: false });
+    expect(page.records).toHaveLength(1);
+    const contactsSink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, contactsSource.id);
+    for (const record of page.records) {
+      const delivered = await ingestExternalTriggerEvent(org.adminSql, {
+        workspaceId: WS,
+        sourceId: contactsSource.id,
+        source: 'contacts',
+        event: record.event,
+        externalId: record.nativeId,
+        datatypeId: record.datatype,
+        adapterPayload: record.payload,
+        normalize: (payload) => payload as typeof record.payload,
+        occurredAt: '2026-08-22T00:00:00Z',
+        additionalSinks: [contactsSink],
+      }, {
+        emit: async () => ({ ok: true, key: 'ext:contacts:contact-changed', woken: 0, notified: [], msgId: null, waiters: 0 }),
+      });
+      expect(delivered.deliveries).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sinkKind: 'personal-vault', outcome: 'delivered' }),
+      ]));
+    }
     const rows = await org.adminSql<Array<{
       source: string;
       source_id: string | null;
       provider_account_id: string | null;
+      dedupe_key: string;
+      title: string;
     }>>`
-      SELECT source, source_id::text, provider_account_id
+      SELECT source, source_id::text, provider_account_id, dedupe_key, title
         FROM harness_shared.documents
        WHERE user_id = ${userId} ORDER BY source`;
     expect(rows.map((r) => r.source)).toEqual(['contacts', 'mail']);
     expect(rows.find((row) => row.source === 'contacts')).toMatchObject({
       source_id: contactsSource.id,
       provider_account_id: 'contacts@example.com',
+      title: 'Ada',
     });
+    // The key the retired in-app contacts poll wrote, so existing Vault rows are resumed, not duplicated.
+    expect(rows.find((row) => row.source === 'contacts')?.dedupe_key).toMatch(
+      new RegExp(`^(account:[0-9a-f]{64}:)?contacts:${contactsSource.id}:people/1$`),
+    );
     expect(rows.find((row) => row.source === 'mail')).toMatchObject({
       source_id: gmailSource.id,
       provider_account_id: 'owner@example.com',

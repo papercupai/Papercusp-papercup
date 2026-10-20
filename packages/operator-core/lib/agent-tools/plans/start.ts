@@ -259,6 +259,9 @@ export default defineTool({
               error: conversationGate.code ?? 'conversation_audit_required',
               message: conversationGate.message,
               ...(conversationGate.unresolvedItems ? { unresolvedItems: conversationGate.unresolvedItems } : {}),
+              ...(conversationGate.declarationBlockers
+                ? { declarationBlockers: conversationGate.declarationBlockers }
+                : {}),
             };
           }
         }

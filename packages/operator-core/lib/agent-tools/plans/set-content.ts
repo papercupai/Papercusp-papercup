@@ -55,6 +55,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { parseRequirementBars } from '../../acceptance-bar-seed';
 import { productShapingWriteAdvisory } from './product-shaping';
+import { planDeclarationsRegressionAdvisory, type PlanDeclarationsRegressionAdvisory } from './plan-declarations';
 
 /**
  * `dev:pg_query` exposes PostgreSQL bigint values as decimal strings, while
@@ -124,6 +125,8 @@ export type SetContentValue =
       /** True when this write changes whether the current lifecycle status warrants
        *  an automatic drained-plan transition. The reaction rule rechecks under lock. */
       planDrainTransitionChanged?: boolean;
+      /** plan-reuse-and-library-declarations R-1: this write broke a declaration section that parsed before. */
+      planDeclarations?: PlanDeclarationsRegressionAdvisory;
     }
   | { ok: false; code: 'not_found' }
   | {
@@ -587,6 +590,7 @@ export async function evaluateSetContent(
   const nextDrainTarget =
     derivePlanStatusTransition(currentStatus, derivePlanLifecycle(proposed.items))?.to ?? null;
   const planDrainTransitionChanged = priorDrainTarget !== nextDrainTarget;
+  const planDeclarations = planDeclarationsRegressionAdvisory(current, body);
   return {
     newBody: body,
     value: {
@@ -597,6 +601,7 @@ export async function evaluateSetContent(
       parseFeedback,
       ...(itemTextChanges.length > 0 ? { itemTextChanges } : {}),
       ...(planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
+      ...(planDeclarations ? { planDeclarations } : {}),
     },
   };
 }
@@ -776,6 +781,7 @@ export default defineTool({
             ...(planItemDrift ? { planItemDrift } : {}),
             // R-9: advisory only — the write above already landed.
             ...(shapingAdvisory ? { productShaping: shapingAdvisory } : {}),
+            ...(v.planDeclarations ? { planDeclarations: v.planDeclarations } : {}),
           }),
         },
       ],

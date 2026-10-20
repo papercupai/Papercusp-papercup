@@ -16385,6 +16385,50 @@ describe("WI-42350: a sha that already reached a RED verdict is not re-judged", 
     expect(result.reason).toBe("unchanged-since-verdict");
     expect(calls).not.toContain("runGreen");
   });
+
+  // WI-6554700010018169 — the WI-10003213 unmeasured retest re-verifies the SAME head: repairHead
+  // stays the frozen candidate, which the marker AND convergenceRounds already call red. Measured
+  // on slack-asana-bug-drill 2026-10-15: the run that requested the retest then skipped it here as
+  // unchanged-since-verdict, the qualification went terminal inconclusive, and the gate never
+  // reached another verdict for five days. A pending retest marker for the current head means
+  // "judge it again"; without the marker the same row is an ordinary already-judged head.
+  it("WI-6554700010018169: a requested same-head unmeasured retest is judged even though the marker names that head", async () => {
+    const { ready, candidate: frozen } = await readyAndCandidate();
+    const judged = frozenQueueAt({ ready, frozen, repairHead: frozen, judgedHeads: [frozen] });
+    const retest: FrozenCandidateRepairQueue = {
+      ...judged,
+      attempts: 0,
+      unmeasuredRetestHead: frozen,
+      retestRequested: { candidate: frozen, repairHead: frozen, requestedAtMs: judged.updatedAtMs },
+    };
+    const logs: string[] = [];
+    const { deps, calls } = stubDeps(true);
+    deps.log = (line: string) => {
+      logs.push(line);
+    };
+    deps.readFrozenRepairQueue = async () => retest;
+    deps.lastJudgedRed = async () => frozen;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.reason).not.toBe("unchanged-since-verdict");
+    expect(calls).toContain("runGreen");
+    expect(logs.some((line) => line.includes("NO verdict at this repair head"))).toBe(true);
+  });
+
+  it("WI-6554700010018169: without a pending retest marker the same-head skip still holds", async () => {
+    const { ready, candidate: frozen } = await readyAndCandidate();
+    const judged = frozenQueueAt({ ready, frozen, repairHead: frozen, judgedHeads: [frozen] });
+    const { deps, calls } = stubDeps(true);
+    // A marker for an OLDER head does not vouch for the current one.
+    deps.readFrozenRepairQueue = async () => ({ ...judged, unmeasuredRetestHead: ready });
+    deps.lastJudgedRed = async () => frozen;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.reason).toBe("unchanged-since-verdict");
+    expect(calls).not.toContain("runGreen");
+  });
 });
 
 describe("WI-42350: the judged-red marker is stamped ONLY by a verdict that actually judged the code", () => {

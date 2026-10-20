@@ -66,9 +66,10 @@ describe('validateFactLifetime — P-002: permanence is GATED on cap-exemption',
     const err = validateFactLifetime({ ...ordinary, permanent: true });
     expect(err).toBeTruthy();
     expect(err).toContain('EXEMPT from the per-scope cap');
-    // The reason is load-bearing: an unbounded row has the maximal remaining-TTL
-    // fraction, so it is the LEAST evictable row in the ranked pool.
-    expect(err).toContain('LEAST evictable');
+    // The reason is load-bearing: ordinary facts now refuse at the ceiling;
+    // permanence could hold a slot forever rather than making it evictable.
+    expect(err).toContain('later ordinary writes at the ceiling are refused rather than evicting an incumbent');
+    expect(err).not.toContain('LEAST evictable');
   });
 
   it("accepts permanent:true on kind:'convention'", () => {

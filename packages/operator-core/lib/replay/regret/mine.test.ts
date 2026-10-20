@@ -7,7 +7,7 @@
  * mode (maxFilePerTick 0).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { runRegretTick, type RegretTickDeps } from './mine';
+import { DEFAULT_MAX_FILE_PER_TICK, runRegretTick, type RegretTickDeps } from './mine';
 import type { SelectionInputRow } from './selection-core';
 import type { RegretFindingRecord } from './store';
 import type { CandidateReplayScore, RegretCounterfactualRunner } from './counterfactual-core';
@@ -274,6 +274,15 @@ describe('runRegretTick — filing leg (D-002: origin=replay)', () => {
     const result = await runRegretTick(WS, deps);
     expect(result.filed).toEqual([]);
     expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('passes the filing bar to the queue read so SQL filters before LIMIT', async () => {
+    const readUnfiledReplayed = vi.fn(async (_workspaceId: string, _limit: number, _minFileScore: number) => []);
+    const { deps } = fakeDeps({ readRows: async () => [], readUnfiledReplayed });
+
+    await runRegretTick(WS, deps, { minFileScore: 0.35 });
+
+    expect(readUnfiledReplayed).toHaveBeenCalledWith(WS, DEFAULT_MAX_FILE_PER_TICK, 0.35);
   });
 
   it('maxFilePerTick 0 is mine-only: nothing files, nothing is even read', async () => {

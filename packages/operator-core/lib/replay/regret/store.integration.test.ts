@@ -102,7 +102,7 @@ describe('regret_findings lifecycle (migration 248)', () => {
 
     // Re-mine upsert (detection refresh, incoming status pending, no scores).
     await upsertFinding(sql, finding({ badnessScore: 0.6, badnessReasons: ['status-failed'] }));
-    const rows = await readUnfiledReplayed(sql, WS, 10);
+    const rows = await readUnfiledReplayed(sql, WS, 10, 0.1);
     expect(rows).toHaveLength(1);
     expect(rows[0].badnessScore).toBeCloseTo(0.6); // detection refreshed
     expect(rows[0].replayStatus).toBe('replayed'); // replay survived
@@ -111,12 +111,38 @@ describe('regret_findings lifecycle (migration 248)', () => {
 
   it('a filed report id sticks and removes the row from the filing queue', async () => {
     await markReportFiled(sql, WS, 'run-1', 'EI-901');
-    expect(await readUnfiledReplayed(sql, WS, 10)).toHaveLength(0);
+    expect(await readUnfiledReplayed(sql, WS, 10, 0.1)).toHaveLength(0);
     // Carry-forward across yet another re-mine.
     await upsertFinding(sql, finding());
     const known = await listKnownRunIds(sql, WS);
     expect(known.has('run-1')).toBe(true);
-    expect(await readUnfiledReplayed(sql, WS, 10)).toHaveLength(0);
+    expect(await readUnfiledReplayed(sql, WS, 10, 0.1)).toHaveLength(0);
+  });
+
+  it('filters filing eligibility before LIMIT so unscored FIFO rows cannot starve scored findings', async () => {
+    for (let i = 1; i <= 3; i++) {
+      await upsertFinding(
+        sql,
+        finding({
+          runId: `run-unscored-${i}`,
+          replayStatus: 'replayed',
+          replayScores: null,
+          minedAt: `2026-06-12T10:0${i}:00.000Z`,
+        }),
+      );
+    }
+    await upsertFinding(
+      sql,
+      finding({
+        runId: 'run-eligible-after-unscored',
+        replayStatus: 'replayed',
+        replayScores: [{ candidateId: 'stop-retry-ladder', improvementScore: 0.4, summary: 'better', costUsd: 0.2 }],
+        minedAt: '2026-06-12T11:00:00.000Z',
+      }),
+    );
+
+    const rows = await readUnfiledReplayed(sql, WS, 1, 0.1);
+    expect(rows.map((row) => row.runId)).toEqual(['run-eligible-after-unscored']);
   });
 
   it('a skipped (no-divergence) finding never enters the pending queue', async () => {

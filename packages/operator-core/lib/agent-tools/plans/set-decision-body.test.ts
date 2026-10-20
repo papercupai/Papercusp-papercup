@@ -6,12 +6,14 @@
  * plans:add-decision.
  */
 import { describe, it, expect, vi } from 'vitest';
+import type { FrozenRepairEditMarker } from '../../release/frozen-repair-edit-marker';
 
 // WI-42142: the provenance stamp does transcript IO. Mocked so the handler test
 // below pins the WIRING; falsifiedOwnerAnchors itself stays REAL here (its contract
 // is unit-tested in carry-surface-provenance-stamp.test.ts).
 const stampMocks = vi.hoisted(() => ({
   carryProvenanceFields: vi.fn(async () => ({}) as Record<string, unknown>),
+  readFrozenRepairMarker: vi.fn((): FrozenRepairEditMarker | null => null),
 }));
 vi.mock('../../carry-surface-provenance-stamp', async (orig) => ({
   ...(await orig<typeof import('../../carry-surface-provenance-stamp')>()),
@@ -22,6 +24,10 @@ vi.mock('./with-plan-lock', () => ({
     throw new Error('withPlanLock must not be reached on the refusal path');
   }),
   bumpUpdatedDate: (body: string) => body,
+}));
+vi.mock('../../release/frozen-repair-edit-marker', async (orig) => ({
+  ...(await orig<typeof import('../../release/frozen-repair-edit-marker')>()),
+  readFrozenRepairMarker: stampMocks.readFrozenRepairMarker,
 }));
 
 import tool, { setDecisionBodyInBody } from './set-decision-body';
@@ -221,5 +227,69 @@ describe('plans:set-decision-body — reserved ```deviation fence (R-17, P-028)'
     ) as Record<string, unknown>;
     expect(out).toMatchObject({ error: 'deviation_fence_reserved', slug: 'p', decisionId: 'D-002' });
     // withPlanLock is mocked to throw in this file, so reaching it would fail the test.
+  });
+});
+
+describe('plans:set-decision-body — frozen candidate lineage carry (P-002)', () => {
+  const payload = async (args: Record<string, unknown>) =>
+    JSON.parse(
+      ((await tool.handler(args as never, { workspaceId: 'ws', harnessSlug: 'h' } as never)) as {
+        content: { text: string }[];
+      }).content[0].text,
+    ) as Record<string, unknown>;
+
+  const marker: FrozenRepairEditMarker = {
+    candidate: 'c'.repeat(40),
+    repairHead: 'r'.repeat(40),
+    phase: 'repair-in-progress',
+    failingPaths: [],
+    updatedAtMs: 1_788_763_360_000,
+    admittedPaths: [],
+    legs: [],
+  };
+
+  it('refuses a body rewrite that selects staging while a frozen repair queue exists', async () => {
+    stampMocks.carryProvenanceFields.mockClear();
+    stampMocks.readFrozenRepairMarker.mockReturnValue(marker);
+    const { withPlanLock } = await import('./with-plan-lock');
+    vi.mocked(withPlanLock).mockClear();
+
+    const out = await payload({
+      slug: 'test',
+      decisionId: 'D-001',
+      body: 'Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+    });
+
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'frozen_candidate_lineage_violation',
+      errorCode: 'frozen_candidate_lineage_violation',
+      surface: 'plan-decision',
+      unsafeSource: 'staging',
+      slug: 'test',
+      decisionId: 'D-001',
+      liveIdentity: {
+        candidate: 'c'.repeat(40),
+        repairHead: 'r'.repeat(40),
+        queueRevision: 1_788_763_360_000,
+      },
+    });
+    // Refusal must happen before the provenance lookup and before mutation.
+    expect(stampMocks.carryProvenanceFields).not.toHaveBeenCalled();
+    expect(withPlanLock).not.toHaveBeenCalled();
+  });
+
+  it('allows a benign body with a frozen queue to continue through the normal write path', async () => {
+    stampMocks.carryProvenanceFields.mockClear();
+    stampMocks.readFrozenRepairMarker.mockReturnValue(marker);
+    stampMocks.carryProvenanceFields.mockResolvedValue({});
+    const { withPlanLock } = await import('./with-plan-lock');
+    vi.mocked(withPlanLock).mockClear();
+
+    await expect(
+      payload({ slug: 'test', decisionId: 'D-001', body: 'This decision records the reviewed rationale.' }),
+    ).rejects.toThrow('withPlanLock must not be reached on the refusal path');
+    expect(stampMocks.carryProvenanceFields).toHaveBeenCalled();
+    expect(withPlanLock).toHaveBeenCalled();
   });
 });

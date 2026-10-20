@@ -1,16 +1,13 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import type { ExternalTriggerSourceRow } from '../../external-triggers/source-store';
-import { syncGoogleContacts } from '../../personal-vault/live-sink';
 import { GOOGLE_CAPABILITY_DEFS, type GoogleCapabilityId } from '../../endpoint-route/routes/user/personal-vault';
-import { GOOGLE_WORKSPACE_SOURCE_KINDS } from '../../external-triggers/google-workspace';
-import { getSystemAction, type SystemActionCtx } from './system-actions';
+import type { SystemActionCtx } from './system-actions';
 import type { ConnectorSyncResult } from '../../providers/connector-runtime';
-import {
-  runConnectorSyncAction,
-  runGoogleContactsPersonalVaultPoll,
-  type GoogleContactsPersonalVaultPollDeps,
-} from './connector-sync-action';
+import type { LegacyCredentialAdoption } from '../../integrations/connection-lifecycle';
+import { runConnectorSyncAction } from './connector-sync-action';
 
 const ctx: SystemActionCtx = {
   workspaceId: 'papercusp-workspace',
@@ -19,44 +16,75 @@ const ctx: SystemActionCtx = {
   payloadTemplate: null,
 };
 
-function source(id: string, config: Record<string, unknown> = {}): ExternalTriggerSourceRow {
+const NO_CHAT = {
+  buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, documentsExpired: 0, documentsHeldKept: 0, legacyMigrated: 0,
+  failed: 0, deadLettered: 0, failures: [],
+};
+
+/** Every step stubbed quiet, so a fake `sql` never reaches a real step. */
+function quietDeps(sql: Sql) {
   return {
-    id,
-    workspaceId: ctx.workspaceId,
-    kind: 'contacts',
-    ownerUserId: '22222222-2222-4222-8222-222222222222',
-    providerAccountId: `${id}@example.com`,
-    credentialRef: `google-workspace:${id}`,
-    status: 'connected',
-    config,
-    cursor: {},
+    sql,
+    adoptLegacyCredentials: vi.fn(async (): Promise<LegacyCredentialAdoption[]> => []),
+    reconcilePush: vi.fn(async () => ({ sources: [] }) as never),
+    runConnectorWakes: vi.fn(async () => ({ sources: [] }) as never),
+    runConnectorSync: vi.fn(async () => ({ providers: 0, sources: [] }) as never),
+    runParticipantBackfills: vi.fn(async () => []),
+    runChatRollup: vi.fn(async () => NO_CHAT),
   };
+}
+
+const PLUGINS_DIR = fileURLToPath(new URL('../../../../../libs/papercusp/plugins/', import.meta.url));
+
+/** Provider ids of the in-tree packages that share the one Google grant (credentialGroup `google`). */
+function googleCredentialGroupProviderIds(): string[] {
+  const ids: string[] = [];
+  for (const entry of readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const manifestPath = join(PLUGINS_DIR, entry.name, 'papercusp.json');
+    if (!existsSync(manifestPath)) continue;
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      provider?: { id?: string; oauth?: { credentialGroup?: string } };
+    };
+    if (manifest.provider?.oauth?.credentialGroup === 'google' && manifest.provider.id) ids.push(manifest.provider.id);
+  }
+  return ids.sort();
 }
 
 /**
  * D-038 recurrence guard: every surfaced Google Personal Vault capability must
- * have an explicit sync disposition. Gmail and Calendar use connector-sync
- * providers and Contacts uses the custom Vault poller. YouTube was removed from
- * the capability definition (2ead0dbf1b) rather than wired, so it has no row. A
- * capability surfaced later without an ingest path must be added here with
- * route 'missing' and a reason, or the coverage check below fails.
+ * have an explicit sync disposition. Since provider-adapters-to-packages-2026-10-11
+ * D-036 all three sync through connector-sync providers in the `google` credential
+ * group (the gmail, google-calendar and google-contacts packages); the custom
+ * Contacts poller is gone. YouTube was removed from the capability definition
+ * (2ead0dbf1b) rather than wired, so it has no row. A capability surfaced later
+ * without an ingest path must be added here with route 'missing' and a reason, or
+ * the coverage check below fails.
  */
 const GOOGLE_VAULT_INGEST_COVERAGE = {
   gmail: { sourceKind: 'gmail', route: 'connector-sync-provider' },
   calendar: { sourceKind: 'gcal', route: 'connector-sync-provider' },
-  contacts: { sourceKind: 'contacts', route: 'connector-sync-contacts-poller' },
+  contacts: { sourceKind: 'contacts', route: 'connector-sync-provider' },
 } as const satisfies Readonly<
   Record<
     GoogleCapabilityId,
     {
       sourceKind: (typeof GOOGLE_CAPABILITY_DEFS)[number]['sourceKind'];
-      route: 'connector-sync-provider' | 'connector-sync-contacts-poller' | 'missing';
+      route: 'connector-sync-provider' | 'missing';
       reason?: string;
     }
   >
 >;
 
-describe('connector-sync Google Contacts Personal Vault path', () => {
+/**
+ * Packages in the `google` credential group that the Personal Vault deliberately does not
+ * surface, each with its reason. A new group member must land here or in the coverage map.
+ */
+const GOOGLE_GROUP_NOT_IN_VAULT: Readonly<Record<string, string>> = {
+  youtube: 'shares the Google grant but has no Personal Vault capability (removed from the capability list in 2ead0dbf1b)',
+};
+
+describe('connector-sync Google Personal Vault ingest coverage', () => {
   it('accounts for every surfaced Google capability with an explicit Vault ingest disposition', () => {
     const surfacedIds = GOOGLE_CAPABILITY_DEFS.map(({ id }) => id).sort();
     expect(Object.keys(GOOGLE_VAULT_INGEST_COVERAGE).sort()).toEqual(surfacedIds);
@@ -65,121 +93,14 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
       expect(GOOGLE_VAULT_INGEST_COVERAGE[definition.id].sourceKind).toBe(definition.sourceKind);
     }
 
+    // Each connector-sync source kind is a provider package in the one Google grant, and every
+    // other package in that grant is an explicit, reasoned exclusion.
     const connectorProviderKinds = Object.values(GOOGLE_VAULT_INGEST_COVERAGE)
       .filter((entry) => entry.route === 'connector-sync-provider')
-      .map((entry) => entry.sourceKind)
-      .sort();
-    expect(connectorProviderKinds).toEqual(GOOGLE_WORKSPACE_SOURCE_KINDS.filter((kind) => kind !== 'contacts').sort());
-  });
-
-  it('polls connected sources with their token-store install and retries a People API 401', async () => {
-    const current = source('contacts-one', { installSlug: 'google-install' });
-    const sql = {} as Sql;
-    const listSources = vi.fn(async () => [current]);
-    const syncContacts = vi.fn(async (_sql: Sql, input: Parameters<typeof syncGoogleContacts>[1]) => {
-      if (input.accessToken === 'expired-token') throw new Error('google_people_401');
-      return { contacts: 2, pages: 2, nextPageToken: null };
-    });
-    const withAccessTokenRetry: NonNullable<GoogleContactsPersonalVaultPollDeps['withAccessTokenRetry']> =
-      async (_source, _installSlug, call) => {
-        const first = await call('expired-token');
-        if (first.status === 401) return (await call('fresh-token')).result;
-        return first.result;
-      };
-    const updateSource = vi.fn(async () => current);
-    // vi.fn's call signature drops the <T> generic, so the spy is kept for assertions and
-    // cast only where it enters the deps seam.
-    const withAccessTokenRetrySpy = vi.fn(withAccessTokenRetry);
-    const deps: GoogleContactsPersonalVaultPollDeps = {
-      listSources,
-      syncContacts,
-      withAccessTokenRetry: withAccessTokenRetrySpy as unknown as typeof withAccessTokenRetry,
-      updateSource,
-    };
-
-    const result = await runGoogleContactsPersonalVaultPoll(ctx, sql, deps);
-
-    expect(result).toEqual({ sources: 1, succeeded: 1, failed: 0, contacts: 2, pages: 2, failures: [] });
-    expect(listSources).toHaveBeenCalledWith(sql, ctx.workspaceId, 'contacts');
-    expect(withAccessTokenRetrySpy).toHaveBeenCalledWith(current, 'google-install', expect.any(Function));
-    expect(syncContacts).toHaveBeenNthCalledWith(1, sql, {
-      workspaceId: ctx.workspaceId,
-      userId: current.ownerUserId,
-      sourceId: current.id,
-      providerAccountId: current.providerAccountId,
-      accessToken: 'expired-token',
-    });
-    expect(syncContacts).toHaveBeenNthCalledWith(2, sql, expect.objectContaining({ accessToken: 'fresh-token' }));
-    expect(updateSource).toHaveBeenCalledWith(sql, ctx.workspaceId, current.id, {
-      status: 'connected',
-      lastError: null,
-      connected: true,
-    });
-  });
-
-  it('keeps transient provider failures degraded and terminal refreshed 401s reconnect-required', async () => {
-    const providerFailure = source('contacts-provider');
-    const authFailure = source('contacts-auth');
-    const sql = {} as Sql;
-    const updateSource = vi.fn(async () => providerFailure);
-    const deps: GoogleContactsPersonalVaultPollDeps = {
-      listSources: vi.fn(async () => [providerFailure, authFailure]),
-      withAccessTokenRetry: async (current, _installSlug, call) => {
-        if (current.id === authFailure.id) throw new Error('oauth: contacts still 401 after refresh; reconnect required');
-        const response = await call('token');
-        return response.result;
-      },
-      syncContacts: vi.fn(async () => {
-        throw new Error('google_people_503');
-      }),
-      updateSource,
-    };
-
-    const result = await runGoogleContactsPersonalVaultPoll(ctx, sql, deps);
-
-    expect(result).toMatchObject({ sources: 2, succeeded: 0, failed: 2, contacts: 0, pages: 0 });
-    expect(result.failures).toEqual([
-      { sourceId: providerFailure.id, status: 'degraded', error: 'google_people_503' },
-      {
-        sourceId: authFailure.id,
-        status: 'error',
-        error: 'oauth: contacts still 401 after refresh; reconnect required',
-      },
-    ]);
-    expect(updateSource).toHaveBeenNthCalledWith(1, sql, ctx.workspaceId, providerFailure.id, {
-      status: 'degraded',
-      lastError: 'google_people_503',
-    });
-    expect(updateSource).toHaveBeenNthCalledWith(2, sql, ctx.workspaceId, authFailure.id, {
-      status: 'error',
-      lastError: 'oauth: contacts still 401 after refresh; reconnect required',
-    });
-  });
-
-  it('runs the Contacts poller from the existing connector-sync action', async () => {
-    const sql = {} as Sql;
-    const runGoogleContacts = vi.fn(async (): Promise<Awaited<ReturnType<typeof runGoogleContactsPersonalVaultPoll>>> => ({
-      sources: 1,
-      succeeded: 1,
-      failed: 0,
-      contacts: 2,
-      pages: 1,
-      failures: [],
-    }));
-
-    const result = await runConnectorSyncAction(ctx, {
-      sql,
-      reconcilePush: vi.fn(async () => ({ sources: [] }) as never),
-      runConnectorWakes: vi.fn(async () => ({ sources: [] }) as never),
-      runConnectorSync: vi.fn(async () => ({ providers: [], sources: [] }) as never),
-      runParticipantBackfills: vi.fn(async () => []),
-      runGoogleContacts,
-      runChatRollup: vi.fn(async () => NO_CHAT),
-    });
-
-    expect(getSystemAction('connector-sync')).toBeTypeOf('function');
-    expect(runGoogleContacts).toHaveBeenCalledWith(ctx, sql);
-    expect(result.diagnostics).toMatchObject({ contactsSources: 1, contactsSynced: 2, contactsPages: 1, contactsFailed: 0 });
+      .map((entry) => entry.sourceKind);
+    expect([...connectorProviderKinds, ...Object.keys(GOOGLE_GROUP_NOT_IN_VAULT)].sort()).toEqual(
+      googleCredentialGroupProviderIds(),
+    );
   });
 
   it('does not turn a source awaiting required config into a routine soft error', async () => {
@@ -201,22 +122,7 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
       }],
     }));
 
-    const result = await runConnectorSyncAction(ctx, {
-      sql,
-      reconcilePush: vi.fn(async () => ({ sources: [] }) as never),
-      runConnectorWakes: vi.fn(async () => ({ sources: [] }) as never),
-      runConnectorSync,
-      runParticipantBackfills: vi.fn(async () => []),
-      runGoogleContacts: vi.fn(async () => ({
-        sources: 0,
-        succeeded: 0,
-        failed: 0,
-        contacts: 0,
-        pages: 0,
-        failures: [],
-      })),
-      runChatRollup: vi.fn(async () => NO_CHAT),
-    });
+    const result = await runConnectorSyncAction(ctx, { ...quietDeps(sql), runConnectorSync });
 
     expect(result.diagnostics).toMatchObject({ sources: 1, failed: 0, admitted: 0 });
     expect(runConnectorSync).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId, harness: ctx.installSlug });
@@ -224,21 +130,61 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
   });
 });
 
-const NO_CHAT = {
-  buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, documentsExpired: 0, documentsHeldKept: 0, legacyMigrated: 0,
-  failed: 0, deadLettered: 0, failures: [],
-};
+// provider-adapters-to-packages-2026-10-11 D-037: a connection stored before its provider moved
+// into a package is adopted by the connector sync itself, before any step reads a credential ref.
+describe('connector-sync legacy credential adoption', () => {
+  it('adopts legacy credentials before any connector step reads a credential ref', async () => {
+    const sql = {} as Sql;
+    const order: string[] = [];
+    const adopted: LegacyCredentialAdoption[] = [
+      { legacyPlugin: 'google-workspace', plugin: 'provider:google', fieldsCopied: 4, sourcesRewritten: 9 },
+      { legacyPlugin: 'older-plugin', plugin: 'provider:other', fieldsCopied: 1, sourcesRewritten: 2 },
+    ];
+    const adoptLegacyCredentials = vi.fn(async () => {
+      order.push('adopt');
+      return adopted;
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
 
-function quietDeps(sql: Sql) {
-  return {
-    sql,
-    reconcilePush: vi.fn(async () => ({ sources: [] }) as never),
-    runConnectorWakes: vi.fn(async () => ({ sources: [] }) as never),
-    runConnectorSync: vi.fn(async () => ({ providers: 0, sources: [] }) as never),
-    runParticipantBackfills: vi.fn(async () => []),
-    runGoogleContacts: vi.fn(async () => ({ sources: 0, succeeded: 0, failed: 0, contacts: 0, pages: 0, failures: [] })),
-  };
-}
+    const result = await runConnectorSyncAction(ctx, {
+      ...quietDeps(sql),
+      adoptLegacyCredentials,
+      reconcilePush: vi.fn(async () => {
+        order.push('push');
+        return { sources: [] } as never;
+      }),
+      runConnectorWakes: vi.fn(async () => {
+        order.push('wakes');
+        return { sources: [] } as never;
+      }),
+      runConnectorSync: vi.fn(async () => {
+        order.push('sync');
+        return { providers: 0, sources: [] } as never;
+      }),
+    });
+
+    expect(adoptLegacyCredentials).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId, harness: ctx.installSlug });
+    expect(order).toEqual(['adopt', 'push', 'wakes', 'sync']);
+    expect(result.diagnostics).toMatchObject({ legacySourcesRewritten: 11 });
+    expect(result).not.toHaveProperty('softError');
+  });
+
+  it('an adoption failure is a soft error and the rest of the tick still runs', async () => {
+    const sql = {} as Sql;
+    const deps = quietDeps(sql);
+
+    const result = await runConnectorSyncAction(ctx, {
+      ...deps,
+      adoptLegacyCredentials: vi.fn(async () => {
+        throw new Error('token store unreadable');
+      }),
+    });
+
+    expect(deps.runConnectorSync).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId, harness: ctx.installSlug });
+    expect(result.diagnostics).toMatchObject({ legacySourcesRewritten: 0 });
+    expect(result.softError).toContain('legacy credential adoption failed: token store unreadable');
+  });
+});
 
 // D-016 (papercusp-enterprise-readiness-roadmap-2026-10-09): the chat rollup driver runs each tick.
 describe('connector-sync chat rollup step', () => {

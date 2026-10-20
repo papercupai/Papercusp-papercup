@@ -450,19 +450,23 @@ describe('sandboxedBashCommand', () => {
   const present = new Set(['/usr/bin/bwrap', '/run/user/1000', '/run/docker.sock', `${home}/.claude`, `${home}/.papercusp/hooks`]);
 
   it('unshares the network, hides host-service sockets, and makes runtime config read-only', () => {
-    const cmd = sandboxedBashCommand(`echo 'it''s'`, { env, cwd: '/repo', uid: 1000, exists: (p) => present.has(p) })!;
-    expect(cmd.startsWith(`'/usr/bin/bwrap' '--dev-bind' '/' '/' '--unshare-net'`)).toBe(true);
+    const script = `echo 'it''s'`;
+    const encoded = Buffer.from(script, 'utf8').toString('base64');
+    const cmd = sandboxedBashCommand(script, { env, cwd: '/repo', uid: 1000, exists: (p) => present.has(p) })!;
+    expect(cmd.startsWith(`'printf' '%s' '${encoded}' | 'base64' '--decode' | '/usr/bin/bwrap' '--dev-bind' '/' '/' '--unshare-net'`)).toBe(true);
+    expect(cmd).not.toContain(script);
+    expect(cmd).not.toContain("'-c'");
     expect(cmd).toContain(`'--tmpfs' '/run/user/1000'`);
     expect(cmd).toContain(`'--ro-bind' '/dev/null' '/run/docker.sock'`);
     expect(cmd).toContain(`'--ro-bind' '${home}/.claude' '${home}/.claude'`);
     expect(cmd).toContain(`'--ro-bind' '${home}/.papercusp/hooks' '${home}/.papercusp/hooks'`);
     expect(cmd).not.toContain('.mcp.json'); // absent paths are skipped (bwrap cannot bind a missing path)
-    expect(cmd.endsWith(`'--' '/bin/bash' '-c' 'echo '\\''it'\\'''\\''s'\\'''`)).toBe(true);
+    expect(cmd.endsWith(`'--' '/bin/bash'`)).toBe(true);
   });
 
   it('falls back to unshare --net, and to null when neither exists', () => {
     expect(sandboxedBashCommand('ls', { env, uid: 1000, exists: (p) => p === '/usr/bin/unshare' })).toBe(
-      `'/usr/bin/unshare' '--user' '--map-current-user' '--net' '--' '/bin/bash' '-c' 'ls'`,
+      `'printf' '%s' '${Buffer.from('ls', 'utf8').toString('base64')}' | 'base64' '--decode' | '/usr/bin/unshare' '--user' '--map-current-user' '--net' '--' '/bin/bash'`,
     );
     expect(sandboxedBashCommand('ls', { env, uid: 1000, exists: () => false })).toBeNull();
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parsePushSnapshot, parsePushSnapshotStream, peekPushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
@@ -103,6 +103,34 @@ describe('cooperative serving snapshot loader', () => {
       await writeFile(fixturePath.current, JSON.stringify(raw()).slice(0, -1));
       expect(peekPushSnapshot('fixture', now + 60_000)).toBe(warm);
       await vi.waitFor(() => expect(peekPushSnapshot('fixture', now + 60_000)).toBeNull());
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  // WI-6554700010018175: the serving file is ~185 MB (measured 32.7 s wall / 36 s CPU per
+  // parse), so the refresh must not re-parse a file that has not changed.
+  it('skips re-parsing an unchanged file and reloads one replaced by atomic rename', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'push-snapshot-'));
+    fixturePath.current = join(dir, 'snapshot.json');
+    const fixed = new Date(now - 5_000);
+    const withCommit = (commit: string) => JSON.stringify({ ...raw(), index: { ...raw().index, lastCommit: commit } });
+    try {
+      await writeFile(fixturePath.current, withCommit('a'.repeat(40)));
+      await utimes(fixturePath.current, fixed, fixed);
+      peekPushSnapshot('unchanged', now);
+      await vi.waitFor(() => expect(peekPushSnapshot('unchanged', now)?.commit).toBe('a'.repeat(40)));
+      // Same inode, size and mtime: only a re-parse could observe the new bytes.
+      await writeFile(fixturePath.current, withCommit('b'.repeat(40)));
+      await utimes(fixturePath.current, fixed, fixed);
+      expect(peekPushSnapshot('unchanged', now + 60_000)?.commit).toBe('a'.repeat(40));
+      await new Promise(resolve => setTimeout(resolve, 250));
+      expect(peekPushSnapshot('unchanged', now + 60_000)?.commit).toBe('a'.repeat(40));
+      // The producer's tmp + rename gives the file a new inode, so the next refresh reloads it.
+      const next = join(dir, 'snapshot.json.tmp');
+      await writeFile(next, withCommit('c'.repeat(40)));
+      await utimes(next, fixed, fixed);
+      await rename(next, fixturePath.current);
+      expect(peekPushSnapshot('unchanged', now + 120_000)?.commit).toBe('a'.repeat(40));
+      await vi.waitFor(() => expect(peekPushSnapshot('unchanged', now + 120_000)?.commit).toBe('c'.repeat(40)));
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });

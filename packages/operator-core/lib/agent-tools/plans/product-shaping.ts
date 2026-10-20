@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { parsePlan } from './parser';
 import { splitPlanSections } from './plan-sections';
 import { parseBarMappings, parseRequirementBars } from '../../acceptance-bar-seed';
+import { previewPlanDeclarations, renderDeclarationsWalkthrough } from './plan-declarations';
 
 const text = z.string().trim().max(2000);
 const sourceRef = z.string().trim().max(500).regex(/^session_turn:(claude|codex|omp|agent_chat):[^\s:]+:\d+$/);
@@ -54,8 +55,19 @@ const clip = (value: string) => value.length > WALKTHROUGH_FIELD_MAX ? value.sli
  * consequential choices still open. Rendered from data, so it cannot drift from
  * the brief; null when there is no valid brief to render.
  */
-export function renderOwnerWalkthrough(brief: ProductShaping | null): string | null {
-  if (!brief) return null;
+/**
+ * The owner's approval read. When the plan content is passed, the reuse and
+ * libraries declarations follow the brief (R-7): every reuse entry, every new
+ * surface with why nothing existing fit, and every library row with its decision.
+ */
+export function renderOwnerWalkthrough(brief: ProductShaping | null, planContent?: string): string | null {
+  const declarations = planContent != null ? previewPlanDeclarations(planContent) : null;
+  if (!brief) {
+    // D-013 #5: with no Product shaping brief, a plan that carries either declaration
+    // section still shows Avi its reuse and library decisions.
+    const anyDeclared = declarations && (declarations.reuse.status !== 'missing' || declarations.libraries.status !== 'missing');
+    return anyDeclared ? renderDeclarationsWalkthrough(declarations).join('\n').trim() || null : null;
+  }
   const lines: string[] = [];
   if (brief.audience) lines.push(`**Who this is for:** ${clip(brief.audience)}`);
   if (brief.problem) lines.push(`**The problem today:** ${clip(brief.problem)}`);
@@ -73,6 +85,7 @@ export function renderOwnerWalkthrough(brief: ProductShaping | null): string | n
   const choices = brief.context.filter(entry => entry.kind === 'product-choice' && entry.material && !entry.resolved && entry.text);
   if (choices.length) lines.push('', '**Choices for you:**',
     ...choices.map(entry => `- ${clip(entry.text)} — recommended: ${entry.recommendation ? clip(entry.recommendation) : '(no recommendation yet)'}`));
+  if (declarations) lines.push('', ...renderDeclarationsWalkthrough(declarations));
   return lines.join('\n').trim() || null;
 }
 
@@ -201,7 +214,7 @@ export function previewProductShaping(planContent: string) {
       'Use the existing independent review route (passOne.consultQuestion suits consult:get_feedback). These diagnostics do not prove semantic completeness or owner approval.',
     ],
   };
-  const ownerWalkthrough = renderOwnerWalkthrough(brief);
+  const ownerWalkthrough = renderOwnerWalkthrough(brief, planContent);
   const preview = {
     status, advisory: true as const, semanticCompleteness: 'not-measured' as const,
     sourceContentVerified: false as const, brief, trace, diagnostics: diagnostics.slice(0, 20),

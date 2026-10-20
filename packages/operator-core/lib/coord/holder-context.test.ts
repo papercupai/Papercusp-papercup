@@ -862,7 +862,22 @@ const LEGACY_ASSUMPTION_FALLBACK_RE = /confidence\s*(?:=|===)\s*['"`]suspected['
  */
 const WRITE_INPUT_KIND_RE = /\b(?:args|input|opts|params|payload|fact)\.kind\s*===?\s*['"`]assumption['"`]/g;
 
+/**
+ * ⚠ A FILE THAT NEVER TOUCHES THE FACTS STORE CANNOT BE SELECTING FACT ROWS.
+ *
+ * `'assumption'` is also a member of OTHER enums. `agent-tools/plans/product-shaping.ts`
+ * filters a plan brief's `context[]` entries (`owner-request | observed-fact |
+ * assumption | product-choice`) in memory, never an `agent_facts` row, and flagging it
+ * held this guard red at HEAD over correct code (WI-6554700010018168). A real
+ * kind-only fact read always lives in a file that names the store — the table, the
+ * `agent-facts` module, or one of its read helpers — so the filter only counts there.
+ * Measured 2026-10-20: of the six non-test lib files matching the kind regex, only
+ * product-shaping.ts carries none of these references.
+ */
+const FACTS_STORE_REF_RE = /agent_facts|agent-facts|\bfoldFacts\w*\b|\blistFacts\b|\bAgentFact\w*\b/;
+
 const ASSUMPTION_KIND_FILTER = (code: string): boolean => {
+  if (!FACTS_STORE_REF_RE.test(code)) return false;
   const reads = code.replace(WRITE_INPUT_KIND_RE, '');
   return ASSUMPTION_KIND_FILTER_RE.test(reads) && !LEGACY_ASSUMPTION_FALLBACK_RE.test(reads);
 };
@@ -898,7 +913,21 @@ describe('LEG C — assumptions are never keyed off the unpopulated `kind` colum
 
     // …and the SCANNED predicate (not just the regex) still fires on a kind-ONLY
     // read, which is the defect D-083 §2 is about.
-    expect(ASSUMPTION_KIND_FILTER(`AND kind = 'assumption'`)).toBe(true);
+    expect(ASSUMPTION_KIND_FILTER(`SELECT id FROM agent_facts WHERE scope = 'owner' AND kind = 'assumption'`)).toBe(true);
+    expect(
+      ASSUMPTION_KIND_FILTER(`import { foldFacts } from '../agent-facts/store';\nconst a = rows.filter(f => f.kind === 'assumption');`),
+    ).toBe(true);
+
+    // ⚠ THE FACTS-STORE NARROWING, proven in BOTH directions. An in-memory filter over
+    // a DIFFERENT enum that also has an 'assumption' member (product-shaping.ts's brief
+    // context entries) selects no fact rows and must not trip the gate...
+    expect(
+      ASSUMPTION_KIND_FILTER(`const assumptions = brief.context.filter(entry => entry.kind === 'assumption' && entry.text);`),
+    ).toBe(false);
+    // ...while the identical filter in a file that DOES read the facts store still fires.
+    expect(
+      ASSUMPTION_KIND_FILTER(`const rows = await listFacts(scope);\nconst assumptions = rows.filter(entry => entry.kind === 'assumption');`),
+    ).toBe(true);
 
     // ⚠ THE WRITE-PATH NARROWING, proven in BOTH directions. Branching on the kind
     // the CALLER passed is not a read filter — flagging it held `main` for the

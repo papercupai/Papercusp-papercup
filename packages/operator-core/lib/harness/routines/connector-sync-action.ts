@@ -15,128 +15,21 @@ import {
 import { formatConnectorPushLog, reconcileConnectorPush, type ConnectorPushResult } from '../../providers/connector-push';
 import { runPendingParticipantBackfills } from '../../relationship-graph/participant-backfill';
 import { runChatRollupPass, type ChatRollupFailure } from '../../data-sources/chat-retrieval-units';
+import { adoptLegacyProviderCredentials } from '../../integrations/connection-lifecycle';
 import type { Sql } from 'postgres';
-import {
-  isGoogleWorkspaceTerminalAuthError,
-  withGoogleWorkspaceAccessTokenRetry,
-} from '../../external-triggers/google-workspace';
-import {
-  listPollableExternalTriggerSources,
-  sourceTokenHarness,
-  updateExternalTriggerSourceSyncState,
-} from '../../external-triggers/source-store';
-import { syncGoogleContacts } from '../../personal-vault/live-sink';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-
-type GoogleContactsSyncResult = Awaited<ReturnType<typeof syncGoogleContacts>>;
-
-export interface GoogleContactsPersonalVaultPollFailure {
-  sourceId: string;
-  status: 'degraded' | 'error';
-  error: string;
-}
-
-export interface GoogleContactsPersonalVaultPollResult {
-  sources: number;
-  succeeded: number;
-  failed: number;
-  contacts: number;
-  pages: number;
-  failures: GoogleContactsPersonalVaultPollFailure[];
-}
-
-export interface GoogleContactsPersonalVaultPollDeps {
-  listSources?: typeof listPollableExternalTriggerSources;
-  withAccessTokenRetry?: typeof withGoogleWorkspaceAccessTokenRetry;
-  syncContacts?: typeof syncGoogleContacts;
-  updateSource?: typeof updateExternalTriggerSourceSyncState;
-}
 
 function errorText(cause: unknown): string {
   return (cause instanceof Error ? cause.message : String(cause)).slice(0, 4000);
 }
 
-function googlePeopleErrorStatus(cause: unknown): number | null {
-  const match = /^google_people_(\d{3})$/.exec(errorText(cause));
-  return match ? Number(match[1]) : null;
-}
-
-/** Poll every owned, credentialed Contacts source into its owner's Personal Vault. */
-export async function runGoogleContactsPersonalVaultPoll(
-  ctx: SystemActionCtx,
-  sql: Sql,
-  provided: GoogleContactsPersonalVaultPollDeps = {},
-): Promise<GoogleContactsPersonalVaultPollResult> {
-  const listSources = provided.listSources ?? listPollableExternalTriggerSources;
-  const withAccessTokenRetry = provided.withAccessTokenRetry ?? withGoogleWorkspaceAccessTokenRetry;
-  const syncContacts = provided.syncContacts ?? syncGoogleContacts;
-  const updateSource = provided.updateSource ?? updateExternalTriggerSourceSyncState;
-  const sources = await listSources(sql, ctx.workspaceId, 'contacts');
-  const result: GoogleContactsPersonalVaultPollResult = {
-    sources: sources.length,
-    succeeded: 0,
-    failed: 0,
-    contacts: 0,
-    pages: 0,
-    failures: [],
-  };
-
-  for (const source of sources) {
-    try {
-      if (!source.ownerUserId) throw new Error(`external_trigger_source_owner_required:${source.id}`);
-      if (!source.providerAccountId) throw new Error(`external_trigger_source_account_required:${source.id}`);
-      const synced = await withAccessTokenRetry(
-        source,
-        sourceTokenHarness(source.config, ctx.installSlug),
-        async (accessToken) => {
-          try {
-            return {
-              status: 200,
-              result: await syncContacts(sql, {
-                workspaceId: ctx.workspaceId,
-                userId: source.ownerUserId!,
-                sourceId: source.id,
-                providerAccountId: source.providerAccountId!,
-                accessToken,
-              }),
-            };
-          } catch (cause) {
-            const status = googlePeopleErrorStatus(cause);
-            // withRetry refreshes only when the callback returns status=401.
-            // Other HTTP failures must remain source errors, not auth retries.
-            if (status !== 401) throw cause;
-            return { status, result: null };
-          }
-        },
-      );
-      if (!synced) throw new Error(`google_people_sync_result_missing:${source.id}`);
-      await updateSource(sql, ctx.workspaceId, source.id, {
-        status: 'connected',
-        lastError: null,
-        connected: true,
-      });
-      result.succeeded += 1;
-      result.contacts += synced.contacts;
-      result.pages += synced.pages;
-    } catch (cause) {
-      const error = errorText(cause);
-      const status = isGoogleWorkspaceTerminalAuthError(cause) ? 'error' : 'degraded';
-      await updateSource(sql, ctx.workspaceId, source.id, { status, lastError: error });
-      result.failed += 1;
-      result.failures.push({ sourceId: source.id, status, error });
-    }
-  }
-
-  return result;
-}
-
 export interface ConnectorSyncActionDeps {
   sql?: Sql;
+  adoptLegacyCredentials?: typeof adoptLegacyProviderCredentials;
   reconcilePush?: typeof reconcileConnectorPush;
   runConnectorWakes?: typeof runConnectorWakes;
   runConnectorSync?: typeof runConnectorSync;
   runParticipantBackfills?: typeof runPendingParticipantBackfills;
-  runGoogleContacts?: (ctx: SystemActionCtx, sql: Sql) => Promise<GoogleContactsPersonalVaultPollResult>;
   runChatRollup?: (sql: Sql, opts: { workspaceId: string }) => Promise<{
     buckets: number; unitsWritten: number; unitsRemoved: number; expired: number; documentsExpired: number;
     documentsHeldKept: number; legacyMigrated: number; failed: number; deadLettered: number; failures: ChatRollupFailure[];
@@ -147,6 +40,14 @@ export interface ConnectorSyncActionDeps {
 export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: ConnectorSyncActionDeps = {}) {
   const sql = provided.sql ?? getOrgPg().sql;
   const options = { workspaceId: ctx.workspaceId, harness: ctx.installSlug };
+  // D-037: before anything reads a credential ref, adopt the tokens of first-party connections
+  // that predate their provider package. Diagnostics only; an adoption failure retries next tick.
+  let adoptionError: string | null = null;
+  const adopted = await (provided.adoptLegacyCredentials ?? adoptLegacyProviderCredentials)(sql, options).catch((cause: unknown) => {
+    adoptionError = errorText(cause);
+    return [];
+  });
+  if (adopted.length > 0) console.log(`connector-sync legacy credentials adopted: ${JSON.stringify(adopted)}`);
   // Provider webhooks (linear-asana-task-sync D-016): keep each push-capable source's remote
   // webhooks matching its config and public hook URL. Diagnostics only, never a failed pass.
   const push = await (provided.reconcilePush ?? reconcileConnectorPush)(sql, options).catch(
@@ -163,25 +64,8 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
   const result = await (provided.runConnectorSync ?? runConnectorSync)(sql, options);
   if (result.sources.length > 0) console.log(formatConnectorSyncLog(result));
   const failed = result.sources.filter((source) => source.outcome === 'failed' || source.outcome === 'reconnect-required');
-  // Contacts is a Google Workspace capability source without a generic provider
-  // plugin. Run the existing Personal Vault adapter on this durable cadence.
-  const contacts = await (provided.runGoogleContacts ?? runGoogleContactsPersonalVaultPoll)(ctx, sql).catch(
-    (cause: unknown): GoogleContactsPersonalVaultPollResult => ({
-      sources: 0,
-      succeeded: 0,
-      failed: 1,
-      contacts: 0,
-      pages: 0,
-      failures: [{ sourceId: '*', status: 'degraded', error: errorText(cause) }],
-    }),
-  );
-  if (contacts.sources > 0 || contacts.failed > 0) {
-    console.log(
-      '[connector-sync] Google Contacts Vault sources=' + contacts.sources +
-        ' succeeded=' + contacts.succeeded + ' failed=' + contacts.failed +
-        ' contacts=' + contacts.contacts + ' pages=' + contacts.pages,
-    );
-  }
+  // Contacts syncs through the driver above like every other provider (the google-contacts
+  // package, provider-adapters-to-packages-2026-10-11 D-036); there is no side poll.
   // D-018: project participants of interactions stored before a source's person -> record grant.
   // Independent of the sync outcome above (it reads the owner's Vault, not the provider), and a
   // failure here is reported, never a failed pass. Time-boxed per tick (WI-10006999): a large
@@ -218,13 +102,11 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
     ...(backfillFailed.length > 0
       ? [`participant backfill: ${backfillFailed.length} source(s) failed: ${backfillFailed.map((b) => `${b.sourceId}:${b.error ?? 'failed'}`).join('; ')}`]
       : []),
-    ...(contacts.failed > 0
-      ? [`Google Contacts Vault sync: ${contacts.failed} source(s) failed: ${contacts.failures.map((s) => `${s.sourceId}:${s.error}`).join('; ')}`]
-      : []),
     ...(pushFailed.length > 0
       ? [`push subscribe: ${pushFailed.length} source(s) failed: ${pushFailed.map((s) => `${s.sourceId}:${s.error ?? 'failed'}`).join('; ')}`]
       : []),
     ...(chatRollupError ? [`chat rollup failed: ${chatRollupError}`] : []),
+    ...(adoptionError ? [`legacy credential adoption failed: ${adoptionError}`] : []),
     // WI-6554700010012111: a re-queued bucket backs off; a dead-lettered one is not retried again until
     // a new message or a routing change revives it, so this is its last report.
     ...(chat.failed > 0
@@ -240,10 +122,6 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       admitted: result.sources.reduce((n, source) => n + source.admitted, 0),
       woken: wakes.sources.filter((source) => source.outcome === 'woken').length,
       wakeFailed: wakes.sources.filter((source) => source.outcome === 'failed').length,
-      contactsSources: contacts.sources,
-      contactsSynced: contacts.contacts,
-      contactsPages: contacts.pages,
-      contactsFailed: contacts.failed,
       participantBackfilled: backfills.filter((b) => b.outcome === 'backfilled').length,
       participantBackfillPartial: backfills.filter((b) => b.outcome === 'partial').length,
       participantBackfillFailed: backfillFailed.length,
@@ -259,6 +137,7 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       chatRollupFailed: chatRollupError ? 1 : 0,
       chatBucketsFailed: chat.failed,
       chatBucketsDeadLettered: chat.deadLettered,
+      legacySourcesRewritten: adopted.reduce((n, entry) => n + entry.sourcesRewritten, 0),
     },
     ...(softErrors.length > 0 ? { softError: softErrors.join(' | ').slice(0, 1000) } : {}),
   };

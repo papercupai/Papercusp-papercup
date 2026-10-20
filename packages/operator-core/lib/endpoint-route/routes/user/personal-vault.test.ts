@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   setCapability: vi.fn(),
   loadProviders: vi.fn(),
   getProvider: vi.fn(),
+  providerRegistry: vi.fn(),
   tokenRead: vi.fn(),
   tokenUpdate: vi.fn(),
 }));
@@ -66,15 +67,11 @@ vi.mock('../../../external-triggers/source-store', () => ({
   disconnectOwnedExternalTriggerSources: mocks.disconnectSources,
   setOwnedExternalTriggerSourceCapability: mocks.setCapability,
 }));
-vi.mock('../../../external-triggers/google-workspace', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../external-triggers/google-workspace')>();
-  return {
-    ...actual,
-    GOOGLE_WORKSPACE_OAUTH_PLUGIN: 'google-workspace',
-    GOOGLE_WORKSPACE_SOURCE_KINDS: ['gmail', 'gcal', 'contacts'],
-    googleWorkspaceOAuthField: (ref: string) => ref.replace('google-workspace:', ''),
-  };
-});
+// The installed Google packages' declared scopes (D-036). Unregistered by default, so the
+// static capability scopes stand in unless a test registers a descriptor.
+vi.mock('../../../integrations/provider-registry', () => ({
+  readyProviderRegistry: mocks.providerRegistry,
+}));
 vi.mock('../../../oauth/providers', () => ({
   GOOGLE_GMAIL_READONLY_SCOPE: 'https://www.googleapis.com/auth/gmail.readonly',
   GOOGLE_GMAIL_COMPOSE_SCOPE: 'https://www.googleapis.com/auth/gmail.compose',
@@ -225,7 +222,7 @@ beforeEach(() => {
       kind: 'gmail',
       ownerUserId: 'user-1',
       providerAccountId: 'owner@example.com',
-      credentialRef: 'google-workspace:owner-user-1',
+      credentialRef: 'provider:google:owner-user-1',
       status: 'connected',
       config: { privateSetting: 'never-serialize-source-config' },
       cursor: { historyId: 'never-serialize-me', lastSyncAt: '2026-08-23T00:00:00.000Z' },
@@ -243,7 +240,7 @@ beforeEach(() => {
   });
   mocks.disconnectSources.mockResolvedValue({
     sources: 3,
-    credentialRefs: ['google-workspace:owner-user-1'],
+    credentialRefs: ['provider:google:owner-user-1'],
   });
   mocks.setCapability.mockResolvedValue({
     id: 'contacts-source',
@@ -251,7 +248,7 @@ beforeEach(() => {
     kind: 'contacts',
     ownerUserId: 'user-1',
     providerAccountId: 'owner@example.com',
-    credentialRef: 'google-workspace:owner-user-1',
+    credentialRef: 'provider:google:owner-user-1',
     status: 'disabled',
     config: { capabilityEnabled: false },
     cursor: {},
@@ -349,7 +346,7 @@ describe('Personal Vault owner routes', () => {
         kind: 'gmail',
         ownerUserId: 'user-1',
         providerAccountId: 'owner@example.com',
-        credentialRef: 'google-workspace:owner-user-1',
+        credentialRef: 'provider:google:owner-user-1',
         status: 'connected',
         config: {},
         cursor: { emailAddress: 'owner@example.com' },
@@ -362,8 +359,8 @@ describe('Personal Vault owner routes', () => {
         workspaceId: 'ws-test',
         kind: 'gmail',
         ownerUserId: 'user-1',
-        providerAccountId: 'google-workspace:owner',
-        credentialRef: 'google-workspace:legacy-owner',
+        providerAccountId: 'provider:google:owner',
+        credentialRef: 'provider:google:legacy-owner',
         status: 'disabled',
         config: {},
         cursor: { emailAddress: 'Owner@Example.com' },
@@ -376,8 +373,8 @@ describe('Personal Vault owner routes', () => {
         workspaceId: 'ws-test',
         kind: 'gcal',
         ownerUserId: 'user-1',
-        providerAccountId: 'google-workspace:owner',
-        credentialRef: 'google-workspace:legacy-owner',
+        providerAccountId: 'provider:google:owner',
+        credentialRef: 'provider:google:legacy-owner',
         status: 'disabled',
         config: {},
         cursor: {},
@@ -400,8 +397,8 @@ describe('Personal Vault owner routes', () => {
     });
     expect(google.accounts[0].sources).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: 'gmail', providerAccountId: 'google-workspace:owner', status: 'disabled' }),
-        expect.objectContaining({ kind: 'gcal', providerAccountId: 'google-workspace:owner', status: 'disabled' }),
+        expect.objectContaining({ kind: 'gmail', providerAccountId: 'provider:google:owner', status: 'disabled' }),
+        expect.objectContaining({ kind: 'gcal', providerAccountId: 'provider:google:owner', status: 'disabled' }),
       ]),
     );
     expect(google.accounts.map((account: { providerAccountId: string }) => account.providerAccountId)).toEqual([
@@ -417,7 +414,7 @@ describe('Personal Vault owner routes', () => {
         kind: 'gmail',
         ownerUserId: 'user-1',
         providerAccountId: 'owner@example.com',
-        credentialRef: 'google-workspace:owner-user-1',
+        credentialRef: 'provider:google:owner-user-1',
         status: 'connected',
         config: {},
         cursor: {},
@@ -431,7 +428,7 @@ describe('Personal Vault owner routes', () => {
         kind: 'youtube',
         ownerUserId: 'user-1',
         providerAccountId: 'owner@example.com',
-        credentialRef: 'google-workspace:owner-user-1',
+        credentialRef: 'provider:google:owner-user-1',
         status: 'connected',
         config: { capabilityEnabled: true },
         cursor: {},
@@ -470,7 +467,7 @@ describe('Personal Vault owner routes', () => {
       ['gmail', 'gcal', 'contacts'],
       'owner@example.com',
     );
-    expect(mocks.tokenUpdate).toHaveBeenCalledWith('google-workspace', 'papercusp', {
+    expect(mocks.tokenUpdate).toHaveBeenCalledWith('provider:google', 'papercusp', {
       'owner-user-1': null,
       'owner-user-1_refresh': null,
       'owner-user-1_expires_at': null,
@@ -501,7 +498,7 @@ describe('Personal Vault owner routes', () => {
       ownerUserId: 'user-1',
       providerAccountId: 'owner@example.com',
       kind: 'contacts',
-      credentialRef: 'google-workspace:owner-user-1',
+      credentialRef: 'provider:google:owner-user-1',
       enabled: false,
       createdBy: 'owner:user-1',
     });
@@ -528,6 +525,36 @@ describe('Personal Vault owner routes', () => {
           status: 'needs-consent',
           missingScopes: ['https://www.googleapis.com/auth/calendar.events'],
         }),
+      ]),
+    );
+  });
+
+  // D-036: the installed google-contacts package's declared scopes are the requirement; the
+  // static capability list only stands in while that package is not registered.
+  it('requires the scopes a registered Google package declares over the static capability list', async () => {
+    const otherContacts = 'https://www.googleapis.com/auth/contacts.other.readonly';
+    mocks.providerRegistry.mockResolvedValueOnce(
+      new Map([
+        ['contacts', { descriptor: { oauth: { scopes: ['https://www.googleapis.com/auth/contacts.readonly', otherContacts] } } }],
+      ]),
+    );
+    mocks.tokenRead.mockResolvedValueOnce({
+      'owner-user-1': 'never-serialize-google-access-token',
+      'owner-user-1_scopes': [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.compose',
+        'https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/calendar.events',
+        'https://www.googleapis.com/auth/contacts.readonly',
+      ],
+    });
+    const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
+    const payload = await response.json();
+    expect(mocks.tokenRead).toHaveBeenCalledWith('provider:google', 'papercusp');
+    expect(payload.integrations.google.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'contacts', status: 'needs-consent', missingScopes: [otherContacts] }),
+        expect.objectContaining({ id: 'calendar', missingScopes: [] }),
       ]),
     );
   });

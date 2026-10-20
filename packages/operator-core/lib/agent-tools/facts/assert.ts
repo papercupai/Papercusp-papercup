@@ -718,10 +718,10 @@ export default defineTool({
           `"this should never lapse" without inventing a large number. ACCEPTED ONLY for a fact that is exempt ` +
           `from the per-scope cap: kind:'convention', or a key under '${WALL_KEY_PREFIX}' / ` +
           `'${DEAD_END_KEY_PREFIX}' / '${GUARD_RAIL_KEY_PREFIX}'. Everywhere else it is REFUSED, and that is ` +
-          `deliberate rather than a restriction to work around: eviction ranks by remaining-TTL FRACTION ` +
-          `descending, so an unbounded row inside the ranked population is the LEAST evictable row there — it ` +
-          `would never expire AND would crowd out live observations, turning "my fact expired" into the much ` +
-          `quieter "my fact was evicted immediately". Choose by WHAT THE ROW IS, not by how durable it feels: ` +
+          `deliberate rather than a restriction to work around: the ordinary cap refuses at its ceiling ` +
+          `instead of evicting an incumbent, so an ` +
+          `unbounded ordinary row could hold a slot forever and cause later ordinary writes to be refused. ` +
+          `Choose by WHAT THE ROW IS, not by how durable it feels: ` +
           `a standing rule or decision is kind:'convention' and permanent by that fact alone; a finding about ` +
           `current code SHOULD expire, so give it a ttlSec and a recheck. Refused for a volatile measurement — ` +
           `a snapshot of a moving subject is never a standing fact.`,

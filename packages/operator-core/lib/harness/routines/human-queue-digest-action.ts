@@ -1,9 +1,9 @@
 /**
- * `system:improvement-human-digest` — the weekly owner drain ritual over the
+ * `system:improvement-human-digest` — the scheduled owner drain ritual over the
  * human review queue (self-improvement-consume-edges-2026-06-12 P-022 / B-08,
  * adopting Scout's own EI-340/EI-352 proposals).
  *
- * Once a week, send the owner the TOP-5 human-lane items ordered by BLOCKING
+ * On each scheduled run, send the owner the TOP-5 human-lane items ordered by BLOCKING
  * IMPACT (blocking-impact.ts: `blocks` edges, inbound references, open
  * re-captures, watchdog persistence, severity × log staleness), each with its
  * "why this ranks here" reasons — so scarce owner attention always lands on
@@ -11,10 +11,12 @@
  * instead of compounding silently (the 06-12 audit's "flat human queue").
  *
  * NOT a revival of the removed `improvement-digest` push (operator-learning-tab
- * D-001 killed a dead-end headline notification): this one is (a) weekly, not
+ * D-001 killed a dead-end headline notification): this one is cadence-driven, not
  * per-tick; (b) a ranked, reasoned top-5, not a count; (c) no longer a dead
  * end — the Learning tab exists to open. Read-only: it changes no state, so
- * the routine seeds ACTIVE (seed-human-digest-routine.ts).
+ * the routine seeds ACTIVE (seed-human-digest-routine.ts). The notification
+ * heading follows the routine's cron cadence when it is recognizable and is
+ * otherwise cadence-neutral, so a live retune cannot leave stale copy behind.
  *
  * Delivery rides BOTH existing rails, each best-effort (a delivery failure
  * never fails the tick): the persistent coord inbox (`to: ['human']`) and
@@ -59,6 +61,22 @@ const DEFAULT_NEEDS_HUMAN_STALE_DAYS = 7;
 const DAY_MS = 86_400_000;
 const TITLE_MAX = 110;
 
+/** Return the owner-facing cadence for the routine's 5/6-field cron, when known. */
+export function digestCadenceLabel(cron: unknown): 'Daily' | 'Weekly' | null {
+  if (typeof cron !== 'string') return null;
+  const fields = cron.trim().split(/\s+/);
+  const schedule = fields.length === 6 ? fields.slice(1) : fields;
+  if (schedule.length !== 5) return null;
+  const [, , dayOfMonth, month, dayOfWeek] = schedule;
+  if (dayOfMonth === '*' && month === '*' && dayOfWeek === '*') return 'Daily';
+  if (dayOfMonth === '*' && month === '*' && dayOfWeek !== '*') return 'Weekly';
+  return null;
+}
+
+function digestHeading(cadence: string | null | undefined): string {
+  return cadence ? `${cadence} review-queue digest` : 'Review-queue digest';
+}
+
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
@@ -66,7 +84,7 @@ function truncate(s: string, max: number): string {
 /** Compose the digest message. Pure. Returns null for an empty queue (no spam). */
 export function composeHumanQueueDigest(
   humanQueue: readonly ImpactRankedItem[],
-  opts: { topN?: number } = {},
+  opts: { topN?: number; cadence?: string | null } = {},
 ): { summary: string; body: string } | null {
   if (humanQueue.length === 0) return null;
   const topN = Math.max(1, opts.topN ?? DEFAULT_TOP_N);
@@ -89,7 +107,7 @@ export function composeHumanQueueDigest(
   ].join('\n\n');
 
   const summary =
-    `Weekly review-queue digest: ${humanQueue.length} item(s) await your decision — ` +
+    `${digestHeading(opts.cadence)}: ${humanQueue.length} item(s) await your decision — ` +
     `top blocker: ${top[0].id} (impact ${top[0].impact.score}${top[0].impact.reasons[0] ? ` — ${top[0].impact.reasons[0]}` : ''}).`;
 
   return { summary, body };
@@ -248,6 +266,7 @@ registerSystemAction('improvement-human-digest', async (ctx: SystemActionCtx) =>
   const cfg = ctx.triggerConfig ?? {};
   const topN =
     Number.isFinite(Number(cfg.top_n)) && Number(cfg.top_n) > 0 ? Number(cfg.top_n) : DEFAULT_TOP_N;
+  const cadence = digestCadenceLabel(cfg.cron);
   const staleDays =
     Number.isFinite(Number(cfg.needs_human_stale_days)) && Number(cfg.needs_human_stale_days) > 0
       ? Number(cfg.needs_human_stale_days)
@@ -258,7 +277,7 @@ registerSystemAction('improvement-human-digest', async (ctx: SystemActionCtx) =>
   // protected-surface kind=bug as "awaiting your decision" while the loop auto-implements it.
   const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ctx.workspaceId);
   const digest = await applyHumanQueueRanking(buildDigest(items, { ownerFullAutonomy }), { candidates: items });
-  const composed = composeHumanQueueDigest(digest.humanQueue, { topN });
+  const composed = composeHumanQueueDigest(digest.humanQueue, { topN, cadence });
   if (!composed) {
     console.log('[human-queue-digest] improvement human queue empty');
   } else {
@@ -269,12 +288,12 @@ registerSystemAction('improvement-human-digest', async (ctx: SystemActionCtx) =>
       console.warn('[human-queue-digest] inbox send failed:', e instanceof Error ? e.message : e);
     }
 
-    // Attention rail — desktop-native + mobile push, so the weekly ritual is seen.
+    // Attention rail — desktop-native + mobile push, so the scheduled ritual is seen.
     try {
       const { notifyAttention } = await import('../../attention-notify');
       await notifyAttention({
         kind: 'needs-human',
-        title: 'Weekly review-queue digest',
+        title: digestHeading(cadence),
         body: composed.summary,
         importance: 'normal',
         workspaceId: ctx.workspaceId,

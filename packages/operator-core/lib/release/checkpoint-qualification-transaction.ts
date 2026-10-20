@@ -24,6 +24,7 @@ import {
 } from './checkpoint-log-tags';
 import {
   frozenRepairHeadAwaitsVerification,
+  frozenRepairHeadOwesVerification,
   parseFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
@@ -1724,10 +1725,12 @@ export function assessTerminalRepairQueueReconciliation(
   // fixerSpawnId here therefore strands every completed fixer admission behind a
   // terminal qualification predecessor (the live failure this reconciliation exists
   // to recover from).
+  // WI-6554700010018169: "owes" rather than "awaits" — a same-head unmeasured retest
+  // (WI-10003213) is a pending verification too; refusing it here blocked every successor.
   const safeUntestedRepairHead =
     queue.phase === 'ready-to-verify' &&
     queue.dispatchReservation == null &&
-    frozenRepairHeadAwaitsVerification(queue);
+    frozenRepairHeadOwesVerification(queue);
   // A legacy/null-origin queue can still be handed forward safely when the caller independently
   // pins the exact never-judged repairHead. The required-ancestor equality supplies the missing
   // provenance link without weakening takeover safety: absent/mismatched pins remain blocked.
@@ -2108,7 +2111,8 @@ export function beginStoredQualification(
         queue.qualificationAttemptId === current.attemptId &&
         queue.fixerSpawnId === null &&
         queue.dispatchReservation == null &&
-        frozenRepairHeadAwaitsVerification(queue)
+        // WI-6554700010018169: a pending same-head unmeasured retest is untested work too.
+        frozenRepairHeadOwesVerification(queue)
       );
       const resumableRepairHead =
         current && queue && queueOwnsUntestedRepairHead && (

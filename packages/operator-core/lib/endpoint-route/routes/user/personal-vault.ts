@@ -18,12 +18,8 @@ import {
   setOwnedExternalTriggerSourceCapability,
   type OwnedExternalTriggerSourceRow,
 } from '../../../external-triggers/source-store';
-import {
-  GOOGLE_WORKSPACE_OAUTH_PLUGIN,
-  GOOGLE_WORKSPACE_SOURCE_KINDS,
-  googleWorkspaceOAuthField,
-  googleWorkspaceSourceAccountId,
-} from '../../../external-triggers/google-workspace';
+import { canonicalSourceAccountId } from '../../../integrations/personal-account';
+import { readyProviderRegistry } from '../../../integrations/provider-registry';
 import {
   GOOGLE_CALENDAR_EVENTS_SCOPE,
   GOOGLE_CALENDAR_READONLY_SCOPE,
@@ -67,12 +63,24 @@ const SUPPORTED_SOURCES = ['mail', 'calendar', 'contacts', 'facebook', 'instagra
 // belong to the installed provider descriptor, not a first-party adapter.
 const FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN = 'provider:facebook';
 const FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS = ['facebook'] as const;
-function facebookPersonalVaultOAuthField(ref: string): string {
-  const prefix = `${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`;
-  if (!ref.startsWith(prefix) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(ref.slice(prefix.length))) {
-    throw new Error('facebook_personal_vault_credential_ref_invalid');
-  }
+// Google is the `google` descriptor credential group: the gmail, google-calendar and
+// google-contacts packages share one consent and one token-store plugin (D-036).
+const GOOGLE_PERSONAL_VAULT_OAUTH_PLUGIN = 'provider:google';
+const GOOGLE_PERSONAL_VAULT_SOURCE_KINDS = ['gmail', 'gcal', 'contacts'] as const;
+const OAUTH_FIELD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+function personalVaultOAuthField(plugin: string, ref: string, errorCode: string): string {
+  const prefix = `${plugin}:`;
+  if (!ref.startsWith(prefix) || !OAUTH_FIELD.test(ref.slice(prefix.length))) throw new Error(errorCode);
   return ref.slice(prefix.length);
+}
+function facebookPersonalVaultOAuthField(ref: string): string {
+  return personalVaultOAuthField(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, ref, 'facebook_personal_vault_credential_ref_invalid');
+}
+function googlePersonalVaultOAuthField(ref: string): string {
+  return personalVaultOAuthField(GOOGLE_PERSONAL_VAULT_OAUTH_PLUGIN, ref, 'google_workspace_credential_ref_invalid');
+}
+function isGoogleSourceKind(kind: string): boolean {
+  return (GOOGLE_PERSONAL_VAULT_SOURCE_KINDS as readonly string[]).includes(kind);
 }
 const PRINCIPAL_TYPES: readonly PersonalPrincipalType[] = ['plan-template', 'binding', 'agent-role'];
 
@@ -240,11 +248,11 @@ function googleCredentialState(
 ): { connected: boolean; grantedScopes: string[] } {
   const source = owned.find(
     (candidate) =>
-      GOOGLE_WORKSPACE_SOURCE_KINDS.includes(candidate.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]) &&
-      candidate.credentialRef !== null,
+      isGoogleSourceKind(candidate.kind) &&
+      Boolean(candidate.credentialRef?.startsWith(`${GOOGLE_PERSONAL_VAULT_OAUTH_PLUGIN}:`)),
   );
   if (!source?.credentialRef) return { connected: false, grantedScopes: [] };
-  const field = googleWorkspaceOAuthField(source.credentialRef);
+  const field = googlePersonalVaultOAuthField(source.credentialRef);
   const token = tokenConfig[field];
   const connected =
     typeof token === 'string' ? Boolean(token.trim()) : token !== null && token !== undefined && token !== false;
@@ -264,10 +272,8 @@ function googleCapabilities(
   owned: OwnedExternalTriggerSourceRow[],
   grantedScopes: string[],
   sharedConnected: boolean,
+  declaredScopes: ReadonlyMap<string, readonly string[]>,
 ): SafeGoogleCapability[] {
-  const sources = owned.filter((source) =>
-    GOOGLE_WORKSPACE_SOURCE_KINDS.includes(source.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]),
-  );
   const granted = new Set(grantedScopes);
   return GOOGLE_CAPABILITY_DEFS.map((definition) => {
     // The shared credential lives on a Workspace source, but capability rows
@@ -276,8 +282,11 @@ function googleCapabilities(
     // per-capability toggle across every owned source.
     const source = owned.find((candidate) => candidate.kind === definition.sourceKind);
     const enabled = source?.config.capabilityEnabled !== false;
+    // The installed package's declared scopes are the requirement; the static list only
+    // stands in when that package's descriptor is not registered in this process.
+    const requiredScopes = declaredScopes.get(definition.sourceKind) ?? definition.requiredScopes;
     const missingScopes =
-      sharedConnected && enabled ? definition.requiredScopes.filter((scope) => !granted.has(scope)) : [];
+      sharedConnected && enabled ? requiredScopes.filter((scope) => !granted.has(scope)) : [];
     const status: SafeGoogleCapability['status'] = providerLoadFailed
       ? 'error'
       : !configured
@@ -387,6 +396,7 @@ function googleAccountStatus(
   providerLoadFailed: boolean,
   owned: OwnedExternalTriggerSourceRow[],
   tokenConfig: Readonly<Record<string, unknown>>,
+  declaredScopes: ReadonlyMap<string, readonly string[]>,
 ): SafeGoogleAccountStatus {
   const credential = googleCredentialState(owned, tokenConfig);
   const status: SafeIntegrationStatus['status'] =
@@ -412,6 +422,7 @@ function googleAccountStatus(
       owned,
       credential.grantedScopes,
       credential.connected,
+      declaredScopes,
     ),
   };
 }
@@ -421,7 +432,7 @@ function googleOwnedSources(owned: OwnedExternalTriggerSourceRow[]): OwnedExtern
   return owned.filter(
     (source) =>
       kinds.has(source.kind as SafeGoogleCapability['sourceKind']) &&
-      (source.credentialRef?.startsWith(`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:`) || source.providerAccountId !== null),
+      (source.credentialRef?.startsWith(`${GOOGLE_PERSONAL_VAULT_OAUTH_PLUGIN}:`) || source.providerAccountId !== null),
   );
 }
 
@@ -492,14 +503,24 @@ async function integrationStatuses(
   const owned = await listOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, ownerUserId);
   const googleConfigured = !providerLoadFailed && getProvider('google') !== null;
   const googleSources = googleOwnedSources(owned);
+  const declaredScopes = new Map<string, readonly string[]>();
+  try {
+    const registry = await readyProviderRegistry();
+    for (const kind of GOOGLE_PERSONAL_VAULT_SOURCE_KINDS) {
+      const scopes = registry.get(kind)?.descriptor.oauth?.scopes;
+      if (scopes?.length) declaredScopes.set(kind, scopes);
+    }
+  } catch {
+    // Packages not registered yet: the static capability scopes stand in.
+  }
   const [tokenConfig, facebookTokenConfig] = await Promise.all([
-    fsTokenStorage.read(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp'),
+    fsTokenStorage.read(GOOGLE_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp'),
     fsTokenStorage.read(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp'),
   ]);
   const accounts = [
     ...new Set(
       googleSources
-        .map((source) => googleWorkspaceSourceAccountId(source, googleSources))
+        .map((source) => canonicalSourceAccountId(source, googleSources))
         .filter((providerAccountId): providerAccountId is string => Boolean(providerAccountId)),
     ),
   ].map((providerAccountId) =>
@@ -508,9 +529,10 @@ async function integrationStatuses(
       googleConfigured,
       providerLoadFailed,
       googleSources.filter(
-        (source) => googleWorkspaceSourceAccountId(source, googleSources) === providerAccountId,
+        (source) => canonicalSourceAccountId(source, googleSources) === providerAccountId,
       ),
       tokenConfig,
+      declaredScopes,
     ),
   );
   const googleConnected = accounts.some((account) => account.connected);
@@ -670,12 +692,12 @@ const disconnectGoogle = defineTool({
       sql,
       workspaceId,
       user.id,
-      [...GOOGLE_WORKSPACE_SOURCE_KINDS],
+      [...GOOGLE_PERSONAL_VAULT_SOURCE_KINDS],
       providerAccountId,
     );
     for (const credentialRef of disconnected.credentialRefs) {
-      const field = googleWorkspaceOAuthField(credentialRef);
-      await fsTokenStorage.update(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp', {
+      const field = googlePersonalVaultOAuthField(credentialRef);
+      await fsTokenStorage.update(GOOGLE_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp', {
         [field]: null,
         [field + '_refresh']: null,
         [field + '_expires_at']: null,
@@ -721,8 +743,8 @@ const setGoogleCapability = defineTool({
     const credentialRef = owned.find(
       (source) =>
         source.providerAccountId === providerAccountId &&
-        GOOGLE_WORKSPACE_SOURCE_KINDS.includes(source.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]) &&
-        source.credentialRef !== null,
+        isGoogleSourceKind(source.kind) &&
+        Boolean(source.credentialRef?.startsWith(`${GOOGLE_PERSONAL_VAULT_OAUTH_PLUGIN}:`)),
     )?.credentialRef;
     if (!credentialRef) {
       return Response.json({ ok: false, error: 'google_workspace_not_connected' }, { status: 409 });

@@ -84,7 +84,8 @@ export interface RegretTickDeps {
   upsertFinding: (finding: RegretFindingRecord) => Promise<void>;
   readPendingReplay: (workspaceId: string, limit: number) => Promise<RegretFindingRecord[]>;
   recordReplayScores: (workspaceId: string, runId: string, scores: CandidateReplayScore[]) => Promise<void>;
-  readUnfiledReplayed: (workspaceId: string, limit: number) => Promise<RegretFindingRecord[]>;
+  /** Read only filing-eligible rows; the store applies minFileScore before LIMIT. */
+  readUnfiledReplayed: (workspaceId: string, limit: number, minFileScore: number) => Promise<RegretFindingRecord[]>;
   capture: (input: CaptureImprovementInput) => Promise<CaptureImprovementResult>;
   markFiled: (workspaceId: string, runId: string, improvementId: string) => Promise<void>;
   /** null ⇒ the replay leg is dormant; live = replay-adapter.ts over lib/replay. */
@@ -197,7 +198,7 @@ export async function runRegretTick(
   const filed: string[] = [];
   let declined = 0;
   if (maxFile > 0) {
-    const unfiled = await deps.readUnfiledReplayed(workspaceId, maxFile);
+    const unfiled = await deps.readUnfiledReplayed(workspaceId, maxFile, minFileScore);
     for (const finding of unfiled) {
       const best = bestReplayScore(finding);
       if (!best || best.improvementScore < minFileScore || finding.divergenceTurn === null) continue;

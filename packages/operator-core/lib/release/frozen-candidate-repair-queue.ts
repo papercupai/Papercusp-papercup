@@ -3419,6 +3419,33 @@ export function frozenRepairHeadAwaitsVerification(queue: FrozenCandidateRepairQ
   return !rounds.some((round) => round.head === queue.repairHead);
 }
 
+/**
+ * WI-6554700010018169 — does the current repair head still OWE a verification pass?
+ *
+ * `frozenRepairHeadAwaitsVerification` answers only for a head that reached the queue by
+ * admission or a fixer: a head the suite has never judged. WI-10003213 added a third route into
+ * `ready-to-verify` that it cannot see — the once-per-head UNMEASURED retest
+ * (`markFrozenRepairUnmeasuredRetest`), which re-verifies the SAME head (often `repairHead ===
+ * candidate`, already in `convergenceRounds`). That head is judged, yet a pass is explicitly
+ * owed, and the durable `retestRequested` marker stays until a pass at that head settles it.
+ *
+ * Callers that asked only the never-judged question stranded that state. Measured 2026-10-15 on
+ * slack-asana-bug-drill (candidate cc5e1cea): the retest was requested, then the WI-42350
+ * `unchanged-since-verdict` short-circuit skipped the suite in the same run (the head "already
+ * reached a RED verdict"), the qualification went terminal inconclusive, and every later fire
+ * was refused `queue-not-safe-unstarted` by the successor reconciliation — five days, 24/24
+ * verdictless outcomes a day. Ask THIS predicate wherever the question is "must the next run
+ * judge this head", so the retest route and the admission route are recognised alike.
+ */
+export function frozenRepairHeadOwesVerification(queue: FrozenCandidateRepairQueue): boolean {
+  if (frozenRepairHeadAwaitsVerification(queue)) return true;
+  return (
+    queue.phase === 'ready-to-verify' &&
+    queue.unmeasuredRetestHead === queue.repairHead &&
+    queue.retestRequested?.repairHead === queue.repairHead
+  );
+}
+
 /** A red verification retries FORWARD from the head that was just tested; it never retreats to
  * a historical prefix and never adopts the moving staging tip. */
 export function markFrozenRepairVerificationRed(

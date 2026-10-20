@@ -984,8 +984,10 @@ interface ReadableCore {
   ready(): Promise<void>;
   update(opts?: { wait?: boolean }): Promise<void>;
   get(i: number, opts?: { wait?: boolean }): Promise<unknown>;
-  /** Bitfield membership test — O(1) per block where available. */
-  has?(i: number): Promise<boolean> | boolean;
+  /** Batched, pipelined range fetch (hypercore `core.download(range).done()`). */
+  download(range: { start: number; end: number }): { done(): Promise<unknown> };
+  /** Bitfield membership test for `i`, or for the whole range `[i, end)` when `end` is given. */
+  has?(i: number, end?: number): Promise<boolean> | boolean;
 }
 
 /** Context for {@link createCorestoreSeedProvider}.cut (build/release time). */
@@ -1116,12 +1118,24 @@ async function dirSize(root: string): Promise<number> {
  * no offline peer holds. Returns the core's full `length` (the authenticated head
  * length, independent of how many blocks were downloaded).
  */
-async function downloadCoreRange(store: Corestore, keyHex: string, from = 0): Promise<number> {
+export async function downloadCoreRange(store: Corestore, keyHex: string, from = 0): Promise<number> {
   const core = store.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
   await core.ready();
   await core.update({ wait: true });
   const len: number = core.length;
-  for (let i = Math.max(0, from); i < len; i++) await core.get(i, { wait: true });
+  const start = Math.max(0, from);
+  // WI-2037678 (P-521 J8): fetch the range as ONE batched, pipelined download —
+  // never a sequential `await core.get(i)` per block. The sequential form costs a
+  // full replication round-trip per block (measured 677us/block on the dev tower,
+  // ~74s for a 108k-block seed; several times that on a QEMU guest), which pushed
+  // the offline seed restore past the installer journey's 180s budget. Every block
+  // is still merkle-verified on receipt; `has()` asserts the whole range landed.
+  if (len > start) {
+    await core.download({ start, end: len }).done();
+    if (core.has && !(await core.has(start, len))) {
+      throw new Error(`downloadCoreRange: core ${keyHex.slice(0, 12)}… missing blocks in [${start}, ${len}) after download`);
+    }
+  }
   return len;
 }
 

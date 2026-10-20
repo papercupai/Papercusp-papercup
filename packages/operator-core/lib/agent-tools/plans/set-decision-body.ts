@@ -23,6 +23,11 @@ import { hardText, softText, clampText, LIMITS } from '../limits';
 import { neutralizeToolCallTags } from '../../text-safety';
 import { containsDeviationFence } from '../../spec-conformance/deviation';
 import { DEVIATION_FENCE_RESERVED_NOTE } from './add-decision';
+import {
+  evaluateFrozenLineageCarryText,
+  frozenLineageCarryViolationPayload,
+} from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 /**
  * Replace a decision's body. Locates the `### D-NNN` head line against the
@@ -155,6 +160,20 @@ export default defineTool({
         },
         true,
       );
+    }
+    // frozen-candidate-carry-and-launch-fail-closed P-002: replacing a decision
+    // body writes the same durable execution authority as appending one. Keep
+    // this sibling writer under the same frozen-lineage carry policy, before
+    // provenance IO and before the plan lock can mutate the decision.
+    const frozenCarryVerdict = evaluateFrozenLineageCarryText({
+      surface: 'plan-decision',
+      text: args.body,
+      target: resolveHomeGateVerdictTarget(),
+    });
+    if (!frozenCarryVerdict.allowed) {
+      const refusal = frozenLineageCarryViolationPayload(frozenCarryVerdict);
+      if (!refusal) throw new Error('frozen lineage refusal payload missing for a refused plan decision');
+      return text({ ...refusal, slug: args.slug, decisionId: args.decisionId }, true);
     }
     // WI-42142 — the same decision-provenance leg plans:add-decision runs, for the
     // same reason: this tool overwrites the very body that tool appends, so guarding

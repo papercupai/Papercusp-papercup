@@ -250,6 +250,8 @@ export default defineTool({
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
             ...(planItemDrift ? { planItemDrift } : {}),
+            // R-1: advisory only — this edit broke a declaration section that parsed before.
+            ...(v.planDeclarations ? { planDeclarations: v.planDeclarations } : {}),
             // Item-parse feedback (WI-3363), computed in evaluateSetContent — a
             // targeted edit can silently break (or fix) an item line, so report
             // itemsParsed + a hint when list-like lines look like unparsed items.

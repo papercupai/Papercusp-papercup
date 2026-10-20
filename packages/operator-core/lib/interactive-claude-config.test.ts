@@ -23,7 +23,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import ts from 'typescript';
@@ -31,6 +31,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { papercuspPtyPath } from '@papercusp/host-platform/home';
 import { RTK_SESSION_ENV } from './agent-tools/capability/rtk-rewrite';
 import {
   ensureInteractiveClaudeConfig,
@@ -660,13 +661,13 @@ describe('WI-3280: SessionStart playbook recovery', () => {
   // wrapper-driven carry-respawn already writes, so resolveSessionRefReconciled
   // (compaction-usage.ts) picks it up on the very next context-gauge read.
   describe('EI-13477: self-relaunch reports its new native id into the psu-pty respawn log', () => {
+    // Resolve the directory exactly as the generated hook does: the
+    // PAPERCUSP_PSU_PTY_DIR pin (the vitest shim sets it to a temp dir) or the
+    // host default — the same papercuspPtyPath() latestRespawnNativeId reads.
     function respawnLogPath(sid: string): string {
-      return join(homedir(), '.papercusp', 'psu-pty', `${sid.replace(/[^a-zA-Z0-9._-]/g, '_')}.events.jsonl`);
+      return join(papercuspPtyPath(), `${sid.replace(/[^a-zA-Z0-9._-]/g, '_')}.events.jsonl`);
     }
-    // These write into the REAL PSU_PTY_DIR under a unique throwaway sid — the
-    // same trust boundary psu-pty-discovery.test.ts's recolorViaPty/interruptViaPty
-    // tests already accept (the generated hook has no dir-override seam, matching
-    // production: it must find the SAME file latestRespawnNativeId reads for real).
+    // Each case writes under a unique throwaway sid.
     function uniqueSid(label: string): string {
       return `su-rec-${label}-${process.pid}-${Math.floor(performance.now() * 1000)}`;
     }
@@ -1344,10 +1345,12 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
     // wake-executor's exemption rests on it targeting a bee's OWN config dir.
     const wake = readFileSync(join(LIB, 'events/await/wake-executor.ts'), 'utf8');
     expect(wake).toMatch(/rematerializeSession\(\{ sourceKind: 'claude', sessionId: sid, targetRoot: cfgDir \}\)/);
-    // streams.ts's rests on it only ever taking a path to READ — WI-6581 moved
-    // the restore itself into session-transcript-remat, so the shape to pin is
-    // "the route consumes a resolved path and nothing else".
-    const streams = readFileSync(join(LIB, 'endpoint-route/routes/harness/streams.ts'), 'utf8');
+    // The transcript-follow route's rests on it only ever taking a path to READ —
+    // WI-6581 moved the restore itself into session-transcript-remat, so the
+    // shape to pin is "the route consumes a resolved path and nothing else".
+    // c8661b4793 moved that follow code from endpoint-route/routes/harness/streams.ts
+    // into owner-sessions/timeline.ts verbatim; pin it where it now lives.
+    const streams = readFileSync(join(LIB, 'owner-sessions/timeline.ts'), 'utf8');
     expect(streams).toMatch(/const r = await rematerializeTranscript\(key\);\s*\n\s*if \(r\.path\) path = r\.path;/);
     // session-transcript-remat's rests on the same thing one layer down: it
     // restores in order to RESOLVE a path, and hands that path back. If it ever
@@ -1472,6 +1475,42 @@ describe('EI-20273348458054257 recovery-banner identity claim', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // WI-6554700010018176: `--check` parses but never EVALUATES, so a name the
+  // generator imports but the emitted file does not (papercuspPtyPath) passed
+  // it while every real SessionStart died with a ReferenceError at load. The
+  // hook runs standalone from the session config dir, so execute it per source.
+  it.each(['startup', 'fork', 'resume', 'compact'])(
+    'the emitted hook LOADS and exits 0 standalone on SessionStart[%s] (guards the unbound-identifier class)',
+    (source) => {
+      const dir = mkdtempSync(join(tmpdir(), 'pc-hookload-'));
+      const file = join(dir, 'session-recover-hook.mjs');
+      try {
+        writeFileSync(file, RECOVER_HOOK_SOURCE);
+        let stderr = '';
+        try {
+          execFileSync(process.execPath, [file], {
+            encoding: 'utf8',
+            input: JSON.stringify({ session_id: 'hookload-probe', source }),
+            env: {
+              ...process.env,
+              PAPERCUSP_SID: '',
+              PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+              PAPERCUSP_PSU_PTY_DIR: dir,
+            },
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: 20_000,
+          });
+        } catch (err) {
+          stderr = String((err as { stderr?: unknown }).stderr ?? err);
+        }
+        expect(stderr).not.toMatch(/ReferenceError|TypeError|SyntaxError/);
+        expect(stderr).toBe('');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   /**
    * identityLine() is self-contained (reads only `intent` and process.env), so

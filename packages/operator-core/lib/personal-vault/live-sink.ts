@@ -1,8 +1,7 @@
 import type { Sql } from 'postgres';
 import { getExternalTriggerSource } from '../external-triggers/source-store';
-import { GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT } from '../oauth/providers';
 import type { PersonalDocumentInput } from './types';
-import { normalizePersonalSource, setPersonalSyncState, upsertPersonalDocuments } from './store';
+import { normalizePersonalSource, upsertPersonalDocuments } from './store';
 
 export interface NormalizedExternalEvent {
   key: string;
@@ -77,6 +76,20 @@ const VAULT_ROUTES: Readonly<Record<string, VaultRoute>> = {
         participants: [...strings(p.organizer), ...attendees],
         title: String(p.summary ?? '(untitled event)'),
         text: String(p.description ?? ''),
+      };
+    },
+  },
+  // Keys stay `contacts:<sourceId>:<resourceName>`, the keys the retired app-code contacts poll
+  // wrote, so the provider package resumes the same Vault rows instead of duplicating them.
+  contact: {
+    category: 'contacts',
+    shape: (p) => {
+      const emails = strings(p.emails);
+      return {
+        kind: 'contact',
+        participants: emails,
+        title: String(p.displayName ?? emails[0] ?? '(unnamed contact)'),
+        text: [...emails, ...strings(p.phones)].join('\n'),
       };
     },
   },
@@ -211,56 +224,3 @@ export async function createPersonalVaultExternalSinkForSource(
   });
 }
 
-export async function syncGoogleContacts(
-  sql: Sql,
-  input: {
-    workspaceId: string;
-    userId: string;
-    sourceId: string;
-    providerAccountId: string;
-    accessToken: string;
-    fetchImpl?: typeof fetch;
-    pageToken?: string | null;
-  },
-): Promise<{ contacts: number; pages: number; nextPageToken: string | null }> {
-  const fetchImpl = input.fetchImpl ?? fetch;
-  let pageToken = input.pageToken ?? null;
-  let contacts = 0;
-  let pages = 0;
-  do {
-    const url = new URL(GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT);
-    url.searchParams.set('personFields', 'names,emailAddresses,phoneNumbers,organizations');
-    url.searchParams.set('pageSize', '1000');
-    if (pageToken) url.searchParams.set('pageToken', pageToken);
-    const response = await fetchImpl(url, { headers: { Authorization: `Bearer ${input.accessToken}` } });
-    if (!response.ok) throw new Error(`google_people_${response.status}`);
-    const body = await response.json() as {
-      connections?: Array<Record<string, unknown>>;
-      nextPageToken?: string;
-      totalPeople?: number;
-    };
-    const docs = (body.connections ?? []).map((person): PersonalDocumentInput => {
-      const names = person.names as Array<{ displayName?: string }> | undefined;
-      const emails = person.emailAddresses as Array<{ value?: string }> | undefined;
-      const phones = person.phoneNumbers as Array<{ value?: string }> | undefined;
-      const resourceName = String(person.resourceName ?? '');
-      const primaryEmail = emails?.map((e) => e.value).find(Boolean) ?? null;
-      return {
-        source: 'contacts', datatypeId: 'contact', kind: 'contact', externalId: resourceName || primaryEmail,
-        sourceId: input.sourceId,
-        providerAccountId: input.providerAccountId,
-        participants: emails?.map((e) => e.value ?? '').filter(Boolean) ?? [],
-        title: names?.map((n) => n.displayName).find(Boolean) ?? primaryEmail ?? '(unnamed contact)',
-        text: [...(emails?.map((e) => e.value) ?? []), ...(phones?.map((p) => p.value) ?? [])].filter(Boolean).join('\n'),
-        metadata: person,
-        dedupeKey: `contacts:${input.sourceId}:${resourceName || primaryEmail || JSON.stringify(person)}`,
-      };
-    });
-    if (docs.length) await upsertPersonalDocuments(sql, input.workspaceId, input.userId, docs);
-    contacts += docs.length;
-    pages += 1;
-    pageToken = body.nextPageToken ?? null;
-    await setPersonalSyncState(sql, input.workspaceId, input.userId, 'contacts', { pageToken, totalPeople: body.totalPeople ?? null });
-  } while (pageToken);
-  return { contacts, pages, nextPageToken: pageToken };
-}

@@ -219,12 +219,33 @@ export async function recordReplayScores(
   });
 }
 
-/** Replayed-but-unfiled findings — the filing queue. */
-export async function readUnfiledReplayed(sql: Sql, workspaceId: string, limit: number): Promise<RegretFindingRecord[]> {
+/**
+ * Replayed-but-unfiled findings that clear the filing bar — the filing queue.
+ *
+ * Eligibility is filtered in SQL before LIMIT. Without that predicate, old
+ * rows with no replay scores can consume the FIFO window forever and starve
+ * scored findings behind them.
+ */
+export async function readUnfiledReplayed(
+  sql: Sql,
+  workspaceId: string,
+  limit: number,
+  minFileScore: number,
+): Promise<RegretFindingRecord[]> {
   const rows = await sql<Record<string, unknown>[]>`
     SELECT * FROM harness_shared.regret_findings
      WHERE workspace_id = ${workspaceId} AND replay_status = 'replayed'
        AND report_improvement_id IS NULL
+       AND replay_scores IS NOT NULL
+       AND EXISTS (
+             SELECT 1
+               FROM jsonb_array_elements(replay_scores) AS score
+              WHERE CASE
+                      WHEN jsonb_typeof(score->'improvementScore') = 'number'
+                      THEN (score->>'improvementScore')::double precision
+                      ELSE NULL
+                    END >= ${minFileScore}
+           )
      ORDER BY mined_at ASC
      LIMIT ${limit}`;
   return rows.map(recordFromRow);
@@ -255,7 +276,7 @@ export function defaultRegretDeps(sql: Sql): RegretTickDeps {
     upsertFinding: (finding) => upsertFinding(sql, finding),
     readPendingReplay: (ws, limit) => readPendingReplay(sql, ws, limit),
     recordReplayScores: (ws, runId, scores) => recordReplayScores(sql, ws, runId, scores),
-    readUnfiledReplayed: (ws, limit) => readUnfiledReplayed(sql, ws, limit),
+    readUnfiledReplayed: (ws, limit, minFileScore) => readUnfiledReplayed(sql, ws, limit, minFileScore),
     capture: (input) => captureImprovement(input),
     markFiled: (ws, runId, id) => markReportFiled(sql, ws, runId, id),
     replayRunner: null,

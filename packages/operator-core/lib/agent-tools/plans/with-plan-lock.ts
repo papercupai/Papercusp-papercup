@@ -758,6 +758,8 @@ export async function withPlanLock<T>(
           workspaceId,
           harnessSlug,
           planSlug: slug,
+          // D-013 #1: judge the declarations on the body this write is about to commit.
+          pendingContent: newBody,
         });
         if (!gate.satisfied) {
           return {

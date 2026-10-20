@@ -9,6 +9,7 @@ import {
   stampableWorkingSet,
   workingSetWindow,
   type DeriveWorkingSetDeps,
+  type EpochRow,
   type WorkingSetQuery,
   type WorkingSetSignals,
 } from './working-set';
@@ -16,7 +17,7 @@ import {
 const NOW = new Date('2026-10-20T14:00:00.000Z');
 const BUMPED = new Date('2026-10-20T12:00:00.000Z');
 
-function depsWith(signals: WorkingSetSignals, epoch = { epoch: 3, bumpedAt: BUMPED }) {
+function depsWith(signals: WorkingSetSignals, epoch: EpochRow = { epoch: 3, bumpedAt: BUMPED }) {
   const queries: WorkingSetQuery[] = [];
   const deps: DeriveWorkingSetDeps = {
     epoch: async () => epoch,

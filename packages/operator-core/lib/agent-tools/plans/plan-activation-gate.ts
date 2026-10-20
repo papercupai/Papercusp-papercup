@@ -4,6 +4,7 @@ type Tx = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => 
 
 import { RUBRIC_TEMPLATE_NAME } from './rubric-template';
 import { parsePlan } from './parser';
+import { evaluateActivationDeclarations, type ActivationDeclarationBlocker } from './plan-declarations';
 
 export const ACTIVATION_PLAN_STATUSES = ['ready', 'active'] as const;
 
@@ -79,6 +80,13 @@ function itemProvenanceCheckOf(
   return { enforced: true, items };
 }
 
+/** True when the stored audit was itself gated on the declaration sections (D-013 #1). */
+function declarationsCheckEnforced(activation: unknown): boolean {
+  const parsed = typeof activation === 'string' ? safeJson(activation) : activation;
+  const check = (parsed as { declarationsCheck?: { enforced?: unknown } } | null)?.declarationsCheck;
+  return Boolean(check && typeof check === 'object' && check.enforced === true);
+}
+
 function safeJson(text: string): unknown {
   try {
     return JSON.parse(text);
@@ -89,11 +97,13 @@ function safeJson(text: string): unknown {
 
 export interface ConversationActivationGateVerdict {
   satisfied: boolean;
-  code?: 'conversation_audit_required' | 'item_provenance_unresolved';
+  code?: 'conversation_audit_required' | 'item_provenance_unresolved' | 'plan_declarations_invalid';
   message?: string;
   auditSeq?: number;
   /** P-003: current items the enforced audit did not resolve. */
   unresolvedItems?: string[];
+  /** D-013 #1: declaration sections that are missing or invalid in the CURRENT content. */
+  declarationBlockers?: ActivationDeclarationBlocker[];
   /** Existing ready/active plan with no audit: activated before this gate could enforce. */
   grandfathered?: boolean;
 }
@@ -108,7 +118,14 @@ export function conversationAuditRequiredMessage(planSlug: string): string {
 
 export async function evaluateConversationActivationGate(
   tx: Tx,
-  scope: { workspaceId: string; harnessSlug: string; planSlug: string },
+  scope: {
+    workspaceId: string;
+    harnessSlug: string;
+    planSlug: string;
+    /** The plan body being written, when the door evaluates a content write that has not
+     *  committed yet. The declaration re-check reads it instead of the stored row. */
+    pendingContent?: string | null;
+  },
 ): Promise<ConversationActivationGateVerdict> {
   const rows = await tx<Array<{ audit_seq: number; activation: unknown }>>`
     SELECT audit_seq, activation
@@ -150,6 +167,40 @@ export async function evaluateConversationActivationGate(
             `Plan '${scope.planSlug}' has item(s) with no recorded provenance since activation audit #${row.audit_seq}: ` +
             `${unresolved.join(', ')}. Re-run plans:audit { phase:'activation' } citing the owner turn for each, or ` +
             'declare it in itemProvenance (derived / agent-added with a reason).',
+        };
+      }
+    }
+    // plan-reuse-and-library-declarations-2026-10-20 D-013 #1: the door is the boundary,
+    // not the audit row. An audit that was gated on the reuse and libraries sections
+    // stays valid only while the CURRENT content still carries them, so a section
+    // removed (or broken) after the audit refuses here. Audits recorded before that gate
+    // have no declarationsCheck and keep passing, as legacy provenance audits do.
+    if (declarationsCheckEnforced(row.activation)) {
+      const stored =
+        (
+          await tx<Array<{ content: string }>>`
+            SELECT content
+              FROM harness_shared.harness_plans
+             WHERE workspace_id = ${scope.workspaceId}
+               AND harness_slug = ${scope.harnessSlug}
+               AND plan_slug = ${scope.planSlug}
+             LIMIT 1`
+        )[0]?.content ?? '';
+      // The STORED status decides whether the gate applies, so a single write that both
+      // enters active and removes a section is still judged as leaving draft/ready.
+      const status = stored ? parsePlan(stored, { filePath: `${scope.planSlug}.md` }).frontmatter.status : null;
+      const declarations = evaluateActivationDeclarations(scope.pendingContent ?? stored, status);
+      if (!declarations.ok) {
+        return {
+          satisfied: false,
+          code: 'plan_declarations_invalid',
+          auditSeq: Number(row.audit_seq),
+          declarationBlockers: declarations.blockers,
+          message:
+            `Plan '${scope.planSlug}' passed activation audit #${row.audit_seq} with its declaration sections, but the ` +
+            `current content no longer does: ${declarations.blockers
+              .map((blocker) => `"## ${blocker.section}" is ${blocker.status} (${blocker.detail})`)
+              .join('; ')}. Restore each section's JSON block, or set its notApplicable to a one-line reason.`,
         };
       }
     }
@@ -197,6 +248,7 @@ export interface ActivationGateRefusalValue {
   code: ActivationGateRefusalCode;
   message: string;
   unresolvedItems?: string[];
+  declarationBlockers?: ActivationDeclarationBlocker[];
 }
 
 export function activationGateRefusalValue(
@@ -208,12 +260,14 @@ export function activationGateRefusalValue(
     code: verdict.code ?? 'conversation_audit_required',
     message: verdict.message ?? conversationAuditRequiredMessage(planSlug),
     ...(verdict.unresolvedItems?.length ? { unresolvedItems: verdict.unresolvedItems } : {}),
+    ...(verdict.declarationBlockers?.length ? { declarationBlockers: verdict.declarationBlockers } : {}),
   };
 }
 
 const ACTIVATION_GATE_REFUSAL_CODES: ReadonlySet<string> = new Set<ActivationGateRefusalCode>([
   'conversation_audit_required',
   'item_provenance_unresolved',
+  'plan_declarations_invalid',
 ]);
 
 /** Typed guard for the non-throwing refusal returned by withPlanLock. */

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-002 / R-6 live ship-verdict census before and after the verification-profile backfill (plan-verification-profiles-2026-10-17)",
+  "framework": "operational",
+  "command": [
+    "npx tsx scripts/backfill-plan-verification-profiles.mts --census census-before.json",
+    "npx tsx scripts/backfill-plan-verification-profiles.mts --execute",
+    "npx tsx scripts/backfill-plan-verification-profiles.mts --census census-after.json",
+    "npx tsx scripts/backfill-plan-verification-profiles.mts --diff census-before.json census-after.json",
+    "npx tsx scripts/backfill-plan-verification-profiles.mts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-20T05:35:51Z",
+  "finishedAt": "2026-10-20T05:50:31Z",
+  "plan": "plan-verification-profiles-2026-10-17",
+  "planItem": "P-002",
+  "workItemId": "WI-6554700010017301",
+  "specIds": ["AUTO-BAR-R-6-P-002@3"],
+  "evidencePlane": "live",
+  "summary": "Against the live operator database (papercusp-workspace), every shipped plan's acceptance gate was re-evaluated before and after the one-time harness_plans.verification_profile backfill. The census uses the gate option reevaluateShipped (SHIP_VERDICT_CENSUS_GATE_OPTS), so a shipped plan is evaluated rather than short-circuited to satisfied. Before: 848 shipped plans, 9 satisfied, 0 errors, 0 skipped as already-shipped (the 9 satisfied plans are 7 rubric-template plans and 2 template instances). The backfill then updated 2559 plan rows (executed=true candidates=2559 updated=2559). After: 848 plans, 9 satisfied, 0 errors, 0 skipped as already-shipped. diffShipVerdicts over the two snapshots: compared=848 unchanged=848 changed=0 onlyBefore=0 onlyAfter=0. A second dry run after the backfill found 0 candidates, so the backfill is idempotent on live data.",
+  "assertions": [
+    {
+      "id": "census-before:every-shipped-plan-reevaluated",
+      "passed": true,
+      "evidence": "CENSUS_RESULT path=.papercusp/scratch/wi6554/census-before2.json plans=848 satisfied=9 errors=0 skippedAlreadyShipped=0 seconds=299 (exit 0). Committed copy: docs/evidence/plan-verification-profiles-r6-live-census-2026-10-20/census-before.json, takenAt 2026-10-20T05:40:50.588Z, count 848."
+    },
+    {
+      "id": "backfill:executed-on-live-rows",
+      "passed": true,
+      "evidence": "BACKFILL_RESULT executed=true candidates=2559 updated=2559 (BACKFILL_EXECUTE_EXIT=0)."
+    },
+    {
+      "id": "census-after:every-shipped-plan-reevaluated",
+      "passed": true,
+      "evidence": "CENSUS_RESULT path=.papercusp/scratch/wi6554/census-after2.json plans=848 satisfied=9 errors=0 skippedAlreadyShipped=0 seconds=272 (exit 0). Committed copy: docs/evidence/plan-verification-profiles-r6-live-census-2026-10-20/census-after.json, takenAt 2026-10-20T05:48:19.796Z, count 848."
+    },
+    {
+      "id": "diff:no-ship-verdict-changed",
+      "passed": true,
+      "evidence": "DIFF_RESULT compared=848 unchanged=848 changed=0 onlyBefore=0 onlyAfter=0 (DIFF_EXIT=0). Re-run 2026-10-20T15:03Z over the same two files: identical DIFF_RESULT, exit 0."
+    },
+    {
+      "id": "backfill:idempotent-after-execute",
+      "passed": true,
+      "evidence": "Dry run after the backfill: BACKFILL_RESULT executed=false candidates=0 updated=0 (DRYRUN_AFTER_EXIT=0)."
+    }
+  ],
+  "environment": {
+    "database": "live operator Postgres (getHarnessAdminUrl), workspace papercusp-workspace",
+    "runner": "npx tsx from the repository root of the canonical staging checkout",
+    "workspace": "papercusp-workspace"
+  },
+  "sourceBlobs": {
+    "scripts/backfill-plan-verification-profiles.mts": "ef05979a0563ad1b31ff4cd9677cb681defe4cac",
+    "packages/operator-core/lib/agent-tools/plans/verification-profile-backfill.ts": "eb2f5be1d69ba4c7ff58939f3b782d375ba06ef9",
+    "packages/operator-core/lib/agent-tools/plans/__tests__/verification-profile-backfill.integration.test.ts": "6148e0a91b4fc6b050394c3dcc40b5800c415b5c"
+  },
+  "artifacts": {
+    "docs/evidence/plan-verification-profiles-r6-live-census-2026-10-20/census-before.json": "sha256:86ba89d8ca713c0cbe1a0c1b07cf2187d899c91db2f83c2a8190fdbc0e834a02",
+    "docs/evidence/plan-verification-profiles-r6-live-census-2026-10-20/census-after.json": "sha256:e6857105a0376c1c74023cef839952002dae56c5803a0123690c48d2df5b95c5"
+  },
+  "rerun": {
+    "diff": "npx tsx scripts/backfill-plan-verification-profiles.mts --diff docs/evidence/plan-verification-profiles-r6-live-census-2026-10-20/census-before.json docs/evidence/plan-verification-profiles-r6-live-census-2026-10-20/census-after.json",
+    "expect": "DIFF_RESULT compared=848 unchanged=848 changed=0 onlyBefore=0 onlyAfter=0",
+    "freshCensus": "npx tsx scripts/backfill-plan-verification-profiles.mts --census <out.json> re-measures the live verdicts now; plans shipped after 05:48Z appear as onlyAfter, and gate code changed since then can move verdicts for reasons unrelated to the backfill."
+  },
+  "limitations": [
+    "The census code was committed at 2026-10-20T05:43:08Z in 98d59341a7, and its blobs are unchanged since. The before census ran 05:35-05:41Z from the shared working tree, before that commit; the after census ran after it. Whether the working-tree bytes at 05:35Z equal the committed blobs was not separately recorded.",
+    "The census and backfill ran from the working tree through tsx against the live database, not through the :3170 or :3070 operator process.",
+    "The census re-evaluates the gate in-process; it records each plan's satisfied flag, top code and blocker list, not the full gate payload."
+  ],
+  "instrument": {
+    "path": "scripts/backfill-plan-verification-profiles.mts",
+    "testPath": "packages/operator-core/lib/agent-tools/plans/__tests__/verification-profile-backfill.integration.test.ts",
+    "role": "shipVerdictSnapshot and diffShipVerdicts (verification-profile-backfill.ts) produce each verdict and the comparison. The integration test asserts that the backfill keeps the ship verdict and is idempotent (test_runs 21412963, mutant caught 21413005)."
+  }
+}

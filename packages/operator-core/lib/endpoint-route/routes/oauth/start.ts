@@ -29,12 +29,10 @@ import {
   connectionScopes,
   resolveOAuthProvider,
 } from '../../../integrations/connection-lifecycle';
-import { ensureBuiltinConnectionAdapters } from '../../../integrations/builtin-connection-adapters';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
 async function ensureProvidersLoaded(): Promise<void> {
-  ensureBuiltinConnectionAdapters();
   if (providersLoaded) return;
   await loadAndRegisterProvidersFromDisk();
   providersLoaded = true;

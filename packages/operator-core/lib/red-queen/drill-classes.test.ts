@@ -23,6 +23,7 @@ import {
 import { DRILL_CLASSES, drillClassById, engineDeathSnapshot, stampDrillSignals } from './drill-classes';
 import { detectRoutineEngineDeath } from './engine-death';
 import { SANDBOX_HARNESS_SLUG, SANDBOX_WORKSPACE_ID } from './types';
+import { triageIdea } from '../harness/improvements/triage';
 
 /** Recording fake: a postgres tagged-template that logs text+params and returns []. */
 function recordingSql() {
@@ -46,6 +47,41 @@ describe('the drill registry', () => {
     expect(new Set(DRILL_CLASSES.map((c) => c.id)).size).toBe(DRILL_CLASSES.length);
     expect(drillClassById('smoke-fail')?.collectorFamily).toBe('smoke-fail');
     expect(drillClassById('routine-engine-death')?.collectorFamily).toBe('out-of-band');
+  });
+
+  it('pins infra drill ground truth to the policy gate decision', async () => {
+    const { sql } = recordingSql();
+    const cases = [
+      {
+        id: 'fire-circuit-open',
+        watchdogKey: 'fire-circuit-open:circuit:red-queen-sandbox:red-queen-drill-worker',
+        tier: 'human' as const,
+        tierReason: 'infra-environment — human gate',
+      },
+      {
+        id: 'routine-engine-death',
+        watchdogKey: 'routine-engine-death:engine:red-queen-sandbox',
+        tier: 'human' as const,
+        tierReason: 'touches protected path "packages/operator-core/lib/dbos/**"',
+      },
+    ] as const;
+
+    for (const c of cases) {
+      const planted = await drillClassById(c.id)!.plant(sql, { drillId: `oracle-${c.id}` });
+      const triage = triageIdea({
+        id: `oracle-${c.id}`,
+        kind: 'bug',
+        title: c.id,
+        scope: 'operator',
+        tier: c.tier,
+        tierReason: c.tierReason,
+        score: 1,
+        ageDays: 0,
+        watchdogKey: c.watchdogKey,
+      });
+      expect(planted.expectedDecision).toBe('gate');
+      expect(triage.decision).toBe(planted.expectedDecision);
+    }
   });
 });
 

@@ -136,6 +136,39 @@ function descriptor(identity: Record<string, unknown>): ProviderDescriptor {
 
 const GRAPHQL_BODY = JSON.stringify({ query: '{ organization { id name } }' });
 
+/**
+ * provider-adapters-to-packages-2026-10-11 D-036/D-037: a package may declare the consumer
+ * domains whose accounts are personal (kept out of the relationship graph), and the first-party
+ * plugin ids whose stored credentials the host adopts into the package's credential group.
+ */
+describe('oauth.personalAccountDomains and oauth.legacyCredentialPlugins', () => {
+  const withOAuth = (extra: Record<string, unknown>): ProviderDescriptor => {
+    const d = descriptor({ url: 'https://api.example.com/me', idField: 'id' });
+    return { ...d, oauth: { ...d.oauth!, ...extra } as NonNullable<ProviderDescriptor['oauth']> };
+  };
+
+  it('accepts lower-case domain lists and plain plugin ids', () => {
+    expect(validateProviderDescriptor(withOAuth({ personalAccountDomains: ['gmail.com', 'googlemail.com'] }))).toEqual([]);
+    expect(validateProviderDescriptor(withOAuth({ legacyCredentialPlugins: ['google-workspace'] }))).toEqual([]);
+  });
+
+  it.each([[], ['Gmail.com'], ['gmail'], ['gmail.com', ''], 'gmail.com', [7], ['-bad.com'], ['bad-.com']])(
+    'refuses personalAccountDomains %j',
+    (personalAccountDomains) => {
+      expect(validateProviderDescriptor(withOAuth({ personalAccountDomains })))
+        .toContain('provider.oauth.personalAccountDomains must be a non-empty list of lower-case domain names');
+    },
+  );
+
+  it.each([[], ['provider:google'], ['Google-Workspace'], ['-x'], 'google-workspace', [null], ['a'.repeat(65)]])(
+    'refuses legacyCredentialPlugins %j',
+    (legacyCredentialPlugins) => {
+      expect(validateProviderDescriptor(withOAuth({ legacyCredentialPlugins })))
+        .toContain('provider.oauth.legacyCredentialPlugins must be a non-empty list of lower-case plugin ids (never provider:*)');
+    },
+  );
+});
+
 describe('package-owned sync support', () => {
   it('accepts existing, readable and write-only providers', () => {
     const d = descriptor({ url: 'https://api.example.com/me', idField: 'id' });
