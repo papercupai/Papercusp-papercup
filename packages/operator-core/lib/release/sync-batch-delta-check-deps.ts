@@ -124,8 +124,9 @@ const execFileAsync = ((...args: unknown[]) =>
  *  `execFile` REJECTS on a non-zero exit, but a non-zero exit is a MEASUREMENT here
  *  (a red), not a failure to measure. So the catch splits them the same way the old
  *  `spawnSync` branch did: a numeric `code` on a child that was not killed is a real
- *  exit status; ENOENT (string code) and a timeout/signal kill (`killed`) are `null`. */
-async function run(
+ *  exit status; ENOENT (string code) and a timeout/signal kill (`killed`) are `null`.
+ *  Exported for the periodic full run (P-013), which runs its legs the same way. */
+export async function run(
   cmd: string,
   args: string[],
   opts: { cwd: string; timeoutMs: number },

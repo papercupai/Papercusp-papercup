@@ -639,6 +639,11 @@ import './frozen-candidate-drift-sweep-action';
 // Skips under host load and while a checkpoint suite runs; observer only — no revert, no gate
 // fire, no spawn. Seeded ACTIVE (seed-sync-batch-delta-check-routine.ts).
 import './sync-batch-delta-check-action';
+// green-main-ratchet-convergence-2026-10-17 P-013: `system:periodic-full-run` — the whole
+// suite of main at least every 6h in the reserved slice; each new failure is attributed to a
+// single promotion by bisection and routed fix -> eject -> downgrade as ONE deduped bug.
+// Observer only. Seeded ACTIVE (seed-periodic-full-run-routine.ts).
+import './periodic-full-run-action';
 // green-main-cycle-time-2026-10-08 P-028: `system:sync-batch-lint-guards` — the gate's
 // repo-wide lint guards per git-sync batch (every 5 min, its own row so the delta check's
 // affected leg never delays it). Each guard is diffed against its own last measurement;

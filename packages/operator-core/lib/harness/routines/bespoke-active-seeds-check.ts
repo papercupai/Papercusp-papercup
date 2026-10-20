@@ -217,6 +217,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // spend entry and the seed script — the registry cross-checks red the fleet gate on a
   // half-landed pair, and this registry exists to catch "the seed script nobody ever ran".
   { name: 'sync-batch-delta-check', seedScript: 'seed-sync-batch-delta-check-routine.ts' },
+  // green-main-ratchet-convergence-2026-10-17 P-013: action, import, spend entry, seed script
+  // and this row landed together.
+  { name: 'periodic-full-run', seedScript: 'seed-periodic-full-run-routine.ts' },
   // green-main-cycle-time-2026-10-08 P-028. Same-change rule: action, import, spend entry,
   // seed script and this row land together.
   { name: 'sync-batch-lint-guards', seedScript: 'seed-sync-batch-lint-guards-routine.ts' },

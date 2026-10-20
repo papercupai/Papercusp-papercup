@@ -5335,6 +5335,19 @@ export async function buildLeaderBrief(
     );
     if (campaignRead) campaign = campaignRead;
   }
+  // bug-inflow-one-problem-one-row-2026-10-18 P-007 / R-6: issue-family rows filed per
+  // day by source next to closes per day, read from the stored work.bugInflow rollup
+  // (one SELECT on bug_inflow_daily, never a live aggregate). null = the read failed or
+  // timed out; an unmeasured or stale rollup says so inside the line itself.
+  const bugInflow = await boundedLeaderBriefRead(
+    'bug-inflow',
+    async () => {
+      const { readBugInflowDaily, formatBugInflowLine } = await import('../../harness/improvements/bug-inflow');
+      const reading = await readBugInflowDaily(workspaceId);
+      return { cell: 'work.bugInflow', assessment: reading.assessment, line: formatBugInflowLine(reading) };
+    },
+    null,
+  );
   return {
     data: {
       ok: true,
@@ -5358,6 +5371,7 @@ export async function buildLeaderBrief(
       ...(blockedAt ? { blockedAt } : {}),
       summary: {
         ...summary,
+        bugInflow,
         darkFleetAlert: darkFleetAlert.alert,
         fleetExecutionCollapseAlert: executionCollapseAlert.alert,
         fleetExecutionCollapse: {

@@ -925,6 +925,7 @@ import './improvements/triage';
 import './improvements/resolve';
 import './improvements/watchdog-status';
 import './improvements/keyless-digest';
+import './improvements/bug-inflow';
 import './improvements/learning-loops';
 import './improvements/set-watchdog-tunables';
 // EI-11401 — one effective-status join across scheduled-watchdog config,

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 978,
+  "count": 979,
   "tools": [
     {
       "name": "ablation:report",
@@ -16267,6 +16267,44 @@
         "when": "Use mode:'claim' with an id when a directed review must take one known pending item without consuming unrelated review work. Use mode:'claim-next' only to take the next pending change/feature. Then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item. Use mode:'adopt' (id) or 'adopt-next' to take a content revision whose original submitter is provably gone, then revise and resubmit it.",
         "notWhen": "Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.",
         "chaining": "improvements:agent-review { mode:'claim', id, harness? } (directed) OR { mode:'claim-next', harness? } (queue order) → use returned gradeWith.ideaId or ledgerIdeaId with blender:grade-idea { ideaId, grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id }."
+      }
+    },
+    {
+      "name": "improvements:bug-inflow",
+      "http": {
+        "path": "/api/agent-tools/improvements/bug-inflow",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Issue-family rows filed per UTC day by source vs closed per day by status, read from the stored daily rollup the improvement watchdog writes. Read-only; reports stale or missing days.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "merge-resolver",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "To see whether bug inflow outpaces closes, and which source files most. Prefer state:read { cell:\"work.bugInflow\" }.",
+        "notWhen": "You need the rows themselves — work_items:list or issues:list."
       }
     },
     {

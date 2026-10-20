@@ -2954,6 +2954,65 @@ export const VERIFICATION_HEALTH_CELL: CellSpec = {
     '{ health: { coverageByCohort, activePlans, activePlansWithContract, activeClauses, activeClausesEvidenceBound, evidenceBoundShare, uncoveredActivePlans, uncoveredActivePlansRaw, closureReasonMissing, triageGaps, activePlansConsidered, unreachablePlans, awaitingAcceptancePlans, awaitingAcceptanceAgeDays, staleAcceptanceSurfaced, staleAcceptanceNeverSurfaced, staleAcceptanceUndispositioned, acceptancePlansConsidered, staleAcceptanceScopeExcluded, measurementErrors, forcedShips, valBlockPlans, breaches, breachCodes, unmeasuredCodes }, assessments: { verificationHealth }, thresholds, scope, measuredAt }',
 };
 
+/**
+ * work.bugInflow — issue-family rows filed per UTC day by source vs closed per day by
+ * status (bug-inflow-one-problem-one-row-2026-10-18 P-007 / R-6, owner directive #1990).
+ * R-6 requires the value to come from STORED rows, not a live aggregate: the
+ * improvement-watchdog tick upserts harness_shared.bug_inflow_daily (migration 1535)
+ * and this cell's resolver only SELECTs it.
+ */
+export const WORK_BUG_INFLOW_CELL: CellSpec = {
+  cell: 'work.bugInflow',
+  registeredOn: '2026-10-20',
+  owner: 'bug-inflow-one-problem-one-row-2026-10-18',
+  headline: 'inflow',
+
+  assessment: {
+    path: 'assessments.bugInflow',
+    codes: {
+      measured: {
+        meaning: 'Today has a stored row and the newest row was computed within the staleness bound; the totals cover every stored day in the window.',
+        safeAction: 'Compare inflow.totals.filed with inflow.totals.closed; a positive net means filing outpaces closing. inflow.totals.filedBySource names who files most.',
+      },
+      stale: {
+        meaning: 'Stored rows exist, but today has no row or the newest row is older than the staleness bound; inflow.reasons says which. Days absent from storage are listed in inflow.missingDays, not counted as zero.',
+        safeAction: 'Treat the totals as a floor for the missing period. Check improvements:watchdog-status for whether the watchdog tick is running.',
+      },
+      unmeasured: {
+        meaning: 'No stored row exists in the window: the writer has never run for this workspace, or migration 1535 is not applied.',
+        safeAction: 'Do not read 0 as "no inflow". Check improvements:watchdog-status and db:migrations { like: "1535" }.',
+      },
+    },
+    evidence: ['inflow.reasons', 'inflow.missingDays', 'inflow.computedAt'],
+  },
+
+  nullable: false,
+  whyTotal:
+    'readBugInflowDaily() returns a reading or throws: it is one SELECT on bug_inflow_daily, and shapeBugInflow() turns every outcome, including zero rows, into an explicit assessment (measured | stale | unmeasured). A missing day is reported in missingDays, never filled with 0.',
+
+  callerRelativity: { kind: 'global' },
+
+  provenance: {
+    obtainedBy:
+      'readBugInflowDaily(workspaceId) — SELECT from harness_shared.bug_inflow_daily, which refreshBugInflowDaily() upserts from the improvement-watchdog tick (two bounded index range scans over work_items for today and yesterday, issue family, observation lane excluded)',
+    liveExercised: true,
+    evidence:
+      'Ran against the operator DB (:5432, papercusp-workspace) at 2026-10-20T04:10Z (.papercusp/scratch/su-fa17-bug-inflow-live.mts, WI-6554700010017607): applyPendingMigrationsNow applied 1535; a 30-day backfill took 2.1s, the two-day tick refresh 20ms, the read 4ms; assessment measured; 7d filed 10590 (watchdog 5498, role:su 2541, unattributed 1252) vs closed 10098, net +492. Positive control: today\'s stored filed_total 57 equalled a direct count of 57. Fixtures: harness/improvements/bug-inflow.test.ts.',
+  },
+
+  resolver: 'readBugInflowDaily() @ packages/operator-core/lib/harness/improvements/bug-inflow.ts — via improvements:bug-inflow (agent-tools/improvements/bug-inflow.ts)',
+
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'improvements:bug-inflow', path: 'inflow' },
+  materiality: {
+    path: 'assessments.bugInflow',
+    why: 'counts move on every filing and close, which is noise for a subscriber; what needs action is the writer falling behind (measured to stale or unmeasured). Threshold subscribers should use state:subscribe on inflow.totals.net instead.',
+  },
+  shape:
+    '{ inflow: { assessment, reasons, windowDays, days: [{ day, filedTotal, filedBySource, closedTotal, closedByStatus, net }], missingDays, totals: { filed, closed, net, filedBySource, closedByStatus }, computedAt, ageMs, storage }, assessments: { bugInflow }, line, measuredAt }',
+};
+
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
@@ -2986,6 +3045,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   WORK_SCOPE_CELL,
   OWNER_DIRECTIVE_STATUS_CELL,
   VERIFICATION_HEALTH_CELL,
+  WORK_BUG_INFLOW_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry
