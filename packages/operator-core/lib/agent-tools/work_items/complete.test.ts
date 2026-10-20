@@ -4927,6 +4927,59 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.skippedTestsWarning).toBeUndefined();
     });
 
+    it('does NOT warn for historical reproduction skips followed by a covering unfiltered command record (EI-26150517852473091)', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed it',
+          testsRun: [
+            {
+              command: 'npm run test:file -- lib/foo.test.ts lib/bar.test.ts -- -t "request cancellation"',
+              testRunIds: [21278811, 21278812],
+              result: 'Before production change: 6 failed/26 skipped.',
+            },
+            {
+              command: 'PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- lib/foo.test.ts lib/baz.test.ts lib/bar.test.ts',
+              testRunIds: [21278828, 21278829, 21278830],
+              result: '44 passed/0 failed/0 skipped; exec23901 drained exit0.',
+            },
+          ],
+          testResult: '44/44 pass',
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.skippedTestsWarning).toBeUndefined();
+    });
+
+    it.each([
+      ['an unrelated file', 'npm run test:file -- lib/other.test.ts', '44 passed/0 failed/0 skipped'],
+      ['an incomplete file cohort', 'npm run test:file -- lib/foo.test.ts', '44 passed/0 failed/0 skipped'],
+      ['another filtered run', 'npm run test:file -- lib/foo.test.ts lib/bar.test.ts -- -t "request cancellation"', '44 passed/0 failed/0 skipped'],
+      ['a failing final run', 'npm run test:file -- lib/foo.test.ts lib/bar.test.ts', '44 passed/1 failed/0 skipped'],
+      ['a final run with skips', 'npm run test:file -- lib/foo.test.ts lib/bar.test.ts', '43 passed/0 failed/1 skipped'],
+      ['an unmeasured skip count', 'npm run test:file -- lib/foo.test.ts lib/bar.test.ts', '44 passed/0 failed'],
+    ])('STILL warns when historical reproduction evidence is followed by %s (EI-26150517852473091)', async (_label, command, result) => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed it',
+          testsRun: [
+            {
+              command: 'npm run test:file -- lib/foo.test.ts lib/bar.test.ts -- -t "request cancellation"',
+              result: 'Before production change: 6 failed/26 skipped.',
+            },
+            { command, result },
+          ],
+          testResult: '44/44 pass',
+        },
+      });
+      expect(r.skippedTestsWarning).toMatch(/26 test\(s\) SKIPPED/);
+    });
+
     it('STILL warns when a name-filter run has no clean unfiltered counterpart', async () => {
       getWorkItem.mockResolvedValue(item);
       const r = await one({

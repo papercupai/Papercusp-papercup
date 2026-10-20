@@ -1625,26 +1625,7 @@ export function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean
   const provenance = row.testRunProvenance;
   const mutation = provenance?.mutation;
   const baseline = provenance?.mutationBaseline;
-  const measurement = mutation === undefined
-    ? null
-    : repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
-  // Descriptors use the subject's own Git root, while a multi-repository
-  // measurement uses workspace paths. Resolve only one pinned source whose
-  // repository and exact bytes agree; a suffix or fixture match is insufficient.
-  // This normalizes identity only: the independent freshness verdict still applies.
-  const pin = readMeasurementPin(row.details);
-  const nestedSubjects = mutation !== undefined && measurement?.success
-    ? pin?.files.filter(file => file.dimension === 'source' && !file.rootHarnessSlug &&
-      file.repo !== '.' && file.path === `${file.repo}/${mutation.subjectPath}` &&
-      file.sha256 === mutation.subjectBeforeSha256 &&
-      measurement.data.sourcePaths.includes(file.path) &&
-      pin.repos.some(repo => repo.repo === file.repo && !repo.rootHarnessSlug && repo.gitlink !== null)) ?? []
-    : [];
-  const mutationSubjectMeasured =
-    mutation !== undefined &&
-    measurement !== null &&
-    measurement.success &&
-    (measurement.data.sourcePaths.includes(mutation.subjectPath) || nestedSubjects.length === 1);
+  const mutationSubjectMeasured = mutation !== undefined && isMutationSubjectMeasured(row, mutation);
   const declaredCases = detailsOf(row).testCases ?? [];
   // A focused runner counts filtered-out cases as skipped. Credit only cases the
   // calibration row actually measured passing; an incomplete list never proves
@@ -1660,6 +1641,58 @@ export function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean
     CALIBRATION_LEGS.includes(baseline.mutation.leg) &&
     baseline.mutation.probeInvocationId === mutation.probeInvocationId &&
     baseline.mutation.subjectBeforeSha256 === mutation.subjectBeforeSha256;
+}
+
+/** A descriptor's subject must be in the measured source set, directly or via one pinned submodule. */
+function isMutationSubjectMeasured(row: SpecEvidenceForAdequacy, mutation: MutationDescriptor): boolean {
+  const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+  if (!measurement.success) return false;
+  if (measurement.data.sourcePaths.includes(mutation.subjectPath)) return true;
+  // Descriptors use the subject's own Git root, while a multi-repository
+  // measurement uses workspace paths. Resolve only one pinned source whose
+  // repository and exact bytes agree; a suffix or fixture match is insufficient.
+  // This normalizes identity only: the independent freshness verdict still applies.
+  const pin = readMeasurementPin(row.details);
+  const nestedSubjects = pin?.files.filter(file => file.dimension === 'source' && !file.rootHarnessSlug &&
+    file.repo !== '.' && file.path === `${file.repo}/${mutation.subjectPath}` &&
+    file.sha256 === mutation.subjectBeforeSha256 &&
+    measurement.data.sourcePaths.includes(file.path) &&
+    pin.repos.some(repo => repo.repo === file.repo && !repo.rootHarnessSlug && repo.gitlink !== null)) ?? [];
+  return nestedSubjects.length === 1;
+}
+
+/** Explain a mutation-specific unknown without implying its canonical status/counts were absent. */
+function mutationExecutionLinkageUnknown(row: SpecEvidenceForAdequacy): string | null {
+  const mutation = row.testRunProvenance?.mutation;
+  if (!mutation || (row.evidenceKind !== 'mutation' && !isCanonicalMutantCounterexample(row)) ||
+      hasLinkedMutationBaseline(row)) return null;
+  const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+  const sourcePaths = measurement.success ? measurement.data.sourcePaths : [];
+  const subjectDetail = isMutationSubjectMeasured(row, mutation)
+    ? `subjectPath ${JSON.stringify(mutation.subjectPath)} is measured, but its same-invocation passing baseline is unverified`
+    : `mutant subjectPath ${JSON.stringify(mutation.subjectPath)} is missing from measured sourcePaths ${JSON.stringify(sourcePaths)}`;
+  return `mutationLinkage=unverified: ${subjectDetail}`;
+}
+
+function executionIntegrityUnknownEvidence(
+  clause: SpecClauseRevision,
+  rows: SpecEvidenceForAdequacy[],
+): string {
+  const mutationLinkage: string[] = [];
+  const otherIncomplete: SpecEvidenceForAdequacy[] = [];
+  for (const row of rows) {
+    const detail = mutationExecutionLinkageUnknown(row);
+    if (detail) mutationLinkage.push(detail);
+    else otherIncomplete.push(row);
+  }
+  return [
+    ...(mutationLinkage.length
+      ? [`Mutation proof linkage is unverified for ${clauseIdentity(clause)}: ${mutationLinkage.join('; ')}.`]
+      : []),
+    ...(otherIncomplete.length
+      ? [`Canonical execution details or mutation catch linkage are incomplete for ${clauseIdentity(clause)}.`]
+      : []),
+  ].join(' ');
 }
 
 function mutationProvenanceDescription(row: SpecEvidenceForAdequacy): string[] {
@@ -3709,10 +3742,11 @@ export function evaluateSpecTestAdequacy(input: {
             ? {
                 rating: 'unknown',
                 evidence: evidenceWithBindings(
-                  `Executable bindings have no complete canonical test_runs status/count verdict for ${clauseIdentity(clause)}.`,
+                  executionIntegrityUnknownEvidence(clause, incompleteMeasuredExecution),
                   incompleteMeasuredExecution,
                 ),
-                suggestion: 'Attach a testRunId whose canonical status and execution_details establish a passing run (or a measured killed mutation).',
+                suggestion:
+                  'Inspect canonical execution_details and, for mutation evidence, verify the measured subject and same-invocation passing baseline are linked.',
             }
             : successfulExecution
               ? {

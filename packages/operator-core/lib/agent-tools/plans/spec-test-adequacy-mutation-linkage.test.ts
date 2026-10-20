@@ -59,6 +59,10 @@ function rating(row: SpecEvidenceForAdequacy) {
     .ratings.falsifiability;
 }
 
+function evaluate(row: SpecEvidenceForAdequacy) {
+  return evaluateSpecTestAdequacy({ clause, evidence: [proof('test'), row], classRef: 'plan-class-feature-ship' });
+}
+
 describe('ledger-derived mutation catches (R-7)', () => {
   it.each(['baseline', 'copy-baseline'])('credits a named failed case with a linked %s pass', leg => {
     const row = proof('mutation'); row.testRunProvenance!.mutationBaseline!.mutation.leg = leg;
@@ -97,6 +101,20 @@ describe('ledger-derived mutation catches (R-7)', () => {
     (row.details.currentMeasurement as { fixturePaths?: string[] }).fixturePaths = [fixturePath];
     expect(rating(row).rating).toBe('unknown');
     expect(rating(row).evidence).toContain('mutationLinkage=unverified');
+  });
+
+  it('identifies a missing mutant subject path as unverified mutation linkage', () => {
+    const row = proof('mutation');
+    row.details.currentMeasurement = {
+      schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/other.ts'], testPaths: [file],
+    };
+
+    const result = evaluate(row).ratings['execution-integrity'];
+    expect(result.rating).toBe('unknown');
+    expect(result.evidence).toContain('mutationLinkage=unverified');
+    expect(result.evidence).toContain('mutant subjectPath "src/guard.ts" is missing from measured sourcePaths ["src/other.ts"]');
+    expect(result.evidence).not.toContain('no complete canonical test_runs status/count verdict');
+    expect(result.suggestion).toContain('verify the measured subject and same-invocation passing baseline');
   });
 
   function nestedSourceProof() {

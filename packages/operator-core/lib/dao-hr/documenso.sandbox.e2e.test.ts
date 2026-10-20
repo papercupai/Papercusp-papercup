@@ -22,9 +22,10 @@ describe.skipIf(!enabled)('P006 real Documenso sandbox — authenticated sequent
     expect(new URL(mailUrl).hostname).toBe('127.0.0.1');
     expect(runtime.appUrl).toBe(baseUrl);
     const suffix = randomUUID();
+    // Exercise the same provider identity labels as the combined native boot.
     const signers: [SigningPerson, SigningPerson] = [
-      { personId: 'PER-test-candidate', name: 'DAO HR test candidate', email: 'candidate-' + suffix + '@daohr.example.test' },
-      { personId: 'PER-test-company', name: 'DAO HR test company signer', email: 'company-' + suffix + '@daohr.example.test' },
+      { personId: 'PER-test-candidate', name: 'Native candidate', email: 'candidate-' + suffix + '@daohr.example.test' },
+      { personId: 'PER-test-company', name: 'Native countersigner', email: 'company-' + suffix + '@daohr.example.test' },
     ];
     const browser = await chromium.launch({ headless: true });
     const contexts: BrowserContext[] = [];

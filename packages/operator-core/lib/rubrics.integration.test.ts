@@ -3685,6 +3685,37 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(Number(row!.acceptance_bar_rubric_revision)).toBe(after.revision);
   });
 
+  it('WI-6554700010018006: a check-only requirement patch re-renders the plan block the closure guard parses', async () => {
+    // Observed live: an amend of requirement.verification.check.files applied on a build without
+    // the apply-time re-render left the plan block naming the OLD file, and the spec-conformance
+    // closure guard (which parses the PLAN block, conformance-contract.ts bar.criterion.check)
+    // refused completion with conformance_done_when_not_passing against a file that never existed.
+    const seeded = await explicitAmendmentSubject('check-files-render-subject');
+    const { parseRequirementBars } = await import('./acceptance-bar-seed');
+    const key = seeded.rubric.criteria[0]!.key;
+    const files = ['packages/operator-core/lib/acceptance-bar-amendment-requirements-drift.test.ts'];
+    const seededBlock = parseRequirementBars(seeded.content);
+    expect(seededBlock.ok && (seededBlock.bars[0]!.criterion?.check as { files?: string[] } | undefined)?.files)
+      .not.toEqual(files);
+    const amendment = { rubricId: seeded.rubricSlug, actorId: 'check-author', reason: 'Name the test that proves the outcome.',
+      expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision,
+      requirement: { key, verification: { check: { kind: 'tests' as const, files } } } };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ requirementsDrift: { rerenderedOnApply: ['R-1'] } });
+    const after = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+    expect(after.criteria[0]!.check).toMatchObject({ kind: 'tests', files });
+    const [row] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const parsed = parseRequirementBars(row!.content);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.bars[0]!.criterion?.check).toMatchObject({ kind: 'tests', files });
+      expect(parsed.bars[1]!.criterion?.check).toEqual(seeded.rubric.criteria[1]!.check);
+    }
+    expect(Number(row!.version)).toBe(seeded.subjectRevision + 1);
+    expect(Number(row!.acceptance_bar_rubric_revision)).toBe(after.revision);
+  });
+
   it('EI-25970739425963382: renders method edits beside a meaning change while only that meaning changes BAR identity', async () => {
     const seeded = await explicitAmendmentSubject('mixed-render-subject');
     const method = 'Run the second current fixture and retain its result.';

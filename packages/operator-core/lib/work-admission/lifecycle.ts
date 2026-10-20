@@ -84,6 +84,7 @@ export interface LifecycleWorkItem {
   state: string;
   assignee: string | null;
   closedAt: string | null;
+  completionAuthority?: string | null;
   payload: unknown;
 }
 
@@ -296,6 +297,15 @@ function completionSummaryOf(payload: unknown): string {
   return typeof summary === 'string' ? summary.trim() : '';
 }
 
+/** A verified existing resolution closes its source without claiming a newly delivered fix. */
+function isVerifiedExistingResolution(item: LifecycleWorkItem): boolean {
+  if (item.state !== 'dropped' || item.completionAuthority !== 'committed') return false;
+  if (!item.payload || typeof item.payload !== 'object') return false;
+  const evidence = (item.payload as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
+  return Boolean(evidence && typeof evidence === 'object'
+    && (evidence as Record<string, unknown>).workOutcome === 'verified-existing');
+}
+
 /**
  * The question a held item is waiting on, from its active blockers. Null when the hold is
  * Papercusp's own source-closed hold: the source closed the ticket, so telling it is pointless.
@@ -329,11 +339,14 @@ export function planLifecycleWrites(
         : `Tested fix for ${item.id}: ${pr.url}\nPassed the pot checks at ${pr.testedSha}. Awaiting the PR merge and its exact merge-result checks.`,
     });
   }
-  if (COMPLETED_STATES.has(item.state)) {
+  const verifiedExisting = isVerifiedExistingResolution(item);
+  if (COMPLETED_STATES.has(item.state) || verifiedExisting) {
     if (lifecycle.complete) {
       const stamp = item.closedAt ?? 'closed';
       const summary = completionSummaryOf(item.payload);
-      const head = `Completed in Papercusp (${item.id}).`;
+      const head = verifiedExisting
+        ? `Verified existing resolution in Papercusp (${item.id}).`
+        : `Completed in Papercusp (${item.id}).`;
       const text = summary ? `${head}\n\n${clip(summary, ADMISSION_WRITE_BACK_MAX - head.length - 2)}` : head;
       writes.push({ key: `complete:${stamp}`, action: 'comment', text });
       writes.push({ key: `complete:${stamp}:move`, action: 'transition', toCategory: lifecycle.completeCategory });

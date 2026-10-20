@@ -27,14 +27,32 @@
  * The spec-test-adequacy cases call the pure evaluator, but the `codeDeliverable` they pass is
  * READ from the plan in Postgres by `readClauseCodeDeliverables`, the function both completion
  * and ship use. That read is the part a unit test cannot see.
+ *
+ * R-19 (same item), last describe: the mixed end-to-end flow. A CODING plan whose code item
+ * cites code and whose declared doc item cites only an artifact passes the real plans:audit and
+ * the real plans:set-plan-status shipped. Its control leaves the doc item undeclared, so the
+ * coding default makes it a code item, and the same artifact citation no longer ships it.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+// The throwaway harness is registered without a source root (same as mixed-plan-ship), so root
+// SELECTION points at the canonical repo through the function's own no-harness branch. Citation
+// RESOLUTION against that root stays real.
+vi.mock('../../../plan-audits', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../plan-audits')>();
+  return {
+    ...actual,
+    repoCitationContextForHarness: (_harnessSlug: unknown, citations?: Parameters<typeof actual.repoCitationContextForHarness>[1]) =>
+      actual.repoCitationContextForHarness(null, citations),
+  };
+});
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import '../new';
 import '../add-item';
 import '../set-status';
+import '../set-plan-status';
 import '../audit';
+import { ensureFirstPartyRubricsSeeded, __resetRubricSeedStateForTests } from '../../../rubrics';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { evaluatePlanAcceptanceGate } from '../../../plan-acceptance-gate';
 import { clauseDeliverableKey, readClauseCodeDeliverables } from '../../../plan-verification-escape';
@@ -176,6 +194,23 @@ const PROFILE_INDEPENDENT = new RegExp(
     ')$|^(blind_review_|independent_verification_)',
 );
 
+/**
+ * The code-truth refusals (JSON) that make a done code item unshippable. plans:audit records no
+ * entry for a code item cited only with generic evidence, so the gate may report the item as
+ * audit_coverage_stale ('no audit entry') rather than code_deliverable_unverified. Either way it
+ * is refused by name.
+ */
+const CODE_TRUTH = new Set([
+  'code_deliverable_unverified', 'implemented_without_code', 'audit_coverage_stale',
+  'audit_citations_unresolved', 'acceptance_unaudited',
+]);
+async function codeTruthRefusals(slug: string): Promise<string> {
+  const verdict = await runWithWorkspace(WS, () =>
+    evaluatePlanAcceptanceGate(slug, { harnessSlug: HARNESS, collectAllBlockers: true }));
+  const list = verdict.satisfied ? [] : (verdict.blockers ?? []);
+  return JSON.stringify(list.filter((b) => CODE_TRUTH.has(b.code)).map((b) => ({ code: b.code, message: b.message })));
+}
+
 async function codeDeliverableOf(slug: string, itemId: string): Promise<boolean | undefined> {
   const map = await runWithWorkspace(WS, () =>
     readClauseCodeDeliverables({ harnessSlug: HARNESS, workspaceId: WS, clauses: [{ planSlug: slug, planItemId: itemId }] }));
@@ -192,7 +227,9 @@ function clause(slug: string, over: Partial<SpecClauseRevision> = {}): SpecClaus
     planItemId: 'P-001',
     behavior: 'The supplier inventory lists every active contract.',
     behaviorClass: 'happy-path',
-    requiredEvidence: ['integration fixture'],
+    // No fixture named: 'integration fixture' declares fixture use, which makes fixture
+    // calibration applicable whatever the deliverable is (see spec-test-adequacy.test.ts P-004).
+    requiredEvidence: ['reviewed runbook'],
     requiredTestLayers: ['integration'],
     mutationRequired: false,
     lifecycleStatus: 'active',
@@ -212,13 +249,14 @@ function clause(slug: string, over: Partial<SpecClauseRevision> = {}): SpecClaus
 /** The evidence a non-code deliverable honestly has: a manual observation, no test run. */
 function manualEvidence(slug: string, specId = 'SPEC-P-001'): SpecEvidenceForAdequacy {
   return {
-    workItemId: 'WI-NONCODE-FIXTURE',
+    // A real work-item id: lineage is durable only for a ref matching the durable work-item form.
+    workItemId: 'WI-6554700010017307',
     planSlug: slug,
     specId,
     specRevision: 1,
     specFingerprint: 'sha256:noncode-v1',
     evidenceKind: 'manual',
-    evidenceRef: 'work-item:WI-NONCODE-FIXTURE',
+    evidenceRef: 'work-item:WI-6554700010017307',
     fingerprints: {
       sourceFingerprint: 'git:abc', testFingerprint: null, fixtureFingerprint: null,
       rubricFingerprint: null, environmentFingerprint: null,
@@ -231,7 +269,18 @@ function manualEvidence(slug: string, specId = 'SPEC-P-001'): SpecEvidenceForAde
         oracleIndependent: true, collected: true, skipped: false, executed: true, outcome: 'passed', targeted: true,
       },
     },
-  } as SpecEvidenceForAdequacy;
+    currentness: {
+      comparisonSupplied: true,
+      provenance: 'server-measured',
+      overall: 'current',
+      dimensions: {
+        spec: 'current', source: 'current', test: 'current', fixture: 'current',
+        rubric: 'current', environment: 'current', coverageEvidence: 'current', testRun: 'current',
+      },
+      staleReasons: [],
+      unknownReasons: [],
+    },
+  };
 }
 
 beforeAll(async () => {
@@ -317,10 +366,11 @@ describe('ship gate: non-code outcomes are not asked for code containment', () =
     ]);
     const audit = await auditCompletion(slug, { 'P-001': [EXTERNAL], 'P-002': [EXTERNAL] });
     if (audit.ok === true) {
-      const { codes, messages } = await blockerCodes(slug);
-      expect(codes, messages).toContain('code_deliverable_unverified');
-      expect(messages).toContain('P-002');
-      expect(messages).not.toMatch(/P-001[^0-9][^"]*code_deliverable_unverified/);
+      const refusals = await codeTruthRefusals(slug);
+      expect(refusals, refusals).not.toBe('[]');
+      expect(refusals).toContain('P-002');
+      // CONTROL inside the case: the undeclared runbook item on the same evidence is not refused.
+      expect(refusals).not.toMatch(/P-001\b/);
     } else {
       // The audit refuses generic-only evidence for a declared code deliverable (D-006).
       expect(brief(audit)).toMatch(/P-002/);
@@ -435,5 +485,83 @@ describe('plans:add-item declares a non-code deliverable at definition time', ()
     expect(await codeDeliverableOf(slug, 'P-001')).toBe(false);
     // CONTROL: the undeclared sibling keeps the coding default.
     expect(await codeDeliverableOf(slug, 'P-002')).toBe(true);
+  });
+});
+
+/**
+ * R-19 (P-007): the mixed end-to-end flow. A CODING plan whose code item cites code and whose
+ * declared doc item cites only an artifact goes through the real plans:audit and the real
+ * plans:set-plan-status shipped. Same ceremony switches as general-plan-ship's 'ships once the
+ * profile-independent ceremony is out of the way': the acceptance-rubric gate is turned off
+ * because grading is profile-independent and covered there (R-12).
+ */
+describe('R-19: a coding plan whose doc items cite artifacts ships', () => {
+  const RUBRIC_GATE_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_ACCEPTANCE_RUBRIC_COMPLETION_GATE';
+  const REAL_CODE: Citation = { kind: 'code', path: 'packages/operator-core/lib/plan-acceptance-gate.ts' };
+  let prevRubricGateEnv: string | undefined;
+
+  beforeAll(async () => {
+    prevRubricGateEnv = process.env[RUBRIC_GATE_ENV];
+    __resetRubricSeedStateForTests();
+    await runWithWorkspace(WS, () => ensureFirstPartyRubricsSeeded());
+  }, 120_000);
+
+  afterEach(() => {
+    if (prevRubricGateEnv === undefined) delete process.env[RUBRIC_GATE_ENV];
+    else process.env[RUBRIC_GATE_ENV] = prevRubricGateEnv;
+  });
+
+  async function storedStatus(slug: string): Promise<string | null> {
+    const [row] = await admin<{ status: string | null }[]>`
+      SELECT status FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
+    return row?.status ?? null;
+  }
+
+  it('ships a coding plan whose code item cites code and whose doc item cites an artifact', async () => {
+    process.env[RUBRIC_GATE_ENV] = '0';
+    const slug = 'zzz-noncode-mixed-ships-2026-10-20';
+    await makeFinishedPlan(slug, 'coding', [
+      { text: 'Build the supplier exporter' },
+      { text: 'Write the exporter runbook', deliverable: 'doc' },
+    ]);
+    expect(await codeDeliverableOf(slug, 'P-001')).toBe(true);
+    expect(await codeDeliverableOf(slug, 'P-002')).toBe(false);
+
+    const audit = await auditCompletion(slug, { 'P-001': [REAL_CODE], 'P-002': [ARTIFACT] });
+    expect(audit.ok, brief(audit)).toBe(true);
+    const { codes, messages } = await blockerCodes(slug);
+    expect(codes.filter((code) => !code.startsWith('blind_review_')), messages).toEqual([]);
+
+    const res = await call('plans:set-plan-status', { slug, status: 'shipped' });
+    if (codes.length === 0) {
+      expect(res.ok, brief(res)).toBe(true);
+      expect(await storedStatus(slug)).toBe('shipped');
+    } else {
+      expect(String(res.error ?? res.code ?? ''), brief(res)).toMatch(/blind_review_/);
+    }
+  });
+
+  it('control: the same plan with the runbook undeclared does not ship on its artifact citation', async () => {
+    process.env[RUBRIC_GATE_ENV] = '0';
+    const slug = 'zzz-noncode-mixed-undeclared-2026-10-20';
+    await makeFinishedPlan(slug, 'coding', [
+      { text: 'Build the supplier exporter' },
+      { text: 'Write the exporter runbook' },
+    ]);
+    expect(await codeDeliverableOf(slug, 'P-002')).toBe(true);
+
+    const audit = await auditCompletion(slug, { 'P-001': [REAL_CODE], 'P-002': [ARTIFACT] });
+    if (audit.ok === true) {
+      const refusals = await codeTruthRefusals(slug);
+      expect(refusals, refusals).not.toBe('[]');
+      expect(refusals).toContain('P-002');
+      expect(refusals).not.toMatch(/P-001\b/);
+      const res = await call('plans:set-plan-status', { slug, status: 'shipped' });
+      expect(res.ok, brief(res)).not.toBe(true);
+    } else {
+      expect(brief(audit)).toMatch(/P-002/);
+    }
+    expect(await storedStatus(slug)).not.toBe('shipped');
   });
 });

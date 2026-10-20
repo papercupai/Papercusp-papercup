@@ -1195,7 +1195,8 @@ function hasIntentionalTestNameFilterProof(
   // Vitest accepts both the short CLI spelling and the long spelling surfaced
   // by testing:run. The boundary prevents prose such as "-test" from counting
   // as a filter invocation.
-  const hasNameFilter = /(?:^|[\s`'"(])(?:-t\b|--testNamePattern\b|--test-name-pattern\b)(?:\s+|=)/i.test(prose);
+  const nameFilter = /(?:^|[\s`'"(])(?:-t\b|--testNamePattern\b|--test-name-pattern\b)(?:\s+|=)/i;
+  const hasNameFilter = nameFilter.test(prose);
   if (!hasNameFilter) return false;
 
   // Require the clean count to be labelled as the unfiltered/full run and keep
@@ -1203,7 +1204,41 @@ function hasIntentionalTestNameFilterProof(
   // accidentally bless a filtered run's skipped count.
   const cleanRun =
     /\b(?:unfiltered|full(?:\s+(?:suite|file|run))?|without\s+(?:a\s+)?(?:test[- ]name\s+)?filter|no\s+(?:test[- ]name\s+)filter)\b[\s\S]{0,180}?\b0\s+(?:tests?\s+)?skip(?:ped|s)?\b|\b0\s+(?:tests?\s+)?skip(?:ped|s)?\b[\s\S]{0,180}?\b(?:unfiltered|full(?:\s+(?:suite|file|run))?|without\s+(?:a\s+)?(?:test[- ]name\s+)?filter|no\s+(?:test[- ]name\s+)filter)\b/i;
-  return cleanRun.test(prose);
+  if (cleanRun.test(prose)) return true;
+
+  // EI-26150517852473091: completion coercion preserves command/result records
+  // as JSON strings joined with semicolons. A later unfiltered command can prove
+  // coverage without a prose "full run" label. Only recognize records we can
+  // parse completely; ambiguous prose or nested records keep the warning.
+  const runs: Array<{ command: string; result: string }> = [];
+  for (const match of (evidence.testsRun ?? '').matchAll(/\{[^{}]*\}/g)) {
+    try {
+      const run: unknown = JSON.parse(match[0]);
+      if (run && typeof run === 'object' &&
+        'command' in run && typeof run.command === 'string' &&
+        'result' in run && typeof run.result === 'string') {
+        runs.push({ command: run.command, result: run.result });
+      }
+    } catch {
+      // An unparseable record is not evidence of a clean covering run.
+    }
+  }
+  if ((skippedTestSummaryCount(evidence.testResult ?? '') ?? 0) > 0) return false;
+  const skippedRuns = runs.flatMap((run, index) =>
+    (skippedTestSummaryCount(run.result) ?? 0) > 0 ? [{ ...run, index }] : [],
+  );
+  return skippedRuns.length > 0 && skippedRuns.every((run) => {
+    if (!TEST_RUNNER_COMMAND_RE.test(run.command) || !nameFilter.test(run.command)) return false;
+    const testedPaths = completionTestPathReferences([run.command], []);
+    if (testedPaths.length === 0) return false;
+    return runs.slice(run.index + 1).some((later) => {
+      if (!TEST_RUNNER_COMMAND_RE.test(later.command) || nameFilter.test(later.command) ||
+        !passingTestResult(later.result) || !/\b0\s+failed\b/i.test(later.result) ||
+        skippedTestSummaryCount(later.result) !== 0) return false;
+      const coveredPaths = new Set(completionTestPathReferences([later.command], []));
+      return testedPaths.every((path) => coveredPaths.has(path));
+    });
+  });
 }
 
 type TypecheckGate = { npmScript: string; prefixes: string[] };

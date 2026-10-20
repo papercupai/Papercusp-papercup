@@ -458,6 +458,37 @@ describe('admission lifecycle (P-003)', () => {
     ]);
   });
 
+  it.each(['committed', 'proposed'] as const)('syncs a verified-existing dropped resolution only when authority is %s', async (authority) => {
+    tickets[TRACKER]!.set('EXISTING-1', ticket('EXISTING-1'));
+    const source = await connect(TRACKER);
+    await sync(source);
+    const wi = await admitted(source, 'EXISTING-1');
+    await claimWorkItem(wi, HOLDER, { harness: HARNESS });
+    await setWorkItemStateWithAliasInfo(wi, 'dropped', {
+      harness: HARNESS, by: HOLDER, completionRef: 'verified-existing-lifecycle-it',
+      completionAuthority: authority,
+      completionEvidence: { summary: 'Existing fix verified.', workOutcome: 'verified-existing',
+        verifiedHow: 'manual', testResult: 'Existing behavior checked.' },
+    });
+    expect((await item(wi)).completionAuthority).toBe(authority);
+    calls.length = 0;
+
+    await sync(source);
+    await sync(source);
+    const expected = authority === 'committed' ? [
+      ['ticket.comment', `Verified existing resolution in Papercusp (${wi}).\n\nExisting fix verified.`],
+      ['ticket.transition', 'done'],
+    ] : [];
+    expect(callsFor('EXISTING-1')).toEqual(expected);
+    expect(tickets[TRACKER]!.get('EXISTING-1')).toMatchObject({
+      statusCategory: authority === 'committed' ? 'done' : 'todo',
+      state: authority === 'committed' ? 'closed' : 'open',
+    });
+    expect((await item(wi)).state).toBe('dropped');
+    expect(await writeBacksForWorkItem(sql, WS, wi)).toHaveLength(expected.length);
+    expect(notified).toEqual([]);
+  });
+
   it('comments the completion summary and moves the ticket to done, without reading its own move as an outside close', async () => {
     tickets[TRACKER]!.set('T-3', ticket('T-3'));
     const source = await connect(TRACKER);

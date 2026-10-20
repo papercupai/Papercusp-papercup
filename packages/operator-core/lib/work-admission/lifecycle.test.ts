@@ -82,6 +82,38 @@ describe('planLifecycleWrites', () => {
     expect(planLifecycleWrites(done, { ...ON, completeCategory: 'in-review' }, none)[1]).toMatchObject({ toCategory: 'in-review' });
   });
 
+  it('completes a committed verified-existing dropped resolution once without claiming a new fix', () => {
+    const resolved = {
+      ...item({ state: 'dropped', closedAt: 'stamp', payload: {
+        _completionEvidence: { workOutcome: 'verified-existing', summary: 'Existing fix verified.' },
+      } }),
+      completionAuthority: 'committed',
+    };
+    const writes = planLifecycleWrites(resolved, ON, none);
+    expect(writes).toEqual([
+      { key: 'complete:stamp', action: 'comment', text: 'Verified existing resolution in Papercusp (WI-1).\n\nExisting fix verified.' },
+      { key: 'complete:stamp:move', action: 'transition', toCategory: 'done' },
+    ]);
+    expect(planLifecycleWrites(resolved, ON, new Set(writes.map((write) => write.key)))).toEqual([]);
+    expect(planLifecycleWrites(resolved, { ...ON, completeCategory: 'in-review' }, none)[1]).toMatchObject({ toCategory: 'in-review' });
+    expect(planLifecycleWrites(resolved, { ...ON, complete: false }, none)).toEqual([]);
+  });
+
+  it.each([
+    ['proposed', 'verified-existing'],
+    [undefined, 'verified-existing'],
+    ['committed', undefined],
+    ['committed', 'invalid-or-expected'],
+    ['committed', 'duplicate'],
+    ['committed', 'introduced-change'],
+  ])('keeps dropped resolutions silent for authority=%s and outcome=%s', (completionAuthority, workOutcome) => {
+    const dropped = {
+      ...item({ state: 'dropped', closedAt: 'stamp', payload: { _completionEvidence: { workOutcome } } }),
+      completionAuthority,
+    };
+    expect(planLifecycleWrites(dropped, ON, none)).toEqual([]);
+  });
+
   it('writes nothing for a dropped item, and nothing a switched-off rule disables', () => {
     expect(planLifecycleWrites(item({ state: 'dropped', closedAt: 't' }), ON, none)).toEqual([]);
     expect(planLifecycleWrites(item({ state: 'wip', assignee: 'su-a' }), { ...ON, claim: false }, none)).toEqual([]);

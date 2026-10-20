@@ -363,6 +363,42 @@ describe('deriveBindingFromTestRun', () => {
     });
   });
 
+  it('adds a valid mutant subject to derived sourcePaths while preserving an explicit override', () => {
+    const mutation = {
+      schemaVersion: 1,
+      probeInvocationId: 'probe-00000001',
+      mode: 'copy-out',
+      subjectPath: 'pkg/lib/types.ts',
+      mutateExpression: 's/number/string/',
+      againstCommit: null,
+      subjectBeforeSha256: 'a'.repeat(64),
+      subjectAfterSha256: 'b'.repeat(64),
+      mutantDiff: '-number\n+string',
+      mutantDiffTruncated: false,
+      testCommandSha256: 'c'.repeat(64),
+      leg: 'mutant',
+      testFileSha256: 'd'.repeat(64),
+    };
+    const mutant = run({
+      status: 'fail',
+      source: 'mutation-probe',
+      execution_details: { mutationPhase: 'mutant', mutation, failed: 1, collectionFailed: false },
+    });
+
+    expect(deriveBindingFromTestRun(input(), mutant, root, 'run')).toMatchObject({
+      ok: true,
+      binding: { measurement: { sourcePaths: [
+        'pkg/lib/lazy.ts', 'pkg/lib/other.ts', 'pkg/lib/thing.ts', 'pkg/lib/types.ts',
+      ] } },
+    });
+    expect(deriveBindingFromTestRun(
+      input({ sourcePaths: ['pkg/lib/other.ts'] }), mutant, root, 'run',
+    )).toMatchObject({
+      ok: true,
+      binding: { measurement: { sourcePaths: ['pkg/lib/other.ts'] } },
+    });
+  });
+
   it('keeps the caller judgment (targeted, layer) and fills only the observable facts', () => {
     const out = deriveBindingFromTestRun(
       input({ details: { adequacy: { targeted: true, testLayer: 'unit', executed: true }, note: 'x' } }),

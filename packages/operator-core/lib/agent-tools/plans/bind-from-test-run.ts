@@ -18,8 +18,9 @@
  *  - `testRunId`      — the run id.
  *  - `measurement`    — `repo-files` with `testPaths:[file_path]` and `sourcePaths` = the
  *                       test file's FIRST RING of relative runtime imports (static, side-effect,
- *                       and literal dynamic `import('…')`), minus test infrastructure. Pass
- *                       `sourcePaths` to override. The first ring, not the transitive graph:
+ *                       and literal dynamic `import('…')`), plus a valid mutant descriptor's
+ *                       subject path, minus test infrastructure. Pass `sourcePaths` to override.
+ *                       The first ring, not the transitive graph:
  *                       the measurement is a FRESHNESS hash, and a transitive set both
  *                       overflows the 32-path cap and stales the proof on every unrelated edit
  *                       anywhere below the subject.
@@ -157,7 +158,7 @@ export const testRunBindingSchema = z
     evidenceKind: z.enum(['test', 'mutation', 'counterexample']).optional(),
     sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths
       .optional()
-      .describe("Override the derived subject files (default: the test file's relative imports)."),
+      .describe("Override the derived subject files (default: the test file's relative imports plus a valid mutant subject path)."),
     sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
     fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths.describe(
       'Supply fixturePaths or fixtureGlobs on the first bind when fixture calibration is needed (including inline fixtures in the test file). The recipe is immutable; fixtures are not derived from source imports.',
@@ -856,12 +857,32 @@ export function deriveBindingFromTestRun(
       message: `test-run ${testRunId} file ${JSON.stringify(row.file_path)} is not inside this harness checkout (${root}).`,
     };
   }
+  const evidenceKind = input.evidenceKind ?? deriveKind(row);
+  const mutationDescriptor = !input.sourcePaths
+    ? parseMutationDescriptor(executionDetails(row.execution_details).mutation)
+    : undefined;
+  const mutantSubjectPath = mutationDescriptor?.leg === 'mutant'
+    ? repoRelativeTestPath(root, mutationDescriptor.subjectPath)
+    : null;
+  if (mutationDescriptor?.leg === 'mutant' && !mutantSubjectPath) {
+    return {
+      ok: false,
+      error: 'mutation_subject_outside_root',
+      testRunId,
+      message:
+        `test-run ${testRunId} mutant subject ${JSON.stringify(mutationDescriptor.subjectPath)} is outside this harness checkout (${root}); ` +
+        'bind only a subject that can be measured from this checkout.',
+    };
+  }
   let sourcePaths: string[];
   if (input.sourcePaths) {
     sourcePaths = [...new Set(input.sourcePaths)].sort();
   } else {
     try {
-      sourcePaths = deriveSubjectSourcePaths(root, testPath);
+      sourcePaths = [...new Set([
+        ...deriveSubjectSourcePaths(root, testPath),
+        ...(mutantSubjectPath ? [mutantSubjectPath] : []),
+      ])].sort();
     } catch (error) {
       return {
         ok: false,
@@ -878,12 +899,11 @@ export function deriveBindingFromTestRun(
         message:
           sourcePaths.length === 0
             ? `${testPath} imports no repo source through a relative specifier, so there is no subject to measure; pass sourcePaths.`
-            : `${testPath} directly imports ${sourcePaths.length} repo files, over the ${FROM_TEST_RUN_MAX_SOURCE_PATHS}-path measurement cap; pass the subject files as sourcePaths.`,
+            : `${testPath} derives ${sourcePaths.length} repo source files, over the ${FROM_TEST_RUN_MAX_SOURCE_PATHS}-path measurement cap; pass the subject files as sourcePaths.`,
       };
     }
   }
 
-  const evidenceKind = input.evidenceKind ?? deriveKind(row);
   const facts = runFacts(row, evidenceKind);
   const declaredAdequacy =
     input.details?.adequacy && typeof input.details.adequacy === 'object'
