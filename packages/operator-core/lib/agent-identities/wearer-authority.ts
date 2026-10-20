@@ -13,12 +13,26 @@ import type { IdentityReactionCeiling } from '../capability-envelope/identity-gr
 import { PROTECTED_CAPABILITY_GLOBS, matchesAny } from '../capability-envelope/policy';
 
 /**
- * Every identity-bearing launch record is an SU launch record
- * (`recordSuLaunchSpec` → `SuLaunchSpecRecord`), and an SU session dispatches
- * as role `su` — the same default the grant kernel applies (`ctx.role ?? 'su'`).
+ * The dispatcher role of a wearer whose launch record names none: an SU launch
+ * record (`SuLaunchSpecRecord`) carries no `role`, and an SU session dispatches
+ * as `su` — the same default the grant kernel applies (`ctx.role ?? 'su'`).
  * A record's `fleet.role` is fleet posture (leader/member), not a dispatcher role.
  */
-export const IDENTITY_WEARER_ROLE = 'su';
+export const SU_WEARER_ROLE = 'su';
+
+/**
+ * PURE (identity-system-everything-migration-2026-10-18 P-003, #D-017): the
+ * dispatcher role identity work runs under for a wearer, read from the wearer's
+ * identity-bearing launch record. A role launch (`bootstrap-role`) records the
+ * role it launched, so a judge wearing an identity stack is judged against the
+ * judge ceiling, never su's. A record without a role is an SU record.
+ */
+export function identityWearerRole(launchRecord: unknown): string {
+  const role = launchRecord !== null && typeof launchRecord === 'object'
+    ? (launchRecord as { role?: unknown }).role
+    : undefined;
+  return typeof role === 'string' && role.trim() ? role.trim() : SU_WEARER_ROLE;
+}
 
 /**
  * PURE (D-008): why the pot/role ceiling or the never-auto protected floor

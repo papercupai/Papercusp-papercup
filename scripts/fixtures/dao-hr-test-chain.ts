@@ -32,6 +32,9 @@ export async function startDaoHrTestChain() {
   const transactions = new Map<Hex, Record<string, unknown>>();
   const receipts = new Map<Hex, Record<string, unknown>>();
   const logs: Array<Record<string, unknown>> = [];
+  let checkpointSequence = 0n;
+  const checkpoints = new Map<string, { sequence: bigint; restoreChain: () => Promise<void>;
+    snapshots: typeof snapshots; transactions: typeof transactions; receipts: typeof receipts; logs: typeof logs }>();
   async function record(hash: Hex) {
     await snapshot();
     const [tx, receipt] = await Promise.all([chain.getTransaction({ hash }), chain.getTransactionReceipt({ hash })]);
@@ -71,6 +74,24 @@ export async function startDaoHrTestChain() {
     } finally { await chain.vm.stateManager.setStateRoot(previousRoot); }
   }
   async function dispatch(method: string, params: unknown[] = []): Promise<unknown> {
+    if (method === 'evm_snapshot') {
+      const sequence = ++checkpointSequence, id = quantity(sequence);
+      checkpoints.set(id, { sequence, restoreChain: await chain.snapshot(), snapshots: new Map(snapshots),
+        transactions: new Map(transactions), receipts: new Map(receipts), logs: logs.slice() });
+      return id;
+    }
+    if (method === 'evm_revert') {
+      const saved = typeof params[0] === 'string' ? checkpoints.get(params[0]) : undefined;
+      if (!saved) return false;
+      await saved.restoreChain();
+      snapshots.clear(); for (const [key, value] of saved.snapshots) snapshots.set(key, value);
+      transactions.clear(); for (const [key, value] of saved.transactions) transactions.set(key, value);
+      receipts.clear(); for (const [key, value] of saved.receipts) receipts.set(key, value);
+      logs.splice(0, logs.length, ...saved.logs);
+      // Match development-chain semantics: reverting consumes this and all later snapshots.
+      for (const [id, checkpoint] of checkpoints) if (checkpoint.sequence >= saved.sequence) checkpoints.delete(id);
+      return true;
+    }
     if (method === 'eth_chainId') return '0x1';
     if (method === 'net_version') return '1';
     if (method === 'eth_accounts' || method === 'eth_requestAccounts') return chain.accounts;

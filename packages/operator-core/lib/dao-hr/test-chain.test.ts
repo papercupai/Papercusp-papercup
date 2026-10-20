@@ -96,6 +96,61 @@ describe('DAO HR isolated JSON-RPC test chain', () => {
     await expect(request('eth_sendRawTransaction', ['0x01'])).rejects.toThrow('Unsupported isolated test RPC');
   });
 
+  it('restores state, nonce, time, blocks, receipts and logs between native calibration legs', async () => {
+    const snapshotId = await request('evm_snapshot');
+    const before = await request('eth_getBlockByNumber', ['latest', false]);
+    const beforeNonce = await request('eth_getTransactionCount', [fixture.accounts[fixture.admin], 'latest']);
+    const beforeRate = await client.readContract({ ...fixture.equity, functionName: 'returnRateBps' });
+    const beforeLogs = await request('eth_getLogs', [{ address: fixture.equity.address, fromBlock: 'earliest' }]);
+    const data = encodeFunctionData({ abi: fixture.equity.abi, functionName: 'setReturnPolicy', args: [900, 45 * 86400] });
+    const send = () => request('eth_sendTransaction', [{ from: fixture.accounts[fixture.admin], to: fixture.equity.address, data }]);
+    const hash = await send();
+    const receipt = await request('eth_getTransactionReceipt', [hash]);
+    await request('evm_increaseTime', [86400]);
+    await request('evm_mine');
+    expect(await client.readContract({ ...fixture.equity, functionName: 'returnRateBps' })).toBe(900);
+    expect(await request('eth_getTransactionCount', [fixture.accounts[fixture.admin], 'latest'])).not.toBe(beforeNonce);
+    expect(BigInt(await request('eth_blockNumber'))).toBeGreaterThan(BigInt(before.number));
+
+    expect(await request('evm_revert', [snapshotId])).toBe(true);
+    expect(await request('eth_getBlockByNumber', ['latest', false])).toEqual(before);
+    expect(await request('eth_getTransactionCount', [fixture.accounts[fixture.admin], 'latest'])).toBe(beforeNonce);
+    expect(await client.readContract({ ...fixture.equity, functionName: 'returnRateBps' })).toBe(beforeRate);
+    expect(await request('eth_getTransactionByHash', [hash])).toBeNull();
+    expect(await request('eth_getTransactionReceipt', [hash])).toBeNull();
+    expect(await request('eth_getLogs', [{ address: fixture.equity.address, fromBlock: 'earliest' }])).toEqual(beforeLogs);
+    await expect(request('eth_getBlockByNumber', [receipt.blockNumber, false])).rejects.toThrow('Unknown historical EVM block');
+    await expect(client.readContract({ ...fixture.equity, functionName: 'returnRateBps', blockNumber: BigInt(receipt.blockNumber) }))
+      .rejects.toThrow('Unknown historical EVM block');
+    expect(await request('evm_revert', [snapshotId])).toBe(false);
+
+    // Resetting nonce, block and time makes the next leg's signed transaction identical.
+    const replaySnapshot = await request('evm_snapshot');
+    expect(await send()).toBe(hash);
+    expect(await request('eth_getTransactionReceipt', [hash])).toEqual(receipt);
+    expect(await request('evm_revert', [replaySnapshot])).toBe(true);
+  });
+
+  it('invalidates reverted and newer snapshots while preserving an older checkpoint', async () => {
+    const first = await request('evm_snapshot');
+    const firstHead = await request('eth_blockNumber');
+    await request('evm_mine');
+    const second = await request('evm_snapshot');
+    const secondHead = await request('eth_blockNumber');
+    const third = await request('evm_snapshot');
+    await request('evm_mine');
+    expect(await request('evm_revert', [second])).toBe(true);
+    expect(await request('eth_blockNumber')).toBe(secondHead);
+    expect(await request('evm_revert', [second])).toBe(false);
+    expect(await request('evm_revert', [third])).toBe(false);
+    expect(await request('evm_revert', ['0xdead'])).toBe(false);
+    expect(await request('evm_revert', [first])).toBe(true);
+    expect(await request('eth_blockNumber')).toBe(firstHead);
+    const next = await request('evm_snapshot');
+    expect(BigInt(next)).toBeGreaterThan(BigInt(third));
+    expect(await request('evm_revert', [next])).toBe(true);
+  });
+
   it('returns a protocol error for malformed requests and continues serving the chain', async () => {
     for (const body of [null, 42, { jsonrpc: '2.0', id: 8, method: 'eth_chainId', params: 'invalid' }]) {
       const response = await fetch(fixture.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },

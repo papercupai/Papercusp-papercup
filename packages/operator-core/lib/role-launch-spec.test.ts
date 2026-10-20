@@ -870,6 +870,43 @@ describe('buildRoleLaunchSpec', () => {
     }
   });
 
+  // identity-system-everything-migration-2026-10-18 SPEC-P-003: a non-su (judge)
+  // launch that names an identity stack renders the stack's layers into its
+  // prompt, and launches as the judge role rather than as su.
+  it('renders a judge launch identity stack into the judge prompt (SPEC-P-003)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'judge-identity-artifact-'));
+    const identityDir = join(dir, '.papercusp', 'blueprints', 'judge-lens');
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      writeFileSync(join(identityDir, 'blueprint.yaml'), [
+        'id: judge-lens', 'extends: base', 'version: 1.0.0',
+        'slots:', '  - slot: domain', 'grants: {}', '',
+      ].join('\n'));
+      writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'JUDGE LENS LAYER\n');
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'JUDGE KERNEL',
+        meta: { role: 'judge', promptFile: '/h/prompts/judge.md', projectDir: dir,
+          stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'judge-identity-1' },
+      });
+      const judge = await buildRoleLaunchSpec({
+        role: 'judge', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        operatorBaseUrl: 'http://localhost:3070', stack: ['domain:judge-lens'],
+      });
+      expect(judge.promptText).toContain('JUDGE KERNEL');
+      expect(judge.promptText).toContain('JUDGE LENS LAYER');
+      expect(judge.stack).toEqual(['domain:judge-lens']);
+      expect(judge.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'judge-lens',
+      }));
+      const url = new URL(judge.mcpUrl);
+      expect(url.searchParams.get('role')).toBe('judge');
+      expect(url.searchParams.has('superuser')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('pins a fixed contribution beside selected configuration without rendering the document twice', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mixed-fixed-identity-artifact-'));
     const identityDir = join(dir, '.papercusp', 'blueprints', 'mixed-domain');

@@ -49,7 +49,8 @@ import {
 import { capabilityGrantDepsForPot } from '../cupboard/install-blueprint-io';
 import { validateIdentityInstallGrants } from '../capability-envelope/identity-grants-port';
 import { getIdentitySource, inspectIdentitySource, localDirs } from './source';
-import { IDENTITY_WEARER_ROLE } from './wearer-authority';
+import { identityWearerRole } from './wearer-authority';
+import { readWearerLaunchRecord } from './wearer-launch-record';
 import { DEFAULT_SINK_HOST_LIMITS, type SinkHostLimits, type SinkInvocationResult } from './sink-evaluator';
 import {
   defaultTurnStartPackageSinkDeps,
@@ -256,7 +257,9 @@ async function loadIdentity(input: IdentityPreviewInput) {
       for (const ref of resolution.missingOptional) {
         warnings.push({ source: 'grants', code: 'optional_capability_provider_absent', message: `${ref}: optional, no provider in this pot`, ref });
       }
-      for (const failure of await validateIdentityInstallGrants({ ...scope, role: IDENTITY_WEARER_ROLE, resolution })) {
+      // P-003: a named wearing session is judged at its own launch role; otherwise su.
+      const role = identityWearerRole(input.ownerId ? await readWearerLaunchRecord(input.ownerId) : null);
+      for (const failure of await validateIdentityInstallGrants({ ...scope, role, resolution })) {
         errors.push({ source: 'grants', code: failure.cause,
           message: `${failure.classRef ?? '(unresolved)'}: ${failure.cause}${failure.toolName ? ` (${failure.toolName})` : ''}`,
           ...(failure.classRef ? { ref: failure.classRef } : {}) });

@@ -13,7 +13,7 @@ import {
   readIdentityWearer,
   wornAsyncRules,
 } from './identity-async-rules';
-import { IDENTITY_WEARER_ROLE } from './wearer-authority';
+import { SU_WEARER_ROLE, identityWearerRole } from './wearer-authority';
 import { wornRulePins, type AppliedIdentityRules } from './sync-hook-rules';
 
 const REVISION = 'a'.repeat(64);
@@ -88,9 +88,23 @@ describe('readIdentityWearer', () => {
     });
     expect(rulesAt).toHaveBeenCalledWith('su-1', 'ws', rules.applied);
     expect(wearer).toEqual({
-      ownerId: 'su-1', workspaceId: 'ws', role: IDENTITY_WEARER_ROLE, harnessSlug: 'ops',
+      ownerId: 'su-1', workspaceId: 'ws', role: SU_WEARER_ROLE, harnessSlug: 'ops',
       revisionTag: 'a'.repeat(16), rules,
     });
+  });
+
+  // identity-system-everything-migration-2026-10-18 P-003: a non-su launch record's role
+  // is the wearer's role; a role-less (SU) record stays su.
+  it('takes the wearer role from its identity-bearing launch record', async () => {
+    const read = (launchRecord: unknown) => readIdentityWearer('judge-1', 'ws', {
+      readAnchor: async () => ({ applied: rules.applied, harnessSlug: 'ops', launchRecord }),
+      rulesAt: async () => rules,
+    });
+    expect((await read({ role: 'judge' }))?.role).toBe('judge');
+    expect((await read({ role: null }))?.role).toBe(SU_WEARER_ROLE);
+    expect((await read({ role: '  ' }))?.role).toBe(SU_WEARER_ROLE);
+    expect(identityWearerRole(undefined)).toBe(SU_WEARER_ROLE);
+    expect(identityWearerRole({ v: 1, agent: 'claude', profile: 'engineer' })).toBe(SU_WEARER_ROLE);
   });
 
   it('throws a lookup failure instead of reading it as detached', async () => {

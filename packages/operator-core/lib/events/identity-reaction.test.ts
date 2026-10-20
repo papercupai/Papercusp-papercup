@@ -27,7 +27,7 @@ import {
   IDENTITY_RULE_SUBSCRIPTION_KIND,
   type IdentityWearer,
 } from '../agent-identities/identity-async-rules';
-import { IDENTITY_WEARER_ROLE } from '../agent-identities/wearer-authority';
+import { SU_WEARER_ROLE } from '../agent-identities/wearer-authority';
 import type { AsyncRuleDeclaration } from '../cupboard/rule-store';
 import type { LatchedEventSubscriber } from './await/store';
 import {
@@ -116,7 +116,7 @@ function wearer(over: Partial<IdentityWearer> & {
 } = {}): IdentityWearer {
   const { rule = RULE, pinRef = PIN, declaredClassNeeds = null, ...rest } = over;
   return {
-    ownerId: OWNER, workspaceId: WS, role: IDENTITY_WEARER_ROLE, harnessSlug: 'papercusp', revisionTag: TAG,
+    ownerId: OWNER, workspaceId: WS, role: SU_WEARER_ROLE, harnessSlug: 'papercusp', revisionTag: TAG,
     rules: {
       applied: { specificationRevision: TAG.padEnd(64, '0'), stateRevision: 's1' },
       packagePins: [],

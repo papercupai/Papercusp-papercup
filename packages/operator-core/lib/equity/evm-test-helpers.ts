@@ -103,8 +103,22 @@ export async function evmChain() {
     if (blockNumber === number) return { hash: bytesToHex(block().hash()) as Hex, timestamp: time };
     throw new Error('Unknown fixture block');
   };
+  /** Capture all chain state so repeated native probe legs start from the same chain. */
+  async function snapshot() {
+    const root = (await vm.stateManager.getStateRoot()).slice();
+    const saved = { time, number, lastTransactionHash, logs: logs.slice(),
+      transactions: new Map(transactions), receipts: new Map(receipts), blocks: new Map(blocks) };
+    return async () => {
+      await vm.stateManager.setStateRoot(root);
+      time = saved.time; number = saved.number; lastTransactionHash = saved.lastTransactionHash;
+      logs.splice(0, logs.length, ...saved.logs);
+      transactions.clear(); for (const [key, value] of saved.transactions) transactions.set(key, value);
+      receipts.clear(); for (const [key, value] of saved.receipts) receipts.set(key, value);
+      blocks.clear(); for (const [key, value] of saved.blocks) blocks.set(key, value);
+    };
+  }
   return { vm, accounts, raw, deploy, send, callAs, read, advance, now, blockNumber, getContractEvents,
-    getTransaction, getTransactionReceipt, getBlock, lastTransactionHash: () => lastTransactionHash };
+    getTransaction, getTransactionReceipt, getBlock, snapshot, lastTransactionHash: () => lastTransactionHash };
 }
 type Chain = Awaited<ReturnType<typeof evmChain>>;
 

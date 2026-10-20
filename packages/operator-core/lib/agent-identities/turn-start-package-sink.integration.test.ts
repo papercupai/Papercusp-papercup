@@ -23,6 +23,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { DEFAULT_SINK_HOST_LIMITS, resetSinkEvaluatorForTests } from './sink-evaluator';
 import { projectPackageOrientationRows } from './package-orientation-classes';
 import { inspectIdentityRecipeClassProvider } from './recipe-provider-conformance';
+import { identityWearerRole } from './wearer-authority';
 import {
   PACKAGE_SINK_SPAWN_ID,
   defaultTurnStartPackageSinkDeps,
@@ -335,4 +336,74 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
       .toEqual({ result: null, classes: [] });
     expect(dispatch.calls).toEqual([]);
   }, 120_000);
+
+  // identity-system-everything-migration-2026-10-18 P-003 (AUTO-BAR-R-1-P-003): a non-su
+  // wearer's identity work runs at the role its identity-bearing launch record names,
+  // never at su. The role is read from the REAL adv_sessions launch record.
+  describe('non-su wearer (P-003)', () => {
+    async function launchRecord(ownerId: string, role: string | null, stack: string[]) {
+      await db.adminSql`
+        INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec)
+        VALUES (${WS}, 'console', ${ownerId},
+          ${db.adminSql.json({ v: 1, workspaceId: WS, harnessSlug: POT, stack, ...(role ? { role } : {}) })})`;
+    }
+    /** A pot/role ceiling that refuses the recipe's `notes:*` requirement for judges only. */
+    const roleKeyedSinkDeps = (rolesRead: string[]) => defaultTurnStartPackageSinkDeps({
+      runtime: { tools: [notesTool], recipes, dispatchDeps: {}, wrapDispatch: recordCall },
+      readCeiling: async ({ role }) => {
+        rolesRead.push(role);
+        return { potSlug: POT, ceilings: role === 'judge' ? [{ denyCapabilities: ['notes:*'] }] : [], protectedAdditions: [] };
+      },
+    });
+
+    it('dispatches a judge wearer\'s tool provider as the judge role', async () => {
+      await wear('owner-judge-tool', ['domain:pkg-a']);
+      await launchRecord('owner-judge-tool', 'judge', ['domain:pkg-a']);
+      const sink = await evaluateTurnStartPackageSink({
+        ownerId: 'owner-judge-tool', workspaceId: WS, deps: { limits: LIMITS }, turnId: 'j1',
+      });
+      expect(sink.result!.omissions).toEqual([]);
+      expect(dispatch.calls).toHaveLength(1);
+      expect(dispatch.calls[0]!.env).toMatchObject({ role: 'judge', onBehalfOf: 'owner-judge-tool' });
+    }, 120_000);
+
+    it('narrows a judge wearer\'s recipe to the judge ceiling, while an SU record keeps the su ceiling', async () => {
+      await wear('owner-judge-recipe', ['domain:pkg-recipe']);
+      await launchRecord('owner-judge-recipe', 'judge', ['domain:pkg-recipe']);
+      const judgeRoles: string[] = [];
+      const judged = await evaluateTurnStartPackageSink({
+        ownerId: 'owner-judge-recipe', workspaceId: WS, turnId: 'j2',
+        deps: { ...roleKeyedSinkDeps(judgeRoles), limits: LIMITS },
+      });
+      expect(judgeRoles).toEqual(['judge']);
+      expect(readNotes).not.toHaveBeenCalled();
+      expect(recipeCalls).toEqual([]);
+      expect(judged.result!.omissions).toEqual([expect.objectContaining({
+        contributionId: 'pinned', reason: 'provider-error', detail: 'capability-class:recipe-capability-denied',
+      })]);
+
+      // Same pot, same ceiling reader: a role-less (SU) launch record is judged at su.
+      await wear('owner-su-recipe', ['domain:pkg-recipe']);
+      await launchRecord('owner-su-recipe', null, ['domain:pkg-recipe']);
+      const suRoles: string[] = [];
+      const su = await evaluateTurnStartPackageSink({
+        ownerId: 'owner-su-recipe', workspaceId: WS, turnId: 'j3',
+        deps: { ...roleKeyedSinkDeps(suRoles), limits: LIMITS },
+      });
+      expect(suRoles).toEqual(['su']);
+      expect(su.result!.omissions).toEqual([]);
+      expect(recipeCalls).toHaveLength(1);
+      expect(recipeCalls[0]).toMatchObject({ role: 'su', uiClientId: 'owner-su-recipe' });
+    }, 120_000);
+
+    it('reads the newest launch record, so a relaunch as judge is judged as judge', async () => {
+      await wear('owner-relaunch', ['domain:pkg-recipe']);
+      await launchRecord('owner-relaunch', null, ['domain:pkg-recipe']);
+      await db.adminSql`UPDATE harness_shared.adv_sessions SET started_at = now() - interval '1 hour'
+        WHERE coord_owner_id = 'owner-relaunch'`;
+      await launchRecord('owner-relaunch', 'judge', ['domain:pkg-recipe']);
+      const wearer = await defaultTurnStartPackageSinkDeps().readWearer('owner-relaunch', WS);
+      expect(identityWearerRole(wearer!.launchRecord)).toBe('judge');
+    }, 120_000);
+  });
 });

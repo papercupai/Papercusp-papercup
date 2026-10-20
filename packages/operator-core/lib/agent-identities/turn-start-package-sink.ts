@@ -61,7 +61,8 @@ import { resolveIdentityClassProvider } from './class-provider';
 import { validateIdentityProviderOutput } from './provider-output';
 import { runIdentityRecipeProvider, type IdentityRecipeRuntimeDeps } from './recipe-provider-runtime';
 import type { IdentityTemplateWearer } from './state-template-reader';
-import { IDENTITY_WEARER_ROLE, buildWearerToolContext, identityCeilingRefusal } from './wearer-authority';
+import { buildWearerToolContext, identityCeilingRefusal, identityWearerRole } from './wearer-authority';
+import { wearerLaunchRoleSql } from './wearer-launch-record';
 import { getIdentitySource, localDirs } from './source';
 import {
   DEFAULT_SINK_HOST_LIMITS,
@@ -84,6 +85,8 @@ export interface PackageSinkWearer {
   readonly attachmentRevision: string;
   /** The pot whose capability-provider bindings resolve this wearer's classes. */
   readonly potSlug: string | null;
+  /** The wearer's launch record; its `role` is the wearer's role (P-003). Absent or role-less: an SU record. */
+  readonly launchRecord?: unknown;
 }
 
 /** The declared fields a due context contribution carries. */
@@ -104,6 +107,8 @@ export interface ProduceContextInput {
   readonly signal: AbortSignal;
   /** Epoch ms: the sink invocation's deadline. A recipe script gets the time left to it. */
   readonly deadlineAt: number;
+  /** The wearer's dispatcher role (P-003); a tool provider is dispatched under it. Absent: `su`. */
+  readonly wearerRole?: string;
 }
 
 export interface TurnStartPackageSinkDeps {
@@ -174,6 +179,7 @@ export async function evaluateTurnStartPackageSink(input: {
     const due = await Promise.all(identities.map(async (identityId) =>
       ({ identityId, contributions: await deps.readDueContributions(identityId) })));
     const potSlug = wearer.potSlug;
+    const wearerRole = identityWearerRole(wearer.launchRecord);
     for (const { identityId, contributions } of due) {
       for (const contribution of contributions) {
         requests.push({
@@ -184,7 +190,7 @@ export async function evaluateTurnStartPackageSink(input: {
             if (!potSlug) throw new Error('the wearer has no pot scope to resolve a provider in');
             return deps.produceContext({
               workspaceId: input.workspaceId, potSlug, ownerId: input.ownerId,
-              identityId, contribution, signal: call.signal, deadlineAt: call.deadlineAt,
+              identityId, contribution, signal: call.signal, deadlineAt: call.deadlineAt, wearerRole,
             });
           },
         });
@@ -294,15 +300,16 @@ export async function resolvePackageSinkRecipeWearer(input: {
     throw new Error('capability-class:recipe-wearer-detached');
   }
   if (!wearer.potSlug) throw new Error('capability-class:recipe-wearer-unscoped');
+  const role = identityWearerRole(wearer.launchRecord);
   const ceiling = await deps.readCeiling({
-    workspaceId: input.workspaceId, harnessSlug: wearer.potSlug, role: IDENTITY_WEARER_ROLE,
+    workspaceId: input.workspaceId, harnessSlug: wearer.potSlug, role,
   });
   const capabilities = input.requiredCapabilities.filter((cap) => identityCeilingRefusal(cap, ceiling) === null);
   return {
     ownerId: input.ownerId,
     capabilityCeiling: new Set(capabilities),
     context: buildWearerToolContext({
-      workspaceId: input.workspaceId, ownerId: input.ownerId, role: IDENTITY_WEARER_ROLE,
+      workspaceId: input.workspaceId, ownerId: input.ownerId, role,
       harnessSlug: wearer.potSlug, capabilities, spawnId: PACKAGE_SINK_SPAWN_ID, signal: input.signal,
     }),
   };
@@ -326,10 +333,10 @@ export interface PackageSinkHost {
 /** Production wiring: the control anchor, the identity source catalog, the class registry and the read-only dispatcher. */
 export function defaultTurnStartPackageSinkDeps(host: PackageSinkHost = {}): TurnStartPackageSinkDeps {
   const readWearer: TurnStartPackageSinkDeps['readWearer'] = async (ownerId, workspaceId) => {
-    const rows = await getOrgPg().sql<{ control_state: unknown; control_generation: string | number | null }[]>`
-      SELECT control_state, control_generation
-        FROM harness_shared.session_briefs
-       WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
+    const rows = await getOrgPg().sql<{ control_state: unknown; control_generation: string | number | null; launch_role: unknown }[]>`
+      SELECT b.control_state, b.control_generation, ${wearerLaunchRoleSql(ownerId)} AS launch_role
+        FROM harness_shared.session_briefs b
+       WHERE b.owner_id = ${ownerId} AND b.workspace_id = ${workspaceId}
        LIMIT 1`;
     const state = rows[0]?.control_state as {
       stack?: unknown; scope?: { harness?: unknown };
@@ -345,6 +352,7 @@ export function defaultTurnStartPackageSinkDeps(host: PackageSinkHost = {}): Tur
       stack: state.stack.filter((ref): ref is string => typeof ref === 'string'),
       attachmentRevision,
       potSlug: typeof state.scope?.harness === 'string' && state.scope.harness ? state.scope.harness : null,
+      launchRecord: { role: rows[0]!.launch_role },
     };
   };
   return {
@@ -419,7 +427,7 @@ export function defaultTurnStartPackageSinkDeps(host: PackageSinkHost = {}): Tur
       const value = host.readProviderValue
         ? await host.readProviderValue({ call, providerKind: 'tool' })
         : await dispatchReadOnlyTool(tool.trim(), {}, {
-          workspaceId: call.workspaceId, harnessSlug: call.potSlug, role: 'su',
+          workspaceId: call.workspaceId, harnessSlug: call.potSlug, role: identityWearerRole({ role: call.wearerRole }),
           onBehalfOf: call.ownerId, spawnId: PACKAGE_SINK_SPAWN_ID, signal: call.signal,
         });
       return envelope(value, resolved.contract.outputSchema);

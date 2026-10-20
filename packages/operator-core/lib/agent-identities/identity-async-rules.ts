@@ -30,7 +30,8 @@ import { parseCapabilityClassRef } from '../capability-class-registry-store';
 import type { IdentityReactionCeiling } from '../capability-envelope/identity-grants-port';
 import { getEventKey, normalizeEventKey } from '../event-key-registry-store';
 import { validateClassFireTarget, type ClassFireTarget } from '../events/class-fire-target';
-import { IDENTITY_WEARER_ROLE, identityCeilingRefusal } from './wearer-authority';
+import { identityCeilingRefusal, identityWearerRole } from './wearer-authority';
+import { wearerLaunchRoleSql } from './wearer-launch-record';
 import {
   appliedIdentityRulesAt,
   type AppliedIdentityRules,
@@ -130,6 +131,8 @@ export interface IdentityWearer {
 export interface IdentityWearerDeps {
   readonly readAnchor: (ownerId: string, workspaceId: string) => Promise<{
     applied: AppliedIdentityRules['applied'] | null; harnessSlug: string | null;
+    /** The wearer's launch record; its `role` is the wearer's role. Absent or role-less: an SU record. */
+    launchRecord?: unknown;
   } | null>;
   readonly rulesAt: typeof appliedIdentityRulesAt;
 }
@@ -147,18 +150,19 @@ export async function readIdentityWearer(
   if (!anchor?.applied) return null;
   const rules = await (deps.rulesAt ?? appliedIdentityRulesAt)(ownerId, workspaceId, anchor.applied);
   return {
-    ownerId, workspaceId, role: IDENTITY_WEARER_ROLE, harnessSlug: anchor.harnessSlug,
+    ownerId, workspaceId, role: identityWearerRole(anchor.launchRecord), harnessSlug: anchor.harnessSlug,
     revisionTag: identityRevisionTag(anchor.applied.specificationRevision), rules,
   };
 }
 
 /** One row: the applied revision and the scope harness, read together. */
 async function readWearerAnchor(ownerId: string, workspaceId: string) {
-  const rows = await getOrgPg().sql<{ applied: unknown; harness: string | null }[]>`
-    SELECT control_state->'activation'->'applied' AS applied,
-           control_state->'scope'->>'harness' AS harness
-      FROM harness_shared.session_briefs
-     WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
+  const rows = await getOrgPg().sql<{ applied: unknown; harness: string | null; launch_role: unknown }[]>`
+    SELECT b.control_state->'activation'->'applied' AS applied,
+           b.control_state->'scope'->>'harness' AS harness,
+           ${wearerLaunchRoleSql(ownerId)} AS launch_role
+      FROM harness_shared.session_briefs b
+     WHERE b.owner_id = ${ownerId} AND b.workspace_id = ${workspaceId}
      LIMIT 1`;
   const row = rows[0];
   if (!row) return null;
@@ -168,6 +172,7 @@ async function readWearerAnchor(ownerId: string, workspaceId: string) {
       ? { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision }
       : null,
     harnessSlug: row.harness || null,
+    launchRecord: { role: row.launch_role },
   };
 }
 
