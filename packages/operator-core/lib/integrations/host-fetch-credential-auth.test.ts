@@ -31,6 +31,8 @@ describe('host-owned pasted credential authentication', () => {
     [{ header: 'api-key', scheme: 'raw' }, 'api-key', 'private-key'],
     [{ header: 'authorization', scheme: 'raw' }, 'authorization', 'private-key'],
     [{ header: 'x-api-key', scheme: 'bearer' }, 'x-api-key', 'Bearer private-key'],
+    // Discord bot tokens (P-005, D-034): `Authorization: Bot <token>`.
+    [{ header: 'authorization', scheme: 'bot' }, 'authorization', 'Bot private-key'],
   ] as const)('injects %j and redacts reflected secrets in response body and headers', async (auth, name, value) => {
     const f = await fixture(auth);
     const result = await f.call();

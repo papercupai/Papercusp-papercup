@@ -17136,6 +17136,30 @@ describe("operator endpoint resolution (desktop vs dev box)", () => {
       expect(warnings[0]).toMatch(/same-vintage MCP proxy :9171/);
     });
 
+    it("routes a managed legacy :9071 URL to staging when the bound host is :3170", () => {
+      const probed: number[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:9071",
+          PAPERCUSP_OPERATOR_URL_PROVENANCE: "psu-launcher",
+          PAPERCUSP_HONO_PORT: "3170",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9171;
+        },
+        warn: () => {},
+      });
+
+      expect(target).toEqual({
+        url: "http://127.0.0.1:9171",
+        source: "managed-env",
+        startedAt: null,
+      });
+      expect(probed).toEqual([9171]);
+    });
+
     it("uses the resolved local staging base when the Hono port hint is absent", () => {
       const target = resolveOperatorTarget({
         env: {

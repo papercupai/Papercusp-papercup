@@ -11,6 +11,7 @@
  */
 import {
   providerCredentialForHost,
+  providerCredentialHeaderValue,
   providerSourceEgressAllows,
   providerPrincipalCredentialForHost,
   type HostFetch,
@@ -279,7 +280,7 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     const secretValues: string[] = [];
     const injectPasted = (field: NonNullable<typeof pasted>, value: string) => {
       const auth = field.auth ?? { header: 'authorization', scheme: 'bearer' };
-      headers.set(auth.header, auth.scheme === 'raw' ? value : `Bearer ${value}`);
+      headers.set(auth.header, providerCredentialHeaderValue(auth.scheme, value));
       secretValues.push(value);
     };
     if (session?.hosts.includes(url.hostname)) {

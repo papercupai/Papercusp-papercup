@@ -174,6 +174,8 @@ export interface LedgerRosterEntry {
   intent?: string;
   sessionId?: string;
   contributor?: string;
+  /** Latest edit timestamp for each repo-relative file in this provenance cohort. */
+  editedAtMsByFile?: Record<string, number>;
 }
 
 interface LedgerRow {
@@ -184,6 +186,7 @@ interface LedgerRow {
   intent: string | null;
   session_id: string | null;
   contributor: string | null;
+  edited_at_ms?: number | string | null;
 }
 
 /**
@@ -223,7 +226,8 @@ export async function readEditAttributionRoster(opts: {
     const { sql } = getOrgPg();
     const rows = await sql<LedgerRow[]>`
       SELECT DISTINCT ON (file)
-             agent_id, file, work_item_id, plan_slug, intent, session_id, contributor
+             agent_id, file, work_item_id, plan_slug, intent, session_id, contributor,
+             extract(epoch FROM ts) * 1000 AS edited_at_ms
         FROM harness_shared.edit_attribution_ledger
        WHERE workspace_id = ${workspaceId}
          AND ts >= now() - make_interval(hours => ${lookbackHours})
@@ -247,6 +251,11 @@ export async function readEditAttributionRoster(opts: {
       if (!e) {
         e = { agent: r.agent_id, files: [], workItems: [] };
         byProvenance.set(key, e);
+      }
+      const editedAtMs = Number(r.edited_at_ms);
+      if (Number.isFinite(editedAtMs)) {
+        e.editedAtMsByFile ??= {};
+        e.editedAtMsByFile[r.file] = editedAtMs;
       }
       if (!e.files.includes(r.file)) e.files.push(r.file);
       if (r.work_item_id && !e.workItems.includes(r.work_item_id)) e.workItems.push(r.work_item_id);

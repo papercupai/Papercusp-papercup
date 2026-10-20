@@ -1,7 +1,7 @@
 # MCP tools vanished mid-session — client transport death, self-diagnosis + the auto-heal
 URL: /internal/docs/agent-insights/mcp-transport-death-self-diagnosis
 
-A Claude Code self-re-exec (auto-update relaunch / TUI fullscreen switch) severs the session's papercusp-su HTTP-MCP transport while the SERVER stays healthy — tools vanish, and the armed loop's events:await registration + every MCP carry surface (loop:checkpoint, facts:assert) die with it. Diagnose with a bash curl of the :9071 initialize handshake; park state in FILES; the fix is client-side (/mcp reconnect or the P-005 auto-heal), never a server restart.
+A Claude Code self-re-exec can sever the session's papercusp-su HTTP-MCP transport while the server stays healthy. Hooks and the psu supervisor can still refresh shared presence without proving tools/list reached the client, so the watchdog also checks recent assistant turns against agent-origin MCP calls. Diagnose with the :9071 initialize handshake; park state in files; reconnect with /mcp rather than restarting the server.
 
 ## The failure shape (su-39f07, 2026-07-13 — 5h dark)
 
@@ -59,3 +59,11 @@ Everything registered on the dead transport dies silently with it:
 3. Surface plainly to the owner: "MCP transport dead client-side; server
    verified healthy; `/mcp` reconnect fixes it" — then keep doing whatever
    file/bash-only work remains useful.
+
+## Fresh presence does not prove the client received tools
+
+`coord_presence.heartbeat_at` is shared liveness telemetry. An authenticated projected dispatch can bump it from a hook; the psu launcher supervisor also calls `touchHeartbeat` every 60 seconds while the CLI process is alive. Either can keep the row fresh without the agent-facing client receiving `tools/list`.
+
+A historical Claude session stayed connected to papercusp-su but never received a tool list across 19 assistant transcript turns. In that interval its owner had 131 hook-origin MCP invocations and zero agent-origin calls (the same scoped query returned positive controls). This separates a live host from a usable agent-facing tool catalog: the former stale-presence predicate could remain quiet under this pattern.
+
+The interactive sweep now counts assistant transcript turns since the last agent-origin MCP invocation. Three consecutive turns with the latest turn still recent trigger the existing `/mcp` heal path even when hook or supervisor traffic refreshed presence. A missing presence row, a host inside the ten-minute grace window, fewer than three turns, or an old latest turn remain non-actionable so idle and manual sessions are not treated as dark.

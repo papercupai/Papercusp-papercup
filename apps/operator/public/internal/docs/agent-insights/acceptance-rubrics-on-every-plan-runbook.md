@@ -74,7 +74,7 @@ plans:audit {
 }
 ```
 
-Only resolving `code` and `test` citations verify implementation. Their repo-relative paths must resolve; optional line and symbol anchors must be valid. A PG-canonical doc citation needs `ref` and `reason`; `none` needs `reason`. An `implemented` verdict requires a resolving code or test citation. Each item stores its audited SHA, timestamp, and text hash. At ship time the gate rechecks only status, text, citation resolution, and cited bytes. If it reports `audit_coverage_stale`, re-audit only the named items.
+Which citations verify depends on the item's deliverable ([plan verification profiles](/internal/docs/agent-insights/plan-verification-profiles)). A code deliverable, the default in a `coding` plan, verifies only by resolving `code` and `test` citations, in either profile. A non-code deliverable, declared on the item or the default in a `general` plan, also verifies by `artifact`, `work-item`, `measurement` and `external` citations. Repo-relative paths must resolve; optional line and symbol anchors must be valid. A PG-canonical doc citation needs `ref` and `reason`; `none` needs `reason`. An `implemented` verdict requires a resolving code or test citation. Each item stores its audited SHA, timestamp, and text hash. At ship time the gate rechecks only status, text, citation resolution, and cited bytes. If it reports `audit_coverage_stale`, re-audit only the named items.
 
 ## 3. Amend and vet the acceptance rubric
 
@@ -154,6 +154,9 @@ Code-truth family, controlled by `PLAN_ITEM_COMPLETION_GATE` and `PLAN_CODE_AUDI
 * `acceptance_unaudited` — run the first code-truth audit.
 * `audit_coverage_stale` — re-audit only named missing, reopened, text-changed, or blob-changed items.
 * `audit_citations_unresolved` — repair and re-audit only named broken citations.
+* `code_deliverable_unverified` — a code deliverable, in either profile, has no resolving code/test citation. Re-audit it citing the files that implement it, or lower its declared deliverable with a recorded plan Decision and a fresh activation audit.
+* `non_code_deliverable_code_evidence` — a closed work item under a non-code deliverable carries code-change evidence. The deliverable was declared wrong, or the code belongs to another item. Not waived by force.
+* `non_code_deliverable_check_unavailable` — the check above could not read its inputs. Retry; not waived by force.
 
 Rubric family:
 
@@ -168,7 +171,7 @@ An unknown/read failure is not one of these refusal codes. Preserve it as unknow
 
 ## Forced shipping is scoped and loud
 
-`plans:set-plan-status { status:'shipped', force:{ reason:'...' } }` may waive only the four code-truth checks. It does not waive rubric existence, vetting, independent grading, or the author's acceptance verdict. Every waived check, reason, actor, and time is appended to the plan's permanent `forcedPast` marker. Use force to record a deliberate exception, never to disguise one.
+`plans:set-plan-status { status:'shipped', force:{ reason:'...' } }` may waive only the five code-truth checks: unfinished items, an unaudited plan, stale coverage, unresolved citations and an unverified code deliverable. It does not waive rubric existence, vetting, independent grading, or the author's acceptance verdict. Every waived check, reason, actor, and time is appended to the plan's permanent `forcedPast` marker. Use force to record a deliberate exception, never to disguise one.
 
 ## What the mechanics prove—and what they do not
 

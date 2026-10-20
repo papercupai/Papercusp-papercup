@@ -1757,7 +1757,7 @@ describe('listSpecEvidence timestamp normalization', () => {
       "baseline.execution_details->'mutation'->>'subjectBeforeSha256'"]) expect(query).toContain(fence);
   });
 
-  it('projects canonical test-run status, counts, passed titles, and runtime layer to the evaluator', async () => {
+  it.each([null, 'exactly passed case'])('projects canonical test-run status, counts, passed titles, and runtime layer to the evaluator (filter: %s)', async (testNamePattern) => {
     h.rows = [{
       id: 2, work_item_id: 'WI-2', plan_slug: 'plan-one', spec_id: 'SPEC-2',
       spec_revision: 1, current_revision: 1, spec_fingerprint: 'spec', spec_is_current: true,
@@ -1774,7 +1774,7 @@ describe('listSpecEvidence timestamp normalization', () => {
       test_run_commit_sha: 'abc123', test_run_worktree_dirty: false, test_run_status: 'pass',
       test_run_execution_details: {
         schemaVersion: 1, root: '/repo', filePath: 'test/a.test.ts', runGroupId: null,
-        workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null,
+        workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern,
         passed: 2, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
         commitSha: 'abc123', worktreeDirty: false, testLayer: 'integration',
         passedCaseTitles: ['suite > exactly passed case', 'suite > another passed case'],
@@ -1791,8 +1791,10 @@ describe('listSpecEvidence timestamp normalization', () => {
       skipped: 0,
       collectionFailed: false,
       testLayer: 'integration',
+      ...(testNamePattern !== null ? { testNamePattern } : {}),
       passedCaseTitles: ['suite > exactly passed case', 'suite > another passed case'],
     });
+    if (testNamePattern === null) expect(row.testRunExecution).not.toHaveProperty('testNamePattern');
     const query = h.queries.find(entry => entry.sql.includes('SELECT b.id'))?.sql ?? '';
     expect(query).toContain('tr.status AS test_run_status');
     expect(query).toContain('tr.execution_details AS test_run_execution_details');

@@ -941,15 +941,16 @@ export function carryTurnProofRequiresNativeId(agent: any): boolean;
  * kickoff is submitted. Requiring the startup flock before that write creates a
  * deadlock: catalog discovery can complete while the host waits forever for an
  * id that only the kickoff can mint. Fresh Codex still gets the stronger native
- * transcript proof after submission; resumed/carry threads retain the binding
- * gate because they already have an authoritative native identity.
- * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean }} [options]
+ * transcript proof after submission. A fresh carry has the same lifecycle;
+ * resumed threads and already-discovered identities retain the binding gate.
+ * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean, nativeId?: string | null }} [options]
  *   Typed explicitly: inferred from `= {}` the declaration dropped `agent`, so every
  *   caller passing it was a TS2353. */
-export function launchKickoffRequiresPreSubmissionNativeBinding({ agent, isResume, hasResolver, }?: {
+export function launchKickoffRequiresPreSubmissionNativeBinding({ agent, isResume, hasResolver, nativeId, }?: {
     agent?: string | null;
     isResume?: boolean;
     hasResolver?: boolean;
+    nativeId?: string | null;
 }): boolean;
 /** WI-6554700010009740: does the native turn-start proof, not the generic
  * submit verifier, own this carry's delivery verdict? Since c727419b0a the
@@ -2150,8 +2151,9 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {(resubmits: number) => void} [opts.onResubmit]
  * @param {(details: {polls: number, resubmits: number, outputObservedAfterResubmit: boolean}) => void} [opts.onExhausted]
+ * @param {() => string | null} [opts.abortReason]
  */
-export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, isSubmitted, requireNativeConfirmation, inputAtStart: inputBaseline, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
+export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, isSubmitted, requireNativeConfirmation, inputAtStart: inputBaseline, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, abortReason, }?: {
     lastOutputAt?: (() => number) | undefined;
     writeCr?: ((data: string) => void) | undefined;
     lastInputAt?: (() => number) | undefined;
@@ -2171,6 +2173,7 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuota
         resubmits: number;
         outputObservedAfterResubmit: boolean;
     }) => void) | undefined;
+    abortReason?: (() => string | null) | undefined;
 }): {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
      *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | 'quota-blocked' | null;
@@ -2181,6 +2184,7 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuota
         resubmits: number;
         aborted: string;
         exhausted: boolean;
+        confirmed?: undefined;
     } | {
         polls: number;
         resubmits: number;

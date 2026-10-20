@@ -30,6 +30,17 @@ describe('agentsForScopedFiles (P-006 assign-don\'t-broadcast)', () => {
   });
 });
 
+describe('attributionMapForRepo edit ages', () => {
+  it('preserves the ledger timestamp for the repo-relative dirty path', () => {
+    const map = attributionMapForRepo(
+      [{ agent: 'su-old', files: ['packages/old.ts'], editedAtMsByFile: { 'packages/old.ts': 123 } }],
+      '',
+    );
+
+    expect(map.get('packages/old.ts')).toMatchObject({ agent: 'su-old', editedAtMs: 123 });
+  });
+});
+
 describe('groupFilesForAttribution (P-004)', () => {
   it('groups attributed files per agent + a catch-all remainder LAST', () => {
     const attr = new Map<string, FileAttribution>([
@@ -47,6 +58,22 @@ describe('groupFilesForAttribution (P-004)', () => {
     expect(groups[1].coAuthor).toBe('Cup Two <ag2@agents.papercusp>');
     // remainder = the unattributed files, sorted, with the default subject + no co-author.
     expect(groups[2]).toEqual({ agent: null, files: ['d.ts', 'e.ts'], subject: DEFAULT_GIT_SYNC_SUBJECT, coAuthor: null });
+  });
+
+  it('orders attributed groups by oldest edit before provenance id, using mtime when needed', () => {
+    const attr = new Map<string, FileAttribution>([
+      ['new.ts', { agent: 'ag1', editedAtMs: 300 }],
+      ['old.ts', { agent: 'z-agent', editedAtMs: 100 }],
+      ['mtime.ts', { agent: 'm-agent' }],
+    ]);
+    const groups = groupFilesForAttribution(['new.ts', 'old.ts', 'mtime.ts', 'residual.ts'], attr, {
+      workingTreeMtimeMsByFile: new Map([
+        ['old.ts', 150], // a shell edit can be newer than its last native ledger row
+        ['mtime.ts', 200],
+      ]),
+    });
+
+    expect(groups.map((group) => group.agent)).toEqual(['z-agent', 'm-agent', 'ag1', null]);
   });
 
   it('with no attribution, the only group is the catch-all over ALL files (flag-OFF degradation)', () => {

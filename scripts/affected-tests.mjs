@@ -71,6 +71,7 @@ import {
 } from "./lib/vitest-summary.mjs";
 import {
   RELATED_FILTER_LIST_ENV,
+  isCrossRootUnreached,
   prepareRelatedTestSelection,
   selectRelatedTests,
   playwrightOwnedTest,
@@ -1180,6 +1181,11 @@ function coverageArgsFor(t) {
 // workspace suite, while lint:required-field-strands, lint:tsc, repo-wide guards,
 // migrations, and builds remain outside this narrowing.
 const relatedOnly = has("--related");
+// --related-cross-root (WI-6554700010018067): with --related, follow bare `@papercusp/*`
+// imports into the dependency's source so a workspace pulled in by ANOTHER package's change
+// narrows to the tests that can reach it (and runs none when none can), instead of running
+// its whole suite. Opt-in: the per-sync delta check passes it; the green gate does not.
+const relatedCrossRoot = has("--related-cross-root");
 const runElSuite = has("--el-suite");
 const excludeArg = arg("--exclude", "");
 const excludes = new Set(excludeArg.split(",").filter(Boolean));
@@ -1213,6 +1219,7 @@ const KNOWN_FLAGS = [
   "--print-selection",
   "--sync-astro",
   "--related",
+  "--related-cross-root",
   "--el-suite",
   "--exclude",
   // P-009 (design-to-code-coverage-seam-2026-09-02) part (a): the Vitest coverage
@@ -1292,6 +1299,13 @@ if (unknownFlags.length > 0) {
   );
   errSync(
     "Refusing to run rather than silently ignoring the flag and running the full default job.",
+  );
+  process.exit(1);
+}
+
+if (relatedCrossRoot && !relatedOnly) {
+  errSync(
+    "affected-tests.mjs: --related-cross-root changes how --related narrows; pass it together with --related.",
   );
   process.exit(1);
 }
@@ -4902,6 +4916,9 @@ for (const dir of workspaces) {
     scripts: pkg.scripts || {},
     deps: depsOf(pkg),
     standalone: standaloneDirs.has(dir),
+    // The resolution fields --related-cross-root follows bare specifiers through.
+    exports: pkg.exports,
+    main: pkg.main,
   };
   wsByName.set(pkg.name, meta);
   wsByDir.set(dir, meta);
@@ -5482,6 +5499,8 @@ let checkpointTargetedReVerdictSelection = null;
 let checkpointTargetedReVerdictRefusal = null;
 /** Per-workspace related-selection result, kept for the print-mode AFFECTED_ETA projection (D-030). */
 const relatedSelectionByWorkspace = new Map();
+/** WI-6554700010018067: test tasks dropped because cross-root selection found no reaching test. */
+let relatedUnreachedDropped = 0;
 
 // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): the executed-source map. The
 // static closure the selector computes is a SUPERSET; a map of what each test file actually
@@ -5557,6 +5576,18 @@ if (relatedOnly) {
     script === "test" || LANE_SCRIPTS.includes(script);
   const byWorkspace = new Map();
   let selectionFailedWide = false;
+  // WI-6554700010018067: every workspace package, for following bare specifiers. Built once.
+  const crossRoot = relatedCrossRoot
+    ? {
+        packages: [...wsByName.values()].map((ws) => ({
+          name: ws.name,
+          dir: join(ROOT, ws.dir),
+          exports: ws.exports,
+          main: ws.main,
+        })),
+        aliasesFor: (dir) => tsconfigPathEntriesFor(dir),
+      }
+    : null;
 
   for (const t of tasks) {
     if (!narrowable(t.script)) continue;
@@ -5578,6 +5609,7 @@ if (relatedOnly) {
           rootDir: wsRoot,
           changedPaths: changedAbs,
           aliases,
+          crossRoot,
         });
         const candidates = prepared.selection.mode === "related"
           ? [...prepared.selection.selected].sort()
@@ -5668,18 +5700,32 @@ if (relatedOnly) {
           (executedMapContext.enabled ? "" : ` disabled=${executedMapContext.reason}`) +
           (executedMap.error ? ` error=${executedMap.error}` : ""),
       );
-      if (result.mode !== "related" || result.selected.length < 1) {
+      const unreached = relatedCrossRoot && isCrossRootUnreached(result);
+      if (!unreached && (result.mode !== "related" || result.selected.length < 1)) {
         selectionFailedWide = true;
       }
     }
 
     const { result, wsRoot } = byWorkspace.get(t.ws.name);
-    if (result.mode === "related") {
+    if (relatedCrossRoot && isCrossRootUnreached(result)) {
+      // No test of this workspace can reach the change: the task is dropped below. Keyed on
+      // the REASON, never on emptiness alone (see isCrossRootUnreached): the runner filter
+      // above can empty a non-empty selection, and that keeps the historical full run.
+      t.relatedUnreached = true;
+    } else if (result.mode === "related") {
       // vitest takes positional filters as substring matches against test paths;
       // workspace-relative paths are what its `include` globs resolve against.
       t.relatedFiles = result.selected.map((f) => relative(wsRoot, f));
     }
   }
+  // WI-6554700010018067: drop the narrowable test tasks of every workspace no test can reach.
+  // The workspace's other tasks (integration, guards) and every other workspace stay.
+  const unreachedTasks = tasks.filter((t) => t.relatedUnreached);
+  for (const t of unreachedTasks) {
+    outSync(`RELATED_SELECTION_DROPPED ws=${t.ws.name} script=${t.script} reason=cross-root-unreached`);
+    tasks.splice(tasks.indexOf(t), 1);
+  }
+  relatedUnreachedDropped = unreachedTasks.length;
   if (executedMapContext.client) {
     try {
       await executedMapContext.client.end();
@@ -5945,6 +5991,13 @@ if (!tasks.length) {
     );
     outSync(
       "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 reason=all-excluded",
+    );
+  } else if (relatedUnreachedDropped > 0) {
+    outSync(
+      `Affected: ${affected.map((w) => w.name).join(", ")} — no test in them can reach the change (--related-cross-root dropped ${relatedUnreachedDropped} task(s)).`,
+    );
+    outSync(
+      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 reason=cross-root-unreached",
     );
   } else {
     outSync(

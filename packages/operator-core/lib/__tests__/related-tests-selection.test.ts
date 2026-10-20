@@ -12,7 +12,9 @@ import {
   RELATED_WIDEN_THRESHOLD_ENV,
   buildIndex,
   classifySpecifier,
+  isCrossRootUnreached,
   isTestFile,
+  packageExportTargets,
   playwrightOwnedTest,
   pruneWithExecutedMap,
   resolveRelatedWidenThreshold,
@@ -741,6 +743,155 @@ describe('selectRelatedTests — every rail fails toward running MORE tests', ()
     expect(r.mode).toBe('full');
     expect(r.reason).toBe('over-threshold(6/10)');
     expect(r.threshold).toBe(0.5);
+  });
+});
+
+describe('cross-root selection (WI-6554700010018067)', () => {
+  // A dependent workspace `/repo/app` whose tests import package `@pkg/core` through its
+  // `exports`, and whose runner config loads a setup file out of core by path.
+  const APP = '/repo/app';
+  const CORE = '/repo/core';
+  const packages = [
+    {
+      name: '@pkg/core',
+      dir: CORE,
+      exports: {
+        '.': { types: './lib/index.d.ts', import: './lib/index.ts' },
+        './lib/*': './lib/*.ts',
+      },
+    },
+    { name: 'app', dir: APP },
+  ];
+  const base: Record<string, string> = {
+    [`${APP}/vitest.config.ts`]:
+      `import { defineConfig } from 'vitest/config';\n` +
+      `export default defineConfig({ test: { setupFiles: [resolve(__dirname, '../core/lib/setup.ts')] } });`,
+    [`${CORE}/package.json`]: '{}',
+    [`${CORE}/lib/setup.ts`]: 'export {};',
+    [`${CORE}/lib/leaf.ts`]: 'export const leaf = 1;',
+    [`${CORE}/lib/other.ts`]: 'export const other = 2;',
+    [`${CORE}/lib/index.ts`]: `export * from './other';`,
+    [`${CORE}/lib/leaf.test.ts`]: `import './leaf';`,
+    [`${CORE}/lib/holey.ts`]: `import '@/nowhere';`,
+    [`${APP}/lonely.ts`]: 'export const lonely = 1;',
+    [`${APP}/uses-leaf.test.ts`]: `import { leaf } from '@pkg/core/lib/leaf';`,
+    [`${APP}/uses-index.test.ts`]: `import { other } from '@pkg/core';`,
+    [`${APP}/plain-1.test.ts`]: 'expect(1).toBe(1);',
+    [`${APP}/plain-2.test.ts`]: 'expect(1).toBe(1);',
+    [`${APP}/plain-3.test.ts`]: 'expect(1).toBe(1);',
+  };
+  const select = (changed: string[], files = base, crossRoot: { packages: typeof packages } | null = { packages }) =>
+    selectRelatedTests({ rootDir: APP, changedPaths: changed, fs: vfs(files), crossRoot });
+
+  it('selects the dependent test that imports the changed module through the package specifier', () => {
+    const leaf = select([`${CORE}/lib/leaf.ts`]);
+    expect(leaf.mode).toBe('related');
+    expect(leaf.selected).toEqual([`${APP}/uses-leaf.test.ts`]);
+    expect(leaf.total).toBe(5);
+    // `.` resolves through the `import` condition (never `types`) and follows the re-export.
+    const other = select([`${CORE}/lib/other.ts`]);
+    expect(other.selected).toEqual([`${APP}/uses-index.test.ts`]);
+  });
+
+  it('CONTROL: without crossRoot the same change keeps the historical full run', () => {
+    const r = select([`${CORE}/lib/leaf.ts`], base, null);
+    expect(r.mode).toBe('full');
+    expect(r.reason).toBe('no-changed-paths-in-scope');
+  });
+
+  it('runs nothing in a dependent no test of which reaches the change', () => {
+    const r = select([`${CORE}/lib/leaf.test.ts`]);
+    expect(r.mode).toBe('related');
+    expect(r.selected).toEqual([]);
+    expect(r.reason).toBe('cross-root-unreached');
+  });
+
+  it('still runs everything when a LOCAL change reaches no test', () => {
+    const r = select([`${APP}/lonely.ts`]);
+    expect(r.mode).toBe('full');
+    expect(r.reason).toBe('empty-selection');
+  });
+
+  it('selects a test whose closure holds an unresolved import anywhere, not only in the test', () => {
+    const files = { ...base, [`${APP}/uses-holey.test.ts`]: `import '@pkg/core/lib/holey';` };
+    const r = select([`${CORE}/lib/leaf.ts`], files);
+    expect(r.mode).toBe('related');
+    expect(r.selected).toEqual([`${APP}/uses-holey.test.ts`, `${APP}/uses-leaf.test.ts`]);
+  });
+
+  it('treats a workspace specifier that maps to no file as a hole, and a registry one as external', () => {
+    const files = {
+      ...base,
+      [`${APP}/bad.test.ts`]: `import '@pkg/core/missing/thing';`,
+      [`${APP}/registry.test.ts`]: `import 'left-pad'; import '@other/pkg';`,
+    };
+    const index = buildIndex({ rootDir: APP, fs: vfs(files), crossRoot: { packages } });
+    expect(index.unresolved.has(`${APP}/bad.test.ts`)).toBe(true);
+    expect(index.unresolved.has(`${APP}/registry.test.ts`)).toBe(false);
+    expect(index.external?.has(`${CORE}/lib/leaf.ts`)).toBe(true);
+    const r = select([`${CORE}/lib/other.ts`], files);
+    expect(r.selected).toEqual([`${APP}/bad.test.ts`, `${APP}/uses-index.test.ts`]);
+  });
+
+  it('runs everything when the change is in what the runner config loads', () => {
+    const r = select([`${CORE}/lib/setup.ts`]);
+    expect(r.mode).toBe('full');
+    expect(r.reason).toBe('runner-config-reaches-change');
+  });
+
+  it('runs everything when the runner config closure has a hole', () => {
+    const files = { ...base, [`${APP}/vitest.config.ts`]: `import '@pkg/core/lib/not-there';` };
+    const r = select([`${CORE}/lib/leaf.ts`], files);
+    expect(r.mode).toBe('full');
+    expect(r.reason).toBe('runner-config-unresolved');
+  });
+
+  it('runs everything for an out-of-root change no import edge can describe', () => {
+    for (const changed of [`${CORE}/package.json`, '/repo/scripts/tool.mjs', `${CORE}/dist/leaf.js`]) {
+      const r = select([`${CORE}/lib/leaf.ts`, changed]);
+      expect(r.mode).toBe('full');
+      expect(r.reason).toBe('cross-root-unrelatable-change');
+    }
+  });
+
+  // affected-tests.mjs drops a workspace's narrowable test tasks exactly when this is true.
+  it('isCrossRootUnreached: only the cross-root reason with an empty selection drops the tasks', () => {
+    expect(isCrossRootUnreached(select([`${CORE}/lib/leaf.test.ts`]))).toBe(true);
+    expect(isCrossRootUnreached({ mode: 'related', selected: new Set(), reason: 'cross-root-unreached' })).toBe(true);
+    // A selection the runner filter emptied keeps the full run: emptiness alone is not proof.
+    const leaf = select([`${CORE}/lib/leaf.ts`]);
+    expect(isCrossRootUnreached({ ...leaf, selected: [] })).toBe(false);
+    expect(isCrossRootUnreached({ mode: 'related', selected: [`${APP}/uses-leaf.test.ts`], reason: 'cross-root-unreached' })).toBe(false);
+    expect(isCrossRootUnreached({ mode: 'full', selected: [], reason: 'cross-root-unreached' })).toBe(false);
+    expect(isCrossRootUnreached(select([`${APP}/lonely.ts`]))).toBe(false);
+    expect(isCrossRootUnreached(null)).toBe(false);
+  });
+});
+
+describe('packageExportTargets', () => {
+  const dir = '/repo/pkg';
+  it('takes an exact subpath key over patterns, and every runtime condition but types', () => {
+    const pkg = {
+      name: 'p',
+      dir,
+      exports: {
+        '.': { types: './a.d.ts', import: './a.ts', require: './a.cjs' },
+        './x': './x-exact.ts',
+        './*': './src/*.ts',
+      },
+    };
+    expect(packageExportTargets(pkg, '.')).toEqual([`${dir}/a.ts`, `${dir}/a.cjs`]);
+    expect(packageExportTargets(pkg, './x')).toEqual([`${dir}/x-exact.ts`]);
+    expect(packageExportTargets(pkg, './y/z')).toEqual([`${dir}/src/y/z.ts`]);
+  });
+
+  it('reads a bare string or condition object as the `.` entry, and main without exports', () => {
+    expect(packageExportTargets({ name: 'p', dir, exports: './i.ts' }, '.')).toEqual([`${dir}/i.ts`]);
+    expect(packageExportTargets({ name: 'p', dir, exports: { default: './d.ts' } }, '.')).toEqual([`${dir}/d.ts`]);
+    expect(packageExportTargets({ name: 'p', dir, main: 'src/m.ts' }, '.')).toEqual([`${dir}/src/m.ts`]);
+    expect(packageExportTargets({ name: 'p', dir }, './deep/f')).toEqual([`${dir}/deep/f`]);
+    // An exports map with no matching key exports nothing: the specifier is a hole.
+    expect(packageExportTargets({ name: 'p', dir, exports: { '.': './i.ts' } }, './other')).toEqual([]);
   });
 });
 

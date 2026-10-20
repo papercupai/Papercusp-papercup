@@ -14,7 +14,7 @@ import PotBeaconToggle from '@/app/adv/harnesses/PotBeaconToggle';
 import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import { useLexicon } from '@/lib/useLexicon';
 import AdvNowRunning from './AdvNowRunning';
-import DiscordBadge from './DiscordBadge';
+import CommunityBadge from './CommunityBadge';
 import { ALL_HARNESSES_OPTION } from './adv-harness-selection';
 import { buildHarnessSelectOptions, type HarnessProjectLite } from './AdvShell';
 import './adv-header-pills.css';
@@ -248,7 +248,7 @@ export default function AdvPotBar({ withStatus = false }: { withStatus?: boolean
       {withStatus && (
         <>
           <AdvNowRunning slug={singleSlug} />
-          <DiscordBadge slug={singleSlug} />
+          <CommunityBadge slug={singleSlug} />
         </>
       )}
     </div>

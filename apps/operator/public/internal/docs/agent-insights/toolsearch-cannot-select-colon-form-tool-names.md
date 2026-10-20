@@ -41,7 +41,7 @@ INPUT SHAPE for that mechanism — not a defect in the tool, and not something
 papercusp can fix by patching ToolSearch (it isn't papercusp's code).
 
 The keyword-search miss is a second, independent symptom: ToolSearch's own
-lexical/semantic ranking over \~550 catalog entries did not surface the right
+lexical/semantic ranking over the full tool catalog did not surface the right
 tool for a reasonable-looking natural-language query. That ranking quality is
 also entirely client-side and outside papercusp's reach.
 

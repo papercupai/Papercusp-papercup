@@ -4381,6 +4381,9 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
       agent: 'codex', isResume: true, hasResolver: true,
     })).toBe(true);
     expect(launchKickoffRequiresPreSubmissionNativeBinding({
+      agent: 'codex', hasResolver: true, nativeId: 'known-successor',
+    })).toBe(true);
+    expect(launchKickoffRequiresPreSubmissionNativeBinding({
       agent: 'claude', isResume: false, hasResolver: true,
     })).toBe(true);
   });

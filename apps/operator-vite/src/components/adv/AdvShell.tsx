@@ -1190,7 +1190,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
               them visible on every tab.
 
               Only these two moved. AdvNowRunning (this pot's start/stop + "N
-              plans waiting") and DiscordBadge (this pot's link) are genuinely
+              plans waiting") and CommunityBadge (this pot's link) are genuinely
               pot-scoped and stay on the HUD pot bar — a pot-scoped control in a
               bar that outlives the pot selector is the confusion the 2026-07-27
               split set out to remove.

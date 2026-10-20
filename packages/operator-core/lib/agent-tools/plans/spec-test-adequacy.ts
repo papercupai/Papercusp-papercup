@@ -181,6 +181,8 @@ export interface SpecEvidenceForAdequacy {
     failed: number;
     skipped: number;
     collectionFailed: boolean;
+    /** Canonical runner filter; a selected run cannot prove whole-file coverage. */
+    testNamePattern?: string | null;
     testLayer?: string;
     passedCaseTitles?: string[];
     /** Derived from the explicit marker or the legacy 64-title/count signal. */
@@ -2055,17 +2057,19 @@ function sourceBarTestSuiteRating(
     );
   }
 
-  // A source BAR may explicitly require shared named cases. Credit those only
-  // for suite coverage; clause path, targeting and mutation raters remain strict.
+  // A source BAR may require shared whole files or named cases. Credit either
+  // only for suite coverage; clause path, targeting and mutation raters remain strict.
   const selectorsForFile = (file: string) => (resolved.cases ?? []).filter((selector) => selector.file === file);
   const declaresSelector = (row: SpecEvidenceForAdequacy, testName: string) =>
     hasMatchingDeclaredCaseTitle(testName, detailsOf(row).testCases ?? []);
   const relevantEvidence = evidence.filter((row) => {
     if (!bindingHasOnlyMismatchedClauseCases(row, clause)) return true;
     const measuredPath = row.testRunProvenance?.filePath ?? row.testRunExecution?.filePath;
-    return typeof measuredPath === 'string' && requiredFiles.some((file) =>
-      testFilePathMatches(file, measuredPath) && selectorsForFile(file).some(({ testName }) => declaresSelector(row, testName)),
-    );
+    return typeof measuredPath === 'string' && requiredFiles.some((file) => {
+      const selectors = selectorsForFile(file);
+      return testFilePathMatches(file, measuredPath) &&
+        (selectors.length === 0 || selectors.some(({ testName }) => declaresSelector(row, testName)));
+    });
   });
 
   const rowsByFile = new Map<string, SpecEvidenceForAdequacy[]>();
@@ -2100,8 +2104,10 @@ function sourceBarTestSuiteRating(
       citedRows.push(...failedRows);
       continue;
     }
-    const passingRows = currentRows.filter(isSuccessfulExecutableEvidence);
-    const selectorsPassed = selectorsForFile(file).every(({ testName }) => passingRows.some((row) =>
+    const selectors = selectorsForFile(file);
+    const passingRows = currentRows.filter((row) => isSuccessfulExecutableEvidence(row) &&
+      (selectors.length > 0 || (row.testRunExecution?.skipped === 0 && !row.testRunExecution.testNamePattern)));
+    const selectorsPassed = selectors.every(({ testName }) => passingRows.some((row) =>
       declaresSelector(row, testName) && hasPassingLedgerCase(row, testName),
     ));
     if (passingRows.length > 0 && selectorsPassed && !ambiguousFiles.has(file)) {
@@ -2644,8 +2650,9 @@ function appendRatingRerunProbes(
  *  34 — durable test-run references in resolved-gap notes do not imply a live limitation.
  *  35 — late automatic same/older receipts cannot hide the latest explicit proof correction.
  *  36 — explicitly registered source BAR named cases can establish shared suite coverage only.
+ *  37 — files-only source BARs accept complete shared suites, rejecting filtered or skipped whole-file proof.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 36;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 37;
 
 /** One key on which a fixture-free review fails to pair with the binding it cites. */
 export type FixtureAbsencePairingKey =

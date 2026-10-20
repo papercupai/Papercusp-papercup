@@ -37,7 +37,7 @@ import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
 
 /** Canonical datatypes the shared outbound verbs write. */
-export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message' | 'social-post' | 'blog-post';
+export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message' | 'social-post' | 'blog-post' | 'notification';
 
 /**
  * The outbound capability vocabulary (D-014.2). Each is passed to `invoke` as
@@ -51,6 +51,8 @@ export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | '
  *  - `social.reply`: `{ target, text, visibility, idempotencyKey }` → `{ externalId, url? }`
  *  - `social.delete`: `{ externalId, target, idempotencyKey }` → `{ deleted, detail? }`
  *    (provider-adapters-to-packages-2026-10-11 P-002; the host runs every social rail first)
+ *  - `notify.send`: `{ text, idempotencyKey }` → `{ externalId, channelId, url? }`
+ *  - `community.presence`: `{}` → `{ widget, presenceCount, name, inviteUrl }` (a read; P-005, D-034/D-035)
  */
 export const OUTBOUND_CAPABILITIES = {
   mailDraft: 'mail.draft',
@@ -61,6 +63,8 @@ export const OUTBOUND_CAPABILITIES = {
   socialReply: PROVIDER_SOCIAL_REPLY_CAPABILITY,
   socialDelete: PROVIDER_SOCIAL_DELETE_CAPABILITY,
   blogPost: 'blog.post',
+  notifySend: 'notify.send',
+  communityPresence: 'community.presence',
 } as const;
 
 /**
@@ -238,7 +242,7 @@ export async function invokeOutboundProvider(
     throw new ProviderCapabilityUnsupported(provider.id, capability);
   }
   const services = await resolveProviderServices(provider.entry.descriptor.serviceCredentials);
-  if (target.datatype === 'social-post' || target.datatype === 'blog-post') {
+  if (target.datatype === 'social-post' || target.datatype === 'blog-post' || target.datatype === 'notification') {
     const registry = deps.registry ?? await readyProviderRegistry();
     const current = verifiedProviderForCapability(registry, provider.id, capability);
     if (current !== provider.entry) throw new Error(`provider_changed:${provider.id}: resolve the source again`);

@@ -331,6 +331,7 @@ import './ticket/file';
 import './social/delete';
 import './social/post';
 import './blog/post';
+import './notify/send';
 import './social/read';
 import './social/reply';
 import './social/search';

@@ -128,14 +128,11 @@ export const CENSUS: readonly CensusEntry[] = [
   // Google Workspace leftovers (Gmail and Calendar already ship as packages).
   p('packages/operator-core/lib/external-triggers/google-workspace.ts', 'google-workspace'),
 
-  // Discord outbound notifications.
-  p('apps/operator/app/_components/DiscordChannelLink.tsx', 'discord'),
-  p('packages/operator-core/lib/endpoint-route/routes/harness/discord.ts', 'discord'),
-  p('packages/operator-core/lib/integrations/discord-webhook-types.ts', 'discord'),
+  // Discord left app code in P-005: the libs/papercusp/plugins/discord package (D-034/D-035).
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 4;
+export const CENSUS_HIGH_WATERMARK = 1;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.

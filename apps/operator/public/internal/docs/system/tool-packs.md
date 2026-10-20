@@ -268,7 +268,7 @@ loop's `installable` units resolve only against locally-listed packs.
 
 Discovery answers the question the install loop's *inverse* asks: not "for this
 declared tool, what do I install?" but **"I want capability X — what provides
-it, and is it already available?"** Over the \~380-tool merged catalog, that
+it, and is it already available?"** Over a merged catalog of several hundred tools, that
 needs ranked search, not a substring filter
 (`tool-distribution-discovery-2026-06-08` P-005..P-008).
 

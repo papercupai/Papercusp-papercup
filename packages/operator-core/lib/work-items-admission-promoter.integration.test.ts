@@ -1936,6 +1936,8 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(promptKeys(first)).toEqual(['WI-beta-free::WI-beta-new']);
       expect(tick1).toMatchObject({ promoted: 0, held: 1, guardRefusals: [] });
       expect(tick1.prescreen).toMatchObject({ selected: 1, deferred: 1, protectedPairs: 2, forcedHolds: 1 });
+      // Neither outcome advances lastRetryAt, so both enter the rotation ledger (WI-6554700010018072).
+      expect([...(tick1.prescreen?.rotatedIds ?? [])].sort()).toEqual(['WI-alpha-new', 'WI-beta-new']);
       expect(await admissionOf('WI-alpha-new')).toBe('pending');
       expect(await admissionOf('WI-beta-new')).toBe(admission);
       const [held] = await db.sql`SELECT payload->'admissionHold' AS hold,
@@ -1968,6 +1970,45 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(tick3).toMatchObject({ promoted: 2, held: 0 });
       expect(await admissionOf('WI-alpha-new')).toBe('admitted');
       expect(await admissionOf('WI-beta-new')).toBe('admitted');
+    }, 90_000);
+
+    it('rotates structurally skipped rows behind unexamined ones so the window head cannot stall (WI-6554700010018072)', async () => {
+      // Three pending rows whose ONLY twin is claimed: each is deferred on every tick and gets no
+      // verdict that advances lastRetryAt. batchSize 1 makes the window 3 rows, so on the old
+      // ordering they held the whole window on every tick and WI-fresh was never examined
+      // (live 2026-10-20: the same 60 rows, 13 scheduled runs, 1 promotion).
+      await seedItem({ id: 'WI-gate', title: 'gate finding', admission: 'admitted', vector: '[1,0,0]', takenBy: 'su-holder', createdAtMs: NOW - 60_000 });
+      for (const [index, id] of ['WI-held-1', 'WI-held-2', 'WI-held-3'].entries()) {
+        await seedItem({ id, title: 'gate finding', vector: '[1,0,0]', createdAtMs: NOW - 50_000 + index * 1_000 });
+      }
+      await seedItem({ id: 'WI-fresh', title: 'zebra telemetry outage', vector: '[0,1,0]', createdAtMs: NOW - 10_000 });
+      const heldStamps = async () => db.sql<Array<{ feature_id: string; updated_ts: string }>>`
+        SELECT feature_id, updated_ts FROM harness_shared.work_items
+         WHERE feature_id LIKE 'WI-held-%' ORDER BY feature_id`;
+      const tick = (runId: string) => runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId, sql: db.sql, llmCall: distinctCall(), now: () => NOW, batchSize: 1,
+      });
+
+      const before = await heldStamps();
+      const tick1 = await tick('rotation-1');
+      expect(tick1.prescreen).toMatchObject({
+        window: 3, selected: 0, deferred: 3, rotatedIds: ['WI-held-1', 'WI-held-2', 'WI-held-3'],
+      });
+      expect(await admissionOf('WI-fresh')).toBe('pending');
+      const [ledger] = await db.sql<Array<{ rotated: string[] }>>`
+        SELECT detail #> '{prescreen,rotatedIds}' AS rotated FROM harness_shared.admission_runs WHERE id = 'rotation-1'`;
+      expect(ledger?.rotated).toEqual(['WI-held-1', 'WI-held-2', 'WI-held-3']);
+
+      // The ledger stamp sorts the deferred rows behind the never-examined row, which now gets
+      // its turn — and the rotation wrote nothing to the deferred rows themselves.
+      const tick2 = await tick('rotation-2');
+      expect(tick2).toMatchObject({ promoted: 1 });
+      expect(await admissionOf('WI-fresh')).toBe('admitted');
+      expect(await heldStamps()).toEqual(before);
+
+      // Outside the scheduled model window the ledger is ignored: a plain read keeps FIFO order.
+      expect((await readPendingBatch(db.sql, WS, HARNESS, 3)).map((row) => row.id))
+        .toEqual(['WI-held-1', 'WI-held-2', 'WI-held-3']);
     }, 90_000);
   });
 
@@ -3648,6 +3689,33 @@ describe('readPendingBatch resolver-input priority (P-006)', () => {
       .toEqual(['WI-old', 'WI-recovery', 'WI-peer']);
     expect((await readPendingBatch(db.sql, WS, HARNESS, 3, ['WI-old', 'WI-recovery'], opts)).map((r) => r.id))
       .toEqual(['WI-old', 'WI-recovery']);
+  });
+
+  it('ranks an authenticated component-screening request ahead of the unbounded overdue re-review lead (EI-26286722843068668)', async () => {
+    // Live 2026-10-20: 121 claimed overdue re-review rows led a 60-row window, so a hinted row
+    // ranked below them never entered it and the scope-held recovery stayed pending.
+    for (const [index, id] of ['WI-lead-a', 'WI-lead-b', 'WI-lead-c'].entries()) {
+      await seedPending({ id, createdAtMs: NOW - 50_000 + index * 10_000 });
+    }
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET admission = 'unreviewed', taken_by = 'su-worker',
+             payload = payload || jsonb_build_object('admissionReview', jsonb_build_object(
+               'state', 'pending', 'retryAttempts', 0, 'reviewDueAt', '2026-08-26T11:00:00Z'))
+       WHERE feature_id LIKE 'WI-lead-%'`;
+    await seedPending({ id: 'WI-hint', createdAtMs: NOW - 20_000 });
+    await seedPending({ id: 'WI-hint-peer', createdAtMs: NOW - 10_000 });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'live-peer' WHERE feature_id = 'WI-hint-peer'`;
+    const read = (batch: number, hints?: string[]) =>
+      readPendingBatch(db.sql, WS, HARNESS, batch, undefined,
+        { demoteGuardBlocked: true, ...(hints ? { componentScreeningItemIds: hints } : {}) })
+        .then((rows) => rows.map((row) => row.id));
+
+    expect(await read(2)).toEqual(['WI-lead-a', 'WI-lead-b']);
+    expect(await read(2, ['WI-hint', 'WI-hint-peer'])).toEqual(['WI-hint', 'WI-lead-a']);
+    // A peer's valid claim still demotes its hinted row behind everything unblocked.
+    expect(await read(5, ['WI-hint', 'WI-hint-peer']))
+      .toEqual(['WI-hint', 'WI-lead-a', 'WI-lead-b', 'WI-lead-c', 'WI-hint-peer']);
   });
 
   it('rotates scheduled ambiguous reviews behind never-reviewed and less-recently reviewed rows', async () => {

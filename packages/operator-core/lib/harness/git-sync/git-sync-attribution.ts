@@ -14,6 +14,8 @@
 export interface FileAttribution {
   /** Stable owner id — the grouping key + the Co-Authored-By identity. */
   agent: string;
+  /** Latest edit-ledger timestamp for this file, used to order older dirty groups first. */
+  editedAtMs?: number;
   /** Human label for the trailer name (falls back to `agent`). */
   agentLabel?: string;
   /** The agent's declared intent — becomes the commit subject. */
@@ -167,7 +169,8 @@ export function coAuthorTrailer(a: FileAttribution): string | null {
  *
  * - Files present in `attribution` group under their agent; the rest fall to the
  *   catch-all (agent=null) — exactly what gets committed as a single lump today.
- * - Deterministic: agent groups sorted by id, files sorted within each, catch-all LAST.
+ * - Attributed groups run oldest-dirty-file first (provenance is the deterministic tie-break),
+ *   files are sorted within each, and the catch-all remains LAST.
  * - The catch-all group is ALWAYS appended (even with zero files — the caller skips an
  *   empty `git add`), so the unattributable remainder is committed just as today.
  *
@@ -177,14 +180,18 @@ export function coAuthorTrailer(a: FileAttribution): string | null {
 export function groupFilesForAttribution(
   dirtyFiles: string[],
   attribution: Map<string, FileAttribution>,
-  opts: { defaultSubject?: string } = {},
+  opts: {
+    defaultSubject?: string;
+    /** Working-tree mtimes, used to catch edits newer than the last native edit-ledger row. */
+    workingTreeMtimeMsByFile?: ReadonlyMap<string, number>;
+  } = {},
 ): AttributedCommitGroup[] {
   const defaultSubject = opts.defaultSubject ?? DEFAULT_GIT_SYNC_SUBJECT;
   // An agent may move between work-items before one git-sync tick. Grouping by
   // agent alone makes whichever file is visited first donate its provenance to
   // every other dirty file from that agent. Partition by the complete commit
   // provenance instead, while retaining the agent as the author identity.
-  const byProvenance = new Map<string, { attr: FileAttribution; files: string[] }>();
+  const byProvenance = new Map<string, { attr: FileAttribution; files: string[]; oldestEditedAtMs?: number }>();
   const remainder: string[] = [];
   for (const f of dirtyFiles) {
     const a = attribution.get(f);
@@ -207,9 +214,33 @@ export function groupFilesForAttribution(
       byProvenance.set(key, g);
     }
     g.files.push(f);
+    const ledgerEditedAtMs =
+      typeof a.editedAtMs === 'number' && Number.isFinite(a.editedAtMs) ? a.editedAtMs : undefined;
+    const workingTreeMtimeMs = opts.workingTreeMtimeMsByFile?.get(f);
+    const editedAtMs =
+      ledgerEditedAtMs === undefined
+        ? workingTreeMtimeMs
+        : typeof workingTreeMtimeMs === 'number' && Number.isFinite(workingTreeMtimeMs)
+          ? Math.max(ledgerEditedAtMs, workingTreeMtimeMs)
+          : ledgerEditedAtMs;
+    if (typeof editedAtMs === 'number' && Number.isFinite(editedAtMs)) {
+      g.oldestEditedAtMs =
+        g.oldestEditedAtMs === undefined ? editedAtMs : Math.min(g.oldestEditedAtMs, editedAtMs);
+    }
   }
   const groups: AttributedCommitGroup[] = [...byProvenance.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a, groupA], [b, groupB]) => {
+      if (groupA.oldestEditedAtMs !== undefined && groupB.oldestEditedAtMs === undefined) return -1;
+      if (groupA.oldestEditedAtMs === undefined && groupB.oldestEditedAtMs !== undefined) return 1;
+      if (
+        groupA.oldestEditedAtMs !== undefined &&
+        groupB.oldestEditedAtMs !== undefined &&
+        groupA.oldestEditedAtMs !== groupB.oldestEditedAtMs
+      ) {
+        return groupA.oldestEditedAtMs - groupB.oldestEditedAtMs;
+      }
+      return a.localeCompare(b);
+    })
     .map(([, g]) => ({
       agent: g.attr.agent,
       files: g.files.slice().sort(),
@@ -245,6 +276,8 @@ export interface AttributionRosterEntry {
   workItems?: string[];
   planSlug?: string;
   sessionId?: string;
+  /** Latest edit-ledger timestamp by workspace-relative file path. */
+  editedAtMsByFile?: Record<string, number>;
 }
 
 export function attributionMapForRepo(
@@ -275,6 +308,7 @@ export function attributionMapForRepo(
       }
       if (rel == null || rel === '') continue;
       if (!map.has(rel)) {
+        const editedAtMs = a.editedAtMsByFile?.[raw] ?? a.editedAtMsByFile?.[f] ?? a.editedAtMsByFile?.[rel];
         map.set(rel, {
           agent: a.agent,
           agentLabel: a.agentLabel,
@@ -283,6 +317,7 @@ export function attributionMapForRepo(
           workItems: a.workItems,
           planSlug: a.planSlug,
           sessionId: a.sessionId,
+          ...(typeof editedAtMs === 'number' && Number.isFinite(editedAtMs) ? { editedAtMs } : {}),
         });
       }
     }

@@ -135,9 +135,9 @@ vi.mock('./AdvNowRunning', () => ({
 // No './PotsRunningPill' mock — the component was DELETED by P-075
 // ([owner 2026-08-10] "remove the ... 'pots running' button").
 vi.mock('./AgentsRunningPill', () => ({ default: () => <div data-testid="agents-pill" /> }));
-vi.mock('./DiscordBadge', () => ({
+vi.mock('./CommunityBadge', () => ({
   default: ({ slug }: { slug: string | null }) => (
-    <div data-testid="discord-badge" data-slug={slug ?? ''} />
+    <div data-testid="community-badge" data-slug={slug ?? ''} />
   ),
 }));
 vi.mock('@/lib/useWorkspaceLabel', () => ({ useWorkspaceLabel: () => 'papercusp-ws' }));
@@ -241,14 +241,14 @@ describe('AdvPotBar — which tabs get it (owner ask 2026-07-27 #2/#3)', () => {
   it('renders the POT-scoped widgets (with the active pot) only when withStatus is set', async () => {
     await renderBar({ withStatus: true });
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('pot-a');
-    expect(screen.getByTestId('discord-badge').getAttribute('data-slug')).toBe('pot-a');
+    expect(screen.getByTestId('community-badge').getAttribute('data-slug')).toBe('pot-a');
 
     cleanup();
     await renderBar();
     // Selector still there; the pot widgets gone.
     expect(screen.getByLabelText('Select Pot')).toBeTruthy();
     expect(screen.queryByTestId('now-running')).toBeNull();
-    expect(screen.queryByTestId('discord-badge')).toBeNull();
+    expect(screen.queryByTestId('community-badge')).toBeNull();
   });
 
   it('never renders the WORKSPACE-wide pills — they live in the AdvShell top bar', async () => {

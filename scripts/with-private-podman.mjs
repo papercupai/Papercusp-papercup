@@ -19,6 +19,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { killSpawnedProcessTree } from './lib/batch-watchdog.mjs';
+import { runGovernedTestProcess } from './lib/governed-test-process.mjs';
 
 function ping(socketPath, timeoutMs, signal) {
   return new Promise((done) => {
@@ -97,7 +98,38 @@ async function stop(child) {
   }
 }
 
-export async function runWithPrivatePodman(command, args, { evidenceDir, env = process.env,
+/** Run the private service and its workload under one durable process receipt.
+ * The receipt spans both children: the Podman API host is resident while the
+ * workload runs, so admitting only the second child would under-account the
+ * private fixture. An inherited context reuses the caller's receipt.
+ */
+export async function runWithPrivatePodman(command, args, options = {}) {
+  const { evidenceDir, env = process.env, runTimeoutMs = 45 * 60_000, signal,
+    storageRoot } = options;
+  if (!command || !evidenceDir) throw new Error('command and fresh evidenceDir are required');
+  if (!Number.isSafeInteger(runTimeoutMs) || runTimeoutMs <= 0 || runTimeoutMs > 2_147_483_647) {
+    throw new Error('runTimeoutMs must be an integer between 1 and 2147483647');
+  }
+  if (storageRoot && resolve(storageRoot, 'run').length > 50) {
+    throw new Error('Podman runroot must be at most 50 characters; choose a shorter storageRoot');
+  }
+  const owner = env.PAPERCUSP_SID?.trim() || `with-private-podman:${process.pid}`;
+  return runGovernedTestProcess({
+    env,
+    owner,
+    namespace: 'with-private-podman',
+    admissionClass: 'process',
+    idempotencyKey: `with-private-podman:${owner}`,
+    demand: { cpuWeight: 1, memoryBytes: 1024 * 1024 * 1024,
+      diskBytes: 256 * 1024 * 1024, fileDescriptors: 16 },
+    timeoutMs: runTimeoutMs,
+    signal,
+  }, async (_context, governedEnv) => runPrivatePodman(command, args, {
+    ...options, evidenceDir, env: governedEnv, runTimeoutMs, signal,
+  }));
+}
+
+async function runPrivatePodman(command, args, { evidenceDir, env = process.env,
   podman = 'podman', storageRoot, timeoutMs = 15_000, runTimeoutMs = 45 * 60_000, signal } = {}) {
   if (!command || !evidenceDir) throw new Error('command and fresh evidenceDir are required');
   if (!Number.isSafeInteger(runTimeoutMs) || runTimeoutMs <= 0 || runTimeoutMs > 2_147_483_647) {

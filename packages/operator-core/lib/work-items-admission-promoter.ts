@@ -2184,33 +2184,62 @@ export async function readPendingBatch(
           AND (payload #>> '{admissionReview,reviewDueAt}')::timestamptz < now(),
           FALSE)`;
   const turnBoundMinutes = CLAIMED_REREVIEW_TURN_BOUND_MINUTES;
+  // WI-6554700010018072: a deferred, self-blocked or forced-hold row gets no verdict that
+  // advances lastRetryAt, so on lastRetryAt alone those rows kept the window head on EVERY
+  // scheduled tick (2026-10-20: 13 runs, the same 60 rows, 1 promotion) and no row behind them
+  // was ever examined. Each tick records them on its own admission_runs row
+  // (detail.prescreen.rotatedIds); the review watermark is the later of the judged-retry stamp
+  // and that rotation stamp. Reading the existing run ledger keeps the no-churn rule of
+  // WI-6554700010008443: nothing is written to work_items, whose UPDATE triggers would fire
+  // the outbox, change-notify and blueprint-event paths for every skipped row on every tick.
+  const rotate = targets === undefined && demote && !modelFree;
+  const reviewWatermark = () => sql`GREATEST(
+          CASE WHEN pg_input_is_valid(wi.payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
+               THEN (wi.payload #>> '{admissionReview,lastRetryAt}')::timestamptz END,
+          rotated.rotated_at)`;
   const rows = await sql<WorkItemRow[]>`
-    SELECT feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
-      FROM harness_shared.work_items
+    WITH rotated AS (
+      SELECT x.rotated_id, max(ar.started_at) AS rotated_at
+        FROM harness_shared.admission_runs ar
+        CROSS JOIN LATERAL jsonb_array_elements_text(
+          CASE WHEN jsonb_typeof(ar.detail #> '{prescreen,rotatedIds}') = 'array'
+               THEN ar.detail #> '{prescreen,rotatedIds}' ELSE '[]'::jsonb END) AS x(rotated_id)
+       WHERE ${rotate}
+         AND ar.workspace_id = ${workspaceId}
+         AND ar.harness_slug = ${harnessSlug}
+         AND ar.run_kind = 'promoter-tick'
+         AND ar.started_at > now() - make_interval(hours => ${PROMOTER_ROTATION_LOOKBACK_HOURS}::int)
+       GROUP BY x.rotated_id
+    )
+    SELECT wi.feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
+      FROM harness_shared.work_items wi
+      LEFT JOIN rotated ON rotated.rotated_id = wi.feature_id
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
        AND admission IN ('pending', 'unreviewed')
        AND lane IS DISTINCT FROM 'observation'
-       AND (${targets === undefined} OR feature_id = ANY(${targets ?? []}::text[]))
+       AND (${targets === undefined} OR wi.feature_id = ANY(${targets ?? []}::text[]))
      ORDER BY
+       -- EI-26286722843068668: an authenticated component-screening request is a BOUNDED set,
+       -- so it outranks the overdue re-review lead, which is not (121 rows on 2026-10-20
+       -- against a 60-row window). Below the lead it inherited the starvation of the lead and never
+       -- entered the window. Peer guards still win: a guard-blocked or validly claimed hinted
+       -- row keeps its demoted place (componentScreeningIds is empty outside this window).
+       (wi.feature_id = ANY(${componentScreeningIds}::text[])
+          AND NOT ${otherGuardBlocked()}
+          AND NOT (${claimed()} AND NOT ${overdueReReview()})) DESC,
        (${demote} AND NOT ${modelFree}
           AND ${claimed()} AND ${overdueReReview()} AND NOT ${otherGuardBlocked()}
           AND COALESCE(
-            NOT pg_input_is_valid(payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
-            OR (payload #>> '{admissionReview,lastRetryAt}') IS NULL
-            OR (payload #>> '{admissionReview,lastRetryAt}')::timestamptz
-                 < now() - make_interval(mins => ${turnBoundMinutes}::int),
+            ${reviewWatermark()} < now() - make_interval(mins => ${turnBoundMinutes}::int),
             TRUE)) DESC,
        (${demote} AND (
           ${otherGuardBlocked()}
           OR (${claimed()} AND NOT ${overdueReReview()}))) ASC,
        (${modelFree} AND admission <> 'pending') ASC,
        (${modelFree} AND (payload -> 'dedupCandidates') IS NOT NULL) ASC,
-       (feature_id = ANY(${componentScreeningIds}::text[])) DESC,
-       CASE WHEN ${demote} AND NOT ${modelFree}
-              AND pg_input_is_valid(payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
-            THEN (payload #>> '{admissionReview,lastRetryAt}')::timestamptz
-            ELSE NULL END ASC NULLS FIRST,
+       (wi.feature_id = ANY(${componentScreeningIds}::text[])) DESC,
+       CASE WHEN ${demote} AND NOT ${modelFree} THEN ${reviewWatermark()} ELSE NULL END ASC NULLS FIRST,
        (payload -> 'dedupCandidates') IS NOT NULL DESC,
        COALESCE((payload -> 'dedupCoverage' ->> 'degraded')::boolean, false) DESC,
        created_ts ASC NULLS FIRST, feature_id ASC
@@ -3923,7 +3952,24 @@ export interface PromoterPrescreen {
   /** Batch rows held without a promote because a transiently protected twin is unjudged. */
   forcedHolds: number;
   samples: PromoterPrescreenSample[];
+  /**
+   * Every examined row this tick left WITHOUT a verdict that advances its review watermark:
+   * self-blocked, deferred, and forced-hold rows, in window order. Persisted on the run's
+   * `detail.prescreen`, it is the rotation ledger: the next scheduled window sorts these rows
+   * behind rows it has not examined yet (see readPendingBatch, WI-6554700010018072). Never
+   * sampled or capped — it is bounded by the window itself.
+   */
+  rotatedIds: string[];
 }
+
+/**
+ * How far back the scheduled window reads the rotation ledger (`detail.prescreen.rotatedIds`
+ * of `promoter-tick` runs). It must exceed one full rotation of the structurally blocked
+ * population (measured 2026-10-20, papercusp: ~3,900 pending/unreviewed rows, at most 60
+ * rotated per tick, ~48 model ticks a day). A row whose last rotation is older falls back to
+ * its own review watermark, so a short bound degrades to a partial rotation, never a stall.
+ */
+export const PROMOTER_ROTATION_LOOKBACK_HOURS = 48;
 
 /**
  * The guard verdict for ONE endpoint in every role the promoter could give it. The
@@ -4016,6 +4062,7 @@ export function prescreenPromoterWindow(input: {
 
   const batch: PromoterItem[] = [];
   const forcedHolds = new Map<string, string>();
+  const deferredIds = new Set<string>();
   let deferred = 0;
   for (const item of input.window) {
     if (selfBlocked.has(item.id)) continue;
@@ -4038,6 +4085,7 @@ export function prescreenPromoterWindow(input: {
     }
     if (protectedTwin && (movable === 0 || input.componentScreeningItemIds?.includes(item.id))) {
       deferred += 1;
+      deferredIds.add(item.id);
       sample({ itemId: item.id, class: 'deferred', reason: protectedTwin.reason, blockedBy: protectedTwin.id });
       continue;
     }
@@ -4082,6 +4130,11 @@ export function prescreenPromoterWindow(input: {
       protectedPairs,
       forcedHolds: forcedHolds.size,
       samples,
+      // None of these outcomes advances lastRetryAt (a forced hold is screeningDeferred), so
+      // without the ledger the same rows would hold the window head on every tick.
+      rotatedIds: input.window
+        .filter((item) => selfBlocked.has(item.id) || deferredIds.has(item.id) || forcedHolds.has(item.id))
+        .map((item) => item.id),
     },
   };
 }

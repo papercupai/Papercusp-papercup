@@ -2258,56 +2258,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // discordConfig.byHarness — Discord guild config + live widget data per harness.
-  // Reads from harnessProjectFiles (config.json) and fetches widget data server-side.
-  // Empty is authoritative (a harness with no row or no discord config returns empty).
-  // (all-active-surfaces-data-sync-migration-2026-07-11 P-009)
-  'discordConfig.byHarness': {
-    argsSchema: z.object({
-      harnessSlug: z.string(),
-      workspaceId: z.string().optional(),
-    }),
-    resolve: async (args) => {
-      const { harnessSlug, workspaceId } = args as {
-        harnessSlug: string;
-        workspaceId?: string;
-      };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { and, eq } = await import('drizzle-orm');
-      const t = generated.harnessProjectFilesInHarnessShared;
-      const { db } = getOrgPg();
-
-      // Fetch the config.json from harnessProjectFiles
-      const rows = await db
-        .select({ config: t.config })
-        .from(t)
-        .where(
-          workspaceId != null
-            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
-            : eq(t.harnessSlug, harnessSlug),
-        );
-
-      // Parse discord config from the config.json
-      const configJson = rows[0]?.config;
-      if (!configJson) return [];
-
-      try {
-        const cfg = JSON.parse(configJson) as Record<string, unknown>;
-        const discordCfg = cfg.discord as Record<string, unknown> | undefined;
-        if (!discordCfg) return [];
-
-        const guildId = typeof discordCfg.guildId === 'string' ? discordCfg.guildId.trim() : '';
-        const inviteUrl = typeof discordCfg.inviteUrl === 'string' ? discordCfg.inviteUrl.trim() : '';
-        if (!guildId) return [];
-
-        // Return the discord config (no widget data — widget is fetched client-side on demand)
-        return [{ guildId, inviteUrl }] as unknown[];
-      } catch {
-        return [];
-      }
-    },
-  },
-
   // harnessSkills.byHarness — skills sorted by name.
   //   zql.harnessSkills.where('harnessSlug', s).orderBy('name', 'asc')
   'harnessSkills.byHarness': {

@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { admitTaskDeadline } from './task-deadline.mjs';
 
 const [phase = 'prepare', prepareOnly = '0', assertionMode = '0', attemptsDone = '0', elapsedSec = '0'] = process.argv.slice(2);
@@ -23,7 +25,23 @@ try {
   const attempts = Math.max(0, integer('VERIFY_TAURI_MAX_BOOT_ATTEMPTS', 2, 1) - Number(attemptsDone));
   const bootMs = prepareOnly === '1' || phase === 'assert' ? 0 : attempts * 1000 *
     (integer('VERIFY_TAURI_BUILD_TIMEOUT', 300, 1) + integer('VERIFY_TAURI_TIMEOUT', 180, 1));
-  const assertionMs = prepareOnly === '1' || assertionMode !== '1' ? 0 : integer('VERIFY_TAURI_ASSERT_ESTIMATE_MS', 0);
+  let assertionMs = 0;
+  if (prepareOnly !== '1' && assertionMode === '1') {
+    assertionMs = integer('VERIFY_TAURI_ASSERT_ESTIMATE_MS', 0);
+    if (process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE) {
+      // Reuse the assertion's maintained prerequisite profile. A missing or
+      // smaller caller estimate must not erase a known long-running journey
+      // and admit a parent clock which will kill it after native preparation.
+      const root = process.env.PAPERCUSP_REPO_DIR ?? fileURLToPath(new URL('../..', import.meta.url));
+      const profile = JSON.parse(readFileSync(resolve(root,
+        process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE), 'utf8'));
+      if (profile.assertionEstimateMs !== undefined) {
+        if (!Number.isSafeInteger(profile.assertionEstimateMs) || profile.assertionEstimateMs <= 0)
+          throw new Error('Invalid live-profile assertionEstimateMs');
+        assertionMs = Math.max(assertionMs, profile.assertionEstimateMs);
+      }
+    }
+  }
   const unknownTasks = Number(phase === 'prepare' && prepareMs === null) +
     Number(prepareOnly !== '1' && assertionMode === '1' && assertionMs === 0);
   const knownEstimateMs = (phase === 'prepare' ? prepareMs ?? 0 : 0) + bootMs + assertionMs + 120_000;
@@ -31,7 +49,7 @@ try {
     Number(assertionMs > 0) + Number(phase === 'prepare' && prepareMs !== null), unknownTasks });
   console.error(`VERIFY_TAURI_TASK_BUDGET phase=${phase} deadlineEpochMs=${admission.deadlineEpochMs ?? 'unknown'} ` +
     `remainingMs=${admission.remainingMs ?? 'unknown'} knownEstimateMs=${admission.knownEstimateMs} ` +
-    `unknownTasks=${unknownTasks} childCutoffEpochMs=${admission.childCutoffEpochMs ?? 'unknown'}`);
+    `unknownTasks=${unknownTasks} assertionEstimateMs=${assertionMs} childCutoffEpochMs=${admission.childCutoffEpochMs ?? 'unknown'}`);
 } catch (error) {
   console.error(error.message);
   process.exitCode = 2;

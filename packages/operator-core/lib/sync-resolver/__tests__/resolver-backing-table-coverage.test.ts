@@ -355,7 +355,6 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'dev.pgHealth',
   'dev.telemetry',
   'dev.toolFormatAdoption',
-  'discordConfig.byHarness',
   'dockLayouts.byName',
   'dockLayouts.list',
   'evals.benchEstimate',

@@ -79,6 +79,15 @@ describe('readEditAttributionRoster — workspace-scoped, never repo_root-scoped
     ]);
   });
 
+  it('returns the latest edit timestamp per file for fair commit-group ordering', async () => {
+    const editedAt = '2026-10-14T23:45:08.212Z';
+    sqlStub.rows = [row({ file: 'a.ts', edited_at_ms: Date.parse(editedAt) })];
+
+    const roster = await readEditAttributionRoster({ workspaceId: 'papercusp-workspace' });
+
+    expect(roster[0]?.editedAtMsByFile).toEqual({ 'a.ts': Date.parse(editedAt) });
+  });
+
   it('groups multiple files under one agent and keeps distinct agents apart', async () => {
     sqlStub.rows = [
       row({ agent_id: 'su-aaa', file: 'a.ts', work_item_id: 'WI-1' }),

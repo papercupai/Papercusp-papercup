@@ -299,7 +299,7 @@
                     "type": "object", "additionalProperties": false, "required": ["header", "scheme"],
                     "properties": {
                       "header": { "enum": ["authorization", "api-key", "x-api-key"] },
-                      "scheme": { "enum": ["bearer", "raw"] }
+                      "scheme": { "enum": ["bearer", "raw", "bot"] }
                     }
                   },
                   "perPrincipal": {

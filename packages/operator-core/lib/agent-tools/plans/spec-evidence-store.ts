@@ -4243,6 +4243,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                   failed: parsedTestRunExecution.failed,
                   skipped: parsedTestRunExecution.skipped,
                   collectionFailed: parsedTestRunExecution.collectionFailed,
+                  ...(parsedTestRunExecution.testNamePattern !== null
+                    ? { testNamePattern: parsedTestRunExecution.testNamePattern }
+                    : {}),
                   filePath: parsedTestRunExecution.filePath,
                   ...(parsedTestRunExecution.scenarioId !== undefined
                     ? { scenarioId: parsedTestRunExecution.scenarioId }

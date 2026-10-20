@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 980,
+  "count": 981,
   "tools": [
     {
       "name": "ablation:report",
@@ -19776,6 +19776,39 @@
         "when": "A plan/event consumer has a result the owner should see now and needs both durable inbox history and a desktop/mobile attention attempt. Use a stable plan-run/delivery key.",
         "notWhen": "Agent coordination uses coord:send. Conversational replies should be spoken normally. Never generate a fresh dedupeKey when retrying the same delivery.",
         "chaining": "Build the result first, then call once with dedupeKey = <plan-run-ref>:<delivery-purpose>. The returned inbox.msgId and attention.recordId are the receipts."
+      }
+    },
+    {
+      "name": "notify:send",
+      "http": {
+        "path": "/api/agent-tools/notify/send",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Post a notification to the channel of an installed notification provider (e.g. Discord) through an explicit connected source. Mentions never ping.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner asks to post an announcement or alert to their connected Discord channel.",
+        "notWhen": "Not for replying in a chat thread (chat:reply) or social posts (social:post).",
+        "chaining": "Reuse the same idempotencyKey when repeating an ambiguous send. Report the returned url."
       }
     },
     {

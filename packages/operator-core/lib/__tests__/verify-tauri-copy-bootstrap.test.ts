@@ -89,11 +89,55 @@ function deadlineProbe({ phase = 'prepare', remainingMs = 1_800_000, history,
       PAPERCUSP_TASK_DEADLINE_EPOCH_MS: remainingMs === null ? '' : String(1000 + remainingMs),
       VERIFY_TAURI_TIMEOUT: '180', VERIFY_TAURI_BUILD_TIMEOUT: '300',
       VERIFY_TAURI_MAX_BOOT_ATTEMPTS: '2', VERIFY_TAURI_ASSERT_ESTIMATE_MS: '240000',
+      PAPERCUSP_APP_OPERATION_LIVE_PROFILE: '',
       VERIFY_TAURI_BUDGET_FROM: history ? historyPath : '', ...extra } });
 }
 
 describe('native verifier parent deadline admission', () => {
   const preparation = [{ phase: 'prepare', status: 'passed', elapsedMs: 1_745_443 }];
+
+  function profileBudget(estimateMs: unknown) {
+    const path = join(stage, 'assertion-budget-profile.json');
+    writeFileSync(path, JSON.stringify({ assertionEstimateMs: estimateMs }));
+    return { PAPERCUSP_APP_OPERATION_LIVE_PROFILE: path };
+  }
+
+  it.each(['', '240000'])('refuses a 45-minute launch below its live-profile assertion budget (%j)', estimate => {
+    const result = deadlineProbe({ remainingMs: 2_700_000,
+      extra: { ...profileBudget(3_600_000), VERIFY_TAURI_ASSERT_ESTIMATE_MS: estimate } });
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('TASK_DEADLINE_REFUSAL');
+    expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
+  });
+
+  it('admits the profile plus measured preparation, retries and cleanup when the parent fits', () => {
+    const result = deadlineProbe({ history: preparation, remainingMs: 7_000_000,
+      extra: profileBudget(3_600_000) });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('knownEstimateMs=6861804');
+    expect(result.stdout).toContain('NATIVE_FIXTURE_ALLOCATED');
+  });
+
+  it('keeps a larger caller assertion estimate instead of lowering it to the profile', () => {
+    const result = deadlineProbe({ phase: 'assert', remainingMs: 4_000_000,
+      extra: { ...profileBudget(3_600_000), VERIFY_TAURI_ASSERT_ESTIMATE_MS: '4000000' } });
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('knownEstimateMs=4120000');
+    expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
+  });
+
+  it.each([0, -1, '3600000', 1.5])('refuses an invalid live-profile assertion estimate %j', estimate => {
+    const result = deadlineProbe({ remainingMs: 7_000_000, extra: profileBudget(estimate) });
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('Invalid live-profile assertionEstimateMs');
+    expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
+  });
+
+  it('declares the full historical pager budget in the maintained audit profile', () => {
+    const profile = JSON.parse(readFileSync(join(repo,
+      'packages/operator-core/test/parked-agent-audit.live-profile.json'), 'utf8'));
+    expect(profile.assertionEstimateMs).toBeGreaterThanOrEqual(3_600_000);
+  });
 
   it('refuses the retained 29-minute preparation forecast before any native allocation', () => {
     const result = deadlineProbe({ history: preparation });

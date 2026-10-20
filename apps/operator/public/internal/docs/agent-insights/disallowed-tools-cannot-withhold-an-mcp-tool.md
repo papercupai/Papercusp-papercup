@@ -50,7 +50,7 @@ Both states present as **exactly** the same two observations:
 
 There is no signal that distinguishes *"this was taken away from you"* from *"this was never
 offered to you"*. That matters because papercusp's trimmed surfaces (su, and any role with a
-narrowed kit) legitimately seed only a subset of the \~550-tool catalog — so **"never seeded" is
+narrowed kit) legitimately seed only a subset of the full tool catalog — so **"never seeded" is
 the common case, and a deny is the rare one.**
 
 The failure mode is a false positive: you deny a tool, observe the expected refusal, and record

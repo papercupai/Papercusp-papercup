@@ -1785,6 +1785,7 @@ export {
   PROVIDER_CREDENTIAL_MAX_LENGTH,
   providerCredentialValueIssue,
   providerCredentialForHost,
+  providerCredentialHeaderValue,
   providerPrincipalCredentialForHost,
   PROVIDER_ACL_REF_PATTERN,
   PROVIDER_SEARCH_LIVE_CAPABILITY,

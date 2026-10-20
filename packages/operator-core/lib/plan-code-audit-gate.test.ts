@@ -515,6 +515,39 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
     expect(mockCitationContext).not.toHaveBeenCalled();
   });
 
+  // D-011: p2p-work-distribution-2026-07-02 P-103/P-104 are 'done' items the audit recorded as
+  // 'dropped'. A recorded drop has no deliverable to verify, so the code-deliverable check
+  // must not refuse it; the same entry audited 'missing' still refuses.
+  it.each([
+    ['dropped', null],
+    ['missing', 'code_deliverable_unverified'],
+  ] as const)('a done code item audited %s with no code citation → %s', async (auditVerdict, refusal) => {
+    const entry: EffectiveItemAudit = {
+      auditSeq: 9,
+      entry: {
+        itemId: 'P-103',
+        verdict: auditVerdict,
+        note: 'superseded by the fleet-scheduler plan',
+        citations: [{ kind: 'none', reason: 'no code was written for this item' }],
+        auditedSha: 'head-1',
+        auditedAt: '2026-08-13T11:00:00.000Z',
+        itemTextHash: planItemTextHash('standing puller'),
+      },
+    };
+    mockEffectiveAudits.mockResolvedValue([entry]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-103', status: 'done', itemText: 'standing puller' }]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    if (refusal === null) {
+      expect(verdict).toMatchObject({ satisfied: true, skipped: 'flag-off' });
+    } else {
+      expect(verdict).toMatchObject({ satisfied: false, code: refusal });
+      expect(verdict.message).toContain(`P-103 (deliverable 'code' from `);
+      expect(verdict.message).toContain(`audit #9 verdict 'missing')`);
+    }
+  });
+
   it('force records both stale coverage and unresolved citations in refusal order', async () => {
     const p1 = effective({ itemId: 'P-001', itemText: 'old requirement', path: 'src/p_001.ts' });
     files.delete('src/p_001.ts');

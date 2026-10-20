@@ -11,8 +11,10 @@ import {
   providerOptionSourceOf,
   PROVIDER_APP_DEFINITION_MAX_LENGTH,
   PROVIDER_APP_DEFINITION_PLACEHOLDER,
+  PROVIDER_CREDENTIAL_AUTH_SCHEMES,
   PROVIDER_CREDENTIAL_MAX_LENGTH,
   PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
+  providerCredentialHeaderValue,
   providerAppDefinitionText,
   providerAppRegistrationUrl,
   providerCredentialForHost,
@@ -31,11 +33,17 @@ describe('host-owned credential authentication headers', () => {
   const field = { key: 'api_key', label: 'API key', hosts: ['blog.test'] };
   const validate = (auth: unknown, overrides = {}) => validateProviderDescriptor({ ...base,
     setup: { credentials: [{ ...field, auth, ...overrides }] } });
-  it('accepts raw API-key and authorization values as well as the existing Bearer default', () => {
+  it('accepts raw, Bot and Bearer authentication values as well as the existing Bearer default', () => {
     for (const header of ['api-key', 'authorization', 'x-api-key']) {
-      for (const scheme of ['raw', 'bearer']) expect(validate({ header, scheme })).toEqual([]);
+      for (const scheme of PROVIDER_CREDENTIAL_AUTH_SCHEMES) expect(validate({ header, scheme })).toEqual([]);
     }
     expect(validateProviderDescriptor({ ...base, setup: { credentials: [field] } })).toEqual([]);
+  });
+  it('writes each scheme as its header value', () => {
+    expect(PROVIDER_CREDENTIAL_AUTH_SCHEMES).toEqual(['bearer', 'raw', 'bot']);
+    expect(providerCredentialHeaderValue('bearer', 'k')).toBe('Bearer k');
+    expect(providerCredentialHeaderValue('raw', 'k')).toBe('k');
+    expect(providerCredentialHeaderValue('bot', 'k')).toBe('Bot k');
   });
   it.each([null, [], 'raw', {}, { header: 'cookie', scheme: 'raw' }, { header: 'host', scheme: 'raw' },
     { header: 'authorization\r\ninjected', scheme: 'raw' }, { header: 'api-key', scheme: 'Basic' },

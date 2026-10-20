@@ -1261,11 +1261,13 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
 
         // P-004 (R-11, D-009): resolve under the declarations in force NOW (plan profile,
         // declared deliverable, effective verdict), the same rule as the R-15 ship check.
+        // A 'dropped' audit verdict is a recorded drop (plans:audit requires its note), so,
+        // like a dropped item status above, it has no deliverable left to verify (D-011).
         const verification = resolveVerification(
           { verificationProfile: planVerification.verificationProfile },
           { deliverable: item.deliverable ?? null, auditVerdict: entry.verdict },
         );
-        if (verification.codeDeliverable && !hasResolvingCodeCitation) {
+        if (entry.verdict !== 'dropped' && verification.codeDeliverable && !hasResolvingCodeCitation) {
           codeUnverified.push(
             `${item.itemId} (deliverable 'code' from ${verification.deliverableSource}; audit #${auditSeq} ` +
             `verdict '${entry.verdict}')`,

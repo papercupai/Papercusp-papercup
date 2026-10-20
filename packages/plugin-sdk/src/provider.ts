@@ -510,8 +510,9 @@ export interface ProviderCredentialField {
    */
   hosts?: string[];
   /** Host-owned authentication for these hosts; omitted preserves Authorization: Bearer.
-   * Only authentication headers are accepted, never arbitrary HTTP header injection. */
-  auth?: { header: 'authorization' | 'api-key' | 'x-api-key'; scheme: 'bearer' | 'raw' };
+   * Only authentication headers are accepted, never arbitrary HTTP header injection.
+   * `bot` sends `Bot <value>` (Discord bot tokens). */
+  auth?: { header: 'authorization' | 'api-key' | 'x-api-key'; scheme: ProviderCredentialAuthScheme };
   /**
    * Each person stores their own value (e.g. a Slack user token), instead of the owner storing one
    * for the source (D-026). The host injects it only into `host.fetch` calls made on that person's
@@ -519,6 +520,17 @@ export interface ProviderCredentialField {
    * credential for the same host. Requires `hosts`; never an ingress credential.
    */
   perPrincipal?: boolean;
+}
+
+/** How the host writes a pasted credential into its authentication header. */
+export type ProviderCredentialAuthScheme = 'bearer' | 'raw' | 'bot';
+export const PROVIDER_CREDENTIAL_AUTH_SCHEMES: readonly ProviderCredentialAuthScheme[] = ['bearer', 'raw', 'bot'];
+
+/** The header value the host sends for a pasted credential under `scheme`. */
+export function providerCredentialHeaderValue(scheme: ProviderCredentialAuthScheme, value: string): string {
+  if (scheme === 'raw') return value;
+  if (scheme === 'bot') return `Bot ${value}`;
+  return `Bearer ${value}`;
 }
 
 /** Credential keys: lowercase, start with a letter, `-`/`_` allowed. */
@@ -1705,9 +1717,9 @@ function credentialFieldIssues(credentials: unknown, egress: string[], serviceHo
       const auth = field.auth;
       if (!auth || typeof auth !== 'object' || Array.isArray(auth) ||
         !['authorization', 'api-key', 'x-api-key'].includes(auth.header) ||
-        !['bearer', 'raw'].includes(auth.scheme) ||
+        !PROVIDER_CREDENTIAL_AUTH_SCHEMES.includes(auth.scheme) ||
         Object.keys(auth).some((key) => !['header', 'scheme'].includes(key))) {
-        issues.push(`${at}.auth must declare an authentication header and bearer or raw scheme`);
+        issues.push(`${at}.auth must declare an authentication header and a bearer, raw or bot scheme`);
       }
       if (!Array.isArray(field.hosts) || field.hosts.length === 0) issues.push(`${at}.auth requires hosts`);
     }

@@ -3051,6 +3051,7 @@ async function loadAttributionRosterMerged(workspaceId: string | null): Promise<
       workItems: e.workItems,
       planSlug: e.planSlug,
       sessionId: e.sessionId,
+      editedAtMsByFile: e.editedAtMsByFile,
     }));
   } catch {
     /* best-effort: fall through to presence */

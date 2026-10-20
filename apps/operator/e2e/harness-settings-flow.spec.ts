@@ -10,7 +10,7 @@
  *   - BlueprintSettingsPanel — schema-driven controls from the harness
  *     blueprint's declared params (may legitimately declare none), or
  *   - the legacy HarnessSettingsPanel — hardcoded Workers / AI backend /
- *     Discord sections.
+ *     Community badge sections.
  *
  * BOTH variants render `<h1>Settings — <slug></h1>` plus the shared
  * "Saved prompts" and "Plugins" sections, so the assertions here target

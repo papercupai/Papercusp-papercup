@@ -1,5 +1,6 @@
 {
   "runtimeUnits": ["postgres:5432", "hono-host:3170"],
+  "assertionEstimateMs": 3600000,
   "requiredEnv": ["PAPERCUSP_SID", "PAPERCUSP_WORKSPACE"],
   "requiredEnvWhen": [
     {

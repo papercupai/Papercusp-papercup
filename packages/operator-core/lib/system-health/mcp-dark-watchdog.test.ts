@@ -181,6 +181,37 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
     expect(evaluateInteractiveMcpDark({ ...base, presenceHeartbeatMs: INOW - 20 * M }, INOW).dark).toBe(false);
   });
 
+  it('detects repeated assistant turns without agent MCP calls even when supervisor or hook presence is fresh', () => {
+    const v = evaluateInteractiveMcpDark(
+      interactiveDark({
+        loopActive: false,
+        loopIntervalSec: null,
+        hostLastActivityMs: INOW - 1 * M,
+        presenceHeartbeatMs: INOW - 1 * M,
+        assistantTurnsSinceLastAgentCall: 3,
+        lastAssistantTurnMs: INOW - 1 * M,
+      }),
+      INOW,
+    );
+    expect(v.dark).toBe(true);
+    expect(v.reason).toContain('3 assistant turns without an agent-origin Papercusp tool call');
+  });
+
+  it('keeps one or two recent assistant turns below the no-agent-MCP threshold healthy', () => {
+    const v = evaluateInteractiveMcpDark(
+      interactiveDark({
+        loopActive: false,
+        loopIntervalSec: null,
+        hostLastActivityMs: INOW - 1 * M,
+        presenceHeartbeatMs: INOW - 1 * M,
+        assistantTurnsSinceLastAgentCall: 2,
+        lastAssistantTurnMs: INOW - 1 * M,
+      }),
+      INOW,
+    );
+    expect(v.dark).toBe(false);
+  });
+
   it('presence NEVER seen ⇒ NOT dark — no evidence it is a papercusp agent (false-positive fix 2026-07-20)', () => {
     // A session that never registered a single coord_presence beat has never
     // made a papercusp MCP call. It is either not a papercusp-tool session at all
@@ -425,6 +456,10 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     openPhases: string[];
     presenceByOwner?: Record<string, number | null>;
     agentInvocationByOwner?: Record<string, boolean>;
+    toolFreeTurnsByOwner?: Record<
+      string,
+      { assistantTurnsSinceLastAgentCall: number; lastAssistantTurnMs: number | null }
+    >;
   }) {
     const updatedPhases: string[] = [];
     type FakeSqlTag = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) & {
@@ -441,6 +476,19 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         const arr = values.find((v) => Array.isArray(v)) as string[] | undefined;
         if (arr) updatedPhases.push(...arr);
         return Promise.resolve([]);
+      }
+      if (q.includes('FROM harness_shared.session_turns')) {
+        const owners = values[0] as string[];
+        return Promise.resolve(
+          owners.map((owner_id) => {
+            const turns = opts.toolFreeTurnsByOwner?.[owner_id];
+            return {
+              owner_id,
+              assistant_turn_count: turns?.assistantTurnsSinceLastAgentCall ?? 0,
+              last_assistant_turn_ms: turns?.lastAssistantTurnMs ?? null,
+            };
+          }),
+        );
       }
       if (q.includes('FROM harness_shared.tool_invocations t')) {
         return Promise.resolve(
@@ -625,6 +673,48 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     expect(updatedPhases).not.toContain(phase);
     expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
     vi.useRealTimers();
+  });
+
+  it('heals a live session after three assistant turns without agent calls despite supervisor or hook presence', async () => {
+    const owner = 'su-connected-without-tools-list';
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-dark-watchdog-toolless-turns-'));
+    const previousProvenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    process.env.PAPERCUSP_TURN_PROVENANCE_DIR = dir;
+    const { tag } = fakeSql({
+      openPhases: [],
+      presenceByOwner: { [owner]: INOW - 1 * M },
+      agentInvocationByOwner: { [owner]: false },
+      toolFreeTurnsByOwner: {
+        [owner]: { assistantTurnsSinceLastAgentCall: 3, lastAssistantTurnMs: INOW - 1 * M },
+      },
+    });
+    listLiveHostsMock.mockReturnValue([
+      {
+        ownerId: owner,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+        bridgeTty: true,
+        caps: ['mcp-reconnect'],
+        sock: '/tmp/toolless-turns.sock',
+      },
+    ]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+    try {
+      const out = await checkInteractiveMcpDark(tag, {
+        jitterMaxMs: 0,
+        sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+      });
+
+      expect(out.darkOwners).toContain(owner);
+      expect(out.healSent).toContain(owner);
+      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owner);
+    } finally {
+      vi.useRealTimers();
+      if (previousProvenanceDir == null) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+      else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = previousProvenanceDir;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('a recent agent-origin invocation clears a live alert even without a presence beat', async () => {

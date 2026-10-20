@@ -281,6 +281,42 @@ export function tsconfigPathEntriesFor(wsRoot: string, { readFile }?: {
  */
 export function matchTsconfigPath(entries: Array<[string, string, boolean]>, spec: string): string | null;
 /**
+ * `@scope/name/sub/path` → `{ name: '@scope/name', subpath: './sub/path' }`; `.` for the root.
+ *
+ * @param {string} spec
+ * @returns {{ name: string, subpath: string } | null}
+ */
+export function splitPackageSpecifier(spec: string): {
+    name: string;
+    subpath: string;
+} | null;
+/**
+ * Every runtime target `pkg` exports for `subpath`, as absolute paths before extension probing.
+ *
+ * Node's rules decide WHICH entry applies: an exact subpath key wins outright; otherwise the
+ * pattern keys (one `*`) that match. All non-`types` conditions of the chosen entries are
+ * kept, and all matching pattern keys rather than only Node's single winner: the selector
+ * does not know the runner's condition set, and an extra edge can only select more tests.
+ * A `null` target (a blocked subpath) contributes nothing. Without `exports`, `.` is `main`
+ * (else `index`) and any other subpath is the file itself.
+ *
+ * @param {WorkspacePackage} pkg
+ * @param {string} subpath `.` or `./x/y`
+ * @returns {string[]}
+ */
+export function packageExportTargets(pkg: WorkspacePackage, subpath: string): string[];
+/**
+ * Whether a changed path OUTSIDE the indexed root can be related through the cross-root graph:
+ * a source module inside a workspace package, outside ignored/generated directories. Anything
+ * else (a manifest, a tsconfig, an asset, a root script) can change resolution or behaviour in
+ * ways no import edge records, so it keeps the whole suite.
+ *
+ * @param {WorkspacePackage[]} packages
+ * @param {string} file absolute path
+ * @returns {boolean}
+ */
+export function crossRootRelatableChange(packages: WorkspacePackage[], file: string): boolean;
+/**
  * Walk the transitive static module graph from a small set of entry files.
  *
  * This is the entry-oriented sibling of `buildIndex`: it reuses the same specifier parser and
@@ -358,6 +394,8 @@ export function edgeCacheKey(file: string, key: string): string;
  * @property {string[]}                files      every source file found under the root
  * @property {Map<string, Set<string>>} deps      file -> the intra-repo files it imports directly
  * @property {Set<string>}             unresolved files carrying an import we could NOT resolve
+ * @property {Set<string>}             [external] cross-root mode only: out-of-root files parsed
+ *                                                because an indexed file reaches them
  */
 /**
  * Build the forward dependency graph for `rootDir`.
@@ -374,13 +412,18 @@ export function edgeCacheKey(file: string, key: string): string;
  * @param {RelatedFs}               [o.fs]      filesystem seam (injected in tests)
  * @param {EdgeCache}               [o.edgeCache] parsed edges reused across calls; consulted only
  *                                              for files `fs.key` identifies
+ * @param {CrossRootOptions | null}  [o.crossRoot] opt-in: follow bare specifiers naming a workspace
+ *                                              package, and parse every reached out-of-root source
+ *                                              file (WI-6554700010018067). Default null keeps the
+ *                                              historical in-root graph byte-for-byte.
  * @returns {RelatedIndex}
  */
-export function buildIndex({ rootDir, aliases, fs, edgeCache }?: {
+export function buildIndex({ rootDir, aliases, fs, edgeCache, crossRoot, }?: {
     rootDir: string;
     aliases?: TsconfigPathEntry[] | undefined;
     fs?: RelatedFs | undefined;
     edgeCache?: EdgeCache | undefined;
+    crossRoot?: CrossRootOptions | null | undefined;
 }): RelatedIndex;
 /**
  * Exact transitive forward closure, including cyclic import graphs.
@@ -393,6 +436,20 @@ export function buildIndex({ rootDir, aliases, fs, edgeCache }?: {
  */
 export function transitiveDeps(index: any): (file: any) => Set<any>;
 /**
+ * Whether a selection result proves that no test of the workspace can reach the change, so its
+ * narrowable test tasks may be dropped (WI-6554700010018067). Keyed on the cross-root REASON,
+ * never on an empty selection alone: a caller's runner filter can empty a non-empty selection,
+ * and that must keep the historical full run.
+ *
+ * @param {{ mode: string, selected: ArrayLike<unknown> | Set<unknown>, reason?: string } | null | undefined} result
+ * @returns {boolean}
+ */
+export function isCrossRootUnreached(result: {
+    mode: string;
+    selected: ArrayLike<unknown> | Set<unknown>;
+    reason?: string;
+} | null | undefined): boolean;
+/**
  * Build the graph index and static candidate superset once. Callers can query a scoped executed
  * map for `selection.selected`, then pass this same prepared value to `selectRelatedTests`.
  *
@@ -402,14 +459,17 @@ export function transitiveDeps(index: any): (file: any) => Set<any>;
  * @param {RelatedIndex | null}    [o.index]
  * @param {TsconfigPathEntry[]}    [o.aliases]
  * @param {RelatedFs}              [o.fs]
+ * @param {CrossRootOptions | null} [o.crossRoot] opt-in cross-root graph and rules (see
+ *   `buildIndex`); a prebuilt `index` must have been built with the same option
  * @returns {{ index: RelatedIndex, selection: StaticSelection }}
  */
-export function prepareRelatedTestSelection({ rootDir, changedPaths, index, aliases, fs }?: {
+export function prepareRelatedTestSelection({ rootDir, changedPaths, index, aliases, fs, crossRoot, }?: {
     rootDir: string;
     changedPaths: string[];
     index?: RelatedIndex | null | undefined;
     aliases?: TsconfigPathEntry[] | undefined;
     fs?: RelatedFs | undefined;
+    crossRoot?: CrossRootOptions | null | undefined;
 }): {
     index: RelatedIndex;
     selection: StaticSelection;
@@ -438,9 +498,13 @@ export function prepareRelatedTestSelection({ rootDir, changedPaths, index, alia
  *                                                  paths that changed between them, or null when
  *                                                  the pair cannot be diffed (⇒ treated as stale)
  * @param {{ index: RelatedIndex, selection: StaticSelection } | null} [o.prepared] static selection from `prepareRelatedTestSelection`
+ * @param {CrossRootOptions | null} [o.crossRoot] opt-in cross-root graph and rules; ignored when
+ *                                                  `prepared` is supplied (it already carries them)
  * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number, executedMap: ExecutedMapSummary }}
+ *   `mode:'related'` with an EMPTY `selected` happens only in cross-root mode, with reason
+ *   `cross-root-unreached`: no test of this workspace can reach the change.
  */
-export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, fs, index, executedMap, judgedSha, changedBetween, prepared, }?: {
+export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, fs, index, executedMap, judgedSha, changedBetween, prepared, crossRoot, }?: {
     rootDir: string;
     changedPaths: string[];
     aliases?: TsconfigPathEntry[] | undefined;
@@ -454,6 +518,7 @@ export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, 
         index: RelatedIndex;
         selection: StaticSelection;
     } | null | undefined;
+    crossRoot?: CrossRootOptions | null | undefined;
 }): {
     mode: "related" | "full";
     selected: string[];
@@ -564,6 +629,11 @@ export type RelatedIndex = {
      * files carrying an import we could NOT resolve
      */
     unresolved: Set<string>;
+    /**
+     * cross-root mode only: out-of-root files parsed
+     *  because an indexed file reaches them
+     */
+    external?: Set<string> | undefined;
 };
 export type StaticSelection = {
     mode: "related" | "full";
@@ -605,4 +675,36 @@ export type ExecutedMapSummary = {
         stale: number;
         intersects: number;
     };
+};
+/**
+ * One workspace package, as cross-root resolution needs it.
+ */
+export type WorkspacePackage = {
+    /**
+     * package name, e.g. `@papercusp/operator-core`
+     */
+    name: string;
+    /**
+     * absolute package directory
+     */
+    dir: string;
+    /**
+     * package.json `exports`
+     */
+    exports?: unknown;
+    /**
+     * package.json `main`
+     */
+    main?: string | undefined;
+};
+export type CrossRootOptions = {
+    /**
+     * every workspace package; a bare specifier naming one is followed
+     */
+    packages: WorkspacePackage[];
+    /**
+     * tsconfig `paths` of the package at
+     * `dir` (default: read through the index's `fs` seam)
+     */
+    aliasesFor?: ((dir: string) => TsconfigPathEntry[]) | undefined;
 };

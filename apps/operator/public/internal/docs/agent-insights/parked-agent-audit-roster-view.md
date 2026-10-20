@@ -1,0 +1,38 @@
+# Run a parked agent audit with coord:roster
+URL: /internal/docs/agent-insights/parked-agent-audit-roster-view
+
+Complete frozen parked-agent census, work and blocker evidence, registered AUTO, exact wake outcomes, request provenance and correction history through coord:roster view:audit without caller SQL.
+
+Implementation is in progress; the current source is the acceptance plane until this plan records final release verification.
+
+Call `coord:roster { view:"audit", scope:"workspace", auditDirectiveId:<captured directive id> }`. Read every page by passing the returned `nextCursor` with the same scope/owner arguments. The cursor retains auditId and offset; no new population is captured on continuation. Stop at nextCursor:null and coverage.complete:true. Retain auditId/asOf/populationHash in the work-item checkpoint.
+
+The tool saves evidence in the existing PG text-artifact store and changes no agent claim, mode, wait, wake or authority. Snapshots bind workspace, lens and reader identity. A cursor for another reader or scope fails. An absent snapshot is an explicit error; it never starts a replacement census.
+
+Records are `agent`, `work`, `wake` or `history`; each has a stable id. Each agent has exactly one agent record. Separate work/wake/hold records keep a large agent bounded. Coverage counts owners separately from records. Every evidence field names known/unknown, source and observation time; recordedAt is the underlying checkpoint or hold date. Truncated prose links back to its canonical source. A failed or stale read remains unknown.
+
+| Similar-looking fields                     | Meaning                                                                                                                                                                      |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| inbox listener / substantive wait          | The exact owner inbox key makes the session reachable; it does not justify parking. A named external event remains substantive. Orientation and audit share this classifier. |
+| wakeMode / registeredAuto                  | wakeMode is wake configuration. registeredAuto is read from the actual mode registry.                                                                                        |
+| queued / delivered / turnStarted / replied | Each is independent positive evidence linked to the exact recipient and message. A delivery or unrelated later activity is not pickup.                                       |
+
+Wake history covers the explicit last-seven-day window. Missing evidence stays unknown, never a failure or a successful pickup. Original request authority requires a directive captured by the provenance hook and classified as owner-typed. Agent-authored or injected text stays unverified. Report correction history uses the existing visibility gate; this feature grants no new access to owner reports.
+
+Tests: roster-audit.test.ts (population/paging/cursor/wake controls), roster-audit-store.test.ts (owner provenance), roster-audit.integration.test.ts (real-PG persistence/isolation), agent-obligation-providers.test.ts (listener vs real waits), and parked-agent-audit.e2e.test.ts (dynamic audit oracles alongside unchanged historical fixtures).
+
+This view does not replace the frozen October 9 audit or its P-013 measurement. Send the completed new bundle to that lane instead of restarting its historical census.
+
+For a repeatable current-runtime check without rewalking the archived whole population, choose one currently parked owner and run the maintained bounded live case:
+
+```bash
+PAPERCUSP_PARKED_CURRENT_LIVE=1 \
+PAPERCUSP_PARKED_AUDIT_OWNER=su-<currently-parked-owner-id> \
+PAPERCUSP_SKIP_PG_DISCOVERY=1 \
+PAPERCUSP_APP_OPERATION_LIVE_PROFILE=packages/operator-core/test/parked-agent-audit.live-profile.json \
+npm run test:file -- packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts -t 'LIVE: bounded current public audit'
+```
+
+Retain the authenticated `PAPERCUSP_SID` and `PAPERCUSP_WORKSPACE`. First use `dev:pipeline_position` with the changed source path and `testClass:"operator-api"` to verify that :3170 contains the committed implementation. The maintained profile binds PostgreSQL :5432 and the :3170 operator. The case creates a fresh owner-filtered public snapshot, requires exactly that one parked owner, reads the persisted writer bytes as an independent SQL test oracle, and reloads each page through separate authenticated public tool calls. It checks exact content, identity, cursor progress and final owner/record coverage, within a 1,280-record budget. Each authenticated call processes at most 20 nonempty, progressing pages or 10 seconds of paging; the overall page bound is the frozen record count because content truncation may return fewer records than pageSize. The maintained test has a 600-second timeout. The product caller still needs no SQL. The test never wakes an agent or changes a claim, mode, hold or authority. Preserve the `PARKED_AUDIT_CURRENT` ledger/log witness; this case adds current creation/reload evidence and does not replace the unchanged historical full-census acceptance run.
+
+An executable work assessment requires a current subject-matching next step, registered AUTO, measured work dependencies, and no recorded external, owner or state hold. Planned work additionally requires a complete current plan-lane read, resolved plan dependencies and scoped owner decisions from canonical plan Markdown. Unreadable, missing or partial plan evidence stays unknown; the scheduler guard's ordinary fail-open null result is not clearance. A paused or completed plan is not positive execution evidence. A supported dependency producer can be measured as satisfied while its recorded hold remains active. Queue evidence requires the exact recipient/message delivery row; sender intent alone is not enqueueing, and enqueueing is not recipient pickup.

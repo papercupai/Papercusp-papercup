@@ -137,6 +137,42 @@ describe('R-1: transient failures are counted, not filed, unless sustained', () 
     expect(signals.map((s) => s.key)).toEqual(['sessions:search:transient']);
     expect(signals[0].body).toMatch(/40×/);
   });
+
+  // The three numbers in the R-1 bar — 15 failures, a 0.2 share of the tool's calls,
+  // 3 distinct hours — are the DEFAULTS, so every case below calls with NO options.
+  // Each pair sits on both sides of one threshold with the other two comfortably
+  // met, so moving any default by one step (14, 0.19, 2h — or 16, 0.21, 4h) flips
+  // exactly one of these expectations. One pre-aggregated row per case keeps the
+  // hour count exact (no float sum across split rows).
+  function transientRow(n: number, total: number, activeHours: number): ClassifiedToolErrorRow {
+    return {
+      tool_name: 'sessions:search',
+      class: 'transient',
+      code_key: null,
+      field_key: null,
+      n,
+      total,
+      active_hours: activeHours,
+      sample: 'tool "sessions:search" exceeded timeout of 30s',
+      latest_at: null,
+    };
+  }
+  const fires = (row: ClassifiedToolErrorRow) => toolErrorSignalsFromRows([row]).map((s) => s.key);
+
+  it('count boundary at the default: 15 failures file, 14 do not', () => {
+    expect(fires(transientRow(15, 50, 4))).toEqual(['sessions:search:transient']);
+    expect(fires(transientRow(14, 50, 4))).toEqual([]);
+  });
+
+  it('share boundary at the default: 0.20 of the calls files, 0.19 does not', () => {
+    expect(fires(transientRow(20, 100, 4))).toEqual(['sessions:search:transient']);
+    expect(fires(transientRow(19, 100, 4))).toEqual([]);
+  });
+
+  it('hours boundary at the default: 3 distinct hours file, 2 do not', () => {
+    expect(fires(transientRow(20, 50, 3))).toEqual(['sessions:search:transient']);
+    expect(fires(transientRow(20, 50, 2))).toEqual([]);
+  });
 });
 
 describe('capToolErrorMintsPerTool (R-3 daily cap)', () => {

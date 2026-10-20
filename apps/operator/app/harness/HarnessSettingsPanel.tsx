@@ -125,14 +125,6 @@ interface TelemetryRow {
   synthesis_error: string | null;
 }
 
-interface DiscordSettings {
-  isShared: boolean;
-  guildId: string;
-  inviteUrl: string;
-  saving: boolean;
-  saved: boolean;
-  error: string | null;
-}
 
 export default function HarnessSettingsPanel(props: { slug: string; phase: string }) {
   const workspaceId = useWorkspaceId();
@@ -186,15 +178,6 @@ function HarnessSettingsPanelForScope({
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const [discord, setDiscord] = useState<DiscordSettings>({
-    isShared: false,
-    guildId: '',
-    inviteUrl: '',
-    saving: false,
-    saved: false,
-    error: null,
-  });
-
   // harnessProjectFiles.byHarness is the sole owner of durable config.json.
   // Empty is authoritative (a harness with no row has default config); a REST
   // back-stop would let a late response overwrite a newer pushed value.
@@ -214,15 +197,6 @@ function HarnessSettingsPanelForScope({
   });
   const telemetry = telemetryQuery.data ?? [];
   const telemetryLoading = telemetryQuery.loading;
-  const discordConfigQuery = useSyncQuery<{
-    guildId: string;
-    inviteUrl: string;
-  }>({
-    queryName: 'discordConfig.byHarness',
-    args: { harnessSlug: slug, workspaceId },
-    enabled: !!slug,
-  });
-  const { data: discordConfigRows, loading: discordConfigLoading } = discordConfigQuery;
   const applyLoadedConfig = useCallback((cfg: Record<string, unknown>) => {
     setOriginalConfig(cfg);
     const pwRaw = (cfg.parallelWorkers ?? {}) as Record<string, unknown>;
@@ -287,12 +261,6 @@ function HarnessSettingsPanelForScope({
       });
     }
     setAiBackend(rows);
-    const discordCfg = (cfg.discord ?? {}) as Record<string, unknown>;
-    setDiscord((prev) => ({
-      ...prev,
-      guildId: typeof discordCfg.guildId === 'string' ? discordCfg.guildId : '',
-      inviteUrl: typeof discordCfg.inviteUrl === 'string' ? discordCfg.inviteUrl : '',
-    }));
     setLoaded(true);
   }, []);
   useEffect(() => {
@@ -302,54 +270,6 @@ function HarnessSettingsPanelForScope({
     try { applyLoadedConfig(JSON.parse(cfgRaw)); }
     catch { applyLoadedConfig({}); }
   }, [settingsConfigRows, settingsLoading, applyLoadedConfig]);
-
-  // Load discord config from the sync query and isShared status from the dedicated endpoint.
-  // The sync query provides guildId/inviteUrl; isShared is fetched separately.
-  useEffect(() => {
-    if (discordConfigLoading || !Array.isArray(discordConfigRows)) return;
-    const cfgRow = discordConfigRows[0];
-    if (cfgRow) {
-      setDiscord((prev) => ({
-        ...prev,
-        guildId: cfgRow.guildId ?? '',
-        inviteUrl: cfgRow.inviteUrl ?? '',
-      }));
-    }
-  }, [discordConfigRows, discordConfigLoading]);
-
-  // Fetch isShared status from the REST endpoint (shared.json existence check).
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/harness/${slug}/discord`)
-      .then((r) => r.json())
-      .then((d: { isShared?: boolean }) => {
-        if (cancelled) return;
-        setDiscord((prev) => ({ ...prev, isShared: d.isShared === true }));
-      })
-      .catch(() => { /* not critical */ });
-    return () => { cancelled = true; };
-  }, [slug]);
-
-  const saveDiscord = useCallback(async () => {
-    setDiscord((prev) => ({ ...prev, saving: true, error: null, saved: false }));
-    try {
-      const res = await fetch(`/api/harness/${slug}/discord`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ guildId: discord.guildId.trim(), inviteUrl: discord.inviteUrl.trim() }),
-      });
-      if (!res.ok) {
-        const body = (await res.json()) as { error?: string };
-        throw new Error(body.error ?? `HTTP ${res.status}`);
-      }
-      setDiscord((prev) => ({ ...prev, saving: false, saved: true }));
-      discordConfigQuery.invalidate();
-      toast.success('Discord settings saved');
-    } catch (e) {
-      setDiscord((prev) => ({ ...prev, saving: false, error: (e as Error).message }));
-      toast.error('Failed to save Discord settings', { description: (e as Error).message });
-    }
-  }, [slug, discord.guildId, discord.inviteUrl, discordConfigQuery]);
 
   // Validation for tier shape — only fires in tiers mode.
   const validation = useMemo(() => {
@@ -954,68 +874,14 @@ function HarnessSettingsPanelForScope({
         </div>
       </section>
 
-      {/* ── Section: Discord ────────────────────────────────── */}
+      {/* ── Section: Community badge ─────────────────────────── */}
       <section style={{ marginBottom: 24, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-        <h2 style={{ fontSize: 14, margin: '0 0 6px', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ color: '#5865F2', flexShrink: 0 }} aria-hidden>
-            <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.031.056a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
-          </svg>
-          Discord
-        </h2>
-        {!discord.isShared ? (
-          <p style={{ margin: 0, color: 'var(--fg-mute)', fontSize: 11.5, fontStyle: 'italic' }}>
-            Discord integration is only available for shared harnesses. Use the Share button to publish this harness first.
-          </p>
-        ) : (
-          <>
-            <p style={{ margin: '0 0 12px', color: 'var(--fg-mute)', fontSize: 11.5 }}>
-              Link a Discord server to show a live online-count badge in the /adv navbar.
-              Requires the Discord server widget to be enabled in Server Settings → Widget.
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 540 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <label style={{ width: 90, fontSize: 11.5, color: 'var(--fg-mute)', flexShrink: 0 }}>Guild ID</label>
-                <input
-                  type="text"
-                  value={discord.guildId}
-                  onChange={(e) => setDiscord((prev) => ({ ...prev, guildId: e.target.value, saved: false }))}
-                  placeholder="e.g. 1509111829471690783"
-                  style={{ flex: 1, fontSize: 12, padding: '4px 8px', fontFamily: 'monospace' }}
-                />
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <label style={{ width: 90, fontSize: 11.5, color: 'var(--fg-mute)', flexShrink: 0 }}>Invite URL</label>
-                <input
-                  type="text"
-                  value={discord.inviteUrl}
-                  onChange={(e) => setDiscord((prev) => ({ ...prev, inviteUrl: e.target.value, saved: false }))}
-                  placeholder="https://discord.gg/…"
-                  style={{ flex: 1, fontSize: 12, padding: '4px 8px' }}
-                />
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => void saveDiscord()}
-                  disabled={discord.saving || !discord.guildId.trim()}
-                  style={{ fontSize: 12, padding: '5px 14px', cursor: discord.saving || !discord.guildId.trim() ? 'not-allowed' : 'pointer' }}
-                >
-                  {discord.saving ? 'Saving…' : 'Save Discord'}
-                </button>
-                {discord.saved && (
-                  <span style={{ fontSize: 11.5, color: 'var(--good, #6aa84f)' }}>✓ Saved</span>
-                )}
-                {discord.error && (
-                  <span style={{ fontSize: 11.5, color: 'var(--bad, #d97757)' }}>⚠ {discord.error}</span>
-                )}
-              </div>
-              <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--fg-mute)', lineHeight: 1.5 }}>
-                To enable the widget: Discord → Server Settings → Widget → Enable Server Widget.
-                The Guild ID is shown there too. The badge refreshes every 5 minutes.
-              </p>
-            </div>
-          </>
-        )}
+        <h2 style={{ fontSize: 14, margin: '0 0 6px' }}>Community badge</h2>
+        <p style={{ margin: 0, color: 'var(--fg-mute)', fontSize: 11.5, lineHeight: 1.5 }}>
+          A shared harness can show its community&apos;s online count in the /adv navbar. Connect a provider that
+          offers community presence (for example Discord) on Settings → Integrations, and set its server and invite
+          link there. The badge refreshes every 5 minutes.
+        </p>
       </section>
 
       {/* ── Save bar ────────────────────────────────────────── */}

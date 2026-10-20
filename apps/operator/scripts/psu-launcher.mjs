@@ -613,19 +613,21 @@ export function resolveOperatorTarget({
     // psu-launcher generation. Its provenance says the URL was selected by the
     // launcher, and the staging service supplies :9171 without a target hint;
     // recover to the same-vintage proxy before exporting the child environment.
-    // A green launcher has no staging-proxy marker, so its managed :9071 URL
-    // remains unchanged.
+    // The bound :3170 Hono port is also a staging marker when an older child
+    // omitted the optional staging-proxy port. A green launcher has neither
+    // marker, so its managed :9071 URL remains unchanged.
     const legacyManagedGreenProxy =
       source === "managed-env" &&
       /^https?:\/\/(127\.0\.0\.1|localhost):9071$/.test(pinned) &&
-      validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) &&
+      (validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) ||
+        localStagingHostPort(env) === "3170") &&
       !validLocalPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT);
     if (
       legacyManagedGreenProxy &&
       env.PAPERCUSP_MCP_STAGING_PROXY !== "0" &&
       !proxyOptedOut
     ) {
-      const stagingProxyPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT);
+      const stagingProxyPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) ?? "9171";
       if (stagingProxyPort && probe(Number(stagingProxyPort))) {
         warn(
           "psu: launcher-managed :9071 is a legacy green route for staging; " +

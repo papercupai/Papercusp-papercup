@@ -149,7 +149,6 @@
     "packages/operator-core/lib/endpoint-route/routes/cupboard-install-deps.ts": 1,
     "packages/operator-core/lib/endpoint-route/routes/flags/set.ts": 1,
     "packages/operator-core/lib/endpoint-route/routes/harness/assertion.ts": 1,
-    "packages/operator-core/lib/endpoint-route/routes/harness/discord.ts": 1,
     "packages/operator-core/lib/endpoint-route/routes/harness/spec.ts": 2,
     "packages/operator-core/lib/endpoint-route/routes/index.ts": 1,
     "packages/operator-core/lib/endpoint-route/routes/plugins/host-events.ts": 2,

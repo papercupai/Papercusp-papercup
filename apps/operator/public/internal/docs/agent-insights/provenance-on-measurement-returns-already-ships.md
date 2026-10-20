@@ -40,7 +40,7 @@ The bet attached to the envelope proposal — *"graders can auto-classify a fail
 1. **Before proposing an envelope, read the surface's existing marker.** The four above cover the cited cases; the field is rarely called `provenance`.
 2. **If a measurement genuinely lacks one, add a field to that surface** — the reuse-first move. Most "this needs provenance" is one more field on an existing return, not a new struct.
 3. **Never make a result available bare when its qualifier exists.** That part of the proposal is sound and is already the local convention: `coverage.ts` deliberately keeps the numerator inaccessible without its population provenance.
-4. **Do not build a mandatory uniform envelope across the tool catalogue.** It is a large breaking change over \~550 tools that would replace better-adapted markers with weaker generic ones, and it duplicates an existing surface — the top review smell in this repo.
+4. **Do not build a mandatory uniform envelope across the tool catalogue.** It is a large breaking change across every tool in the catalogue that would replace better-adapted markers with weaker generic ones, and it duplicates an existing surface — the top review smell in this repo.
 
 ## The one real residue
 

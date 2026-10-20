@@ -4,16 +4,17 @@
  * per-harness Settings panel (whole-app-test-coverage-breadth). The panel
  * gates rendering behind `loaded` (config.json via useSyncQuery), so the test
  * feeds a config row to flip it loaded, then exercises: the loading gate, the
- * always-on sections (Workers / AI backend / Discord / Save bar — the chunk-loop
- * and debugger-threshold knobs were removed from the panel with the chunk
- * loop itself), the testing-flag-gated controls (workers-per-feature
- * mode, tiers section), the tiers add/remove row flow, the Discord
- * shared/not-shared branch, and a successful Save (toast.success).
+ * always-on sections (Workers / AI backend / Community badge / Save bar — the
+ * chunk-loop and debugger-threshold knobs were removed from the panel with the
+ * chunk loop itself), the testing-flag-gated controls (workers-per-feature
+ * mode, tiers section), the tiers add/remove row flow, the provider-neutral
+ * community badge pointer (P-005: Discord left app code), and a successful
+ * Save (toast.success).
  *
  * Mocked: useFlag (controls the testing flag), @papercusp/flags (FLAGS),
  * useSyncQuery, sonner, VirtualGrid (stub list), and the two heavy children.
- * fetch is allowed only for the filesystem-backed Discord shared marker and
- * mutations; durable config + telemetry must stay on named queries.
+ * fetch is allowed only for mutations; durable config + telemetry must stay
+ * on named queries, so any GET fails the test.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -65,12 +66,9 @@ function setLoadedConfig(cfg: Record<string, unknown> = {}) {
   syncState.set('harnessProjectFiles.byHarness', { data: loadedConfigRow(cfg) });
 }
 
-/** Stub only the filesystem-backed Discord marker and mutation calls. */
-function stubFetch(opts: { isShared?: boolean } = {}) {
+/** Stub only mutation calls; a GET means durable state left its named query. */
+function stubFetch() {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (typeof url === 'string' && url.includes('/discord')) {
-      return new Response(JSON.stringify({ isShared: opts.isShared ?? false, discord: null }), { status: 200 });
-    }
     if (!init?.method || init.method === 'GET') throw new Error(`unexpected durable GET: ${url}`);
     // /spec PUT and other mutations.
     return new Response(JSON.stringify({ ok: true, config: '{}' }), { status: 200 });
@@ -104,7 +102,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
     // The slug appears in the header.
     expect(screen.getByText(/Settings — h/)).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'AI backend' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Discord' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Community badge' })).toBeTruthy();
     // The chunk-loop checkbox is gone with the chunk loop (HarnessSettingsPanel.tsx
     // dropped `useChunkLoop` + the debugger threshold) — assert its absence so a
     // resurrected knob is a reviewed diff, not a silent return.
@@ -155,21 +153,16 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
     expect(screen.getByText('Tier 3')).toBeTruthy();
   });
 
-  it('shows the not-shared Discord notice when the harness is private', async () => {
-    stubFetch({ isShared: false });
+  it('points the community badge at Integrations instead of storing a Discord server here (P-005)', async () => {
+    stubFetch();
     setLoadedConfig();
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
-    await waitFor(() => expect(screen.getByText(/only available for shared harnesses/i)).toBeTruthy());
-    // The guild-id input only renders in the shared branch.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Community badge' })).toBeTruthy());
+    expect(screen.getByText(/Settings → Integrations/)).toBeTruthy();
+    // The provider-specific guild/invite form and its save button left app code with the package move.
     expect(screen.queryByPlaceholderText(/1509111829471690783/)).toBeNull();
-  });
-
-  it('renders the Discord guild/invite inputs for a shared harness', async () => {
-    stubFetch({ isShared: true });
-    setLoadedConfig();
-    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
-    await waitFor(() => expect(screen.getByPlaceholderText(/1509111829471690783/)).toBeTruthy());
-    expect(screen.getByRole('button', { name: /Save Discord/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Save Discord/i })).toBeNull();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 
   it('adds an AI backend role-override row', async () => {
@@ -216,7 +209,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
   it('does not claim success on a denied save and retries without losing edits', async () => {
     let deny = true;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      if (!init?.method) return new Response('{"isShared":false}');
+      if (!init?.method) throw new Error('unexpected durable GET');
       return new Response(deny ? '{"error":"forbidden"}' : '{"ok":true}', { status: deny ? 403 : 200 });
     }));
     setLoadedConfig({ unrelated: { keep: true } });

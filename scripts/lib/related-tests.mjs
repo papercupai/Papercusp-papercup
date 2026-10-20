@@ -718,6 +718,169 @@ function aliasTuples(aliases) {
   return aliases.map(({ prefix, target, wildcard }) => [prefix, target, wildcard === true]);
 }
 
+// ── CROSS-ROOT SELECTION (WI-6554700010018067) ─────────────────────────────────────────
+// By default a bare specifier is out of graph and a changed path outside the indexed root
+// forces the whole suite. That made every reverse dependent of operator-core (apps/operator's
+// `web :: test`, ~588s) run in FULL for any operator-core source commit. The opt-in cross-root
+// mode follows bare specifiers that name a WORKSPACE package into that package's source and
+// parses the reached out-of-root files recursively, so a dependent's tests can be related to
+// a change in another package. It is a superset construction: every place the resolver is
+// unsure adds an edge or marks a hole, and a hole selects every test that can reach it.
+
+/**
+ * One workspace package, as cross-root resolution needs it.
+ *
+ * @typedef {object} WorkspacePackage
+ * @property {string}  name      package name, e.g. `@papercusp/operator-core`
+ * @property {string}  dir       absolute package directory
+ * @property {unknown} [exports] package.json `exports`
+ * @property {string}  [main]    package.json `main`
+ */
+
+/**
+ * @typedef {object} CrossRootOptions
+ * @property {WorkspacePackage[]} packages every workspace package; a bare specifier naming one is followed
+ * @property {(dir: string) => TsconfigPathEntry[]} [aliasesFor] tsconfig `paths` of the package at
+ *   `dir` (default: read through the index's `fs` seam)
+ */
+
+/** Type declarations are never loaded at runtime. */
+const DECLARATION_RE = /\.d\.[cm]?ts$/;
+
+/** Vitest/Vite config basenames a workspace runner can load. */
+const RUNNER_CONFIG_RE = /^(?:vitest|vite)(?:\.[\w-]+)*\.config\.[cm]?[jt]s$/;
+
+/**
+ * `@scope/name/sub/path` → `{ name: '@scope/name', subpath: './sub/path' }`; `.` for the root.
+ *
+ * @param {string} spec
+ * @returns {{ name: string, subpath: string } | null}
+ */
+export function splitPackageSpecifier(spec) {
+  const parts = spec.split("/");
+  const nameParts = spec.startsWith("@") ? 2 : 1;
+  if (parts.length < nameParts || parts.slice(0, nameParts).some((p) => p === "")) return null;
+  const rest = parts.slice(nameParts).join("/");
+  return { name: parts.slice(0, nameParts).join("/"), subpath: rest ? `./${rest}` : "." };
+}
+
+/** Flatten an `exports` target value to its runtime strings (every condition except `types`). */
+function exportTargetStrings(value, out = []) {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const v of value) exportTargetStrings(v, out);
+  else if (value && typeof value === "object") {
+    for (const [condition, v] of Object.entries(value)) {
+      if (condition !== "types") exportTargetStrings(v, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every runtime target `pkg` exports for `subpath`, as absolute paths before extension probing.
+ *
+ * Node's rules decide WHICH entry applies: an exact subpath key wins outright; otherwise the
+ * pattern keys (one `*`) that match. All non-`types` conditions of the chosen entries are
+ * kept, and all matching pattern keys rather than only Node's single winner: the selector
+ * does not know the runner's condition set, and an extra edge can only select more tests.
+ * A `null` target (a blocked subpath) contributes nothing. Without `exports`, `.` is `main`
+ * (else `index`) and any other subpath is the file itself.
+ *
+ * @param {WorkspacePackage} pkg
+ * @param {string} subpath `.` or `./x/y`
+ * @returns {string[]}
+ */
+export function packageExportTargets(pkg, subpath) {
+  const ex = pkg.exports;
+  if (ex === undefined || ex === null) {
+    if (subpath === ".") return [path.join(pkg.dir, typeof pkg.main === "string" ? pkg.main : "index")];
+    return [path.join(pkg.dir, subpath)];
+  }
+  const map =
+    typeof ex === "string" || Array.isArray(ex) || !Object.keys(ex).some((k) => k.startsWith("."))
+      ? { ".": ex }
+      : /** @type {Record<string, unknown>} */ (ex);
+  if (Object.prototype.hasOwnProperty.call(map, subpath)) {
+    return exportTargetStrings(map[subpath]).map((t) => path.join(pkg.dir, t));
+  }
+  const out = [];
+  for (const [key, value] of Object.entries(map)) {
+    const star = key.indexOf("*");
+    if (star < 0) continue;
+    const prefix = key.slice(0, star);
+    const suffix = key.slice(star + 1);
+    if (
+      subpath.length < prefix.length + suffix.length ||
+      !subpath.startsWith(prefix) ||
+      !subpath.endsWith(suffix)
+    ) continue;
+    const match = subpath.slice(prefix.length, subpath.length - suffix.length);
+    for (const t of exportTargetStrings(value)) out.push(path.join(pkg.dir, t.replaceAll("*", match)));
+  }
+  return out;
+}
+
+/**
+ * Resolve a bare specifier against the workspace packages. `external` = not a workspace package
+ * (a node built-in or a registry dependency: out of graph, as without cross-root). `workspace` =
+ * every existing file the package `exports` or any supplied tsconfig `paths` list maps it to
+ * (vite-tsconfig-paths can resolve through either, so both are edges). `unresolvable` = a
+ * workspace package specifier that maps to no existing file, which is a graph hole.
+ *
+ * @param {string} spec
+ * @param {Map<string, WorkspacePackage>} packagesByName
+ * @param {Array<Array<[string, string, boolean]>>} aliasLists
+ * @param {(p: string) => boolean} exists
+ * @returns {{ kind: 'external' } | { kind: 'workspace', targets: string[] } | { kind: 'unresolvable' }}
+ */
+function resolveWorkspaceBare(spec, packagesByName, aliasLists, exists) {
+  const parsed = splitPackageSpecifier(spec);
+  const pkg = parsed ? packagesByName.get(parsed.name) : undefined;
+  if (!parsed || !pkg) return { kind: "external" };
+  const bases = packageExportTargets(pkg, parsed.subpath);
+  for (const entries of aliasLists) {
+    const aliased = matchTsconfigPath(entries, spec);
+    if (aliased !== null) bases.push(path.resolve(aliased));
+  }
+  const targets = new Set();
+  for (const base of bases) {
+    const hit = candidatesFor(base).find(exists);
+    if (hit) targets.add(hit);
+  }
+  return targets.size > 0 ? { kind: "workspace", targets: [...targets] } : { kind: "unresolvable" };
+}
+
+/**
+ * The workspace package that owns `file` (longest directory prefix), or null.
+ *
+ * @param {WorkspacePackage[]} packages
+ * @param {string} file
+ * @returns {WorkspacePackage | null}
+ */
+function owningPackage(packages, file) {
+  let best = null;
+  for (const pkg of packages) {
+    if (file.startsWith(pkg.dir + path.sep) && (best === null || pkg.dir.length > best.dir.length)) best = pkg;
+  }
+  return best;
+}
+
+/**
+ * Whether a changed path OUTSIDE the indexed root can be related through the cross-root graph:
+ * a source module inside a workspace package, outside ignored/generated directories. Anything
+ * else (a manifest, a tsconfig, an asset, a root script) can change resolution or behaviour in
+ * ways no import edge records, so it keeps the whole suite.
+ *
+ * @param {WorkspacePackage[]} packages
+ * @param {string} file absolute path
+ * @returns {boolean}
+ */
+export function crossRootRelatableChange(packages, file) {
+  if (!SOURCE_RE.test(file)) return false;
+  if (file.split(/[\\/]/).slice(0, -1).some((part) => SKIP_DIRS.has(part))) return false;
+  return owningPackage(packages, file) !== null;
+}
+
 /**
  * Walk the transitive static module graph from a small set of entry files.
  *
@@ -875,6 +1038,8 @@ export function edgeCacheKey(file, key) {
  * @property {string[]}                files      every source file found under the root
  * @property {Map<string, Set<string>>} deps      file -> the intra-repo files it imports directly
  * @property {Set<string>}             unresolved files carrying an import we could NOT resolve
+ * @property {Set<string>}             [external] cross-root mode only: out-of-root files parsed
+ *                                                because an indexed file reaches them
  */
 
 /**
@@ -892,34 +1057,98 @@ export function edgeCacheKey(file, key) {
  * @param {RelatedFs}               [o.fs]      filesystem seam (injected in tests)
  * @param {EdgeCache}               [o.edgeCache] parsed edges reused across calls; consulted only
  *                                              for files `fs.key` identifies
+ * @param {CrossRootOptions | null}  [o.crossRoot] opt-in: follow bare specifiers naming a workspace
+ *                                              package, and parse every reached out-of-root source
+ *                                              file (WI-6554700010018067). Default null keeps the
+ *                                              historical in-root graph byte-for-byte.
  * @returns {RelatedIndex}
  */
-export function buildIndex({ rootDir, aliases = [], fs = defaultFs(), edgeCache = undefined } = {}) {
+export function buildIndex({
+  rootDir,
+  aliases = [],
+  fs = defaultFs(),
+  edgeCache = undefined,
+  crossRoot = null,
+} = {}) {
   const aliasEntries = aliasTuples(aliases);
   const files = fs.list(rootDir);
   const fileSet = new Set(files);
   const deps = new Map();
   const unresolved = new Set();
+  const exists = (cand) => fileSet.has(cand) || fs.exists(cand);
 
+  const root = path.resolve(rootDir);
+  const insideRoot = (file) => file === root || file.startsWith(root + path.sep);
+  const packages = crossRoot ? crossRoot.packages : [];
+  const packagesByName = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  const aliasesFor =
+    crossRoot?.aliasesFor ??
+    ((dir) =>
+      tsconfigPathEntriesFor(dir, {
+        readFile: (p) => {
+          const text = fs.read(p);
+          if (text === null) throw new Error(`unreadable ${p}`);
+          return text;
+        },
+      }));
+  /** @type {Map<string, Array<[string, string, boolean]>>} */
+  const aliasesByDir = new Map();
+  /** The alias tuples a file's own imports resolve through: the indexed workspace's for an
+   *  in-root file, else its owning package's ([] when no package owns it). */
+  const aliasEntriesFor = (file) => {
+    if (insideRoot(file)) return aliasEntries;
+    const owner = owningPackage(packages, file);
+    if (!owner) return [];
+    if (!aliasesByDir.has(owner.dir)) aliasesByDir.set(owner.dir, aliasTuples(aliasesFor(owner.dir)));
+    return aliasesByDir.get(owner.dir);
+  };
+
+  /** @returns {{ targets: string[], unresolvable?: boolean }} */
   const resolve = (fromFile, spec) => {
     const kind = classifySpecifier(spec);
-    if (kind === "bare") return { kind, target: null };
+    if (kind === "bare") {
+      if (!crossRoot) return { targets: [] };
+      // vite-tsconfig-paths can resolve a package specifier through the importer's tsconfig
+      // or the runner workspace's, and Node through the package `exports`: all are edges.
+      const lists = [aliasEntriesFor(fromFile)];
+      if (lists[0] !== aliasEntries) lists.push(aliasEntries);
+      const r = resolveWorkspaceBare(spec, packagesByName, lists, exists);
+      if (r.kind === "external") return { targets: [] };
+      if (r.kind === "unresolvable") return { targets: [], unresolvable: true };
+      return { targets: r.targets };
+    }
     let base;
     if (kind === "relative") {
       base = path.resolve(path.dirname(fromFile), spec);
     } else {
       // Alias: exact key first, else the longest wildcard prefix (TypeScript's rule).
-      const aliasBase = matchTsconfigPath(aliasEntries, spec);
-      if (aliasBase === null) return { kind, target: null, unresolvable: true };
+      const aliasBase = matchTsconfigPath(aliasEntriesFor(fromFile), spec);
+      if (aliasBase === null) return { targets: [], unresolvable: true };
       base = path.resolve(aliasBase);
     }
     for (const cand of candidatesFor(base)) {
-      if (fileSet.has(cand) || fs.exists(cand)) return { kind, target: cand };
+      if (exists(cand)) return { targets: [cand] };
     }
-    return { kind, target: null, unresolvable: true };
+    return { targets: [], unresolvable: true };
   };
 
-  for (const f of files) {
+  // Cross-root mode grows the work list with every out-of-root SOURCE module a parsed file
+  // reaches; a reached asset (CSS, JSON) stays a leaf edge. `files` stays the in-root list,
+  // because only in-root tests belong to this workspace's suite.
+  const queue = [...files];
+  const queued = new Set(files);
+  const external = crossRoot ? new Set() : undefined;
+  const follow = (target) => {
+    if (!crossRoot || queued.has(target) || insideRoot(target)) return;
+    if (!SOURCE_RE.test(target) || DECLARATION_RE.test(target)) return;
+    if (target.split(/[\\/]/).slice(0, -1).some((part) => SKIP_DIRS.has(part))) return;
+    queued.add(target);
+    external?.add(target);
+    queue.push(target);
+  };
+
+  for (let i = 0; i < queue.length; i += 1) {
+    const f = queue[i];
     const identity = edgeCache && typeof fs.key === "function" ? fs.key(f) : null;
     const cacheKey = identity ? edgeCacheKey(f, identity) : null;
     /** @type {ParsedEdges | undefined} */
@@ -950,21 +1179,24 @@ export function buildIndex({ rootDir, aliases = [], fs = defaultFs(), edgeCache 
     for (const spec of edges.specifiers) {
       if (!spec) continue;
       const r = resolve(f, spec);
-      if (r.target) set.add(r.target);
-      else if (r.unresolvable) unresolved.add(f);
+      for (const target of r.targets) {
+        set.add(target);
+        follow(target);
+      }
+      if (r.unresolvable) unresolved.add(f);
     }
     for (const spec of edges.runtimePaths) {
       if (!spec || !RUNTIME_DEPENDENCY_RE.test(spec)) continue;
-      const target = candidatesFor(path.resolve(path.dirname(f), spec)).find(
-        (candidate) => fileSet.has(candidate) || fs.exists(candidate),
-      );
-      if (target) set.add(target);
-      else unresolved.add(f);
+      const target = candidatesFor(path.resolve(path.dirname(f), spec)).find(exists);
+      if (target) {
+        set.add(target);
+        follow(target);
+      } else unresolved.add(f);
     }
     deps.set(f, set);
   }
 
-  return { files, deps, unresolved };
+  return external ? { files, deps, unresolved, external } : { files, deps, unresolved };
 }
 
 /**
@@ -1065,9 +1297,10 @@ export function transitiveDeps(index) {
  * changedSet?: Set<string>, reach?: (file: string) => Set<string>, unresolved?: Set<string> }} StaticSelection */
 
 /** Compute the static candidate superset and closure once for a prebuilt graph index.
+ * @param {{ rootDir: string, changedPaths: string[], idx: RelatedIndex, crossRoot?: CrossRootOptions | null }} o
  * @returns {StaticSelection}
  */
-function collectStaticSelection({ rootDir, changedPaths, idx }) {
+function collectStaticSelection({ rootDir, changedPaths, idx, crossRoot = null }) {
   const testFiles = idx.files.filter(isTestFile);
   const total = testFiles.length;
   const full = (reason) => ({ mode: "full", selected: new Set(), total, reason });
@@ -1082,12 +1315,41 @@ function collectStaticSelection({ rootDir, changedPaths, idx }) {
   const inScope = changedPaths.filter(
     (p) => p.startsWith(rootDir + path.sep) || p === rootDir,
   );
-  if (inScope.length === 0) return full("no-changed-paths-in-scope");
-  if (inScope.length !== changedPaths.length) return full("changed-paths-outside-scope");
+  if (!crossRoot) {
+    if (inScope.length === 0) return full("no-changed-paths-in-scope");
+    if (inScope.length !== changedPaths.length) return full("changed-paths-outside-scope");
+  } else {
+    // Cross-root: an out-of-root change is relatable only when it is a source module in a
+    // workspace package, the one shape the expanded index has edges for.
+    const inScopeSet = new Set(inScope);
+    for (const p of changedPaths) {
+      if (!inScopeSet.has(p) && !crossRootRelatableChange(crossRoot.packages, p)) {
+        return full("cross-root-unrelatable-change");
+      }
+    }
+  }
 
-  const changedSet = new Set(inScope);
+  const changedSet = new Set(crossRoot ? changedPaths : inScope);
   const reach = transitiveDeps(idx);
   const selected = new Set();
+
+  if (crossRoot) {
+    // The runner config and everything it loads (setupFiles, globalSetup, reporters, the
+    // shared test-config) run around EVERY test, and no test imports them. A change there,
+    // or a hole there, cannot be related to a subset: run the whole suite.
+    const configs = idx.files.filter(
+      (f) => path.dirname(f) === rootDir && RUNNER_CONFIG_RE.test(path.basename(f)),
+    );
+    if (configs.length === 0) return full("cross-root-no-runner-config");
+    for (const config of configs) {
+      const closure = reach(config);
+      closure.add(config);
+      for (const f of closure) {
+        if (changedSet.has(f)) return full("runner-config-reaches-change");
+        if (idx.unresolved.has(f)) return full("runner-config-unresolved");
+      }
+    }
+  }
 
   for (const t of testFiles) {
     // A changed test file always selects itself, even if nothing imports it.
@@ -1102,6 +1364,17 @@ function collectStaticSelection({ rootDir, changedPaths, idx }) {
       continue;
     }
     const deps = reach(t);
+    if (crossRoot) {
+      // Cross-root reads a hole ANYWHERE in the closure as reaching the change: a module
+      // the test loads may import the change through the edge we could not resolve.
+      for (const d of deps) {
+        if (changedSet.has(d) || idx.unresolved.has(d)) {
+          selected.add(t);
+          break;
+        }
+      }
+      continue;
+    }
     for (const c of changedSet) {
       if (deps.has(c)) {
         selected.add(t);
@@ -1110,8 +1383,31 @@ function collectStaticSelection({ rootDir, changedPaths, idx }) {
     }
   }
 
-  if (selected.size === 0) return full("empty-selection");
+  if (selected.size === 0) {
+    // Only a workspace pulled in by a dependency's change, with a closure-complete graph that
+    // reaches no change and no hole, may run nothing. A local change that reaches no test is
+    // still a graph gap, not proof, and keeps the whole suite.
+    if (crossRoot && inScope.length === 0) {
+      return { mode: "related", selected, total, reason: "cross-root-unreached", changedSet, reach, unresolved: idx.unresolved };
+    }
+    return full("empty-selection");
+  }
   return { mode: "related", selected, total, changedSet, reach, unresolved: idx.unresolved };
+}
+
+/**
+ * Whether a selection result proves that no test of the workspace can reach the change, so its
+ * narrowable test tasks may be dropped (WI-6554700010018067). Keyed on the cross-root REASON,
+ * never on an empty selection alone: a caller's runner filter can empty a non-empty selection,
+ * and that must keep the historical full run.
+ *
+ * @param {{ mode: string, selected: ArrayLike<unknown> | Set<unknown>, reason?: string } | null | undefined} result
+ * @returns {boolean}
+ */
+export function isCrossRootUnreached(result) {
+  if (!result || result.mode !== "related" || result.reason !== "cross-root-unreached") return false;
+  const n = result.selected instanceof Set ? result.selected.size : result.selected.length;
+  return n === 0;
 }
 
 /**
@@ -1124,11 +1420,20 @@ function collectStaticSelection({ rootDir, changedPaths, idx }) {
  * @param {RelatedIndex | null}    [o.index]
  * @param {TsconfigPathEntry[]}    [o.aliases]
  * @param {RelatedFs}              [o.fs]
+ * @param {CrossRootOptions | null} [o.crossRoot] opt-in cross-root graph and rules (see
+ *   `buildIndex`); a prebuilt `index` must have been built with the same option
  * @returns {{ index: RelatedIndex, selection: StaticSelection }}
  */
-export function prepareRelatedTestSelection({ rootDir, changedPaths, index = null, aliases = [], fs = defaultFs() } = {}) {
-  const idx = index ?? buildIndex({ rootDir, aliases, fs });
-  return { index: idx, selection: collectStaticSelection({ rootDir, changedPaths, idx }) };
+export function prepareRelatedTestSelection({
+  rootDir,
+  changedPaths,
+  index = null,
+  aliases = [],
+  fs = defaultFs(),
+  crossRoot = null,
+} = {}) {
+  const idx = index ?? buildIndex({ rootDir, aliases, fs, crossRoot });
+  return { index: idx, selection: collectStaticSelection({ rootDir, changedPaths, idx, crossRoot }) };
 }
 
 /**
@@ -1155,7 +1460,11 @@ export function prepareRelatedTestSelection({ rootDir, changedPaths, index = nul
  *                                                  paths that changed between them, or null when
  *                                                  the pair cannot be diffed (⇒ treated as stale)
  * @param {{ index: RelatedIndex, selection: StaticSelection } | null} [o.prepared] static selection from `prepareRelatedTestSelection`
+ * @param {CrossRootOptions | null} [o.crossRoot] opt-in cross-root graph and rules; ignored when
+ *                                                  `prepared` is supplied (it already carries them)
  * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number, executedMap: ExecutedMapSummary }}
+ *   `mode:'related'` with an EMPTY `selected` happens only in cross-root mode, with reason
+ *   `cross-root-unreached`: no test of this workspace can reach the change.
  */
 export function selectRelatedTests({
   rootDir,
@@ -1168,13 +1477,25 @@ export function selectRelatedTests({
   judgedSha = null,
   changedBetween = null,
   prepared = null,
+  crossRoot = null,
 } = {}) {
   const noMap = executedMapSummaryInert("not-reached");
-  const ready = prepared ?? prepareRelatedTestSelection({ rootDir, changedPaths, aliases, fs, index });
+  const ready = prepared ?? prepareRelatedTestSelection({ rootDir, changedPaths, aliases, fs, index, crossRoot });
   const { index: idx, selection: staticSelection } = ready;
   const { total } = staticSelection;
   if (staticSelection.mode !== "related") {
     return { mode: "full", selected: [], total, reason: staticSelection.reason, threshold, executedMap: noMap };
+  }
+  if (staticSelection.selected.size === 0) {
+    // Cross-root `cross-root-unreached`: nothing to prune and no share to widen on.
+    return {
+      mode: "related",
+      selected: [],
+      total,
+      reason: staticSelection.reason ?? "cross-root-unreached",
+      threshold,
+      executedMap: noMap,
+    };
   }
   const { selected, changedSet, reach, unresolved } = staticSelection;
 

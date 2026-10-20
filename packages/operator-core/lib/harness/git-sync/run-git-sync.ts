@@ -39,7 +39,7 @@ import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
@@ -5191,7 +5191,43 @@ export async function commitAttributedGroups(
     forceCatchAll.size === 0
       ? attribution
       : new Map([...attribution].filter(([path]) => !forceCatchAll.has(path)));
-  const grouped = groupFilesForAttribution(dirty, groupAttribution);
+  // The durable edit ledger supplies native-edit ages. Sample working-tree mtimes only for
+  // attributed paths without a ledger row, so presence-only/script edits still get an age without
+  // adding a filesystem read for normally recorded native edits. These are scheduling hints only;
+  // post-stage guards still decide whether a changing path can commit.
+  const workingTreeMtimeMsByFile = new Map<string, number>();
+  const repoRoot = resolvePath(repoPath);
+  await Promise.all(
+    dirty
+      .filter((file) => {
+        if (!groupAttribution.has(file)) return false;
+        const editedAtMs = groupAttribution.get(file)?.editedAtMs;
+        return typeof editedAtMs !== 'number' || !Number.isFinite(editedAtMs);
+      })
+      .map(async (file) => {
+        let candidate = resolvePath(repoRoot, file);
+        while (candidate !== repoRoot) {
+          const relativeCandidate = relative(repoRoot, candidate);
+          if (
+            relativeCandidate === '..' ||
+            relativeCandidate.startsWith('..' + sep) ||
+            isAbsolute(relativeCandidate)
+          ) {
+            return;
+          }
+          try {
+            workingTreeMtimeMsByFile.set(file, (await lstat(candidate)).mtimeMs);
+            return;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return;
+            const parent = dirname(candidate);
+            if (parent === candidate) return;
+            candidate = parent;
+          }
+        }
+      }),
+  );
+  const grouped = groupFilesForAttribution(dirty, groupAttribution, { workingTreeMtimeMsByFile });
   const residual = grouped.find((g) => g.agent === null && g.files.length > 0);
   const groups = [
     ...(residual ? [residual] : []),

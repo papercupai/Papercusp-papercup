@@ -1332,9 +1332,14 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
 });
 
 describe('host-code-adopted carry with a late Codex native id (EI-24961854655864836)', () => {
-  it.each([['adopted', true], ['adopted', false], ['in-place', true], ['in-place', false]] as const)(
-    'gates %s carry before submission, then proves delivery (confirmation %s)',
-    async (route, mappingConfirmed) => {
+  it.each([
+    ['adopted', true, 'known'], ['adopted', false, 'known'],
+    ['in-place', true, 'known'], ['in-place', false, 'known'],
+    ['adopted', true, 'first-turn'], ['adopted', false, 'first-turn'],
+    ['in-place', true, 'first-turn'], ['in-place', false, 'first-turn'],
+  ] as const)(
+    'binds %s carry with confirmation %s and native id %s',
+    async (route, mappingConfirmed, idTiming) => {
       const root = mkdtempSync(join(tmpdir(), 'codex-adopted-carry-proof-'));
       const ownerId = uniqueOwner('ADOPTED-CARRY-LATE-ID');
       const nativeId = '12345678-1234-4234-8234-123456789abc';
@@ -1392,15 +1397,17 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
         bridgeTty: false,
         kickoff: route === 'adopted' ? kickoff : null,
         adoptedCarryRespawn: route === 'adopted' ? { nativeId: null } : null,
-        resolveRespawnNativeId: () => nativeId,
+        // Codex creates its rollout/writer lock only after its first turn.
+        // A painted startup frame alone must not make the id discoverable.
+        resolveRespawnNativeId: () => idTiming === 'known' || existsSync(nativePath) ? nativeId : null,
         mintCarryRespawnArgs: () => ({ args: ['-e', childCode], nativeId: null }),
         nativePersistenceTimeoutMs: 1_000,
         onRespawn: async (freshId: string, { onConfirmed }: { onConfirmed: (id: string) => void }) => {
           order.push('reanchor');
           reportedIds.push(freshId);
           confirmBinding = () => { order.push('confirmed'); onConfirmed(freshId); };
-          // The initial report fails; production's existing durable retry owns
-          // the eventual confirmation. No user work can reach this child yet.
+          // Production's durable retry owns eventual mapping confirmation.
+          // Known ids gate the first write; a lazy id needs that write first.
           return false;
         },
         emitCompacted: (emittedOwner: string, focus: string, options: { nativeId?: string | null } = {}) => {
@@ -1421,11 +1428,19 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
             mode: 'carry-respawn', data: kickoff, systemPromptAddendum: 'saved task', ownerId,
           });
         }
+        if (idTiming === 'first-turn') {
+          expect(await waitForOutput(captured, 'SUBMITTED', 3_000),
+            hostTestDiagnostics(ownerId, captured)).toBe(true);
+          expect(readFileSync(nativePath, 'utf8')).toContain(marker);
+        }
         const reportDeadline = Date.now() + 2_000;
         while (!confirmBinding && Date.now() < reportDeadline) await sleep(20);
         expect(confirmBinding).toBeTypeOf('function');
-        expect(existsSync(nativePath)).toBe(false);
-        expect(captured()).not.toContain('SUBMITTED');
+        if (idTiming === 'known') {
+          expect(existsSync(nativePath)).toBe(false);
+          expect(captured()).not.toContain('SUBMITTED');
+        }
+        expect(emitted, 'never announce compaction before trusted binding').toHaveLength(0);
         if (mappingConfirmed) {
           confirmBinding!();
           const submitted = await waitForOutput(captured, 'SUBMITTED', 5_000);
@@ -1470,14 +1485,16 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
         } else {
           expect(order).toEqual(['reanchor']);
           expect(emitted).toHaveLength(0);
-          expect(existsSync(nativePath)).toBe(false);
-          expect(captured()).not.toContain('SUBMITTED');
+          expect(existsSync(nativePath)).toBe(idTiming === 'first-turn');
+          if (idTiming === 'known') expect(captured()).not.toContain('SUBMITTED');
           expect(events, hostTestDiagnostics(ownerId, captured)).toContainEqual(expect.objectContaining({
             kind: 'respawn-binding-unconfirmed',
             nativeId,
             reason: 'successor-reanchor-unconfirmed',
           }));
-          expect(events).not.toContainEqual(expect.objectContaining({ kind: 'respawn-carry-delivered' }));
+          if (idTiming === 'known') {
+            expect(events).not.toContainEqual(expect.objectContaining({ kind: 'respawn-carry-delivered' }));
+          }
         }
       } finally {
         await injectIntoHost(socketPathFor(ownerId), {

@@ -9,8 +9,10 @@
  *
  * THE SIGNAL (why this is robust, not a guess): the two heartbeats a spawned bee carries have
  * DIFFERENT couplings —
- *   • coord_presence.heartbeat_at is TOOL-CALL-COUPLED — bumped only when the bee makes an MCP
- *     tool call (dispatch-heartbeat / coord:inbox / bootstrap). A dark MCP ⇒ it FREEZES.
+ *   • coord_presence.heartbeat_at is shared dispatch/keepalive telemetry, not agent-tool-list
+ *     proof. Hook-origin calls and the psu supervisor's 60s keepalive can refresh it while the
+ *     agent-facing catalog is empty. The interactive sweep checks assistant turns since the
+ *     last agent-origin invocation as an independent signal.
  *   • spawned_agents.heartbeat_at is the SUPERVISOR beat — written out-of-band by the nursery/
  *     bg-host (a SEPARATE process from :3070 that a deploy does NOT restart), every ~60s while it
  *     holds the child. A dark MCP ⇒ it stays FRESH (the process is alive).
@@ -71,7 +73,7 @@ export interface McpDarkSnapshot {
   supervisorHeartbeatMs: number | null;
   /** spawned_agents.last_output_at — child stdout (actively-generating). */
   lastOutputMs: number | null;
-  /** coord_presence.heartbeat_at — the TOOL-CALL-COUPLED beat (dark MCP ⇒ frozen). */
+  /** Shared presence beat; hook dispatch and psu supervisor keepalives may refresh it. */
   presenceHeartbeatMs: number | null;
 }
 
@@ -108,7 +110,8 @@ export function evaluateMcpDark(
   // (c) actively generating output right now (a live turn that needs its tools — not idle/parked).
   const working = s.lastOutputMs != null && nowMs - s.lastOutputMs < workingMs;
   if (!working) return { dark: false, reason: null };
-  // (d) NO successful MCP call since the restart — the tool-call-coupled beat predates it (or absent).
+  // (d) NO presence update since the restart. This shared beat can also be refreshed
+  // by hooks or a psu supervisor keepalive without proving the client received tools/list.
   const reconnected = s.presenceHeartbeatMs != null && s.presenceHeartbeatMs >= restartAtMs;
   if (reconnected) return { dark: false, reason: null };
 
@@ -154,7 +157,7 @@ export interface McpDarkWatchdogResult {
 }
 
 /**
- * One watchdog pass: scan every running/restarting spawned bee, join its tool-call-coupled presence
+ * One watchdog pass: scan every running/restarting spawned bee, join its shared presence
  * beat, evaluate darkness, claim each newly-dark owner exactly once (INSERT…ON CONFLICT DO NOTHING),
  * fire a consolidated owner notify + fleet broadcast for the claimed set, and clear the escalation
  * of any owner that has recovered (reconnected or exited). Never throws.
@@ -308,11 +311,13 @@ export async function checkMcpDark(
 //
 // THE SIGNAL here is the same two-heartbeat decoupling, re-based per session:
 // the psu-pty host discovery file is the process-alive beat (FS, transport-
-// independent), while coord_presence.heartbeat_at is TOOL-CALL-COUPLED — a
-// severed transport freezes it while the host stays live. An ARMED LOOP
-// (harness_shared.routines loop-<owner>, active) makes the expected MCP cadence
-// known (≈ its interval), so staleness is judged against it; without a loop,
-// fresh pty activity + a long-stale presence beat is the (weaker) signal.
+// independent), while coord_presence.heartbeat_at can be refreshed by hook
+// dispatches or the psu supervisor's 60s keepalive, even if the client never
+// receives tools/list. The sweep therefore also counts assistant turns since
+// the last agent-origin invocation. An ARMED LOOP (harness_shared.routines
+// loop-<owner>, active) makes the expected MCP cadence known (≈ its interval),
+// so staleness is judged against it; without a loop, fresh pty activity + a
+// long-stale presence beat is the weaker signal.
 //
 // THE HEAL preserves headed sessions in place: inject mode:'mcp-reconnect' into
 // the session's own pty host (the /mcp dialog macro, psu-pty-host P-003). A
@@ -344,11 +349,13 @@ const DEFAULT_INTERACTIVE_GRACE_MS = 10 * 60_000;
 const DEFAULT_PTY_FRESH_MS = 10 * 60_000;
 /** No-loop clause: presence beat staler than this while the pty is in use. */
 const DEFAULT_NO_LOOP_STALE_MS = 30 * 60_000;
+/** Repeated assistant turns with no agent-origin MCP call indicate a missing client tool catalog. */
+const DEFAULT_TOOLLESS_ASSISTANT_TURN_THRESHOLD = 3;
 /** Armed-loop clause floor (beats 3× a short loop interval). */
 const DEFAULT_LOOP_STALE_FLOOR_MS = 20 * 60_000;
-/** Positive-evidence recovery: a tool-call-coupled beat fresher than this means
- *  tools are demonstrably flowing NOW (2026-07-14 false-heal fix — recovery is
- *  never inferred from ¬dark). */
+/** Positive-evidence recovery: an agent-origin invocation this fresh means
+ *  Papercusp tools are demonstrably flowing NOW (2026-07-14 false-heal fix —
+ *  recovery is never inferred from ¬dark). */
 const RECOVERED_FRESH_MS = 5 * 60_000;
 
 export interface InteractiveDarkSnapshot {
@@ -356,11 +363,15 @@ export interface InteractiveDarkSnapshot {
   /** psu-pty discovery file: host start + freshest pty stream activity (epoch ms). */
   hostStartedMs: number | null;
   hostLastActivityMs: number | null;
-  /** coord_presence.heartbeat_at — the TOOL-CALL-COUPLED beat (epoch ms). */
+  /** Shared heartbeat; hook dispatch and psu supervisor keepalives may keep it fresh (epoch ms). */
   presenceHeartbeatMs: number | null;
   /** An ACTIVE loop routine (harness_shared.routines loop-<owner>) + its interval. */
   loopActive: boolean;
   loopIntervalSec: number | null;
+  /** Indexed assistant turns since the current host started or its last agent-origin MCP call. */
+  assistantTurnsSinceLastAgentCall?: number;
+  /** Timestamp of the latest indexed assistant turn in that no-agent-call streak. */
+  lastAssistantTurnMs?: number | null;
 }
 
 export interface InteractiveDarkThresholds {
@@ -368,6 +379,7 @@ export interface InteractiveDarkThresholds {
   ptyFreshMs?: number;
   noLoopStaleMs?: number;
   loopStaleFloorMs?: number;
+  assistantTurnsWithoutAgentMcp?: number;
 }
 
 /**
@@ -394,6 +406,30 @@ export function evaluateInteractiveMcpDark(
   // trigger an automatic /mcp heal. Only the live cadence evidence below is
   // actionable.
   if (s.presenceHeartbeatMs == null) return { dark: false, reason: null };
+  // A projected hook call can keep the shared presence beat fresh even while
+  // this client's tools/list never arrived. Require multiple indexed assistant
+  // turns after the last agent-origin MCP call, and a recent final turn, before
+  // treating that mismatch as actionable.
+  const assistantTurnsWithoutAgentMcp = s.assistantTurnsSinceLastAgentCall ?? 0;
+  const lastAssistantTurnAgeMs = s.lastAssistantTurnMs == null ? null : nowMs - s.lastAssistantTurnMs;
+  if (
+    assistantTurnsWithoutAgentMcp >=
+      (opts.assistantTurnsWithoutAgentMcp ?? DEFAULT_TOOLLESS_ASSISTANT_TURN_THRESHOLD) &&
+    lastAssistantTurnAgeMs != null &&
+    lastAssistantTurnAgeMs >= 0 &&
+    lastAssistantTurnAgeMs < ptyFreshMs
+  ) {
+    return {
+      dark: true,
+      reason:
+        'interactive session completed ' +
+        assistantTurnsWithoutAgentMcp +
+        ' assistant turns without an agent-origin Papercusp tool call (latest ~' +
+        mins(lastAssistantTurnAgeMs) +
+        'm ago) while its pty host is live; supervisor keepalives and hook-origin dispatches can refresh the shared ' +
+        'presence beat without restoring the client tool catalog.',
+    };
+  }
   const staleMs = nowMs - s.presenceHeartbeatMs;
 
   if (s.loopActive) {
@@ -406,7 +442,7 @@ export function evaluateInteractiveMcpDark(
       dark: true,
       reason:
         `interactive session with an ARMED loop (interval ~${Math.round(intervalMs / 1000)}s) whose ` +
-        `tool-call-coupled presence beat is ~${mins(staleMs)}m stale (> ${mins(threshold)}m) while its ` +
+        `shared presence beat is ~${mins(staleMs)}m stale (> ${mins(threshold)}m) while its ` +
         `pty host is live — the MCP transport is severed (loop wakes cannot re-register either).`,
     };
   }
@@ -455,7 +491,7 @@ interface OwnerHealState {
  * VERDICT SEMANTICS (rewritten after the 2026-07-14 live false-heal incident —
  * the first deployed pass announced "healed" to two sessions whose transports
  * were still dead): recovery is POSITIVE EVIDENCE ONLY. `recovered` = a FRESH
- * tool-call-coupled presence beat exists right now (tools demonstrably
+ * recent agent-origin invocation exists right now (tools demonstrably
  * flowing); `dark` = the evaluateInteractiveMcpDark verdict. NEITHER
  * (¬dark ∧ ¬recovered — e.g. the session merely went idle and slipped under
  * the in-use gate, or its presence row is reaped/absent) is INDETERMINATE:
@@ -734,9 +770,57 @@ export async function checkInteractiveMcpDark(
     const liveOwnerIds = new Set(owners);
     const recoveredOwnerIds = new Set<string>();
     const now = Date.now();
+    const assistantTurnThreshold = opts.assistantTurnsWithoutAgentMcp ?? DEFAULT_TOOLLESS_ASSISTANT_TURN_THRESHOLD;
+    const toolFreeTurnRowsPromise =
+      owners.length > 0
+        ? sql<
+            {
+              owner_id: string;
+              assistant_turn_count: string | number | null;
+              last_assistant_turn_ms: string | number | null;
+            }[]
+          >`
+      WITH live_hosts AS (
+        SELECT owner_id, host_started_at
+          FROM UNNEST(
+            ${sql.array(owners)}::text[],
+            ${sql.array(hosts.map((host) => new Date(host.startedAt)))}::timestamptz[]
+          ) AS h(owner_id, host_started_at)
+      ),
+      last_agent AS (
+        SELECT h.owner_id, max(t.invoked_at) AS invoked_at
+          FROM live_hosts h
+          JOIN harness_shared.tool_invocations t
+            ON t.coord_owner_id = h.owner_id
+           AND t.invoked_at >= h.host_started_at
+           AND ${agentToolInvocationPredicate(sql, 't')}
+         GROUP BY h.owner_id
+      )
+      SELECT h.owner_id,
+             turns.assistant_turn_count,
+             turns.last_assistant_turn_ms
+        FROM live_hosts h
+        LEFT JOIN last_agent a ON a.owner_id = h.owner_id
+        CROSS JOIN LATERAL (
+          SELECT count(*)::int AS assistant_turn_count,
+                 max(extract(epoch from recent.ts) * 1000) AS last_assistant_turn_ms
+            FROM (
+              SELECT p.ts
+                FROM harness_shared.session_turns p
+               WHERE p.workspace_id = 'default'
+                 AND p.owner = h.owner_id
+                 AND p.speaker = 'assistant'
+                 AND p.ts >= coalesce(a.invoked_at, h.host_started_at)
+                 AND p.ts <= ${new Date(now)}
+               ORDER BY p.ts DESC
+               LIMIT ${assistantTurnThreshold}
+            ) recent
+        ) turns
+      `
+        : Promise.resolve([]);
 
-    // Only query per-host presence/loop state + agent-origin invocation evidence
-    // + run the verdict/heal ladder
+    // Only query per-host presence/loop state, agent-origin invocation and
+    // assistant-turn evidence + run the verdict/heal ladder
     // when there IS at least one live host — an empty `owners` array feeding
     // `= ANY(${owners})` is exactly what the original hosts.length===0 guard
     // avoided, and skipping this block leaves darkOwners empty (correct: zero
@@ -763,6 +847,7 @@ export async function checkInteractiveMcpDark(
              AND ${agentToolInvocationPredicate(sql, 't')}
         `,
       ]);
+      const toolFreeTurnRows = await toolFreeTurnRowsPromise;
       const presenceBy = new Map(
         presenceRows.map((r) => [r.owner_id, r.presence_ms != null ? Number(r.presence_ms) : null]),
       );
@@ -773,6 +858,15 @@ export async function checkInteractiveMcpDark(
         ]),
       );
       const agentInvocationOwners = new Set(agentInvocationRows.map((r) => r.owner_id));
+      const toolFreeTurnsByOwner = new Map(
+        toolFreeTurnRows.map((r) => [
+          r.owner_id,
+          {
+            count: r.assistant_turn_count == null ? 0 : Number(r.assistant_turn_count),
+            lastTurnMs: r.last_assistant_turn_ms == null ? null : Number(r.last_assistant_turn_ms),
+          },
+        ]),
+      );
 
       const verdictByOwner = new Map<
         string,
@@ -780,6 +874,7 @@ export async function checkInteractiveMcpDark(
       >();
       for (const h of hosts) {
         const presenceMs = presenceBy.get(h.ownerId) ?? null;
+        const toolFreeTurns = toolFreeTurnsByOwner.get(h.ownerId);
         const verdict = evaluateInteractiveMcpDark(
           {
             ownerId: h.ownerId,
@@ -788,6 +883,8 @@ export async function checkInteractiveMcpDark(
             presenceHeartbeatMs: presenceMs,
             loopActive: loopBy.has(h.ownerId),
             loopIntervalSec: loopBy.get(h.ownerId) ?? null,
+            assistantTurnsSinceLastAgentCall: toolFreeTurns?.count ?? 0,
+            lastAssistantTurnMs: toolFreeTurns?.lastTurnMs ?? null,
           },
           now,
           opts,
