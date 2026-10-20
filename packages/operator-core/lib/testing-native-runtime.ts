@@ -1,8 +1,11 @@
 /** Native executable custody stays outside a browser's unprivileged user namespace. */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { once } from 'node:events';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { constants, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isCliEntry } from './util/cli-entry';
 import { readProcessIdentity, linuxProcStateFromStat } from './process-identity.ts';
 import type { RecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
@@ -125,9 +128,42 @@ export function serveNativeRuntimeObserver(socket: string) {
   return server;
 }
 
+/** Keep kernel custody in the caller's namespace for the entire guard command. */
+async function withNativeRuntimeObserver(command: string[]): Promise<number> {
+  const work = mkdtempSync(join(tmpdir(), 'native-runtime-observer-'));
+  const socket = join(work, 'runtime.sock');
+  let server: ReturnType<typeof serveNativeRuntimeObserver> | undefined;
+  try {
+    server = serveNativeRuntimeObserver(socket);
+    await once(server, 'listening');
+    return await new Promise<number>((resolve, reject) => {
+      const child = spawn(command[0]!, command.slice(1), {
+        stdio: 'inherit',
+        env: { ...process.env, PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET: socket },
+      });
+      const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
+      const handlers = signals.map(signal => () => { child.kill(signal); });
+      signals.forEach((signal, i) => process.on(signal, handlers[i]!));
+      const detach = () => signals.forEach((signal, i) => process.off(signal, handlers[i]!));
+      child.once('error', error => { detach(); reject(error); });
+      child.once('close', (code, signal) => {
+        detach();
+        resolve(code ?? (signal ? 128 + constants.signals[signal] : 1));
+      });
+    });
+  } finally {
+    if (server?.listening) await new Promise<void>(done => server!.close(() => done()));
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
 if (isCliEntry(import.meta.url)) {
   try {
-    if (process.argv[2] === '--observe-native') serveNativeRuntimeObserver(process.argv[3]!);
+    if (process.argv[2] === '--with-native-observer') {
+      if (process.argv[3] !== '--' || !process.argv[4]) throw new Error('native observer requires -- and a command');
+      void withNativeRuntimeObserver(process.argv.slice(4)).then(code => { process.exitCode = code; })
+        .catch(error => { console.error(`Native runtime observer failed: ${String(error)}`); process.exitCode = 1; });
+    } else if (process.argv[2] === '--observe-native') serveNativeRuntimeObserver(process.argv[3]!);
     else if (process.argv[2] === '--check-native-liveness') {
       const socket = process.env.PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET;
       if (!socket) throw new Error('native liveness observer is unavailable');

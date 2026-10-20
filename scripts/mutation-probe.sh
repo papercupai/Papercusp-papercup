@@ -302,6 +302,13 @@ ORIGINAL_ARGS=("$@")
 ORIGINAL_CWD="$(pwd -P)"
 RUNNER_SOURCE_ABSOLUTE="${MUTATION_PROBE_SOURCE_PATH:-$(realpath -e "$0")}"
 RUNNER_ROOT="$(git -C "$(dirname "$RUNNER_SOURCE_ABSOLUTE")" rev-parse --show-toplevel 2>/dev/null || true)"
+# Overlay guards enter a user namespace and cannot read the native host's exe.
+# Reuse the live kernel observer before that boundary, across every probe leg.
+# Re-enter this same frozen script so runner provenance and argv stay intact.
+if [ -n "${VERIFY_TAURI_PID:-}" ] && [ -z "${PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET:-}" ]; then
+  exec node --import tsx "$OPERATOR_SOURCE_ROOT/packages/operator-core/lib/testing-native-runtime.ts" \
+    --with-native-observer -- bash "$MUTATION_PROBE_FROZEN_SOURCE" "${ORIGINAL_ARGS[@]}"
+fi
 RUNNER_SOURCE_PATH="$RUNNER_SOURCE_ABSOLUTE"
 REPLAY_CWD="$ORIGINAL_CWD"
 RUNNER_COMMIT=""
