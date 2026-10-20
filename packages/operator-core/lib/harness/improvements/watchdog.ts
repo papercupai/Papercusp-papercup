@@ -65,6 +65,7 @@ import {
   type KnownOpenAgingTickTunables,
 } from './known-open-aging';
 import { processAutoClose as runAutoCloseSweep, type AutoCloseOutcome } from './auto-close';
+import { refreshBugInflowDaily } from './bug-inflow';
 import {
   classifyToolError,
   toolErrorSignalKey,
@@ -4423,6 +4424,12 @@ export interface WatchdogDeps {
    * ran-ticks. Defaults to `processAutoClose` (DEFAULT-OFF flag-gated); tests inject.
    */
   processAutoClose?: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
+  /**
+   * bug-inflow P-007 (R-6): store today's + yesterday's inflow-vs-closes rollup
+   * (harness_shared.bug_inflow_daily) off the read path. Defaults to
+   * `refreshBugInflowDaily` on a production tick; tests inject or omit it.
+   */
+  refreshBugInflow?: (workspaceId: string) => Promise<unknown>;
   /** Re-detect file-backed red tests immediately before capture; fails open on read errors. */
   redetectRedTests?: RedTestRedetect;
   /** R-3 daily cap: repeated-tool-error rows minted per tool in the last 24h (fails open). */
@@ -5301,6 +5308,7 @@ interface ResolvedTickDeps {
   pruneTicks: (workspaceId: string, olderThanDays: number) => Promise<void>;
   processAging: (workspaceId: string, knownOpen: readonly KnownOpenAgingInput[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
   processAutoClose: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
+  refreshBugInflow?: (workspaceId: string) => Promise<unknown>;
   redetectRedTests?: RedTestRedetect;
   /** R-3 daily cap: repeated-tool-error rows minted per tool in the last 24h. Default reads PG. */
   readToolErrorMintsByTool?: (workspaceId: string) => Promise<ReadonlyMap<string, number>>;
@@ -5414,6 +5422,17 @@ async function runWatchdogTickBody(
     await deps.processAutoClose(workspaceId, opts);
   } catch (e) {
     console.warn(`[improvement-watchdog] auto-close failed: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // bug-inflow P-007 (R-6): refresh the stored daily inflow-vs-closes rollup the
+  // work.bugInflow cell and the leader brief read. Best-effort, like auto-close:
+  // a failure leaves the stored rows to age into the reader's 'stale' verdict.
+  if (deps.refreshBugInflow) {
+    try {
+      await deps.refreshBugInflow(workspaceId);
+    } catch (e) {
+      console.warn(`[improvement-watchdog] bug-inflow refresh failed: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   // P-009 deferred-escalation: feed the last RAN tick's deferred keys so a signal
@@ -5657,6 +5676,8 @@ export async function runWatchdogTick(
   // Same opt-in rule: an injected-collector (unit) tick never reads PG for the cap.
   const readToolErrorMints = deps?.readToolErrorMintsByTool
     ?? (!deps?.collect && !deps?.collectors ? (ws: string) => readToolErrorMintsByTool(ws) : undefined);
+  const refreshBugInflow = deps?.refreshBugInflow
+    ?? (!deps?.collect && !deps?.collectors ? (ws: string) => refreshBugInflowDaily(ws) : undefined);
 
   const outcome = await withLock(workspaceId, () =>
     runWatchdogTickBody(workspaceId, opts, {
@@ -5667,6 +5688,7 @@ export async function runWatchdogTick(
       pruneTicks,
       processAging,
       processAutoClose,
+      refreshBugInflow,
       redetectRedTests,
       readToolErrorMintsByTool: readToolErrorMints,
       collect: deps?.collect,

@@ -860,7 +860,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(d.created[0].payload).not.toHaveProperty('toolFailureProbation.report.reproduced');
   });
 
-  it('does not class-coalesce agent reports with missing dimensions and different messages', async () => {
+  it('keys agent reports that differ only in wording onto one tool+class+code+field row (bug-inflow D-004/D-005)', async () => {
     const firstReport: SuspectedToolFailure = {
       toolName: 'coord:send', errorCode: 'invalid_args', status: 'error',
       message: 'invalid_args: first body value was rejected',
@@ -871,11 +871,25 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     const first = normalizeSuspectedToolFailure(firstReport);
     const incoming = normalizeSuspectedToolFailure(incomingReport);
     expect(incoming.classKey).toBe(first.classKey);
-    expect(incoming.watchdogKey).not.toBe(first.watchdogKey);
+    // Wording alone never splits a key (bug-inflow-one-problem-one-row-2026-10-18#D-004 item 1).
+    expect(incoming.watchdogKey).toBe(first.watchdogKey);
+    // A real dimension still does: a different error code, or a different field, keys a different row.
+    expect(normalizeSuspectedToolFailure({ ...firstReport, errorCode: 'unknown_recipient' }).watchdogKey)
+      .not.toBe(first.watchdogKey);
+    // The field comes from the measured message (never the reporter's own fieldPath).
+    expect(normalizeSuspectedToolFailure({ ...firstReport, message: 'invalid_args: Unrecognized key: "bodyx"' }).watchdogKey)
+      .not.toBe(first.watchdogKey);
     const prior = existing({ id: 'EI-INCOMPLETE-CLASS', title: 'first report', scope: 'harness:papercusp',
       payload: { lane: 'observation', watchdogKey: first.watchdogKey,
         toolFailureProbation: { ...first, state: 'probation', reporters: ['su-a'], report: firstReport } } });
-    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior] };
+    const d = {
+      ...deps(),
+      findIssuesByToolFailureClassKeys: async () => [prior],
+      mergeIssuePayload: async (_id: string, patch: Record<string, unknown>) => {
+        prior.payload = { ...(prior.payload as Record<string, unknown>), ...patch };
+        return prior;
+      },
+    };
 
     const result = await captureImprovement({
       title: 'second report', kind: 'change', lane: 'observation', scope: 'harness:papercusp',
@@ -883,9 +897,9 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       payloadExtra: { toolFailureProbation: { ...incoming, state: 'probation', reporters: ['su-b'], report: incomingReport } },
     }, d);
 
-    expect(result).toMatchObject({ created: true });
-    expect(d.created).toHaveLength(1);
-    expect((prior.payload as Record<string, any>).toolFailureProbation.reporters).toEqual(['su-a']);
+    // The rewording is a counted repeat of the prior row, never a second filing.
+    expect(result).toMatchObject({ created: false });
+    expect(d.created).toHaveLength(0);
   });
 
   it('keeps a timed-out capability:bash report separate from the legacy ECONNREFUSED row', async () => {
@@ -907,10 +921,10 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       'repeated-tool-error-class:capability:bash:transient:error-code-unknown:schema-unknown~field-unknown:runtime-unknown',
     );
     expect(timeoutNormalized.classKey).toBe(priorNormalized.classKey);
-    expect(priorNormalized.watchdogKey).toBe(
-      'repeated-tool-error:capability:bash:transient:md5-1258d1f30c048e723dd13e6b951fa28b',
-    );
-    expect(timeoutNormalized.watchdogKey).not.toBe(priorNormalized.watchdogKey);
+    // Transient errors are TOOL-keyed: one counted row per tool, whatever the
+    // wording (bug-inflow-one-problem-one-row-2026-10-18#D-004 item 1, R-1).
+    expect(priorNormalized.watchdogKey).toBe('repeated-tool-error:capability:bash:transient');
+    expect(timeoutNormalized.watchdogKey).toBe(priorNormalized.watchdogKey);
 
     const legacyWatchdogKey = 'repeated-tool-error:capability:bash:transient:econnrefused-unable-to-connect-is-the';
     const prior = existing({
@@ -950,12 +964,10 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       },
     }, d);
 
-    expect(result).toMatchObject({ created: true });
-    expect(d.created).toHaveLength(1);
-    expect((prior.payload as Record<string, any>).toolFailureProbation.reporters).toEqual([
-      'su-prior-a',
-      'su-prior-b',
-    ]);
+    // R-1: one counted row per tool for transient failures — the timeout is a
+    // repeat onto the standing capability:bash transient row, not a new filing.
+    expect(result).toMatchObject({ created: false });
+    expect(d.created).toHaveLength(0);
   });
 
   // WI-10003605: a workspace-spanning invocation records harness '*'. Scoping it
@@ -1370,7 +1382,9 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     const canonicalReport: SuspectedToolFailure = {
       toolName: 'coord:read',
       status: 'found:false',
-      message: "No message id starts with '7b902c85'; not a full msg_id",
+      // A leading snake_case code is a real key dimension (bug-inflow D-004 item 2),
+      // so this is a DIFFERENT current key from the spill failure, not a rewording.
+      message: "not_found: No message id starts with '7b902c85'; not a full msg_id",
     };
     const priorNormalized = normalizeSuspectedToolFailure(priorReport);
     const canonicalNormalized = normalizeSuspectedToolFailure(canonicalReport);
@@ -5358,7 +5372,7 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     expect(new Set(store.occurrences.map((occurrence) => occurrence.canonicalId))).toEqual(new Set(['EI-S1']));
   });
 
-  it('keeps same-prefix helper-eligible lock failures separate while exact repeats still coalesce (EI-25714783883986261)', async () => {
+  it('counts differently-worded lock failures with one code onto one row (bug-inflow D-004; supersedes the EI-25714783883986261 split)', async () => {
     const store = signatureStore();
     const firstMessage = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
       'No edit attempted. Reconcile authoritative lock for crates/papercup-core/tests/android_uniffi_abi_guard.rs in mobile coordination_domain before writing or retrying.';
@@ -5377,15 +5391,21 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     const repeatedFirst = await store.capture('su-a', '', failure(firstMessage));
 
     expect(first).toMatchObject({ created: true });
-    expect(second).toMatchObject({ created: true });
+    // The second incident is the same problem (same tool, same upstream code):
+    // it is COUNTED onto the first row, not filed as a sibling.
+    expect(second).toMatchObject({ created: false, reason: 'coalesced', issue: { id: first?.issue?.id } });
     expect(repeatedFirst).toMatchObject({ created: false, reason: 'coalesced', issue: { id: first?.issue?.id } });
+    expect(store.rows).toHaveLength(1);
+    expect(store.payloadOf(store.rows[0]).repeatCount).toBe(3);
+    // A different upstream code is a different problem and still gets its own row.
+    const otherCode = await store.capture('su-a', '', {
+      ...failure('column "holder_pid" of relation "file_locks" does not exist'), errorCode: 'undefined_column',
+    });
+    expect(otherCode).toMatchObject({ created: true });
     expect(store.rows).toHaveLength(2);
-    expect(new Set(store.rows.map((row) => store.payloadOf(row).watchdogKey)).size).toBe(2);
-    expect(store.payloadOf(store.rows[0]).repeatCount).toBe(2);
-    expect(store.payloadOf(store.rows[1])).not.toHaveProperty('repeatCount');
   });
 
-  it('uses the exact message key when any class dimension is missing', async () => {
+  it('counts differently-worded reports with a missing class dimension onto one row (bug-inflow D-004)', async () => {
     const store = signatureStore();
     const firstMessage = 'invalid_args: first body value was rejected';
     const secondMessage = 'invalid_args: second body value was rejected';
@@ -5399,12 +5419,13 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     await store.capture('su-b', '', { ...incomplete, message: secondMessage });
     await store.capture('su-a', '', incomplete);
 
-    expect(store.rows).toHaveLength(2);
-    expect(store.payloadOf(store.rows[0]).watchdogKey).not.toBe(store.payloadOf(store.rows[1]).watchdogKey);
-    expect(store.payloadOf(store.rows[0]).repeatCount).toBe(2);
-    expect(store.payloadOf(store.rows[1])).not.toHaveProperty('repeatCount');
-    expect(store.payloadOf(store.rows[0]).toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['su-a'] });
-    expect(store.payloadOf(store.rows[1]).toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['su-b'] });
+    // Same tool+class+code with the field unknown: the second wording and the
+    // repeat are counted onto the one row (D-004 item 1 — missing parts render
+    // as error-code-unknown / field-unknown, never as a message fingerprint).
+    expect(store.rows).toHaveLength(1);
+    // Every report is a counted occurrence of that one row, and both reporters are on it.
+    expect(store.occurrences).toHaveLength(3);
+    expect(store.payloadOf(store.rows[0]).toolFailureProbation.reporters).toEqual(['su-a', 'su-b']);
   });
 
   it('bounds the per-class tally but always keeps the class the probation is about', () => {
