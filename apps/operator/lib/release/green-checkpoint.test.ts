@@ -24,6 +24,7 @@ import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-he
 import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
   runGreenCheckpoint,
+  failingRepairLegsForRouting,
   archivePureProofCapture,
   recordDerivedFreezeDispositionWithDeadline,
   runPostVerdictStepWithDeadline,
@@ -1148,6 +1149,95 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
         failingTests: ["lib/broken.test.ts"],
       },
     });
+  });
+
+  it("P-013: a same-head passing repair-tick leg is not routed as a claimable repair", () => {
+    const contradicted = "@papercusp/papercusp-docs :: test";
+    const head = "a".repeat(40);
+    const failingTests = [contradicted];
+    const routed = failingRepairLegsForRouting(
+      { repairHead: head, failingTests },
+      {
+        head,
+        atMs: 1_000,
+        ok: true,
+        failingSignatures: [],
+        legs: [{ id: contradicted, status: "pass", durationMs: 1 }],
+      },
+    );
+
+    expect(failingTests).toEqual([contradicted]);
+    expect(routed).toEqual([]);
+  });
+
+  it("P-013: only same-head contradicted entries are removed from mixed repair routing", () => {
+    const contradicted = "@papercusp/papercusp-docs :: test";
+    const realRed = "packages/operator-core/lib/release/foo.test.ts";
+    const head = "b".repeat(40);
+
+    expect(
+      failingRepairLegsForRouting(
+        { repairHead: head, failingTests: [contradicted, realRed] },
+        {
+          head,
+          atMs: 2_000,
+          ok: false,
+          failingSignatures: [],
+          legs: [{ id: contradicted, status: "pass", durationMs: 1 }],
+        },
+      ),
+    ).toEqual([realRed]);
+  });
+
+  it("P-013: a same-head passing hold-tick leg is omitted from routing but retained in the queue", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const contradicted = "@papercusp/papercusp-docs :: test";
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "live-fixer",
+      failingTests: [contradicted],
+      signature: [],
+    };
+    const { deps } = stubDeps(false, [contradicted]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => true;
+    const tick = vi.fn(async () => ({
+      head: frozen,
+      atMs: now,
+      ok: true,
+      failingSignatures: [],
+      legs: [{ id: contradicted, status: "pass" as const, durationMs: 1 }],
+    }));
+    deps.runRepairTickLegs = tick;
+    const route = vi.fn(async (_input: unknown) => undefined);
+    deps.routeFrozenRepairLegsToAgents = route;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.reason).toBe("repair-in-progress");
+    expect(tick).toHaveBeenCalled();
+    expect(route).toHaveBeenCalled();
+    expect(route.mock.calls.at(-1)?.[0]).toMatchObject({
+      queue: {
+        candidate: frozen,
+        repairHead: frozen,
+        failingTests: [],
+      },
+    });
+    expect(queue?.failingTests).toEqual([contradicted]);
   });
 
   it("P-013: a green tick routes queue:null so every open leg item resolves", async () => {
