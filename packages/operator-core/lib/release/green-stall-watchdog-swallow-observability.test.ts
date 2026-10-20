@@ -73,6 +73,24 @@ function findSwallowSites(lines: string[]): SwallowSite[] {
   return out;
 }
 
+/**
+ * The install-scoped recording route inside the watchdog's `run` closure: from the
+ * `invokeScopedPass` declaration to the boot `run()` call. Both markers must exist, so a
+ * restructure fails loudly here instead of silently widening or emptying the census.
+ */
+function installScopedRegion(lines: string[]): { start: number; end: number } {
+  const start = lines.findIndex((l) => /const invokeScopedPass = \(/.test(l));
+  const end = lines.findIndex((l, i) => i > start && /^\s*run\(\);/.test(l));
+  expect(start, 'invokeScopedPass declaration not found').toBeGreaterThanOrEqual(0);
+  expect(end, 'boot run() call after invokeScopedPass not found').toBeGreaterThan(start);
+  return { start, end };
+}
+
+/** Pass names given as a string literal to the recorder in `src`. */
+function namedRecorderPasses(src: string): string[] {
+  return [...src.matchAll(new RegExp(`${RECORDER}\\(\\s*sql,\\s*'([^']+)'`, 'g'))].map((m) => m[1]);
+}
+
 /** The declared `WatchdogPassName` union members, read from the writer rather than re-typed. */
 function declaredPassNames(): string[] {
   const src = readFileSync(HEALTH_MODULE, 'utf8');
@@ -115,15 +133,41 @@ describe('green-stall-watchdog: every (non-fatal) swallow is observable', () => 
   it('records exactly once per swallow — no pass double-reports or shares another pass name', () => {
     const lines = readLines(WATCHDOG);
     const sites = findSwallowSites(lines);
-    const calls = lines.filter((l) => !l.trim().startsWith('//') && l.includes(`${RECORDER}(`));
+    // The install-scoped passes record through a second, deliberate route (see the next case),
+    // so the swallow census excludes that one region and the region is pinned on its own.
+    const { start, end } = installScopedRegion(lines);
+    const outside = [...lines.slice(0, start), ...lines.slice(end)];
+    const calls = outside.filter((l) => !l.trim().startsWith('//') && l.includes(`${RECORDER}(`));
     expect(calls.length).toBe(sites.length);
 
     // Each call must name a DISTINCT pass, or two passes write over each other's marker and one
     // of them becomes exactly as invisible as before.
-    const src = readFileSync(WATCHDOG, 'utf8');
-    const named = [...src.matchAll(new RegExp(`${RECORDER}\\(\\s*sql,\\s*'([^']+)'`, 'g'))].map((m) => m[1]);
+    const named = namedRecorderPasses(outside.join('\n'));
     expect(named.length).toBe(sites.length);
     expect(new Set(named).size).toBe(named.length);
+  });
+
+  it('records each install-scoped pass once when it throws, and once each when the install read fails', () => {
+    // runInstallScopedWatchdogs runs one handler per pass per install. A handler that rejects is
+    // recorded by invokeScopedPass's single generic call; if the install-scope read itself fails,
+    // no handler ran, so the fan-out records every scoped pass once. A pass missing from the
+    // fan-out is invisible exactly when the read is broken; a name listed twice double-reports.
+    const lines = readLines(WATCHDOG);
+    const { start, end } = installScopedRegion(lines);
+    const region = lines.slice(start, end);
+    const text = region.join('\n');
+
+    const scoped = [...text.matchAll(/invokeScopedPass\(\s*'([^']+)'/g)].map((m) => m[1]);
+    expect(scoped.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(scoped).size).toBe(scoped.length);
+
+    const fanout = namedRecorderPasses(text);
+    expect([...fanout].sort()).toEqual([...scoped].sort());
+
+    const calls = region.filter((l) => !l.trim().startsWith('//') && l.includes(`${RECORDER}(`));
+    // one generic call inside invokeScopedPass + one named call per scoped pass, nothing else
+    expect(calls.length).toBe(fanout.length + 1);
+    expect(calls.filter((l) => new RegExp(`${RECORDER}\\(\\s*sql,\\s*pass,`).test(l))).toHaveLength(1);
   });
 
   it('uses only pass names the writer actually declares (a typo would create a phantom key)', () => {

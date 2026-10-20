@@ -547,6 +547,61 @@ describe('expandTestRunBinding: mutation causal controls', () => {
   ] as const)('refuses causal controls from %s', async (_label, override) => {
     expect(await expand(override)).toMatchObject({ ok: false, error: 'mutation_causal_controls_invalid', testRunId: 42 });
   });
+
+  // EI-26471802780956386: once the mutant carries a descriptor, its controls must be
+  // its OWN invocation's calibration legs, or the store reads mutationLinkage=unverified.
+  describe('probe-invocation linkage', () => {
+    const descriptor = (leg: string, over: Record<string, unknown> = {}) => ({
+      schemaVersion: 1,
+      probeInvocationId: 'probe-own-0001',
+      mode: 'copy-out',
+      subjectPath: 'pkg/lib/limit.ts',
+      mutateExpression: 's/3/4/',
+      againstCommit: null,
+      subjectBeforeSha256: 'c'.repeat(64),
+      subjectAfterSha256: 'd'.repeat(64),
+      mutantDiff: '-3\n+4\n',
+      mutantDiffTruncated: false,
+      testCommandSha256: 'e'.repeat(64),
+      leg,
+      testFileSha256: 'f'.repeat(64),
+      ...over,
+    });
+    async function expandLinked(baseline: unknown, copyBaseline: unknown) {
+      const rows = new Map<number, TestRunEvidenceRow>([
+        [42, run({ status: 'fail', source: 'mutation-probe',
+          execution_details: { mutationPhase: 'mutant', mutation: descriptor('mutant') } })],
+        [10, run({ id: 10, source: 'mutation-probe',
+          execution_details: { mutationPhase: 'baseline', ...(baseline ? { mutation: baseline } : {}) } })],
+        [11, run({ id: 11, source: 'mutation-probe',
+          execution_details: { mutationPhase: 'copy-baseline', ...(copyBaseline ? { mutation: copyBaseline } : {}) } })],
+      ]);
+      return expandTestRunBinding(input({ details: { causalControls: controls } }), SCOPE, {
+        loadRun: async (_scope, id) => rows.get(Number(id)) ?? null,
+        adoptRun: async () => true,
+        resolveRoot: async () => root,
+      });
+    }
+
+    it("accepts the mutant's own invocation's baseline and copy-baseline legs", async () => {
+      expect(await expandLinked(descriptor('baseline'), descriptor('copy-baseline'))).toMatchObject({ ok: true,
+        binding: { testRunId: 42, details: { causalControls: controls } } });
+    });
+
+    it.each([
+      ['another probe invocation', descriptor('baseline', { probeInvocationId: 'probe-other-0002' }), descriptor('copy-baseline'), 10],
+      ['other subject bytes', descriptor('baseline'), descriptor('copy-baseline', { subjectBeforeSha256: 'a'.repeat(64) }), 11],
+      ['swapped calibration legs', descriptor('copy-baseline'), descriptor('baseline'), 10],
+      ['a control with no descriptor', descriptor('baseline'), null, 11],
+    ] as const)('refuses controls from %s', async (_label, baseline, copyBaseline, offending) => {
+      const out = await expandLinked(baseline, copyBaseline);
+      expect(out).toMatchObject({ ok: false, error: 'mutation_causal_controls_unlinked', testRunId: 42 });
+      if (!out.ok) {
+        expect(out.message).toContain(`test-run ${offending}`);
+        expect(out.message).toContain('"probe-own-0001"');
+      }
+    });
+  });
 });
 
 describe('expandTestRunBinding: harness attribution', () => {

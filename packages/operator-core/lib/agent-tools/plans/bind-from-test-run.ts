@@ -345,6 +345,7 @@ export type TestRunBindingError =
   | 'source_paths_underivable'
   | 'run_contradicts_declared_adequacy'
   | 'mutation_causal_controls_invalid'
+  | 'mutation_causal_controls_unlinked'
   | 'mutation_reaim_unjustified'
   | 'test_run_as_committed_content_mismatch'
   | 'test_run_as_committed_probe_failed'
@@ -788,6 +789,43 @@ function mutationCausalControlsRefusal(
     || new Set(ids).size !== 3 || valid?.mutantTestRunId !== testRunId) {
     return { ok: false, error: 'mutation_causal_controls_invalid', testRunId,
       message: `Mutation causalControls must name distinct positive baselineTestRunId, copyBaselineTestRunId and mutantTestRunId; mutantTestRunId must equal the bound test-run ${testRunId}.` };
+  }
+  return null;
+}
+
+/** The calibration leg each named causal control must have recorded, in controlIds order. */
+const CAUSAL_CONTROL_LEGS = ['baseline', 'copy-baseline'] as const;
+
+/**
+ * EI-26471802780956386: a caught mutant is linked only to calibration rows from
+ * its OWN probe invocation (spec-evidence-store pairs the baseline on
+ * probeInvocationId + subjectBeforeSha256). Controls copied from another probe of
+ * the same commit pass the scope check yet leave the binding reading
+ * mutationLinkage=unverified, so refuse them here. Pre-descriptor mutant rows keep
+ * the scope-only check; a descriptor-bearing mutant needs descriptor-bearing controls.
+ */
+function mutationCausalControlsUnlinked(
+  row: TestRunEvidenceRow,
+  controls: readonly TestRunEvidenceRow[],
+  controlIds: readonly number[],
+): Extract<TestRunExpansion, { ok: false }> | null {
+  const mutant = parseMutationDescriptor(executionDetails(row.execution_details).mutation);
+  if (mutant?.leg !== 'mutant') return null;
+  const testRunId = Number(row.id);
+  for (const [index, control] of controls.entries()) {
+    const descriptor = parseMutationDescriptor(executionDetails(control.execution_details).mutation);
+    const expectedLeg = CAUSAL_CONTROL_LEGS[index];
+    if (descriptor?.probeInvocationId === mutant.probeInvocationId
+      && descriptor.subjectBeforeSha256 === mutant.subjectBeforeSha256
+      && descriptor.leg === expectedLeg) continue;
+    const found = descriptor
+      ? `probeInvocationId ${JSON.stringify(descriptor.probeInvocationId)}, leg ${JSON.stringify(descriptor.leg)}`
+      : 'no mutation descriptor';
+    return { ok: false, error: 'mutation_causal_controls_unlinked', testRunId,
+      message: `Mutation causal control test-run ${controlIds[index]} records ${found}, but the bound mutant ${testRunId} ` +
+        `is probeInvocationId ${JSON.stringify(mutant.probeInvocationId)}; its ${expectedLeg} control must be that ` +
+        `invocation's ${expectedLeg} leg for the same subject bytes. Take all three ids from one probe run's ledger rows ` +
+        `(testing:runs on the guard file, grouped by execution_details.mutation.probeInvocationId), never from another probe.` };
   }
   return null;
 }
@@ -1427,6 +1465,8 @@ export async function expandTestRunBinding(
           message: `Mutation causal control test-run ${controlIds[index]} must exist, pass and match the bound mutant's workspace, harness and known commit.` };
       }
     }
+    const unlinked = mutationCausalControlsUnlinked(row, rows as TestRunEvidenceRow[], controlIds);
+    if (unlinked) return unlinked;
   }
   const resolvedHarnessRoot = harnessRoot ?? await deps.resolveRoot(scope);
   if (sibling === undefined) {
