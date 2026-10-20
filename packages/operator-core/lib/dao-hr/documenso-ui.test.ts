@@ -3,6 +3,47 @@ import type { Browser, Page } from 'playwright-core';
 import { assertCompletionResponse, register, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 
 describe('Documenso UI failure diagnostics', () => {
+  it.each([false, true])('fills signup identity after the signature interaction establishes hydration (initial hydration pending=%s)', async hydrationPending => {
+    const values: Record<string, string> = {};
+    const person = { personId: 'PER-signup', name: 'Native countersigner', email: 'signup@daohr.test' };
+    let dialogVisible = false;
+    const submit = vi.fn(async () => { throw new Error('Stop before provider submission'); });
+    const dialog = {
+      isVisible: async () => dialogVisible,
+      getByRole: (_role: string, options: { name: string }) => ({ click: async () => {
+        if (options.name === 'Next') dialogVisible = false;
+      } }),
+      getByTestId: () => ({ fill: vi.fn() }),
+    };
+    const form = { checkValidity: () => values.name === person.name && values.email === person.email && Boolean(values.password) };
+    const page = {
+      goto: vi.fn(),
+      locator: (selector: string) => {
+        const name = /input\[name="(\w+)"\]/.exec(selector)?.[1];
+        return name ? {
+          fill: async (value: string) => { values[name] = value; },
+          inputValue: async () => values[name] ?? '',
+          evaluate: async (callback: (input: object) => unknown) => callback({ form }),
+        } : { evaluateAll: async () => [], evaluate: async () => [] };
+      },
+      getByTestId: () => ({ click: async () => {
+        // The server-rendered fields accept fill before React attaches handlers.
+        // Opening the interactive signature pad establishes that boundary and
+        // can replace those early DOM values with the form's initial state.
+        if (hydrationPending) { delete values.name; delete values.password; }
+        dialogVisible = true;
+      } }),
+      getByRole: (role: string) => role === 'dialog' ? dialog : { click: submit },
+    } as unknown as Page;
+    const browser = { newContext: async () => ({ newPage: async () => page }) } as unknown as Browser;
+    const error = await register(browser, person).then(() => null, value => value as Error);
+    expect(error!.message).toContain('submit provider signup');
+    expect(submit).toHaveBeenCalledOnce();
+    expect(values.name).toBe(person.name);
+    expect(values.email).toBe(person.email);
+    expect(Boolean(values.password)).toBe(true);
+  });
+
   it.each([false, true])('waits for the PDF viewer before navigating to a virtualized signature field (signature dialog=%s)', async needsSignature => {
     let viewerReady = false, fieldRevealed = false, dialogVisible = false, fieldSigned = false, completed = false;
     const viewer = { first: () => viewer, waitFor: vi.fn(async () => {

@@ -1678,6 +1678,33 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(readFileSync(s, 'utf8')).toBe('keep\n');
   });
 
+  /**
+   * WI-6554700010018051: if a contained leg's setup cannot mount its tmpfs, the guard never ran,
+   * so its exit code (the setup's 97) is not a measurement. run_guard must refuse with a
+   * harness error instead of scoring it. The test seam re-points the legs' tmpfs at a path that
+   * does not exist AFTER the preflight has proved containment works on this host.
+   */
+  it.skipIf(!containWorks)('refuses with a harness error, never a verdict, when a leg cannot set up write containment', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-contain-abort-repo');
+    const unmountable = join(dir, 'contain-abort-no-such-dir', 'work');
+    const { code, out } = runProbeIO(['--file', s, '--mutate', 's/keep/KEEP/', '--test', guard], {
+      ...process.env,
+      MUTATION_PROBE_TEST_CONTAIN_LEG_WORK: unmountable,
+    }, repo);
+    // The preflight passed, so the probe believed containment was in force.
+    expect(out).toContain('MUTATION_PROBE_CONTAINMENT status=contained overlays=1 uncovered=0 failed=0');
+    expect(out).toContain(`tmpfs mount on ${unmountable} failed`);
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=harness-error .*guard_exit=97 containment_setup_failed=yes/);
+    expect(out).toContain('write containment could not be set up');
+    expect(out).not.toMatch(/verdict=(caught|survived)/);
+    expect(code).toBe(2);
+    // No contained leg ran its guard, so nothing past the baseline reached the real tree.
+    expect(existsSync(join(repo, 'rootlevel-copy-baseline'))).toBe(false);
+    expect(existsSync(join(repo, 'rootlevel-mutant'))).toBe(false);
+    expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8')).toBe('keep\n');
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
+  });
+
   it.skipIf(!containWorks)('splits a checkout with a mount point under it and names the root-level writes it could not contain', () => {
     const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-mounted-repo');
     // A bind under the root, like the shared papercusp tree's .gitnexus: overlayfs will not take

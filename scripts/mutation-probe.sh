@@ -2962,6 +2962,21 @@ contain_preflight() {
   else
     CONTAIN_STATUS="partial"
   fi
+  # Test seam (WI-6554700010018051). Once the positive control above has proved
+  # containment, MUTATION_PROBE_TEST_CONTAIN_LEG_WORK re-points the legs' tmpfs
+  # at another path. Overriding it any earlier would fail the preflight and run
+  # uncontained instead. A path that cannot be mounted makes every contained leg's
+  # setup write contain-abort and exit 97, so a test can reach run_guard's
+  # harness-error branch on a host where the setup normally works.
+  if [ -n "${MUTATION_PROBE_TEST_CONTAIN_LEG_WORK:-}" ]; then
+    CONTAIN_WORK="$MUTATION_PROBE_TEST_CONTAIN_LEG_WORK"
+    contain_write_setup || {
+      CONTAIN_STATUS="uncontained"
+      CONTAIN_REASON="could not rewrite $SCRATCH/contain-setup.sh for MUTATION_PROBE_TEST_CONTAIN_LEG_WORK"
+      CONTAIN_SETUP=""
+      return 0
+    }
+  fi
 }
 
 # After a post-baseline leg that ran with uncovered levels, name each level
