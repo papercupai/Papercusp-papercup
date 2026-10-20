@@ -68,7 +68,7 @@ describe('groupFilesForAttribution (P-004)', () => {
     ]);
     const groups = groupFilesForAttribution(['new.ts', 'old.ts', 'mtime.ts', 'residual.ts'], attr, {
       workingTreeMtimeMsByFile: new Map([
-        ['old.ts', 150], // a shell edit can be newer than its last native ledger row
+        ['old.ts', 999], // a ledger timestamp remains authoritative when available
         ['mtime.ts', 200],
       ]),
     });

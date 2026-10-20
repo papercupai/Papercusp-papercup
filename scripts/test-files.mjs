@@ -3499,11 +3499,6 @@ export async function main(
   // Diagnostic only: one stderr line, never a verdict input (see scripts/lib/mutation-probe-window.mjs).
   const probeWindowBefore = readMutationProbeWindow(repoRoot);
   if (probeWindowBefore) console.error(formatMutationProbeWindow(probeWindowBefore, repoRoot));
-  // Clone only after admission: receipt-consuming children must inherit the
-  // same real preflight result instead of repeating the disclosure-ledger read.
-  const receiptChildEnv = receiptFile
-    ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
-    : process.env;
   // EI-25978996299130239: a superproject can pin a reporter older than its
   // receipt contract. Refuse before collection, rather than spend a full test
   // run discovering a missing export at finalization. Keep the loaded module
@@ -3529,6 +3524,14 @@ export async function main(
   // The census is a deliberate committed-source closure walk — its substitutions are the
   // defence working, not the run measuring HEAD — so opening the channel earlier blamed the tests.
   childSourceNoticeSink = openChildSourceNoticeSink(process.env);
+  // Clone only after admission: receipt-consuming children must inherit the
+  // same real preflight result instead of repeating the disclosure-ledger read.
+  // WI-6554700010018066: and only AFTER the notice channel is exported above. A copy taken
+  // earlier lacks PAPERCUSP_COMMITTED_SOURCE_NOTICES, so every child of a receipt-bearing run
+  // (every mutation-probe leg) wrote no notice and childSubstituted read a false measured 0.
+  const receiptChildEnv = receiptFile
+    ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
+    : process.env;
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final

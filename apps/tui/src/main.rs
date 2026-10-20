@@ -48,6 +48,9 @@ mod notify;
 mod operator_voice_bus;
 mod paste_chips;
 mod plans_board;
+// R-14 / P-002: exercise the public UX contract through the real reducer/renderer.
+#[cfg(test)]
+mod public_release_ux_tests;
 mod reap;
 mod remote_connect;
 mod self_install;

@@ -216,13 +216,8 @@ export function groupFilesForAttribution(
     g.files.push(f);
     const ledgerEditedAtMs =
       typeof a.editedAtMs === 'number' && Number.isFinite(a.editedAtMs) ? a.editedAtMs : undefined;
-    const workingTreeMtimeMs = opts.workingTreeMtimeMsByFile?.get(f);
-    const editedAtMs =
-      ledgerEditedAtMs === undefined
-        ? workingTreeMtimeMs
-        : typeof workingTreeMtimeMs === 'number' && Number.isFinite(workingTreeMtimeMs)
-          ? Math.max(ledgerEditedAtMs, workingTreeMtimeMs)
-          : ledgerEditedAtMs;
+    const mtimeEditedAtMs = opts.workingTreeMtimeMsByFile?.get(f);
+    const editedAtMs = ledgerEditedAtMs ?? mtimeEditedAtMs;
     if (typeof editedAtMs === 'number' && Number.isFinite(editedAtMs)) {
       g.oldestEditedAtMs =
         g.oldestEditedAtMs === undefined ? editedAtMs : Math.min(g.oldestEditedAtMs, editedAtMs);

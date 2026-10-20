@@ -3273,7 +3273,9 @@ verify_mutation_bytes "$TARGET"
 MUTANT_PARSE="unchecked"
 MUTANT_PARSE_ERR="$SCRATCH/mutant-parse.err"
 case "$FILE" in
-  *.mjs|*.cjs|*.js)
+  # The workspace pins Node >=25, whose syntax checker strips TypeScript
+  # without executing it. Typed subjects need the same parse proof as JS.
+  *.mjs|*.cjs|*.js|*.mts|*.cts|*.ts)
     if ! command -v node >/dev/null 2>&1; then
       MUTANT_PARSE="unchecked-no-node"
     elif node --check "$TARGET" >/dev/null 2>"$MUTANT_PARSE_ERR"; then

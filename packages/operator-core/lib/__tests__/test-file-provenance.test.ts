@@ -544,17 +544,26 @@ describe('test-spawned child committed-source substitutions', () => {
     });
   });
 
-  it('main() opens the channel after the restricted-hold census and reports what a run child appended', async () => {
-    const keys: string[] = [CHILD_SOURCE_NOTICE_ENV, 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE'];
+  // The fake child writes to the channel named in the env main() HANDS it — what a real child
+  // inherits — never to this process's env. WI-6554700010018066: a receipt-bearing run cloned
+  // its child env before the channel was exported, so the child got no channel while
+  // process.env had one; reading process.env here hid that.
+  async function runMainWithFakeChild(receiptFile?: string) {
+    const keys: string[] = [
+      CHILD_SOURCE_NOTICE_ENV, 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE',
+      'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+    ];
     const saved = keys.map((key) => process.env[key]);
     // Under `npm run test:file` this worker inherits the PARENT router's channel; the fake child
     // record below must land in a channel this main() owns, not in the parent's report.
     for (const key of keys) delete process.env[key];
+    if (receiptFile) process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptFile;
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let censusSaw: string | undefined = 'census not called';
     let channel: string | undefined;
+    let childChannel: string | undefined;
     let afterMain: string | undefined;
     let code: number;
     let output: string;
@@ -564,9 +573,10 @@ describe('test-spawned child committed-source substitutions', () => {
           censusSaw = process.env[CHILD_SOURCE_NOTICE_ENV];
           return { verdict: 'skip' };
         },
-        runCapturedTestProcessImpl: async () => {
+        runCapturedTestProcessImpl: async (_command: string, _args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
           channel = process.env[CHILD_SOURCE_NOTICE_ENV];
-          if (channel) appendFileSync(channel, `${notice(realpathSync(REPO_ROOT), { pid: 999001 })}\n`);
+          childChannel = opts?.env?.[CHILD_SOURCE_NOTICE_ENV];
+          if (childChannel) appendFileSync(childChannel, `${notice(realpathSync(REPO_ROOT), { pid: 999001 })}\n`);
           return {
             status: 0,
             signal: null,
@@ -588,10 +598,16 @@ describe('test-spawned child committed-source substitutions', () => {
       errSpy.mockRestore();
       stdoutSpy.mockRestore();
     }
+    return { code, output, censusSaw, channel, childChannel, afterMain };
+  }
+
+  it('main() opens the channel after the restricted-hold census and reports what a run child appended', async () => {
+    const { code, output, censusSaw, channel, childChannel, afterMain } = await runMainWithFakeChild();
     expect(code).toBe(0);
     // The census is a deliberate committed-source walk: its substitutions are not the tests'.
     expect(censusSaw).toBeUndefined();
     expect(channel).toBeTruthy();
+    expect(childChannel).toBe(channel);
     expect(output).toContain('  substituted esm scripts/lib/a.mjs  pid=999001 entry=/checkout/scripts/child.mjs');
     // The real `vitest list` child shares the channel, so count by agreement, not by a literal 1.
     const count = Number(/TEST_FILE_CHILD_SUBSTITUTED count=(\d+)/.exec(output)?.[1]);
@@ -599,6 +615,20 @@ describe('test-spawned child committed-source substitutions', () => {
     expect(output).toMatch(new RegExp(`TEST_FILE_RESULT .* childSubstituted=${count} `));
     expect(afterMain).toBeUndefined();
     expect(existsSync(dirname(channel!))).toBe(false);
+  });
+
+  it('a receipt-bearing run (every mutation-probe leg) hands its run child the notice channel too', async () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'test-file-provenance-receipt-'));
+    try {
+      const { output, censusSaw, channel, childChannel } = await runMainWithFakeChild(join(scratch, 'receipts.jsonl'));
+      expect(censusSaw).toBeUndefined();
+      expect(channel).toBeTruthy();
+      // Before the WI-6554700010018066 fix this was undefined: the receipt env was cloned early.
+      expect(childChannel).toBe(channel);
+      expect(output).toContain('  substituted esm scripts/lib/a.mjs  pid=999001 entry=/checkout/scripts/child.mjs');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });
 

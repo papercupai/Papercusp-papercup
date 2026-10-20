@@ -161,6 +161,35 @@ function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } 
   return { repo, file, oldSha };
 }
 
+describe('mutation-probe.sh — TypeScript mutant syntax', () => {
+  it.each(['ts', 'mts', 'cts'])('checks a valid .%s mutant before scoring its assertion failure', extension => {
+    const typedSubject = join(dir, `subject.${extension}`);
+    const marker = join(dir, 'guard-phases');
+    const original = 'const ANSWER: number = 1;\n';
+    writeFileSync(typedSubject, original);
+    const guard = `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> "${marker}"; grep -q 'ANSWER: number = 1' {}`;
+    const { code, out } = runProbeIO(['--file', typedSubject, '--mutate', 's/= 1/= 2/', '--test', guard]);
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=caught .* mutant_parse=ok /);
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline', 'mutant']);
+    expect(readFileSync(typedSubject, 'utf8')).toBe(original);
+  });
+
+  it.each(['ts', 'mts', 'cts'])('refuses a broken .%s mutant before executing its guard', extension => {
+    const typedSubject = join(dir, `subject.${extension}`);
+    const marker = join(dir, 'guard-phases');
+    const original = 'const ANSWER: number = 1;\n';
+    writeFileSync(typedSubject, original);
+    const guard = `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> "${marker}"; test -f {}`;
+    const { code, out } = runProbeIO(['--file', typedSubject, '--mutate', 's/= 1/= (/', '--test', guard]);
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=harness-error .* mutant_parse=broken/);
+    expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline']);
+    expect(readFileSync(typedSubject, 'utf8')).toBe(original);
+  });
+});
+
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
   it('refuses a CommonJS npm guard that propagates the committed loader before starting its baseline', () => {
     const repo = join(dir, 'cjs-npm-guard');
