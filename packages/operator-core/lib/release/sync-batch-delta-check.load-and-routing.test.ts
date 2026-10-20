@@ -360,6 +360,9 @@ describe('reserved-capacity legs (green-main-ratchet P-009 / D-017)', () => {
     // that would actually execute rather than every selected suite in full.
     const probeRun = heavy.find((c) => c.args.includes('--print-affected'));
     expect(probeRun?.args).toContain('--related');
+    // WI-6554700010018067: both narrow across package roots, the same way.
+    expect(affectedRun?.args).toContain('--related-cross-root');
+    expect(probeRun?.args).toContain('--related-cross-root');
     await deps.headSha();
     await deps.greenCheckpointRunning();
     expect(calls.map((c) => c.cmd)).toEqual(['git', 'node']);

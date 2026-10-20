@@ -206,6 +206,7 @@ import {
   resolveInWellKnownDirs,
   resolveBackendLaunch,
 } from "../../../packages/operator-core/lib/backend-bin-resolve.mjs";
+import { buildFrameworkInstallSpec } from "../../../packages/operator-core/lib/framework-install-spec.mjs";
 // WI-37841: the ONE derivation of a launch's boot-log path, shared with
 // launch-su.ts (which points the keep-window-open receipt at the same file) and
 // with the reader that surfaces its tail on the failed-launch banner. Plain .mjs
@@ -240,9 +241,15 @@ export const PUI_TUI_ORIGIN = "pui";
  * validation set) and added only to this picker. A PUI-originated invocation
  * filters the destination back out to prevent recursive `pui workbench`
  * launches.
+ * @param {{tui?: string | null, availability?: Record<string, boolean> | null}} [options]
  */
-export function agentPickerChoices({ tui = null } = {}) {
-  const choices = AGENTS.map((agent) => ({ name: agent, value: agent }));
+export function agentPickerChoices({ tui = null, availability = null } = {}) {
+  const choices = AGENTS.map((agent) => ({
+    name: availability
+      ? `${AGENT_LABELS[agent] ?? agent} (${availability[agent] ? "installed" : "not installed — install on selection"})`
+      : agent,
+    value: agent,
+  }));
   if (tui !== PUI_TUI_ORIGIN) choices.push({ name: "pui", value: "pui" });
   return choices;
 }
@@ -8782,12 +8789,24 @@ async function api(path, opts = {}) {
   return json;
 }
 
-async function pickAgent({ tui = null } = {}) {
-  const { select } = await import("@inquirer/prompts");
-  return select({
-    message: "Agent",
-    choices: agentPickerChoices({ tui }),
-  });
+/** @param {{tui?: string | null, detect?: typeof detectBackendBin, ensure?: typeof ensureBackendInstalled, select?: Function | null}} [options] */
+export async function pickAgent({
+  tui = null,
+  detect = detectBackendBin,
+  ensure = ensureBackendInstalled,
+  select = null,
+} = {}) {
+  const selectAgent = select ?? (await import("@inquirer/prompts")).select;
+  for (;;) {
+    const availability = backendAvailability({ detect });
+    const agent = await selectAgent({
+      message: "Agent",
+      choices: agentPickerChoices({ tui, availability }),
+    });
+    if (agent === "pui" || await ensure(agent, { detect, confirmInstall: false })) return agent;
+    // A declined or failed optional install must not strand a working backend.
+    console.error("psu: choose another backend, or select the missing backend to retry installation.");
+  }
 }
 
 // su-context-size-variants: the per-variant ~Nk figures shown in the picker —
@@ -17568,6 +17587,46 @@ export function detectBackendBin(agent, opts = {}) {
   return resolved ? { path: resolved.bin, onPath: resolved.onPath } : null;
 }
 
+/** Check every supported backend using the same resolver used for launching. */
+export function backendAvailability({ detect = detectBackendBin } = {}) {
+  return Object.fromEntries(AGENTS.map((agent) => [agent, Boolean(detect(agent))]));
+}
+
+/**
+ * Optional local setup; one installed backend is enough to continue.
+ * @param {{interactive?: boolean, detect?: typeof detectBackendBin, ensure?: typeof ensureBackendInstalled, prompts?: {confirm: Function, checkbox: Function} | null}} [options]
+ */
+export async function offerBackendInstallation({
+  interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY),
+  detect = detectBackendBin,
+  ensure = ensureBackendInstalled,
+  prompts = null,
+} = {}) {
+  const availability = backendAvailability({ detect });
+  if (!interactive || isHostedPsuCustomer(process.env)) return availability;
+  const missing = AGENTS.filter((agent) => !availability[agent]);
+  for (const agent of AGENTS) {
+    console.error(`psu: ${AGENT_LABELS[agent] ?? agent}: ${availability[agent] ? "installed" : "not installed"}`);
+  }
+  if (!missing.length) return availability;
+  const { confirm, checkbox } = prompts ?? await import("@inquirer/prompts");
+  const wants = await confirm({
+    message: Object.values(availability).some(Boolean)
+      ? "Install any missing AI backends now? You can continue with an installed backend."
+      : "No AI backend is installed. Install one or more now? You can also choose one in the next menu.",
+    default: false,
+  });
+  if (!wants) return availability;
+  const selected = await checkbox({
+    message: "Choose AI backends to install",
+    choices: missing.map((agent) => ({ name: AGENT_LABELS[agent] ?? agent, value: agent })),
+  });
+  for (const agent of selected) {
+    await ensure(agent, { interactive: true, detect, confirmInstall: false });
+  }
+  return backendAvailability({ detect });
+}
+
 export function codexManagedDaemonArgs(bin, args) {
   if (!/(^|[\\/])codex(?:\.exe|\.cmd)?$/.test(bin) || args.includes("--no-daemon")) return args;
   return ["--no-daemon", ...args];
@@ -17620,7 +17679,13 @@ function runInstallerInherit(spec) {
  */
 export async function ensureBackendInstalled(
   agent,
-  { interactive = Boolean(process.stdout.isTTY), detect = detectBackendBin } = {},
+  {
+    interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    detect = detectBackendBin,
+    confirmInstall = true,
+    installer = buildFrameworkInstallSpec,
+    runInstaller = runInstallerInherit,
+  } = {},
 ) {
   const present = detect(agent);
   if (present) {
@@ -17637,47 +17702,44 @@ export async function ensureBackendInstalled(
   }
   if (!interactive) {
     console.error(
-      "psu: install it with `papercusp setup` (or run psu interactively to be prompted), then re-run.",
+      "psu: run psu interactively to install this backend, or select an installed backend with --agent.",
     );
     return false;
   }
-  const { confirm } = await import("@inquirer/prompts");
-  const wants = await confirm({
-    message: `The ${label} AI backend isn't installed. Install it now?`,
-    default: true,
-  });
-  if (!wants) {
-    console.error(
-      `psu: skipped. Install ${label} yourself or run \`papercusp setup\`, then re-run psu.`,
-    );
-    return false;
+  if (confirmInstall) {
+    const { confirm } = await import("@inquirer/prompts");
+    const wants = await confirm({
+      message: `The ${label} AI backend isn't installed. Install it now?`,
+      default: true,
+    });
+    if (!wants) return false;
   }
-  let cmds;
+  let spec;
   try {
-    cmds = await api("/api/desktop/setup-pty-commands");
+    // Run the shared installer for THIS machine, even with a remote operator.
+    spec = installer(agent, process.platform, homedir());
   } catch (e) {
-    console.error(
-      `psu: couldn't fetch the installer (${e?.message ?? e}). Finish setup with \`papercusp setup\`.`,
-    );
+    console.error(`psu: couldn't prepare the ${label} installer (${e?.message ?? e}).`);
     return false;
   }
-  const spec = cmds?.installFramework?.[agent];
   if (!spec?.command) {
-    console.error(
-      `psu: no installer available for ${label} on this platform. Install it manually` +
-        (agent === "omp" ? " (see https://github.com/can1357/oh-my-pi)" : "") +
-        ", then re-run psu.",
-    );
+    console.error(`psu: no installer available for ${label} on this platform; choose another backend.`);
     return false;
   }
   console.error(`psu: installing ${label} — streaming the installer here…`);
-  const code = await runInstallerInherit(spec);
+  let code;
+  try {
+    code = await runInstaller(spec);
+  } catch (e) {
+    console.error(`psu: the ${label} installer failed (${e?.message ?? e}).`);
+    return false;
+  }
   if (code !== 0)
     console.error(`psu: the installer exited ${code}; re-checking anyway.`);
-  const after = detectBackendBin(agent);
+  const after = detect(agent);
   if (!after) {
     console.error(
-      `psu: ${label} still isn't detected. Open a new terminal (so PATH refreshes) and re-run psu, or finish setup with \`papercusp setup\`.`,
+      `psu: ${label} still isn't detected. Choose another backend, or select ${label} to retry installation.`,
     );
     return false;
   }
@@ -18093,6 +18155,8 @@ export async function main({
     await resumeFlow(args);
     return;
   }
+
+  if (args.picker) await startupStep("backend-availability", offerBackendInstallation);
 
   // Resolve the role first: flag wins; else pick (picker mode); else 'su'.
   let role = args.role || null;

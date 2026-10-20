@@ -319,6 +319,7 @@
     // untracked byproducts that `--check` does not police and that reappear every run.
     // Registering all three is what keeps the emitted set and the tracked set equal.
     "apps/operator/scripts/psu-launcher.mjs",
+    "packages/operator-core/lib/framework-install-spec.mjs",
     // P-004 bounded native recovery — imported directly by its TypeScript
     // contract test and by psu-launcher.mjs; generate the typed sibling so both
     // importers cannot absorb a TS7016 or drift onto an inferred any surface.

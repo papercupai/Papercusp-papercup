@@ -15,9 +15,11 @@ export function nativeOmpExtensionArgs(backend: any, env?: NodeJS.ProcessEnv, pl
  * validation set) and added only to this picker. A PUI-originated invocation
  * filters the destination back out to prevent recursive `pui workbench`
  * launches.
+ * @param {{tui?: string | null, availability?: Record<string, boolean> | null}} [options]
  */
-export function agentPickerChoices({ tui }?: {
-    tui?: null | undefined;
+export function agentPickerChoices({ tui, availability }?: {
+    tui?: string | null;
+    availability?: Record<string, boolean> | null;
 }): {
     name: string;
     value: string;
@@ -2362,6 +2364,13 @@ export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now
  * route deadline otherwise cannot identify which bootstrap request failed.
  * Query strings and fragments may carry credentials and never enter the log. */
 export function formatApiFailureMessage(json: any, status: any, path: any, method?: string): string;
+/** @param {{tui?: string | null, detect?: typeof detectBackendBin, ensure?: typeof ensureBackendInstalled, select?: Function | null}} [options] */
+export function pickAgent({ tui, detect, ensure, select, }?: {
+    tui?: string | null;
+    detect?: typeof detectBackendBin;
+    ensure?: typeof ensureBackendInstalled;
+    select?: Function | null;
+}): Promise<any>;
 /**
  * P-016 persona-append assertion: with the $HOME AGENTS.md mirrors gone
  * (P-015), the --append-system-prompt file IS the session's whole behavioral
@@ -4439,6 +4448,27 @@ export function detectBackendBin(agent: any, opts?: {}): {
     path: string;
     onPath: boolean;
 } | null;
+/** Check every supported backend using the same resolver used for launching. */
+export function backendAvailability({ detect }?: {
+    detect?: typeof detectBackendBin | undefined;
+}): {
+    [k: string]: boolean;
+};
+/**
+ * Optional local setup; one installed backend is enough to continue.
+ * @param {{interactive?: boolean, detect?: typeof detectBackendBin, ensure?: typeof ensureBackendInstalled, prompts?: {confirm: Function, checkbox: Function} | null}} [options]
+ */
+export function offerBackendInstallation({ interactive, detect, ensure, prompts, }?: {
+    interactive?: boolean;
+    detect?: typeof detectBackendBin;
+    ensure?: typeof ensureBackendInstalled;
+    prompts?: {
+        confirm: Function;
+        checkbox: Function;
+    } | null;
+}): Promise<{
+    [k: string]: boolean;
+}>;
 export function codexManagedDaemonArgs(bin: any, args: any): any;
 /**
  * Ensure the chosen backend CLI is installed before we launch it. Returns true when
@@ -4447,9 +4477,12 @@ export function codexManagedDaemonArgs(bin: any, args: any): any;
  * (scripted / non-TTY) launches never prompt; they fail with guidance instead.
  * Exported for tests; `detect` is injectable so a test can stage a missing backend.
  */
-export function ensureBackendInstalled(agent: any, { interactive, detect }?: {
+export function ensureBackendInstalled(agent: any, { interactive, detect, confirmInstall, installer, runInstaller, }?: {
     interactive?: boolean | undefined;
     detect?: typeof detectBackendBin | undefined;
+    confirmInstall?: boolean | undefined;
+    installer?: typeof buildFrameworkInstallSpec | undefined;
+    runInstaller?: typeof runInstallerInherit | undefined;
 }): Promise<boolean>;
 /** @param {{ readHandoff?: typeof readHostHandoffForParentPid,
  * launchHandoff?: typeof launchHostHandoff,
@@ -5241,6 +5274,9 @@ declare function sessionPortApi(path: any, opts: any): Promise<any>;
 declare function launchResolvedResume(source: any, args: any, { tracked }: {
     tracked: any;
 }): Promise<void>;
+import { buildFrameworkInstallSpec } from "../../../packages/operator-core/lib/framework-install-spec.mjs";
+/** Spawn an installer SpawnSpec inheriting this terminal (installs are interactive). */
+declare function runInstallerInherit(spec: any): Promise<any>;
 import { readHostHandoffForParentPid } from "./psu-pty-host.mjs";
 /**
  * Continue a host-code handoff without running bootstrap-su a second time.

@@ -514,7 +514,7 @@ Two mechanisms make this cheap in practice:
 **Two independent evidence families gate `plans:set-plan-status → 'shipped'`: a per-item CODE-TRUTH audit, then a GRADED acceptance rubric.** After implementation is verified:
 
 1. **Finish or intentionally drop every item** — `todo`/`blocked`/`needs-human` refuse shipping; a deliberate departure is `plans:set-status { status:'dropped', note }`.
-2. **Audit the actual code, per item** — `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations verify; paths must resolve and their blob SHAs are stored. Never treat a work-item, doc, or memory of writing code as code truth.
+2. **Audit the actual code, per item** — `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. A code deliverable verifies only by `code`/`test` citations, in any profile; paths must resolve and their blob SHAs are stored. A non-code deliverable (a `general` plan's default, or declared) also verifies by `artifact`/`work-item`/`measurement`/`external`. Never treat a work-item, doc, or memory of writing code as code truth.
 3. **Acceptance bars are seeded at plan activation** from the plan's `requirement` blocks (`plans:audit { phase:'activation' }`), OUTCOME criteria tracing to the goal + Decisions. At completion, amend them to as-built reality with `rubrics:amend`. No seed? Author one with `rubrics:propose { rubricRef:"<acceptance-rubric-slug>", kind:"acceptance", subjectPlan:"<plan-slug>", classRef:"plan-class-feature-ship", characteristic:"<umbrella-domain>", title:"<acceptance title>", criteria:[…] }` (an investigation may use `criteria:[]`).
 4. **Vet its current revision** — `consult:get_feedback { policy:'rubric-vetting' }` (that key, NO responder count), improve, then attest with `scorecards:emit` against `meta-acceptance-rubric`. Any later rubric edit invalidates BOTH the attestation AND any independent grading, so batch every revision BEFORE requesting independent grading.
 5. **A NON-implementer grades it** — `scorecards:emit { rubricRef, ratings }` with concrete evidence per criterion; the grader must be outside the rubric author's spawn/rebind lineage and spot-checks the audit citations.
@@ -523,7 +523,7 @@ Two mechanisms make this cheap in practice:
 
 `force:{ reason }` waives ONLY the code-truth checks, and permanently marks the plan with what was waived, by whom and why. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
 
-Each refusal code names its own repair: [plan completion runbook](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook) · [rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
+Each refusal code names its own repair: [plan completion runbook](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook) · [rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting) · [verification profiles](/internal/docs/agent-insights/plan-verification-profiles).
 Evidence behind the plan-completion rule (the rule itself is the invariant sibling; this is the case history, kept out of the projected guide).
 
 ## Why "route, never launch" a grader — the mechanism

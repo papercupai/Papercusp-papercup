@@ -147,14 +147,20 @@ describe('psu launcher in hosted-customer mode (D-002)', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('outside hosted-customer mode the same launch prompts and fetches the installer (positive control)', async () => {
+    it('outside hosted-customer mode prompts and runs the local installer without an operator fetch', async () => {
       delete process.env.PAPERCUSP_PSU_HOSTED_CUSTOMER;
       const fetchSpy = stubInstallerFetch();
       vi.spyOn(console, 'error').mockImplementation(() => {});
       confirm.mockResolvedValueOnce(true);
-      await expect(ensureBackendInstalled('codex', { interactive: true, detect: () => null })).resolves.toBe(false);
+      const installer = vi.fn(() => ({ command: 'test-installer', args: [], cwd: '/tmp', env: {} }));
+      const runInstaller = vi.fn(async () => 1);
+      await expect(ensureBackendInstalled('codex', {
+        interactive: true, detect: () => null, installer, runInstaller,
+      })).resolves.toBe(false);
       expect(confirm).toHaveBeenCalledTimes(1);
-      expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('/api/desktop/setup-pty-commands');
+      expect(installer).toHaveBeenCalledWith('codex', process.platform, expect.any(String));
+      expect(runInstaller).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
 });

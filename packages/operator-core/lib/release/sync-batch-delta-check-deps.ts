@@ -352,7 +352,16 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
         'node',
         // --related: the same narrowing the real run applies, so the AFFECTED_ETA line projects
         // the run that would actually execute (green-main-ratchet-convergence-2026-10-17#D-030).
-        [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--print-affected', '--related'],
+        // --related-cross-root (WI-6554700010018067): a dependent pulled in by another package's
+        // change narrows to the tests that reach it, or drops when none can. Gate does not pass it.
+        [
+          script('scripts/affected-tests.mjs'),
+          '--changed-paths',
+          paths.join(','),
+          '--print-affected',
+          '--related',
+          '--related-cross-root',
+        ],
         { cwd: cfg.root, timeoutMs: SYNC_DELTA_TIMEOUTS_MS.probe },
       );
       if (!r || r.status !== 0) return null;
@@ -368,7 +377,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     }> {
       const r = await heavy(
         'node',
-        [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--related'],
+        [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--related', '--related-cross-root'],
         {
           cwd: cfg.root,
           timeoutMs: SYNC_DELTA_TIMEOUTS_MS.affected,

@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   buildOnboardingSetupSpec,
   buildFrameworkInstallSpec,
@@ -31,6 +35,35 @@ describe('buildFrameworkInstallSpec', () => {
     for (const framework of ['codex'] as const) {
       const script = buildFrameworkInstallSpec(framework, 'linux', HOME).args.join(' ');
       expect(script).toContain('npm init -y');
+    }
+  });
+
+  it.each(['linux', 'darwin'])('codex on %s offers the official standalone installer when npm is absent', (os) => {
+    const script = buildFrameworkInstallSpec('codex', os, HOME).args[1];
+    expect(script).toContain('if command -v npm');
+    expect(script).toContain('https://chatgpt.com/codex/install.sh');
+    expect(script).toContain('set -e -o pipefail');
+  });
+
+  it.skipIf(process.platform === 'win32')('executes the Codex standalone install branch with no npm on PATH', () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-codex-no-npm-'));
+    try {
+      const bins = join(root, 'bin');
+      mkdirSync(bins);
+      symlinkSync('/bin/sh', join(bins, 'sh'));
+      const upstream = join(root, 'stub-official-installer.sh');
+      writeFileSync(upstream, '#!/bin/sh\n/bin/mkdir -p "$HOME/.local/bin"\nprintf "installed without npm" > "$HOME/.local/bin/codex"\n');
+      // Stub only the download; execute the generated installer shell unchanged.
+      writeFileSync(join(bins, 'curl'), '#!/bin/sh\n/bin/cat "$CODEX_STUB_INSTALLER"\n', { mode: 0o755 });
+      const spec = buildFrameworkInstallSpec('codex', process.platform, root);
+      const result = spawnSync('/bin/bash', spec.args, {
+        cwd: root, encoding: 'utf8',
+        env: { HOME: root, PATH: bins, CODEX_STUB_INSTALLER: upstream },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(join(root, '.local/bin/codex'), 'utf8')).toBe('installed without npm');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
