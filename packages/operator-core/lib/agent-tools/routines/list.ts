@@ -321,6 +321,11 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     'last_errors',
     'consecutive_error_ticks',
     'consecutive_content_error_ticks',
+    // WI-6554700010018198: attribution health. A non-zero counter with last_attribution
+    // showing agentGroupCount>0 and agentCommitCount=0 means agents' edits are landing
+    // only in the anonymous catch-all.
+    'consecutive_zero_attribution_ticks',
+    'last_attribution',
     // EI-20105965677293021: recordOutcome persists the exact content-lint paths and
     // detector keys plus their stable signature. Without this reader, `quarantined`
     // and its counter expose the failure class but not the file an agent must resolve.

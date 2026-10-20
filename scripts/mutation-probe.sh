@@ -1969,6 +1969,15 @@ run_guard() {
       if [ "${RELOCATION_USED:-}" = "overlay" ] && [ "$phase" != "baseline" ]; then
         overlay_args=(--bind "$TARGET" "$OVERLAY_DEST")
         export PAPERCUSP_MUTATION_PROBE_SUBJECT="$FILE"
+        # WI-6554700010018232: a split checkout (PARTIAL write containment)
+        # overlays each subtree on its own, so inside the namespace a
+        # subdirectory sits on a different device from the root that holds
+        # .git. Git stops its upward discovery at a device boundary, so a guard
+        # that ran git from a subdirectory (`git rev-parse --show-toplevel` in a
+        # test) failed the UNMUTATED copy-baseline and the probe returned
+        # harness-error. Those boundaries exist only because of the probe, so
+        # let git cross them. A caller's explicit value still wins.
+        export GIT_DISCOVERY_ACROSS_FILESYSTEM="${GIT_DISCOVERY_ACROSS_FILESYSTEM:-1}"
       fi
       # See the DIRTY-WINDOW ceiling above. Exported for BOTH phases in in-tree
       # mode and never for the mutant alone: the baseline and the mutant have to

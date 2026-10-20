@@ -661,9 +661,11 @@ if (isolatedRuntime) {
     'PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', 'PAPERCUSP_MUTATION_PROBE_SUBJECT',
     // What the probe mutated (libs/test-config/src/mutation-descriptor.ts).
     'PAPERCUSP_MUTATION_DESCRIPTOR',
-    // The explicitly selected parser reader is evidence provenance, like the
-    // reporter ledger sink, rather than an ambient product operator endpoint.
+    // The explicitly selected parser reader, source checkout and fail-closed
+    // requirement are mutation evidence provenance, not product endpoints.
     'PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL',
+    'PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO',
+    'PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED',
   ]);
   for (const key of Object.keys(childEnv)) {
     if (evidenceKeys.has(key)) continue;

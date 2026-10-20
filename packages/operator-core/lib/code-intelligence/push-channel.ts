@@ -11,7 +11,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
-import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushSnapshot } from './push-snapshot';
+import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
 import { FACT_FILE_ANCHOR_PREFIX, foldCodeNotesForPaths, isCodeNoteKey, isFactFileAnchor, type AgentFact } from '../agent-facts/store';
 import type { FactDependencyStaleness } from '../agent-tools/facts/dependency-staleness';
 import {
@@ -129,9 +129,14 @@ function pushCallInput(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown> : null;
 }
 
+/** Native `Read`/`Edit`/`Write`, `capability:read|edit|write` and their MCP-mangled
+ * forms (`mcp__…_capability_write`) — the same vocabulary the working-set ledger
+ * counts as code tools (blind review 35 G-5: `Write` was not a first touch). */
+const FIRST_TOUCH_TOOL_RE = /(?:^|_|:)(?:Read|Edit|Write|read|edit|write)$/;
+
 export function firstTouchPaths(input: PushInput): string[] {
   return [...new Set(input.calls.flatMap(call => {
-    if (!/(?:^|_|:)(?:Read|Edit|read|edit)$/.test(call.tool ?? '')) return [];
+    if (!FIRST_TOUCH_TOOL_RE.test(call.tool ?? '')) return [];
     const args = pushCallInput(call.toolInput);
     const raw = args?.file_path ?? args?.path;
     if (typeof raw !== 'string') return [];
@@ -225,8 +230,23 @@ export interface ResumeEntry {
   itemId?: string;
   previousOwner?: string;
   epoch?: number;
+  /** Symbol HANDLES carried with this file (blind review 35 G-4). Names only: the
+   * resume leg re-resolves each against the CURRENT snapshot, never a stored answer. */
+  symbols?: readonly string[];
 }
 export const RESUME_FACTS_PER_BATCH = 2;
+export const RESUME_SYMBOLS_PER_ENTRY = 6;
+
+/** One carried symbol handle, re-resolved in the current snapshot: its definition in
+ * this file if there is exactly one, else its unique definition elsewhere, else named
+ * as unresolved. The caller count is the snapshot's static lower bound. */
+export function resolveCarriedSymbol(snapshot: PushSnapshot, name: string, path: string): string {
+  const definitions: readonly SnapshotSymbol[] = snapshot.symbols?.get(name) ?? [];
+  const here = definitions.filter(symbol => symbol.path === path);
+  const pick = here.length === 1 ? here[0] : definitions.length === 1 ? definitions[0] : null;
+  if (!pick) return `${name} (${definitions.length ? 'ambiguous' : 'not indexed'} in this snapshot)`;
+  return `${name}${pick.path === path ? '' : ` @${pick.path}`}:${pick.line} >=${pick.callers.length} static calls`;
+}
 
 /** P-003: fresh first-touch facts for carried files, from the CURRENT snapshot. The
  * subject is `resume:<path>`, so the existing (owner, epoch, leg, subject) dedupe
@@ -243,8 +263,12 @@ export const snapshotResumeLeg: PushLeg = (input, snapshot) => {
     const origin = entry.from === 'work-item'
       ? `Carried from ${entry.itemId ?? 'a held work item'}'s working set (stamped by ${entry.previousOwner ?? 'its previous holder'})`
       : `Carried from your previous epoch's working set${entry.epoch !== undefined ? ` (epoch ${entry.epoch})` : ''} (${entry.reason})`;
+    const carried = (entry.symbols ?? []).slice(0, RESUME_SYMBOLS_PER_ENTRY);
+    const symbolLine = carried.length
+      ? `\nCarried symbol handles, re-resolved in this snapshot: ${carried.map(name => resolveCarriedSymbol(snapshot, name, entry.path)).join('; ')}.`
+      : '';
     facts.push({ ...base, leg: 'resume', subject: `resume:${entry.path}`,
-      text: `${origin}; recomputed from the current snapshot, not replayed.\n${base.text}` });
+      text: `${origin}; recomputed from the current snapshot, not replayed.\n${base.text}${symbolLine}` });
   }
   return facts;
 };
@@ -253,7 +277,7 @@ registerCodeIntelPushLeg('resume', snapshotResumeLeg);
 export interface ReadResumeContextDeps {
   epoch(owner: string): Promise<EpochRow>;
   signals(query: WorkingSetQuery): Promise<WorkingSetSignals>;
-  foreign(owner: string, workspace: string): Promise<ForeignWorkingSet[]>;
+  foreign(owner: string, workspace: string, harness: string): Promise<ForeignWorkingSet[]>;
   /** Subjects already pushed to this owner in its CURRENT epoch on the first-touch / resume legs. */
   pushed(input: PushInput, epoch: number): Promise<string[]>;
 }
@@ -271,7 +295,7 @@ async function readPushedResumeSubjects(input: PushInput, epoch: number, sql = g
 const resumeDefaults: ReadResumeContextDeps = {
   epoch: owner => readSessionEpoch(owner),
   signals: query => readWorkingSetSignals(query, undefined, 75),
-  foreign: (owner, workspace) => readForeignWorkingSets(owner, workspace),
+  foreign: (owner, workspace, harness) => readForeignWorkingSets(owner, workspace, harness),
   pushed: (input, epoch) => readPushedResumeSubjects(input, epoch),
 };
 
@@ -283,19 +307,45 @@ export async function readPushResumeContext(input: PushInput, deps: ReadResumeCo
   const [previous, foreign, pushed] = await Promise.all([
     deriveCodeWorkingSet({ workspace: input.workspace, harness: input.harness, owner: input.owner, which: 'previous', root: input.root },
       { epoch: async () => epoch, signals: deps.signals }).catch(() => null),
-    deps.foreign(input.owner, input.workspace).catch(() => [] as ForeignWorkingSet[]),
+    deps.foreign(input.owner, input.workspace, input.harness).catch(() => [] as ForeignWorkingSet[]),
     deps.pushed(input, epoch.epoch).catch(() => [] as string[]),
   ]);
   const done = new Set(pushed.map(subject => subject.startsWith('resume:') ? subject.slice('resume:'.length) : subject));
   const entries: ResumeEntry[] = [];
-  const add = (entry: ResumeEntry) => {
-    if (entries.length >= 8 || done.has(entry.path) || !safeSnapshotPath(entry.path)) return;
+  const add = (entry: ResumeEntry): ResumeEntry | null => {
+    if (entries.length >= 8 || done.has(entry.path) || !safeSnapshotPath(entry.path)) return null;
     done.add(entry.path);
     entries.push(entry);
+    return entry;
   };
-  for (const file of previous?.files ?? []) add({ path: file.path, reason: file.reason, from: 'previous-epoch', epoch: previous!.epoch });
-  for (const set of foreign) for (const path of set.stamp.paths) {
-    add({ path, reason: 'held', from: 'work-item', itemId: set.itemId, previousOwner: set.stamp.owner });
+  /** G-4: names that could not be placed on their own file ride on the source's first added entry. */
+  const placeRest = (first: ResumeEntry | null, names: readonly string[]) => {
+    if (!first || !names.length) return;
+    first.symbols = [...new Set([...(first.symbols ?? []), ...names])].slice(0, RESUME_SYMBOLS_PER_ENTRY);
+  };
+  // Previous epoch: each file carries the symbols defined in it; a symbol whose file
+  // the cap dropped still brings that file forward (G-4).
+  const previousSymbols = previous?.symbols ?? [];
+  const definedIn = (path: string) => previousSymbols.filter(symbol => symbol.path === path).map(symbol => symbol.name);
+  const previousPaths = [...new Set([...(previous?.files ?? []).map(file => file.path),
+    ...previousSymbols.flatMap(symbol => symbol.path ? [symbol.path] : [])])];
+  let firstPrevious: ResumeEntry | null = null;
+  for (const path of previousPaths) {
+    const file = previous?.files.find(candidate => candidate.path === path);
+    const symbols = definedIn(path);
+    const added = add({ path, reason: file?.reason ?? 'queried', from: 'previous-epoch', epoch: previous!.epoch,
+      ...(symbols.length ? { symbols } : {}) });
+    firstPrevious ??= added;
+  }
+  placeRest(firstPrevious, previousSymbols.filter(symbol => !symbol.path).map(symbol => symbol.name));
+  // A work-item stamp records symbol NAMES without paths; the leg resolves them.
+  for (const set of foreign) {
+    let first: ResumeEntry | null = null;
+    for (const path of set.stamp.paths) {
+      const added = add({ path, reason: 'held', from: 'work-item', itemId: set.itemId, previousOwner: set.stamp.owner });
+      first ??= added;
+    }
+    placeRest(first, set.stamp.symbols);
   }
   return { entries };
 }

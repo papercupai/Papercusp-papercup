@@ -36,6 +36,15 @@ const PACKS = [
     oauth: null,
   },
   {
+    // provider-adapters-to-packages P-025: binds the `discord` package's source the same way.
+    slug: 'discord-community-responder',
+    targetId: 'member-reply',
+    sourceKind: 'discord',
+    eventPattern: 'ext:discord:mention',
+    datatype: 'chat-message',
+    oauth: null,
+  },
+  {
     slug: 'meeting-prep-brief',
     targetId: 'prepare-brief',
     sourceKind: 'gcal',

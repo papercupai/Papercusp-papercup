@@ -52,6 +52,7 @@ import '../add-item';
 import '../set-status';
 import '../set-plan-status';
 import '../audit';
+import blindReviewTool from '../blind-review';
 import { ensureFirstPartyRubricsSeeded, __resetRubricSeedStateForTests } from '../../../rubrics';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { evaluatePlanAcceptanceGate } from '../../../plan-acceptance-gate';
@@ -493,12 +494,40 @@ describe('plans:add-item declares a non-code deliverable at definition time', ()
  * declared doc item cites only an artifact goes through the real plans:audit and the real
  * plans:set-plan-status shipped. Same ceremony switches as general-plan-ship's 'ships once the
  * profile-independent ceremony is out of the way': the acceptance-rubric gate is turned off
- * because grading is profile-independent and covered there (R-12).
+ * because grading is profile-independent and covered there (R-12), and the per-plan blind gap
+ * review stays ON and is satisfied by a real counted review from an agent outside the plan's
+ * implementer population. The positive case must actually ship; no alternative outcome passes.
  */
 describe('R-19: a coding plan whose doc items cite artifacts ships', () => {
   const RUBRIC_GATE_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_ACCEPTANCE_RUBRIC_COMPLETION_GATE';
   const REAL_CODE: Citation = { kind: 'code', path: 'packages/operator-core/lib/plan-acceptance-gate.ts' };
+  /** An agent outside the plan's implementer population that has never read the plan. */
+  const BLIND_REVIEWER = 'su-noncode-blind-reviewer';
   let prevRubricGateEnv: string | undefined;
+
+  /**
+   * Record a counted blind gap review with no gaps for the plan's latest activation audit, through
+   * the real `plans:blind-review` handler. Asserts the review counts and satisfies the door, so a
+   * later ship refusal cannot be the blind review.
+   */
+  async function recordBlindReview(slug: string): Promise<void> {
+    const reviewerCtx = {
+      log: () => {},
+      progress: () => {},
+      metadata: () => {},
+      emit: () => {},
+      signal: new AbortController().signal,
+      workspaceId: WS,
+      principal: { kind: 'agent', slug: BLIND_REVIEWER, workspaceId: WS },
+      ownerId: BLIND_REVIEWER,
+      coordOwnerId: BLIND_REVIEWER,
+    } as never;
+    const res = (await runWithWorkspace(WS, () => blindReviewTool.handler(
+      { harness: HARNESS, slug, op: 'post', gaps: [] } as never, reviewerCtx,
+    ))) as { content?: Array<{ text: string }> };
+    const posted = JSON.parse(res.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+    expect(posted, brief(posted)).toMatchObject({ ok: true, counts: true, door: { satisfied: true } });
+  }
 
   beforeAll(async () => {
     prevRubricGateEnv = process.env[RUBRIC_GATE_ENV];
@@ -530,16 +559,13 @@ describe('R-19: a coding plan whose doc items cite artifacts ships', () => {
 
     const audit = await auditCompletion(slug, { 'P-001': [REAL_CODE], 'P-002': [ARTIFACT] });
     expect(audit.ok, brief(audit)).toBe(true);
+    await recordBlindReview(slug);
     const { codes, messages } = await blockerCodes(slug);
-    expect(codes.filter((code) => !code.startsWith('blind_review_')), messages).toEqual([]);
+    expect(codes, messages).toEqual([]);
 
     const res = await call('plans:set-plan-status', { slug, status: 'shipped' });
-    if (codes.length === 0) {
-      expect(res.ok, brief(res)).toBe(true);
-      expect(await storedStatus(slug)).toBe('shipped');
-    } else {
-      expect(String(res.error ?? res.code ?? ''), brief(res)).toMatch(/blind_review_/);
-    }
+    expect(res.ok, brief(res)).toBe(true);
+    expect(await storedStatus(slug)).toBe('shipped');
   });
 
   it('control: the same plan with the runbook undeclared does not ship on its artifact citation', async () => {
@@ -550,6 +576,8 @@ describe('R-19: a coding plan whose doc items cite artifacts ships', () => {
       { text: 'Write the exporter runbook' },
     ]);
     expect(await codeDeliverableOf(slug, 'P-002')).toBe(true);
+    // Same ceremony as the positive case, so the only variable is the undeclared deliverable.
+    await recordBlindReview(slug);
 
     const audit = await auditCompletion(slug, { 'P-001': [REAL_CODE], 'P-002': [ARTIFACT] });
     if (audit.ok === true) {
@@ -559,6 +587,7 @@ describe('R-19: a coding plan whose doc items cite artifacts ships', () => {
       expect(refusals).not.toMatch(/P-001\b/);
       const res = await call('plans:set-plan-status', { slug, status: 'shipped' });
       expect(res.ok, brief(res)).not.toBe(true);
+      expect(String(res.error ?? res.code ?? ''), brief(res)).not.toMatch(PROFILE_INDEPENDENT);
     } else {
       expect(brief(audit)).toMatch(/P-002/);
     }

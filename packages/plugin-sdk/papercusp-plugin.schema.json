@@ -352,7 +352,73 @@
                   "properties": {
                     "url": { "type": "string", "pattern": "^https://" },
                     "method": { "type": "string", "enum": ["GET", "POST"] },
-                    "urlField": { "type": "string", "minLength": 1 }
+                    "urlField": { "type": "string", "minLength": 1 },
+                    "query": {
+                      "type": "object",
+                      "description": "Query parameters the host adds to the socket URL the open response returns (not to the open request).",
+                      "minProperties": 1,
+                      "maxProperties": 8,
+                      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_.-]{0,63}$" },
+                      "additionalProperties": { "type": "string", "maxLength": 200 }
+                    }
+                  }
+                },
+                "session": {
+                  "type": "object",
+                  "description": "A stateful protocol the host runs on the socket (provider-adapters-to-packages D-038): on hello it sends identify.frame, then heartbeat.frame every interval and at once on requestMatch. A frame string exactly '{{credential}}' (identify only) or '{{sequence}}' is filled in by the host. Only deliver-matching envelopes reach ingress.normalize.",
+                  "additionalProperties": false,
+                  "required": ["hello", "identify", "heartbeat"],
+                  "properties": {
+                    "hello": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["match", "intervalPath"],
+                      "properties": {
+                        "match": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["field", "values"],
+                          "properties": {
+                            "field": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$" },
+                            "values": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+                          }
+                        },
+                        "intervalPath": { "type": "string", "minLength": 1 }
+                      }
+                    },
+                    "identify": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["frame"],
+                      "properties": { "frame": { "type": "object" } }
+                    },
+                    "heartbeat": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["frame"],
+                      "properties": {
+                        "frame": { "type": "object" },
+                        "requestMatch": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["field", "values"],
+                          "properties": {
+                            "field": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$" },
+                            "values": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+                          }
+                        }
+                      }
+                    },
+                    "sequencePath": { "type": "string", "minLength": 1 },
+                    "deliver": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["field", "values"],
+                      "properties": {
+                        "field": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$" },
+                        "values": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+                      }
+                    }
                   }
                 },
                 "ackField": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$" },

@@ -14,6 +14,7 @@ import { installPluginFromCupboardCore, InstallPluginError, type InstallPluginMa
 import { createProviderRegistry, verifiedProviderForCapability } from '../../integrations/provider-registry';
 import { createHostFetch } from '../../integrations/host-fetch';
 import { summarizeIntegrationProvider } from '../../integrations/ticket-integrations';
+import { socketIngressProviders } from '../provider-socket-ingress';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const ROOT = join(tmpdir(), `discord-package-install-${process.pid}-${Date.now()}`);
@@ -35,21 +36,33 @@ describe('installed discord notification package', () => {
       review = (error as InstallPluginError).data?.review as InstallPluginManifestReview;
     }
     // The consent review lists capabilities sorted, not in manifest order.
-    expect(review?.provider).toMatchObject({ id: 'discord', runtime: 'daemon', capabilities: ['community.presence', 'notify.send'], datatypes: ['notification'], oauthScopes: [] });
+    expect(review?.provider).toMatchObject({
+      id: 'discord', runtime: 'daemon', oauthScopes: [],
+      capabilities: ['chat.reply', 'community.presence', 'ingress.normalize', 'notify.send'], datatypes: ['chat-message', 'notification'],
+    });
     expect(await fs.readdir(globalPluginsDir).catch(() => [])).toEqual([]);
     await installPluginFromCupboardCore({ ...input, acceptCapabilities: true, expectedReview: review }, deps);
     const { loaded, errors } = await loadPlugins({ projectDir, harnessSlugs: [], globalPluginsDir });
     expect(errors).toEqual([]);
     const registry = createProviderRegistry();
-    expect(await registerPluginProviders(loaded, () => {}, registry)).toEqual(['discord']);
+    // Collect registration failures instead of discarding them, so a refused package names its reason.
+    const registrationErrors: unknown[] = [];
+    const registeredIds = await registerPluginProviders(loaded, (error) => registrationErrors.push(error), registry);
+    expect(registrationErrors).toEqual([]);
+    expect(registeredIds).toEqual(['discord']);
     const entry = verifiedProviderForCapability(registry, 'discord', 'notify.send');
     expect(verifiedProviderForCapability(registry, 'discord', 'community.presence')).toBe(entry);
+    expect(verifiedProviderForCapability(registry, 'discord', 'chat.reply')).toBe(entry);
+    expect(verifiedProviderForCapability(registry, 'discord', 'ingress.normalize')).toBe(entry);
     try {
       const descriptor = await entry.adapter!.describe();
       expect(descriptor).toEqual(entry.descriptor);
       expect(summarizeIntegrationProvider(entry, [], null)).toMatchObject({ id: 'discord', displayName: 'Discord',
-        capabilities: ['notify.send', 'community.presence'], connectHref: null, oauthClient: null, requiredConfig: [] });
+        capabilities: ['notify.send', 'community.presence', 'ingress.normalize', 'chat.reply'], connectHref: null, oauthClient: null, requiredConfig: [] });
       expect(registry.forDatatype('notification', 'notify.send').map((x) => x.descriptor.id)).toEqual(['discord']);
+      expect(registry.forDatatype('chat-message', 'chat.reply').map((x) => x.descriptor.id)).toContain('discord');
+      // The installed package is picked up by the host's socket ingress, with the Gateway session it declares.
+      expect(socketIngressProviders(registry).map((x) => x.provider.descriptor.id)).toEqual(['discord']);
       const seen: Array<{ url: string; method: string; headers: Headers; body: string }> = [];
       const fetch = createHostFetch('discord', { registry, resolveSource: async (source) => source === 'owned' ? { sourceId: source, providerId: 'discord' } : null,
         accessToken: async () => { throw new Error('OAuth must not be consulted'); }, pastedCredential: async () => 'host-private-bot-token',

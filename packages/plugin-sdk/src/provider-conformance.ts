@@ -609,7 +609,11 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
         { source, capability: invocation.capability, args: invocation.args, config: harness.config, services: harness.services },
         faulted.host,
       );
-      fail('invoke-fault-not-retried', `${invocation.capability} resolved although its first request was rate-limited${faulted.state.calls > 1 ? ` (it retried: ${faulted.state.calls} calls)` : ''}`);
+      // A capability that sends no request (a pure transform such as ingress.normalize) had no
+      // first request to rate-limit, so it has nothing to swallow or retry.
+      if (faulted.state.calls > 0) {
+        fail('invoke-fault-not-retried', `${invocation.capability} resolved although its first request was rate-limited${faulted.state.calls > 1 ? ` (it retried: ${faulted.state.calls} calls)` : ''}`);
+      }
     } catch {
       if (faulted.state.calls > 1) {
         fail('invoke-fault-not-retried', `${invocation.capability} called host.fetch ${faulted.state.calls} times after a rate-limited response; it must not retry`);

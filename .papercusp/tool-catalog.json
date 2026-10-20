@@ -23651,7 +23651,7 @@
           "POST"
         ]
       },
-      "description": "Read a plan's template TYPE + its STRUCTURED instance data (the `template_data` jsonb) — the structured read complement of plans:set-template-data, without parsing the markdown. Returns { template, templateData, version }; templateData is null until set. Read-only.",
+      "description": "Read a plan's template TYPE + its STRUCTURED instance data (the `template_data` jsonb) — the structured read complement of plans:set-template-data, without parsing this plan's markdown. For acceptance-rubric instances, verification fields are overlaid from the subject plan's live requirement blocks to match rubrics:get; liveRequirements reports whether the overlay or stored fallback was used. Returns { template, templateData, version }; templateData is null until set. Read-only.",
       "capabilities": [
         "plans:read"
       ],
@@ -23670,7 +23670,7 @@
         "judge"
       ],
       "guidance": {
-        "when": "Reading a template-instance plan's structured data (e.g. a rubric instance's fields) to consume it programmatically — never scrape it out of the markdown. An evidence-only judge may use this read when rubrics:get cannot project a backing rubric row.",
+        "when": "Reading a template-instance plan's structured data (e.g. a rubric instance's fields) to consume it programmatically — never scrape it out of this plan's markdown. Acceptance-rubric reads align verification fields with rubrics:get through the subject plan's live requirement blocks. An evidence-only judge may use this read when rubrics:get cannot project a backing rubric row.",
         "notWhen": "You need the whole plan (Now / items / decisions / prose) — plans:get. Writing the data — plans:set-template-data. Listing plans of a template type — plans:list { template }.",
         "chaining": "plans:get-template-data { slug } → plans:set-template-data { slug, data } to update it."
       }

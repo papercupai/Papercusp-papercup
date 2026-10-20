@@ -92,6 +92,7 @@ function harness(opts: {
   sources?: () => ConnectorSourceRow[];
   /** Holds normalizing of an envelope until the returned promise settles. */
   gate?: (envelope: Record<string, unknown>) => Promise<void>;
+  now?: () => number;
 } = {}): Harness {
   const sockets: FakeSocket[] = [];
   const invokes: ProviderInvokeRequest[] = [];
@@ -137,6 +138,7 @@ function harness(opts: {
     },
     updateSource: async (_sql, _row, input) => { health.push(input); },
     log: (message) => logs.push(message),
+    ...(opts.now ? { now: opts.now } : {}),
   });
   return { manager, sockets, invokes, admitted, health, opens, order, logs };
 }
@@ -346,5 +348,139 @@ describe('provider socket ingress (P-003, D-009)', () => {
     await expect(openIngressSocketUrl(socket, APP_TOKEN, ok)).resolves.toBe('wss://s.example.com/1');
     const http = (async () => new Response(JSON.stringify({ data: { link: 'https://s.example.com/1' } }))) as unknown as typeof fetch;
     await expect(openIngressSocketUrl(socket, APP_TOKEN, http)).rejects.toThrow('socket_open_no_url:data.link');
+  });
+});
+
+// A gateway-shaped protocol (provider-adapters-to-packages D-038): hello -> identify, heartbeats
+// carrying the latest sequence, protocol frames kept away from normalize. Shaped like the Discord
+// Gateway, but nothing in the host names a provider.
+describe('provider socket ingress: declared session (D-038)', () => {
+  const INTERVAL = 41_250;
+  const gateway: ProviderDescriptor = {
+    ...descriptor,
+    setup: {
+      credentials: [{
+        key: 'app_token', label: 'Bot token', hosts: ['api.example.com'], auth: { header: 'authorization', scheme: 'bot' },
+      }],
+    },
+    ingress: {
+      socket: {
+        credential: 'app_token',
+        open: { url: 'https://api.example.com/gateway/bot', method: 'GET', urlField: 'url', query: { v: '10', encoding: 'json' } },
+        reconnect: { field: 'op', values: ['7', '9'] },
+        session: {
+          hello: { match: { field: 'op', values: ['10'] }, intervalPath: 'd.heartbeat_interval' },
+          identify: { frame: { op: 2, d: { token: '{{credential}}', intents: 37377 } } },
+          heartbeat: { frame: { op: 1, d: '{{sequence}}' }, requestMatch: { field: 'op', values: ['1'] } },
+          sequencePath: 's',
+          deliver: { field: 'op', values: ['0'] },
+        },
+      },
+    },
+  };
+  const hello = (interval: unknown = INTERVAL) => JSON.stringify({ op: 10, d: { heartbeat_interval: interval } });
+
+  function gatewayHarness() {
+    let t = 1_000_000;
+    const h = harness({
+      descriptor: gateway,
+      now: () => t,
+      records: (envelope) => (envelope.op === 0 ? [record(String((envelope.d as { id: string }).id))] : []),
+    });
+    return { h, advance: (ms: number) => { t += ms; } };
+  }
+
+  it('opens with the credential field\'s own scheme and adds the declared query to the socket URL', async () => {
+    const { h } = gatewayHarness();
+    await h.manager.reconcile();
+    expect(h.opens[0]!.init?.method).toBe('GET');
+    expect((h.opens[0]!.init?.headers as Record<string, string>).authorization).toBe(`Bot ${APP_TOKEN}`);
+    expect(h.sockets.map((s) => s.url)).toEqual(['wss://socket.example.com/link?n=1&v=10&encoding=json']);
+  });
+
+  it('answers hello with the identify frame carrying the credential, once, and never before hello', async () => {
+    const { h } = gatewayHarness();
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+    await h.manager.reconcile();
+    expect(socket.sent).toEqual([]);
+    socket.emit('message', hello());
+    socket.emit('message', hello());
+    expect(socket.sent).toEqual([JSON.stringify({ op: 2, d: { token: APP_TOKEN, intents: 37377 } })]);
+    expect(h.invokes).toEqual([]);
+    expect(h.logs.join('\n')).not.toContain(APP_TOKEN);
+  });
+
+  it('heartbeats from the tick with the latest sequence, and at once when the gateway asks', async () => {
+    const { h, advance } = gatewayHarness();
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+    socket.emit('message', hello());
+    socket.sent.length = 0;
+    advance(INTERVAL - 15_001);
+    await h.manager.reconcile();
+    expect(socket.sent).toEqual([]);
+    advance(1);
+    await h.manager.reconcile();
+    expect(socket.sent).toEqual([JSON.stringify({ op: 1, d: null })]);
+    socket.emit('message', JSON.stringify({ op: 0, s: 7, t: 'MESSAGE_CREATE', d: { id: 'm7' } }));
+    socket.emit('message', JSON.stringify({ op: 1, d: null }));
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ op: 1, d: 7 }));
+    // The heartbeat credential placeholder is never filled outside identify.
+    expect(socket.sent.join('\n')).not.toContain(APP_TOKEN);
+  });
+
+  it('keeps every beat less than one interval apart under a 15s tick at any phase', async () => {
+    const { h, advance } = gatewayHarness();
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+    const beats: number[] = [];
+    let now = 1_000_000;
+    const send = socket.send.bind(socket);
+    socket.send = (payload: string) => { if (payload.startsWith('{"op":1')) beats.push(now); send(payload); };
+    advance(3_333);
+    now += 3_333;
+    socket.emit('message', hello());
+    const helloAt = now;
+    for (let i = 0; i < 60; i += 1) {
+      advance(15_000);
+      now += 15_000;
+      await h.manager.reconcile();
+    }
+    expect(beats.length).toBeGreaterThan(10);
+    const gaps = [beats[0]! - helloAt, ...beats.slice(1).map((at, i) => at - beats[i]!)];
+    for (const gap of gaps) expect(gap).toBeLessThan(INTERVAL);
+  });
+
+  it('passes only deliver-matching envelopes to normalize and admits their records', async () => {
+    const { h } = gatewayHarness();
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+    socket.emit('message', hello());
+    socket.emit('message', JSON.stringify({ op: 11 }));
+    socket.emit('message', JSON.stringify({ op: 0, s: 1, t: 'MESSAGE_CREATE', d: { id: 'm1' } }));
+    await vi.waitFor(() => expect(h.admitted.map((r) => r.nativeId)).toEqual(['m1']));
+    expect(h.invokes.map((i) => (i.args.envelope as { op: number }).op)).toEqual([0]);
+  });
+
+  it('re-identifies on a fresh socket after a reconnect frame', async () => {
+    const { h } = gatewayHarness();
+    await h.manager.reconcile();
+    h.sockets[0]!.emit('message', hello());
+    h.sockets[0]!.emit('message', JSON.stringify({ op: 7, d: null }));
+    await vi.waitFor(() => expect(h.sockets).toHaveLength(2));
+    const fresh = h.sockets[1]!;
+    fresh.emit('message', hello());
+    expect(fresh.sent).toEqual([JSON.stringify({ op: 2, d: { token: APP_TOKEN, intents: 37377 } })]);
+  });
+
+  it('drops a socket whose hello carries no usable interval', async () => {
+    const { h } = gatewayHarness();
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+    socket.emit('message', hello('soon'));
+    expect(socket.closed).toBe(true);
+    expect(socket.sent).toEqual([]);
+    expect(h.logs.join('\n')).toContain('hello carried no heartbeat interval at d.heartbeat_interval');
   });
 });

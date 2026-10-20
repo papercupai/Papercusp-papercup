@@ -110,18 +110,69 @@ export type ImportSearch = (input: {
 const defaultImportSearch: ImportSearch = ({ pattern, language, paths, rootPath }) =>
   astGrepFacade('search', { pattern, language, paths, rootPath });
 
-/** Files per ast-grep invocation: small enough that the facade's site cap is not reached. */
+/**
+ * Files per first ast-grep invocation. The facade caps SITES per call, not files, so this
+ * size alone cannot keep a batch under the cap: a real plan's files (audit.ts alone has
+ * dozens of imports) overflow it. A truncated batch is therefore split and re-read.
+ */
 const IMPORT_BATCH_SIZE = 20;
 
+type UnreadFile = { path: string; reason: string };
+
 /**
- * Read the imports of JS/TS files. A batch whose search failed or was truncated
- * is reported in `unread`, so a partial read is never mistaken for "no imports".
+ * Read one batch. A search error is terminal for the batch (a smaller batch fails the same
+ * way). A truncated answer is bisected until each part fits, so only a single file whose own
+ * import sites exceed the facade's cap is reported unread.
+ */
+async function readImportBatch(
+  batch: readonly string[],
+  language: AstGrepLanguage,
+  repoRoot: string,
+  search: ImportSearch,
+  imports: ImportSite[],
+  unread: UnreadFile[],
+): Promise<void> {
+  const answers = await Promise.all(JS_IMPORT_PATTERNS.map((pattern) =>
+    search({ pattern, language, paths: [...batch], rootPath: repoRoot })
+      .catch((error: unknown) => ({ sites: [], error: error instanceof Error ? error.message : String(error), truncation: { truncated: false, totalAvailable: null, continuation: null } }))));
+  const failed = answers.find((answer) => answer.error);
+  if (failed) {
+    for (const path of batch) unread.push({ path, reason: `import read failed: ${failed.error}` });
+    return;
+  }
+  if (answers.some((answer) => answer.truncation?.truncated)) {
+    if (batch.length > 1) {
+      const middle = Math.ceil(batch.length / 2);
+      await readImportBatch(batch.slice(0, middle), language, repoRoot, search, imports, unread);
+      await readImportBatch(batch.slice(middle), language, repoRoot, search, imports, unread);
+      return;
+    }
+    unread.push({ path: batch[0]!, reason: 'import read truncated: this file has more import sites than one structural search returns' });
+    return;
+  }
+  const batchSet = new Set(batch);
+  const seen = new Set<string>();
+  for (const answer of answers) {
+    for (const site of answer.sites) {
+      const specifier = specifierFromImportText(site.detail ?? '');
+      if (!specifier || !batchSet.has(site.path)) continue;
+      const key = `${site.path}\u0000${site.line1}\u0000${specifier}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      imports.push({ path: site.path, line1: site.line1 ?? null, specifier });
+    }
+  }
+}
+
+/**
+ * Read the imports of JS/TS files. A file whose search failed or stayed truncated is
+ * reported in `unread`, so a partial read is never mistaken for "no imports".
  */
 export async function readJsImports(input: {
   files: readonly string[];
   repoRoot: string;
   search?: ImportSearch;
-}): Promise<{ imports: ImportSite[]; unread: Array<{ path: string; reason: string }> }> {
+}): Promise<{ imports: ImportSite[]; unread: UnreadFile[] }> {
   const search = input.search ?? defaultImportSearch;
   const byLanguage = new Map<AstGrepLanguage, string[]>();
   for (const file of input.files) {
@@ -129,31 +180,10 @@ export async function readJsImports(input: {
     if (language) byLanguage.set(language, [...(byLanguage.get(language) ?? []), file]);
   }
   const imports: ImportSite[] = [];
-  const unread: Array<{ path: string; reason: string }> = [];
+  const unread: UnreadFile[] = [];
   for (const [language, files] of byLanguage) {
     for (let start = 0; start < files.length; start += IMPORT_BATCH_SIZE) {
-      const batch = files.slice(start, start + IMPORT_BATCH_SIZE);
-      const batchSet = new Set(batch);
-      const answers = await Promise.all(JS_IMPORT_PATTERNS.map((pattern) =>
-        search({ pattern, language, paths: batch, rootPath: input.repoRoot })
-          .catch((error: unknown) => ({ sites: [], error: error instanceof Error ? error.message : String(error), truncation: { truncated: false, totalAvailable: null, continuation: null } }))));
-      const failure = answers.find((answer) => answer.error || answer.truncation?.truncated);
-      if (failure) {
-        const reason = failure.error ? `import read failed: ${failure.error}` : 'import read truncated';
-        for (const path of batch) unread.push({ path, reason });
-        continue;
-      }
-      const seen = new Set<string>();
-      for (const answer of answers) {
-        for (const site of answer.sites) {
-          const specifier = specifierFromImportText(site.detail ?? '');
-          if (!specifier || !batchSet.has(site.path)) continue;
-          const key = `${site.path}\u0000${site.line1}\u0000${specifier}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          imports.push({ path: site.path, line1: site.line1 ?? null, specifier });
-        }
-      }
+      await readImportBatch(files.slice(start, start + IMPORT_BATCH_SIZE), language, input.repoRoot, search, imports, unread);
     }
   }
   return { imports, unread };

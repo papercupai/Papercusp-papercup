@@ -194,6 +194,34 @@ describe('ship check — decision (R-6)', () => {
     expect(report.notInspected[0]).toMatchObject({ path: 'src/uses-left-pad.ts', reason: expect.stringContaining('disabled') });
   });
 
+  /** A search that truncates whenever the requested paths hold more sites than `cap`, like the facade. */
+  function cappedSearch(cap: number, sitesPerFile: Record<string, number>): ImportSearch {
+    return async ({ pattern, paths }) => {
+      const sites = pattern !== IMPORT ? [] : paths.flatMap((path) =>
+        Array.from({ length: sitesPerFile[path] ?? 0 }, (_, index) => ({ path, line1: index + 1, kind: 'match', detail: `import x${index} from 'pkg-${index}';` })));
+      const truncated = sites.length > cap;
+      return { sites: truncated ? sites.slice(0, cap) : sites, error: null, truncation: { truncated, totalAvailable: sites.length, continuation: null } };
+    };
+  }
+
+  it('splits a batch the site cap truncated until every file is read (a real plan overflows one call)', async () => {
+    const files = ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'];
+    const { imports, unread } = await readJsImports({
+      files, repoRoot: root, search: cappedSearch(3, Object.fromEntries(files.map((file) => [file, 2]))),
+    });
+    expect(unread).toEqual([]);
+    expect(imports).toHaveLength(10);
+    expect(new Set(imports.map((site) => site.path))).toEqual(new Set(files));
+  });
+
+  it('reports only the one file whose own imports exceed the cap as unread, and still reads the rest', async () => {
+    const { imports, unread } = await readJsImports({
+      files: ['src/huge.ts', 'src/small.ts'], repoRoot: root, search: cappedSearch(3, { 'src/huge.ts': 5, 'src/small.ts': 1 }),
+    });
+    expect(unread).toEqual([{ path: 'src/huge.ts', reason: expect.stringContaining('import read truncated') }]);
+    expect(imports).toEqual([{ path: 'src/small.ts', line1: 1, specifier: 'pkg-0' }]);
+  });
+
   it('warns, without refusing, about a declared reuse entry no inspected file references', async () => {
     const reuse = {
       searched: [{ where: 'src', how: 'grep' }],

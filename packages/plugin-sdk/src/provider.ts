@@ -339,8 +339,9 @@ export interface ProviderIngressDescriptor {
  */
 export interface ProviderSocketIngressDescriptor {
   /**
-   * `setup.credentials` key whose stored value authenticates `open`, sent as
-   * `Authorization: Bearer <value>`. Typically a credential with no `hosts`, used only here.
+   * `setup.credentials` key whose stored value authenticates `open`, sent in `Authorization` under
+   * that field's own `auth.scheme` (default `Bearer <value>`; `bot` sends `Bot <value>`). Never a
+   * per-person credential.
    */
   credential: string;
   /** The request that returns a fresh socket URL. */
@@ -351,6 +352,11 @@ export interface ProviderSocketIngressDescriptor {
     method?: 'GET' | 'POST';
     /** Dot path of the `wss://` URL in the JSON response, e.g. `url`. */
     urlField: string;
+    /**
+     * Query parameters the host adds to the SOCKET URL the response returns, before connecting
+     * (Discord: `{ v: '10', encoding: 'json' }`). Not sent on the open request itself.
+     */
+    query?: Record<string, string>;
   };
   /**
    * Top-level envelope field whose value the host sends back as `{ [ackField]: value }` as soon as
@@ -369,12 +375,71 @@ export interface ProviderSocketIngressDescriptor {
    * Their records are admitted in arrival order among themselves, not among other envelopes.
    */
   immediate?: ProviderSocketEnvelopeMatch;
+  /**
+   * A stateful protocol the host runs on the socket (provider-adapters-to-packages D-038), for
+   * gateways that want an identify frame and heartbeats instead of acks (e.g. the Discord Gateway).
+   */
+  session?: ProviderSocketSessionDescriptor;
 }
 
 /** A top-level envelope field and the values that select an envelope. */
 export interface ProviderSocketEnvelopeMatch {
   field: string;
   values: string[];
+}
+
+/**
+ * The session protocol the host runs on a socket. Frames are JSON objects. A string value that is
+ * EXACTLY {@link PROVIDER_SOCKET_CREDENTIAL_PLACEHOLDER} (identify frame only) or
+ * {@link PROVIDER_SOCKET_SEQUENCE_PLACEHOLDER} is substituted by the host, so the credential still
+ * never reaches provider code. Each fresh socket identifies again: there is no resume, so data the
+ * vendor sent while the socket was down is not replayed.
+ */
+export interface ProviderSocketSessionDescriptor {
+  /** The envelope that opens the session; the host answers it with `identify.frame`. */
+  hello: {
+    match: ProviderSocketEnvelopeMatch;
+    /** Dot path of the heartbeat interval in milliseconds in the hello envelope. */
+    intervalPath: string;
+  };
+  /** Sent once per socket, in reply to hello. */
+  identify: { frame: Record<string, unknown> };
+  heartbeat: {
+    /** Sent every interval, and at once when an envelope matches `requestMatch`. */
+    frame: Record<string, unknown>;
+    requestMatch?: ProviderSocketEnvelopeMatch;
+  };
+  /** Dot path of the envelope sequence number; the latest one fills `{{sequence}}` (else null). */
+  sequencePath?: string;
+  /** Only matching envelopes reach `ingress.normalize`; protocol frames never do. */
+  deliver?: ProviderSocketEnvelopeMatch;
+}
+
+/** Identify-frame value the host replaces with the stored ingress credential. */
+export const PROVIDER_SOCKET_CREDENTIAL_PLACEHOLDER = '{{credential}}';
+/** Frame value the host replaces with the latest envelope sequence number, or null. */
+export const PROVIDER_SOCKET_SEQUENCE_PLACEHOLDER = '{{sequence}}';
+/** Longest serialized session frame a descriptor may declare. */
+export const PROVIDER_SOCKET_FRAME_MAX_CHARS = 4096;
+
+/**
+ * A session frame with its placeholders filled. Only a string that is exactly a placeholder is
+ * replaced; `credential` undefined leaves `{{credential}}` alone (heartbeat frames never carry it).
+ */
+export function renderProviderSocketFrame(
+  frame: Record<string, unknown>,
+  values: { credential?: string; sequence: number | null },
+): Record<string, unknown> {
+  const fill = (value: unknown): unknown => {
+    if (value === PROVIDER_SOCKET_SEQUENCE_PLACEHOLDER) return values.sequence;
+    if (value === PROVIDER_SOCKET_CREDENTIAL_PLACEHOLDER && values.credential !== undefined) return values.credential;
+    if (Array.isArray(value)) return value.map(fill);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, fill(v)]));
+    }
+    return value;
+  };
+  return fill(frame) as Record<string, unknown>;
 }
 
 /**
@@ -1559,29 +1624,114 @@ function ingressDescriptorIssues(
     if (!isNonEmptyString(open.urlField) || !PROVIDER_INGRESS_PATH_PATTERN.test(open.urlField)) {
       issues.push(`${at}.open.urlField must be a dot path to the socket URL in the response`);
     }
+    if (open.query !== undefined) issues.push(...socketQueryIssues(open.query, `${at}.open.query`));
   }
   if (s.ackField !== undefined && (!isNonEmptyString(s.ackField) || !PROVIDER_INGRESS_FIELD_PATTERN.test(s.ackField))) {
     issues.push(`${at}.ackField must be a top-level envelope field name`);
   }
   for (const key of ['reconnect', 'immediate'] as const) {
-    if (s[key] === undefined) continue;
-    const match = s[key] as Partial<ProviderSocketEnvelopeMatch> | null;
-    if (!match || typeof match !== 'object' || Array.isArray(match)) {
-      issues.push(`${at}.${key} must be an object`);
-      continue;
-    }
-    if (!isNonEmptyString(match.field) || !PROVIDER_INGRESS_FIELD_PATTERN.test(match.field)) {
-      issues.push(`${at}.${key}.field must be a top-level envelope field name`);
-    }
-    const values = Array.isArray(match.values) ? match.values : [];
-    if (values.length === 0 || !values.every(isNonEmptyString)) {
-      issues.push(`${at}.${key}.values must list at least one value`);
-    }
-    for (const dup of duplicates(values.filter(isNonEmptyString))) issues.push(`${at}.${key}.values repeats "${dup}"`);
+    if (s[key] !== undefined) issues.push(...envelopeMatchIssues(s[key], `${at}.${key}`));
   }
+  if (s.session !== undefined) issues.push(...socketSessionIssues(s.session, `${at}.session`));
   if (!capabilities.includes(PROVIDER_INGRESS_NORMALIZE_CAPABILITY)) {
     issues.push(`${at} needs capability ${PROVIDER_INGRESS_NORMALIZE_CAPABILITY}`);
   }
+  return issues;
+}
+
+function envelopeMatchIssues(raw: unknown, at: string): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [`${at} must be an object`];
+  const match = raw as Partial<ProviderSocketEnvelopeMatch>;
+  const issues: string[] = [];
+  if (!isNonEmptyString(match.field) || !PROVIDER_INGRESS_FIELD_PATTERN.test(match.field)) {
+    issues.push(`${at}.field must be a top-level envelope field name`);
+  }
+  const values = Array.isArray(match.values) ? match.values : [];
+  if (values.length === 0 || !values.every(isNonEmptyString)) {
+    issues.push(`${at}.values must list at least one value`);
+  }
+  for (const dup of duplicates(values.filter(isNonEmptyString))) issues.push(`${at}.values repeats "${dup}"`);
+  return issues;
+}
+
+const SOCKET_QUERY_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
+
+function socketQueryIssues(raw: unknown, at: string): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [`${at} must be an object of strings`];
+  const entries = Object.entries(raw as Record<string, unknown>);
+  const issues: string[] = [];
+  if (entries.length === 0 || entries.length > 8) issues.push(`${at} must have 1 to 8 parameters`);
+  for (const [name, value] of entries) {
+    if (!SOCKET_QUERY_KEY_PATTERN.test(name)) issues.push(`${at}.${name} is not a valid parameter name`);
+    if (typeof value !== 'string' || value.length > 200) issues.push(`${at}.${name} must be a string of at most 200 characters`);
+  }
+  return issues;
+}
+
+/** Why a declared session frame is unusable: not an object, too long, a partial placeholder, a credential outside identify. */
+function frameIssues(raw: unknown, at: string, allowCredential: boolean): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [`${at} must be a JSON object`];
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(raw);
+  } catch {
+    return [`${at} must be a JSON object`];
+  }
+  const issues: string[] = [];
+  if (serialized.length > PROVIDER_SOCKET_FRAME_MAX_CHARS) {
+    issues.push(`${at} is longer than ${PROVIDER_SOCKET_FRAME_MAX_CHARS} characters`);
+  }
+  const walk = (value: unknown): void => {
+    if (typeof value === 'string') {
+      if (value === PROVIDER_SOCKET_CREDENTIAL_PLACEHOLDER) {
+        if (!allowCredential) issues.push(`${at} may not carry ${PROVIDER_SOCKET_CREDENTIAL_PLACEHOLDER}; only the identify frame does`);
+      } else if (value !== PROVIDER_SOCKET_SEQUENCE_PLACEHOLDER && value.includes('{{')) {
+        issues.push(`${at} has "${value.slice(0, 40)}": a placeholder must be a whole value (${PROVIDER_SOCKET_CREDENTIAL_PLACEHOLDER} or ${PROVIDER_SOCKET_SEQUENCE_PLACEHOLDER})`);
+      }
+      return;
+    }
+    if (Array.isArray(value)) { value.forEach(walk); return; }
+    if (value && typeof value === 'object') {
+      for (const [name, child] of Object.entries(value as Record<string, unknown>)) {
+        if (['__proto__', 'prototype', 'constructor'].includes(name)) issues.push(`${at} may not use the key ${name}`);
+        walk(child);
+      }
+    }
+  };
+  walk(raw);
+  return issues;
+}
+
+function socketSessionIssues(raw: unknown, at: string): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [`${at} must be an object`];
+  const s = raw as Partial<ProviderSocketSessionDescriptor> & Record<string, unknown>;
+  const issues: string[] = [];
+  for (const name of Object.keys(s)) {
+    if (!['hello', 'identify', 'heartbeat', 'sequencePath', 'deliver'].includes(name)) issues.push(`${at}.${name} is not a session field`);
+  }
+  const isPath = (value: unknown): boolean => isNonEmptyString(value) && PROVIDER_INGRESS_PATH_PATTERN.test(value);
+  const hello = s.hello as Partial<ProviderSocketSessionDescriptor['hello']> | undefined;
+  if (!hello || typeof hello !== 'object' || Array.isArray(hello)) {
+    issues.push(`${at}.hello must be an object`);
+  } else {
+    issues.push(...envelopeMatchIssues(hello.match, `${at}.hello.match`));
+    if (!isPath(hello.intervalPath)) issues.push(`${at}.hello.intervalPath must be a dot path to the heartbeat interval`);
+  }
+  const identify = s.identify as Partial<ProviderSocketSessionDescriptor['identify']> | undefined;
+  if (!identify || typeof identify !== 'object' || Array.isArray(identify)) {
+    issues.push(`${at}.identify must be an object`);
+  } else {
+    issues.push(...frameIssues(identify.frame, `${at}.identify.frame`, true));
+  }
+  const heartbeat = s.heartbeat as Partial<ProviderSocketSessionDescriptor['heartbeat']> | undefined;
+  if (!heartbeat || typeof heartbeat !== 'object' || Array.isArray(heartbeat)) {
+    issues.push(`${at}.heartbeat must be an object`);
+  } else {
+    issues.push(...frameIssues(heartbeat.frame, `${at}.heartbeat.frame`, false));
+    if (heartbeat.requestMatch !== undefined) issues.push(...envelopeMatchIssues(heartbeat.requestMatch, `${at}.heartbeat.requestMatch`));
+  }
+  if (s.sequencePath !== undefined && !isPath(s.sequencePath)) issues.push(`${at}.sequencePath must be a dot path to the sequence number`);
+  if (s.deliver !== undefined) issues.push(...envelopeMatchIssues(s.deliver, `${at}.deliver`));
   return issues;
 }
 

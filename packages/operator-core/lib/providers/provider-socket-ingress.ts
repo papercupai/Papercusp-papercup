@@ -13,6 +13,9 @@
  *   4. hands each envelope to the provider's `ingress.normalize` capability and admits the returned
  *      records through {@link admitConnectorRecord} — the same path a synced page takes, so dedupe,
  *      sinks and trigger bindings behave identically whichever way a record arrived.
+ * A descriptor may also declare a `session` (provider-adapters-to-packages D-038): the host answers
+ * the hello envelope with the identify frame, sends heartbeats from the reconcile tick, and passes
+ * only `deliver`-matching envelopes to normalize.
  * Nothing here branches on a provider name.
  */
 import { WebSocket } from 'ws';
@@ -22,8 +25,12 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { getOrgPg } from '@papercusp/db-org';
 import {
   PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
+  providerCredentialHeaderValue,
+  renderProviderSocketFrame,
   type HostFetch,
+  type ProviderCredentialField,
   type ProviderIngressNormalizeArgs,
+  type ProviderSocketEnvelopeMatch,
   type ProviderSocketIngressDescriptor,
 } from '@papercusp/plugin-sdk';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -109,6 +116,23 @@ interface Connection {
    * discovery runs.
    */
   registry: ProviderRegistry;
+  /** Present when the descriptor declares a `session`. */
+  session: SessionState | null;
+}
+
+/** Per-socket state of a declared session protocol. */
+interface SessionState {
+  /** From the hello envelope; null until hello arrives (no heartbeats before it). */
+  intervalMs: number | null;
+  lastBeat: number;
+  /** Latest envelope sequence number, the value of `{{sequence}}`. */
+  sequence: number | null;
+  identified: boolean;
+}
+
+/** Whether `envelope`'s top-level `match.field` holds one of `match.values`. */
+function envelopeMatches(match: ProviderSocketEnvelopeMatch | undefined, envelope: Record<string, unknown>): boolean {
+  return !!match && match.values.includes(String(envelope[match.field]));
 }
 
 /** Providers in `registry` that declare a socket ingress and the capability that normalizes it. */
@@ -139,18 +163,33 @@ export class SocketIngressCredentialError extends Error {
   }
 }
 
+/** How the open request carries the ingress credential: the credential field's own declared auth. */
+export function ingressCredentialAuth(
+  provider: RegisteredProvider,
+  socket: ProviderSocketIngressDescriptor,
+): NonNullable<ProviderCredentialField['auth']> {
+  const field = provider.descriptor.setup?.credentials?.find((entry) => entry.key === socket.credential);
+  return field?.auth ?? { header: 'authorization', scheme: 'bearer' };
+}
+
 /**
  * Ask the provider's open endpoint for a fresh socket URL. The credential goes ONLY into this
- * request's Authorization header and never into a log line or an error message.
+ * request's auth header (the credential field's declared header and scheme; default
+ * `Authorization: Bearer`) and never into a log line or an error message. `open.query` is added
+ * to the returned socket URL.
  */
 export async function openIngressSocketUrl(
   socket: ProviderSocketIngressDescriptor,
   credential: string,
   fetchImpl: typeof fetch = fetch,
+  auth: NonNullable<ProviderCredentialField['auth']> = { header: 'authorization', scheme: 'bearer' },
 ): Promise<string> {
   const response = await fetchImpl(socket.open.url, {
     method: socket.open.method ?? 'POST',
-    headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/x-www-form-urlencoded' },
+    headers: {
+      [auth.header]: providerCredentialHeaderValue(auth.scheme, credential),
+      'content-type': 'application/x-www-form-urlencoded',
+    },
   });
   if (response.status === 401 || response.status === 403) {
     throw new SocketIngressCredentialError(`socket_open_${response.status}`);
@@ -171,7 +210,10 @@ export async function openIngressSocketUrl(
     }
     throw new Error(`socket_open_no_url:${socket.open.urlField}`);
   }
-  return url;
+  if (!socket.open.query) return url;
+  const withQuery = new URL(url);
+  for (const [name, value] of Object.entries(socket.open.query)) withQuery.searchParams.set(name, value);
+  return withQuery.toString();
 }
 
 function isSocketUrl(value: string): boolean {
@@ -277,12 +319,50 @@ export class ProviderSocketIngressManager {
     }
   }
 
+  /** Send a declared session frame with its placeholders filled; a failed send drops the socket. */
+  private sendFrame(connection: Connection, frame: Record<string, unknown>, credential?: string): boolean {
+    try {
+      connection.socket.send(JSON.stringify(renderProviderSocketFrame(frame, {
+        credential, sequence: connection.session?.sequence ?? null,
+      })));
+      return true;
+    } catch (error) {
+      this.log(`source ${connection.source.id} session frame failed: ${String(error)}`);
+      try { connection.socket.close(); } catch { /* already closed */ }
+      return false;
+    }
+  }
+
+  /**
+   * Send `connection`'s heartbeat when it is due before the next reconcile tick (or at once when
+   * `force`), so consecutive beats are always less than one interval apart.
+   */
+  private beat(connection: Connection, force = false): void {
+    const heartbeat = connection.ingress.socket.session?.heartbeat;
+    const state = connection.session;
+    if (!heartbeat || !state?.intervalMs) return;
+    const now = this.now();
+    if (!force && now < state.lastBeat + state.intervalMs - RECONCILE_MS) return;
+    if (this.sendFrame(connection, heartbeat.frame)) state.lastBeat = now;
+  }
+
+  /** Heartbeats for every session socket that is due; runs first on every reconcile tick. */
+  beatDue(): void {
+    for (const connection of this.connections.values()) this.beat(connection);
+  }
+
   private attach(
-    source: ConnectorSourceRow, ingress: SocketIngressProvider, socket: IngressSocketLike, registry: ProviderRegistry,
+    source: ConnectorSourceRow,
+    ingress: SocketIngressProvider,
+    socket: IngressSocketLike,
+    registry: ProviderRegistry,
+    credential: string,
   ): void {
     const id = key(source);
+    const session = ingress.socket.session;
     const connection: Connection = {
       source, ingress, socket, processing: Promise.resolve(), immediate: Promise.resolve(), reconnectRequested: false, registry,
+      session: session ? { intervalMs: null, lastBeat: 0, sequence: null, identified: false } : null,
     };
     this.connections.set(id, connection);
     const { ackField, reconnect, immediate } = ingress.socket;
@@ -305,10 +385,39 @@ export class ProviderSocketIngressManager {
           return;
         }
       }
-      if (reconnect && reconnect.values.includes(String(envelope[reconnect.field]))) {
+      if (session && connection.session && session.sequencePath) {
+        const sequence = valueAtPath(envelope, session.sequencePath);
+        if (typeof sequence === 'number' && Number.isFinite(sequence)) connection.session.sequence = sequence;
+      }
+      if (envelopeMatches(reconnect, envelope)) {
         connection.reconnectRequested = true;
         try { socket.close(); } catch { /* already closed */ }
         return;
+      }
+      if (session && connection.session) {
+        if (envelopeMatches(session.hello.match, envelope)) {
+          const interval = valueAtPath(envelope, session.hello.intervalPath);
+          if (typeof interval !== 'number' || !Number.isFinite(interval) || interval <= 0) {
+            this.log(`source ${source.id} hello carried no heartbeat interval at ${session.hello.intervalPath}`);
+            try { socket.close(); } catch { /* already closed */ }
+            return;
+          }
+          if (interval < RECONCILE_MS) {
+            this.log(`source ${source.id} heartbeat interval ${interval}ms is shorter than the ${RECONCILE_MS}ms tick`);
+          }
+          connection.session.intervalMs = interval;
+          connection.session.lastBeat = this.now();
+          if (!connection.session.identified && this.sendFrame(connection, session.identify.frame, credential)) {
+            connection.session.identified = true;
+          }
+          return;
+        }
+        if (envelopeMatches(session.heartbeat.requestMatch, envelope)) {
+          this.beat(connection, true);
+          return;
+        }
+        // Protocol frames (heartbeat acks, invalid-session notices) never reach normalize.
+        if (session.deliver && !envelopeMatches(session.deliver, envelope)) return;
       }
       const failed = (error: unknown) => {
         this.log(`source ${source.id} envelope failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -319,7 +428,7 @@ export class ProviderSocketIngressManager {
       };
       // An `immediate` envelope (e.g. a click whose response window is seconds) must not wait for
       // a slow envelope ahead of it, so it runs on its own chain.
-      if (immediate && immediate.values.includes(String(envelope[immediate.field]))) {
+      if (envelopeMatches(immediate, envelope)) {
         connection.immediate = connection.immediate.then(() => this.handleEnvelope(connection, envelope)).catch(failed);
         return;
       }
@@ -340,6 +449,8 @@ export class ProviderSocketIngressManager {
 
   async reconcile(): Promise<void> {
     if (this.stopped) return;
+    // Before any await: a slow registry or source read must not delay a due heartbeat.
+    this.beatDue();
     const sql = this.sql();
     const registry = await (this.deps.registry ?? readyProviderRegistry)();
     const providers = new Map(socketIngressProviders(registry).map((entry) => [entry.provider.descriptor.id, entry]));
@@ -373,10 +484,12 @@ export class ProviderSocketIngressManager {
           ingress.socket.credential,
         );
         if (!credential) throw new SocketIngressCredentialError(`credential_not_configured:${ingress.socket.credential}`);
-        const url = await openIngressSocketUrl(ingress.socket, credential, this.deps.fetch ?? fetch);
+        const url = await openIngressSocketUrl(
+          ingress.socket, credential, this.deps.fetch ?? fetch, ingressCredentialAuth(ingress.provider, ingress.socket),
+        );
         if (this.stopped) return;
         const create = this.deps.createSocket ?? ((value: string) => new WebSocket(value) as unknown as IngressSocketLike);
-        this.attach(source, ingress, create(url), registry);
+        this.attach(source, ingress, create(url), registry, credential);
       } catch (error) {
         this.scheduleRetry(source, error);
       }

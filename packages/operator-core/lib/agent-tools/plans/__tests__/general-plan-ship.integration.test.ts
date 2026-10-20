@@ -14,10 +14,13 @@
  * Scope, stated plainly. The R-10 ship cases switch the acceptance-RUBRIC family off through its
  * env override, the same way plan-acceptance-gate-independent-evidence.integration.test.ts does.
  * That family is profile-independent and is exactly what R-12 pins with the flag ON; it is not a
- * code-only reason. Everything else in the gate runs for real: the item family, the completion
- * audit, citation resolution, the code-deliverable check and the spec/proof checks. The R-10 ship
- * goes through the real `plans:set-plan-status` handler without `force`, so a plan that clears it
- * is really stored as shipped.
+ * code-only reason. The per-plan blind gap review is NOT switched off: each R-10 ship case records
+ * a counted review through the real `plans:blind-review` handler, posted by an agent outside the
+ * plan's implementer population, so that door is satisfied the way a real plan satisfies it.
+ * Everything else in the gate runs for real: the item family, the completion audit, citation
+ * resolution, the code-deliverable check and the spec/proof checks. The R-10 ship goes through the
+ * real `plans:set-plan-status` handler without `force`, and the positive case asserts the plan is
+ * stored as shipped, with no alternative outcome accepted.
  *
  * Plans, items and the rubric are written through the real projected dispatch against a private
  * (isolated) integration PG. Completion audits are seeded as rows, as in the sibling mixed-plan
@@ -45,6 +48,7 @@ import '../set-status';
 import '../set-plan-status';
 import '../audit';
 import '../../rubrics/propose';
+import blindReviewTool from '../blind-review';
 import { emitScorecard } from '../../scorecards/emit';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { evaluatePlanAcceptanceGate } from '../../../plan-acceptance-gate';
@@ -207,6 +211,33 @@ const PROFILE_INDEPENDENT = new RegExp(
 // Deliberately NOT listed: `acceptance_unaudited` (no completion audit) is the code-truth
 // family despite its prefix, and the coding control below relies on seeing it.
 
+/** An agent outside the plan's implementer population that has never read the plan. */
+const BLIND_REVIEWER = 'su-genship-blind-reviewer';
+
+/**
+ * Record a counted blind gap review with no gaps for the plan's latest activation audit, through
+ * the real `plans:blind-review` handler (the sanctioned writer the ship door reads). Asserts the
+ * review counts and satisfies the door, so a later ship refusal cannot be the blind review.
+ */
+async function recordBlindReview(slug: string): Promise<void> {
+  const reviewerCtx = {
+    log: () => {},
+    progress: () => {},
+    metadata: () => {},
+    emit: () => {},
+    signal: new AbortController().signal,
+    workspaceId: WS,
+    principal: { kind: 'agent', slug: BLIND_REVIEWER, workspaceId: WS },
+    ownerId: BLIND_REVIEWER,
+    coordOwnerId: BLIND_REVIEWER,
+  } as never;
+  const res = (await runWithWorkspace(WS, () => blindReviewTool.handler(
+    { harness: HARNESS, slug, op: 'post', gaps: [] } as never, reviewerCtx,
+  ))) as { content?: Array<{ text: string }> };
+  const posted = JSON.parse(res.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  expect(posted, brief(posted)).toMatchObject({ ok: true, counts: true, door: { satisfied: true } });
+}
+
 async function storedStatus(slug: string): Promise<string | null> {
   const [row] = await admin<{ status: string | null }[]>`
     SELECT status FROM harness_shared.harness_plans
@@ -265,31 +296,31 @@ describe('R-10: a general plan ships on generic evidence alone', () => {
   });
 
   it('ships once the profile-independent ceremony is out of the way', async () => {
-    // The acceptance-rubric family is profile-independent and pinned with the flag ON by R-12.
-    // With it off, the only gate between this plan and `shipped` is the per-plan blind gap
-    // review, which is not code-only either: forcing past the code-truth family must not be
-    // what lets the plan through, so the ship goes unforced and only that review may refuse.
+    // The acceptance-rubric family is profile-independent and pinned with the flag ON by R-12,
+    // so it is switched off here. The per-plan blind gap review stays ON and is satisfied by a
+    // real counted review. Forcing past the code-truth family must not be what lets the plan
+    // through, so the ship goes unforced, and it must actually ship.
     process.env[RUBRIC_GATE_ENV] = '0';
     const slug = 'zzz-genship-general-ships-2026-10-20';
     await makePlan(slug, 'general');
     await finishItems(slug);
     await auditGenericOnly(slug);
+    await recordBlindReview(slug);
 
-    const codes = await blockerCodes(slug);
-    expect(codes.filter((code) => !code.startsWith('blind_review_')), brief(codes)).toEqual([]);
+    expect(await blockerCodes(slug)).toEqual([]);
     const res = await ship(slug);
-    if (codes.length === 0) {
-      expect(res.ok, brief(res)).toBe(true);
-      expect(await storedStatus(slug)).toBe('shipped');
-    } else {
-      expect(String(res.error ?? res.code ?? ''), brief(res)).toMatch(/blind_review_/);
-    }
+    expect(res.ok, brief(res)).toBe(true);
+    expect(await storedStatus(slug)).toBe('shipped');
   });
 
   it('control: the same plan and evidence under the coding profile is refused for a code-only reason', async () => {
+    // Same ceremony switches as the case above (rubric family off, a counted blind review), so
+    // the only variable is the profile. Whatever refuses the ship must then be code-only.
+    process.env[RUBRIC_GATE_ENV] = '0';
     const slug = 'zzz-genship-coding-generic-2026-10-20';
     await makePlan(slug, 'coding');
     await finishItems(slug);
+    await recordBlindReview(slug);
     // Under coding every default item is a code deliverable, so the audit itself refuses
     // generic-only evidence, and the ship refuses for a code-truth reason. Both are code-only,
     // which is what proves the general-plan assertions above can see one.
@@ -298,9 +329,12 @@ describe('R-10: a general plan ships on generic evidence alone', () => {
     expect(brief(audit)).toContain('implemented_without_code');
 
     const codes = await blockerCodes(slug);
-    expect(codes.filter((code) => !PROFILE_INDEPENDENT.test(code)).length, brief(codes)).toBeGreaterThan(0);
+    expect(codes.length, brief(codes)).toBeGreaterThan(0);
+    expect(codes.filter((code) => PROFILE_INDEPENDENT.test(code)), brief(codes)).toEqual([]);
     const res = await ship(slug);
     expect(res.ok, brief(res)).not.toBe(true);
+    expect(String(res.error ?? res.code ?? ''), brief(res)).not.toMatch(PROFILE_INDEPENDENT);
+    expect(String(res.error ?? res.code ?? ''), brief(res)).not.toBe('');
     expect(await storedStatus(slug)).not.toBe('shipped');
   });
 });

@@ -1759,6 +1759,34 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(out).not.toContain('phase=baseline path=');
   });
 
+  /**
+   * WI-6554700010018232: a split checkout overlays each subtree on its own, so inside the
+   * namespace src/ sits on a different device from the root that holds .git. Git stops its
+   * upward discovery at a device boundary, so on the shared tree a guard that ran git from a
+   * subdirectory (a vitest file calling `git rev-parse --show-toplevel`) failed the UNMUTATED
+   * copy-baseline and the probe returned harness-error instead of a verdict.
+   */
+  it.skipIf(!containWorks)('lets a guard run git from a subdirectory of a split checkout', () => {
+    const { repo, subject: s } = makeBuildOutputRepo('build-output-mounted-git-repo');
+    const empty = join(dir, 'empty-mount-source-git');
+    mkdirSync(empty);
+    mkdirSync(join(repo, 'mnt'));
+    const q = (p: string) => JSON.stringify(p);
+    const guard = `cd ${q(join(repo, 'src'))} && test "$(git rev-parse --show-toplevel)" = ${q(realpathSync(repo))} && grep -q "^keep$" {}`;
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.GIT_DISCOVERY_ACROSS_FILESYSTEM;
+    const r = spawnSync('bwrap', [
+      '--dev-bind', '/', '/', '--bind', empty, join(repo, 'mnt'), '--die-with-parent', '--',
+      'bash', SCRIPT, '--file', s, '--mutate', 's/keep/KEEP/', '--test', guard,
+    ], { encoding: 'utf8', timeout: 60_000, cwd: repo, env });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    expect(out).toMatch(/MUTATION_PROBE_CONTAINMENT status=partial overlays=[1-9]\d* uncovered=\d+ failed=0/);
+    expect(out).not.toContain('COPY-BASELINE FAILED');
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(r.status).toBe(0);
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
+  });
+
   it.skipIf(!overlayWorks)('calibration: with MUTATION_PROBE_CONTAIN_WRITES=0 the same fixture leaks the mutant build', () => {
     const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-uncontained-repo');
     const { code, out } = runProbeIO(

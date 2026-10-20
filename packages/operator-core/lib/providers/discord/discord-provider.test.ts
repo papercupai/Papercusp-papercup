@@ -24,13 +24,18 @@ const presence = (fetch: HostFetch, c: Record<string, unknown> = config) =>
   adapter.invoke({ source: 'source', config: c, capability: 'community.presence', args: {} }, { fetch });
 
 describe('discord provider package (P-005)', () => {
-  it('declares notify.send and community.presence behind a host-held Bot token, with an honestly empty sync', async () => {
+  it('declares its capabilities behind a host-held Bot token, with an honestly empty sync', async () => {
     const d = await adapter.describe();
     expect(validateProviderDescriptor(d)).toEqual([]);
-    expect(d).toMatchObject({ id: 'discord', datatypes: ['notification'], capabilities: ['notify.send', 'community.presence'], sync: false, egressHosts: ['discord.com'] });
+    expect(d).toMatchObject({
+      id: 'discord', datatypes: ['notification', 'chat-message'], sync: false, egressHosts: ['discord.com'],
+      capabilities: ['notify.send', 'community.presence', 'ingress.normalize', 'chat.reply'],
+    });
     expect(d.oauth).toBeUndefined();
     expect(d.setup?.credentials).toEqual([expect.objectContaining({ key: 'bot_token', hosts: ['discord.com'], auth: { header: 'authorization', scheme: 'bot' } })]);
-    expect(d.verification?.capabilities).toEqual({ 'notify.send': '2026-10-20', 'community.presence': '2026-10-20' });
+    expect(d.verification?.capabilities).toEqual({
+      'notify.send': '2026-10-20', 'community.presence': '2026-10-20', 'ingress.normalize': '2026-10-20', 'chat.reply': '2026-10-20',
+    });
     const fetch = vi.fn();
     expect(await adapter.syncPage({ source: 'source', config, cursor: null, mode: 'backfill' }, { fetch })).toMatchObject({ records: [], nextCursor: null, hasMore: false });
     await expect(adapter.syncPage({ source: 'source', config, cursor: 'foreign', mode: 'incremental' }, { fetch })).rejects.toMatchObject({ kind: 'cursor-expired' });
@@ -73,7 +78,7 @@ describe('discord provider package (P-005)', () => {
     for (const a of [{ text: args.text }, { ...args, idempotencyKey: ' ' }, { ...args, idempotencyKey: 'k'.repeat(201) }]) {
       await expect(send(a, fetch)).rejects.toThrow('invalid_idempotency_key');
     }
-    await expect(adapter.invoke({ source: 'source', config, capability: 'chat.reply', args }, { fetch })).rejects.toThrow('capability_unsupported');
+    await expect(adapter.invoke({ source: 'source', config, capability: 'social.post', args }, { fetch })).rejects.toThrow('capability_unsupported');
     expect(fetch).not.toHaveBeenCalled();
     // 2000 code points is the vendor limit, not 2000 UTF-16 units.
     await expect(send({ ...args, text: '😀'.repeat(2000) })).resolves.toMatchObject({ externalId: messageId });
@@ -135,16 +140,133 @@ describe('discord provider package (P-005)', () => {
     await expect(presence(vi.fn(async () => { throw new Error('down'); }))).rejects.toMatchObject({ kind: 'transient' });
   });
 
-  it('passes the shared conformance kit with both of its actual invocations', async () => {
+  it('passes the shared conformance kit with each of its actual invocations', async () => {
     const widget = () => jsonResponse(200, { id: guildId, name: 'Papercusp', presence_count: 42 });
+    const envelope = { op: 0, s: 1, t: 'MESSAGE_CREATE', d: { id: messageId, channel_id: channelId, guild_id: guildId, type: 0,
+      content: 'hi', author: { id: '333333333333333333', username: 'member1' }, mentions: [] } };
     const report = await runProviderConformance({ adapter, source: 'source', config,
       createFetch: () => async ({ request }) => request.url.endsWith('/widget.json') ? widget() : sent(),
       faults: { rateLimited: false, auth: false, serverError: false },
       invocations: [
         { capability: 'notify.send', args, check: (r) => (r as { externalId?: unknown }).externalId === messageId ? null : 'message id required' },
         { capability: 'community.presence', args: {}, check: (r) => (r as { presenceCount?: unknown }).presenceCount === 42 ? null : 'online count required' },
+        { capability: 'ingress.normalize', args: { envelope, sourceConfig: { guildId } },
+          check: (r) => (r as { records?: unknown[] }).records?.length === 1 ? null : 'one chat-message record required' },
+        { capability: 'chat.reply', args: { channelId, threadId: messageId, text: 'hello' },
+          check: (r) => (r as { messageTs?: unknown }).messageTs === messageId ? null : 'reply message id required' },
       ] });
     expect(report.failures).toEqual([]);
     expect(report.ok).toBe(true);
+  });
+});
+
+// P-025 (D-038): the community bot reads members' messages from the Gateway and replies to them.
+describe('discord community bot (P-025)', () => {
+  const botUserId = '222222222222222222';
+  const authorId = '333333333333333333';
+  const message = (d: Record<string, unknown> = {}) => ({
+    op: 0, s: 12, t: 'MESSAGE_CREATE',
+    d: {
+      id: messageId, channel_id: channelId, guild_id: guildId, type: 0, content: 'How do I install the desktop app?',
+      timestamp: '2026-10-20T17:00:00.000000+00:00', author: { id: authorId, username: 'member1' }, mentions: [], ...d,
+    },
+  });
+  const normalize = (envelope: unknown, sourceConfig: Record<string, unknown> = { guildId, botUserId }) =>
+    adapter.invoke({ source: 'source', capability: 'ingress.normalize', args: { envelope, sourceConfig } }, { fetch: vi.fn() }) as Promise<{ records: Array<Record<string, any>> }>;
+
+  it('maps a member\'s message to a chat-message record whose own id is its reply thread', async () => {
+    const { records } = await normalize(message());
+    expect(records).toEqual([{
+      datatype: 'chat-message',
+      nativeId: `${channelId}:${messageId}`,
+      event: 'message',
+      version: `message:${channelId}:${messageId}`,
+      occurredAt: '2026-10-20T17:00:00.000Z',
+      payload: {
+        id: `${channelId}:${messageId}`, channelId, threadId: messageId, threadKey: null, sender: authorId,
+        text: 'How do I install the desktop app?', mentions: [], occurredAt: '2026-10-20T17:00:00.000Z',
+        extensions: { discord: { messageId, guildId, authorName: 'member1' } },
+      },
+    }]);
+  });
+
+  it('records a mention of the bot, a direct message and a reply as such', async () => {
+    const mention = await normalize(message({ content: `<@${botUserId}> help`, mentions: [{ id: botUserId, bot: true }] }));
+    expect(mention.records[0]).toMatchObject({ event: 'mention', payload: { mentions: [botUserId] } });
+    // Without the bot's id configured, a mention is an ordinary message.
+    expect((await normalize(message({ mentions: [{ id: botUserId }] }), { guildId })).records[0]!.event).toBe('message');
+    const dm = await normalize(message({ guild_id: undefined }));
+    expect(dm.records[0]).toMatchObject({ event: 'dm', payload: { extensions: { discord: { guildId: null } } } });
+    const replyTo = '444444444444444444';
+    const reply = await normalize(message({ type: 19, message_reference: { message_id: replyTo } }));
+    expect(reply.records[0]!.payload).toMatchObject({ threadId: messageId, threadKey: replyTo, extensions: { discord: { replyTo } } });
+  });
+
+  it('never records bots (its own replies included), webhooks, system posts, empty text, other servers or other events', async () => {
+    for (const envelope of [
+      message({ author: { id: botUserId, bot: true } }),
+      message({ webhook_id: '555555555555555555' }),
+      message({ author: { id: authorId, system: true } }),
+      message({ type: 7 }),
+      message({ content: '' }),
+      message({ content: '   ' }),
+      message({ guild_id: '666666666666666666' }),
+      message({ id: '../../x' }),
+      { ...message(), t: 'MESSAGE_UPDATE' },
+      { op: 11 },
+      null,
+    ]) {
+      expect((await normalize(envelope)).records).toEqual([]);
+    }
+    // With no server configured, every server's messages are read.
+    expect((await normalize(message({ guild_id: '666666666666666666' }), {})).records).toHaveLength(1);
+  });
+
+  it('replies to the message without pinging anyone and returns the new message id', async () => {
+    const replyId = '777777777777777777';
+    const fetch = vi.fn(async () => jsonResponse(200, { id: replyId, channel_id: channelId }));
+    const replyArgs = { channelId, threadId: messageId, text: 'See https://papercusp.com/download' };
+    const result = await adapter.invoke({ source: 'source', config: {}, capability: 'chat.reply', args: replyArgs }, { fetch });
+    expect(result).toEqual({ channelId, threadId: messageId, messageTs: replyId });
+    const call = callOf(fetch);
+    expect(call.request).toMatchObject({ url: `https://discord.com/api/v10/channels/${channelId}/messages`, method: 'POST' });
+    expect(Object.keys(call.request.headers ?? {}).map((k) => k.toLowerCase())).not.toContain('authorization');
+    const body = JSON.parse(call.request.body!);
+    expect(body).toEqual({
+      content: replyArgs.text, nonce: expect.any(String), enforce_nonce: true,
+      message_reference: { message_id: messageId, fail_if_not_exists: false },
+      allowed_mentions: { parse: [], replied_user: false },
+    });
+    expect(body.nonce).toHaveLength(25);
+    const again = vi.fn(async () => jsonResponse(200, { id: replyId, channel_id: channelId }));
+    await adapter.invoke({ source: 'source', config: {}, capability: 'chat.reply', args: replyArgs }, { fetch: again });
+    expect(JSON.parse(callOf(again).request.body!).nonce).toBe(body.nonce);
+  });
+
+  it('refuses bad reply coordinates or text before any request, and keeps an unconfirmed reply ambiguous', async () => {
+    const fetch = vi.fn();
+    const reply = (args: Record<string, unknown>, f: HostFetch = fetch) =>
+      adapter.invoke({ source: 'source', config: {}, capability: 'chat.reply', args }, { fetch: f });
+    await expect(reply({ channelId: 'C1', threadId: messageId, text: 'x' })).rejects.toThrow('invalid_channel_id');
+    await expect(reply({ channelId, threadId: '1.2', text: 'x' })).rejects.toThrow('invalid_thread_id');
+    await expect(reply({ channelId, threadId: messageId, text: 'x'.repeat(2001) })).rejects.toThrow('invalid_text');
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(reply({ channelId, threadId: messageId, text: 'x' }, vi.fn(async () => jsonResponse(500, {}))))
+      .rejects.toMatchObject({ kind: 'transient', retrySafe: false });
+    await expect(reply({ channelId, threadId: messageId, text: 'x' }, vi.fn(async () => jsonResponse(403, {}))))
+      .rejects.toMatchObject({ kind: 'auth' });
+  });
+
+  it('declares the Gateway session the host runs: Bot auth, v10 JSON, identify with the needed intents, heartbeats, dispatch only', async () => {
+    const d = await adapter.describe();
+    const socket = d.ingress!.socket;
+    expect(socket.credential).toBe('bot_token');
+    expect(socket.open).toEqual({ url: 'https://discord.com/api/v10/gateway/bot', method: 'GET', urlField: 'url', query: { v: '10', encoding: 'json' } });
+    // GUILDS | GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT.
+    expect(socket.session!.identify.frame).toMatchObject({ op: 2, d: { token: '{{credential}}', intents: (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15) } });
+    expect(socket.session!.heartbeat).toEqual({ frame: { op: 1, d: '{{sequence}}' }, requestMatch: { field: 'op', values: ['1'] } });
+    expect(socket.session!.deliver).toEqual({ field: 'op', values: ['0'] });
+    expect(socket.reconnect).toEqual({ field: 'op', values: ['7', '9'] });
+    expect(d.defaultDestinations).toEqual({ 'chat-message': ['document', 'event'] });
   });
 });

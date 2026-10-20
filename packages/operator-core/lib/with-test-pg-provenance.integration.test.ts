@@ -168,6 +168,8 @@ describe('isolated PostgreSQL mutation evidence', () => {
       PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT: root,
       PAPERCUSP_MUTATION_PROBE_SUBJECT: join(root, 'scripts/with-test-pg.mjs'),
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://reader.invalid:3170/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: join(root, 'reader-checkout'),
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '1',
     };
     const child = `
       const keys = ${JSON.stringify(Object.keys(probe))};

@@ -248,7 +248,15 @@ function refuse(code: string, message: string): never {
   throw new TriggerPackMaterializeError(code, message);
 }
 
-async function readPackTemplate(pluginDir: string, relPath: string, targetId: string): Promise<string> {
+/**
+ * Read one plan template out of an installed pack. Exported for tests.
+ *
+ * An unreadable template names the ABSOLUTE path it looked at and says whether
+ * the whole pack directory is gone (EI-25837518317183010): the installed
+ * plugins dir is workspace-scoped (papercuspRoot()), so a message naming only
+ * the relative path sent the reporter to the legacy ~/.papercusp tree instead.
+ */
+export async function readPackTemplate(pluginDir: string, relPath: string, targetId: string): Promise<string> {
   const root = resolve(pluginDir);
   const inside = (path: string) => path === root || path.startsWith(root + sep);
   const planPath = resolve(root, relPath);
@@ -257,7 +265,14 @@ async function readPackTemplate(pluginDir: string, relPath: string, targetId: st
   try {
     real = await fs.realpath(planPath);
   } catch {
-    refuse('trigger_pack_template_unreadable', `plan target "${targetId}" template not readable at ${relPath}`);
+    const packPresent = await fs.stat(root).then((s) => s.isDirectory(), () => false);
+    refuse(
+      'trigger_pack_template_unreadable',
+      packPresent
+        ? `plan target "${targetId}" template not readable at ${relPath} (looked at ${planPath})`
+        : `plan target "${targetId}" template not readable at ${relPath}: the pack directory ${root} is missing, ` +
+          'so the installed files are gone while the installation remains; reinstall the pack from the Cupboard to restore them',
+    );
   }
   if (!inside(real)) refuse('trigger_pack_template_unsafe', `plan target "${targetId}" template symlink escapes the pack`);
   return fs.readFile(real, 'utf8');

@@ -14,6 +14,7 @@ import {
   PROVIDER_CREDENTIAL_AUTH_SCHEMES,
   PROVIDER_CREDENTIAL_MAX_LENGTH,
   PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
+  renderProviderSocketFrame,
   providerCredentialHeaderValue,
   providerAppDefinitionText,
   providerAppRegistrationUrl,
@@ -828,6 +829,79 @@ describe('validateProviderDescriptor: ingress.socket (P-003, D-009)', () => {
     );
     expect(validateProviderDescriptor({ ...base, ingress: 'socket' } as unknown as ProviderDescriptor)).toEqual(['provider.ingress must be an object']);
     expect(validateProviderDescriptor({ ...base, ingress: {} } as unknown as ProviderDescriptor)).toEqual(['provider.ingress.socket must be an object']);
+  });
+
+  // provider-adapters-to-packages D-038: a gateway protocol declared as data.
+  const session = {
+    hello: { match: { field: 'op', values: ['10'] }, intervalPath: 'd.heartbeat_interval' },
+    identify: { frame: { op: 2, d: { token: '{{credential}}', intents: 37377, properties: { os: 'linux' } } } },
+    heartbeat: { frame: { op: 1, d: '{{sequence}}' }, requestMatch: { field: 'op', values: ['1'] } },
+    sequencePath: 's',
+    deliver: { field: 'op', values: ['0'] },
+  };
+  const withSession = (patch: Record<string, unknown>) => withSocket({ session: { ...session, ...patch } });
+
+  it('accepts a declared session and a socket query, and an ingress credential that also serves hosts', () => {
+    expect(withSocket({ session, open: { ...socket.open, method: 'GET', query: { v: '10', encoding: 'json' } } })).toEqual([]);
+    expect(withSocket({ credential: 'bot_token', session })).toEqual([]);
+    const { sequencePath: _s, deliver: _d, ...minimal } = session;
+    expect(withSocket({ session: { ...minimal, heartbeat: { frame: { op: 1 } } } })).toEqual([]);
+  });
+
+  it('refuses a session missing a part, or with a malformed match or path', () => {
+    expect(withSocket({ session: 'gateway' })).toEqual(['provider.ingress.socket.session must be an object']);
+    expect(withSession({ hello: undefined })).toContain('provider.ingress.socket.session.hello must be an object');
+    expect(withSession({ identify: undefined })).toContain('provider.ingress.socket.session.identify must be an object');
+    expect(withSession({ heartbeat: undefined })).toContain('provider.ingress.socket.session.heartbeat must be an object');
+    expect(withSession({ hello: { match: { field: 'op', values: [] }, intervalPath: 'd.x' } })).toContain(
+      'provider.ingress.socket.session.hello.match.values must list at least one value',
+    );
+    expect(withSession({ hello: { match: session.hello.match, intervalPath: 'd..x' } })).toContain(
+      'provider.ingress.socket.session.hello.intervalPath must be a dot path to the heartbeat interval',
+    );
+    expect(withSession({ sequencePath: '' })).toContain('provider.ingress.socket.session.sequencePath must be a dot path to the sequence number');
+    expect(withSession({ deliver: { field: 'd.op', values: ['0'] } })).toContain(
+      'provider.ingress.socket.session.deliver.field must be a top-level envelope field name',
+    );
+    expect(withSession({ heartbeat: { frame: { op: 1 }, requestMatch: { field: 'op', values: ['1', '1'] } } })).toContain(
+      'provider.ingress.socket.session.heartbeat.requestMatch.values repeats "1"',
+    );
+    expect(withSession({ resume: {} })).toContain('provider.ingress.socket.session.resume is not a session field');
+  });
+
+  it('keeps the credential placeholder to the identify frame and placeholders whole', () => {
+    expect(withSession({ heartbeat: { frame: { op: 1, d: '{{credential}}' } } })).toContain(
+      'provider.ingress.socket.session.heartbeat.frame may not carry {{credential}}; only the identify frame does',
+    );
+    expect(withSession({ identify: { frame: { op: 2, d: { token: 'Bot {{credential}}' } } } })).toContain(
+      'provider.ingress.socket.session.identify.frame has "Bot {{credential}}": a placeholder must be a whole value ({{credential}} or {{sequence}})',
+    );
+    expect(withSession({ identify: { frame: [2] } })).toContain('provider.ingress.socket.session.identify.frame must be a JSON object');
+    expect(withSession({ identify: { frame: { op: 2, d: 'x'.repeat(5000) } } })).toContain(
+      'provider.ingress.socket.session.identify.frame is longer than 4096 characters',
+    );
+  });
+
+  it('refuses a malformed socket query', () => {
+    expect(withSocket({ open: { ...socket.open, query: { v: 10 } } })).toContain(
+      'provider.ingress.socket.open.query.v must be a string of at most 200 characters',
+    );
+    expect(withSocket({ open: { ...socket.open, query: { 'a b': '1' } } })).toContain(
+      'provider.ingress.socket.open.query.a b is not a valid parameter name',
+    );
+    expect(withSocket({ open: { ...socket.open, query: {} } })).toContain('provider.ingress.socket.open.query must have 1 to 8 parameters');
+    expect(withSocket({ open: { ...socket.open, query: 'v=10' } })).toContain('provider.ingress.socket.open.query must be an object of strings');
+  });
+
+  it('fills only whole placeholders, and leaves the credential placeholder alone without a credential', () => {
+    const frame = { op: 2, d: { token: '{{credential}}', seq: '{{sequence}}', note: 'a {{sequence}}', list: ['{{sequence}}'] } };
+    expect(renderProviderSocketFrame(frame, { credential: 'tok', sequence: 9 })).toEqual({
+      op: 2, d: { token: 'tok', seq: 9, note: 'a {{sequence}}', list: [9] },
+    });
+    expect(renderProviderSocketFrame(frame, { sequence: null })).toEqual({
+      op: 2, d: { token: '{{credential}}', seq: null, note: 'a {{sequence}}', list: [null] },
+    });
+    expect(frame.d.token).toBe('{{credential}}');
   });
 });
 

@@ -3,15 +3,17 @@
  * DERIVED from ledgers that already exist — never an agent-authored list, never
  * a stored code-intelligence answer.
  *
- * Sources (one bounded read, all indexed):
- *  - `harness_shared.code_intel_pushes` for (owner, epoch): first-touch subjects
- *    are files read, interface facts cite the edited file first, grep subjects
- *    are symbol names whose first cited path is the definition.
+ * Sources (one bounded read, all indexed; every read is bounded by the epoch
+ * window AND scoped to the query's harness — blind review 35 G-1/G-2):
+ *  - `harness_shared.code_intel_pushes` for (owner, epoch) in the epoch window:
+ *    first-touch subjects are files read, interface facts cite the edited file
+ *    first, grep subjects are symbol names whose first cited path is the definition.
  *  - `harness_shared.edit_attribution_ledger` rows with `agent_id = owner` in the
- *    epoch window (files edited).
+ *    epoch window and the query's harness (files edited).
  *  - `harness_shared.tool_invocations` rows with `coord_owner_id = owner` in the
- *    epoch window: `lsp:query` / `graph:query` arguments name queried symbols and
- *    files; `capability:read|edit|write` name files read or edited.
+ *    epoch window, in the query's harness or attributed to no harness (a
+ *    harness-less su's calls): `lsp:query` / `graph:query` arguments name queried
+ *    symbols and files; `capability:read|edit|write` name files read or edited.
  *
  * The result is a set of HANDLES (paths, symbol names) for the next epoch to
  * re-run, ranked edited > queried > read. Tier 1 of the plan: nothing here
@@ -164,7 +166,15 @@ export function rankCodeWorkingSet(signals: WorkingSetSignals, opts: { root?: st
 
 type SqlLike = { begin<T>(fn: (tx: any) => Promise<T>): Promise<T> };
 
-/** Bounded read of the three ledgers for one owner/epoch window. */
+/** `tool_invocations.harness_slug` values that attribute a call to NO harness: a
+ * harness-less su records `''`, operator-level calls record `'*'`. Those calls stay
+ * in every harness's working set; a call attributed to a DIFFERENT harness never
+ * does (blind review 35 G-2). */
+export const UNATTRIBUTED_TOOL_HARNESS_SLUGS = ['', '*'] as const;
+
+/** Bounded read of the three ledgers for one owner/epoch window. Every ledger is
+ * bounded by [windowStart, windowEnd) — the push ledger too, so a long-lived epoch
+ * cannot carry pushes older than the window (G-1) — and scoped to `query.harness`. */
 export async function readWorkingSetSignals(query: WorkingSetQuery, sql: SqlLike = getOrgPg().sql as unknown as SqlLike,
   statementTimeoutMs = 200): Promise<WorkingSetSignals> {
   return sql.begin(async (tx: any) => {
@@ -173,6 +183,7 @@ export async function readWorkingSetSignals(query: WorkingSetQuery, sql: SqlLike
       SELECT leg, subject, cited_paths, (extract(epoch FROM pushed_at) * 1000)::float8 AS at
       FROM harness_shared.code_intel_pushes
       WHERE workspace_id = ${query.workspace} AND owner_id = ${query.owner} AND epoch = ${query.epoch}
+        AND pushed_at >= ${query.windowStart} AND pushed_at < ${query.windowEnd}
         AND leg IN ('first-touch', 'interface', 'grep')
       ORDER BY pushed_at DESC LIMIT ${ROW_LIMIT}`;
     const edits: { file: string; at: number }[] = await tx`
@@ -186,6 +197,7 @@ export async function readWorkingSetSignals(query: WorkingSetQuery, sql: SqlLike
       FROM harness_shared.tool_invocations
       WHERE coord_owner_id = ${query.owner} AND invoked_at >= ${query.windowStart} AND invoked_at < ${query.windowEnd}
         AND workspace_id = ${query.workspace} AND tool_name = ANY(${[...WORKING_SET_TOOLS]}::text[])
+        AND (harness_slug = ${query.harness} OR harness_slug = ANY(${[...UNATTRIBUTED_TOOL_HARNESS_SLUGS]}::text[]))
       ORDER BY invoked_at DESC LIMIT ${ROW_LIMIT}`;
     return {
       pushes: pushes.map(row => ({ leg: row.leg, subject: row.subject, citedPaths: row.cited_paths ?? [], at: Number(row.at) })),
@@ -300,16 +312,18 @@ export async function stampCodeWorkingSet(owner: string, workspace: string, set:
 
 export interface ForeignWorkingSet { itemId: string; stamp: StampedCodeWorkingSet }
 
-/** P-004: working sets stamped by a DIFFERENT owner on items this owner now holds. */
-export async function readForeignWorkingSets(owner: string, workspace: string,
+/** P-004: working sets stamped by a DIFFERENT owner on items this owner now holds
+ * IN THIS HARNESS — a stamp on an item of another harness names paths of another
+ * checkout, so it is never inherited (blind review 35 G-3). */
+export async function readForeignWorkingSets(owner: string, workspace: string, harness: string,
   sql: SqlLike = getOrgPg().sql as unknown as SqlLike, statementTimeoutMs = 75): Promise<ForeignWorkingSet[]> {
-  if (!owner || !workspace) return [];
+  if (!owner || !workspace || !harness) return [];
   const { ANY_FAMILY_TERMINAL_STATES } = await import('../work-item-dispatch-states');
   return sql.begin(async (tx: any) => {
     await tx`SELECT set_config('statement_timeout', ${`${Math.max(10, Math.floor(statementTimeoutMs))}ms`}, true)`;
     const rows: { feature_id: string; stamp: unknown }[] = await tx`
       SELECT feature_id, payload -> 'codeWorkingSet' AS stamp FROM harness_shared.work_items
-       WHERE workspace_id = ${workspace} AND taken_by = ${owner}
+       WHERE workspace_id = ${workspace} AND harness_slug = ${harness} AND taken_by = ${owner}
          AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
          AND jsonb_typeof(payload -> 'codeWorkingSet') = 'object'
          AND payload -> 'codeWorkingSet' ->> 'owner' IS DISTINCT FROM ${owner}

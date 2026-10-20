@@ -239,6 +239,36 @@ describe('runProviderConformance', () => {
     expect(report.failures.map((f) => f.check), formatProviderConformanceReport(report)).toContain(check);
   });
 
+  it('does not fault a capability that sends no request, but still faults one that swallows a 429', async () => {
+    const base = harness();
+    const inner = base.adapter;
+    const declared = await inner.describe();
+    const withTransform = (swallow429: boolean): ProviderAdapter => {
+      const descriptor = { ...declared, capabilities: [...declared.capabilities, 'ingress.normalize'] };
+      return {
+        ...inner,
+        describe: () => descriptor,
+        async invoke(request, host) {
+          // A pure transform: it reads its args and never calls host.fetch.
+          if (request.capability === 'ingress.normalize') return { records: [] };
+          if (swallow429 && request.capability === 'social.delete') {
+            const res = await host.fetch({ source: request.source, request: { url: `https://${API}/posts/${String(request.args.externalId)}`, method: 'DELETE' } });
+            return { deleted: res.status === 204 };
+          }
+          return inner.invoke(request, host);
+        },
+      };
+    };
+    const invocations = [...(base.invocations ?? []), { capability: 'ingress.normalize', args: { payload: {} } }];
+
+    const clean = await runProviderConformance({ ...base, adapter: withTransform(false), invocations });
+    expect(clean.failures, formatProviderConformanceReport(clean)).toEqual([]);
+
+    const swallowing = await runProviderConformance({ ...base, adapter: withTransform(true), invocations });
+    const findings = swallowing.failures.filter((f) => f.check === 'invoke-fault-not-retried');
+    expect(findings.map((f) => f.detail)).toEqual(['social.delete resolved although its first request was rate-limited']);
+  });
+
   it('fails a package whose syncPage repeats a record across resumed pages, and only on resume', async () => {
     const report = await runProviderConformance(harness({ inclusiveResume: true }));
     const checks = report.failures.map((f) => f.check);

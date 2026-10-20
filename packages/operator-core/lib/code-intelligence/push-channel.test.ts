@@ -317,6 +317,17 @@ describe('shared snapshot-backed push channel', () => {
     }
   });
 
+  it('G-5 (blind review 35): a write is a first touch in every tool vocabulary the working-set ledger counts', () => {
+    for (const tool of ['Write', 'capability:write', 'mcp__papercusp-su__capability_write',
+      'capability:read', 'mcp__papercusp-su__capability_edit']) {
+      expect(firstTouchPaths({ ...input, calls: [{ tool, toolInput: { file_path: 'lib/target.ts' } }] })).toEqual(['lib/target.ts']);
+    }
+    // A tool merely ENDING in those letters is not a file touch.
+    for (const tool of ['overwrite', 'Rewrite', 'docs:rewrite', 'unread']) {
+      expect(firstTouchPaths({ ...input, calls: [{ tool, toolInput: { file_path: 'lib/target.ts' } }] })).toEqual([]);
+    }
+  });
+
   it.each([false, true])('answers a literal grep with a unique snapshot symbol and aliases (serialized native input: %s)', serialized => {
     const snap = snapshot();
     snap.symbols = new Map([['target', [{ id: 'target', name: 'target', path: 'lib/target.ts', line: 2, column: 1,

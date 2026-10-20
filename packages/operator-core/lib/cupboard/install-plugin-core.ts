@@ -16,7 +16,7 @@
  * route registry. The route (`install-plugin.ts`) wires the real impls.
  */
 import { promises as fs, existsSync } from 'node:fs';
-import { join, resolve, sep, dirname } from 'node:path';
+import { basename, join, resolve, sep, dirname } from 'node:path';
 import type { PluginTriggerPack, ProviderDescriptor } from '@papercusp/plugin-sdk';
 import type { TriggerPackInstallation } from './trigger-pack-materialize';
 import { validateProviderDeclaration } from '@papercusp/plugin-sdk';
@@ -482,13 +482,42 @@ async function locatePlugin(
   throw new InstallPluginError('no papercusp.json found in the plugin repo (checked listing_ref subdir + root)', 422);
 }
 
-/** Recursively copy a plugin dir into `target`, excluding the repo's .git. */
-async function copyPluginDir(src: string, target: string): Promise<void> {
-  await fs.rm(target, { recursive: true, force: true });
-  await fs.cp(src, target, {
-    recursive: true,
-    filter: (s) => !s.split(/[/\\]/).includes('.git'),
-  });
+/**
+ * Replace `target` with a copy of the plugin dir `src` (excluding the repo's
+ * .git) without ever leaving `target` absent or half-written.
+ *
+ * The copy goes to a sibling staging dir first; only a complete copy is
+ * swapped in, by rename. The previous install is moved aside, not deleted,
+ * until the new one is in place, and is put back if the swap fails. Before
+ * EI-25837518317183010 this was rm-then-cp: a copy that failed (or a process
+ * killed) between the two left a live installation row whose files were gone.
+ * Exported for tests.
+ */
+export async function replacePluginDir(src: string, target: string): Promise<void> {
+  const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Dot-prefixed siblings: plugin-catalog skips hidden entries, so a staged or
+  // set-aside copy is never listed as an installed plugin.
+  const staged = join(dirname(target), `.${basename(target)}.installing-${nonce}`);
+  const previous = join(dirname(target), `.${basename(target)}.previous-${nonce}`);
+  try {
+    await fs.cp(src, staged, {
+      recursive: true,
+      filter: (s) => !s.split(/[/\\]/).includes('.git'),
+    });
+  } catch (error) {
+    await fs.rm(staged, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+  const hadPrevious = existsSync(target);
+  if (hadPrevious) await fs.rename(target, previous);
+  try {
+    await fs.rename(staged, target);
+  } catch (error) {
+    if (hadPrevious) await fs.rename(previous, target).catch(() => {});
+    await fs.rm(staged, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+  if (hadPrevious) await fs.rm(previous, { recursive: true, force: true }).catch(() => {});
 }
 
 /** Fingerprint original package bytes, excluding only the host-owned install receipt. */
@@ -781,7 +810,7 @@ export async function installPluginFromCupboardCore(
     // `@scope/name` lands at global-plugins/@scope/name/ — the loader's layout.
     // For an unscoped name this is global-plugins itself (unchanged).
     await fs.mkdir(dirname(target), { recursive: true });
-    await copyPluginDir(pluginDir, target);
+    await replacePluginDir(pluginDir, target);
     if (provenance) {
       await fs.writeFile(join(target, 'listing.json'), canonicalJson({ ...localListing, cupboardInstallation: provenance }));
     } else if (stripSuppliedReceipt) {

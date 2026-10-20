@@ -180,11 +180,80 @@ describe('R-6: a new holder receives fresh facts for the previous holder\'s file
     ];
     const tx = (strings: TemplateStringsArray) => { statements.push(strings.join('?')); return Promise.resolve(strings.join('').includes('codeWorkingSet') ? rows : []); };
     const sql = { begin: async (fn: (t: unknown) => unknown) => fn(tx) };
-    const sets = await readForeignWorkingSets(OWNER, 'ws-A', sql as never);
+    const sets = await readForeignWorkingSets(OWNER, 'ws-A', 'papercusp', sql as never);
     expect(sets.map(s => s.itemId)).toEqual(['WI-2']);
     const read = statements.find(s => s.includes('codeWorkingSet'))!;
     expect(read).toContain('taken_by = ?');
     expect(read).toContain("payload -> 'codeWorkingSet' ->> 'owner' IS DISTINCT FROM ?");
+  });
+
+  it('G-3 (blind review 35): inherits only stamps on items of THIS harness, and the resume read passes its harness', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve([]);
+    };
+    const sql = { begin: async (fn: (t: unknown) => unknown) => fn(tx) };
+    await readForeignWorkingSets(OWNER, 'ws-A', 'calendar', sql as never);
+    const read = calls.find(c => c.text.includes('codeWorkingSet'))!;
+    expect(read.text).toContain('harness_slug = ?');
+    expect(read.values).toEqual(expect.arrayContaining(['ws-A', 'calendar', OWNER]));
+    // No harness, no read: an unscoped stamp read is exactly the leak.
+    calls.length = 0;
+    await expect(readForeignWorkingSets(OWNER, 'ws-A', '', sql as never)).resolves.toEqual([]);
+    expect(calls).toEqual([]);
+
+    const foreign = vi.fn(async () => []);
+    await readPushResumeContext(input(), resumeDeps({ foreign }).deps);
+    expect(foreign).toHaveBeenCalledWith(OWNER, 'ws-A', 'papercusp');
+  });
+
+  it('G-4 (blind review 35): carried symbol handles ride the resume leg and are re-resolved in the CURRENT snapshot', async () => {
+    const symbol = (name: string, path: string, line: number, callers: number) => ({ id: `${path}#${name}`, name, path, line, column: 1,
+      sha256: 'b'.repeat(64), signature: `function ${name}()`, aliases: [name], sources: [{ path, sha256: 'b'.repeat(64) }],
+      callers: Array.from({ length: callers }, (_, i) => ({ path: 'app/use.ts', line: i + 1, column: 1, sha256: 'c'.repeat(64), spelling: name })) });
+    const symbolSnapshot = () => {
+      const snap = snapshot();
+      snap.symbols = new Map([
+        ['targetFn', [symbol('targetFn', 'lib/target.ts', 12, 2)]],
+        ['elsewhereFn', [symbol('elsewhereFn', 'lib/defs.ts', 40, 1)]],
+      ]);
+      return snap;
+    };
+    const run = async (resume: ReadResumeContextDeps) => {
+      const base = channel(resume);
+      await codeIntelPushText(input(), 0, { ...base.deps, snapshot: async () => symbolSnapshot() });
+      return base.committed;
+    };
+    // Previous epoch: eight edited files fill the file cap, so the queried definition
+    // file lib/target.ts is dropped from `files` — its symbol still brings it forward
+    // (the eight were already resumed this epoch); a path-less handle rides along.
+    const edited = Array.from({ length: 8 }, (_, i) => ({ file: `lib/e${i}.ts`, at: now - 100_000 + i }));
+    const previous = resumeDeps({
+      signals: async () => ({ pushes: [], edits: edited,
+        tools: [{ tool: 'lsp:query', args: { op: 'workspace_symbols', name: 'targetFn', file: 'lib/target.ts' }, at: now - 120_000 },
+          { tool: 'graph:query', args: { op: 'callers', name: 'elsewhereFn' }, at: now - 110_000 }] }),
+      pushed: async () => edited.map(row => `resume:${row.file}`),
+    }).deps;
+    const context = await readPushResumeContext(input(), previous);
+    expect(context.entries).toEqual([expect.objectContaining({ path: 'lib/target.ts', reason: 'queried', from: 'previous-epoch',
+      symbols: ['targetFn', 'elsewhereFn'] })]);
+    const [fact] = await run(previous);
+    expect(fact.subject).toBe('resume:lib/target.ts');
+    // Line and caller counts come from THIS snapshot, not from anything carried.
+    expect(fact.text).toContain('Carried symbol handles, re-resolved in this snapshot: targetFn:12 >=2 static calls; elsewhereFn @lib/defs.ts:40 >=1 static calls.');
+
+    // A work-item stamp carries names only; each is resolved, or named as unresolved.
+    const held = resumeDeps({ epoch: async () => ({ epoch: 0, bumpedAt: null }),
+      foreign: async () => [{ itemId: 'WI-9', stamp: { owner: 'su-previous', epoch: 3, derivedAt: '', paths: ['lib/target.ts'],
+        symbols: ['targetFn', 'goneFn'] } }] }).deps;
+    const [heldFact] = await run(held);
+    expect(heldFact.text).toContain("Carried from WI-9's working set (stamped by su-previous)");
+    expect(heldFact.text).toContain('targetFn:12 >=2 static calls; goneFn (not indexed in this snapshot).');
+
+    // No carried symbols: no symbol line (the file-only resume text is unchanged).
+    const [plain] = await run(resumeDeps().deps);
+    expect(plain.text).not.toContain('Carried symbol handles');
   });
 
   it('stamps only non-terminal items still held by the stamping owner', async () => {

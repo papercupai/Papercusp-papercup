@@ -3,9 +3,11 @@ import {
   WORKING_SET_MAX_FILES,
   WORKING_SET_MAX_SYMBOLS,
   WORKING_SET_PREVIOUS_EPOCH_LOOKBACK_MS,
+  UNATTRIBUTED_TOOL_HARNESS_SLUGS,
   deriveCodeWorkingSet,
   parseStampedWorkingSet,
   rankCodeWorkingSet,
+  readWorkingSetSignals,
   stampableWorkingSet,
   workingSetWindow,
   type DeriveWorkingSetDeps,
@@ -133,6 +135,39 @@ describe('workingSetWindow', () => {
     const { deps, queries } = depsWith({ pushes: [], edits: [], tools: [] }, { epoch: 0, bumpedAt: null });
     await expect(deriveCodeWorkingSet({ workspace: 'ws', harness: 'h', owner: 'o', which: 'previous', now: NOW }, deps)).resolves.toBeNull();
     expect(queries).toHaveLength(0);
+  });
+});
+
+describe('readWorkingSetSignals (blind review 35 G-1/G-2: window-bounded and harness-scoped)', () => {
+  function capture() {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve([]);
+    };
+    return { calls, sql: { begin: async (fn: (t: unknown) => unknown) => fn(tx) } };
+  }
+  const query: WorkingSetQuery = { workspace: 'ws', harness: 'papercusp', owner: 'su-1', epoch: 2,
+    windowStart: new Date(BUMPED.getTime() - WORKING_SET_PREVIOUS_EPOCH_LOOKBACK_MS), windowEnd: BUMPED };
+
+  it('G-1: bounds the predecessor-epoch push read by the window, not only by the epoch', async () => {
+    const { calls, sql } = capture();
+    await readWorkingSetSignals(query, sql as never);
+    const pushes = calls.find(c => c.text.includes('code_intel_pushes'))!;
+    expect(pushes.text).toContain('epoch = ?');
+    expect(pushes.text).toContain('pushed_at >= ? AND pushed_at < ?');
+    expect(pushes.values).toEqual(expect.arrayContaining([query.windowStart, query.windowEnd]));
+  });
+
+  it('G-2: reads tool calls of this harness or of no harness, never of a different harness', async () => {
+    const { calls, sql } = capture();
+    await readWorkingSetSignals(query, sql as never);
+    const tools = calls.find(c => c.text.includes('tool_invocations'))!;
+    expect(tools.text).toContain('(harness_slug = ? OR harness_slug = ANY(?::text[]))');
+    expect(tools.values).toEqual(expect.arrayContaining(['papercusp', [...UNATTRIBUTED_TOOL_HARNESS_SLUGS]]));
+    expect([...UNATTRIBUTED_TOOL_HARNESS_SLUGS]).toEqual(['', '*']);
+    // Edit attribution was already harness-scoped; it stays so.
+    expect(calls.find(c => c.text.includes('edit_attribution_ledger'))!.text).toContain('harness_slug = ?');
   });
 });
 
