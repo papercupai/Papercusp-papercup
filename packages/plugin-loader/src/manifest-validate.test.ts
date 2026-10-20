@@ -336,6 +336,8 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     pkce: true,
     clientRegistrationRef: 'example',
     credentialGroup: 'example-suite',
+    personalAccountDomains: ['example.com'],
+    legacyCredentialPlugins: ['example-legacy'],
     refreshPolicy: 'refresh-token',
     resourceToken: {
       url: 'https://example.com/api/resources',

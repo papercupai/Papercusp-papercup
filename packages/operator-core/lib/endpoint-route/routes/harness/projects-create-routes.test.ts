@@ -60,10 +60,13 @@ const byPath = (path: string) => {
 
 const fromRepoRoute = byPath('/harness/pots/from-repo');
 const createHiveRoute = byPath('/harness/pots');
-const deleteProjectRoute = (routes as Array<{ path: string; method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>).find(
-  (x) => x.path === '/harness/projects/:slug' && x.method === 'DELETE',
-);
-if (!deleteProjectRoute) throw new Error('no DELETE route for /harness/projects/:slug');
+const deleteProjectRoute = (() => {
+  const route = (routes as Array<{ path: string; method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>).find(
+    (x) => x.path === '/harness/projects/:slug' && x.method === 'DELETE',
+  );
+  if (!route) throw new Error('no DELETE route for /harness/projects/:slug');
+  return route;
+})();
 
 async function post(
   route: { path: string; handler: (req: Request, ctx: unknown) => Promise<Response> },

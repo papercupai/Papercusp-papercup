@@ -98,7 +98,7 @@ describe('buildKnowledgeReusePatterns — demand misses + aged one-offs', () => 
           candidateImprovementId: null,
         },
         {
-          surface: 'memory',
+          surface: 'plans',
           queryNorm: 'one fluke',
           exampleQuery: 'one fluke',
           missCount: 1,
