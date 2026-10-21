@@ -3,9 +3,21 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import {
+  formatMinePeerDriftBanner,
   formatUncoveredFilesBanner,
   suggestTypecheckGate,
 } from './tsc-baseline-gate.mjs';
+
+test('--mine output describes the current shared dirty set without attributing it to the caller', () => {
+  const lines = formatMinePeerDriftBanner({ outsideCount: 2 });
+  assert.equal(
+    lines[0],
+    '✓ The current --mine dirty set is tsc-clean. 2 baseline-regressed file(s) are outside that set:',
+  );
+  assert.ok(lines.some((line) => line.includes("other sessions' dirty edits")));
+  assert.ok(lines.some((line) => line.includes('--files= for explicit attribution')));
+  assert.ok(!lines.some((line) => line.includes('Your changed files')));
+});
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 

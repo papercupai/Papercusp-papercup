@@ -27,8 +27,9 @@
 import * as fsp from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { spawn, type StdioOptions } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
+import { spawnSidecarChild, type SidecarChild, type SidecarSpawnRequest } from './forkserver/forkserver-client';
 import { SIDECAR_PROCESS_KILL_GRACE_MS } from './sidecar-exec-lifetime';
 import { observeAdmission, type AdmissionHealthObserver } from './sidecar-admission-wedge';
 
@@ -134,6 +135,8 @@ export interface ExecProcessDeps {
    * sidecar server passes its wedge breaker here; omitted elsewhere.
    */
   admissionHealth?: AdmissionHealthObserver;
+  /** Test seam: replaces the forkserver spawn (default spawnSidecarChild). */
+  spawnChild?: (request: SidecarSpawnRequest) => Promise<SidecarChild>;
 }
 
 /**
@@ -342,25 +345,28 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
 
   let result: ExecResult;
   try {
+    reportStage('spawn-start');
+    // The fork runs in the forkserver (forkserver/forkserver-client.ts), not on this
+    // event loop: forking from this large process blocked the loop that also runs
+    // governed-admission I/O (WI-6554700010019379). Everything below reads only the
+    // child's pid, exit fields, stdio streams and events, so every guard is the same
+    // for a forkserver child and a direct one.
+    const child = await (deps.spawnChild ?? spawnSidecarChild)({
+      command: params.command,
+      args: params.args ?? [],
+      cwd: params.cwd,
+      env: {
+        ...(params.inheritEnv === false ? {} : process.env),
+        ...(params.env ?? {}),
+        ...execution.childEnv,
+      },
+      // Own the command's helper processes too. Keep the child referenced;
+      // detached here creates a POSIX process group, not a fire-and-forget job.
+      detached: process.platform !== 'win32',
+      ...(stdinHandle && params.stdinPath ? { stdin: { path: params.stdinPath, fd: stdinHandle.fd } } : {}),
+      ...(stdoutHandle && params.stdoutPath ? { stdout: { path: params.stdoutPath, fd: stdoutHandle.fd } } : {}),
+    });
     result = await new Promise<ExecResult>((resolve) => {
-      const stdio: StdioOptions = [
-        stdinHandle ? stdinHandle.fd : 'ignore',
-        stdoutHandle ? stdoutHandle.fd : 'pipe',
-        'pipe',
-      ];
-      reportStage('spawn-start');
-      const child = spawn(params.command, params.args ?? [], {
-        cwd: params.cwd,
-        env: {
-          ...(params.inheritEnv === false ? {} : process.env),
-          ...(params.env ?? {}),
-          ...execution.childEnv,
-        },
-        stdio,
-        // Own the command's helper processes too. Keep the child referenced;
-        // detached here creates a POSIX process group, not a fire-and-forget job.
-        detached: process.platform !== 'win32',
-      });
       // A lazy receipt's delay measures the child's runtime, not the setup before it.
       execution.armAfterSpawn();
       // Decode across chunk boundaries: a multi-byte UTF-8 character split between
@@ -392,7 +398,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         return pipes.length > 0 && pipes.every((s) => s.readableEnded);
       };
       let removeAbortListener = (): void => {};
-      const groupLifetime = processGroupLifetime(child, (message) => { stderr += `\nsidecar ${message}`; });
+      const groupLifetime = processGroupLifetime(child as unknown as ChildProcess, (message) => { stderr += `\nsidecar ${message}`; });
       const signalCommand = groupLifetime.signal;
       const waitForCommandExit = async (): Promise<void> => {
         await groupLifetime.waitForExit();

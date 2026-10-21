@@ -13,6 +13,7 @@ import {
   crossGenerationAuditProbeArgs,
   evaluateSpecTestAdequacy,
   evaluateSpecEvidenceMatrix,
+  isAcceptedMutationTarget,
   resolveFixtureAbsenceVerifications,
   latestLogicalEvidence,
   mutationMeasuredFailedCase,
@@ -2250,6 +2251,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           executed: true,
           outcome: 'caught',
           targeted: 'promotion-readable',
+          scenarioIds: ['promotion-readable'],
+          testCases: [DEFAULT_MUTATION_TEST_CASE],
         },
       },
     });
@@ -2466,6 +2469,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           executed: true,
           outcome: 'caught',
           targeted: 'promotion-readable',
+          scenarioIds: ['promotion-readable'],
+          testCases: [DEFAULT_MUTATION_TEST_CASE],
         },
       },
     });
@@ -2514,6 +2519,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           executed: true,
           outcome: 'caught',
           targeted: RECONNECT_FALSIFIER_SCENARIO,
+          scenarioIds: [RECONNECT_FALSIFIER_SCENARIO],
+          testCases: [failedCaseTitle],
         },
       },
     });
@@ -2744,6 +2751,23 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
     });
 
+    it('keeps self-specId as an accepted identity but does not let it prove an explicit falsifier alone', () => {
+      const targetClause = clause({
+        falsifier: { observation: 'The promoted directive cannot be read from the open standing state.' },
+      });
+      expect(isAcceptedMutationTarget(targetClause, 'spec-003-01')).toBe(true);
+
+      const result = evaluateSpecTestAdequacy({
+        clause: targetClause,
+        evidence: [evidence(), successfulTestBinding(testPath), mutationTargeting('spec-003-01')],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings.falsifiability.rating).toBe('unknown');
+      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
+      expect(result.ratings.falsifiability.suggestion).toContain('real clause falsifier.requiredScenarios id');
+    });
+
     it('accepts the exact uppercase ID of a platform-generated clause as its self-target', () => {
       const specId = 'AUTO-BAR-R-5-P-004';
       const generatedClause = clause({ specId });
@@ -2760,7 +2784,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       expect(result.ratings.falsifiability.rating).toBe('pass');
     });
 
-    it('does not describe a declared falsifier as absent when it has no named scenarios', () => {
+    it('keeps an explicit falsifier unresolved when it has no canonical scenario to align', () => {
       const result = evaluateSpecTestAdequacy({
         clause: clause({
           falsifier: {
@@ -2772,13 +2796,13 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings.falsifiability.rating).toBe('pass');
-      expect(result.ratings.falsifiability.evidence).toContain('declares no structured falsifier.requiredScenarios list');
+      expect(result.ratings.falsifiability.rating).toBe('unknown');
+      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
       expect(result.ratings.falsifiability.evidence).not.toContain('observation and probe method do not name scenarios');
       expect(result.ratings.falsifiability.evidence).not.toContain('declares no falsifier scenarios');
     });
 
-    it('does not claim prose-named scenarios are absent when the structured list is empty', () => {
+    it('does not use prose-named scenarios to stand in for a canonical scenario list', () => {
       const result = evaluateSpecTestAdequacy({
         clause: clause({
           falsifier: {
@@ -2790,8 +2814,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings.falsifiability.rating).toBe('pass');
-      expect(result.ratings.falsifiability.evidence).toContain('declares no structured falsifier.requiredScenarios list');
+      expect(result.ratings.falsifiability.rating).toBe('unknown');
+      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
       expect(result.ratings.falsifiability.evidence).not.toContain('observation and probe method do not name scenarios');
     });
 
@@ -2961,10 +2985,14 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
   it('requires tree evidence when binder-authored falsifiability targets a tree clause', () => {
     const testPath = 'packages/operator-core/lib/agent-tools/plans/tree-plane-proof.integration.test.ts';
+    const scenarioId = 'missing-tree-tool-reported';
     const treeClause = clause({
       requiredEvidence: ['tree'],
       requiredTestLayers: [],
-      falsifier: { observation: 'A verb missing from the agent-tools tree is reported.' },
+      falsifier: {
+        observation: 'A verb missing from the agent-tools tree is reported.',
+        requiredScenarios: [scenarioId],
+      },
     });
     const mutation = evidence({
       evidenceKind: 'mutation',
@@ -2973,7 +3001,9 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       details: {
         adequacy: {
           ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
-          targeted: treeClause.specId,
+          targeted: scenarioId,
+          scenarioIds: [scenarioId],
+          testCases: [DEFAULT_MUTATION_TEST_CASE],
           outcome: 'killed',
           falsifiable: true,
           oracleIndependent: true,

@@ -112,6 +112,7 @@ import toolFind, {
   TOOLS_FIND_LIMIT_MAX,
   ensureIndex,
   exactToolNamesInQuery,
+  exactToolNamesInCorpus,
   normalizeToolsFindArgs,
   filterCorpusForConfirmedHiveScope,
   prioritizeExactToolHits,
@@ -971,7 +972,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('when kind!=undecidable => settledBy forbidden');
   });
 
-  it('keeps work_items:complete assumptions visible in the bounded discovery schema', () => {
+  it('keeps work_items:complete conditional change-kind fields and assumptions visible', async () => {
     expect(complete.name).toBe('work_items:complete');
     const { corpus, schemaByTool } = buildCorpus();
     const entry = corpus.find((candidate) => candidate.tool === 'work_items:complete');
@@ -982,6 +983,17 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain('assumptions?');
     expect(compact).toContain('one-of:items');
     expect(compact).toContain('assumptions?');
+    expect(compact).toContain('changeKinds?');
+    expect(compact).toContain('changeKindReason?');
+    expect(compact).toContain('contract v2; required:');
+    expect(compact).toContain(
+      'hypotheses differ; predictions differ meaningfully; distinguishingTest: non-empty procedure',
+    );
+    expect(compact).not.toContain('predictedObservations arms must be meaningfully different');
+    expect(entry?.argSchema).toContain('contractVersion=2; required fields:');
+    expect(entry?.argSchema).toContain('predictedObservations arms must be meaningfully different');
+    expect(entry?.argSchema).toContain('hypothesis!=alternativeHypothesis');
+    expect(entry?.argSchema).toContain(ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT);
     // EI-21563626901112953: the recursive verification shape is larger than
     // the nested segment budget, but its field name/type must remain visible;
     // otherwise discovery advertises only the legacy top-level coverage alias.
@@ -1020,6 +1032,12 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(currentEvidence).not.toContain('environmentFingerprint');
     expect(currentEvidence.length).toBeLessThanOrEqual(400);
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+
+    const liveResult = await callHandler({ query: 'work_items:complete', limit: 1 });
+    const liveCompact = liveResult.hits.find((hit) => hit.tool === 'work_items:complete')?.argSchema;
+    expect(liveCompact).toContain('changeKinds?');
+    expect(liveCompact).toContain('changeKindReason?');
+    expect(liveCompact).toContain('verification?:object{coverage?:object{population:array(≥1)<string>');
   });
 
   it('retains canonical completion coverage when optional legacy fields grow', () => {
@@ -1056,7 +1074,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     // Keep both the field and its four required evidence keys visible even when
     // the surrounding completion schema exceeds the nested-field budget.
     expect(compact).toContain('rootCauseVerification?:object');
-    expect(compact).toContain('required fields: hypothesis');
+    expect(compact).toContain('required: hypothesis');
     expect(compact).toContain('alternativeHypothesis');
     expect(compact).toContain('distinguishingTest');
     expect(compact).toContain('testResult');
@@ -1076,9 +1094,9 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     }
     expect(compact).toContain(`state=${ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.join('|')}) => required`);
     expect(compact).toContain('successful bug/capability-gap close');
-    expect(compact).toContain('hypothesis!=alternativeHypothesis');
-    expect(compact).toContain(ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT);
-    expect(compact).toContain(ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT);
+    expect(compact).toContain('hypotheses differ');
+    expect(compact).toContain('distinguishingTest: non-empty procedure');
+    expect(compact).toContain('predictions differ meaningfully');
     expect(compact).toContain('assumptions?');
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
 
@@ -2195,6 +2213,18 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
 });
 
 describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () => {
+  it('does not advertise unknown exact names as omitted callable tools', async () => {
+    const corpus = [
+      { tool: 'routines:list' },
+      { tool: 'tools:find' },
+    ];
+    expect(exactToolNamesInCorpus(['routines:statvfs', 'routines:list'], corpus)).toEqual(['routines:list']);
+
+    const out = await callHandler({ query: 'routines:statvfs tools:find', limit: 8 });
+    expect(out.hits.some((hit) => hit.tool === 'tools:find')).toBe(true);
+    expect(out.omittedTools ?? []).not.toContain('routines:statvfs');
+  });
+
   it('prioritizes explicitly named tools and identifies requested names omitted by the result budget', async () => {
     const requested = [
       'work_items:link',

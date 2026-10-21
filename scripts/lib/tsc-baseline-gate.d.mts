@@ -1167,6 +1167,18 @@ export function formatCrossLegReport({ clean, notMember, red, undetermined, unch
     uncheckable: string[];
 }): string[];
 /**
+ * Explain a clean `--mine` result when baseline regressions are outside the current dirty set.
+ *
+ * The set comes from shared-checkout git status and may include edits from other sessions;
+ * `--files=` is the explicit attribution path.
+ *
+ * @param {{outsideCount: number}} opts
+ * @returns {string[]}
+ */
+export function formatMinePeerDriftBanner({ outsideCount }: {
+    outsideCount: number;
+}): string[];
+/**
  * The banner for `--files=` entries this run cannot judge.
  *
  * Written to be impossible to mistake for a pass: the failure this closes is that a scoped run

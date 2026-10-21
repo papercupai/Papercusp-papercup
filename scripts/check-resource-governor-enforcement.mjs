@@ -3331,6 +3331,30 @@ export const BYPASS_REGISTRY = new Map([
         !/\bdetached\b/.test(stripCommentsAndStrings(source)),
     },
   ],
+  // ── spawner-sidecar forkserver (sidecar-forkserver-2026-10-21, WI-6554700010019379) ──
+  [
+    "packages/operator-core/lib/fleet/forkserver/forkserver-client.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass for the spawner sidecar's forkserver client. It has two starts. (1) startForkserver: one long-lived `node -e` forkserver per sidecar process, restarted only after it dies. It runs no work of its own: it forks children on request so the ~500MB sidecar stops forking on its admission event loop. (2) directSpawn: the fallback while the forkserver cannot start. Every child either start produces is requested by execProcess (sidecar-exec-process.ts) AFTER its governed admission receipt is held, and the receipt is settled when the child's group exits. The forkserver adds no capacity the governor does not already admit. Pinned to exactly these two spawn calls.",
+      matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+        source.includes("spawn(process.execPath, ['-e', FORKSERVER_SOURCE]") &&
+        source.includes("return spawn(req.command, req.args, {"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/fleet/forkserver/forkserver-client.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "server.pending and server.children are in-flight correlation maps, not queued work. Each entry is one child that execProcess already admitted and is awaiting. A pending entry moves to children on the forkserver's 'spawned' ack. A children entry is deleted on 'close'. Both maps are cleared when the forkserver dies, and every entry is settled as an infrastructure fault. Their size is bounded by the sidecar's concurrently admitted execs.",
+      matchesSource: (source) => source.includes("server.pending.delete(m.id)") &&
+        source.includes("server.children.delete(m.id)") &&
+        source.includes("server.pending.clear()") &&
+        source.includes("server.children.clear()"),
+    },
+  ],
 ]);
 
 function registryKey(path, code) {

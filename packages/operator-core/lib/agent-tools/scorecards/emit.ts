@@ -18,6 +18,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+import { getBuildInfo } from '../../build-info';
 import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from '../../long-lived-admin-pool';
 import { deriveAgentRunEvidenceRecordSafe, type EvidenceRecordSql } from './agent-run-evidence-record';
 import {
@@ -151,6 +152,7 @@ import { fillRatingsFromLedger } from '../../scorecard-ledger-fill';
 import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../../plan-audits';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarness } from '../plans/source';
+import { classifyEvaluatorBuildCurrentness } from './get';
 
 /**
  * The `planTouched` reverse map: every implementing file the subject plan's work-items
@@ -1798,6 +1800,8 @@ export async function emitScorecard(
     closeSourceAuditConsults?: typeof closeSourceAuditConsults;
     /** Tri-state git ancestry seam for replay-based grading-integrity audits. */
     generationAncestry?: GenerationAncestryProbe;
+    /** Live evaluator identity used to fence pending grading audits. */
+    getEvaluatorBuild?: typeof getBuildInfo;
     /** Canonical producing-task read for CRM interaction reviewer independence. */
     readInteractionProducer?: (workspaceId: string, id: string, opts: { includeBody: false }) =>
       Promise<Pick<WorkItem, 'state' | 'terminalOwner' | 'terminalCompletionRef'> | null>;
@@ -3058,6 +3062,42 @@ export async function emitScorecard(
             `audit subject '${args.subject.ref}' carries a ${gradingAuditCurrentness.state} gradingAudit stamp ` +
             `(${gradingAuditCurrentness.reason}); re-open it through the pending-audit dispatcher before settling a new audit`,
         };
+      }
+      // A judge can spend its lease while the serving evaluator advances. The
+      // historical replay below proves the old card's evidence, but it does not
+      // make an audit of that stale evaluator safe. Recheck the same evaluator
+      // identity that scorecards:get exposes immediately before settling; legacy
+      // recipes without a pin remain auditable by design.
+      if (gradedObservation.gradingAudit.state === 'pending' && gradedObservation.rerunRecipe) {
+        const evaluatorBuildCurrentness = classifyEvaluatorBuildCurrentness(
+          gradedObservation.rerunRecipe,
+          (deps.getEvaluatorBuild ?? getBuildInfo)(),
+        );
+        if (evaluatorBuildCurrentness && evaluatorBuildCurrentness.state !== 'current') {
+          const reason =
+            `evaluatorBuildCurrentness=${evaluatorBuildCurrentness.state} (${evaluatorBuildCurrentness.reason}); ` +
+            `recorded=${JSON.stringify({
+              sha: evaluatorBuildCurrentness.recordedSha,
+              version: evaluatorBuildCurrentness.recordedVersion,
+            })}; ` +
+            `live=${JSON.stringify({
+              sha: evaluatorBuildCurrentness.liveSha,
+              version: evaluatorBuildCurrentness.liveVersion,
+            })}`;
+          await markGradingAuditAwaitingReemit(
+            args.subject.ref,
+            gradedObservation.gradingAudit,
+            { reason, responderOwnerId: input.createdBy },
+          );
+          return {
+            ok: false as const,
+            code: 'grading_audit_evaluator_changed' as const,
+            error:
+              `audit subject '${args.subject.ref}' cannot be settled because its evaluator build is ` +
+              `${evaluatorBuildCurrentness.state} (${evaluatorBuildCurrentness.reason}); ` +
+              're-emit the target under the current evaluator before auditing it again',
+          };
+        }
       }
       const activeDispatchReservation = gradedObservation.gradingAudit.dispatchReservation;
       const lastDispatchReservation = gradedObservation.gradingAudit.lastDispatchReservation;

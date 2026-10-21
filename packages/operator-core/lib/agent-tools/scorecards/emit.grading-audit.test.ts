@@ -90,6 +90,9 @@ vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted }));
 vi.mock('../../scout/generation-watermark', () => ({
   readRunningGeneration: (...args: unknown[]) => readRunningGeneration(...args),
 }));
+vi.mock('../../build-info', () => ({
+  getBuildInfo: () => ({ sha: 'graded-evaluator-sha', version: '1.2.2' }),
+}));
 // Collaborator mock, matching emit-evaluate.test.ts. emit.ts's acceptance branch
 // calls these identity helpers, which fall back to a REAL org-admin pool when no
 // sql seam is injected — a unit tier must not open a live connection. This file
@@ -862,6 +865,40 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res).toMatchObject({ ok: false });
     expect((res as { error?: string }).error).toContain('stale gradingAudit stamp (criteria-hash-mismatch)');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('refuses and reopens a target whose pinned evaluator build became stale before filing', async () => {
+    getIssue.mockResolvedValue({
+      ...GRADED_CARD,
+      payload: {
+        observation: {
+          ...GRADED_CARD.payload.observation,
+          rerunRecipe: {
+            ...RERUN_RECIPE,
+            evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+          },
+        },
+      },
+    });
+
+    const res = await emitScorecard(
+      auditArgs,
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { getEvaluatorBuild: () => ({ sha: 'live-evaluator-sha', version: '1.2.2' }) },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_evaluator_changed' });
+    expect((res as { error?: string }).error).toContain('sha-mismatch');
+    expect(markGradingAuditAwaitingReemit).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({ state: 'pending' }),
+      expect.objectContaining({
+        responderOwnerId: 'su-auditor',
+        reason: expect.stringContaining('evaluatorBuildCurrentness=stale (sha-mismatch)'),
+      }),
+    );
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });

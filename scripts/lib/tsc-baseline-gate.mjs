@@ -2634,6 +2634,24 @@ export function formatCrossLegReport({ clean, notMember = [], red, undetermined,
 }
 
 /**
+ * Explain a clean `--mine` result when baseline regressions are outside the current dirty set.
+ *
+ * The set comes from shared-checkout git status and may include edits from other sessions;
+ * `--files=` is the explicit attribution path.
+ *
+ * @param {{outsideCount: number}} opts
+ * @returns {string[]}
+ */
+export function formatMinePeerDriftBanner({ outsideCount }) {
+  return [
+    `✓ The current --mine dirty set is tsc-clean. ${outsideCount} baseline-regressed file(s) are outside that set:`,
+    `   (Not gated under --mine. The shared git-status set can include other sessions' dirty edits;`,
+    `    use --files= for explicit attribution.)`,
+    `    A bare npm run of this gate will still catch these for whoever owns them.`,
+  ];
+}
+
+/**
  * The banner for `--files=` entries this run cannot judge.
  *
  * Written to be impossible to mistake for a pass: the failure this closes is that a scoped run
@@ -4371,11 +4389,12 @@ export async function runTscBaselineGate({
       break;
     }
     case 'ok-peer-drift': {
-      console.log(`✓ Your changed files are tsc-clean. ${result.peerDrift.length} file(s) already in the baseline regressed but are not in your changed set:`);
+      for (const line of formatMinePeerDriftBanner({
+        outsideCount: result.peerDrift.length,
+      })) {
+        console.log(line);
+      }
       for (const r of result.peerDrift) console.log(formatRow(r));
-      console.log(`   (Not gated under --mine. Note the changed set comes from git status, and git-sync auto-commits this tree`);
-      console.log(`    every few minutes — so a file you edited a while ago can appear here. Use --files= to scope precisely.`);
-      console.log(`    A bare npm run of this gate will still catch these for whoever owns them.)`);
       // EI-19305736771912430 — under `--files` an unscoped NEW file no longer sets the exit code,
       // but it is emphatically still REPORTED: a committed one is a standing red that WILL red the
       // fleet at the next bare run, and someone has to see it. Not gating it is what stops a SCOPED
