@@ -154,6 +154,7 @@ export function assessFleetHeadcountGovernor(args: {
   const retryLimit = Math.max(1, Math.floor(args.retryLimit ?? FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT));
   const pruneCandidateIds = unreadyMemberIds.filter(
     (ownerId) =>
+      !args.executingMemberIds?.has(ownerId) &&
       (attempts[ownerId] ?? 0) >= retryLimit &&
       (verified.has(ownerId) || terminalFailureIds.has(ownerId)),
   );
@@ -1388,6 +1389,29 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     await persistTransaction(transaction);
 
     if (pruneOwnerId) {
+      // Launch-stage attestations can lag a member's actual work. Recheck the
+      // independent execution/wait signal after the asynchronous launch preflight
+      // so a worker that resumed meanwhile is not killed by an old prune decision.
+      const currentExecuting = countedMemberSet(
+        await readFleetMemberSilence([pruneOwnerId], { fleetPaused: false }),
+      );
+      if (currentExecuting == null || currentExecuting.has(pruneOwnerId)) {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+        claimedLaunchSlotAt = null;
+        const reason = currentExecuting == null
+          ? 'prune deferred: current member execution evidence is unreadable'
+          : 'prune deferred: member has current execution or a declared wait';
+        const verdict = governorVerdictForAssessment(assessment, Date.now(), {
+          action: 'wait',
+          outcome: 'unverified',
+          reason,
+        });
+        recordGovernorVerdict(transaction, verdict);
+        transaction.recovery.nextAction = reason;
+        await persistTransaction(transaction);
+        await recordFleetHeadcountAttempt({ workspaceId, fleetSlug, succeeded: false, error: reason });
+        return;
+      }
       const killed = killOutcome(await killTool.handler(
         {
           owner: pruneOwnerId,

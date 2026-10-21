@@ -4382,8 +4382,19 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           boundary: error.boundary,
           submodules_synced: error.submodulesSynced,
           submodules_total: error.submodulesTotal,
+          ...(error.localCommitSha ? { local_commit_sha: error.localCommitSha } : {}),
         },
       }).catch(() => {});
+      // WI-6554700010018899: commits that published before the yield are real local
+      // commits. The redo pass finds nothing left to commit, so without this emit every
+      // `git-sync:committed` waiter sleeps to its timeout.
+      if (error.localCommitSha) {
+        emitGitSyncCommittedEvent(
+          error.localCommitSha,
+          { scope: { installSlug: slug, workspaceId } },
+          error.localCommitAtMs,
+        );
+      }
       console.log(`[git-sync] ${slug}: ${error.message} — barrier released; the next tick redoes the pass`);
       return { status: 'skipped', reason: 'yielded-to-restart', blockedOn: error.reason };
     }

@@ -283,6 +283,10 @@ import {
   type GreenCheckpointCapacityMode,
   type ReleaseConfig,
 } from "./release-config";
+import {
+  preflightGovernedAdmissionTarget,
+  type GovernedAdmissionPreflightResult,
+} from "./governed-admission-preflight";
 import { runPerfGate, perfGatePolicyFromFlags } from "./perf-gate";
 import {
   runDesktopPerfGate,
@@ -1381,6 +1385,14 @@ export interface CheckpointDeps {
     /** P-022: which precondition refused, when `ok` is false. Absent ⇒ disk headroom. */
     blocker?: GatePreconditionBlocker;
   }>;
+  /** WI-6554700010018689: does the governed-admission target the suite will receive answer
+   *  `select 1`? Run before setupTree, right after the disk-headroom precondition. A refusal
+   *  ends the run as a no-verdict `infra-inconclusive` in seconds, instead of every
+   *  affected-test task failing admission ~55 minutes in (run 63b14b89). A THROW means the
+   *  preflight itself broke: the run logs it and keeps judging, so a broken preflight can
+   *  never wedge the gate. Optional so existing test stubs need not provide it;
+   *  realCheckpointDeps probes the exact `buildGreenCheckpointEnv` admission key. */
+  preflightGovernedAdmission?(): Promise<GovernedAdmissionPreflightResult>;
   /** P-022: free dependency-generation space before the one bounded precondition retry.
    *  Production runs the existing retention prune ({@link runDependencyGenerationRetention})
    *  and returns a one-line receipt. Only called for a `disk-headroom` refusal. */
@@ -14115,6 +14127,37 @@ async function runGreenCheckpointInner(
     }
   }
 
+  // WI-6554700010018689: a wrong governed-admission target used to surface only inside the
+  // suite. Run 63b14b89 materialized the tree, drained pc-heavy, then had every affected-test
+  // task refused admission (28P01) ~55 minutes in, judging zero tests. Probe the exact target
+  // the suite will receive now, before setupTree, and end the run as a no-verdict
+  // `infra-inconclusive` if it does not answer. Not a code verdict: `classifyGateStallStatus`
+  // keeps it out of the red streak. A THROW is unknown, not knowledge, so it keeps judging.
+  if (deps.preflightGovernedAdmission) {
+    let admission: GovernedAdmissionPreflightResult | null = null;
+    try {
+      admission = await deps.preflightGovernedAdmission();
+    } catch (e) {
+      deps.log(
+        `governed-admission preflight failed to run (${e instanceof Error ? e.message : e}) — ` +
+          "judging anyway; the suite reports its own admission failures",
+      );
+    }
+    if (admission) {
+      deps.log(admission.summary);
+      if (!admission.ok) {
+        return {
+          advanced: false,
+          candidate,
+          from: lastReady,
+          green: null,
+          reason: "infra-inconclusive",
+          summary: admission.summary,
+        };
+      }
+    }
+  }
+
   // Persist C after every candidate-selection preflight, but before setup or suite work. A crash,
   // red verdict, or newer staging tip therefore resumes this exact candidate. The production
   // writer supplies the queue writer; older/direct callers keep their historical path.
@@ -21318,6 +21361,21 @@ export function realCheckpointDeps(
             ? `; earliest window reset ${new Date(retryAtMs).toISOString()}`
             : "; no window reset reported"),
       };
+    },
+    async preflightGovernedAdmission() {
+      // WI-6554700010018689: probe the EXACT admission key the suite receives, read off the
+      // same builder, so the preflight cannot drift from what the suite is handed.
+      const target = buildGreenCheckpointEnv(null)[GOVERNED_ADMISSION_DATABASE_URL_ENV];
+      return preflightGovernedAdmissionTarget(target, async (url) => {
+        const { createDedicatedOrgPg } = await import("@papercusp/db-org");
+        // Same seam and pooling as the suite's own admission client (`governed-process`).
+        const { sql } = createDedicatedOrgPg("governed-admission-preflight", { url, max: 1 });
+        try {
+          await sql`select 1`;
+        } finally {
+          await sql.end({ timeout: 2 }).catch(() => {});
+        }
+      });
     },
     async checkDiskHeadroom() {
       const {

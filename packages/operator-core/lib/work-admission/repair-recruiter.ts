@@ -118,16 +118,22 @@ function isoMs(value: unknown): number | null {
  */
 export function recruitLegFor(c: RecruitCandidate): RecruitLeg_Wait | { leg: null; reason: string } {
   if (TERMINAL_STATES.has(c.status)) return { leg: null, reason: 'terminal' };
-  if (c.admission === 'pending') return { leg: null, reason: 'awaiting-admission-dedup' };
   const review = record(record(c.payload).agentReview);
   const status = typeof review.status === 'string' ? review.status : null;
   const round = Number.isFinite(Number(review.round)) && Number(review.round) > 0 ? Math.floor(Number(review.round)) : 1;
   const timing = record(review.timing);
   const timingCurrent = Number(timing.round) === round;
+  // The review leg is decided BEFORE the admission-pending skip. The admission promoter holds a
+  // row at admission='pending' WHILE its agent review is pending (work-items-admission-promoter.ts
+  // otherGuardBlocked / 'review-gated'), so skipping pending admission here first meant an
+  // admission-rule bug report never got a reviewer and never left pending: a deadlock
+  // (WI-6554700010018302, measured on BD016 EI-26578049744916274 2026-10-21 08:58Z).
   if (status === 'pending') {
     const entered = timingCurrent ? isoMs(timing.enteredAt) : null;
     return { leg: 'review', epoch: `r${round}`, sinceMs: entered ?? c.createdAtMs };
   }
+  // The repair leg still waits for admission: an implementer cannot claim a pending-admission row.
+  if (c.admission === 'pending') return { leg: null, reason: 'awaiting-admission-dedup' };
   if (status === 'revision-requested') return { leg: null, reason: 'revision-requested' };
   if (c.kind !== 'bug') return { leg: null, reason: 'not-a-bug' };
   if (c.status !== 'open') return { leg: null, reason: `state-${c.status}` };

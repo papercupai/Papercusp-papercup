@@ -643,6 +643,17 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       actionOwnerId: 'su-dark',
       pruneCandidateIds: ['su-dark'],
     });
+
+    // A stale launch-stage failure cannot outweigh independent evidence that
+    // this same member is now doing work (or waiting by contract).
+    const resumed = assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-dark'],
+      executingMemberIds: new Set(['su-dark']),
+      transaction: member,
+      now: 20_000,
+    });
+    expect(resumed).toMatchObject({ action: 'wait', pruneCandidateIds: [], productiveMemberCount: 1 });
   });
 
   it('refuses a prune even at the retry cap when start/failure proof is still unknown', () => {

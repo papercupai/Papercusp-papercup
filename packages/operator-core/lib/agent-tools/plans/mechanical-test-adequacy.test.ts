@@ -118,6 +118,19 @@ describe('mechanical test adequacy', () => {
       passingTestBindingIds: { [file]: 1 } });
   });
 
+  it.each([0, 93])('accepts repeated measured case identities with %s skipped cases', skipped => {
+    const row = proof('test');
+    row.testRunExecution!.passed = 2;
+    row.testRunExecution!.skipped = skipped;
+    row.testRunExecution!.passedCaseTitles = ['suite > parameterized case'];
+    const testCases = ['suite > parameterized case', 'suite > parameterized case'];
+    row.details.adequacy = { testCases };
+    expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'pass' });
+
+    testCases.push('suite > missing case');
+    expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'fail' });
+  });
+
   it.each(['missing', 'different', 'partial', 'malformed'] as const)(
     'rejects filtered runs with %s declared-case proof', defect => {
       const row = proof('test');

@@ -547,6 +547,73 @@ describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
   });
 });
 
+// WI-6554700010018689: run 63b14b89 had every affected-test task refused governed admission
+// (28P01) ~55 min in. The gate now probes the admission target before setupTree.
+describe("WI-6554700010018689: governed-admission preflight", () => {
+  const seed = async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    return { ready, candidate };
+  };
+
+  it("refuses as a no-verdict infra-inconclusive before setupTree or runGreen", async () => {
+    const { ready, candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    deps.preflightGovernedAdmission = async () => ({
+      ok: false,
+      reason: "admission-target-auth",
+      target: "harness_admin@localhost:18058/papercusp",
+      code: "28P01",
+      summary: "governed-admission preflight REFUSED (admission-target-auth): 28P01",
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      from: ready,
+      green: null,
+      reason: "infra-inconclusive",
+    });
+    expect(result.summary).toContain("admission-target-auth");
+    expect(result.preconditionBlocker).toBeUndefined();
+    expect(calls).not.toContain("runGreen");
+    expect(calls.some((call) => call.startsWith("setup:"))).toBe(false);
+    expect(calls).not.toContain("advance");
+  });
+
+  it("continues normally when the admission target answers", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    deps.preflightGovernedAdmission = async () => ({
+      ok: true,
+      probed: true,
+      target: "harness_admin@localhost:5432/papercusp",
+      summary: "governed-admission preflight: harness_admin@localhost:5432/papercusp answered select 1",
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(calls).toContain("runGreen");
+  });
+
+  it("keeps judging when the preflight itself throws, so a broken preflight cannot wedge the gate", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    deps.preflightGovernedAdmission = async () => {
+      throw new Error("db-org import failed");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(calls).toContain("runGreen");
+  });
+});
+
 // green-main-cycle-time-2026-10-08 P-022: a typed setup-precondition refusal (no verdict) is
 // retried ONCE in-process after a short delay instead of idling until the next hourly tick.
 // Measured 2026-10-12: four consecutive fires refused on headroom, each mid-setup (exit 77

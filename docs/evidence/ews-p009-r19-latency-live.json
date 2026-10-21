@@ -8,8 +8,8 @@
     "docs/evidence/ews-p009-r19-latency-live/run.mjs"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-21T08:28:32.265Z",
-  "finishedAt": "2026-10-21T08:28:44.985Z",
+  "startedAt": "2026-10-21T09:07:07.303Z",
+  "finishedAt": "2026-10-21T09:07:18.333Z",
   "plan": "event-wait-settlement-2026-10-20",
   "planItem": "P-009",
   "workItemId": "WI-6554700010018160",
@@ -17,7 +17,7 @@
     "AUTO-BAR-R-19-P-009@3"
   ],
   "evidencePlane": "live",
-  "summary": "The R-19 probe (docs/evidence/ews-p009-r19-latency-live/time.mts) timed the dependency-graph resolvers 5 times on the papercusp harness against papercusp@5432. Before the wait leg (depEdges alone) the slowest run took 232.9 ms; with it (depEdges and depWaits concurrently, as the pane loads them) 387.9 ms; depWaits alone 411.1 ms. The deadline is 10000 ms (RESOLVER_READ_TIMEOUT_MS). The committed oracle judged it PASS. 6 of 6 negative controls failed on exactly their targeted assertion.",
+  "summary": "The R-19 probe (docs/evidence/ews-p009-r19-latency-live/time.mts) timed the dependency-graph resolvers 5 times on the papercusp harness against papercusp@5432. Before the wait leg (depEdges alone) the slowest run took 466.2 ms; with it (depEdges and depWaits concurrently, as the pane loads them) 691.7 ms; depWaits alone 582.6 ms. The deadline is 10000 ms (RESOLVER_READ_TIMEOUT_MS). The committed oracle judged it PASS. 6 of 6 negative controls failed on exactly their targeted assertion.",
   "assertions": [
     {
       "id": "live:min-runs",
@@ -32,22 +32,22 @@
     {
       "id": "live:graph-non-empty",
       "passed": true,
-      "evidence": "depEdges rows per run: 2656,2656,2656,2656,2656"
+      "evidence": "depEdges rows per run: 2654,2654,2654,2654,2654"
     },
     {
       "id": "live:wait-leg-ran",
       "passed": true,
-      "evidence": "depWaits rows per run: 1450,1450,1450,1450,1450; depWaits alone ms per run: 411.1,347.9,310.2,328.8,290.8"
+      "evidence": "depWaits rows per run: 1450,1450,1450,1450,1450; depWaits alone ms per run: 348.4,308.4,374.1,582.6,357"
     },
     {
       "id": "live:before-recorded",
       "passed": true,
-      "evidence": "depEdges alone ms per run (the pane's load before the wait leg): 166,192.9,232.9,218.7,186.7"
+      "evidence": "depEdges alone ms per run (the pane's load before the wait leg): 466.2,182.6,150.4,252.3,181.7"
     },
     {
       "id": "live:within-deadline",
       "passed": true,
-      "evidence": "max depEdges alone 232.9 ms, max depEdges+depWaits 387.9 ms, max depWaits alone 411.1 ms; deadline 10000 ms (RESOLVER_READ_TIMEOUT_MS)"
+      "evidence": "max depEdges alone 466.2 ms, max depEdges+depWaits 691.7 ms, max depWaits alone 582.6 ms; deadline 10000 ms (RESOLVER_READ_TIMEOUT_MS)"
     },
     {
       "id": "control:C1-run-at-deadline",
@@ -85,27 +85,27 @@
     "workspace": "papercusp-workspace",
     "harness": "papercusp",
     "reader": "docs/evidence/ews-p009-r19-latency-live/time.mts through npx tsx, in-process resolver calls",
-    "commit": "f219b26fa68ec3e2d62f081168448f0320a6676d",
-    "measuredAt": "2026-10-21T08:28:44.107Z"
+    "commit": "1c407cf5ae9af24f4feff4b3f78278b3b3342ee7",
+    "measuredAt": "2026-10-21T09:07:18.141Z"
   },
   "measurement": {
     "deadlineMs": 10000,
     "deadlineSource": "RESOLVER_READ_TIMEOUT_MS in packages/operator-core/lib/sync-resolver/read-deadline.ts, read by the probe",
     "beforeAfter": {
-      "beforeMaxMs": 232.9,
+      "beforeMaxMs": 466.2,
       "beforeMeans": "workItems.depEdges alone: what the Work-tab dependency graph pane loaded before the wait leg",
-      "afterMaxMs": 387.9,
+      "afterMaxMs": 691.7,
       "afterMeans": "workItems.depEdges and workItems.depWaits concurrently: what the pane loads now",
-      "waitsAloneMaxMs": 411.1
+      "waitsAloneMaxMs": 582.6
     },
     "runs": [
       {
         "run": 1,
-        "edgesMs": 166,
-        "edgesPlusWaitsMs": 387.9,
-        "waitsAloneMs": 411.1,
-        "edges": 2656,
-        "edgesConcurrent": 2656,
+        "edgesMs": 466.2,
+        "edgesPlusWaitsMs": 364.6,
+        "waitsAloneMs": 348.4,
+        "edges": 2654,
+        "edgesConcurrent": 2654,
         "waits": 1450,
         "legs": {
           "bound": 112,
@@ -115,15 +115,15 @@
             "session-await"
           ]
         },
-        "payloadBytes": 984070
+        "payloadBytes": 982765
       },
       {
         "run": 2,
-        "edgesMs": 192.9,
-        "edgesPlusWaitsMs": 298.7,
-        "waitsAloneMs": 347.9,
-        "edges": 2656,
-        "edgesConcurrent": 2656,
+        "edgesMs": 182.6,
+        "edgesPlusWaitsMs": 285.9,
+        "waitsAloneMs": 308.4,
+        "edges": 2654,
+        "edgesConcurrent": 2654,
         "waits": 1450,
         "legs": {
           "bound": 112,
@@ -133,15 +133,15 @@
             "session-await"
           ]
         },
-        "payloadBytes": 984070
+        "payloadBytes": 982765
       },
       {
         "run": 3,
-        "edgesMs": 232.9,
-        "edgesPlusWaitsMs": 338.2,
-        "waitsAloneMs": 310.2,
-        "edges": 2656,
-        "edgesConcurrent": 2656,
+        "edgesMs": 150.4,
+        "edgesPlusWaitsMs": 288.4,
+        "waitsAloneMs": 374.1,
+        "edges": 2654,
+        "edgesConcurrent": 2654,
         "waits": 1450,
         "legs": {
           "bound": 112,
@@ -151,15 +151,15 @@
             "session-await"
           ]
         },
-        "payloadBytes": 984070
+        "payloadBytes": 982765
       },
       {
         "run": 4,
-        "edgesMs": 218.7,
-        "edgesPlusWaitsMs": 313.3,
-        "waitsAloneMs": 328.8,
-        "edges": 2656,
-        "edgesConcurrent": 2656,
+        "edgesMs": 252.3,
+        "edgesPlusWaitsMs": 691.7,
+        "waitsAloneMs": 582.6,
+        "edges": 2654,
+        "edgesConcurrent": 2654,
         "waits": 1450,
         "legs": {
           "bound": 112,
@@ -169,15 +169,15 @@
             "session-await"
           ]
         },
-        "payloadBytes": 984070
+        "payloadBytes": 982765
       },
       {
         "run": 5,
-        "edgesMs": 186.7,
-        "edgesPlusWaitsMs": 296.2,
-        "waitsAloneMs": 290.8,
-        "edges": 2656,
-        "edgesConcurrent": 2656,
+        "edgesMs": 181.7,
+        "edgesPlusWaitsMs": 372.1,
+        "waitsAloneMs": 357,
+        "edges": 2654,
+        "edgesConcurrent": 2654,
         "waits": 1450,
         "legs": {
           "bound": 112,
@@ -187,15 +187,15 @@
             "session-await"
           ]
         },
-        "payloadBytes": 984070
+        "payloadBytes": 982765
       }
     ],
     "verdict": {
       "ok": true,
       "failedIds": [],
-      "maxEdgesMs": 232.9,
-      "maxEdgesPlusWaitsMs": 387.9,
-      "maxWaitsAloneMs": 411.1
+      "maxEdgesMs": 466.2,
+      "maxEdgesPlusWaitsMs": 691.7,
+      "maxWaitsAloneMs": 582.6
     }
   },
   "sourceBlobs": {
@@ -206,7 +206,7 @@
   "sourcesDirty": {
     "packages/operator-core/lib/sync-resolver/dependency-graph-edges.ts": false,
     "packages/operator-core/lib/sync-resolver/read-deadline.ts": false,
-    "scripts/lib/dependency-graph-wait-latency-live-oracle.mjs": true
+    "scripts/lib/dependency-graph-wait-latency-live-oracle.mjs": false
   },
   "artifacts": {
     "docs/evidence/ews-p009-r19-latency-live/run.mjs": "sha256:978d6963eed82dd07bc2a49a275380e829713e20a5ce59fbbf5e4fb536b66710",

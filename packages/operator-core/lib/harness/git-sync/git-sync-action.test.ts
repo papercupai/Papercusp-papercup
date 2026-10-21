@@ -4495,6 +4495,8 @@ describe('clean sync outcome', () => {
           remote: 'upstream',
           maxBlobBytes: 1024,
           maxCommitTotalBytes: 2048,
+          // WI-6554700010018602: always resolved (306f422f0e); no nested pots in this fixture.
+          nestedPotCheckouts: [],
         },
         deletionGuard: true,
         diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
@@ -6437,6 +6439,43 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
     expect(releaseTrace.some((r) => r.resource === 'git-sync')).toBe(true);
     expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'complete', outcome_status: null });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('barrier released; the next tick redoes the pass'));
+    // Nothing landed before this yield, so there is no commit to announce.
+    expect(emitGitSyncCommittedEventMock).not.toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it('WI-6554700010018899: a yield after published group commits still emits git-sync:committed', async () => {
+    // Measured 2026-10-21: one papercusp fire published 8 superproject commits
+    // (06:45:17Z-07:01:01Z), then yielded at before-superproject-publish to an
+    // exclusive drain. No git-sync:committed fired; a waiter slept to its timeout.
+    const localCommitSha = '0c68f95949'.padEnd(40, '0');
+    const localCommitAtMs = 1_792_570_861_000;
+    runGitSyncMock.mockRejectedValueOnce(
+      Object.assign(yieldError('exclusive git-sync drain requested by su-test', 'before-superproject-publish', 38, 38), {
+        localCommitSha,
+        localCommitAtMs,
+      }),
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(emitGitSyncCommittedEventMock).toHaveBeenCalledTimes(1);
+    expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
+      localCommitSha,
+      { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
+      localCommitAtMs,
+    );
+    expect(routinePatches()).toEqual([
+      {
+        last_yield: expect.objectContaining({
+          boundary: 'before-superproject-publish',
+          local_commit_sha: localCommitSha,
+        }),
+      },
+    ]);
+    // Still a yield: no error streak, no outcome recorded.
+    expect(routinePatches().some((p) => 'consecutive_error_ticks' in p || 'last_status' in p)).toBe(false);
     log.mockRestore();
   });
 });

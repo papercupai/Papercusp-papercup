@@ -11,10 +11,17 @@
  *  - excluded files: active rows of the downgrade/quarantine store (P-002/P-008);
  *  - routes: ONE deduped bug per failing file (`conditionKey periodic-full-run:<file>`);
  *  - state: `harness_shared.routines.metadata.periodic_full_run` on this routine's row.
+ *  - command evidence: private raw stdout/stderr files under defaultEvidenceRoot, because
+ *    diagnostic byte artifacts must remain recoverable without copying them into PG or
+ *    public logs (WI-6554700010018216; system/storage-policy file exception).
  *
  * ASYNC spawns only (the sync-batch-delta-check-deps.ts contract): a sync spawn would wedge
  * bg-host's shared event loop for the length of a whole-suite run.
  */
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import { getOrgPg } from '@papercusp/db-org';
 import { createOneWorkItem } from '../agent-tools/work_items/_create-core';
 import { parseFailingFilesLine } from './sync-batch-delta-check';
@@ -41,6 +48,8 @@ export interface PeriodicFullRunDepsConfig {
   root: string;
   releaseRef: string;
   filedBy?: string;
+  /** Override only for isolated tests. Production uses the canonical evidence volume. */
+  evidenceRoot?: string;
   exec?: (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<RunResult | null>;
 }
 
@@ -64,6 +73,33 @@ function routeTitle(file: string, route: string, culprit: string | null): string
 export function buildPeriodicFullRunDeps(cfg: PeriodicFullRunDepsConfig): PeriodicFullRunDeps {
   const exec = cfg.exec ?? run;
   const filedBy = cfg.filedBy ?? 'system:periodic-full-run';
+  const runRetained = async (sha: string, leg: 'full-suite' | 'probe', p: ReturnType<typeof fullRunPayload>, timeoutMs: number): Promise<RunResult | null> => {
+    // Raw output can contain private test data. Keep it out of logs/bug summaries and
+    // out of swept checkouts; each command gets a private, immutable evidence file.
+    const scope = createHash('sha256').update(JSON.stringify([cfg.workspaceId, cfg.installSlug])).digest('hex');
+    const root = join(cfg.evidenceRoot ?? defaultEvidenceRoot('periodic-full-run'), scope);
+    let directory: string;
+    try {
+      await mkdir(root, { recursive: true, mode: 0o700 });
+      directory = await mkdtemp(join(root, 'run-'));
+    } catch (error) {
+      throw new Error(`periodic-full-run evidence setup failed (${(error as NodeJS.ErrnoException).code ?? 'unknown'})`);
+    }
+    const startedAt = new Date().toISOString();
+    const result = await runReservedArgv(exec, p.cmd, p.args, { cwd: cfg.root, timeoutMs });
+    const body = JSON.stringify({ version: 1, workspaceId: cfg.workspaceId, installSlug: cfg.installSlug,
+      sha, leg, command: p, cwd: cfg.root, startedAt, completedAt: new Date().toISOString(), result });
+    const path = join(directory, 'command.json');
+    try {
+      await writeFile(path, body, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    } catch (error) {
+      // Never advance a measured baseline while its diagnostic evidence was lost.
+      throw new Error(`periodic-full-run evidence retention failed (${(error as NodeJS.ErrnoException).code ?? 'unknown'})`);
+    }
+    console.log(`[periodic-full-run] evidence ${JSON.stringify({ path, sha, leg,
+      sha256: createHash('sha256').update(body).digest('hex'), bytes: Buffer.byteLength(body) })}`);
+    return result;
+  };
   const git = async (args: string[]): Promise<string> => {
     const res = await exec('git', ['-C', cfg.root, ...args], { cwd: cfg.root, timeoutMs: 60_000 });
     if (!res || res.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${res?.stderr.slice(0, 300) ?? 'unmeasured'}`);
@@ -97,13 +133,13 @@ export function buildPeriodicFullRunDeps(cfg: PeriodicFullRunDepsConfig): Period
     promotions: async () => parseMainReflog(await git(['reflog', 'show', '--format=%H%x09%ct', cfg.releaseRef])),
     async runFullSuite(sha: string): Promise<FullSuiteResult> {
       const p = fullRunPayload(sha);
-      return classifyFullSuiteOutput(await runReservedArgv(exec, p.cmd, p.args, { cwd: cfg.root, timeoutMs: FULL_SUITE_TIMEOUT_MS }));
+      return classifyFullSuiteOutput(await runRetained(sha, 'full-suite', p, FULL_SUITE_TIMEOUT_MS));
     },
     async runFilesAt(sha: string, files: readonly string[]): Promise<Map<string, boolean | null>> {
       const out = new Map<string, boolean | null>();
       for (const file of files) {
         const p = probePayload(sha, file);
-        const res = await runReservedArgv(exec, p.cmd, p.args, { cwd: cfg.root, timeoutMs: PROBE_TIMEOUT_MS });
+        const res = await runRetained(sha, 'probe', p, PROBE_TIMEOUT_MS);
         out.set(file, res ? parseConfirmOutput(`${res.stdout}\n${res.stderr}`) : null);
       }
       return out;

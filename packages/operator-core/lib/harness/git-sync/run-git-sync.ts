@@ -2098,13 +2098,32 @@ export class GitSyncYieldError extends Error {
   /** Submodules fully synced before the yield (all of them at `before-pointer-bump`). */
   readonly submodulesSynced: number;
   readonly submodulesTotal: number;
-  constructor(reason: string, boundary: GitSyncYieldBoundary, submodulesSynced: number, submodulesTotal: number) {
+  /**
+   * WI-6554700010018899: root commit proof when the superproject pass had ALREADY
+   * published commits before it yielded. A per-agent group commit lands, then a
+   * later group's `before-superproject-publish` probe yields. The action emits
+   * `git-sync:committed` from this proof; without it every commit waiter slept to
+   * its timeout although the commits were on the branch. Absent = nothing landed.
+   */
+  readonly localCommitSha?: string;
+  readonly localCommitAtMs?: number;
+  constructor(
+    reason: string,
+    boundary: GitSyncYieldBoundary,
+    submodulesSynced: number,
+    submodulesTotal: number,
+    landed?: { localCommitSha: string; localCommitAtMs: number },
+  ) {
     super(`git-sync yielded at ${boundary} (${submodulesSynced}/${submodulesTotal} submodules synced): ${reason}`);
     this.name = 'GitSyncYieldError';
     this.reason = reason;
     this.boundary = boundary;
     this.submodulesSynced = submodulesSynced;
     this.submodulesTotal = submodulesTotal;
+    if (landed) {
+      this.localCommitSha = landed.localCommitSha;
+      this.localCommitAtMs = landed.localCommitAtMs;
+    }
   }
 }
 
@@ -8047,9 +8066,17 @@ async function runGitSyncPass(
   if (pointerBumpYield) {
     throw new GitSyncYieldError(pointerBumpYield, 'before-pointer-bump', submodulePaths.length, submodulePaths.length);
   }
+  // WI-6554700010018899: a yield INSIDE the commit phase can follow published group
+  // commits (the residual and earlier per-agent groups publish before a later group's
+  // probe). Pin the pre-phase root HEAD so such a yield carries its commit proof.
+  const superprojectHeadBefore = await headSha(runGit, repo);
   const yieldSuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
     const reason = await checkYield();
-    if (reason) throw new GitSyncYieldError(reason, boundary, submodulePaths.length, submodulePaths.length);
+    if (!reason) return;
+    const headNow = superprojectHeadBefore ? await headSha(runGit, repo) : '';
+    const landed =
+      headNow && headNow !== superprojectHeadBefore ? { localCommitSha: headNow, localCommitAtMs: Date.now() } : undefined;
+    throw new GitSyncYieldError(reason, boundary, submodulePaths.length, submodulePaths.length, landed);
   };
 
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this

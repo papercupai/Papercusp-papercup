@@ -236,6 +236,8 @@ describe('WI-10007606 runGitSync cooperative yield', () => {
 
       expect(error).toBeInstanceOf(GitSyncYieldError);
       expect((error as GitSyncYieldError).boundary).toBe(boundary);
+      // WI-6554700010018899: nothing published before this yield, so no commit proof.
+      expect((error as GitSyncYieldError).localCommitSha).toBeUndefined();
       expect(waiting).toBe(true);
       expect(probesInFlight.every((n) => n === 0)).toBe(true);
       expect(git('rev-parse', 'HEAD')).toBe(baseline);
@@ -254,6 +256,61 @@ describe('WI-10007606 runGitSync cooperative yield', () => {
       expect(readFileSync(join(repo, 'protected.txt'), 'utf8')).toBe('live held edit\n');
       expect(git('rev-list', '--count', `${baseline}..HEAD`)).toBe('1');
       expect(readdirSync(join(repo, '.git')).filter((name) => name.startsWith('papercusp-git-sync-'))).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-6554700010018899: a yield after a published group commit carries the root commit proof', async () => {
+    // One agent's group publishes, then the drain arrives before the next group's
+    // publication. The published commit is real; the yield must say so, or the
+    // action never emits git-sync:committed for it (the redo pass commits nothing new).
+    const repo = mkdtempSync(join(tmpdir(), 'git-sync-yield-proof-'));
+    const git = (...args: string[]): string => {
+      const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 30_000 });
+      if (result.status !== 0) throw new Error(String(result.stderr || result.stdout));
+      return String(result.stdout).trim();
+    };
+    try {
+      git('init', '-b', 'main');
+      git('config', 'user.email', 'test@papercusp.local');
+      git('config', 'user.name', 'yield proof test');
+      git('config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'a.txt'), 'a original\n');
+      writeFileSync(join(repo, 'b.txt'), 'b original\n');
+      git('add', '-A');
+      git('commit', '-m', 'baseline');
+      const baseline = git('rev-parse', 'HEAD');
+      writeFileSync(join(repo, 'a.txt'), 'a edited by su-a\n');
+      writeFileSync(join(repo, 'b.txt'), 'b edited by su-b\n');
+      let published = 0;
+      const runGit: RunGit = async (args, cwd, options) => {
+        const result = spawnSync('git', args, {
+          cwd, encoding: 'utf8', timeout: 30_000,
+          env: { ...process.env, ...options?.env },
+        });
+        if (result.status === 0 && args[0] === 'update-ref' && args.includes('HEAD')) published++;
+        return { code: result.status ?? -1, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+      };
+      const error = await runGitSync('test', {
+        repoPath: repo, runGit, submodulePaths: [],
+        config: { push: false, pushSubmoduleOrigins: false },
+        contentDetectors: [], deletionGuard: false, diffSubjects: false, log: () => {},
+        loadRoster: async () => [
+          { agent: 'su-a', intent: 'edit a', files: ['a.txt'] },
+          { agent: 'su-b', intent: 'edit b', files: ['b.txt'] },
+        ],
+        shouldYield: async () => (published > 0 ? 'late exclusive drain' : null),
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(GitSyncYieldError);
+      const yielded = error as GitSyncYieldError;
+      expect(yielded.boundary).toBe('before-superproject-publish');
+      expect(published).toBe(1);
+      const head = git('rev-parse', 'HEAD');
+      expect(head).not.toBe(baseline);
+      expect(yielded.localCommitSha).toBe(head);
+      expect(yielded.localCommitAtMs).toBeTypeOf('number');
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

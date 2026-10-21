@@ -80,9 +80,11 @@ function isPassingLedgerRun(row: SpecEvidenceForAdequacy): boolean {
   const execution = row.testRunExecution;
   const rawCases = (row.details.adequacy as { testCases?: unknown } | undefined)?.testCases;
   if (rawCases !== undefined && (!Array.isArray(rawCases) ||
-    rawCases.length > MAX_RECORDED_PASSED_CASES || !rawCases.every(isRecordedCaseTitle) ||
-    new Set(rawCases).size !== rawCases.length)) return false;
-  const declaredCases = rawCases as string[] | undefined;
+    rawCases.length > MAX_RECORDED_PASSED_CASES || !rawCases.every(isRecordedCaseTitle))) return false;
+  // Parameterized cases may share a full title, and the reporter stores title
+  // identities as a set. Repeating an identity adds no claim; every unique title
+  // must still match the measured ledger below.
+  const declaredCases = rawCases === undefined ? undefined : [...new Set(rawCases as string[])];
   // Focused runners count outside-filter cases as skipped. A declaration only
   // narrows the claim when the canonical ledger confirms every named case.
   const declaredCasesPassed = declaredCases !== undefined && declaredCases.length > 0 &&

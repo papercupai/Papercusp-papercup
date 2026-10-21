@@ -712,7 +712,8 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     });
   });
 
-  it('kills the exact repeatedly non-working identity before spawning its pre-pinned replacement', async () => {
+  it.each(['silent', 'executing', 'unknown'] as const)(
+    'rechecks a prune candidate before killing it when current execution is %s', async (execution) => {
     const transaction = {
       version: 1 as const,
       transactionId: 'tx-dark',
@@ -754,10 +755,24 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
       const ownerId = args.expectedOwnerIds[0];
       return verifierResult(ownerId, ownerId !== 'su-dark');
     });
+    mocks.executingOwnersSince
+      .mockResolvedValueOnce(new Set<string>())
+      .mockResolvedValueOnce(execution === 'unknown' ? null : new Set(execution === 'executing' ? ['su-dark'] : []));
 
     await runFleetHeadcountGovernor({
       installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
     });
+
+    if (execution !== 'silent') {
+      expect(mocks.kill).not.toHaveBeenCalled();
+      expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+      expect(mocks.releaseSlot).toHaveBeenCalledWith({ workspaceId: 'ws', fleetSlug: 'fleet-a', at: 10 });
+      expect(mocks.recordAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+        succeeded: false,
+        error: expect.stringContaining('prune deferred:'),
+      }));
+      return;
+    }
 
     expect(mocks.events).toEqual(['kill', 'spawn']);
     expect(mocks.kill).toHaveBeenCalledWith(
@@ -777,7 +792,8 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
       expect.objectContaining({ action: 'respawn', ownerId: 'su-dark', replacementOwnerId: spawnArgs.coordOwnerId }),
     ]));
     expect(persisted.governor.terminalVerdict).toMatchObject({ outcome: 'productive', action: 'none' });
-  });
+    },
+  );
 
   it('releases its launch slot and opens nothing when a concurrent transaction wins the CAS', async () => {
     mocks.getFleet.mockResolvedValue({

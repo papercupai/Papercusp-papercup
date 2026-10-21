@@ -7,13 +7,14 @@
  *   and content hash;
  * - after revision 2 of the item type (a smaller module set and a different completion schema)
  *   and of the plan type (a non-code default item type) are defined, the activated plan's start
- *   door, ship door and completion code-ness check judge it exactly as before, while a plan
+ *   door, ship door, completion code-ness check, completion-fields check (work_items:complete's
+ *   R-10 schema) and plans:get item-type checklist judge it exactly as before, while a plan
  *   activated after revision 2 is judged under revision 2;
  * - re-running migration 1545's backfill on a plan activated without pins pins it to the
  *   first-party revision, and never moves a pin a plan already holds.
  *
- * The completion-schema and plans:get checklist legs are added with P-004, which adds those
- * checks (plan-item-types-registry-cupboard-2026-10-20#D-007).
+ * The completion-fields and checklist legs arrived with P-004, which added those checks
+ * (plan-item-types-registry-cupboard-2026-10-20#D-007).
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -56,11 +57,13 @@ import '../../plans/add-item';
 import '../../plans/set-content';
 import '../../plans/set-status';
 import '../../plans/set-plan-status';
+import '../../plans/get';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { runWithWorkspace } from '../../../workspace-als';
 import { definitionContentHash } from '../../../plan-types/content-hash';
 import { loadTypeRegistry } from '../../../plan-types/registry';
 import { readCloseDeliverablesAreNonCode } from '../../../plan-verification-escape';
+import { readCloseItemTypeFieldsRefusal, type TypeFieldsRefusal } from '../../../plan-types/item-type-contract';
 import { withPlanLock } from '../../plans/with-plan-lock';
 import { hashPlanContent } from '../../plans/content-hash';
 import { checkPlanStartable } from '../../plans/plan-start-gate';
@@ -257,6 +260,33 @@ async function completionNonCode(slug: string): Promise<{ p001: boolean; p002: b
   return { p001: await read('P-001'), p002: await read('P-002') };
 }
 
+/** work_items:complete's completion-fields check (R-10) for a close of P-001 carrying `typeFields`. */
+async function closeFieldsRefusal(slug: string, typeFields: Record<string, unknown>): Promise<TypeFieldsRefusal | null> {
+  return runWithWorkspace(WS, () => readCloseItemTypeFieldsRefusal({
+    workspaceId: WS, harnessSlug: HARNESS, planSlug: slug, planItemIds: ['P-001'], typeFields,
+  }));
+}
+
+function findKey(value: unknown, key: string): unknown {
+  if (!value || typeof value !== 'object') return undefined;
+  if (key in value) return (value as Record<string, unknown>)[key];
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    const found = findKey(child, key);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/** P-001's entry in the item-type checklist plans:get renders (verification.itemTypes). */
+async function checklistFor(slug: string): Promise<Record<string, unknown> | undefined> {
+  const got = await call('plans:get', { slug });
+  const verification = findKey(got.payload, 'verification') as
+    | { itemTypes?: Array<Record<string, unknown>> | null }
+    | undefined;
+  expect(Array.isArray(verification?.itemTypes), brief(got.payload)).toBe(true);
+  return verification!.itemTypes!.find((entry) => entry.itemId === 'P-001');
+}
+
 beforeAll(async () => {
   fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
@@ -299,6 +329,13 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
     expect(shipBefore).toContain('code_deliverable_unverified');
     const closeBefore = await completionNonCode(planA);
     expect(closeBefore).toEqual({ p001: false, p002: false });
+    // D-007: revision 1's completion schema asks a close of P-001 for clauseRef (revision 2 asks
+    // for memoRef), and plans:get lists P-001's item type at revision 1.
+    expect(await closeFieldsRefusal(planA, { clauseRef: 'clause-1' })).toBeNull();
+    const fieldsBefore = await closeFieldsRefusal(planA, { memoRef: 'memo-1' });
+    expect(fieldsBefore).toMatchObject({ code: 'item_type_fields_invalid', itemId: 'P-001', itemType: ITEM, revision: 1 });
+    const checklistBefore = await checklistFor(planA);
+    expect(checklistBefore).toMatchObject({ itemId: 'P-001', itemType: ITEM, revision: 1, completion: { kind: 'schema' } });
 
     // The shrink check (D-006) judges unpinned activated plans only, so a pinned plan never
     // stops a newer revision from being defined.
@@ -312,6 +349,9 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
     expect(await startDoor(planA)).toEqual(startBefore);
     expect(await shipDoor(planA)).toContain('code_deliverable_unverified');
     expect(await completionNonCode(planA)).toEqual(closeBefore);
+    expect(await closeFieldsRefusal(planA, { clauseRef: 'clause-1' })).toBeNull();
+    expect(await closeFieldsRefusal(planA, { memoRef: 'memo-1' })).toEqual(fieldsBefore);
+    expect(await checklistFor(planA)).toEqual(checklistBefore);
 
     // Counterfactual: the same plan activated after revision 2 resolves revision 2, so the
     // revisions differ in what every one of those checks sees.
@@ -325,6 +365,11 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
     expect(startB.planDefault.code, brief(startB)).toBe(false);
     expect(await shipDoor(planB)).not.toContain('code_deliverable_unverified');
     expect(await completionNonCode(planB)).toEqual({ p001: true, p002: true });
+    expect(await closeFieldsRefusal(planB, { memoRef: 'memo-1' })).toBeNull();
+    expect(await closeFieldsRefusal(planB, { clauseRef: 'clause-1' })).toMatchObject({
+      code: 'item_type_fields_invalid', itemId: 'P-001', itemType: ITEM, revision: 2,
+    });
+    expect(await checklistFor(planB)).toMatchObject({ itemId: 'P-001', itemType: ITEM, revision: 2, completion: { kind: 'schema' } });
   }, 300_000);
 
   it('a plan activated before the registry backfills to the first-party revision, and no held pin moves', async () => {

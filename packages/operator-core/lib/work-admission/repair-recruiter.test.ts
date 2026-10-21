@@ -80,9 +80,18 @@ describe('recruitLegFor', () => {
     expect(leg).toEqual({ leg: 'repair', epoch: 'a1', sinceMs: NOW - 20 * MIN });
   });
 
+  it('a pending review is recruitable while admission is still pending (the promoter holds admission on the review)', () => {
+    // WI-6554700010018302 / BD016 EI-26578049744916274: the admission promoter keeps an
+    // admission-rule bug at admission='pending' until its agent review clears. Skipping
+    // pending admission before the review check deadlocked the item: no reviewer, no admission.
+    const leg = recruitLegFor(candidate({ admission: 'pending', payload: pendingReview(1, 12 * MIN) }));
+    expect(leg).toEqual({ leg: 'review', epoch: 'r1', sinceMs: NOW - 12 * MIN });
+  });
+
   it.each([
     ['terminal', { status: 'done' }],
-    ['awaiting-admission-dedup', { admission: 'pending' }],
+    ['awaiting-admission-dedup', { admission: 'pending', payload: approvedReview(1, 20 * MIN) }],
+    ['awaiting-admission-dedup', { admission: 'pending', payload: {} }],
     ['held', { payload: approvedReview(1, 20 * MIN), assignee: 'su-abc' }],
     ['not-a-bug', { payload: approvedReview(1, 20 * MIN), kind: 'change' }],
     ['state-wip', { payload: approvedReview(1, 20 * MIN), status: 'wip' }],

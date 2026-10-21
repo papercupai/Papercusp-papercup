@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   PERIODIC_FULL_RUN_ESCALATE_AFTER_MS,
   PERIODIC_FULL_RUN_INTERVAL_MS,
@@ -20,7 +24,74 @@ import {
   type RunFilesAt,
 } from './periodic-full-run';
 import { SOURCE_CHECK_SLICE } from './sync-batch-delta-check';
-import { classifyFullSuiteOutput } from './periodic-full-run-deps';
+import { buildPeriodicFullRunDeps, classifyFullSuiteOutput } from './periodic-full-run-deps';
+
+describe('periodic command evidence retention (WI-6554700010018216)', () => {
+  it('retains exact inconclusive, measured and probe output privately, with independent references', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'periodic-evidence-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const results = [
+        { status: 2, stdout: 'private stdout\n', stderr: 'ENOSPC: historical fixture\n' },
+        { status: 0, stdout: 'AFFECTED_TESTS_FAILING_FILES run=r1 files=[] unattributed=0\n', stderr: '' },
+        { status: 1, stdout: 'private probe output', stderr: 'probe failed' },
+        null,
+      ];
+      let i = 0;
+      const deps = buildPeriodicFullRunDeps({ installSlug: 'fixture', workspaceId: 'ws', root: '/fixture',
+        releaseRef: 'main', evidenceRoot: root, exec: async () => results[i++] ?? null });
+      expect(await deps.runFullSuite('abc')).toEqual({ status: 'inconclusive', reason: 'environment: ENOSPC' });
+      expect(await deps.runFullSuite('def')).toEqual({ status: 'measured', failing: [] });
+      await deps.runFilesAt('ghi', ['a.test.ts']);
+      expect(await deps.runFullSuite('jkl')).toEqual({ status: 'inconclusive', reason: 'spawn-unmeasured' });
+      const references = log.mock.calls.map(([line]) => JSON.parse(String(line).split('evidence ')[1]));
+      expect(references).toHaveLength(4);
+      expect(new Set(references.map(ref => ref.path)).size).toBe(4);
+      for (const [index, ref] of references.entries()) {
+        const body = await readFile(ref.path, 'utf8');
+        expect(JSON.parse(body).result).toEqual(results[index]);
+        expect(JSON.parse(body).leg).toBe(index === 2 ? 'probe' : 'full-suite');
+        expect(createHash('sha256').update(body).digest('hex')).toBe(ref.sha256);
+        expect(Buffer.byteLength(body)).toBe(ref.bytes);
+        expect((await stat(ref.path)).mode & 0o777).toBe(0o600);
+        expect((await stat(join(ref.path, '..'))).mode & 0o777).toBe(0o700);
+      }
+      expect(JSON.stringify(log.mock.calls)).not.toContain('private stdout');
+      expect(JSON.stringify(log.mock.calls)).not.toContain('private probe output');
+    } finally { log.mockRestore(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses to execute when evidence storage cannot be prepared', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'periodic-evidence-'));
+    try {
+      const blocked = join(root, 'file');
+      await writeFile(blocked, 'not a directory');
+      const exec = vi.fn();
+      const deps = buildPeriodicFullRunDeps({ installSlug: 'fixture', workspaceId: 'ws', root: '/fixture',
+        releaseRef: 'main', evidenceRoot: blocked, exec });
+      await expect(deps.runFullSuite('abc')).rejects.toThrow('evidence setup failed');
+      expect(exec).not.toHaveBeenCalled();
+      expect(await readdir(root)).toEqual(['file']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('does not classify or publish success when the completed command evidence cannot be saved', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'periodic-evidence-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const deps = buildPeriodicFullRunDeps({ installSlug: 'fixture', workspaceId: 'ws', root: '/fixture',
+        releaseRef: 'main', evidenceRoot: root, exec: async () => {
+          const [scope] = await readdir(root);
+          const [run] = await readdir(join(root, scope));
+          // An existing file forces wx to fail, even when tests run as root.
+          await writeFile(join(root, scope, run, 'command.json'), 'existing evidence');
+          return { status: 0, stdout: 'AFFECTED_TESTS_FAILING_FILES run=r1 files=[] unattributed=0', stderr: '' };
+        } });
+      await expect(deps.runFullSuite('abc')).rejects.toThrow('evidence retention failed (EEXIST)');
+      expect(log).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); await rm(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('classifyFullSuiteOutput: only a terminal break-set line measures a full run', () => {
   const line = 'AFFECTED_TESTS_FAILING_FILES run=r1 files=[{"workspace":"ws","file":"x.test.ts"}] unattributed=0';
