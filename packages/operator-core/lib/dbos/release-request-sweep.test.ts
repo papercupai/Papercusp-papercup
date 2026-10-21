@@ -9,8 +9,10 @@ import type { DueReleaseRequestRow } from '../work-items-release-request';
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 
 const findDueReleaseRequests = vi.fn();
+const findPendingReleaseRequestConsequences = vi.fn();
 const resolveWorkItemReleaseRequest = vi.fn();
 const settleReleaseRequestCondition = vi.fn();
+const settleReleaseRequestConsequence = vi.fn();
 const hasWorkItemProgressAfterReleaseRequest = vi.fn(
   (request: { requestedAt: number }, lastProgressAt: string | Date | null) => {
     if (lastProgressAt == null) return false;
@@ -20,12 +22,14 @@ const hasWorkItemProgressAfterReleaseRequest = vi.fn(
 );
 vi.mock('../work-items-release-request', () => ({
   findDueReleaseRequests: (...a: unknown[]) => findDueReleaseRequests(...a),
+  findPendingReleaseRequestConsequences: (...a: unknown[]) => findPendingReleaseRequestConsequences(...a),
   hasWorkItemProgressAfterReleaseRequest: (
     request: { requestedAt: number },
     lastProgressAt: string | Date | null,
   ) => hasWorkItemProgressAfterReleaseRequest(request, lastProgressAt),
   resolveWorkItemReleaseRequest: (...a: unknown[]) => resolveWorkItemReleaseRequest(...a),
   settleReleaseRequestCondition: (...a: unknown[]) => settleReleaseRequestCondition(...a),
+  settleReleaseRequestConsequence: (...a: unknown[]) => settleReleaseRequestConsequence(...a),
 }));
 
 const releaseWorkItem = vi.fn();
@@ -50,6 +54,7 @@ vi.mock('../agent-tools/coordination/messages', () => ({
 const notifyAttention = vi.fn();
 vi.mock('../attention-notify', () => ({
   notifyAttention: (...a: unknown[]) => notifyAttention(...a),
+  notifyAttentionOnce: (...a: unknown[]) => notifyAttention(...a),
 }));
 
 const broadcastSevereEvent = vi.fn();
@@ -92,18 +97,47 @@ function dueRow(overrides: Partial<{ id: string; harness: string | null; workspa
   };
 }
 
+function consequenceJob(row: DueReleaseRequestRow) {
+  const req = row.request;
+  const resolution =
+    req.onSilence === 'reclaim' ? 'consequence-reclaim' : req.onSilence === 'escalate' ? 'consequence-escalate' : 'consequence-nothing';
+  return {
+    id: 'release-request:' + req.requestedAt + ':' + req.deadlineAt,
+    resolution,
+    by: req.by,
+    holder: req.holder,
+    reason: req.reason,
+    onSilence: req.onSilence,
+    deadlineAt: req.deadlineAt,
+    requestedAt: req.requestedAt,
+    reclaimHolder: row.holderNow ?? req.holder,
+    paths: row.paths,
+  };
+}
+
+function pendingConsequence(row: DueReleaseRequestRow) {
+  return {
+    id: row.id,
+    harness: row.harness,
+    workspaceId: row.workspaceId,
+    job: consequenceJob(row),
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   // The tick intentionally console.warn()s a one-line summary per fired consequence
   // (operational visibility, mirrors every other sweep in this file) — expected, not a bug.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   findDueReleaseRequests.mockResolvedValue([]);
+  findPendingReleaseRequestConsequences.mockResolvedValue([]);
   settleReleaseRequestCondition.mockResolvedValue(true);
+  settleReleaseRequestConsequence.mockResolvedValue(true);
   broadcastSevereEvent.mockResolvedValue(true);
   broadcastSevereEventResolved.mockResolvedValue(true);
   commentWorkItem.mockResolvedValue({ id: 'post' });
   sendMessage.mockResolvedValue(undefined);
-  notifyAttention.mockResolvedValue(undefined);
+  notifyAttention.mockResolvedValue({ recordId: 1, deduped: false, mobileDelivered: false, desktopDelivered: true });
   releaseWorkItem.mockResolvedValue({ id: 'WI-1', assignee: null });
   setWorkItemClaimHold.mockResolvedValue({ id: 'WI-1', hold: false, applicable: true });
   releaseReclaimedWorkItemLocks.mockResolvedValue({ releases: [], failures: 0, skipped: null });
@@ -181,6 +215,7 @@ describe('release-request-sweep check', () => {
       expectedHolder: 'holder-1',
       expectedDeadlineAt: row.request.deadlineAt,
       expectedLastProgressAt: row.lastProgressAt,
+      consequenceJob: consequenceJob(row),
     });
     expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({
       ownerId: 'holder-1',
@@ -200,6 +235,8 @@ describe('release-request-sweep check', () => {
     expect(commentWorkItem.mock.calls[0][1]).toContain('EXPIRED');
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage.mock.calls[0][1]).toMatchObject({ to: ['holder-1', 'requester-1'] });
+    expect(sendMessage.mock.calls[0][1].msgId).toContain(consequenceJob(row).id);
+    expect(settleReleaseRequestConsequence).toHaveBeenCalledWith({}, pendingConsequence(row));
     expect(notifyAttention).not.toHaveBeenCalled();
   });
 
@@ -256,6 +293,7 @@ describe('release-request-sweep check', () => {
       expectedHolder: 'holder-1',
       expectedDeadlineAt: row.request.deadlineAt,
       expectedLastProgressAt: row.lastProgressAt,
+      consequenceJob: consequenceJob(row),
     });
     expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
     expect(releaseWorkItem).not.toHaveBeenCalled();
@@ -291,6 +329,45 @@ describe('release-request-sweep check', () => {
     expect(notifyAttention).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(commentWorkItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays the persisted consequence after an interruption immediately following the CAS', async () => {
+    const row = dueRow({ onSilence: 'reclaim' });
+    const job = consequenceJob(row);
+    const pending = pendingConsequence(row);
+    findPendingReleaseRequestConsequences
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([pending]);
+    findDueReleaseRequests
+      .mockResolvedValueOnce([]) // alarm scan before the CAS
+      .mockResolvedValueOnce([row])
+      .mockResolvedValueOnce([]) // restarted sweep has no new deadline
+      .mockResolvedValueOnce([]);
+    resolveWorkItemReleaseRequest.mockResolvedValue({
+      ...row.request,
+      resolved: true,
+      resolution: 'consequence-reclaim',
+    });
+    releaseReclaimedWorkItemLocks.mockRejectedValueOnce(new Error('simulated process interruption'));
+
+    await expect(check.tick()).resolves.toBeUndefined();
+
+    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', expect.objectContaining({
+      resolution: 'consequence-reclaim',
+      consequenceJob: job,
+    }));
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(settleReleaseRequestConsequence).not.toHaveBeenCalled();
+
+    await check.tick();
+
+    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledTimes(1);
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-1', {
+      harness: 'papercup',
+      expectedAssignee: 'holder-1',
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(settleReleaseRequestConsequence).toHaveBeenCalledWith({}, pending);
   });
 
   it('CAS losing the race (null) → the row is skipped entirely — no double-fire', async () => {

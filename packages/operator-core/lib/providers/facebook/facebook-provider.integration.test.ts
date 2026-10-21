@@ -144,6 +144,7 @@ describe('installed Facebook Personal Vault uses the shared host (P-003)', () =>
     let throttle = true;
     let edited = false;
     const requests: string[] = [];
+    const reconciled: string[] = [];
     const fetch: HostFetch = async ({ source: sid, request }) => {
       expect(sid).toBe(source.id); requests.push(request.url);
       const path = new URL(request.url).pathname;
@@ -155,16 +156,23 @@ describe('installed Facebook Personal Vault uses the shared host (P-003)', () =>
     const sync = async () => (await runConnectorSync(sql, { workspaceId: WS, harness: 'papercusp', sourceIds: [source.id], maxPagesPerSource: 10 }, {
       registry, hostFetchFor: () => fetch, servicesFor: async () => undefined, leaseOwner: 'facebook-package-test',
       ingest: (db, input) => ingestExternalTriggerEvent(db, input, { emit: async (event) => ({ ok: true, key: event.key, woken: 0, notified: [], msgId: null, waiters: 0 }) }),
+      afterSourceSynced: async (db, syncedSource) => {
+        expect(db).toBe(sql);
+        expect(syncedSource).toMatchObject({ id: source.id, workspaceId: WS });
+        reconciled.push(syncedSource.id);
+      },
     })).sources[0];
     const due = () => sql`UPDATE harness_shared.data_sources SET sync_next_attempt_at = now() - interval '1 second'
       WHERE workspace_id = ${WS} AND id = ${source.id}::uuid`;
     expect(await sync()).toMatchObject({ outcome: 'rate-limited', admitted: 2 });
+    expect(reconciled).toEqual([]);
     const limited = await getExternalTriggerSource(sql, WS, source.id);
     expect(JSON.parse(String(limited!.cursor.provider))).toMatchObject({ phase: 'photo' });
     throttle = false; await due();
     expect(await sync()).toMatchObject({ outcome: 'synced', admitted: 1 });
     await due(); expect(await sync()).toMatchObject({ outcome: 'synced', admitted: 0 });
     edited = true; await due(); expect(await sync()).toMatchObject({ outcome: 'synced', admitted: 1 });
+    expect(reconciled).toEqual([source.id, source.id, source.id]);
     const docs = await sql<{ kind: string; external_id: string; text: string }[]>`
       SELECT kind, external_id, text FROM harness_shared.documents WHERE workspace_id = ${WS} AND user_id = ${userId} ORDER BY kind`;
     expect(docs).toEqual([

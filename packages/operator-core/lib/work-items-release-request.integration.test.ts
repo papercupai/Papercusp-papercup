@@ -247,6 +247,68 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     expect(req?.resolution).toBe('holder-released');
   });
 
+  it('persists the consequence outbox in the resolving CAS and keeps it across a new request', async () => {
+    const id = 'WI-rr-outbox-restart';
+    await seedIssue(id, {
+      takenBy: 'holder-1',
+      payload: { paths: ['packages/target.ts'] },
+    });
+    await rr.setWorkItemReleaseRequest(id, {
+      harness: H,
+      by: 'requester-1',
+      holder: 'holder-1',
+      expectedHolder: 'holder-1',
+      reason: 'stalled',
+      onSilence: 'reclaim',
+      deadlineAt: Date.now() - 1,
+    });
+    const request = rr.readWorkItemReleaseRequest(await readPayload(id))!;
+    const job = {
+      id: 'release-request:' + request.requestedAt + ':' + request.deadlineAt,
+      resolution: 'consequence-reclaim' as const,
+      by: request.by,
+      holder: request.holder,
+      reason: request.reason,
+      onSilence: request.onSilence,
+      deadlineAt: request.deadlineAt,
+      requestedAt: request.requestedAt,
+      reclaimHolder: 'holder-1',
+      paths: ['packages/target.ts'],
+    };
+
+    const resolved = await rr.resolveWorkItemReleaseRequest(id, {
+      harness: H,
+      resolution: 'consequence-reclaim',
+      expectedBy: request.by,
+      expectedHolder: request.holder,
+      expectedDeadlineAt: request.deadlineAt,
+      consequenceJob: job,
+    });
+    expect(resolved).toMatchObject({ resolved: true, resolution: 'consequence-reclaim' });
+
+    // This read uses only the durable work-item payload, as a fresh sweep process would.
+    const [pending] = await rr.findPendingReleaseRequestConsequences(db.sql);
+    expect(pending).toEqual({ id, harness: H, workspaceId: WS, job });
+    expect(await readPayload(id)).toMatchObject({
+      release_request_resolved: true,
+      release_request_resolution: 'consequence-reclaim',
+      release_request_consequence_outbox: { [job.id]: job },
+    });
+
+    await rr.setWorkItemReleaseRequest(id, {
+      harness: H,
+      by: 'requester-2',
+      holder: 'holder-1',
+      expectedHolder: 'holder-1',
+      reason: 'refreshed after restart',
+      onSilence: 'nothing',
+      deadlineAt: Date.now() + 60_000,
+    });
+    expect(await rr.findPendingReleaseRequestConsequences(db.sql)).toEqual([pending]);
+    expect(await rr.settleReleaseRequestConsequence(db.sql, pending)).toBe(true);
+    expect(await rr.findPendingReleaseRequestConsequences(db.sql)).toEqual([]);
+  });
+
   it('CAS: a stale progress snapshot cannot resolve a request after the holder made progress', async () => {
     await seedIssue('WI-rr-progress-race', { takenBy: 'peer-b' });
     await rr.setWorkItemReleaseRequest('WI-rr-progress-race', {

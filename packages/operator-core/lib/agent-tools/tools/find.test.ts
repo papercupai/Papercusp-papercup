@@ -474,7 +474,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(hit).toBeDefined();
     expect(hit?.argSchema).toContain('brief?:string');
     expect(hit?.argSchema).toContain(
-      'constraint:$ (resume or fork => non-empty top-level brief required)',
+      'constraint:$ (resume or fork => non-empty top-level brief required, except guarded system:lineage-neutral-successor resume)',
     );
 
     const recoveryArgs = { resume: { agentId: 'su-a1a71' }, headless: true, account: 'auto' };
@@ -985,6 +985,12 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('assumptions?');
     expect(compact).toContain('changeKinds?');
     expect(compact).toContain('changeKindReason?');
+    expect(compact).toContain('constraint:changeKinds (A successful close uses stored `changeKinds` or this declaration');
+    expect(compact).toContain('constraint:changeKindReason (First close-time declaration needs this reason');
+    expect(compact).toContain('constraint:completion.kindEvidence (Multi-kind close needs one `completion.kindEvidence` entry per declared kind');
+    expect(compact).toContain('constraint:items[].changeKinds (same as constraint:changeKinds)');
+    expect(compact).toContain('constraint:items[].changeKindReason (same as constraint:changeKindReason)');
+    expect(compact).toContain('constraint:items[].completion.kindEvidence (same as constraint:completion.kindEvidence)');
     expect(compact).toContain('contract v2; required:');
     expect(compact).toContain(
       'hypotheses differ; predictions differ meaningfully; distinguishingTest: non-empty procedure',
@@ -1037,6 +1043,10 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const liveCompact = liveResult.hits.find((hit) => hit.tool === 'work_items:complete')?.argSchema;
     expect(liveCompact).toContain('changeKinds?');
     expect(liveCompact).toContain('changeKindReason?');
+    expect(liveCompact).toContain('constraint:changeKinds');
+    expect(liveCompact).toContain('constraint:changeKindReason');
+    expect(liveCompact).toContain('constraint:completion.kindEvidence');
+    expect(liveCompact).toContain('constraint:items[].completion.kindEvidence');
     expect(liveCompact).toContain('verification?:object{coverage?:object{population:array(≥1)<string>');
   });
 

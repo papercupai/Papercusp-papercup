@@ -227,6 +227,8 @@ export interface BlockingAwaitLike {
   expiresTs: string | null;
   /** ISO creation time — the suppression-quiet clock's origin (no new state needed). */
   createdAt: string;
+  /** False for a recurring subscription; it listens for events without parking the loop. */
+  once?: boolean;
   /** Platform-authored lifecycle binding; manual events:await leaves it null. */
   boundTo?: { kind: string; ref: string } | null;
 }
@@ -343,6 +345,10 @@ export function decideLoopAwaitSuppression(input: {
   let earliestResumeAtMs = Infinity;
   let drivingEventKey: string | undefined;
   for (const a of input.awaits) {
+    // A standing watch remains registered after delivery so future matching events can
+    // wake the owner. It is ongoing interest, not a deliberate wait that should suspend
+    // the loop's interval cadence.
+    if (a.once === false) continue;
     // EI-22433430601034541 / WI-10004466: platform side-channel watches (a blocked
     // item's unblock watch, an obligation reminder) are armed on the owner's behalf
     // even while other owned work is actionable. They are never a deliberate park,
@@ -388,7 +394,13 @@ export function decideLoopAwaitSuppression(input: {
  *  inbox-wake self-await + `announce` rows — see `listParkedAwaitsForSubscribers`). */
 async function defaultListBlockingAwaits(targetOwnerId: string): Promise<BlockingAwaitLike[]> {
   const rows = await listParkedAwaitsForSubscribers([targetOwnerId]);
-  return rows.map((r) => ({ eventKey: r.eventKey, expiresTs: r.expiresTs, createdAt: r.createdAt, boundTo: r.boundTo }));
+  return rows.map((r) => ({
+    eventKey: r.eventKey,
+    expiresTs: r.expiresTs,
+    createdAt: r.createdAt,
+    once: r.once,
+    boundTo: r.boundTo,
+  }));
 }
 
 /** WI-10004466: work-item states that are held but not actionable — the owner is

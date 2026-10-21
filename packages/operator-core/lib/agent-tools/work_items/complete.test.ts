@@ -8329,10 +8329,37 @@ describe('work_items:complete — change-kind proof gate (change-kind-declared-p
       validateOnly: true,
       completion: { summary: 'changed the ranking', testsRun: 'eyeballed it', testResult: 'looks right' },
     });
+    expect(r).toMatchObject({
+      ok: false,
+      validationOnly: true,
+      stateError: expect.stringMatching(/^REJECTED — F-12 declares change kind\(s\) logic/),
+      changeKindProof: { kinds: ['logic'], missing: expect.any(Array), problems: expect.any(Array) },
+    });
     expect(r.validationOnly).toBe(true);
     expect(r.completionContract.requirements).toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'change-kind-proof', applicable: true, satisfied: false })]),
     );
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('a validateOnly preview refuses a post-cutover close with no change-kind declaration', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      validateOnly: true,
+      completion: { summary: 'changed the ranking', testsRun: 'testing:run rank.test.ts', testResult: '12 passed' },
+    });
+    expect(r).toMatchObject({
+      ok: false,
+      validationOnly: true,
+      stateError: expect.stringMatching(/^REJECTED — F-12 has no change-kind declaration/),
+      changeKindProof: {
+        kinds: null,
+        missing: [],
+        problems: expect.arrayContaining([expect.stringContaining('no change kind has been declared')]),
+      },
+    });
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 

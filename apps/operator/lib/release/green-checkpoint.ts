@@ -14295,7 +14295,7 @@ async function runGreenCheckpointInner(
       if (!ancestry.ok) {
         await deps
           .escalate?.(
-            `green-checkpoint held: origin/${cfg.releaseRef} diverged from ${candidate.slice(0, 8)}`,
+            `green-checkpoint held: promotion target ${cfg.releaseRef} diverged from ${candidate.slice(0, 8)}`,
             ancestry.summary,
           )
           .catch(() => {});

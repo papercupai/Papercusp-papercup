@@ -1028,14 +1028,137 @@ const releaseRequestSweepCheck: PeriodicCheck = {
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
-    const { findDueReleaseRequests, hasWorkItemProgressAfterReleaseRequest, resolveWorkItemReleaseRequest, settleReleaseRequestCondition } = await import('../work-items-release-request');
+    const {
+      findDueReleaseRequests,
+      findPendingReleaseRequestConsequences,
+      hasWorkItemProgressAfterReleaseRequest,
+      resolveWorkItemReleaseRequest,
+      settleReleaseRequestCondition,
+      settleReleaseRequestConsequence,
+    } = await import('../work-items-release-request');
     const { releaseWorkItem, setWorkItemClaimHold, commentWorkItem } = await import('../work-items');
     const { releaseReclaimedWorkItemLocks } = await import('../work-item-lock-release');
     const { assessForceRelease } = await import('../agent-tools/work_items/release-force-guard');
     const { sendMessage } = await import('../agent-tools/coordination/messages');
-    const { notifyAttention } = await import('../attention-notify');
+    const { notifyAttentionOnce } = await import('../attention-notify');
     const { broadcastSevereEvent, broadcastSevereEventResolved } = await import('../severe-event-broadcast');
     const { resolveAlarm } = await import('../alarm-attention');
+
+    const replayConsequence = async (
+      row: Awaited<ReturnType<typeof findPendingReleaseRequestConsequences>>[number],
+    ): Promise<void> => {
+      const { job } = row;
+      const resolution = job.resolution;
+      const messageId = 'release-request-consequence:' + row.workspaceId + ':' + row.id + ':' + job.id;
+      const deadlineIso = new Date(job.deadlineAt).toISOString();
+      const noteBody =
+        '⏰ Release request from ' + job.by + ' → ' + job.holder + ' EXPIRED unanswered ' +
+        '(deadline ' + deadlineIso + ') — announced onSilence:"' + job.onSilence + '" fired: ' + resolution + '. ' +
+        'Original reason: ' + job.reason;
+
+      // Comment delivery remains best-effort; durable owner notices use stable producer keys.
+      await commentWorkItem(row.id, noteBody, 'release-request-sweep', {
+        harness: row.harness ?? undefined,
+      }).catch(() => {});
+
+      if (resolution === 'consequence-reclaim') {
+        const lockRelease = await releaseReclaimedWorkItemLocks({
+          ownerId: job.reclaimHolder,
+          paths: job.paths,
+          goalRef: row.id,
+        });
+        if (lockRelease.skipped === null) observeFallback('routine-capability-read', {
+          eligible: 1, applied: lockRelease.failures === 0 ? 1 : 0,
+          reason: lockRelease.failures === 0 ? 'applied' : 'lock-release-unavailable',
+          scope: 'release-request-locks',
+        });
+        if (lockRelease.failures > 0) {
+          console.warn(
+            '[release-request-sweep] ' + row.id + ': targeted lock release had ' + lockRelease.failures +
+              ' failure(s); reclaim continues with lease fallback',
+          );
+        }
+        const released = await releaseWorkItem(row.id, {
+          harness: row.harness ?? undefined,
+          expectedAssignee: job.reclaimHolder,
+        });
+        if (released) {
+          await setWorkItemClaimHold(row.id, false, {
+            harness: row.harness ?? undefined,
+            leaseOnly: true,
+            expectedLeaseHolder: job.reclaimHolder,
+          });
+        }
+        await sendMessage(
+          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
+          {
+            to: [job.holder, job.by],
+            msgId: messageId,
+            summary: row.id + ': release request went unanswered past its deadline — RECLAIMED per the announced consequence (requested by ' + job.by + ').',
+            harnessSlug: row.harness ?? undefined,
+            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution, consequenceJob: job.id },
+          },
+        );
+        if (!released) console.warn('[release-request-sweep] ' + row.id + ': reclaim fired but release itself failed (already free / raced)');
+      } else if (resolution === 'consequence-escalate') {
+        await broadcastSevereEvent({
+          conditionKey: 'alarm:release-request:' + row.workspaceId + ':' + row.id,
+          oneShot: true,
+          category: 'service-health',
+          summary: 'Release request timed out — ' + row.id,
+          body: noteBody,
+        }).catch(() => false);
+        await notifyAttentionOnce({
+          kind: 'intervention',
+          title: 'release request timed out — ' + row.id,
+          body: job.by + ' requested ' + job.holder + ' release ' + row.id + ' (reason: ' + job.reason +
+            ') — no response by the deadline. Escalating per the announced consequence.',
+          importance: 'high',
+          harnessSlug: row.harness ?? undefined,
+          workspaceId: row.workspaceId,
+          dedupeKey: messageId + ':attention',
+          data: { workItem: row.id, holder: job.holder, requestedBy: job.by },
+        });
+        await sendMessage(
+          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
+          {
+            to: [job.holder, job.by],
+            msgId: messageId,
+            summary: row.id + ': release request went unanswered past its deadline — ESCALATED per the announced consequence (item stays with ' + job.holder + ').',
+            harnessSlug: row.harness ?? undefined,
+            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution, consequenceJob: job.id },
+          },
+        );
+      } else {
+        await sendMessage(
+          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
+          {
+            to: [job.holder, job.by],
+            msgId: messageId,
+            summary: row.id + ': release request went unanswered past its deadline — no consequence configured (onSilence:"nothing"); item stays with ' + job.holder + '.',
+            harnessSlug: row.harness ?? undefined,
+            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution, consequenceJob: job.id },
+          },
+        );
+      }
+
+      await settleReleaseRequestConsequence(sql, row);
+    };
+
+    // The outbox is committed in the same work-item CAS as the consequence
+    // resolution. Drain it first so a host restart resumes completed CASes before
+    // scanning for new deadlines.
+    const pendingConsequences = await findPendingReleaseRequestConsequences(sql, { limit: 200 });
+    for (const row of pendingConsequences) {
+      try {
+        await replayConsequence(row);
+      } catch (error) {
+        console.warn(
+          '[release-request-sweep] ' + row.id + ': consequence replay remains pending (' +
+            (error instanceof Error ? error.message : String(error)) + ')',
+        );
+      }
+    }
 
     const pending = await findDueReleaseRequests(sql, { nowMs: Date.now(), alarmPending: true });
     for (const row of pending) {
@@ -1063,6 +1186,18 @@ const releaseRequestSweepCheck: PeriodicCheck = {
       const { request: req } = row;
       const resolution =
         req.onSilence === 'reclaim' ? 'consequence-reclaim' : req.onSilence === 'escalate' ? 'consequence-escalate' : 'consequence-nothing';
+      const consequenceJob = {
+        id: 'release-request:' + req.requestedAt + ':' + req.deadlineAt,
+        resolution,
+        by: req.by,
+        holder: req.holder,
+        reason: req.reason,
+        onSilence: req.onSilence,
+        deadlineAt: req.deadlineAt,
+        requestedAt: req.requestedAt,
+        reclaimHolder: row.holderNow ?? req.holder,
+        paths: row.paths,
+      };
       if (req.onSilence === 'reclaim') {
         const holder = row.holderNow ?? req.holder;
         if (holder === req.holder && hasWorkItemProgressAfterReleaseRequest(req, row.lastProgressAt)) {
@@ -1117,6 +1252,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         expectedHolder: req.holder,
         expectedDeadlineAt: req.deadlineAt,
         expectedLastProgressAt: row.lastProgressAt,
+        consequenceJob,
       }).catch(() => null);
       if (!resolved) continue;
 
@@ -1129,98 +1265,18 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         continue;
       }
 
-      const deadlineIso = new Date(resolved.deadlineAt).toISOString();
-      const noteBody =
-        `⏰ Release request from ${resolved.by} → ${resolved.holder} EXPIRED unanswered ` +
-        `(deadline ${deadlineIso}) — announced onSilence:"${resolved.onSilence}" fired: ${resolution}. ` +
-        `Original reason: ${resolved.reason}`;
-      await commentWorkItem(row.id, noteBody, 'release-request-sweep', { harness: row.harness ?? undefined }).catch(() => {});
-      console.warn(`[release-request-sweep] ${row.id}: ${resolution} (requested by ${resolved.by}, holder ${resolved.holder})`);
-
-      if (req.onSilence === 'reclaim') {
-        // The announcement + expired deadline is necessary but no longer sufficient:
-        // the live/progress guard above proves the holder actually reached an idle/dead
-        // state (or the requester has independent force authority) before this mutation.
-        // Release the former holder's declared touch-set BEFORE returning the
-        // work-item to the claim pool. This is deliberately targeted: all_mine
-        // would strand unrelated work owned by the same agent. A lock-plane
-        // failure is fail-open and the file-lock lease remains the backstop.
-        const lockRelease = await releaseReclaimedWorkItemLocks({
-          ownerId: row.holderNow ?? resolved.holder,
-          paths: row.paths,
-          goalRef: row.id,
+      try {
+        await replayConsequence({
+          id: row.id,
+          harness: row.harness,
+          workspaceId: row.workspaceId,
+          job: consequenceJob,
         });
-        if (lockRelease.skipped === null) observeFallback('routine-capability-read', {
-          eligible: 1, applied: lockRelease.failures === 0 ? 1 : 0,
-          reason: lockRelease.failures === 0 ? 'applied' : 'lock-release-unavailable',
-          scope: 'release-request-locks',
-        });
-        if (lockRelease.failures > 0) {
-          console.warn(
-            `[release-request-sweep] ${row.id}: targeted lock release had ${lockRelease.failures} failure(s); reclaim continues with lease fallback`,
-          );
-        }
-        // The due-row read is the holder snapshot that authorized this consequence. Keep
-        // both mutations tied to it: a successor that claims between the scan and release
-        // must not be released, and its lease must not be cleared. When the row is already
-        // unassigned, the resolved request holder still lets us lift the stale lease left
-        // by the reclaimed holder.
-        const reclaimHolder = row.holderNow ?? resolved.holder;
-        const released = await releaseWorkItem(row.id, {
-          harness: row.harness ?? undefined,
-          expectedAssignee: reclaimHolder,
-        }).catch(() => null);
-        if (released) {
-          await setWorkItemClaimHold(row.id, false, {
-            harness: row.harness ?? undefined,
-            leaseOnly: true,
-            expectedLeaseHolder: reclaimHolder,
-          }).catch(() => null);
-        }
-        await sendMessage(
-          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
-          {
-            to: [resolved.holder, resolved.by],
-            summary: `${row.id}: release request went unanswered past its deadline — RECLAIMED per the announced consequence (requested by ${resolved.by}).`,
-            harnessSlug: row.harness ?? undefined,
-            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution },
-          },
-        ).catch(() => {});
-        if (!released) console.warn(`[release-request-sweep] ${row.id}: reclaim fired but release itself failed (already free / raced)`);
-      } else if (req.onSilence === 'escalate') {
-        await broadcastSevereEvent({
-          conditionKey: `alarm:release-request:${row.workspaceId}:${row.id}`,
-          oneShot: true, category: 'service-health',
-          summary: `Release request timed out — ${row.id}`,
-          body: noteBody,
-        }).catch(() => false);
-        await notifyAttention({
-          kind: 'intervention',
-          title: `release request timed out — ${row.id}`,
-          body: `${resolved.by} requested ${resolved.holder} release ${row.id} (reason: ${resolved.reason}) — no response by the deadline. Escalating per the announced consequence.`,
-          importance: 'high',
-          harnessSlug: row.harness ?? undefined,
-          data: { workItem: row.id, holder: resolved.holder, requestedBy: resolved.by },
-        }).catch(() => {});
-        await sendMessage(
-          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
-          {
-            to: [resolved.holder, resolved.by],
-            summary: `${row.id}: release request went unanswered past its deadline — ESCALATED per the announced consequence (item stays with ${resolved.holder}).`,
-            harnessSlug: row.harness ?? undefined,
-            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution },
-          },
-        ).catch(() => {});
-      } else {
-        await sendMessage(
-          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
-          {
-            to: [resolved.holder, resolved.by],
-            summary: `${row.id}: release request went unanswered past its deadline — no consequence configured (onSilence:"nothing"); item stays with ${resolved.holder}.`,
-            harnessSlug: row.harness ?? undefined,
-            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution },
-          },
-        ).catch(() => {});
+      } catch (error) {
+        console.warn(
+          '[release-request-sweep] ' + row.id + ': consequence remains pending (' +
+            (error instanceof Error ? error.message : String(error)) + ')',
+        );
       }
     }
   },

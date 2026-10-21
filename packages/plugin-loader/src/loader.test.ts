@@ -563,11 +563,17 @@ describe('distribution: "cupboard"', () => {
     assert.equal(pkg?.plugin.version, '1.0.0');
   });
 
-  it('the real slack and bug-triage packages are excluded from the bundled root', async () => {
+  it('the delivered provider packages load only from an installed root', async () => {
     const plugins = fileURLToPath(new URL('../../../libs/papercusp/plugins/', import.meta.url));
-    for (const name of ['slack', 'bug-triage']) {
+    for (const name of [
+      'slack', 'bug-triage', 'facebook', 'google-contacts', 'facebook-pages', 'instagram',
+      'x', 'threads', 'tiktok', 'linkedin', 'linkedin-company', 'youtube', 'mastodon',
+      'reddit', 'bluesky', 'devto', 'hashnode', 'discord',
+    ]) {
       const r = await loadPluginFromDir(join(plugins, name), 'project');
       assert.ok('skipped' in r && r.skipped === 'excluded', `${name}: ${JSON.stringify(r)}`);
+      const installed = await loadPluginFromDir(join(plugins, name), 'global');
+      assert.ok('plugin' in installed, `${name}: ${JSON.stringify(installed)}`);
     }
   });
 });

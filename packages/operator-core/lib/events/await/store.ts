@@ -1352,7 +1352,10 @@ export async function listParkedAwaitsForSubscribers(
   subscriberIds: readonly string[],
 ): Promise<
   Array<
-    Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'timeoutBehavior' | 'createdAt' | 'rootId' | 'boundTo'>
+    Pick<
+      AwaitRow,
+      'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'timeoutBehavior' | 'createdAt' | 'rootId' | 'boundTo' | 'once'
+    >
   >
 > {
   const ids = [...new Set(subscriberIds.filter((id) => !!id))];
@@ -1360,7 +1363,7 @@ export async function listParkedAwaitsForSubscribers(
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
-    SELECT subscriber_id, event_key, note, expires_ts, timeout_behavior, created_at, root_id, bound_to
+    SELECT subscriber_id, event_key, note, expires_ts, timeout_behavior, created_at, root_id, bound_to, once
       FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
        AND subscriber_id = ANY(${ids as string[]}::text[])
@@ -1411,6 +1414,8 @@ export async function listParkedAwaitsForSubscribers(
     // Loop suppression needs the writer's provenance: an automatically bound
     // dependency watch is interest in ONE item, not a deliberate session park.
     boundTo: parseJsonb<LifecycleBinding>(r.bound_to),
+    // Standing watches keep listening after delivery; they are not a parked turn.
+    once: r.once !== false,
   }));
   // P-016. This read IS the bench/park verdict behind fleet:assignments' `parkedOn`
   // and the claim-discipline watch, so both halves of the composed-leaf defect matter

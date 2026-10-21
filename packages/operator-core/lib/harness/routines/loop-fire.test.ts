@@ -1642,6 +1642,23 @@ describe('decideLoopAwaitSuppression — the pure suppression decision (EI-10901
     expect(decideLoopAwaitSuppression({ awaits: [], nowMs: now })).toEqual({ suppress: false, resumeAtMs: null });
   });
 
+  it('a standing once:false watch does not suppress loop recurrence', () => {
+    const standing = {
+      eventKey: 'work-item:claimable',
+      expiresTs: null,
+      createdAt: new Date(now).toISOString(),
+      once: false,
+    };
+    expect(decideLoopAwaitSuppression({ awaits: [standing], nowMs: now })).toEqual({
+      suppress: false,
+      resumeAtMs: null,
+    });
+    expect(decideLoopAwaitSuppression({
+      awaits: [{ ...standing, once: true }],
+      nowMs: now,
+    })).toMatchObject({ suppress: true, drivingEventKey: 'work-item:claimable' });
+  });
+
   it('WI-10004466: an agent-obligation reminder binding never parks the loop', () => {
     const reminder = {
       eventKey: 'plan:acceptance:p', createdAt: new Date(now).toISOString(), expiresTs: null,

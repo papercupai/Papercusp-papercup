@@ -2083,6 +2083,13 @@ describe('await-event store (PG)', () => {
       timeoutBehavior: 'wake',
       note: 'explicit bounded inbox-wake park',
     });
+    // A standing watch remains in the list for consumers that need its cardinality.
+    await registerAwait({
+      subscriberId: 'sub-a',
+      eventKey: 'work-item:claimable',
+      once: false,
+      note: 'standing claimable watch',
+    });
     // sub-a: a fired await → excluded
     await registerAwait({ subscriberId: 'sub-a', eventKey: 'k:already-fired', once: true });
     await fireAwaitsForKey({ eventKey: 'k:already-fired' });
@@ -2096,20 +2103,28 @@ describe('await-event store (PG)', () => {
     await registerAwait({ subscriberId: 'sub-b', eventKey: 'k:other-agent' });
 
     const parked = await listParkedAwaitsForSubscribers(['sub-a', 'sub-c']);
-    expect(parked).toHaveLength(2);
+    expect(parked).toHaveLength(3);
     expect(parked).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           subscriberId: 'sub-a',
           eventKey: 'p2p-git:phase3-open',
           note: 'benched until phase 3',
+          once: true,
         }),
         expect.objectContaining({
           subscriberId: 'sub-a',
           eventKey: 'coord:inbox-wake:sub-a',
           note: 'explicit bounded inbox-wake park',
+          once: true,
           // P-009: loop:end's guarantee check reads this; absent, it defaulted to 'wake'.
           timeoutBehavior: 'wake',
+        }),
+        expect.objectContaining({
+          subscriberId: 'sub-a',
+          eventKey: 'work-item:claimable',
+          note: 'standing claimable watch',
+          once: false,
         }),
       ]),
     );

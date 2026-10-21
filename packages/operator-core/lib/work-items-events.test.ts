@@ -1011,6 +1011,30 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     expect(emit).toHaveBeenCalledOnce();
   });
 
+  it('EI-266267: drops queued or screen-held admission recovery from claimable wakes', async () => {
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    for (const state of ['queued', 'held']) {
+      const emit = typedEmit();
+      emitWorkItemClaimableEvent(
+        wi({ id: `WI-recovery-${state}`, state: 'open', assignee: null,
+          payload: { _admissionRecovery: { state } } }),
+        'released',
+        { emit },
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      expect(emit, `recovery state '${state}' must not fire`).not.toHaveBeenCalled();
+    }
+    const delivered = typedEmit();
+    emitWorkItemClaimableEvent(
+      wi({ id: 'WI-recovery-delivered', state: 'open', assignee: null,
+        payload: { _admissionRecovery: { state: 'delivered' } } }),
+      'released',
+      { emit: delivered },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(delivered).toHaveBeenCalledOnce();
+  });
+
   it('EI-22773307703217310: drops observation-lane rows from both the emit and registration latch', async () => {
     const emit = typedEmit();
     const item = wi({

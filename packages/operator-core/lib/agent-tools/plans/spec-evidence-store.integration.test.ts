@@ -3450,6 +3450,77 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     })).toEqual([]);
   });
 
+  it('refuses caught-case prose overclaims through both fromTestRun and hand-built bindings', async () => {
+    await specs.setSpecClause(clause());
+    const runId = await recordRun({ status: 'fail', source: 'mutation-probe' });
+    const failedCaseTitle = 'suite > rejects the invalid request';
+    const extraClaimedCase = 'suite > accepts the valid request';
+    await setRunExecutionDetails(runId, {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 1,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: 'mutant',
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'unit',
+      failedCaseTitles: [failedCaseTitle],
+    });
+    const overclaimed = `The mutant was caught by: ${failedCaseTitle} | ${extraClaimedCase}`;
+    const details = {
+      observations: { scope: overclaimed },
+      adequacy: { targeted: 'SPEC-003-01', testCases: [failedCaseTitle] },
+    };
+
+    const fromTestRun = await bindFromRun(runId, 'WI-101', details);
+    expect(fromTestRun).toMatchObject({
+      ok: false,
+      error: 'mutation_caught_case_claim_mismatch',
+      fromTestRun: runId,
+    });
+
+    const handBuilt = (await bindTool.handler(
+      {
+        harness: HARNESS,
+        slug: 'reconnect-plan',
+        binding: {
+          workItemId: 'WI-102',
+          specId: 'SPEC-003-01',
+          evidenceKind: 'mutation',
+          evidenceRef: 'mutation-probe:hand-built-overclaim',
+          testRunId: runId,
+          measurement: {
+            schemaVersion: 1,
+            kind: 'repo-files',
+            sourcePaths: EXPECTED_SOURCES,
+            testPaths: [DERIVE_TEST],
+          },
+          details,
+        },
+      } as never,
+      CTX,
+    )) as { data: { results: Array<Record<string, unknown>> } };
+    expect(handBuilt.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'mutation_caught_case_claim_mismatch',
+      status: 'mutation_caught_case_claim_mismatch',
+      testRunId: runId,
+      field: 'observations',
+    });
+    expect(await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101', 'WI-102'],
+    })).toEqual([]);
+  });
+
   it('binds a mutation-probe copy-out row using its JSON execution root and canonical test path', async () => {
     await specs.setSpecClause(clause());
     const mirror = '/tmp/mutation-probe-removed/mirror';

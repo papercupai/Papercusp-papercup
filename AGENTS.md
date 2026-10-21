@@ -773,6 +773,10 @@ row says so and bash remains correct.
 - **Exclude the definition site when asking who CALLS this**: `| grep -v '<the lib dir>'` drops the definition, the barrel re-export, the docstrings and the tests in one move — both what you meant and what stops self-noise from crowding out the answer.
 
 
+
+> @papercupai/papercusp-monorepo@0.0.1 set-doc-part
+> tsx scripts/set-doc-part.ts --part-key reaching-for-bash-these-read-the-tool-call-is-al --show
+
 The tool call is also cheaper: a structured result, no subprocess, nothing to re-parse. When a row caveat applies (a `tail -f` follow, a non-operator database, a `\du`), the bash form is the right answer — the gate will not fight you on those.
 
 ⚠ **No Papercusp tools at all? Read the refusal: four classes, four different doors.**
@@ -780,7 +784,7 @@ The tool call is also cheaper: a structured result, no subprocess, nothing to re
 - **TRANSPORT** — no tools listed. Use `mcp-call` with your own `--client`; never let a write land under an anonymous identity.
 - **DISCONNECTED** — tools worked, then calls refuse. Probe the same environment. Retry the original call only after a before-send refusal; if a write may have been sent, verify its outcome first.
 - **TOOLLESS but connected** — run `node scripts/mcp-reconnect.mjs` from native Bash, then end the turn for host reconnect. Do not ask the owner to reconnect. If it remains broken or reports no host/refused ack/exit 3, request a carry-respawn; details are in the `#evidence` sibling.
-- **IDENTITY `stale-artifact`** — transport changes cannot bypass server preflight. Read activation state; reconcile only when the process already runs the desired revision.
+- **IDENTITY `stale-artifact`** — transport changes cannot bypass server preflight. Read activation state; reconcile only when the process already runs the desired revision. Recovery is `coord:orient { afterCompaction: true }`; `mcp-call.mjs` CANNOT open this one.
 
 Exact error meanings, commands, and branch evidence are in this part's `#evidence` sibling.
 

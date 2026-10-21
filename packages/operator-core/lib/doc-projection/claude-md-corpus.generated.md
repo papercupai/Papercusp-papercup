@@ -2209,6 +2209,10 @@ Cost was one step there, because the next probe contradicted it. The expensive v
 Sibling false-absence traps in this same family, each with a different instrument and all reading as a clean negative: a full-tree `grep -r` that TIMES OUT prints nothing and exits nonzero, visually identical to "no matches found" (measured twice inside ten minutes, 2026-08-13); `pgrep -q`, which does not exist on this box and reports `gone` for a live process; a vitest `-t` pattern matching zero tests, which used to report `status=passed`; and a zero-row lookup against an issue-family view that structurally cannot hold feature-family rows.
 
 
+
+> @papercupai/papercusp-monorepo@0.0.1 set-doc-part
+> tsx scripts/set-doc-part.ts --part-key reaching-for-bash-these-read-the-tool-call-is-al --show
+
 The tool call is also cheaper: a structured result, no subprocess, nothing to re-parse. When a row caveat applies (a `tail -f` follow, a non-operator database, a `\du`), the bash form is the right answer — the gate will not fight you on those.
 
 ⚠ **No Papercusp tools at all? Read the refusal: four classes, four different doors.**
@@ -2216,12 +2220,16 @@ The tool call is also cheaper: a structured result, no subprocess, nothing to re
 - **TRANSPORT** — no tools listed. Use `mcp-call` with your own `--client`; never let a write land under an anonymous identity.
 - **DISCONNECTED** — tools worked, then calls refuse. Probe the same environment. Retry the original call only after a before-send refusal; if a write may have been sent, verify its outcome first.
 - **TOOLLESS but connected** — run `node scripts/mcp-reconnect.mjs` from native Bash, then end the turn for host reconnect. Do not ask the owner to reconnect. If it remains broken or reports no host/refused ack/exit 3, request a carry-respawn; details are in the `#evidence` sibling.
-- **IDENTITY `stale-artifact`** — transport changes cannot bypass server preflight. Read activation state; reconcile only when the process already runs the desired revision.
+- **IDENTITY `stale-artifact`** — transport changes cannot bypass server preflight. Read activation state; reconcile only when the process already runs the desired revision. Recovery is `coord:orient { afterCompaction: true }`; `mcp-call.mjs` CANNOT open this one.
 
 Exact error meanings, commands, and branch evidence are in this part's `#evidence` sibling.
+
+> @papercupai/papercusp-monorepo@0.0.1 set-doc-part
+> tsx scripts/set-doc-part.ts --part-key reaching-for-bash-these-read-the-tool-call-is-al#evidence --show
+
 Evidence behind the IDENTITY-refusal rule in "Reaching for bash? These reads already have a tool".
 
-**Why `mcp-call.mjs` cannot open the identity class (WI-10002028).** The `stale-artifact`
+**Why `mcp-call.mjs` CANNOT open this one (WI-10002028).** The `stale-artifact`
 denial is a server-side kernel preflight evaluated AFTER the request is accepted, so a
 different client, port or transport reaches the byte-identical denial. The documented
 transport fallback is not an escape hatch for this class.
@@ -2258,11 +2266,11 @@ activation `failed` is still armed. Occurrences accumulate on EI-237035868038924
 Relocated from the invariant part `reaching-for-bash-these-read-the-tool-call-is-al` on
 2026-09-28 under EI-24511252962859723 (launch prose budget), to keep the rule in every
 launch and the case history in the searchable corpus.
-## Transport and reconnect detail moved out of the always-loaded rule (2026-10-21)
+### Transport and reconnect detail moved out of the always-loaded rule (2026-10-21)
 
 **TRANSPORT.** No tools listed means the handshake never completed; `:9071` can starve new handshakes under load. Use `node scripts/mcp-call.mjs <server:verb> --json-file <args.json> --client <your-su-id> --port 3170`; without your own client, a write may be attributed to an anonymous `mcp-call-*`. Omit `--port` unless pinning; defaults try configured, canonical, and proxy ports. If every port refuses before send, native psu Bash cannot reach loopback, so `mcp-call` uses the operator agent-MCP unix socket. `--transport http|uds` pins one. Exit 7 means sent but reply lost; inspect the outcome before repeating a write.
 
-**DISCONNECTED.** `ECONNREFUSED` or not-connected after prior success does not prove a restart. `mcp-call` refusal means its process failed to connect before sending; another runtime may reach. Probe in the same environment; when `/api/health` answers, retry the original failed tool. Re-dial is inconsistent; never ask the owner to run `/mcp`.
+**DISCONNECTED.** `ECONNREFUSED` or not-connected after prior success does not prove a restart. `mcp-call` refusal means its process failed to connect before sending; another runtime may reach. Probe in the same environment; once its `/api/health` answers, retry the original failed Papercup tool call. Re-dial is inconsistent; never ask the owner to run `/mcp`.
 
 **TOOLLESS but connected.** Run `node scripts/mcp-reconnect.mjs` from native Bash. The host presses Reconnect after this turn settles, even when the dialog says connected. If tools remain missing, the script reports no host/refused ack, or exits 3 `host-cannot-force-reconnect`, that interactive host is older than the fix and sent nothing; request `mcp-call.mjs session:request-compaction`. Exit 3 prints the exact command.
 

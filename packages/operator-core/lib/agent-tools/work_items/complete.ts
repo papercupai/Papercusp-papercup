@@ -388,8 +388,24 @@ const completionCoverageField = CompletionRecordSchema.shape.coverage.meta({
   id: 'wi-coverage',
 });
 
+const CHANGE_KIND_CLOSE_DECLARATION_CALL_CONSTRAINT =
+  'A successful close uses stored `changeKinds` or this declaration; a first declaration needs `changeKindReason`.';
+const CHANGE_KIND_CLOSE_REASON_CALL_CONSTRAINT =
+  'First close-time declaration needs this reason (why absent at create/claim/checkpoint); unexplained narrowing or a UI-file mismatch leaves the close proposed.';
+const CHANGE_KIND_PROOF_CALL_CONSTRAINT =
+  'Multi-kind close needs one `completion.kindEvidence` entry per declared kind. Required fields: ui=testsRun+testResult+artifacts+build+states+distinguishingChecks; service=testsRun+testResult+build; migration=database+testsRun+testResult; background-job=runtime+testsRun+testResult; logic/test-only=testsRun+testResult; config/docs=readBack. Single-kind may reuse root evidence when allowed; no-code-change needs empty root filesChanged/filesDeleted.';
+const changeKindsCloseField = () =>
+  changeKindsArg().optional().meta({ 'x-papercusp-call-constraint': CHANGE_KIND_CLOSE_DECLARATION_CALL_CONSTRAINT });
+const changeKindReasonCloseField = () =>
+  changeKindReasonArg().optional().meta({ 'x-papercusp-call-constraint': CHANGE_KIND_CLOSE_REASON_CALL_CONSTRAINT });
+const completionKindEvidenceField = CompletionRecordSchema.shape.kindEvidence.meta({
+  ...CompletionRecordSchema.shape.kindEvidence.meta(),
+  'x-papercusp-call-constraint': CHANGE_KIND_PROOF_CALL_CONSTRAINT,
+});
+
 const completionInputSchema = CompletionRecordSchema.extend({
   coverage: completionCoverageField,
+  kindEvidence: completionKindEvidenceField,
   discharges: CompletionRecordSchema.shape.discharges.describe(
     'For a linked-plan terminal close, declare mapped R-* keys shown in the spec-conformance-closure row of the returned completionContract.',
   ),
@@ -1068,8 +1084,8 @@ const itemSpec = z.object({
       'Optional successor/boundary note to append after a terminal close and finish cleanup; ignored for record-only or non-terminal results.',
     ),
   /** change-kind-declared-proof P-001: the kinds of change this close covers (recorded at step 'complete'). */
-  changeKinds: changeKindsArg().optional(),
-  changeKindReason: changeKindReasonArg().optional(),
+  changeKinds: changeKindsCloseField(),
+  changeKindReason: changeKindReasonCloseField(),
 });
 
 type CompleteItem = z.infer<typeof itemSpec>;
@@ -5300,9 +5316,16 @@ async function completeOne(
         'Resolve the reported content identity before submitting, or submit the close with proposed authority.'
       : undefined;
     return {
-      ok: true,
+      // P-002 / D-002: a preview must expose the same change-kind refusal as the real
+      // close. The contract row alone is insufficient because callers use `ok` to decide
+      // whether the identical terminal close is admissible.
+      ok: !changeKindProofError,
       id: it.id,
       validationOnly: true,
+      ...(changeKindProofError ? { error: changeKindProofError, stateError: changeKindProofError } : {}),
+      ...(changeKindProofError && changeKindGate.applicable && changeKindGate.outcome === 'refuse'
+        ? { changeKindProof: { kinds: changeKindGate.kinds, missing: changeKindGate.missing, problems: changeKindGate.problems } }
+        : {}),
       completionAuthority,
       countsTowardBurnDown: countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
       ...(contentIdentityPreviewWarning ? { authorityWarning: contentIdentityPreviewWarning } : {}),
@@ -6584,8 +6607,8 @@ const workItemsCompleteTool = defineTool({
             validateOnly: z.boolean().optional(),
             /** Required only when this single item requests a terminal close. */
             assumptions: closeAssumptionsField,
-            changeKinds: changeKindsArg().optional(),
-            changeKindReason: changeKindReasonArg().optional(),
+            changeKinds: changeKindsCloseField(),
+            changeKindReason: changeKindReasonCloseField(),
             // Keep the union's handler type uniform while ensuring a bulk payload
             // cannot accidentally parse through this branch and have `items` stripped.
             items: z.never().optional(),
@@ -6631,8 +6654,8 @@ const workItemsCompleteTool = defineTool({
             validateOnly: z.boolean().optional(),
             assumptions: closeAssumptionsField,
             /** Default change kinds for items that omit their own. */
-            changeKinds: changeKindsArg().optional(),
-            changeKindReason: changeKindReasonArg().optional(),
+            changeKinds: changeKindsCloseField(),
+            changeKindReason: changeKindReasonCloseField(),
             items: z
               .array(itemSpec)
               .min(1)
