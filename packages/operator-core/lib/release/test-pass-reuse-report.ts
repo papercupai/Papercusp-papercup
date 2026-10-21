@@ -152,7 +152,6 @@ export interface TestPassReuseTotal {
   reused: number;
   /** Missing audit counters are unmeasured, including in historical logs. */
   audited: number | null;
-  expiredClean: number;
   /**
    * Lower bound on the test time the reused files would have cost: the sum of each reused
    * file's last CI pass duration. `null` = the durations could not be read for some task.
@@ -167,7 +166,7 @@ export interface TestPassReuseWorkspace {
   /** False when reuse was not applied to this task (`reason` says why). */
   applied: boolean;
   reason: string | null;
-  /** Every numeric `key=value` field on the line (candidates, reused, noProof, expired, …). */
+  /** Every numeric `key=value` field on the line (candidates, reused, noProof, unknownDrift, …). */
   counts: Record<string, number>;
   minSavedTestMs: number | null;
   /** Whether the task ran a narrowed (related-files) selection; null when the line omits it. */
@@ -207,7 +206,7 @@ function parseRuntimeField(value: string): TestPassReuseRuntime | null {
 export interface TestPassReuseAlarm {
   ws: string;
   file: string;
-  /** Why the file ran instead of being reused (the proof state, e.g. `expired`). */
+  /** Why the file ran instead of being reused (the proof state, e.g. `audit`). */
   proof: string;
 }
 
@@ -330,7 +329,6 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
         candidates: int(f.get('candidates')) ?? 0,
         reused: int(f.get('reused')) ?? 0,
         audited: int(f.get('audited')),
-        expiredClean: int(f.get('expiredClean')) ?? 0,
         minSavedTestMs: int(f.get('minSavedTestMs')),
         unmeasured: int(f.get('unmeasured')) ?? 0,
       };
@@ -964,7 +962,7 @@ function parseArchivedAuditRuns(value: unknown): TestPassReuseRun[] | null {
     if (r.applied !== true || r.offReason !== null || !Array.isArray(r.workspaces) ||
         !Array.isArray(r.alarms) || !r.total || typeof r.total !== 'object') return null;
     const t = r.total as Record<string, unknown>;
-    if (!['tasks', 'candidates', 'reused', 'audited', 'expiredClean', 'unmeasured'].every((k) => isCount(t[k])) ||
+    if (!['tasks', 'candidates', 'reused', 'audited', 'unmeasured'].every((k) => isCount(t[k])) ||
         !(t.minSavedTestMs === null || isCount(t.minSavedTestMs))) return null;
     const workspaces: TestPassReuseWorkspace[] = [];
     for (const rawWorkspace of r.workspaces) {

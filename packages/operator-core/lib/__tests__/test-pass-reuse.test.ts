@@ -43,9 +43,7 @@ const {
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
-  testReuseMaxAgeMs,
   TEST_REUSE_AUDIT_RATE_DEFAULT,
-  TEST_REUSE_MAX_AGE_MS_DEFAULT,
   tsconfigUnreadByToolchain,
   workspacePackageJsonChangeIsInert,
   writeReuseSkipList,
@@ -101,8 +99,6 @@ function run(files: string[], proofs: Map<string, Proof>, drift: Set<string> | n
     changedBetween: () => drift,
     runContext: CTX,
     runnerIdentity: RUNNER,
-    nowMs: NOW,
-    maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
   });
 }
 
@@ -126,8 +122,6 @@ describe('judged-tree proof format (legacy proofs on a frozen lineage)', () => {
       changedBetween: () => drift,
       runContext: CTX,
       runnerIdentity: reuseRunnerIdentity(RUNNER, LEGACY) ?? '',
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
       ...(proofFormat === undefined ? {} : { proofFormat }),
     });
   const legacyProof = (file: string) => proof(file, { runnerIdentity: legacyIdentity });
@@ -238,13 +232,12 @@ describe('selectReusablePasses', () => {
     }
   });
 
-  it('runs on unknown drift, missing, foreign, expired, uncaptured or opaque proofs', () => {
+  it('runs on unknown drift, missing, foreign, uncaptured or opaque proofs', () => {
     expect(run([T], new Map([[T, proof(T)]]), null).summary.unknownDrift).toBe(1);
     expect(run([T], new Map(), new Set()).summary.noProof).toBe(1);
     expect(run([T], new Map([[T, proof(T, { executedModules: ['pkg/src/a.ts'] })]]), new Set()).summary.noProof).toBe(1);
     expect(run([T], new Map([[T, proof(T, { runContext: 'clean-local' })]]), new Set()).summary.otherContext).toBe(1);
     expect(run([T], new Map([[T, proof(T, { runnerIdentity: 'v22.0.0 linux x64' })]]), new Set()).summary.otherRunner).toBe(1);
-    expect(run([T], new Map([[T, proof(T, { recordedAtMs: NOW - 25 * 3600_000 })]]), new Set()).summary.expired).toBe(1);
     expect(run([T], new Map([[T, proof(T, { inputsCaptured: false })]]), new Set()).summary.notCaptured).toBe(1);
     expect(run([T], new Map([[T, proof(T, { opaqueReasons: ['child-process'] })]]), new Set()).summary.opaque).toBe(1);
   });
@@ -261,8 +254,6 @@ describe('selectReusablePasses', () => {
       },
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
     });
     expect(r.skip).toEqual([T]);
     expect(calls).toBe(0);
@@ -278,8 +269,6 @@ describe('selectReusablePasses', () => {
       },
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
     });
     expect(r.skip).toEqual([]);
     expect(r.summary.unknownDrift).toBe(1);
@@ -311,17 +300,10 @@ describe('gateReuseObservations', () => {
     ]);
   });
 
-  it('records intentional expiry without counting it as a reuse opportunity', () => {
-    expect(gateReuseObservations('@ws::test', { summary: { candidates: 1099, expired: 1099 } })).toEqual([
-      { eligible: 0, applied: 0, populationKnown: true, reason: 'expired', scope: '@ws::test' },
-    ]);
-  });
-
-  it('excludes expired proofs from the eligible rate while preserving the remaining buckets', () => {
+  it('splits a mixed population into its exclusive buckets', () => {
     expect(gateReuseObservations('@ws::test', {
-      summary: { candidates: 20, reused: 10, expired: 5, noProof: 5 },
+      summary: { candidates: 15, reused: 10, noProof: 5 },
     })).toEqual([
-      { eligible: 0, applied: 0, populationKnown: true, reason: 'expired', scope: '@ws::test' },
       { eligible: 10, applied: 10, populationKnown: true, reason: 'applied', scope: '@ws::test' },
       { eligible: 5, applied: 0, populationKnown: true, reason: 'noProof', scope: '@ws::test' },
     ]);
@@ -383,8 +365,6 @@ describe('P-001 (gate-test-reuse-yield-2026-10-01): nested vitest configs are pe
       changedBetween: () => new Set([OC_CFG]),
       runContext: CTX,
       runnerIdentity: reuseRunnerIdentity(RUNNER) ?? '',
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
     });
     expect(r.skip).toEqual([]);
     expect(r.summary.otherRunner).toBe(1);
@@ -556,8 +536,6 @@ describe('P-002: scripts-only root package.json changes are not global', () => {
       changedBetween: () => drift,
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
       inertGlobalChange,
     });
   }
@@ -727,8 +705,6 @@ describe('D-009: scripts-only workspace package.json changes reach only proofs t
       changedBetween: () => drift,
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
       inertGlobalChange,
     });
   }
@@ -922,8 +898,6 @@ describe('P-003: a test-config file outside the main-process closure is a per-pr
       changedBetween: () => drift,
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
       testConfigMainProcess: main,
     });
 
@@ -981,8 +955,6 @@ describe('P-004: a tsconfig the vitest toolchain never reads is not a runner inp
       changedBetween: () => drift,
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
       toolchainTsconfigs: read,
     });
 
@@ -1165,8 +1137,6 @@ describe('P-005: a lockfile edit that installs nothing different is not global',
         changedBetween: () => new Set(['package-lock.json']),
         runContext: 'green-checkpoint',
         runnerIdentity: 'id',
-        nowMs: 2_000,
-        maxAgeMs: 1_000_000,
         inertGlobalChange: (rel: string) => inert && rel === 'package-lock.json',
       });
     expect(run(prf(), true).skip).toEqual([T]);
@@ -1181,8 +1151,6 @@ describe('env toggles and the report line', () => {
   it('is ON by default and OFF for the documented values', () => {
     expect(testReuseEnabled({})).toBe(true);
     for (const v of ['0', 'false', 'off', 'no']) expect(testReuseEnabled({ AFFECTED_TEST_REUSE: v })).toBe(false);
-    expect(testReuseMaxAgeMs({})).toBe(TEST_REUSE_MAX_AGE_MS_DEFAULT);
-    expect(testReuseMaxAgeMs({ AFFECTED_TEST_REUSE_MAX_AGE_HOURS: '6' })).toBe(6 * 3600_000);
   });
 
   it('prints every counter on one greppable line', () => {
@@ -1190,7 +1158,7 @@ describe('env toggles and the report line', () => {
     const line = formatTestReuseLine('@papercusp/x', r.summary);
     expect(line).toMatch(/^TEST_PASS_REUSE ws=@papercusp\/x candidates=1 reused=1 /);
     expect(line).toMatch(
-      / audited=0 expiredClean=0 inertGlobal=0 testConfigNarrowed=0 tsconfigNarrowed=0 inertWorkspaceConfig=0 schemaNarrowed=0$/,
+      / audited=0 inertGlobal=0testConfigNarrowed=0 tsconfigNarrowed=0 inertWorkspaceConfig=0 schemaNarrowed=0$/,
     );
     // D-009: the workspace-manifest narrowing is visible in the gate log, not only in the summary object.
     expect(formatTestReuseLine('@papercusp/x', { ...r.summary, inertWorkspaceConfig: 3 })).toMatch(/ inertWorkspaceConfig=3 /);
@@ -1209,11 +1177,10 @@ describe('env toggles and the report line', () => {
 });
 
 /**
- * P-012 soundness backstop. Every proof expires after maxAgeMs (so every file re-runs at least
- * that often), a deterministic sample of reusable files runs anyway, and a failure among the files
- * reuse WOULD have skipped is an alarm.
+ * P-012 soundness backstop. A proof never expires (owner #2143); instead a deterministic sample of
+ * reusable files runs anyway, and a failure among the files reuse WOULD have skipped is an alarm.
  */
-describe('P-012 audit sample and expired-clean watch', () => {
+describe('P-012 audit sample (no proof age limit)', () => {
   const runWith = (
     files: string[],
     proofs: Map<string, Proof>,
@@ -1227,8 +1194,6 @@ describe('P-012 audit sample and expired-clean watch', () => {
       changedBetween: over.changedBetween ?? (() => drift),
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
       auditRate: over.auditRate,
     });
 
@@ -1266,42 +1231,40 @@ describe('P-012 audit sample and expired-clean watch', () => {
     expect(r.watch.size).toBe(0);
   });
 
-  it('a recently-expired proof that is otherwise clean RUNS and is watched as expired-clean', () => {
-    const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 25 * 3600_000 })]]), new Set(), {
-      auditRate: 1,
-    });
+  it('owner #2143: a clean proof is reused however old it is, and its sha is still diffed', () => {
+    for (const ageMs of [25 * 3600_000, 49 * 3600_000, 400 * 24 * 3600_000]) {
+      let diffs = 0;
+      const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - ageMs })]]), null, {
+        changedBetween: () => {
+          diffs += 1;
+          return new Set();
+        },
+      });
+      expect(diffs).toBe(1);
+      expect(r.skip).toEqual([T]);
+      expect(r.summary).toMatchObject({ reused: 1, audited: 0 });
+      expect(r.summary).not.toHaveProperty('expired');
+      expect(r.summary).not.toHaveProperty('expiredClean');
+    }
+  });
+
+  it('an old proof whose inputs drifted still runs (drift, not age, invalidates)', () => {
+    const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 49 * 3600_000 })]]), new Set(['pkg/src/a.ts']));
     expect(r.skip).toEqual([]);
-    expect(r.summary).toMatchObject({ expired: 1, expiredClean: 1, audited: 0, reused: 0 });
-    expect([...r.watch]).toEqual([[T, 'expired-clean']]);
+    expect(r.summary).toMatchObject({ reused: 0, inputChanged: 1 });
+    expect(r.watch.size).toBe(0);
   });
 
-  it('a recently-expired proof whose inputs drifted is counted ONLY as expired and not watched', () => {
-    const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 25 * 3600_000 })]]), new Set(['pkg/src/a.ts']));
-    expect(r.summary).toMatchObject({ expired: 1, expiredClean: 0, inputChanged: 0 });
-    expect(r.watch.size).toBe(0);
-    const nc = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 25 * 3600_000, inputsCaptured: false })]]), new Set());
-    expect(nc.summary).toMatchObject({ expired: 1, notCaptured: 0 });
-    expect(nc.watch.size).toBe(0);
-  });
-
-  it('a proof older than 2x maxAge stops at expiry without diffing its sha', () => {
-    let diffs = 0;
-    const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 49 * 3600_000 })]]), null, {
-      changedBetween: () => {
-        diffs += 1;
-        return new Set();
-      },
-    });
-    expect(diffs).toBe(0);
-    expect(r.summary).toMatchObject({ expired: 1, expiredClean: 0 });
-    expect(r.watch.size).toBe(0);
+  it('an unreadable recorded_at does not block reuse: the rule never reads proof age', () => {
+    const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: Number.NaN })]]), new Set());
+    expect(r.skip).toEqual([T]);
   });
 });
 
 describe('reuseSoundnessAlarms', () => {
-  const watch = new Map<string, 'audit' | 'expired-clean'>([
+  const watch = new Map<string, 'audit'>([
     ['packages/x/lib/a.test.ts', 'audit'],
-    ['packages/x/lib/b.test.ts', 'expired-clean'],
+    ['packages/x/lib/b.test.ts', 'audit'],
   ]);
 
   it('maps runner-printed (workspace-relative) failures onto the watched repo-relative files', () => {
@@ -1313,7 +1276,7 @@ describe('reuseSoundnessAlarms', () => {
       }),
     ).toEqual([
       { file: 'packages/x/lib/a.test.ts', reason: 'audit' },
-      { file: 'packages/x/lib/b.test.ts', reason: 'expired-clean' },
+      { file: 'packages/x/lib/b.test.ts', reason: 'audit' },
     ]);
   });
 
@@ -1343,7 +1306,7 @@ describe('reuseSoundnessAlarms', () => {
     const s1 = run([T], new Map([[T, proof(T)]]), new Set()).summary;
     const s2 = { ...s1, candidates: 3, reused: 1, audited: 2 };
     expect(formatTestReuseTotalLine({ tasks: 2, summaries: [s1, s2], savedMs: 4200, unmeasured: 1 })).toBe(
-      'TEST_PASS_REUSE_TOTAL tasks=2 candidates=4 reused=2 audited=2 expiredClean=0 minSavedTestMs=4200 unmeasured=1',
+      'TEST_PASS_REUSE_TOTAL tasks=2 candidates=4 reused=2 audited=2 minSavedTestMs=4200 unmeasured=1',
     );
     expect(formatTestReuseTotalLine({ tasks: 1, summaries: [s1], savedMs: null, unmeasured: 0 })).toMatch(
       / minSavedTestMs=unknown /,
@@ -1464,8 +1427,6 @@ describe('P-011: the full phase reuses passes the selective phase recorded at th
       },
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
     });
     expect(r.skip).toEqual([passed]);
     expect(r.summary.reused).toBe(1);
@@ -1481,8 +1442,6 @@ describe('P-011: the full phase reuses passes the selective phase recorded at th
       changedBetween: () => null,
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
     });
     expect(r.skip).toEqual([]);
     expect(r.summary.otherContext).toBe(1);

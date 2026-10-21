@@ -28,8 +28,6 @@ export function judgedTreeProofFormat(root: string, readFile?: (file: string) =>
 /** @param {Record<string, string | undefined>} [env] */
 export function testReuseEnabled(env?: Record<string, string | undefined>): boolean;
 /** @param {Record<string, string | undefined>} [env] */
-export function testReuseMaxAgeMs(env?: Record<string, string | undefined>): number;
-/** @param {Record<string, string | undefined>} [env] */
 export function testReuseAuditRate(env?: Record<string, string | undefined>): number;
 /**
  * Deterministic draw in [0, 1) for one (file, judgedSha): a re-run of the same sha re-derives the
@@ -209,8 +207,6 @@ export function tsconfigUnreadByToolchain(rel: string, toolchainTsconfigs: Reado
  * @param {(a: string, b: string) => Set<string> | null} o.changedBetween  repo-RELATIVE drift, null = unknown
  * @param {string}                        o.runContext
  * @param {string}                        o.runnerIdentity
- * @param {number}                        o.nowMs
- * @param {number}                        o.maxAgeMs
  * @param {number}                        [o.auditRate] P-012: fraction of reusable files that
  *        run anyway (deterministic per file+sha, see auditDraw). Default 0 (pure rule).
  * @param {((rel: string, fromSha: string, toSha: string) => boolean) | null} [o.inertGlobalChange]
@@ -239,20 +235,18 @@ export function tsconfigUnreadByToolchain(rel: string, toolchainTsconfigs: Reado
  * @param {string} [o.proofFormat] WI-6554700010008589: the format the JUDGED tree records
  *        (judgedTreeProofFormat). Older than REUSE_PROOF_FORMAT = legacy: a proof is then reused only
  *        when every drift path is another test file (summary.legacyFormatDrift otherwise).
- * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
- *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
- *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
- *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
+ * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit"> }}
+ *        `watch` = files the rule would have skipped but that RUN this time (the audit sample).
+ *        If one of them fails, reuse could have hidden that red: reuseSoundnessAlarms turns it
+ *        into an alarm.
  */
-export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, testConfigMainProcess, toolchainTsconfigs, schemaDriftJudge, proofFormat, }: {
+export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, auditRate, inertGlobalChange, testConfigMainProcess, toolchainTsconfigs, schemaDriftJudge, proofFormat, }: {
     candidates: string[];
     proofs: Map<string, ReuseProof>;
     judgedSha: string;
     changedBetween: (a: string, b: string) => Set<string> | null;
     runContext: string;
     runnerIdentity: string;
-    nowMs: number;
-    maxAgeMs: number;
     auditRate?: number | undefined;
     inertGlobalChange?: ((rel: string, fromSha: string, toSha: string) => boolean) | null | undefined;
     testConfigMainProcess?: ReadonlySet<string> | null | undefined;
@@ -262,7 +256,7 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
 }): {
     skip: string[];
     summary: Record<string, number>;
-    watch: Map<string, "audit" | "expired-clean">;
+    watch: Map<string, "audit">;
 };
 /**
  * P-012 alarm: the watched files (would-have-been-reused, see selectReusablePasses) that FAILED on
@@ -346,10 +340,7 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }: {
 }): string[];
 /**
  * P-004: exclusive decision buckets for the durable gate-pass-reuse observation.
- * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
- * Expired proofs are recorded as a zero-eligible diagnostic row: the max-age safety rule
- * deliberately prevents them from taking the primary reuse path, so they are not reuse
- * opportunities and must not depress its eligible-pass rate.
+ * Counters such as inertGlobal overlap outcomes and are not denominators.
  * @param {string} task
  * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
  * @returns {Array<{ eligible: number, applied: number, populationKnown: boolean, reason: string, scope: string }>}
@@ -467,9 +458,6 @@ export const TEST_REUSE_ENV: "AFFECTED_TEST_REUSE";
 export const TEST_REUSE_SKIP_LIST_ENV: "PC_TEST_REUSE_SKIP_LIST";
 /** The explicit partial-integration resume skip-list channel consumed by vitest-config. */
 export const PC_TEST_PARTIAL_SKIP_LIST_ENV: "PC_TEST_PARTIAL_SKIP_LIST";
-/** Maximum proof age; default 24h. */
-export const TEST_REUSE_MAX_AGE_ENV: "AFFECTED_TEST_REUSE_MAX_AGE_HOURS";
-export const TEST_REUSE_MAX_AGE_MS_DEFAULT: number;
 /**
  * P-012 soundness audit: the fraction (0..1) of REUSABLE files that run anyway, so a proof the
  * rule trusted is re-tested against reality every run. Default 5%; `0` disables the audit only.

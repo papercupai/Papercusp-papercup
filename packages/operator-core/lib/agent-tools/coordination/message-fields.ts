@@ -603,7 +603,8 @@ const couldNotDetermineEntrySchema = z.object({
  */
 export const PREMISES_SHAPE_MESSAGE =
   '`premises` must be an ARRAY of REF STRINGS — not a string, and not an array of objects. ' +
-  'Write: premises: ["WI-1234#completion", "my-plan#D-007"]. Note the difference from the ' +
+  'Write: premises: ["WI-1234#completion", "my-plan#D-007"]. The `{ ref, provenance }` shape ' +
+  'belongs in `youMayNotKnow`, not `premises`. Note the difference from the ' +
   "section's `forYouBecause`, which IS an object — that asymmetry is the usual cause of this " +
   'error. Cite refs: `fact:owner:<id>:<key>@v<N>` · `<plan-slug>#D-NNN` · `WI-NNNN#completion` ' +
   '(the completion CLAIM, not the item) · `msg:<msg_id>` · `owner-turn:<ref>` · ' +
@@ -618,6 +619,7 @@ const premisesArg = shapeTaughtArray('premises', z.string().min(1), PREMISES_SHA
   .describe(
     'PER-SECTION. What this section RESTS ON — claims someone ASSERTED (D-041). An ARRAY OF REF ' +
       'STRINGS (not objects — `forYouBecause` is the object one). Cite refs: ' +
+      'The `{ ref, provenance }` shape belongs in `youMayNotKnow`, not `premises`. ' +
       '`fact:owner:<id>:<key>@v<N>` · `<plan-slug>#D-NNN` · `WI-NNNN#completion` (the completion ' +
       'CLAIM, not the item) · `msg:<msg_id>` · `owner-turn:<ref>` · `/internal/docs/...`. Any ref ' +
       'may be cited; the ref KIND decides whether it can go stale (a doc is declarable, never ' +
@@ -1085,7 +1087,8 @@ export const messageBodyArg = shapeTaughtArray(
       '[{ text: "..." }]. Use SEVERAL sections when the parts of your message have different ' +
       'dispositions — a concession, an experimental result, an explicitly-undetermined claim — ' +
       'each with its own `premises` (an ARRAY OF REF STRINGS, e.g. `premises: ["WI-1234#completion"]`, ' +
-      'not objects), `forYouBecause`, `youMayNotKnow`, `couldNotDetermine`, ' +
+      'not objects), `forYouBecause`, `youMayNotKnow`, `couldNotDetermine`. The ' +
+      '`{ ref, provenance }` shape belongs in `youMayNotKnow`, not `premises`. ' +
       '`youMayNotKnow: [{ ref: "WI-1234", provenance: "authored" }]`, or ' +
       '`couldNotDetermine: [{ what: "the thing you tried to establish", note: "optional detail" }]`, ' +
       '`clarify`. The ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and ' +

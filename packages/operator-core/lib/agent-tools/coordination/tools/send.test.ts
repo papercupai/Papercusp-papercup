@@ -3135,12 +3135,14 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     expect(primaryGuidance).toContain('premises');
     expect(primaryGuidance).toContain('`premises` is an array of ref STRINGS');
     expect(primaryGuidance).toMatch(/premises.*array.*ref strings/i);
+    expect(primaryGuidance).toContain('put that shape in `body[].youMayNotKnow`, not in `body[].premises`');
   });
 
   it('publishes the exact authored entry shapes in the body guidance', () => {
     const bodyDescription = publishedArgDescription(z.toJSONSchema(tool.args) as JsonSchemaish, 'body');
     expect(bodyDescription).toContain('premises: ["WI-1234#completion"]');
     expect(bodyDescription).toContain('youMayNotKnow: [{ ref:');
+    expect(bodyDescription).toContain('The `{ ref, provenance }` shape belongs in `youMayNotKnow`, not `premises`.');
     expect(bodyDescription).toContain('provenance: "authored"');
     expect(bodyDescription).toContain('couldNotDetermine: [{ what:');
     expect(bodyDescription).toContain('note: "optional detail"');

@@ -587,12 +587,13 @@ describe('structured section fields refuse a wrong shape by TEACHING it (EI-2002
    * (EI-20088434414057337, measured 2026-08-10 — five independent filings of the same
    * round-trip loop). Its wrong-shape set is NOT the same as its siblings': premises entries
    * are BARE REF STRINGS, so `['WI-1']` is CORRECT here and wrong for the other two. The
-   * confusable neighbour is `forYouBecause`, which IS an object on the very same section —
-   * which is why `[{ ref: 'WI-1' }]` is the shape agents actually send.
+   * confusable neighbours are `forYouBecause` and `youMayNotKnow`, which use objects on the
+   * very same section — which is why those shapes are commonly sent in `premises` by mistake.
    */
   const premisesWrongShapes: Array<[string, unknown]> = [
     ['a bare string', 'WI-1234#completion'],
     ['an array of ref OBJECTS (the forYouBecause generalization)', [{ ref: 'WI-1234' }]],
+    ['an array of youMayNotKnow entries', [{ ref: 'WI-1234', provenance: 'authored' }]],
     ['an array of the wrong object', [{ text: 'WI-1234' }]],
   ];
 

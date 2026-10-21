@@ -6761,7 +6761,7 @@
           "POST"
         ]
       },
-      "description": "Annotate your idle state at end-of-turn: refresh the \"why I am idle\" note on your inbox-wake watch (and optionally its wake floor), report live reachability before and after the refresh, then end your turn. SessionStart normally arms the watch, but a lifecycle race or lapse can leave it unarmed; use the returned before/after verdict and advice rather than assuming it is armed. Returns the watch id, inbox-wake key, and reachability evidence.",
+      "description": "Annotate your idle state at end-of-turn: refresh the \"why I am idle\" note on your inbox-wake watch (and optionally its wake floor), and report live reachability before and after the refresh. Use the returned advice to decide whether it is safe to end your turn: a reachable standing inbox watch can receive a message, but is not a guaranteed timed wake for autonomous sessions holding unfinished work. SessionStart normally arms the watch, but a lifecycle race or lapse can leave it unarmed. Returns the watch id, inbox-wake key, and reachability evidence.",
       "capabilities": [
         "coord:write"
       ],
@@ -6786,9 +6786,9 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "Optional, at end-of-turn when idle — to record WHY you are idle (the note rides the wake turn), tune your wake floor, and verify/repair the standing inbox-wake watch. Read the returned before/after reachability verdict and advice, then END YOUR TURN.",
+        "when": "Optional, at end-of-turn when idle — to record WHY you are idle (the note rides the wake turn), tune your wake floor, and verify/repair the standing inbox-wake watch. Read the returned before/after reachability verdict and advice. If you hold unfinished work in an autonomy mode, end only when a loop or guaranteed wake exists, or after completing/releasing the work.",
         "notWhen": "You still have queued work — keep going. A specific one-shot readiness (a lock grant, a peer's artifact) — use events:await on that exact key. A sub-minute wait inside one turn — just block.",
-        "chaining": "coord:await-inbox → end your turn. On wake the turn text carries the message that woke you (read coord:inbox for the full set). To stop watching: events:cancel."
+        "chaining": "coord:await-inbox → check the advice against your held-work and loop state before ending. On wake the turn text carries the message that woke you (read coord:inbox for the full set). To stop watching: events:cancel."
       }
     },
     {
@@ -7871,7 +7871,7 @@
           "POST"
         ]
       },
-      "description": "coord:send. Directed action/answer requires `body[].forYouBecause: { relation, ref?, note? }`. `summary` is the required inbox headline. `items:[…]` sends distinct messages. `why`={goalRef,note?}, not prose. `basedOn` is OUTPUT-ONLY, auto-derived; omit it. `body[].premises` are ref strings; `body[].youMayNotKnow` uses {ref, provenance} objects. `wake` re-invokes recipients; `optimistic` needs `backstop`.",
+      "description": "coord:send. Directed action/answer requires `body[].forYouBecause: { relation, ref?, note? }`. `summary` is the required inbox headline. `items:[…]` sends distinct messages. `why`={goalRef,note?}, not prose. `basedOn` is OUTPUT-ONLY, auto-derived; omit it. `body[].premises` are ref strings; `body[].youMayNotKnow` uses {ref, provenance} objects — put that shape in `body[].youMayNotKnow`, not in `body[].premises`. `wake` re-invokes recipients; `optimistic` needs `backstop`.",
       "capabilities": [
         "coord:write"
       ],

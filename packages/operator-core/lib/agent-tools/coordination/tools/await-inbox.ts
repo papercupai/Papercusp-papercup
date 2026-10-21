@@ -40,38 +40,55 @@ function snapshotReachability(verdict: WakeReachabilityVerdict | null): Reachabi
   };
 }
 
-function reachabilityAdvice(
+export function reachabilityAdvice(
   before: WakeReachabilityVerdict | null,
   after: WakeReachabilityVerdict | null,
 ): string {
   if (!after) {
-    return 'Inbox-wake watch refreshed, but live reachability could not be measured. END YOUR TURN now; do not poll.';
+    return (
+      'Inbox-wake watch refreshed, but live reachability could not be measured. ' +
+      'If you hold unfinished work in an autonomy mode and have neither an armed loop nor a guaranteed wake, ' +
+      'do not end yet: add a bounded events:await with on_timeout:"wake", complete the work, or release it. ' +
+      'If no unfinished work remains or a loop/guaranteed wake exists, END YOUR TURN. Do not poll.'
+    );
   }
 
   if (after.reachable) {
-    if (before?.reachable) {
-      return `Inbox-wake watch refreshed. It was already wake-reachable via ${before.channel} before this call and is reachable via ${after.channel} now — END YOUR TURN; a coord:send with {wake:true} can re-invoke you. Do not poll.`;
-    }
-    if (before?.awaitRepairable) {
-      return `You were unarmed for inbox-wake before this call; the watch is now wake-reachable via ${after.channel}. END YOUR TURN; a coord:send with {wake:true} can re-invoke you. Do not poll.`;
-    }
-    return `Inbox-wake watch refreshed and is now reachable via ${after.channel}; the prior reachability state was unavailable or not directly repairable. END YOUR TURN; a coord:send with {wake:true} can re-invoke you. Do not poll.`;
+    const reachability = before?.reachable
+      ? 'It was already wake-reachable via ' + before.channel + ' and is reachable via ' + after.channel + ' now.'
+      : before?.awaitRepairable
+        ? 'You were unarmed before this call; it is now wake-reachable via ' + after.channel + '.'
+        : 'It is now wake-reachable via ' + after.channel + '.';
+    return (
+      'Inbox-wake watch refreshed. ' +
+      reachability +
+      ' It can receive an incoming coord:send with {wake:true}, but this unbounded standing watch is not a guaranteed timed wake. ' +
+      'If you hold unfinished work in an autonomy mode and have neither an armed loop nor a guaranteed wake, do not end yet: ' +
+      'register a bounded events:await for the blocker or this inbox key with timeout_sec and on_timeout:"wake", ' +
+      'arm a loop, complete the work, or release it. ' +
+      'If no unfinished work remains or a guaranteed wake is active, END YOUR TURN. Do not poll.'
+    );
   }
 
-  return `Inbox-wake watch refreshed, but it is still NOT wake-reachable: ${after.summary}. END YOUR TURN only if another wake source will resume you; otherwise fix the reported reachability issue. Do not poll.`;
+  return (
+    'Inbox-wake watch refreshed, but it is still NOT wake-reachable: ' +
+    after.summary +
+    '. If you hold unfinished autonomous work, END YOUR TURN only when another guaranteed wake source will resume you; ' +
+    'otherwise fix the reported reachability issue or add a bounded wake. If no unfinished work remains, END YOUR TURN. Do not poll.'
+  );
 }
 
 export default defineTool({
   name: 'coord:await-inbox',
   description:
-    'Annotate your idle state at end-of-turn: refresh the "why I am idle" note on your inbox-wake watch (and optionally its wake floor), report live reachability before and after the refresh, then end your turn. SessionStart normally arms the watch, but a lifecycle race or lapse can leave it unarmed; use the returned before/after verdict and advice rather than assuming it is armed. Returns the watch id, inbox-wake key, and reachability evidence.',
+    'Annotate your idle state at end-of-turn: refresh the "why I am idle" note on your inbox-wake watch (and optionally its wake floor), and report live reachability before and after the refresh. Use the returned advice to decide whether it is safe to end your turn: a reachable standing inbox watch can receive a message, but is not a guaranteed timed wake for autonomous sessions holding unfinished work. SessionStart normally arms the watch, but a lifecycle race or lapse can leave it unarmed. Returns the watch id, inbox-wake key, and reachability evidence.',
   guidance: {
     when:
-      'Optional, at end-of-turn when idle — to record WHY you are idle (the note rides the wake turn), tune your wake floor, and verify/repair the standing inbox-wake watch. Read the returned before/after reachability verdict and advice, then END YOUR TURN.',
+      'Optional, at end-of-turn when idle — to record WHY you are idle (the note rides the wake turn), tune your wake floor, and verify/repair the standing inbox-wake watch. Read the returned before/after reachability verdict and advice. If you hold unfinished work in an autonomy mode, end only when a loop or guaranteed wake exists, or after completing/releasing the work.',
     notWhen:
       'You still have queued work — keep going. A specific one-shot readiness (a lock grant, a peer\'s artifact) — use events:await on that exact key. A sub-minute wait inside one turn — just block.',
     chaining:
-      'coord:await-inbox → end your turn. On wake the turn text carries the message that woke you (read coord:inbox for the full set). To stop watching: events:cancel.',
+      'coord:await-inbox → check the advice against your held-work and loop state before ending. On wake the turn text carries the message that woke you (read coord:inbox for the full set). To stop watching: events:cancel.',
   },
   capability: 'coord:write',
   requirePrincipal: false,

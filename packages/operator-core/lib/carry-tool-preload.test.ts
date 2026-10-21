@@ -83,7 +83,7 @@ describe('predecessor tool preload (R-12)', () => {
   });
 });
 
-describe('D-058 candidate detail promotion (not enabled on the host)', () => {
+describe('D-058 actual-use detail promotion', () => {
   const listings = ['plans:get', 'work_items:list'].map(name => ({
     name, description: 'Complete original definition. More detailed guidance for continued use.',
     inputSchema: { type: 'object', properties: { scope: { type: 'string', description: 'Full scope guidance' } } },
@@ -91,6 +91,18 @@ describe('D-058 candidate detail promotion (not enabled on the host)', () => {
   const compact = new Set(listings.map(tool => tool.name));
   const project = () => applyCompactTier(listings, compact, compactInputSchema,
     summaryGuidanceDescription, getSessionUsedTools(input.sessionKey));
+
+  it('signals a change for first actual use of an already-advertised tool, not discovery or repeated use', async () => {
+    const readUsedTools = vi.fn().mockResolvedValueOnce([])
+      .mockResolvedValueOnce(['plans:get']).mockResolvedValueOnce(['plans:get']);
+    getSessionSurface(input.sessionKey, new Set([...seed, 'plans:get']));
+    activateSessionTools(input.sessionKey, ['work_items:list']);
+    await expect(restoreSessionTools({ ...input, readUsedTools })).resolves.toBe(false);
+    await expect(restoreSessionTools({ ...input, readUsedTools })).resolves.toBe(true);
+    await expect(restoreSessionTools({ ...input, readUsedTools })).resolves.toBe(false);
+    expect(project()[0]).toBe(listings[0]);
+    expect(project()[1]?.inputSchema).not.toEqual(listings[1]?.inputSchema);
+  });
 
   it('keeps discovered but unused definitions compact and promotes only actual invoked names', async () => {
     getSessionSurface(input.sessionKey, seed);

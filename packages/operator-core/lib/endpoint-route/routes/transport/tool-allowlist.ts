@@ -339,8 +339,7 @@ export function getSessionSurface(
   return e.tools;
 }
 
-/** Candidate detail promotion reads actual use, never mere discovery (D-058).
- * The transport does not consume this until its explicit contract review.
+/** Detail promotion reads actual use, never mere discovery (D-058).
  * Callers must still filter the current authorized catalog before projection.
  */
 export function getSessionUsedTools(sessionKey: string | null | undefined): ReadonlySet<string> | null {
@@ -351,6 +350,8 @@ export function getSessionUsedTools(sessionKey: string | null | undefined): Read
  * CLI respawns and operator restarts lose discovery state, while this ledger
  * already records direct and nested dispatch under their canonical tool names.
  * This is listing state only: the host still applies its role/principal filters.
+ * Returns true when new actual-use history changes membership or detail, even
+ * for a tool already present in the seed, so the client knows to refresh.
  */
 export async function restoreSessionTools(input: {
   sessionKey: string | null | undefined;
@@ -358,10 +359,11 @@ export async function restoreSessionTools(input: {
   ownerId: string;
   workspaceId: string;
   readUsedTools?: (ownerId: string, workspaceId: string) => Promise<string[]>;
-}): Promise<void> {
-  if (!input.seed || !input.sessionKey) return;
+}): Promise<boolean> {
+  if (!input.seed || !input.sessionKey) return false;
   getSessionSurface(input.sessionKey, input.seed);
   const entry = sessionSurfaces.get(input.sessionKey)!;
+  const usedBefore = entry.used.size;
   if (!entry.restored) {
     const read = input.readUsedTools ?? (async (ownerId: string, workspaceId: string) => {
       const { getOrgPg } = await import('@papercusp/db-org');
@@ -386,6 +388,7 @@ export async function restoreSessionTools(input: {
     });
   }
   await entry.restored;
+  return entry.used.size > usedBefore;
 }
 
 /**

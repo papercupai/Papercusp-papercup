@@ -202,6 +202,7 @@ import {
   applyCompactTier,
   filterListingsByAllowlist,
   getSessionSurface,
+  getSessionUsedTools,
   sessionToolSurfaceKey,
   restoreSessionTools,
   activateSessionTools,
@@ -3453,6 +3454,7 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       compact,
       compactInputSchema,
       summaryGuidanceDescription,
+      getSessionUsedTools(surfaceKey),
     ),
   };
 }
@@ -3597,6 +3599,38 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       await sendNotification({ method: 'notifications/tools/list_changed', params: {} });
       listChangedSent = true;
     };
+    const runHandler = async () => {
+      const result = await handler(req, extra);
+      // D-058: actual direct AND nested use changes continued-session detail,
+      // even when the name was already in the seed. Discovery alone does not.
+      // This also runs for stateless HTTP requests, whose response stream can
+      // carry notifications despite having no MCP sessionId baseline.
+      const url = urlFromExtra(extra);
+      const seed = parseToolsAllowlist(url?.searchParams.get('tools'));
+      if (seed && sendNotification) {
+        try {
+          const spawn = await tryBuildSpawnContext(extra);
+          if (spawn.kind === 'ok' && spawn.ctx.uiClientId) {
+            await flushPendingTelemetry();
+            const changed = await restoreSessionTools({
+              sessionKey: sessionToolSurfaceKey(spawn.ctx.uiClientId, spawn.ctx.workspaceId),
+              seed,
+              ownerId: resolveAgentIdentity(spawn.ctx).ownerId,
+              workspaceId: spawn.ctx.workspaceId,
+            });
+            if (changed && !listChangedSent) {
+              await sendNotification({ method: 'notifications/tools/list_changed', params: {} });
+              listChangedSent = true;
+            }
+          }
+        } catch (err) {
+          // The tool already settled. Keep restoration retryable on tools/list
+          // and report refresh failure without claiming the tool did not run.
+          console.warn(`[mcp-host] used tool definition refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      return result;
+    };
 
     // Refuse only what is PROVABLY stale (WI-10006051). The HTTP transport is
     // STATELESS: mcp-handler builds a fresh server per POST with no
@@ -3609,7 +3643,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
     // nothing to compare against, so it is dispatched without the per-call
     // generation read; argument validation and the kernel preflight still gate it.
     const declaredGeneration = declaredServingGeneration(req);
-    if (!sessionKey && declaredGeneration === null) return handler(req, extra);
+    if (!sessionKey && declaredGeneration === null) return runHandler();
 
     const before = await readGeneration();
     if (before.state !== 'known') {
@@ -3650,7 +3684,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       );
     }
 
-    const result = await handler(req, extra);
+    const result = await runHandler();
     if (sessionKey) {
       const after = await readGeneration();
       try {

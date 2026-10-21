@@ -128,6 +128,7 @@ describe('D-186 — a vm-release cut skips dependency generation', () => {
     it('CONTROL: without the skip it DOES reach the publisher — so the test above is not vacuous', async () => {
       const mod = await import(CONSUMER_IMPORT_PATH);
       const calls: unknown[][] = [];
+      const attributionLogs: string[] = [];
       const runPublisher = (...args: unknown[]) => {
         calls.push(args);
         return { status: 0 };
@@ -138,11 +139,15 @@ describe('D-186 — a vm-release cut skips dependency generation', () => {
       // wait inside the pure lane wedges the shared fork).
       const scratch = mkdtempSync(join(tmpdir(), 'dep-gen-skip-'));
       try {
-        await mod.publishDependencyGeneration({
+        const status = await mod.publishDependencyGeneration({
           repoRoot: scratch,
           runPublisher,
           env: {},
+          // Capture the intentional structured diagnostic; the global console guard
+          // should remain able to catch unexpected stderr from this control path.
+          log: (line: string) => { attributionLogs.push(line); },
         });
+        expect(status).toBe(0);
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }
@@ -151,6 +156,16 @@ describe('D-186 — a vm-release cut skips dependency generation', () => {
       const [command, args] = calls[0] as [string, string[]];
       expect(command).toBe('bash');
       expect(args[0]).toMatch(/dependency-generation\.sh$/);
+
+      const attributionPrefix = 'NPM_INSTALL_SAFE attribution=';
+      expect(attributionLogs).toHaveLength(1);
+      expect(attributionLogs[0].startsWith(attributionPrefix)).toBe(true);
+      expect(JSON.parse(attributionLogs[0].slice(attributionPrefix.length))).toMatchObject({
+        repoRoot: scratch,
+        phase: 'generation-publish',
+        exitCode: 0,
+        error: null,
+      });
     });
 
     it('checks the skip BEFORE taking the install mutex, so it costs nothing', () => {

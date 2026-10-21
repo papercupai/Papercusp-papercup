@@ -420,6 +420,39 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief).not.toContain('coord:send');
   });
 
+  it('treats an unapplied new BAR as expected during pre-apply review', () => {
+    const newCriterion = { key: 'r-32', barKey: 'R-32', model: 'New requirement from the source Requirements.' };
+    const existingCriteria = Array.from({ length: 26 }, (_, index) => ({
+      key: `r-${index + 1}`,
+      barKey: `R-${index + 1}`,
+      model: `Existing requirement ${index + 1}.`,
+    }));
+    const preview = {
+      ...baseInput.preview,
+      approval: {
+        ...approval,
+        kind: 'acceptance-bar-amendment-approval',
+        subjectPlan: 'acceptance-demo',
+        bars: [{ barKey: 'R-32', priorBarHash: null, nextBarHash: 'a'.repeat(64) }],
+      },
+      changes: [{ barKey: 'R-32', kinds: ['added'], fields: ['bar'] }],
+    };
+    const brief = buildAmendmentReviewBrief({
+      ...baseInput,
+      preview,
+      reason: 'Add R-32 from the source Requirements.',
+      patch: { criteria: [...existingCriteria, newCriterion] },
+    });
+
+    expect(brief).toContain('PRE-APPLY review');
+    expect(brief).toContain('A new BAR is expected to be absent from the current criteria');
+    expect(brief).toContain('priorBarHash:null');
+    expect(brief).toContain('Do not require the new BAR, nextBarHash, or target rubric revision');
+    expect(brief).toContain('Requirements of subjectPlan in the approval JSON (read that plan if needed)');
+    expect(brief).toContain(JSON.stringify(preview.approval));
+    expect(brief).toContain(JSON.stringify(newCriterion));
+  });
+
   it('front-loads spill recovery for a long review brief', () => {
     const changes = [
       { barKey: 'R-1', kinds: ['bar-meaning' as const], fields: ['model'] },

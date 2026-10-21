@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ToolListChangedNotificationSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 
 // Like public-manual-mcp.e2e.test.ts, opt in to a verified serving build.
 // An absent runtime is unmeasured, never passing live acceptance evidence.
@@ -14,7 +15,7 @@ const workspace = process.env.PAPERCUSP_WORKSPACE;
 const harness = process.env.PAPERCUSP_HARNESS_SLUG;
 
 describe.runIf(Boolean(baseUrl))('session tool restoration over real HTTP MCP', () => {
-  it('restores canonical calls on reconnect, observes later nested use, and isolates another owner', async () => {
+  it('refreshes original FULL definitions after direct and nested use, preserves discovery-only compact detail, and isolates reconnects', async () => {
     expect(workspace, 'explicit workspace required').toBeTruthy();
     expect(harness, 'explicit harness required').toBeTruthy();
     async function servingSha() {
@@ -32,28 +33,55 @@ describe.runIf(Boolean(baseUrl))('session tool restoration over real HTTP MCP', 
     const token = readFileSync(tokenPath, 'utf8').trim();
     const owner = `su-tool-preload-e2e-${randomUUID()}`;
     const clients: Client[] = [];
-    async function connect(identity: string) {
+    const seed = 'tools:find,tools:invoke,facts:list,mode:get';
+    const compact = `${seed},orders:list,coord:whoami`;
+    const observations = new Map<Client, {
+      notifications: number; snapshots: Tool[][]; refresh: Promise<void>; error?: unknown;
+    }>();
+    async function connect(identity: string, fullReference = false) {
       const url = new URL('/api/mcp', baseUrl);
       for (const [key, value] of Object.entries({ superuser: '1', workspace: workspace!,
-        harness: harness!, client: identity, format: 'json', tools: 'tools:find,tools:invoke' })) {
+        harness: harness!, client: identity, format: 'json',
+        tools: fullReference ? `${seed},orders:list,coord:whoami` : seed,
+        ...(fullReference ? {} : { tools_compact: compact }) })) {
         url.searchParams.set(key, value);
       }
       const client = new Client({ name: 'tool-preload-e2e', version: '1.0.0' });
       clients.push(client);
+      const state = { notifications: 0, snapshots: [] as Tool[][], refresh: Promise.resolve(), error: undefined as unknown };
+      observations.set(client, state);
+      client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+        state.notifications++;
+        state.refresh = state.refresh.then(async () => {
+          state.snapshots.push(await listings(client));
+        }).catch(error => { state.error = error; });
+        await state.refresh;
+      });
       await client.connect(new StreamableHTTPClientTransport(url, {
         requestInit: { headers: { Authorization: `Bearer ${token}` } },
       }), { timeout: 20_000 });
       return client;
     }
-    async function names(client: Client) {
-      const names: string[] = [];
+    async function listings(client: Client) {
+      const tools: Tool[] = [];
       let cursor: string | undefined;
       do {
         const page = await client.listTools(cursor ? { cursor } : undefined);
-        names.push(...page.tools.map(tool => tool.name));
+        tools.push(...page.tools);
         cursor = page.nextCursor;
       } while (cursor);
-      return names;
+      return tools;
+    }
+    const contract = (tool: Tool | undefined) => {
+      expect(tool, 'required definition missing').toBeDefined();
+      return { name: tool!.name, description: tool!.description, inputSchema: tool!.inputSchema };
+    };
+    async function receivedAfterNotification(client: Client, before: number) {
+      const state = observations.get(client)!;
+      await expect.poll(() => state.snapshots.length, { timeout: 15_000 }).toBeGreaterThan(before);
+      await state.refresh;
+      expect(state.error, 'client refresh failed').toBeUndefined();
+      return state.snapshots.at(-1)!;
     }
     async function call(client: Client, name: string, args: Record<string, unknown>) {
       const result = await client.callTool({ name, arguments: args,
@@ -61,27 +89,55 @@ describe.runIf(Boolean(baseUrl))('session tool restoration over real HTTP MCP', 
       expect(result.isError, JSON.stringify(result).slice(0, 800)).not.toBe(true);
     }
     try {
+      const reference = await connect(`${owner}-reference`, true);
+      const full = new Map((await listings(reference)).map(tool => [tool.name, tool]));
       const first = await connect(owner);
-      expect(await names(first)).not.toContain('coord:whoami');
+      const initial = await listings(first);
+      expect(initial.map(tool => tool.name)).not.toContain('coord:whoami');
+      expect(contract(initial.find(tool => tool.name === 'facts:list'))).not.toEqual(contract(full.get('facts:list')));
+      let before = observations.get(first)!.snapshots.length;
+      await call(first, 'facts:list', { scope: 'owner' });
+      const afterDirect = await receivedAfterNotification(first, before);
+      expect(contract(afterDirect.find(tool => tool.name === 'facts:list'))).toEqual(contract(full.get('facts:list')));
+      expect(contract(afterDirect.find(tool => tool.name === 'mode:get'))).not.toEqual(contract(full.get('mode:get')));
+
+      before = observations.get(first)!.snapshots.length;
+      await call(first, 'tools:invoke', { name: 'mode:get', args: {} });
+      const afterNested = await receivedAfterNotification(first, before);
+      expect(contract(afterNested.find(tool => tool.name === 'mode:get'))).toEqual(contract(full.get('mode:get')));
+
+      await call(first, 'tools:find', { query: 'orders:list' });
+      const afterDiscovery = await listings(first);
+      const unused = contract(afterDiscovery.find(tool => tool.name === 'orders:list'));
+      expect(unused).not.toEqual(contract(full.get('orders:list')));
       await call(first, 'coord:whoami', {});
       await first.close();
 
       const reconnected = await connect(owner);
-      expect(await names(reconnected)).toContain('coord:whoami');
-      await call(reconnected, 'tools:invoke', { name: 'facts:list', args: { scope: 'owner' } });
-      expect(await names(reconnected)).toEqual(expect.arrayContaining(['coord:whoami', 'facts:list']));
+      const restored = await listings(reconnected);
+      for (const name of ['coord:whoami', 'facts:list', 'mode:get']) {
+        expect(contract(restored.find(tool => tool.name === name))).toEqual(contract(full.get(name)));
+      }
 
       const other = await connect(`${owner}-other`);
-      const otherNames = await names(other);
+      const otherListings = await listings(other);
+      const otherNames = otherListings.map(tool => tool.name);
       expect(otherNames).not.toContain('coord:whoami');
-      expect(otherNames).not.toContain('facts:list');
+      expect(otherNames).not.toContain('orders:list');
+      expect(contract(otherListings.find(tool => tool.name === 'facts:list'))).toEqual(contract(initial.find(tool => tool.name === 'facts:list')));
+      const definitionBytes = (tools: Tool[]) => Buffer.byteLength(JSON.stringify(tools.map(contract)));
+      const initialBytes = definitionBytes(initial);
+      const continuedBytes = definitionBytes(afterNested);
+      expect(continuedBytes).toBeGreaterThan(initialBytes);
       expect(await servingSha(), 'runtime changed during the live proof').toBe(buildSha);
       console.info('session-tool-restoration-proof', JSON.stringify({
         baseUrl, buildSha, owner, workspace, harness,
-        direct: 'coord:whoami', nested: 'facts:list', isolatedOwner: `${owner}-other`,
+        direct: 'facts:list', nested: 'mode:get', restored: 'coord:whoami',
+        discoveryOnly: 'orders:list', notifications: observations.get(first)!.notifications,
+        initialBytes, continuedBytes, isolatedOwner: `${owner}-other`,
       }));
     } finally {
       await Promise.allSettled(clients.map(client => client.close()));
     }
-  }, 90_000);
+  }, 150_000);
 });

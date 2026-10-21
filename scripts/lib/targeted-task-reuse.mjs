@@ -63,7 +63,6 @@ import {
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
-  testReuseMaxAgeMs,
   writeReuseSkipList,
 } from "./test-pass-reuse.mjs";
 import { STANDALONE_PACKAGE_DIRS, expandWorkspaceDirs } from "./test-runner-classes.mjs";
@@ -519,8 +518,6 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
     runContext,
     runnerIdentity,
     proofFormat,
-    nowMs: d.now(),
-    maxAgeMs: testReuseMaxAgeMs(out),
     auditRate: testReuseAuditRate(out),
     inertGlobalChange: typeof d.inertGlobalChange === "function" ? d.inertGlobalChange(root) : null,
     testConfigMainProcess: await (async () => {

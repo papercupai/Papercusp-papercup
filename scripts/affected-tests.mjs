@@ -125,7 +125,6 @@ import {
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
-  testReuseMaxAgeMs,
   writeReuseSkipList,
 } from "./lib/test-pass-reuse.mjs";
 import {
@@ -6225,9 +6224,7 @@ async function armTestPassReuse(taskList) {
       `TEST_PASS_REUSE_TSCONFIG_CLOSURE state=unavailable reason=${String((err && err.message) || err).replace(/\s+/g, "_").slice(0, 120)}`,
     );
   }
-  const maxAgeMs = testReuseMaxAgeMs();
   const auditRate = testReuseAuditRate();
-  const nowMs = Date.now();
   // WI-6554700010008741: proof identity must match the recorder in this judged checkout, which
   // may be older than the selector carried by the gate runner.
   const judgedProofFormat = judgedTreeProofFormat(ROOT);
@@ -6345,8 +6342,6 @@ async function armTestPassReuse(taskList) {
         changedBetween,
         runContext,
         runnerIdentity,
-        nowMs,
-        maxAgeMs,
         ...(judgedProofFormat == null ? {} : { proofFormat: judgedProofFormat }),
         auditRate,
         inertGlobalChange,
@@ -8649,7 +8644,7 @@ for (const scheduled of initialPool.results) {
   }
   emitCapturedTaskOutput(t, scheduled.value, scheduled.allocation);
   // P-012 (gate-file-level-test-reuse-2026-09-27): a file the reuse rule WOULD have skipped (an
-  // audit sample, or a freshly-expired clean proof) that failed on this fresh run means reuse can
+  // audit sample) that failed on this fresh run means reuse can
   // hide a red. Judged on the FIRST pass (the output reuse would have replaced), before any retry;
   // the retry verdict printed below separates a flake from a reproduced capture gap.
   if (t.reuseWatch) {

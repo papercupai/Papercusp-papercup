@@ -54,7 +54,6 @@ import {
   REUSE_PROOF_FORMAT,
   TEST_REUSE_SKIP_LIST_ENV,
   judgedTreeProofFormat,
-  testReuseMaxAgeMs,
 } from "./test-pass-reuse.mjs";
 
 export const PURE_PROOF_CAPTURE_ENV = "PC_PURE_PROOF_CAPTURE";
@@ -111,8 +110,9 @@ const byPath = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
  * proof over a failure), and files already holding a fresh proof AT the sha. Then, by path within
  * each tier:
  *   (i)   ranPassed — passed in this sha's suite (the radius the next candidate most likely shares);
- *   (ii)  unproven  — no usable proof (none, expired, or from another runner identity);
- *   (iii) refresh   — a usable proof at an older sha, oldest first, refreshed before it expires.
+ *   (ii)  unproven  — no usable proof (none, or from another runner identity);
+ *   (iii) refresh   — a usable proof at an older sha, oldest first. A proof never expires (owner
+ *         #2143), but the further its sha is from the judged one, the more drift can invalidate it.
  *
  * @param {object} o
  * @param {string[]} o.laneFiles repo-relative pure-lane files
@@ -120,8 +120,6 @@ const byPath = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
  * @param {Set<string>} o.passedInSuite repo-relative files with a clean source=ci pass at the sha
  * @param {Map<string, { recordedSha: string, recordedAtMs: number, runnerIdentity?: string | null }>} o.proofs
  * @param {string} o.sha
- * @param {number} o.nowMs
- * @param {number} o.maxAgeMs
  * @param {string | null} [o.runnerIdentity] the runner capture will record under; a proof from
  *   another identity cannot be reused (D-004 rule 1), so it counts as no proof
  */
@@ -131,8 +129,6 @@ export function orderCaptureCandidates({
   passedInSuite,
   proofs,
   sha,
-  nowMs,
-  maxAgeMs,
   runnerIdentity = null,
 }) {
   const ranPassed = [];
@@ -148,8 +144,6 @@ export function orderCaptureCandidates({
     const proof = proofs.get(file);
     const usable =
       proof != null &&
-      Number.isFinite(proof.recordedAtMs) &&
-      nowMs - proof.recordedAtMs < maxAgeMs &&
       (runnerIdentity == null || proof.runnerIdentity == null || proof.runnerIdentity === runnerIdentity);
     if (usable && proof.recordedSha === sha) {
       proven += 1;
@@ -159,7 +153,12 @@ export function orderCaptureCandidates({
     else if (!usable) unproven.push(file);
     else refresh.push(file);
   }
-  refresh.sort((a, b) => proofs.get(a).recordedAtMs - proofs.get(b).recordedAtMs || byPath(a, b));
+  // An unreadable recorded_at sorts as the oldest: refreshing it first is the safe direction.
+  const recordedAt = (file) => {
+    const at = proofs.get(file).recordedAtMs;
+    return Number.isFinite(at) ? at : -Infinity;
+  };
+  refresh.sort((a, b) => recordedAt(a) - recordedAt(b) || byPath(a, b));
   return {
     order: [...ranPassed, ...unproven, ...refresh],
     tiers: { ranPassed: ranPassed.length, unproven: unproven.length, refresh: refresh.length },
@@ -503,7 +502,6 @@ export async function runPureLaneProofCapture({
   }
   if (laneFiles.length === 0) return skip("no-lane-files");
 
-  const nowMs = d.now();
   // WI-6554700010008589: the judged tree's recorder writes the captured proofs, so match ITS format.
   const runnerIdentity = d.runnerIdentity(root, env, judgedTreeProofFormat(root) ?? REUSE_PROOF_FORMAT) ?? null;
   let plan;
@@ -534,8 +532,6 @@ export async function runPureLaneProofCapture({
         passedInSuite: outcomes.passedInSuite,
         proofs,
         sha,
-        nowMs,
-        maxAgeMs: testReuseMaxAgeMs(env),
         runnerIdentity,
       });
     });

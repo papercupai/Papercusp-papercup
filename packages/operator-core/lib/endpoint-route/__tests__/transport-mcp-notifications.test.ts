@@ -25,6 +25,7 @@ import { MCP_SERVER_CAPABILITIES } from '../routes/transport/mcp-contract';
 import { buildMcpSessionSurfaceTraceEvent } from '../../mcp-request-trace';
 import {
   getSessionSurface,
+  sessionToolSurfaceKey,
   rememberSessionToolRegistryRevision,
   __resetSessionSurfaces,
 } from '../routes/transport/tool-allowlist';
@@ -44,6 +45,7 @@ const fakeSpawn: BuiltSpawnContext = {
 
 /** A spawn with a stable session identity — required for activateTools. */
 const seededSpawn: BuiltSpawnContext = { ...fakeSpawn, uiClientId: 'sess-A' };
+const seededSurfaceKey = sessionToolSurfaceKey(seededSpawn.uiClientId, seededSpawn.workspaceId)!;
 
 function recordingSendNotification() {
   const sent: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -160,7 +162,7 @@ describe('MCP emit → notifications', () => {
     it('fires list_changed exactly once when a SEEDED session grows', async () => {
       __resetSessionSurfaces();
       // Seed the session as tools/list would on first contact.
-      getSessionSurface('sess-A', new Set(['coord:orient']));
+      getSessionSurface(seededSurfaceKey, new Set(['coord:orient']));
       const { sent, sendNotification } = recordingSendNotification();
       const ctx = await __buildMcpToolContext_forTests(seededSpawn, undefined, sendNotification);
       const grew = ctx.activateTools!(['flags:set', 'harness:status']);
@@ -168,14 +170,14 @@ describe('MCP emit → notifications', () => {
       expect(grew).toBe(true);
       expect(sent).toEqual([{ method: 'notifications/tools/list_changed', params: {} }]);
       // The grown set is now visible to a re-fetch.
-      expect(getSessionSurface('sess-A', new Set(['coord:orient']))).toEqual(
+      expect(getSessionSurface(seededSurfaceKey, new Set(['coord:orient']))).toEqual(
         new Set(['coord:orient', 'flags:set', 'harness:status']),
       );
     });
 
     it('does NOT fire when activation adds nothing new (no re-fetch spam)', async () => {
       __resetSessionSurfaces();
-      getSessionSurface('sess-A', new Set(['coord:orient', 'flags:set']));
+      getSessionSurface(seededSurfaceKey, new Set(['coord:orient', 'flags:set']));
       const { sent, sendNotification } = recordingSendNotification();
       const ctx = await __buildMcpToolContext_forTests(seededSpawn, undefined, sendNotification);
       const grew = ctx.activateTools!(['flags:set']); // already present
@@ -195,9 +197,21 @@ describe('MCP emit → notifications', () => {
       expect(sent).toHaveLength(0);
     });
 
+    it('cannot grow or notify a different workspace with the same stable client id', async () => {
+      __resetSessionSurfaces();
+      const otherKey = sessionToolSurfaceKey(seededSpawn.uiClientId, 'other-workspace')!;
+      getSessionSurface(otherKey, new Set(['coord:orient']));
+      const { sent, sendNotification } = recordingSendNotification();
+      const ctx = await __buildMcpToolContext_forTests(seededSpawn, undefined, sendNotification);
+      expect(ctx.activateTools!(['flags:set'])).toBe(false);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(sent).toHaveLength(0);
+      expect(getSessionSurface(otherKey, new Set(['coord:orient']))?.has('flags:set')).toBe(false);
+    });
+
     it('never throws when sendNotification is undefined', async () => {
       __resetSessionSurfaces();
-      getSessionSurface('sess-A', new Set(['coord:orient']));
+      getSessionSurface(seededSurfaceKey, new Set(['coord:orient']));
       const ctx = await __buildMcpToolContext_forTests(seededSpawn, undefined, undefined);
       expect(() => ctx.activateTools!(['flags:set'])).not.toThrow();
     });

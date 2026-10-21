@@ -2948,7 +2948,7 @@ export default defineTool({
   // Budget is recovered by tightening prose instead; response/refusal detail lives in the
   // free `returns` below (EI-22083648545226771 / EI-18742337097445085).
   description:
-    'coord:send. Directed action/answer requires `body[].forYouBecause: { relation, ref?, note? }`. `summary` is the required inbox headline. `items:[…]` sends distinct messages. `why`={goalRef,note?}, not prose. `basedOn` is OUTPUT-ONLY, auto-derived; omit it. `body[].premises` are ref strings; `body[].youMayNotKnow` uses {ref, provenance} objects. `wake` re-invokes recipients; `optimistic` needs `backstop`.',
+    'coord:send. Directed action/answer requires `body[].forYouBecause: { relation, ref?, note? }`. `summary` is the required inbox headline. `items:[…]` sends distinct messages. `why`={goalRef,note?}, not prose. `basedOn` is OUTPUT-ONLY, auto-derived; omit it. `body[].premises` are ref strings; `body[].youMayNotKnow` uses {ref, provenance} objects — put that shape in `body[].youMayNotKnow`, not in `body[].premises`. `wake` re-invokes recipients; `optimistic` needs `backstop`.',
   guidance: {
     when:
       'Share context or ask. `summary` is the required inbox headline; `body` is detail. For the dispatch advisory, put the work-item action target in `body[].forYouBecause.ref`; summary ids can be contextual. A complete active-GOAL owner report (MOVED/COST/OWNER-WALLED/KILLED) must fit in one body of at most ' +

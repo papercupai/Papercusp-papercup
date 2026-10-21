@@ -14,8 +14,9 @@ export function pureProofCaptureSliceSize(env?: Record<string, string | undefine
  * proof over a failure), and files already holding a fresh proof AT the sha. Then, by path within
  * each tier:
  *   (i)   ranPassed — passed in this sha's suite (the radius the next candidate most likely shares);
- *   (ii)  unproven  — no usable proof (none, expired, or from another runner identity);
- *   (iii) refresh   — a usable proof at an older sha, oldest first, refreshed before it expires.
+ *   (ii)  unproven  — no usable proof (none, or from another runner identity);
+ *   (iii) refresh   — a usable proof at an older sha, oldest first. A proof never expires (owner
+ *         #2143), but the further its sha is from the judged one, the more drift can invalidate it.
  *
  * @param {object} o
  * @param {string[]} o.laneFiles repo-relative pure-lane files
@@ -23,12 +24,10 @@ export function pureProofCaptureSliceSize(env?: Record<string, string | undefine
  * @param {Set<string>} o.passedInSuite repo-relative files with a clean source=ci pass at the sha
  * @param {Map<string, { recordedSha: string, recordedAtMs: number, runnerIdentity?: string | null }>} o.proofs
  * @param {string} o.sha
- * @param {number} o.nowMs
- * @param {number} o.maxAgeMs
  * @param {string | null} [o.runnerIdentity] the runner capture will record under; a proof from
  *   another identity cannot be reused (D-004 rule 1), so it counts as no proof
  */
-export function orderCaptureCandidates({ laneFiles, failedAtSha, passedInSuite, proofs, sha, nowMs, maxAgeMs, runnerIdentity, }: {
+export function orderCaptureCandidates({ laneFiles, failedAtSha, passedInSuite, proofs, sha, runnerIdentity, }: {
     laneFiles: string[];
     failedAtSha: Set<string>;
     passedInSuite: Set<string>;
@@ -38,8 +37,6 @@ export function orderCaptureCandidates({ laneFiles, failedAtSha, passedInSuite, 
         runnerIdentity?: string | null;
     }>;
     sha: string;
-    nowMs: number;
-    maxAgeMs: number;
     runnerIdentity?: string | null | undefined;
 }): {
     order: string[];
