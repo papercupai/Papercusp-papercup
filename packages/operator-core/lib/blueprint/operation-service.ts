@@ -1083,6 +1083,7 @@ async function verifyDirectOperationModel(
   pin: Record<string, unknown>,
   policy: { mode: 'exact' | 'allowed' | 'preferred'; models: readonly string[]; effort?: string },
   persistOrigins = false,
+  forceNativeHistory = false,
 ): Promise<string | null> {
   if (pin.kind !== 'blueprint-operation' || typeof pin.harnessSlug !== 'string' ||
       typeof pin.operationId !== 'string' || typeof pin.specificationRevision !== 'string') {
@@ -1143,8 +1144,9 @@ async function verifyDirectOperationModel(
   const origins = new Map<string, AttestationOrigin>();
   for (const row of eventRows) {
     const parsed = OperationEventBodySchema.safeParse(row.body);
-    if (!parsed.success || parsed.data.receiptId !== receiptId ||
-        (parsed.data.kind !== 'model-attestation' && parsed.data.kind !== 'model-attestation-origin')) {
+    if (!parsed.success ||
+        (parsed.data.kind !== 'model-attestation' && parsed.data.kind !== 'model-attestation-origin') ||
+        parsed.data.receiptId !== receiptId) {
       return 'accepted worker has malformed model attestation';
     }
     if (parsed.data.kind === 'model-attestation-origin') {
@@ -1157,6 +1159,40 @@ async function verifyDirectOperationModel(
     if (events.has(key)) return 'accepted worker has duplicate model attestation';
     events.set(key, event);
     eventIds.set(key, String(row.id));
+  }
+  const currentNatives = new Set(rows.map(row => row.native_session_id));
+  const readNativeHistory = forceNativeHistory || events.size > rows.length ||
+    [...events.values()].some(event => !currentNatives.has(event.nativeSessionId));
+  if (readNativeHistory) {
+    // A managed carry replaces adv_sessions.session_id in place. Its applied
+    // identity ledger, not an owner-only usage join, proves the predecessor
+    // belongs to this exact accepted launch. DISTINCT prevents repeated
+    // activations from counting a request more than once.
+    const historicalRows = await sql<typeof rows>`
+      SELECT s.agent, s.coord_owner_id AS owner_id, n.native_session_id,
+             u.model, u.provider, u.input_tokens, u.output_tokens,
+             u.cache_read_tokens, u.cache_creation_tokens,
+             u.usage_provenance->>'modelSource' AS model_source,
+             u.usage_provenance->>'grain' AS grain,
+             u.usage_provenance->>'sourceId' AS source_id,
+             u.usage_provenance->>'inputTotalTokens' AS input_total_tokens
+        FROM harness_shared.adv_sessions s
+        JOIN LATERAL (
+          SELECT DISTINCT a.native_session_id
+            FROM harness_shared.session_identity_activation_events a
+           WHERE a.workspace_id = s.workspace_id AND a.adv_session_id = s.id
+             AND a.owner_id = s.coord_owner_id AND a.phase = 'applied'
+             AND a.native_session_id IS NOT NULL AND a.native_session_id <> s.session_id
+        ) n ON true
+        LEFT JOIN harness_shared.agent_usage_samples u
+          ON u.workspace_id = s.workspace_id AND u.session_id = n.native_session_id
+         AND u.source = 'interactive'
+       WHERE s.workspace_id = ${workspaceId} AND s.feature = ${workItemId}
+         AND s.launch_spec->'acceptedOperation'->'pin' = ${sql.json(pin as JSONValue)}
+       ORDER BY s.id, n.native_session_id, u.id LIMIT 1001
+    `;
+    rows.push(...historicalRows);
+    if (rows.length > 1000) return 'model evidence exceeds the bounded verification window';
   }
   const unmatched = new Set(events.keys());
   const nonnegative = (value: string | number | null) => value !== null && Number.isSafeInteger(Number(value)) && Number(value) >= 0;
@@ -1186,7 +1222,7 @@ async function verifyDirectOperationModel(
         (!listedEffort || listedEffort === effort);
     });
   };
-  const policyFailure = (event: (typeof events extends Map<string, infer T> ? T : never)): string | null => {
+  const policyFailure = (event: Extract<z.infer<typeof OperationEventBodySchema>, { kind: 'model-attestation' }>): string | null => {
     if (!modelAllowed(event.requestedModel, event.provider, event.forwardedEffort) ||
         !modelAllowed(event.actualModel, event.provider, event.forwardedEffort)) {
       return `accepted worker reported a model outside the ${policy.mode} policy`;
@@ -1255,6 +1291,10 @@ async function verifyDirectOperationModel(
     }
   }
   if (unmatched.size) {
+    // Even if the row/event counts hid a surplus, establish the complete
+    // accepted native population before calling any response auxiliary.
+    // This retry is bounded to one read of the immutable applied history.
+    if (!readNativeHistory) return verifyDirectOperationModel(sql, workspaceId, workItemId, pin, policy, persistOrigins, true);
     const refusal = 'accepted worker has unmatched request-grain model evidence';
     const acceptedSessions = new Set(rows.map(row => row.native_session_id));
     const pending: AttestationOrigin[] = [];

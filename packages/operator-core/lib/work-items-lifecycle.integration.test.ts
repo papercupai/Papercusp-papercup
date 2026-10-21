@@ -239,6 +239,10 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.session_briefs (
       workspace_id text NOT NULL, owner_id text NOT NULL, control_state jsonb,
       PRIMARY KEY (workspace_id, owner_id));
+    -- Reader-only projection of the existing applied identity ledger (1149).
+    CREATE TABLE harness_shared.session_identity_activation_events (
+      workspace_id text NOT NULL, owner_id text NOT NULL, adv_session_id bigint,
+      native_session_id text, phase text NOT NULL);
     CREATE TABLE harness_shared.agent_usage_samples (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL, session_id text,
       source text NOT NULL, provider text NOT NULL, model text,
@@ -319,7 +323,8 @@ beforeEach(async () => {
                        harness_shared.blueprints, harness_shared.blueprint_specifications,
                        harness_shared.blueprint_operation_invocations, harness_shared.plan_runs RESTART IDENTITY`;
   await db.sql`TRUNCATE harness_shared.adv_sessions, harness_shared.session_briefs,
-                        harness_shared.agent_usage_samples, harness_shared.gateway_request_outcomes RESTART IDENTITY`;
+                        harness_shared.agent_usage_samples, harness_shared.gateway_request_outcomes,
+                        harness_shared.session_identity_activation_events RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   await setLeaseFlag(false);
   fh.spy.mockClear();
@@ -677,13 +682,46 @@ describe('blueprint direct-item revision pin', () => {
       SET usage_provenance = jsonb_set(usage_provenance, '{inputTotalTokens}', '120'::jsonb)
       WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
 
+    // Managed carry changes the native id on the SAME accepted launch. The
+    // applied ledger retains its predecessor; a shared owner alone cannot.
+    const successor = `${sessionId}-successor`;
+    const [launch] = await db.sql`UPDATE harness_shared.adv_sessions SET session_id = ${successor}
+      WHERE workspace_id = 'default' AND session_id = ${sessionId} RETURNING id`;
+    const successorBinding = await readActiveOperationModelPolicy('default', owner, 'codex');
+    if (successorBinding.status !== 'bound' || !successorBinding.attestation) throw new Error('missing successor binding');
+    await recordDirectOperationModelAttestation(db.sql, successorBinding.attestation, {
+      ...evidence, providerResponseId: 'resp-codex-successor', requestId: '123e4567-e89b-42d3-a456-426614174006',
+    });
+    await db.sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, session_id, source, provider, model, input_tokens, output_tokens,
+       cache_read_tokens, cache_creation_tokens, usage_provenance)
+      SELECT workspace_id, ${successor}, source, provider, model, input_tokens, output_tokens,
+             cache_read_tokens, cache_creation_tokens, usage_provenance
+        FROM harness_shared.agent_usage_samples WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+    for (const [workspace, historyOwner, advId, phase] of [
+      ['other-workspace', owner, launch.id, 'applied'], ['default', 'other-owner', launch.id, 'applied'],
+      ['default', owner, Number(launch.id) + 1, 'applied'], ['default', owner, launch.id, 'prepared'],
+    ] as const) {
+      await db.sql`INSERT INTO harness_shared.session_identity_activation_events
+        VALUES (${workspace}, ${historyOwner}, ${advId}, ${sessionId}, ${phase})`;
+      await expect(close()).rejects.toThrow('model attestation failed');
+      await db.sql`TRUNCATE harness_shared.session_identity_activation_events`;
+    }
+    await db.sql`INSERT INTO harness_shared.session_identity_activation_events
+      VALUES ('default', ${owner}, ${launch.id}, ${sessionId}, 'applied')`;
+    await db.sql`UPDATE harness_shared.agent_usage_samples SET output_tokens = 18
+      WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+    await expect(close()).rejects.toThrow('model attestation failed');
+    await db.sql`UPDATE harness_shared.agent_usage_samples SET output_tokens = 17
+      WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+
     // Historical gateways stamped hidden Codex threads with the accepted main
     // session. Reconcile only an exact provider response in the existing outcome
     // ledger; neither token similarity nor the shared owner proves its origin.
     const auxiliary = { ...evidence, providerResponseId: 'resp-codex-auxiliary',
       requestId: '123e4567-e89b-42d3-a456-426614174005',
       usage: { ...evidence.usage, inputTokens: 22, outputTokens: 3 } };
-    const auxiliaryReceipt = await recordDirectOperationModelAttestation(db.sql, binding.attestation, auxiliary);
+    const auxiliaryReceipt = await recordDirectOperationModelAttestation(db.sql, successorBinding.attestation, auxiliary);
     const [originalEvent] = await db.sql`SELECT body FROM harness_shared.coord_event_log
       WHERE id = ${auxiliaryReceipt.id}`;
     await expect(close()).rejects.toThrow('unmatched request-grain');
@@ -705,6 +743,7 @@ describe('blueprint direct-item revision pin', () => {
       { nativeSessionId: null }, { nativeThreadId: null },
       { nativeThreadId: 'inconsistent-thread' },
       { nativeSessionId: sessionId, nativeThreadId: sessionId },
+      { nativeSessionId: successor, nativeThreadId: successor },
       { outcomeClass: 'upstream-error' as const, finalStatus: 502 },
     ]) {
       await outcomes.record({ ...outcome, ...patch });

@@ -47,6 +47,7 @@ import { runWorkItemDurableParkAudit } from './work-items-durable-park-audit';
 import { buildDurableParkReleaseContract } from './durable-park-release-contract';
 import { readEventConditionReachability } from './external-condition-reachability';
 import { recordKeyFire, registerAnnouncement, settleProvingFire } from './events/await/store';
+import { requestAdmissionRecovery } from './work-item-admission-recovery';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, activeWs: 'default' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -114,6 +115,19 @@ beforeAll(async () => {
     started_at timestamptz, finished_at timestamptz, batch_size integer, held integer,
     model_id text, tokens_in bigint, tokens_out bigint, latency_ms integer, detail jsonb
   )`);
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.operator_secrets (name text PRIMARY KEY, value_b64 text);
+    CREATE TABLE harness_shared.routines (
+      id text PRIMARY KEY, workspace_id text, install_slug text, name text, target_role text,
+      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz
+    );
+  `).simple();
+  await db.sql`INSERT INTO harness_shared.operator_secrets VALUES
+    ('spawn-signing-key', ${Buffer.alloc(32, 42).toString('base64')})`;
+  await db.sql`INSERT INTO harness_shared.routines
+    (id, workspace_id, install_slug, name, target_role, trigger_config)
+    VALUES ('claim-hold-promoter', ${WS}, ${H}, 'work-item-admission-promoter',
+      'system:work-item-admission-promoter', '{"cron":"*/30 * * * *"}')`;
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -392,6 +406,47 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
 });
 
 describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
+  it.each(['queued', 'held', 'delivered'] as const)(
+    'EI-266267: a %s recovery preserves its target without changing ordinary unreviewed admission',
+    async (state) => {
+      const id = 'WI-recovery-reservation';
+      await seedIssue(id, { createdTs: 100, payload: {
+        admissionReview: { state: 'pending' },
+        admissionHold: { reason: 'claimed-duplicate', actor: 'system:work-item-admission-promoter' },
+      } });
+      await db.sql`UPDATE harness_shared.work_items SET admission = 'unreviewed'
+        WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+      const registered = await requestAdmissionRecovery({
+        workspaceId: WS, harnessSlug: H, workItemId: id,
+        caller: 'recovery-requester', target: 'recovery-target',
+      }, { authorize: vi.fn(async () => {}) }, db.sql);
+      await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{_admissionRecovery}',
+        ${db.sql.json({ ...registered.request, state,
+          stage: state === 'held' ? 'screen' : state === 'delivered' ? 'await-pickup' : 'queued' })})
+        WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+      const original = await readPayload(id);
+      await seedIssue('WI-unreviewed-control', { createdTs: 200 });
+      await db.sql`UPDATE harness_shared.work_items SET admission = 'unreviewed'
+        WHERE workspace_id = ${WS} AND feature_id = 'WI-unreviewed-control'`;
+
+      const got = await wi.claimNextWorkItem({ harness: H, assignee: 'unrelated-scheduler' });
+      if (state === 'delivered') {
+        expect(got?.id).toBe(id);
+        return;
+      }
+      expect(got?.id).toBe('WI-unreviewed-control');
+      expect(await wi.claimNextWorkItem({ harness: H, assignee: 'another-scheduler' })).toBeNull();
+      const diagnosis = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'another-scheduler' });
+      expect(diagnosis.readyUnclaimed).toBe(0);
+      expect(diagnosis.pendingUnclaimed).toBeGreaterThan(0);
+      expect(diagnosis.drained).toBe(false);
+      expect(await readPayload(id)).toEqual(original);
+      const targeted = await wi.claimWorkItem(id, 'recovery-target', { harness: H });
+      expect(targeted?.assignee).toBe('recovery-target');
+      expect(targeted?.payload?._admissionRecovery).toEqual(original?._admissionRecovery);
+    },
+  );
+
   it('serves the unheld item, never the held one, when both are otherwise ready', async () => {
     await seedIssue('WI-held', { createdTs: 100, payload: { _claimHold: true } });
     await seedIssue('WI-open', { createdTs: 200 });
