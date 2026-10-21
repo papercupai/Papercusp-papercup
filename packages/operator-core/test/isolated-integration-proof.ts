@@ -15,7 +15,7 @@ import { readCommittedFiles } from '../lib/agent-tools/plans/committed-tree-read
 import { qualifyCommittedReaderOriginalPreparation as qualifyOriginalPreparation } from './private-http-workspace-preflight';
 import { it } from 'vitest';
 // @ts-ignore -- reuse the maintained JS router's deadline contract.
-import { defaultTestFileRunTimeoutMs, testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
+import { assertPrivateIntegrationEvidence, defaultTestFileRunTimeoutMs, testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
 // @ts-ignore -- same progress watchdog used by that router.
 import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog.mjs';
 
@@ -542,6 +542,9 @@ export async function recordIsolatedIntegrationProof(options: {
     retainedArtifacts,
     runPhase: async ctx => {
       if (ctx.phase === 'prepare') {
+        // Working-source callers also fail before the parent telemetry DB or
+        // any worker exists, so teardown can truthfully report no allocation.
+        assertPrivateIntegrationEvidence();
         // Required originals must be validated and retained before allocating
         // the parent observer. Legacy void callbacks retain their old order.
         if (options.requiredPreparation) {

@@ -33,8 +33,17 @@ import {
 } from '../../integrations/provider-census';
 import { defaultBlobBatchReader, locateCommittedBlobs, type CommittedTreeDeps } from './committed-tree-reader';
 import { defaultGitRunner } from './evidence-measurement-pin';
+import {
+  KIND_SCAN_ROOTS,
+  isKindScanPath,
+  kindBranchCensusOutput,
+  mayHoldKindBranch,
+  reconcileKindBranchFindings,
+  scanSourceForKindBranches,
+  type KindBranchFinding,
+} from '../../plan-types/kind-branch-census';
 
-export const TREE_INSTRUMENT_KEYS = ['provider-specific-census'] as const;
+export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census'] as const;
 export const treeInstrumentKeySchema = z.enum(TREE_INSTRUMENT_KEYS);
 export type TreeInstrumentKey = z.infer<typeof treeInstrumentKeySchema>;
 
@@ -56,6 +65,8 @@ const MAX_BLOB_BATCH_BYTES = 8 * 1024 * 1024;
 const memo = pinModuleState('@papercusp/operator-core.tree-instrument-memo', () => ({
   /** Content verdicts by blob id (plus path for allowance paths); a blob's bytes never change. */
   verdicts: new Map<string, StrictKind[]>(),
+  /** Kind-branch findings by [path, blob]: findings carry the path, so the key does too. */
+  kindFindings: new Map<string, KindBranchFinding[]>(),
   /** Instrument outputs by [key, root, commit]; a commit's tree never changes. */
   outputs: new Map<string, Promise<unknown>>(),
 }));
@@ -63,6 +74,7 @@ const memo = pinModuleState('@papercusp/operator-core.tree-instrument-memo', () 
 /** Test seam: forget memoized verdicts and outputs. */
 export function __resetTreeInstrumentMemoForTest(): void {
   memo.verdicts.clear();
+  memo.kindFindings.clear();
   memo.outputs.clear();
 }
 
@@ -184,8 +196,36 @@ async function providerCensusAtCommit(root: string, commit: string, deps: Commit
   return providerCensusOutput(files.map((file) => file.path), (path) => kinds.get(path) ?? []);
 }
 
+/**
+ * The R-7 deliverable-kind branch census (plan-types/kind-branch-census.ts) over a committed
+ * tree: the rules plan-verification-profile-boundary.test.ts asserts, line-free, so an edit
+ * that moves a baselined site without changing it leaves the output unchanged.
+ */
+async function kindBranchCensusAtCommit(root: string, commit: string, deps: CommittedTreeDeps): Promise<unknown> {
+  const files = (await listCommittedFilesUnder(root, commit, KIND_SCAN_ROOTS, isKindScanPath, deps))
+    .filter((file) => isKindScanPath(file.path));
+  // Findings are collected locally first: the shared memo may be cleared while this runs.
+  const byPath = new Map<string, KindBranchFinding[]>();
+  const unread: CommittedTreeFile[] = [];
+  for (const file of files) {
+    const known = memo.kindFindings.get(`${file.path}\0${file.blob}`);
+    if (known) byPath.set(file.path, known);
+    else unread.push(file);
+  }
+  await forEachCommittedBody(root, unread, (file, body) => {
+    const found = mayHoldKindBranch(body) ? scanSourceForKindBranches(file.path, body) : [];
+    byPath.set(file.path, found);
+    if (memo.kindFindings.size >= MAX_MEMOIZED_VERDICTS) memo.kindFindings.clear();
+    memo.kindFindings.set(`${file.path}\0${file.blob}`, found);
+  }, deps);
+  // Same order as the working-tree census (path order), so baseline matching is identical.
+  const findings = files.flatMap((file) => byPath.get(file.path) ?? []);
+  return kindBranchCensusOutput(reconcileKindBranchFindings(findings));
+}
+
 const TREE_INSTRUMENTS: Record<TreeInstrumentKey, (root: string, commit: string, deps: CommittedTreeDeps) => Promise<unknown>> = {
   'provider-specific-census': providerCensusAtCommit,
+  'deliverable-kind-branch-census': kindBranchCensusAtCommit,
 };
 
 /**

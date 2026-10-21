@@ -30,7 +30,8 @@ vi.mock('../presence', async (importOriginal) => ({
   getPresence: (...a: unknown[]) => getPresence(...(a as [])),
 }));
 
-const resolveAgentIdentity = vi.fn(() => ({ ownerId: 'su-test', ownerLabel: 'su · test' }));
+const resolveAgentIdentity = vi.fn((): { ownerId: string; ownerLabel: string; workspaceId?: string } =>
+  ({ ownerId: 'su-test', ownerLabel: 'su · test' }));
 vi.mock('../identity', () => ({
   resolveAgentIdentity: (...a: unknown[]) => resolveAgentIdentity(...(a as [])),
 }));
@@ -94,6 +95,17 @@ const fetchPresenceFleet = vi.fn(async () => new Map<string, unknown>());
 vi.mock('../presence-fleet', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fetchPresenceFleet: (...a: unknown[]) => fetchPresenceFleet(...(a as [])),
+}));
+
+const getIntentTimeTaskBrief = vi.fn(async (..._a: unknown[]): Promise<unknown> => null);
+vi.mock('../../../code-intelligence/task-brief', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getIntentTimeTaskBrief: (...a: unknown[]) => getIntentTimeTaskBrief(...a),
+}));
+const recordIntentTaskBrief = vi.fn(async (..._a: unknown[]) => true);
+vi.mock('../../../code-intelligence/push-channel', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  recordIntentTaskBrief: (...a: unknown[]) => recordIntentTaskBrief(...a),
 }));
 
 import { FLAGS } from '@papercusp/flags';
@@ -772,5 +784,48 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
     });
     expect(r.detect.mock.calls[0]?.[2]).toEqual({});
     expect(r.detect.mock.calls[1]?.[2]).toEqual({});
+  });
+});
+
+describe('coord:declare-intent records its intent-time task brief (WI-6554700010018439)', () => {
+  const brief = { status: 'current', files: [{ path: 'lib/a.ts', sha256: 'a'.repeat(64), kind: 'implementation' }] };
+  const declare = () => tool.handler(
+    (declareIntentTool.args as { parse: (input: unknown) => unknown }).parse({ intent: 'fix a', current_files: ['lib/a.ts'] }), ctx);
+  beforeEach(() => {
+    resolveAgentIdentity.mockImplementation(() => ({ ownerId: 'su-test', ownerLabel: 'su · test', workspaceId: 'ws-test' }));
+    setFlagOverridesForTest({ [FLAGS.CODE_INTEL_PUSH_INTENT]: true });
+  });
+  afterEach(() => {
+    resolveAgentIdentity.mockImplementation(() => ({ ownerId: 'su-test', ownerLabel: 'su · test' }));
+    setFlagOverridesForTest(null);
+  });
+
+  it('records the delivered brief once in the push ledger', async () => {
+    getIntentTimeTaskBrief.mockResolvedValueOnce({ taskBrief: brief });
+    const res = parse(await declare());
+    expect(res.taskBrief).toEqual(brief);
+    expect(recordIntentTaskBrief).toHaveBeenCalledOnce();
+    expect(recordIntentTaskBrief).toHaveBeenCalledWith({ workspace: 'ws-test', owner: 'su-test' }, brief);
+  });
+
+  it('records nothing for an unmeasured brief or with the intent flag off', async () => {
+    getIntentTimeTaskBrief.mockResolvedValueOnce({ taskBrief: { ...brief, status: 'unknown' } });
+    expect(parse(await declare()).taskBrief).toMatchObject({ status: 'unknown' });
+    setFlagOverridesForTest({ [FLAGS.CODE_INTEL_PUSH_INTENT]: false });
+    expect(parse(await declare()).taskBrief).toBeUndefined();
+    expect(getIntentTimeTaskBrief).toHaveBeenCalledOnce();
+    expect(recordIntentTaskBrief).not.toHaveBeenCalled();
+  });
+
+  it('a failed ledger write never fails the declaration', async () => {
+    getIntentTimeTaskBrief.mockResolvedValueOnce({ taskBrief: brief });
+    recordIntentTaskBrief.mockRejectedValueOnce(new Error('ledger down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = parse(await declare());
+      expect(res.ok).toBe(true);
+      expect(res.taskBrief).toEqual(brief);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('declare-intent:task-brief-ledger failed: ledger down'));
+    } finally { warn.mockRestore(); }
   });
 });

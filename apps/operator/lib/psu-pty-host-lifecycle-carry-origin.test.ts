@@ -15,7 +15,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { classify, readLedgerRows } from '@papercusp/operator-core/lib/turn-provenance/turn-provenance';
 
-import { stampUntaggedLifecycleCarry, tagSessionPortTurn } from '../scripts/psu-pty-host.mjs';
+import {
+  LIFECYCLE_CARRY_MODES,
+  decodeControl,
+  stampLifecycleControlCarry,
+  stampUntaggedLifecycleCarry,
+  tagSessionPortTurn,
+} from '../scripts/psu-pty-host.mjs';
 
 const SID = 'su-00000000-0000-4000-8000-lifecyclecarry';
 const KICKOFF = [
@@ -81,5 +87,57 @@ describe('stampUntaggedLifecycleCarry', () => {
       origin: 'session-port',
       matchedBy: 'nonce+hash',
     });
+  });
+});
+
+/**
+ * EI-26565736281520734: the stamp must cover every lifecycle mode, checked on
+ * the DECODED control message the socket handler sees. On 2026-10-21 an agent
+ * self-recycled with `{v:1, mode:'carry-respawn', data, ownerId}`. The handler
+ * stamped only reset/recycle, so that first prompt classified as owner-typed and
+ * became owner directive #2136.
+ */
+describe('stampLifecycleControlCarry (decoded control messages)', () => {
+  let dir: string;
+  let env: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'lifecycle-control-carry-'));
+    env = { PAPERCUSP_TURN_PROVENANCE_DIR: dir };
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('covers carry-respawn, the mode of the 2026-10-21 hand-built self-recycle', () => {
+    expect(LIFECYCLE_CARRY_MODES).toEqual(expect.arrayContaining(['reset', 'recycle', 'carry-respawn']));
+  });
+
+  it.each([...LIFECYCLE_CARRY_MODES])('stamps an untagged %s carry so it verifies as host-control', (mode) => {
+    const now = Date.now();
+    const msg = decodeControl(JSON.stringify({ v: 1, mode, data: KICKOFF, ownerId: SID }));
+    expect(msg.mode).toBe(mode);
+    expect(stampLifecycleControlCarry(msg, SID, env, now)).toBe(true);
+    expect(classify(msg.data, readLedgerRows(SID, { dir, nowMs: now }), { nowMs: now })).toMatchObject({
+      verdict: 'verified-agent',
+      origin: 'host-control',
+    });
+  });
+
+  it('leaves an already-enveloped carry-respawn unchanged', () => {
+    const tagged = `${LOOP_FIRE_MARKER}\nself-compaction continuation`;
+    const msg = decodeControl(JSON.stringify({ v: 1, mode: 'carry-respawn', data: tagged, ownerId: SID }));
+    expect(stampLifecycleControlCarry(msg, SID, env)).toBe(false);
+    expect(msg.data).toBe(tagged);
+    expect(readLedgerRows(SID, { dir, includeExpired: true })).toHaveLength(0);
+  });
+
+  it('does not stamp a live turn', () => {
+    const msg = decodeControl(JSON.stringify({ v: 1, mode: 'turn', data: 'hello', ownerId: SID }));
+    expect(msg.mode).toBe('turn');
+    expect(stampLifecycleControlCarry(msg, SID, env)).toBe(false);
+    expect(msg.data).toBe('hello');
+    expect(readLedgerRows(SID, { dir, includeExpired: true })).toHaveLength(0);
   });
 });

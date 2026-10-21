@@ -33,7 +33,8 @@ import {
   type SyncBatchFleetTally,
 } from './green-main-slo';
 
-type NonVerdictReasonFiling = { id: string; assignee: string } | { skipped: 'no-live-gate-owner' };
+type NonVerdictReasonSkip = 'no-live-gate-owner' | 'covered-by-closed-item';
+type NonVerdictReasonFiling = { id: string; assignee: string } | { skipped: NonVerdictReasonSkip };
 
 export interface GreenMainSloPassDeps {
   installSlug: string;
@@ -71,8 +72,11 @@ export interface GreenMainSloPassResult {
   readErrors: Array<{ input: 'lastGreenAt' | 'lastVerdictAt' | 'queue' | 'syncTallies' | 'nonVerdictReasons'; message: string }>;
   conditionErrors: string[];
   reasonItems: Array<{ reason: string; id: string; assignee: string }>;
-  /** Follow-ups intentionally skipped when no positively live gate owner can receive them. */
-  reasonFilingSkips: Array<{ reason: string; cause: 'no-live-gate-owner' }>;
+  /**
+   * Follow-ups intentionally skipped: no positively live gate owner can receive them, or an
+   * earlier item for the same reason was closed and too few new outcomes have arrived since.
+   */
+  reasonFilingSkips: Array<{ reason: string; cause: NonVerdictReasonSkip }>;
 }
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -289,11 +293,50 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
   return { slo, deliveries, readErrors, conditionErrors, reasonItems, reasonFilingSkips };
 }
 
+/**
+ * EI-26555742295077041: a closed reason item already answered every outcome counted before its
+ * close. The close nulls `condition_key`, so the create seam's open-key dedupe cannot see it,
+ * and the rolling-day count keeps including those same outcomes until they age out. Without this
+ * guard every close was followed by a fresh item for identical events
+ * (WI-6554700010018575 -> WI-6554700010018662 -> WI-6554700010018758, all one set of 7 rows).
+ */
+export interface NonVerdictReasonRefileGuard {
+  /** Newest close (epoch ms) of an earlier item this filer raised for the same install + reason; null if none. */
+  readLastClosedAtMs: () => Promise<number | null>;
+  /** Outcomes of this reason at or after `sinceMs`, counted exactly as readGateNonVerdictReasons counts them. */
+  countSince: (sinceMs: number) => Promise<number>;
+}
+
+/** Newest close of an earlier green-main-slo reason item for this exact install + reason. */
+export async function readLastClosedNonVerdictReasonItemMs(
+  sql: Sql,
+  target: { workspaceId: string; installSlug: string },
+  reason: string,
+): Promise<number | null> {
+  const rows = await sql<{ closed_ms: string | number | null }[]>`
+    SELECT max(closed_ts) AS closed_ms
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${target.workspaceId} AND harness_slug = ${target.installSlug}
+       AND payload->>'source' = 'green-main-slo' AND payload->>'reason' = ${reason}
+       AND status IN ('done', 'dropped', 'resolved', 'closed') AND closed_ts IS NOT NULL`;
+  const raw = rows[0]?.closed_ms;
+  if (raw == null) return null;
+  const ms = Number(raw);
+  if (!Number.isSafeInteger(ms) || ms <= 0) throw new Error(`closed reason item has an invalid closed_ts: ${String(raw)}`);
+  return ms;
+}
+
 /** Reuse the condition-key create/claim seam; adoption must never report an unowned success. */
 export async function fileRecurringNonVerdictReason(
   target: { workspaceId: string; installSlug: string },
   breach: GreenMainSloBreach,
+  refile: NonVerdictReasonRefileGuard,
 ): Promise<NonVerdictReasonFiling> {
+  // Re-file only on enough NEW outcomes since the last close; the pre-close ones were answered.
+  const closedAtMs = await refile.readLastClosedAtMs();
+  if (closedAtMs !== null && (await refile.countSince(closedAtMs)) < breach.threshold) {
+    return { skipped: 'covered-by-closed-item' };
+  }
   const { readGateOwnership, ownershipHeldByLiveHolder } = await import('../coord/gate-ownership');
   const { createOneWorkItem } = await import('../agent-tools/work_items/_create-core');
   const { claimWorkItem, getWorkItem } = await import('../work-items');
@@ -361,7 +404,11 @@ export async function checkGreenMainSlo(
       readLastGreenAtMs: async () => parseLastGreenAtMs(rows[0].last_green_at),
       readLastVerdictAtMs: async () => (await readVerdictRateWindow(sql, target)).lastVerdictBearingAtMs,
       readNonVerdictReasons: () => readGateNonVerdictReasons(sql, target, nowMs),
-      fileNonVerdictReason: (breach) => fileRecurringNonVerdictReason(target, breach),
+      fileNonVerdictReason: (breach) => fileRecurringNonVerdictReason(target, breach, {
+        readLastClosedAtMs: () => readLastClosedNonVerdictReasonItemMs(sql, target, breach.subject ?? ''),
+        countSince: async (sinceMs) => (await readGateNonVerdictReasons(sql, target, nowMs, { sinceMs }))
+          .reasons.find((r) => r.reason === breach.subject)?.count ?? 0,
+      }),
       readQueue: async () => {
         const q = await readFrozenCandidateRepairQueueState(target);
         if (q.status === 'value') return q.queue;

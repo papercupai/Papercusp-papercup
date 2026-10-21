@@ -64,6 +64,7 @@ import { declareChangeKinds } from '../../work-item-change-kinds';
 import { stampFiledBugReproduction } from '../../attention/bug-reproduction';
 import { defaultReproductionLedgerDeps } from '../../attention/intake-promotion';
 import { CREATE_RECEIPT, toWorkItemReceipt } from './receipt';
+import { deployWaitAdvisory } from './deploy-wait-advisory';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -801,6 +802,11 @@ export default defineTool({
                   'fleet lane instead of surfacing later as an orphaned, untracked item.',
               }
             : {};
+        // staging-build-tool-routing-2026-10-21 R-5 non-blocking nudge: a new item whose
+        // title/summary defers non-final work behind the :3070 deploy is told the staging
+        // route at filing time. Advisory only — the item above is already created.
+        const deployWaitText = deployWaitAdvisory(spec.title, spec.summary);
+        const deployWaitNudge = deployWaitText ? { deployWaitAdvisory: deployWaitText } : {};
         // EI-20450339646861882 non-blocking nudge: a high-severity issue filed while the
         // caller holds a declared plan lane, carrying NO plan-item edge of any kind, is
         // the exact failure that item describes — such a row is invisible in BOTH
@@ -892,6 +898,7 @@ export default defineTool({
           ...changeKindsOut,
           ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
           ...residualLinkNudge,
+          ...deployWaitNudge,
           // EI-20450339646861882: filed, but nothing links it to the plan lane the
           // caller is on — advisory, never fatal (a filing must not fail over an edge).
           ...planItemBlockerNudge,

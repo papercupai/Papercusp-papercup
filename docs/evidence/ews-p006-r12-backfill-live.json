@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 / R-12 live unprovable-wait backfill reading on the operator database (event-wait-settlement-2026-10-20)",
+  "framework": "operational",
+  "command": [
+    "node",
+    "docs/evidence/ews-p006-r12-backfill-live/run.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T05:47:03.819Z",
+  "finishedAt": "2026-10-21T05:47:13.284Z",
+  "plan": "event-wait-settlement-2026-10-20",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010018158",
+  "specIds": [
+    "AUTO-BAR-R-12-P-006@3"
+  ],
+  "evidencePlane": "live",
+  "summary": "The R-12 probe (docs/evidence/ews-p006-r12-backfill-live/probe.sql) read every active event/gate wait on a non-terminal papercusp-workspace item and returned 404|344|51|9|0|0|299|0|0: 404 active wait(s) = 344 with a re-check date + 51 on a concrete condition-proving key + 9 on a live announced key + 0 on an already-fired announced key + 0 unprovable with no re-check date. The backfill (system:unprovable-wait-backfill) has stamped 299 row(s) across all items, cleared 0, and 0 stamped row(s) went inactive with no recorded clearer. The committed oracle judged it PASS. All six negative controls failed on their targeted assertion as required.",
+  "assertions": [
+    {
+      "id": "live:every-wait-classified-once",
+      "passed": true,
+      "evidence": "stamped=344 + proving_concrete=51 + announced_live=9 + announced_fired=0 + unprovable_unstamped=0 = 404; active_waits=404; row 404|344|51|9|0|0|299|0|0"
+    },
+    {
+      "id": "live:no-unprovable-unstamped",
+      "passed": true,
+      "evidence": "unprovable_unstamped=0 (active event/gate rows with no re-check date that are neither a concrete condition-proving key nor announced); row 404|344|51|9|0|0|299|0|0"
+    },
+    {
+      "id": "live:none-cleared-by-backfill",
+      "passed": true,
+      "evidence": "backfill_cleared=0 (rows whose clearedBy is system:unprovable-wait-backfill); row 404|344|51|9|0|0|299|0|0"
+    },
+    {
+      "id": "live:no-unattributed-clear",
+      "passed": true,
+      "evidence": "stamped_inactive_unattributed=0 (backfill-stamped rows no longer active with no clearedBy); row 404|344|51|9|0|0|299|0|0"
+    },
+    {
+      "id": "live:backfill-observed",
+      "passed": true,
+      "evidence": "backfill_stamped_rows=299 (rows whose recheckSource is system:unprovable-wait-backfill); row 404|344|51|9|0|0|299|0|0"
+    },
+    {
+      "id": "control-no-stamps:fails-on-no-unprovable-unstamped",
+      "passed": true,
+      "evidence": "re-check dates ignored: a database the backfill never stamped must fail; row 404|0|53|22|8|321|299|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
+    },
+    {
+      "id": "control-no-announcements:fails-on-no-unprovable-unstamped",
+      "passed": true,
+      "evidence": "live announcements ignored: an unstamped announced wait must then count as unprovable; row 404|344|51|0|0|9|299|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
+    },
+    {
+      "id": "control-no-concrete-keys:fails-on-no-unprovable-unstamped",
+      "passed": true,
+      "evidence": "concrete condition-proving keys ignored: an unstamped proving wait must then count as unprovable; row 404|344|0|9|0|51|299|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
+    },
+    {
+      "id": "control-cleared-counts:fails-on-none-cleared-by-backfill",
+      "passed": true,
+      "evidence": "every cleared row attributed to the backfill: the cleared-row count must be able to fail; row 404|344|51|9|0|0|299|2920|0; oracle passed=false; failing assertions: none-cleared-by-backfill"
+    },
+    {
+      "id": "control-unattributed:fails-on-no-unattributed-clear",
+      "passed": true,
+      "evidence": "every stamped row treated as cleared with no clearer: the fail-closed count must be able to fail; row 404|344|51|9|0|0|299|0|299; oracle passed=false; failing assertions: no-unattributed-clear"
+    },
+    {
+      "id": "control-backfill-actor:fails-on-backfill-observed",
+      "passed": true,
+      "evidence": "the backfill actor renamed to one that never wrote: a database the backfill never reached must fail; row 404|344|51|9|0|0|0|0|0; oracle passed=false; failing assertions: backfill-observed"
+    }
+  ],
+  "environment": {
+    "database": "papercusp (native PG :5432)",
+    "workspace": "papercusp-workspace",
+    "reader": "sudo -n -u postgres psql -q -At (BEGIN READ ONLY ... ROLLBACK)",
+    "launchedBy": "su-42565716-6d11-4087-93d3-1b2b0d5ded7b"
+  },
+  "sourceBlobs": {
+    "packages/operator-core/lib/attention/work-item-blocker-reaper.ts": "95d48f5ddaf7f655b6a039e73e721a9c0aa2a173",
+    "packages/operator-core/lib/events/await/catalog.ts": "85995a43476b49edfe261baf29050b26a44ee538",
+    "scripts/lib/unprovable-wait-backfill-live-oracle.mjs": "35245f7c5a327430374047baa7cd13e2add48bc3"
+  },
+  "artifacts": {
+    "docs/evidence/ews-p006-r12-backfill-live/run.mjs": "sha256:345cf4610f3eb90f512830197b427d5839f2694fd68eb5c0b323e2d6de3125d3",
+    "docs/evidence/ews-p006-r12-backfill-live/probe.sql": "sha256:17690679e2437e329bbedd2054dc4e9672c3f30171246a20c7389a4a1077026a",
+    "docs/evidence/ews-p006-r12-backfill-live/probe.sql#control-no-stamps": "sha256:9db8530f585af5e82361ae8ce7deb85556727c513000f6e10b99647dd9d20322",
+    "docs/evidence/ews-p006-r12-backfill-live/probe.sql#control-no-announcements": "sha256:65480bb83b6037dfd7fac9bd4051d07a552516077738d1a25d8e15d0067da685",
+    "docs/evidence/ews-p006-r12-backfill-live/probe.sql#control-no-concrete-keys": "sha256:947487533ed3c0fbac7ea110cfedb20fef46ccadaed4e1a3e45a76253a4f97b4",
+    "docs/evidence/ews-p006-r12-backfill-live/probe.sql#control-cleared-counts": "sha256:b114bab937c4f0f4c62f1fa023fbac84fc377931554439a623cff8967c69b5f7",
+    "docs/evidence/ews-p006-r12-backfill-live/probe.sql#control-unattributed": "sha256:e626fbdde068869f51ac254db681eca96879a6de582b2d8b6e2202d1d45f8303",
+    "docs/evidence/ews-p006-r12-backfill-live/probe.sql#control-backfill-actor": "sha256:3ef423fa8f9b992560264bf2386bf58c68e7727a62acd84ed29b8f8379068cb9"
+  },
+  "limitations": [
+    "One live reading, not a continuous observation: a wait written through an old build (one without wait-ref-admission) after this reading is not covered until the backfill and this probe are re-run.",
+    "Provability is decided by the probe independently of readEventConditionReachability: a concrete key of a catalog family whose fire proves the condition, or an exact live announcement. A provable wait of another shape (a predicate watch) would be reported as unprovable — fail-closed, and none exists at this reading.",
+    "The reading judges the outcome (no unprovable wait left without a re-check date, none cleared by the backfill), not the backfill code path; the code path is covered by the tree evidence bound to the same clause (work-item-blocker-reaper.test.ts and its mutation runs)."
+  ],
+  "instrument": {
+    "path": "scripts/lib/unprovable-wait-backfill-live-oracle.mjs",
+    "testPath": "scripts/lib/unprovable-wait-backfill-live-oracle.test.ts",
+    "role": "Every pass/fail decision on the probe rows is taken by this committed oracle; run.mjs only executes the SQL and records output. The oracle test also pins the probe's terminal-state and condition-family lists to the code."
+  }
+}

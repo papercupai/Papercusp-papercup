@@ -3271,6 +3271,23 @@ export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = pro
   return { configLoaderArgs: selected === null ? [] : ['--configLoader', selected], vitestArgs: remaining };
 }
 
+/** Match with-test-pg's explicit, reporter-only evidence contract before the
+ * immutable source/dependency copy. Never infer this sink from a product DSN. */
+export function assertPrivateIntegrationEvidence(env = process.env) {
+  const sink = env.PAPERCUSP_TEST_RUNS_DB_URL;
+  if (sink !== undefined) {
+    if (!sink.trim()) throw new Error('PAPERCUSP_TEST_RUNS_DB_URL must not be blank');
+    try {
+      const url = new URL(sink.trim());
+      if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') throw new Error('unsupported protocol');
+    } catch {
+      throw new Error('PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL');
+    }
+  }
+  if ((env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim() || env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) && !sink?.trim())
+    throw new Error('PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+}
+
 /** Select the maintained immutable command route before collecting a committed
  * private proof. Ordinary local guards remain runnable from working source. */
 export function privateIntegrationVerifierInputs(root, files, env = process.env, execArgv = process.execArgv) {
@@ -3476,6 +3493,7 @@ export async function main(
     try {
       const inputs = privateIntegrationVerifierInputs(repoRoot, routes.map(route => route.absolute));
       if (inputs) {
+        assertPrivateIntegrationEvidence();
         const privatePg = await preflightPrivateIntegrationPgImpl();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
         const ref = head?.stdout?.trim();

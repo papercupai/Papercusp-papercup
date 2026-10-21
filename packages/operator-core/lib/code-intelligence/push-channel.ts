@@ -1,6 +1,7 @@
 /** P-034/D-016: one code-intelligence leg at the existing PostToolBatch sink. */
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, posix, relative } from 'node:path';
+import type { Sql, TransactionSql } from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
@@ -11,6 +12,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import type { TaskBrief } from './task-brief';
 import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
 import { FACT_FILE_ANCHOR_PREFIX, foldCodeNotesForPaths, isCodeNoteKey, isFactFileAnchor, type AgentFact } from '../agent-facts/store';
 import type { FactDependencyStaleness } from '../agent-tools/facts/dependency-staleness';
@@ -24,7 +26,11 @@ export const CODE_INTEL_PUSH_WALL_MS = 250;
 export const PUSH_LEG_FLAGS = {
   grep: FLAGS.CODE_INTEL_PUSH_GREP, 'first-touch': FLAGS.CODE_INTEL_PUSH_FIRST_TOUCH,
   interface: FLAGS.CODE_INTEL_PUSH_INTERFACE, incident: FLAGS.CODE_INTEL_PUSH_INCIDENT,
-  completion: FLAGS.CODE_INTEL_PUSH_COMPLETION, intent: FLAGS.CODE_INTEL_PUSH_INTENT,
+  completion: FLAGS.CODE_INTEL_PUSH_COMPLETION,
+  // No registered hook leg: this flag gates the task brief coord:declare-intent returns for
+  // current_files (declare-intent.ts -> task-brief.ts getIntentTimeTaskBrief), recorded by
+  // recordIntentTaskBrief (WI-6554700010018439).
+  intent: FLAGS.CODE_INTEL_PUSH_INTENT,
   resume: FLAGS.CODE_INTEL_PUSH_RESUME, notes: FLAGS.CODE_INTEL_PUSH_NOTES,
 } as const;
 export type PushLegId = keyof typeof PUSH_LEG_FLAGS;
@@ -56,6 +62,16 @@ export interface PushFact {
   citedPaths: readonly string[];
   suggestedCall?: string;
   sourceHashes?: readonly PushProofSource[];
+}
+/** WI-6554700010018440: a fact dropped whole for budget, recorded in code_intel_push_skips.
+ * `request-budget` = the request's share (1,500 minus the memory block) was strictly the
+ * binding limit; `turn-budget` = the turn's own code-intel spend was (including a tie,
+ * where memory took nothing and code intelligence filled the turn itself). */
+interface PushSkip {
+  fact: PushFact;
+  chars: number;
+  budgetLeft: number;
+  site: 'request-budget' | 'turn-budget';
 }
 /** Measured attribution supplied by the incident caller. Static reach alone is
  * never upgraded to a change or work-item claim; callers must provide these
@@ -799,12 +815,38 @@ export interface PushChannelDeps {
   incidentContext?(input: PushInput, paths: string[]): Promise<IncidentAttribution>;
   resumeContext?(input: PushInput): Promise<ResumeContext>;
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
-  commit(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[], requestBudget: number, signal: AbortSignal): Promise<string>;
+  /** `dropped`: facts the request already found too big for `requestBudget`; the commit
+   * classifies and records them with its own budget drops (WI-6554700010018440). */
+  commit(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[], requestBudget: number, signal: AbortSignal,
+    dropped: readonly PushFact[]): Promise<string>;
+}
+
+const skipSite = (requestLeft: number, turnLeft: number): PushSkip['site'] =>
+  requestLeft < turnLeft ? 'request-budget' : 'turn-budget';
+
+/** WI-6554700010018440: budget drops, written beside the deliveries. Telemetry only: the
+ * savepoint keeps a failed write from rolling back the facts this request delivered. A fact
+ * already delivered this epoch is not a budget loss, so it is not recorded. */
+async function recordPushSkips(tx: Sql, input: PushInput, epoch: number, turn: string,
+  skips: readonly PushSkip[]): Promise<void> {
+  if (typeof (tx as Sql & Partial<Pick<TransactionSql, 'savepoint'>>).savepoint !== 'function') return;
+  try {
+    await (tx as unknown as TransactionSql).savepoint(sp => sp`INSERT INTO harness_shared.code_intel_push_skips
+      (workspace_id, owner_id, epoch, turn_id, leg, subject, chars, budget_left, site, client)
+      SELECT ${input.workspace}, ${input.owner}, ${epoch}, ${turn}, s.leg, s.subject, s.chars, s.budget_left, s.site, ${input.client ?? null}
+      FROM unnest(${skips.map(s => s.fact.leg)}::text[], ${skips.map(s => s.fact.subject)}::text[],
+        ${skips.map(s => s.chars)}::int[], ${skips.map(s => s.budgetLeft)}::int[], ${skips.map(s => s.site)}::text[])
+        AS s(leg, subject, chars, budget_left, site)
+      WHERE NOT EXISTS (SELECT 1 FROM harness_shared.code_intel_pushes p
+        WHERE p.workspace_id = ${input.workspace} AND p.owner_id = ${input.owner} AND p.epoch = ${epoch}
+          AND p.leg = s.leg AND p.subject = s.subject)
+      ON CONFLICT (workspace_id, owner_id, turn_id, leg, subject) DO NOTHING`);
+  } catch (error) { console.warn('[code-intel-push] skip record failed:', String(error).slice(0, 200)); }
 }
 
 /** One transaction serializes both the turn ceiling and session dedupe across cluster workers. */
 export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[],
-  requestBudget: number, signal: AbortSignal): Promise<string> {
+  requestBudget: number, signal: AbortSignal, dropped: readonly PushFact[] = []): Promise<string> {
   return withWorkspace(input.workspace, async tx => {
     // The hook must not leave a slow query behind after its response deadline.
     await tx`SELECT set_config('lock_timeout', '100ms', true), set_config('statement_timeout', '150ms', true)`;
@@ -816,25 +858,72 @@ export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, 
     if (!turn || signal.aborted) return '';
     const epochs = await tx<{ epoch: number }[]>`SELECT epoch FROM harness_shared.memory_session_epochs WHERE session_id = ${input.owner}`;
     const epoch = Number(epochs[0]?.epoch ?? 0);
+    // The intent leg's rows are tool-result briefs, never hook text (recordIntentTaskBrief).
     const spent = await tx<{ chars: number }[]>`SELECT COALESCE(SUM(chars), 0)::int AS chars FROM harness_shared.code_intel_pushes
-      WHERE workspace_id = ${input.workspace} AND owner_id = ${input.owner} AND turn_id = ${turn}`;
-    let left = Math.min(requestBudget, CODE_INTEL_PUSH_TURN_CHARS - Number(spent[0]?.chars ?? 0));
+      WHERE workspace_id = ${input.workspace} AND owner_id = ${input.owner} AND turn_id = ${turn} AND leg <> 'intent'`;
+    let requestLeft = requestBudget;
+    let turnLeft = CODE_INTEL_PUSH_TURN_CHARS - Number(spent[0]?.chars ?? 0);
+    const skips: PushSkip[] = dropped.map(fact => ({ fact, chars: formatPushFact(fact, snapshot).length + 2,
+      budgetLeft: Math.max(0, Math.min(requestLeft, turnLeft)), site: skipSite(requestLeft, turnLeft) }));
     const text: string[] = [];
     for (const fact of facts) {
       const block = formatPushFact(fact, snapshot);
       const chars = block.length + 2;
+      const left = Math.min(requestLeft, turnLeft);
       if (signal.aborted) throw new Error('code-intel push cancelled');
-      if (chars > left) continue; // Never cut a qualifier or citation off a fact.
+      if (chars > left) { // Never cut a qualifier or citation off a fact.
+        skips.push({ fact, chars, budgetLeft: Math.max(0, left), site: skipSite(requestLeft, turnLeft) });
+        continue;
+      }
       const inserted = await tx<{ id: number }[]>`INSERT INTO harness_shared.code_intel_pushes
         (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, snapshot_generated_at, cited_paths, suggested_call, chars, client)
         VALUES (${input.workspace}, ${input.owner}, ${epoch}, ${turn}, ${fact.leg}, ${fact.subject}, ${snapshot.commit},
           ${snapshot.generatedAt}::timestamptz, ${[...fact.citedPaths]}::text[], ${fact.suggestedCall ?? null}, ${chars}, ${input.client ?? null})
         ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING RETURNING id`;
-      if (inserted.length) { text.push(block); left -= chars; }
+      if (inserted.length) { text.push(block); requestLeft -= chars; turnLeft -= chars; }
     }
+    if (skips.length && !signal.aborted) await recordPushSkips(tx, input, epoch, turn, skips);
     if (signal.aborted) throw new Error('code-intel push cancelled');
     return text.join('\n\n');
   });
+}
+
+/** WI-6554700010018439: the intent leg delivers through a TOOL RESULT, not this hook. When
+ * coord:declare-intent is given current_files, it returns the task brief from
+ * getIntentTimeTaskBrief (task-brief.ts). This records one ledger row per delivered brief so
+ * the push-outcome instrument measures the leg like the others. Unlike hook facts, the brief
+ * is not budgeted here: it has its own TASK_BRIEF_MAX_CHARS cap and never shares the hook
+ * response, so commitPushFacts excludes leg 'intent' from the per-turn spend. A brief that
+ * measured nothing (status 'unknown', for example a timed-out read) delivered no code facts
+ * and is not recorded. Best-effort: returns false instead of failing the declaration. */
+export async function recordIntentTaskBrief(input: { workspace: string; owner: string; client?: string },
+  brief: Pick<TaskBrief, 'status' | 'intent' | 'sourceFingerprint' | 'commit' | 'files' | 'recover'>): Promise<boolean> {
+  if (brief.status !== 'current' || !input.workspace || !input.owner) return false;
+  const subject = `${brief.intent?.fingerprint ?? 'no-intent'}:${brief.sourceFingerprint ?? 'unmeasured'}`.slice(0, 1000);
+  const citedPaths = [...new Set(brief.files.map(file => file.path))].filter(safeSnapshotPath).slice(0, 20);
+  const suggestedCall = `${brief.recover.tool} ${JSON.stringify(brief.recover.args)}`.slice(0, 1000);
+  const chars = JSON.stringify(brief).length;
+  try {
+    return await withWorkspace(input.workspace, async tx => {
+      await tx`SELECT set_config('lock_timeout', '100ms', true), set_config('statement_timeout', '150ms', true)`;
+      await tx`INSERT INTO harness_shared.identity_hook_turns (workspace_id, owner_id, turn_id)
+        VALUES (${input.workspace}, ${input.owner}, ${randomUUID()}) ON CONFLICT DO NOTHING`;
+      const turns = await tx<{ turn_id: string }[]>`SELECT turn_id FROM harness_shared.identity_hook_turns
+        WHERE workspace_id = ${input.workspace} AND owner_id = ${input.owner}`;
+      const turn = turns[0]?.turn_id;
+      if (!turn) return false;
+      const epochs = await tx<{ epoch: number }[]>`SELECT epoch FROM harness_shared.memory_session_epochs WHERE session_id = ${input.owner}`;
+      const inserted = await tx<{ id: number }[]>`INSERT INTO harness_shared.code_intel_pushes
+        (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, cited_paths, suggested_call, chars, client)
+        VALUES (${input.workspace}, ${input.owner}, ${Number(epochs[0]?.epoch ?? 0)}, ${turn}, 'intent', ${subject},
+          ${brief.commit}, ${citedPaths}::text[], ${suggestedCall}, ${chars}, ${input.client ?? null})
+        ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING RETURNING id`;
+      return inserted.length > 0;
+    });
+  } catch (error) {
+    console.warn('[code-intel-push] intent brief record failed:', String(error).slice(0, 200));
+    return false;
+  }
 }
 
 export function formatPushFact(fact: PushFact, snapshot: PushSnapshot): string {
@@ -901,6 +990,7 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
         .catch(() => ({ value: undefined }))
       : null;
     const facts: PushFact[] = [];
+    const dropped: PushFact[] = [];
     // Consequences take precedence over a first-touch brief for the same edit.
     for (const [id, leg] of [...deps.legs()].sort(([a], [b]) => Number(b === 'interface') - Number(a === 'interface'))) {
       if (signal.aborted || !await deps.enabled(PUSH_LEG_FLAGS[id])) continue;
@@ -934,16 +1024,25 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
         }
         for (const fact of candidates) {
           if (id === 'first-touch' && facts.some(f => f.leg === 'interface' && f.citedPaths[0] === fact.subject)) continue;
-          if (fact.leg === id && fact.subject.length <= 1000 && fact.subject.trim() && fact.text.trim()
-            && fact.citedPaths.every(safeSnapshotPath)
-            && formatPushFact(fact, snapshot).length + 2 <= requestBudget
-            && (!fact.sourceHashes || await corroboratePushSources(input.root, fact.sourceHashes, signal))) facts.push(fact);
+          if (fact.leg !== id || fact.subject.length > 1000 || !fact.subject.trim() || !fact.text.trim()
+            || !fact.citedPaths.every(safeSnapshotPath)) continue;
+          const chars = formatPushFact(fact, snapshot).length + 2;
+          // WI-6554700010018440: too big for this request's share, so dropped whole and
+          // recorded. Not source-corroborated first: that check costs wall time for a
+          // fact that cannot be delivered either way.
+          if (chars > requestBudget) {
+            if (dropped.length < 12) dropped.push(fact);
+            continue;
+          }
+          if (!fact.sourceHashes || await corroboratePushSources(input.root, fact.sourceHashes, signal)) facts.push(fact);
           if (facts.length >= 12) break;
         }
       } catch (error) { console.warn(`[code-intel-push] ${id} failed:`, String(error).slice(0, 200)); }
       if (facts.length >= 12) break;
     }
-    return facts.length && !signal.aborted ? deps.commit(input, snapshot, facts, requestBudget, signal) : '';
+    // A request whose only candidates were dropped still commits, to record the skips.
+    return (facts.length || dropped.length) && !signal.aborted
+      ? deps.commit(input, snapshot, facts, requestBudget, signal, dropped) : '';
   }, { timeoutMs: CODE_INTEL_PUSH_WALL_MS, fallback: '', label: 'code-intel-push' });
   return result.value;
 }

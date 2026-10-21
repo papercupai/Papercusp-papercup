@@ -218,7 +218,7 @@ describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph pla
     const claims = call('locks:queue', claimArgs);
     for (const path of [consumer, 'packages/operator-core/lib/code-intelligence/first-party-callers.ts',
       'packages/operator-core/lib/code-intelligence/first-party-traversal.ts']) {
-      const route = call('dev:pipeline_position', { path, testClass: 'operator-api',
+      const route = projectedRoute({ path, testClass: 'operator-api',
         projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
       expect(route.currentBuildTestRoute.readiness).toBe('ready');
       expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
@@ -363,7 +363,7 @@ describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real
     // This test creates no work items and does not steal another session's lane.
     expect(subject.assignee).toBe(identity.ownerId);
     expect(subject.payload?.paths?.length, 'Task brief fixture requires stored payload.paths on its caller-owned item').toBeGreaterThan(0);
-    const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/code-intelligence/task-brief.ts',
+    const route = projectedRoute({ path: 'packages/operator-core/lib/code-intelligence/task-brief.ts',
       testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
     expect(route.currentBuildTestRoute.readiness).toBe('ready');
     expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
@@ -461,9 +461,19 @@ function call(name: string, args: Record<string, unknown>) {
   return nativeCliCall(baseUrl!, name, args);
 }
 
+/**
+ * Projected current-build route read. dev:pipeline_position marks unpicked
+ * prose fields (verdict detail) as text-truncated, so its door is a
+ * non-recoverable projected partial; accept only the complete projection item,
+ * exactly as P014/P021 do. Every other read stays fail-closed.
+ */
+function projectedRoute(args: Record<string, unknown> & { projection: { pick: string[] } }) {
+  return nativeCliCall(baseUrl!, 'dev:pipeline_position', args, spawnSync, { allowProjectedPartial: true });
+}
+
 describe.runIf(Boolean(baseUrl))('native P010 required BAR real CLI change report', () => {
   it('cites both reference consumers and rechecks the remaining consumer after a source edit', async () => {
-    const route = call('dev:pipeline_position', {
+    const route = projectedRoute({
       path: 'packages/operator-core/lib/agent-tools/lsp/pack.ts', testClass: 'operator-api',
       marker: 'previousFingerprint', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] },
     });

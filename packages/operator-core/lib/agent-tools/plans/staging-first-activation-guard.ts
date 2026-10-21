@@ -342,6 +342,23 @@ function isFinalLifecycleText(text: string): boolean {
 }
 
 /**
+ * Filing-time classifier (staging-build-tool-routing-2026-10-21 R-5): the clauses of a NEW
+ * work-item's title + summary that defer its work behind main/:3070/green-checkpoint/deploy.
+ * Same clause matcher and narrow deployed-only exception as the blocker and activation guards,
+ * so all three agree on what a non-final deploy wait is. Empty for final lifecycle or
+ * gate-repair work, for a stated deployed-only property, and for a clause that names only
+ * staging. Advisory input — `work_items:create` never refuses on it.
+ */
+export function nonFinalDeployWaitClauses(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed || isFinalLifecycleText(trimmed)) return [];
+  if (hasNarrowDeployedMainException(neutralizePlanIdentifiers(trimmed))) return [];
+  return strongDeployedGateClauses(trimmed).filter(
+    (clause) => !(EXPLICIT_STAGING_ENV_RE.test(clause) && !MAIN_RELEASE_BLOCKER_RE.test(clause)),
+  );
+}
+
+/**
  * Activation-time guard for plans that accidentally serialize ordinary implementation
  * behind the release plane. It is deliberately plan-local and conservative: only strong
  * wait/gate language is rejected, while final lifecycle work and a concrete deployed-only

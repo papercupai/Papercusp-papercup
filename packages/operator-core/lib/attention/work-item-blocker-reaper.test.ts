@@ -571,6 +571,14 @@ describe('backfillUnprovableWaitRecheckDates (P-006)', () => {
       verdict: 'unknown', basis: 'unmeasured', authoritative: false, evidence: 'reachability resolver failed: boom',
       checkedAt: NOW.toISOString(),
     },
+    'fleet:x:expired-gate': {
+      verdict: 'impossible', basis: 'expired-registration', authoritative: true,
+      evidence: 'the latest authoritative producer registration expired', checkedAt: NOW.toISOString(),
+    },
+    'harness:x:cancelled-gate': {
+      verdict: 'impossible', basis: 'cancelled-registration', authoritative: true,
+      evidence: 'the latest authoritative producer registration was cancelled', checkedAt: NOW.toISOString(),
+    },
   };
   const row = (over: Partial<ExternalBlockerRecord> & { ref: string }) =>
     blocker({ kind: 'event', capability: 'live-dependency', decideBy: undefined, defaultAction: undefined,
@@ -661,6 +669,32 @@ describe('backfillUnprovableWaitRecheckDates (P-006)', () => {
     expect(await backfillUnprovableWaitRecheckDates({ now: NOW, deps: raced.deps })).toMatchObject({
       unprovable: 1, stamped: 0, skipped: { 'lost-race': 1 },
     });
+  });
+
+  it('AUTO-BAR-R-12-P-006: stamps an announced wait whose registration expired or was cancelled, and clears none', async () => {
+    const waits = [row({ ref: 'fleet:x:expired-gate' }), row({ kind: 'gate', ref: 'harness:x:cancelled-gate' })];
+    const { deps, writes } = backfillDeps({ 'WI-A': { externalBlockers: waits } });
+
+    const out = await backfillUnprovableWaitRecheckDates({ now: NOW, deps });
+
+    expect(out).toMatchObject({ examined: 2, unprovable: 2, stamped: 2, provable: 0, skipped: {} });
+    expect(out.byReason).toEqual({ 'expired-registration': 1, 'cancelled-registration': 1 });
+    const after = writes[0]!.blockers as Array<Record<string, unknown>>;
+    expect(after.map((b) => [b.status, b.recheckAt])).toEqual([['active', NOW.toISOString()], ['active', NOW.toISOString()]]);
+  });
+
+  it('AUTO-BAR-R-12-P-006: retries an unmeasured classification once and stamps the row when the retry measures it', async () => {
+    const payloads: Record<string, unknown> = { 'WI-A': { externalBlockers: [row({ ref: 'gate:uncatalogued:x' })] } };
+    const { deps, classify } = backfillDeps(payloads);
+    classify
+      .mockResolvedValueOnce(VERDICTS['flaky:resolver']!)
+      .mockResolvedValueOnce(VERDICTS['waiting on the vendor reply']!);
+
+    const out = await backfillUnprovableWaitRecheckDates({ now: NOW, deps });
+
+    expect(out).toMatchObject({ unprovable: 1, stamped: 1, skipped: {} });
+    expect(classify).toHaveBeenCalledTimes(2);
+    expect(readExternalBlockers(payloads['WI-A'])[0]!.recheckAt).toBe(NOW.toISOString());
   });
 
   it('classifies each distinct ref once per run', async () => {

@@ -461,6 +461,10 @@ describe('assembleRolePrompt — deploy-pipeline note (deploy-pipeline-legibilit
     expect(out.text).toContain('reserved ONLY for final promotion and shipment verification');
     expect(out.text).toContain('held or red green-checkpoint gate does NOT block non-final work');
     expect(out.text).toContain('explicitly names the deployed-only property');
+    // staging-build-tool-routing-2026-10-21 R-4: the per-call staging route + the post-ship split
+    expect(out.text).toContain("`tools:invoke { name, args, build: 'staging' }`");
+    expect(out.text).toContain("`tools:find { query, build: 'staging' }`");
+    expect(out.text).toContain('SEPARATE post-ship item that names that property');
     expect(out.text).toContain('dev:pipeline_position');
     expect(out.text).toContain(':3070 serves GREEN `main`');
     // owner-directed reframe (2026-06-23): a RED gate is everyone's job to fix — no owner-ask, even out of lane

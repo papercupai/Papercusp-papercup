@@ -641,9 +641,11 @@ export const defaultUnprovableWaitBackfillDeps: UnprovableWaitBackfillDeps = {
 /**
  * event-wait-settlement-2026-10-20 P-006 (D-001 item 1, R-12): give every pre-existing active
  * event/gate wait that no fire can prove a re-check date of `now`, so the next re-check sweep
- * (sweepWorkItemBlockerDefaults above) escalates it to its holder. It CLEARS NOTHING — the
+ * (sweepWorkItemBlockerDefaults above) escalates it to its holder. "No fire can prove" covers an
+ * unprovable ref (broad, uncatalogued, change notification) and an announced key whose producer
+ * registration expired or was cancelled (verdict impossible). It CLEARS NOTHING — the
  * owner ruled these are neither cleared nor left silent — and never touches a row that
- * already has a recheckAt, a provable row, or a row whose classification failed. New
+ * already has a recheckAt, a provable row, or a row whose classification failed twice. New
  * unprovable waits are refused at write (wait-ref-admission.ts), so this is a backfill of the
  * existing population; it is idempotent (a stamped row is no longer a candidate).
  *
@@ -685,15 +687,25 @@ export async function backfillUnprovableWaitRecheckDates(opts?: {
         if (!ref || entry.recheckAt != null || PLAN_LANE_REF_RE.test(ref)) continue;
         result.examined += 1;
         let verdict = verdicts.get(ref);
-        if (!verdict) { verdict = deps.classify(ref); verdicts.set(ref, verdict); }
+        if (!verdict) {
+          // A ledger read that fails under load comes back `unmeasured`; retry it once, so one slow
+          // read does not leave the row unstamped (it did on the first live run, 2026-10-21).
+          verdict = deps.classify(ref).then((first) =>
+            !first.uncertifiedReason && first.basis === 'unmeasured' ? deps.classify(ref) : first);
+          verdicts.set(ref, verdict);
+        }
         const reachability = await verdict;
-        if (!reachability.uncertifiedReason) {
+        // An announced wait whose producer registration expired or was cancelled can never fire
+        // either, so it is stamped like an unprovable ref rather than left to strand silently.
+        const reason = reachability.uncertifiedReason
+          ?? (reachability.verdict === 'impossible' ? reachability.basis : undefined);
+        if (!reason) {
           if (reachability.basis === 'unmeasured') skip('unmeasured');
           else result.provable += 1;
           continue;
         }
         result.unprovable += 1;
-        result.byReason[reachability.uncertifiedReason] = (result.byReason[reachability.uncertifiedReason] ?? 0) + 1;
+        result.byReason[reason] = (result.byReason[reason] ?? 0) + 1;
         entry.recheckAt = now.toISOString();
         entry.recheckSource = UNPROVABLE_WAIT_BACKFILL_ACTOR;
         entry.reachability = reachability;

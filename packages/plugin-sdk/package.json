@@ -31,6 +31,11 @@
       "import": "./src/provider-daemon.ts",
       "default": "./src/provider-daemon.ts"
     },
+    "./provider-faults": {
+      "types": "./src/provider-faults.ts",
+      "import": "./src/provider-faults.ts",
+      "default": "./src/provider-faults.ts"
+    },
     "./provider-conformance": {
       "types": "./src/provider-conformance.ts",
       "import": "./src/provider-conformance.ts",

@@ -203,6 +203,26 @@ describe('P012 bounded scoped task briefs', () => {
       expect(vi.mocked(deps.graph).mock.calls[0]![4]).toBeLessThan(TASK_BRIEF_BUDGET_MS);
     } finally { now.mockRestore(); }
   }, 10_000);
+  it('names the capture phase in flight when the claim-time deadline fallback wins', async () => {
+    // A hung safe pack must surface as an honest unknown that says WHERE the
+    // budget went; a bare "exceeded its deadline" was undiagnosable (WI-10007889 P018).
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    const deps = depsFor(root);
+    let packStarted: () => void = () => {};
+    const started = new Promise<void>(resolve => { packStarted = resolve; });
+    deps.pack = vi.fn(() => { packStarted(); return new Promise<never>(() => {}); });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const pending = getClaimTimeTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h',
+        payload: { paths: ['target.ts'] } } }, deps);
+      await started;
+      await vi.advanceTimersByTimeAsync(TASK_BRIEF_BUDGET_MS);
+      const result = await pending;
+      expect(result?.taskBrief.status).toBe('unknown');
+      expect(result?.taskBrief.files).toEqual([]);
+      expect(result?.taskBrief.exclusions).toEqual(['Task brief exceeded its bounded read deadline during safe-pack.']);
+    } finally { vi.useRealTimers(); }
+  }, 10_000);
   it('shares the capture window with compilation and rejects evidence from a file omitted by the safe packer', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "CURRENT_SOURCE"; }');
     const deps = depsFor(root), pack = deps.pack;

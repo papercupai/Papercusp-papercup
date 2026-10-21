@@ -79,6 +79,22 @@ describe('unknownToolReferral', () => {
     expect(text).toContain('dev:pipeline_position');
   });
 
+  // staging-build-tool-routing-2026-10-21 R-3: on the main build, the not-deployed case has a
+  // route that does not wait for the deploy — the per-call staging selector.
+  it('names build:"staging" on tools:invoke as the route when this operator serves main', () => {
+    const text = unknownToolReferral('testing:run', 'main');
+    expect(text).toContain("tools:invoke { name, args, build: 'staging' }");
+    expect(text).toContain("tools:find { query, build: 'staging' }");
+    expect(text).toContain(':3170');
+  });
+
+  // Falsifiability control: on the staging operator the same sentence would point at itself.
+  it('omits the staging route when this operator already serves staging', () => {
+    const text = unknownToolReferral('testing:run', 'staging');
+    expect(text).not.toContain("build: 'staging'");
+    expect(text).toMatch(/^unknown_tool: no tool named "testing:run"/);
+  });
+
   // EI-22365453839629245: the plugin-sweep window. Plugin verbs register INCREMENTALLY after
   // an operator restart, so one verb can miss while a sibling dispatches — a transient miss
   // that both other reasons ("typo", "not deployed") would have the agent read as permanent.

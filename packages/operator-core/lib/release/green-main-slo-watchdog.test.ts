@@ -366,38 +366,68 @@ describe('recurring non-verdict reasons (P-029)', () => {
     const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
     const breach = { metric: 'non-verdict-reason' as const, subject: 'skipped-joined-attempt', value: 7,
       threshold: 6, episodeKey: 'daily-key', title: 'Recurring joined attempt', detail: 'Seven outcomes', severity: 'alert' as const };
+    const neverClosed = { readLastClosedAtMs: async () => null, countSince: async () => { throw new Error('no close to count from'); } };
     beforeEach(() => {
       mocks.readGateOwnership.mockResolvedValue({ claimState: 'held', takenBy: 'su-current', holderSessionState: 'live', assessment: 'held-live' });
       mocks.createOneWorkItem.mockResolvedValue({ ok: true, workItem: { id: 'WI-reason', assignee: 'su-current', harness: 'papercusp' } });
       mocks.claimWorkItem.mockReset(); mocks.getWorkItem.mockReset();
     });
     it('reuses a reason key across days and passes an atomic assignment to the existing create seam', async () => {
-      expect(await fileRecurringNonVerdictReason(target, breach)).toEqual({ id: 'WI-reason', assignee: 'su-current' });
+      expect(await fileRecurringNonVerdictReason(target, breach, neverClosed)).toEqual({ id: 'WI-reason', assignee: 'su-current' });
       const key = mocks.createOneWorkItem.mock.lastCall?.[0].conditionKey;
-      await fileRecurringNonVerdictReason(target, { ...breach, episodeKey: 'next-day' });
+      await fileRecurringNonVerdictReason(target, { ...breach, episodeKey: 'next-day' }, neverClosed);
       expect(mocks.createOneWorkItem.mock.lastCall?.[0]).toMatchObject({ conditionKey: key, assign_to: 'su-current' });
       expect(mocks.claimWorkItem).not.toHaveBeenCalled();
     });
     it('preserves a different incumbent and claims an unassigned adopted item without force', async () => {
       mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: 'su-incumbent' } });
-      expect(await fileRecurringNonVerdictReason(target, breach)).toMatchObject({ id: 'WI-reason', assignee: 'su-incumbent' });
+      expect(await fileRecurringNonVerdictReason(target, breach, neverClosed)).toMatchObject({ id: 'WI-reason', assignee: 'su-incumbent' });
       mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: null, harness: 'papercusp' } });
       mocks.claimWorkItem.mockResolvedValueOnce({ id: 'WI-reason', assignee: 'su-current' });
-      expect(await fileRecurringNonVerdictReason(target, breach)).toMatchObject({ id: 'WI-reason', assignee: 'su-current' });
+      expect(await fileRecurringNonVerdictReason(target, breach, neverClosed)).toMatchObject({ id: 'WI-reason', assignee: 'su-current' });
       expect(mocks.claimWorkItem).toHaveBeenCalledWith('WI-reason', 'su-current', { harness: 'papercusp', assignedBy: 'system:green-main-slo' });
+    });
+    // EI-26555742295077041: the close nulls condition_key, so only this guard stops a closed item
+    // from being re-filed for the same pre-close outcomes while they stay inside the rolling day.
+    it('does not re-file a closed reason for outcomes it already covered, and recounts from the close', async () => {
+      const closedAtMs = NOW - 3 * HOUR;
+      const countSince = vi.fn(async () => 0);
+      mocks.createOneWorkItem.mockClear(); mocks.readGateOwnership.mockClear();
+      await expect(fileRecurringNonVerdictReason(target, breach, { readLastClosedAtMs: async () => closedAtMs, countSince }))
+        .resolves.toEqual({ skipped: 'covered-by-closed-item' });
+      expect(countSince).toHaveBeenCalledWith(closedAtMs);
+      expect(mocks.createOneWorkItem).not.toHaveBeenCalled();
+      expect(mocks.readGateOwnership).not.toHaveBeenCalled();
+      countSince.mockResolvedValueOnce(breach.threshold - 1);
+      await expect(fileRecurringNonVerdictReason(target, breach, { readLastClosedAtMs: async () => closedAtMs, countSince }))
+        .resolves.toEqual({ skipped: 'covered-by-closed-item' });
+      expect(mocks.createOneWorkItem).not.toHaveBeenCalled();
+    });
+    it('re-files once the reason recurs at threshold after the close', async () => {
+      const countSince = vi.fn(async () => breach.threshold);
+      await expect(fileRecurringNonVerdictReason(target, breach, { readLastClosedAtMs: async () => NOW - HOUR, countSince }))
+        .resolves.toEqual({ id: 'WI-reason', assignee: 'su-current' });
+      expect(mocks.createOneWorkItem).toHaveBeenCalledTimes(1);
+    });
+    it('surfaces an unreadable close history instead of guessing', async () => {
+      mocks.createOneWorkItem.mockClear();
+      await expect(fileRecurringNonVerdictReason(target, breach, {
+        readLastClosedAtMs: async () => { throw new Error('work_items read failed'); }, countSince: async () => 0,
+      })).rejects.toThrow('work_items read failed');
+      expect(mocks.createOneWorkItem).not.toHaveBeenCalled();
     });
     it('skips without a verified live owner and never reports an unassigned filing as successful', async () => {
       mocks.readGateOwnership.mockResolvedValueOnce({ claimState: 'held', takenBy: 'su-dead', holderSessionState: 'ended' });
       mocks.createOneWorkItem.mockClear();
-      await expect(fileRecurringNonVerdictReason(target, breach)).resolves.toEqual({ skipped: 'no-live-gate-owner' });
+      await expect(fileRecurringNonVerdictReason(target, breach, neverClosed)).resolves.toEqual({ skipped: 'no-live-gate-owner' });
       expect(mocks.createOneWorkItem).not.toHaveBeenCalled();
       mocks.readGateOwnership.mockRejectedValueOnce(new Error('ownership ledger unavailable'));
-      await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('ownership ledger unavailable');
+      await expect(fileRecurringNonVerdictReason(target, breach, neverClosed)).rejects.toThrow('ownership ledger unavailable');
       mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: null, harness: 'papercusp' } });
       mocks.claimWorkItem.mockResolvedValueOnce(null); mocks.getWorkItem.mockResolvedValueOnce(null);
-      await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('remains unassigned');
+      await expect(fileRecurringNonVerdictReason(target, breach, neverClosed)).rejects.toThrow('remains unassigned');
       mocks.createOneWorkItem.mockResolvedValueOnce({ ok: false, error: 'write refused' });
-      await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('write refused');
+      await expect(fileRecurringNonVerdictReason(target, breach, neverClosed)).rejects.toThrow('write refused');
     });
   });
 });

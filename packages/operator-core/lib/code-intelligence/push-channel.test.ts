@@ -83,7 +83,7 @@ describe('shared snapshot-backed push channel', () => {
     d.legs = () => new Map([['first-touch', snapshotFirstTouchLeg], ['interface', snapshotInterfaceLeg]]);
     const delivered = await codeIntelPushText(changed, 0, d);
     expect(delivered).toContain('signature target');
-    expect(d.commit).toHaveBeenCalledWith(changed, snap, [facts[0]], 1500, expect.any(AbortSignal));
+    expect(d.commit).toHaveBeenCalledWith(changed, snap, [facts[0]], 1500, expect.any(AbortSignal), []);
   });
 
   it('pushes an observed failing-test incident with static hypotheses and explicit unknowns', () => {
@@ -281,7 +281,7 @@ describe('shared snapshot-backed push channel', () => {
     const d = deps();
     expect(await codeIntelPushText(input, 350, d)).toContain('Static consumer');
     expect(d.commit).toHaveBeenCalledWith(input, expect.objectContaining({ commit: 'a'.repeat(40) }), [fact],
-      CODE_INTEL_PUSH_TURN_CHARS - 350, expect.any(AbortSignal));
+      CODE_INTEL_PUSH_TURN_CHARS - 350, expect.any(AbortSignal), []);
     vi.mocked(d.commit).mockClear();
     expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS, d)).toBe('');
     expect(d.commit).not.toHaveBeenCalled();
@@ -298,12 +298,24 @@ describe('shared snapshot-backed push channel', () => {
 
   it('does not clip oversized facts or persist unsafe paths', async () => {
     const d = deps();
-    d.legs = () => new Map([['first-touch', () => [
-      { ...fact, text: 'x'.repeat(CODE_INTEL_PUSH_TURN_CHARS) },
-      { ...fact, citedPaths: ['/private/file'] },
-    ]]]);
+    const oversized = { ...fact, text: 'x'.repeat(CODE_INTEL_PUSH_TURN_CHARS) };
+    d.legs = () => new Map([['first-touch', () => [oversized, { ...fact, citedPaths: ['/private/file'] }]]]);
     expect(await codeIntelPushText(input, 0, d)).toBe('');
-    expect(d.commit).not.toHaveBeenCalled();
+    // WI-6554700010018440: the oversized fact is delivered nowhere but handed to the commit
+    // to record as a budget drop; the unsafe-path fact is rejected, not a budget loss.
+    expect(d.commit).toHaveBeenCalledOnce();
+    const [, , delivered, , , dropped] = vi.mocked(d.commit).mock.calls[0];
+    expect(delivered).toEqual([]);
+    expect(dropped).toEqual([oversized]);
+  });
+
+  it('hands a fact that does not fit the memory-reduced share to the commit as a drop', async () => {
+    const d = deps();
+    expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS - 40, d)).toBe('');
+    const [, , delivered, budget, , dropped] = vi.mocked(d.commit).mock.calls[0];
+    expect(delivered).toEqual([]);
+    expect(budget).toBe(40);
+    expect(dropped).toEqual([fact]);
   });
 
   it('accepts serialized native Read/Edit inputs without guessing malformed or oversized digests', () => {

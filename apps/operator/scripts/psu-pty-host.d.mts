@@ -242,6 +242,17 @@ export function tagSessionPortTurn(text: string, sid: string, env?: EnvironmentM
  * @param {number} [nowMs]
  */
 export function stampUntaggedLifecycleCarry(text: string, sid: string, env?: EnvironmentMap, nowMs?: number): string;
+/** Stamp a decoded lifecycle control message's untagged carry text in place.
+ * Returns true only when it stamped. Exported for tests.
+ * @param {{ mode?: string, data?: string } | null | undefined} msg
+ * @param {string} sid
+ * @param {EnvironmentMap} [env]
+ * @param {number} [nowMs]
+ */
+export function stampLifecycleControlCarry(msg: {
+    mode?: string;
+    data?: string;
+} | null | undefined, sid: string, env?: EnvironmentMap, nowMs?: number): boolean;
 /** Chunk a large paste without splitting a UTF-16 surrogate pair. 16k code
  * units is at most 64 KiB of UTF-8, keeping node-pty writes bounded while the
  * concatenated stream remains byte-identical. */
@@ -5592,6 +5603,15 @@ export const MAX_CONTROL_PAYLOAD_BYTES: number;
  * standalone ESM process and cannot import the TypeScript module. */
 export const KICKOFF_PROOF_PATH_ENV: "PAPERCUSP_KICKOFF_PROOF_PATH";
 export const KICKOFF_PROOF_TOKEN_ENV: "PAPERCUSP_KICKOFF_PROOF_TOKEN";
+/** EI-26565736281520734: every control mode whose `data` becomes the FIRST typed
+ * turn of a fresh context. carry-respawn belongs here as much as reset/recycle.
+ * On 2026-10-21 an agent self-recycled by writing `{v:1, mode:'carry-respawn',
+ * data}` with no envelope. The stamp checked only reset/recycle, so the
+ * successor's first prompt was recorded as owner-typed (owner directive #2136).
+ * A live `turn` is deliberately NOT listed. Its machine senders already envelope
+ * their text, and this change does not establish that no owner-facing path uses
+ * that mode. */
+export const LIFECYCLE_CARRY_MODES: readonly string[];
 /** WI-10002745: how many trailing nonce characters a truncated provenance
  * marker must still carry to count as this injection's. 8 hex characters are
  * 32 random bits, and the row must also pass the same timestamp fence and

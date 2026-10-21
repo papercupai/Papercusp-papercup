@@ -2348,7 +2348,7 @@ describe('work_items:set_blocker write-time wait admission (P-006)', () => {
     ['a live predicate watch', 'event', 'predicate:pw-1', () => {
       getPredicateWatch.mockResolvedValueOnce({ eventKey: 'predicate:pw-1', active: true });
     }],
-  ])('accepts %s and writes the blocker', async (_label, kind, ref, arrange) => {
+  ])('SPEC-P-006: accepts %s and writes the blocker', async (_label, kind, ref, arrange) => {
     openItem();
     arrange();
     const out = await one({ id: 'WI-1', kind, ref, summary: 'blocked on it' });
@@ -2356,6 +2356,18 @@ describe('work_items:set_blocker write-time wait admission (P-006)', () => {
     expect(out).toMatchObject({ ok: true, id: 'WI-1', changed: true });
     expect(out.activeBlockers).toEqual([expect.objectContaining({ kind, ref })]);
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-1', 'blocked', expect.anything());
+  });
+
+  // A pure work-item:done:<id> ref is a dependency: set_blocker records it as a blocks edge
+  // (WI-10005020) before wait admission runs, so it is accepted, never refused as a wait.
+  it('SPEC-P-006: accepts work-item:done:<an open item> as a blocks edge, never refusing it as unprovable or already satisfied', async () => {
+    openItem();
+    linkWorkItemRefDependencies.mockResolvedValue({ ok: true, edges: [{ blocker: 'WI-2', blocked: { kind: 'issue', ref: 'WI-1' } }] });
+    const out = await one({ id: 'WI-1', kind: 'event', ref: 'work-item:done:WI-2', summary: 'blocked on WI-2' });
+
+    expect(out).toMatchObject({ ok: true, id: 'WI-1', convertedToEdge: { rel: 'blocks', blockers: ['WI-2'] } });
+    expect(out).not.toHaveProperty('code');
+    expect(linkWorkItemRefDependencies).toHaveBeenCalledWith(expect.objectContaining({ dependentId: 'WI-1', referents: ['WI-2'] }));
   });
 
   it('lets a holder re-assert an existing active row (not a new wait) and clear it', async () => {

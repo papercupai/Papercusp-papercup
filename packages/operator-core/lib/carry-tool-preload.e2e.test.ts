@@ -17,6 +17,16 @@ describe.runIf(Boolean(baseUrl))('session tool restoration over real HTTP MCP', 
   it('restores canonical calls on reconnect, observes later nested use, and isolates another owner', async () => {
     expect(workspace, 'explicit workspace required').toBeTruthy();
     expect(harness, 'explicit harness required').toBeTruthy();
+    async function servingSha() {
+      const response = await fetch(new URL('/api/health', baseUrl), {
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(response.ok, 'serving build identity required').toBe(true);
+      const body = await response.json() as { sha?: string };
+      expect(body.sha, 'serving build SHA required').toMatch(/^[0-9a-f]{7,40}$/);
+      return body.sha!;
+    }
+    const buildSha = await servingSha();
     const tokenPath = process.env.PAPERCUSP_MCP_TOKEN_FILE ?? join(
       process.env.PAPERCUSP_HOME ?? join(homedir(), '.papercusp'), 'superuser-token');
     const token = readFileSync(tokenPath, 'utf8').trim();
@@ -65,6 +75,11 @@ describe.runIf(Boolean(baseUrl))('session tool restoration over real HTTP MCP', 
       const otherNames = await names(other);
       expect(otherNames).not.toContain('coord:whoami');
       expect(otherNames).not.toContain('facts:list');
+      expect(await servingSha(), 'runtime changed during the live proof').toBe(buildSha);
+      console.info('session-tool-restoration-proof', JSON.stringify({
+        baseUrl, buildSha, owner, workspace, harness,
+        direct: 'coord:whoami', nested: 'facts:list', isolatedOwner: `${owner}-other`,
+      }));
     } finally {
       await Promise.allSettled(clients.map(client => client.close()));
     }

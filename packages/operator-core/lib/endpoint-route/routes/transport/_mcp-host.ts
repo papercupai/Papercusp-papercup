@@ -202,6 +202,7 @@ import {
   applyCompactTier,
   filterListingsByAllowlist,
   getSessionSurface,
+  sessionToolSurfaceKey,
   restoreSessionTools,
   activateSessionTools,
   rememberSessionToolRegistryRevision,
@@ -2371,6 +2372,7 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 // implementation. Don't fork the SQL across transports.
 import {
   PROJECTED_DEPS,
+  flushPendingTelemetry,
   backfillResultDoorOutputRef,
   backfillToolInvocationMetadataByMcpRequestTraceId,
   wrapOperatorKernelSpawn,
@@ -2851,7 +2853,7 @@ async function buildMcpToolContext(
   // No-op for un-seeded (full-catalog / Claude) sessions: activateSessionTools
   // returns false when no surface entry exists, so no notification is sent.
   const activateTools: UnifiedToolContext['activateTools'] = (toolNames) => {
-    const added = activateSessionTools(spawn.uiClientId, toolNames);
+    const added = activateSessionTools(sessionToolSurfaceKey(spawn.uiClientId, spawn.workspaceId), toolNames);
     if (added && sendNotification) {
       sendNotification({
         method: 'notifications/tools/list_changed',
@@ -3402,13 +3404,18 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // there's no seed at all. Keyed by the su session identity (uiClientId).
   const seed = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
   const sessionKey = spawnRes.kind === 'ok' ? spawnRes.ctx.uiClientId : null;
+  const surfaceKey = spawnRes.kind === 'ok'
+    ? sessionToolSurfaceKey(sessionKey, spawnRes.ctx.workspaceId) : null;
   if (!identityListings && spawnRes.kind === 'ok' && seed && sessionKey) {
-    await restoreSessionTools({ sessionKey, seed,
+    // Invocation telemetry is batched off the response path. A later list is
+    // a read-after-dispatch boundary, just like the existing quota reader.
+    await flushPendingTelemetry();
+    await restoreSessionTools({ sessionKey: surfaceKey, seed,
       ownerId: resolveAgentIdentity(spawnRes.ctx).ownerId,
       workspaceId: spawnRes.ctx.workspaceId,
     });
   }
-  const allow = identityListings ? null : getSessionSurface(sessionKey, seed);
+  const allow = identityListings ? null : getSessionSurface(surfaceKey, seed);
   // `?tools_compact=` is the SECOND axis of the same decision (deterministic-
   // tool-definition-delivery-2026-09-21): `?tools=` says WHICH tools are
   // advertised, this says HOW MUCH of each one ships. A named tool keeps its

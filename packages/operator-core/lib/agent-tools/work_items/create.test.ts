@@ -348,6 +348,25 @@ describe('residualLinkNudge (EI-18655063958515097)', () => {
   });
 });
 
+// staging-build-tool-routing-2026-10-21 R-5: a filing that defers non-final work behind the
+// :3070 deploy is created AND told the staging route; an ordinary filing carries nothing.
+describe('deployWaitAdvisory (staging-build-tool-routing-2026-10-21 R-5)', () => {
+  it('creates the item and names build:staging when it waits on the :3070 deploy', async () => {
+    const b = await body({
+      kind: 'change',
+      title: 'Accept the new rubric tool',
+      summary: 'Blocked until the fix is deployed to :3070, then run the acceptance check.',
+    });
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[0].deployWaitAdvisory).toContain("build: 'staging'");
+  });
+
+  it('adds nothing to an ordinary filing', async () => {
+    const b = await body({ kind: 'bug', title: 'fix the login race condition' });
+    expect(b.results[0].deployWaitAdvisory).toBeUndefined();
+  });
+});
+
 // EI-20450339646861882: "a high-severity bug filed while on a plan lane, with no
 // plan-item edge, is invisible in BOTH directions at once — unclaimable by the
 // plan-scoped spec AND missing from any enumeration of that plan's open blockers".

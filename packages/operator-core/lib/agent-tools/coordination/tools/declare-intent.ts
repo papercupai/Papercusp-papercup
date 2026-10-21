@@ -545,6 +545,15 @@ export default defineTool({
           harness: args.harness ?? ctx.harnessSlug ?? presence?.potSlug ?? '', intent: args.intent, paths: args.current_files! });
       }, { timeoutMs: 6_000, fallback: null, label: 'declare-intent:task-brief' })).value
       : null;
+    // WI-6554700010018439: the intent leg's delivery is this brief; record it in the push
+    // ledger like the hook legs. Best-effort and bounded: never delays or fails the declaration.
+    if (taskBrief?.taskBrief.status === 'current' && identity.workspaceId) {
+      const workspace = identity.workspaceId;
+      await withBoundedTimeout(async () => {
+        const { recordIntentTaskBrief } = await import('../../../code-intelligence/push-channel');
+        return recordIntentTaskBrief({ workspace, owner: identity.ownerId }, taskBrief.taskBrief);
+      }, { timeoutMs: 1_000, fallback: false, label: 'declare-intent:task-brief-ledger' }).catch(() => undefined);
+    }
     return {
       content: [
         {

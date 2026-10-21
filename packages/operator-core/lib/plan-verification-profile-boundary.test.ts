@@ -30,14 +30,21 @@
  * types are open now (`acme/legal-review`), so a branch on one of the six built-in kinds
  * silently misjudges every third-party type: ask the resolver for the module set instead
  * (`resolveVerification(...).codeDeliverable` / `.modules`). Seven shapes count, see
- * `scanSourceForKindBranches`. It has its own shrink-only `KIND_BRANCH_BASELINE`.
+ * `scanSourceForKindBranches`. It has its own shrink-only `KIND_BRANCH_BASELINE`. Those rules
+ * live in ./plan-types/kind-branch-census.ts, shared with the committed-tree instrument.
  */
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DELIVERABLE_KINDS } from '@papercusp/plan-parser';
+import {
+  KIND_SCAN_ROOTS,
+  KIND_SKIPPED_DIRS,
+  isKindScanPath,
+  kindBranchCensus,
+  scanSourceForKindBranches,
+} from './plan-types/kind-branch-census';
 
 const LIB_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(LIB_ROOT, '../../..');
@@ -212,145 +219,11 @@ export function localGate(entry: { verdict: string }, item: { kind: string; work
 
 // ─────────────────────────── R-7: deliverable-kind branches ───────────────────────────
 
-type KindShape =
-  | 'literal-equality'
-  | 'literal-membership'
-  | 'list-membership'
-  | 'kind-comparison'
-  | 'kind-switch'
-  | 'kind-keyed-lookup';
-
-interface KindBranchFinding {
-  file: string;
-  line: number;
-  shape: KindShape;
-  text: string;
-}
-
-const KIND_LITERALS: ReadonlySet<string> = new Set(DELIVERABLE_KINDS);
-
-/** The roots R-7 names, as repo-relative prefixes. */
-const KIND_SCAN_ROOTS: readonly string[] = ['packages/operator-core/lib', 'apps/operator', 'libs/generic/plan-parser/src'];
-
-/** The resolver owns kind policy; the parser vocabulary DEFINES the kinds (grammar only, R-4). */
-const KIND_POLICY_OWNERS: readonly RegExp[] = [
-  /^packages\/operator-core\/lib\/plan-verification-profile\.ts$/,
-  /^packages\/operator-core\/lib\/plan-types\//,
-  /^libs\/generic\/plan-parser\/src\/verification-vocabulary\.ts$/,
-];
-
-const KIND_SKIPPED_DIRS = new Set([
-  ...SKIPPED_DIRS, 'dist-host', '.next', 'sidecar', 'target', 'public', 'e2e', 'src-tauri', 'out',
-]);
-
-/**
- * A deliverable-KIND operand: an expression whose own name says it holds an item's deliverable
- * (`item.deliverable`, `declaredDeliverable`, `row['deliverable']`, `x.deliverable ?? null`).
- * `codeDeliverable` is the resolver's code-ness ANSWER, not a kind, and mail "deliverability"
- * / "undeliverable" are unrelated words.
- */
-const KIND_OPERAND_NAME = /deliverable/i;
-const NOT_A_KIND_NAME = /codeDeliverable|undeliverable|deliverabilit|deliverables$/i;
-
-function operandName(node: ts.Expression): string | null {
-  const target = unwrap(node);
-  if (ts.isNonNullExpression(target)) return operandName(target.expression);
-  if (
-    ts.isBinaryExpression(target) &&
-    (target.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || target.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-  ) {
-    return operandName(target.left);
-  }
-  if (ts.isIdentifier(target)) return target.text;
-  if (ts.isPropertyAccessExpression(target)) return target.name.text;
-  if (ts.isElementAccessExpression(target)) {
-    const key = literalValue(target.argumentExpression);
-    return key ?? null;
-  }
-  return null;
-}
-
-function isKindOperand(node: ts.Expression | undefined): boolean {
-  if (!node) return false;
-  const name = operandName(node);
-  return name !== null && KIND_OPERAND_NAME.test(name) && !NOT_A_KIND_NAME.test(name);
-}
-
-/** A kind LIST: `DELIVERABLE_KINDS`, `deliverableKinds`, `CODE_DELIVERABLES`... */
-function isKindListName(node: ts.Expression): boolean {
-  const name = operandName(node);
-  return name !== null && /deliverable/i.test(name) && /kinds?$|deliverables$/i.test(name);
-}
-
-function isNullishLiteral(node: ts.Expression): boolean {
-  const target = unwrap(node);
-  return (
-    target.kind === ts.SyntaxKind.NullKeyword ||
-    target.kind === ts.SyntaxKind.TrueKeyword ||
-    target.kind === ts.SyntaxKind.FalseKeyword ||
-    (ts.isIdentifier(target) && target.text === 'undefined')
-  );
-}
-
-function scanSourceForKindBranches(relPath: string, text: string): KindBranchFinding[] {
-  const sf = ts.createSourceFile(
-    relPath,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-    relPath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-  const findings: KindBranchFinding[] = [];
-  const record = (node: ts.Node, shape: KindShape) => {
-    findings.push({
-      file: relPath,
-      line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
-      shape,
-      text: node.getText(sf).replace(/\s+/g, ' ').trim(),
-    });
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isBinaryExpression(node) && EQUALITY_OPERATORS.has(node.operatorToken.kind)) {
-      // `item.deliverable === 'code'` / `before.deliverable !== after.deliverable` / `deliverable === wanted`
-      for (const [kindSide, other] of [[node.left, node.right], [node.right, node.left]] as const) {
-        if (!isKindOperand(kindSide)) continue;
-        const literal = literalValue(unwrap(other));
-        if (literal !== null) {
-          if (KIND_LITERALS.has(literal)) record(node, 'literal-equality');
-        } else if (!isNullishLiteral(other) && !ts.isTypeOfExpression(unwrap(other))) {
-          record(node, 'kind-comparison');
-        }
-        break;
-      }
-    } else if (ts.isSwitchStatement(node) && isKindOperand(node.expression)) {
-      record(node.expression, 'kind-switch');
-    } else if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      const arg = node.arguments[0];
-      if (ts.isIdentifier(callee) && callee.text === 'isDeliverableKind') {
-        // The parser's own grammar check, called to BRANCH on "is it a built-in kind".
-        record(node, 'list-membership');
-      } else if (
-        ts.isPropertyAccessExpression(callee) &&
-        (callee.name.text === 'includes' || callee.name.text === 'has') &&
-        arg
-      ) {
-        const members = literalMembers(callee.expression);
-        if (members.some((member) => KIND_LITERALS.has(member)) && isKindOperand(arg)) {
-          record(node, 'literal-membership');
-        } else if (isKindListName(callee.expression) || (isKindOperand(arg) && members.length === 0)) {
-          record(node, 'list-membership');
-        }
-      }
-    } else if (ts.isElementAccessExpression(node) && isKindOperand(node.argumentExpression)) {
-      // `MODULES_BY_KIND[item.deliverable]`
-      record(node, 'kind-keyed-lookup');
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return findings;
-}
+// The census rules (scan roots, the seven shapes, the shrink-only KIND_BRANCH_BASELINE) live in
+// ./plan-types/kind-branch-census.ts. The 'deliverable-kind-branch-census' tree instrument runs
+// the same rules over a COMMITTED tree, so a spec-evidence binding of this test stays current
+// exactly while the committed census output is unchanged. This file keeps its own working-tree
+// walk; isKindScanPath decides which walked files the census reads, for both readers.
 
 function listKindScanFiles(root: string): string[] {
   const walk = (dir: string, rel: string): string[] => {
@@ -367,47 +240,17 @@ function listKindScanFiles(root: string): string[] {
         if (!KIND_SKIPPED_DIRS.has(entry.name)) out.push(...walk(path.join(dir, entry.name), relPath));
         continue;
       }
-      if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
-      if (/\.test\.tsx?$/.test(entry.name) || /\.spec\.tsx?$/.test(entry.name) || entry.name.endsWith('.d.ts')) continue;
-      if (KIND_POLICY_OWNERS.some((re) => re.test(relPath))) continue;
-      out.push(relPath);
+      if (entry.isFile() && isKindScanPath(relPath)) out.push(relPath);
     }
     return out;
   };
   return walk(path.join(REPO_ROOT, root), root);
 }
 
-const kindFindingKey = (f: Pick<KindBranchFinding, 'file' | 'shape' | 'text'>) => `${f.file} :: ${f.shape} :: ${f.text}`;
-
-/**
- * Kind branches that existed when R-7 landed. SHRINK-ONLY: delete an entry when its site goes
- * away; never add one — route the decision through the resolver instead. Each entry says why it
- * is not (yet) routed.
- */
-const KIND_BRANCH_BASELINE: readonly string[] = [
-  // Not a branch: a doc-claim pin comparing the documented default kind with the resolver's own answer.
-  'packages/operator-core/lib/doc-claims/verification-profiles-doc.ts :: kind-comparison :: deliverable[0] !== expected.deliverable',
-];
-
 function checkKindBoundary(overrides: ReadonlyMap<string, string> = new Map()) {
   const files = KIND_SCAN_ROOTS.flatMap((root) => listKindScanFiles(root));
-  const findings: KindBranchFinding[] = [];
-  for (const relPath of files) {
-    const text = overrides.get(relPath) ?? readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
-    if (!/deliverable|isDeliverableKind/i.test(text)) continue;
-    findings.push(...scanSourceForKindBranches(relPath, text));
-  }
-  const remaining = new Map<string, number>();
-  for (const key of KIND_BRANCH_BASELINE) remaining.set(key, (remaining.get(key) ?? 0) + 1);
-  const unexpected: KindBranchFinding[] = [];
-  for (const finding of findings) {
-    const key = kindFindingKey(finding);
-    const left = remaining.get(key) ?? 0;
-    if (left > 0) remaining.set(key, left - 1);
-    else unexpected.push(finding);
-  }
-  const stale = [...remaining].flatMap(([key, count]) => Array.from({ length: count }, () => key));
-  return { files, findings, unexpected, stale };
+  const census = kindBranchCensus(files, (relPath) => overrides.get(relPath) ?? readFileSync(path.join(REPO_ROOT, relPath), 'utf8'));
+  return { files, ...census };
 }
 
 const SEEDED_KIND_BRANCHES = `

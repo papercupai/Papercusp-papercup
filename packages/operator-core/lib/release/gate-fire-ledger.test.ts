@@ -40,6 +40,19 @@ describe('non-verdict reason counts (P-029)', () => {
     expect(parts.join('?')).toContain("count(DISTINCT COALESCE(NULLIF(detail->>'gateFireId', ''), id::text))");
     expect(values).toEqual(['ws-a', 'install-a', new Date(now - 86_400_000), new Date(now)]);
   });
+  // EI-26555742295077041: the re-file guard recounts from an earlier item's close.
+  it('narrows the window to opts.sinceMs but never widens it past the rolling day', async () => {
+    const target = { workspaceId: 'ws-a', installSlug: 'install-a' };
+    const sql = vi.fn(async () => []);
+    const closedAtMs = now - 3 * 3_600_000;
+    expect((await readGateNonVerdictReasons(sql as never, target, now, { sinceMs: closedAtMs })).sinceMs).toBe(closedAtMs);
+    expect((sql.mock.calls[0] as unknown as unknown[]).slice(1)).toEqual(['ws-a', 'install-a', new Date(closedAtMs), new Date(now)]);
+    for (const wider of [now - 3 * 86_400_000, Number.NaN, undefined]) {
+      sql.mockClear();
+      expect((await readGateNonVerdictReasons(sql as never, target, now, { sinceMs: wider })).sinceMs).toBe(now - 86_400_000);
+      expect((sql.mock.calls[0] as unknown as unknown[])[3]).toEqual(new Date(now - 86_400_000));
+    }
+  });
   it('keeps empty, unreadable and invalid measurements distinct', async () => {
     expect((await readGateNonVerdictReasons(vi.fn(async () => []) as never,
       { workspaceId: 'w', installSlug: 'i' }, now)).reasons).toEqual([]);

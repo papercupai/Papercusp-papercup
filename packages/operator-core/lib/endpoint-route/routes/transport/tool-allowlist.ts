@@ -309,6 +309,14 @@ export function sessionToolRegistryRevisionChanged(
  * MCP client lists before it calls, so the entry exists by the time
  * `tools:find` → `activateSessionTools` runs.
  */
+/** A stable owner can connect to several workspaces on the same operator. */
+export function sessionToolSurfaceKey(
+  sessionKey: string | null | undefined,
+  workspaceId: string,
+): string | null {
+  return sessionKey ? JSON.stringify([workspaceId, sessionKey]) : null;
+}
+
 export function getSessionSurface(
   sessionKey: string | null | undefined,
   seed: Set<string> | null,

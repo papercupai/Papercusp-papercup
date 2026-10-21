@@ -1,15 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSessionSurfaces, filterListingsByAllowlist, getSessionSurface, restoreSessionTools } from './endpoint-route/routes/transport/tool-allowlist';
+import { __resetSessionSurfaces, filterListingsByAllowlist, getSessionSurface, restoreSessionTools, sessionToolSurfaceKey } from './endpoint-route/routes/transport/tool-allowlist';
 
 const sql = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }),
 }));
 const seed = new Set(['tools:find', 'tools:invoke']);
-const input = { sessionKey: 'su-lineage', seed, ownerId: 'su-lineage', workspaceId: 'workspace-a' };
+const input = { sessionKey: sessionToolSurfaceKey('su-lineage', 'workspace-a')!, seed, ownerId: 'su-lineage', workspaceId: 'workspace-a' };
 beforeEach(() => { __resetSessionSurfaces(); sql.mockReset(); });
 
 describe('predecessor tool preload (R-12)', () => {
+  it('isolates the same stable owner across workspaces in the in-memory surface', async () => {
+    const otherKey = sessionToolSurfaceKey(input.ownerId, 'workspace-b')!;
+    const readUsedTools = vi.fn(async (_owner: string, workspace: string) =>
+      [workspace === 'workspace-a' ? 'plans:get' : 'facts:list']);
+    await restoreSessionTools({ ...input, readUsedTools });
+    await restoreSessionTools({ ...input, sessionKey: otherKey, workspaceId: 'workspace-b', readUsedTools });
+    expect(getSessionSurface(input.sessionKey, seed)?.has('facts:list')).toBe(false);
+    expect(getSessionSurface(otherKey, seed)?.has('plans:get')).toBe(false);
+    expect(getSessionSurface(otherKey, seed)?.has('facts:list')).toBe(true);
+    expect(sessionToolSurfaceKey(null, 'workspace-a')).toBeNull();
+  });
   it('advertises every previously called tool on the first restarted list without discovery, including beyond the orient cap', async () => {
     const names = Array.from({ length: 60 }, (_, i) => `used:tool-${i}`);
     sql.mockResolvedValue(names.map((tool_name) => ({ tool_name })));

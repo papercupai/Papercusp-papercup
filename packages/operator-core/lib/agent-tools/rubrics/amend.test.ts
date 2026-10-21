@@ -295,6 +295,13 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(() => z.toJSONSchema(amendTool.args as never)).not.toThrow();
   });
 
+  it('does not expose the test-only faultInjection rollback probe to tool callers (WI-6554700010018783)', () => {
+    const properties = (z.toJSONSchema(rubricsAmendArgs) as { properties: Record<string, unknown> }).properties;
+    // Positive control: the reader sees the real public args.
+    expect(properties).toHaveProperty('approvalRef');
+    expect(Object.keys(properties)).not.toContain('faultInjection');
+  });
+
   it('publishes the structured/legacy alias equality contract before payload construction', () => {
     const schema = z.toJSONSchema(amendTool.args as never);
     const rendered = JSON.stringify(schema);

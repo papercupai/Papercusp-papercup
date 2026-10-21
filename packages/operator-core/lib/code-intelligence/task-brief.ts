@@ -159,8 +159,13 @@ export function compactTaskBrief(input: TaskBrief, maxChars = TASK_BRIEF_MAX_CHA
   return brief;
 }
 
+/** The capture phase in flight; a deadline fallback reports it so a timeout is diagnosable. */
+export type TaskBriefPhase = 'setup' | 'repository-root' | 'plan-decisions' | 'scope-read' | 'safe-pack'
+  | 'compiler-wait' | 'incident' | 'source-recheck';
+
 /** Root authority is the workspace registry, never payload.rootPath or operator cwd. */
-export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): Promise<TaskBrief> {
+export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
+  phase: { current: TaskBriefPhase } = { current: 'setup' }): Promise<TaskBrief> {
   const wi = ref.workItem;
   const harness = wi?.harness ?? ref.harness ?? null;
   const payload = wi?.payload as { paths?: unknown } | null;
@@ -206,6 +211,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
   }) };
   try {
     const workspaceId = ref.workspaceId ?? activeWorkspaceId();
+    phase.current = 'repository-root';
     const registered = await deps.root(workspaceId, harness);
     if (!registered) throw new Error('harness is not registered in the task workspace');
     const root = await realpath(registered);
@@ -213,6 +219,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     const planPayload = wi?.payload as { plan_item?: { plan_slug?: string } } | null;
     const planSlug = wi?.sourcePlanSlug ?? planPayload?.plan_item?.plan_slug;
     if (planSlug) {
+      phase.current = 'plan-decisions';
       const authority = await deps.decisions?.({ ...ref, workspaceId, harness }).catch(() => null);
       brief.decisions = { status: authority && !authority.authorityReadFailed ? 'measured' : 'unknown',
         refs: authority?.decisions.slice(0, 8).map(decision => ({ plan: decision.sourcePlanSlug ?? authority.planSlug, id: decision.id })) ?? [],
@@ -221,6 +228,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
         brief.exclusions.push('Governing decision bodies or unread authority remain at the canonical plan reader.');
       }
     }
+    phase.current = 'scope-read';
     for (const path of [...new Set(requested)].slice(0, 8)) {
       if (!safePath(path)) { brief.exclusions.push('Rejected unsafe, hidden, or unbounded stored task path.'); continue; }
       try {
@@ -266,6 +274,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     const failures = wi?.id && deps.failures
       ? deps.failures({ workspaceId, harness, root, paths: brief.scope.paths.filter(path => kindOf(path) === 'test') }).catch(() => null)
       : null;
+    phase.current = 'safe-pack';
     const packed: PackerResult = await deps.pack('pack', {
       rootPath: root, include: brief.scope.paths, format: 'xml', compress: false,
     }, effects);
@@ -292,6 +301,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
         let graph: CodeIntelAnswer | null = null;
         let compilerTimer: ReturnType<typeof setTimeout> | undefined;
         if (waitMs > 0) {
+          phase.current = 'compiler-wait';
           try {
             graph = await Promise.race([
               compiler,
@@ -314,6 +324,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     } else brief.graph.reason = 'No supported implementation in the stored task scope.';
     remaining();
     if (failures && wi?.id) {
+      phase.current = 'incident';
       let incidentTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const signals = await Promise.race([failures, new Promise<null>(resolve => {
@@ -331,6 +342,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     remaining();
     // Optional incident reads also belong to the capture window. Recheck AFTER
     // they finish, so their latency cannot publish an already-edited source pin.
+    phase.current = 'source-recheck';
     const final = await Promise.all([...texts.keys()].map(async path => {
       if (!inside(root, await realpath(join(root, path)))) throw new Error('task source escaped during capture');
       return [path, hash(await readFile(join(root, path), 'utf8'))];
@@ -352,11 +364,13 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
   const payload = ref.workItem?.payload as { paths?: unknown } | null;
   if (ref.workItem?.id ? !Array.isArray(payload?.paths) || payload.paths.length === 0 : !ref.intent || !ref.paths?.length) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const phase: { current: TaskBriefPhase } = { current: 'setup' };
   try {
-    return { taskBrief: await Promise.race([buildTaskBrief(ref, deps), new Promise<TaskBrief>(resolve => {
+    return { taskBrief: await Promise.race([buildTaskBrief(ref, deps, phase), new Promise<TaskBrief>(resolve => {
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
-        graph: { status: 'unknown', consumers: [], relationships: [] }, exclusions: ['Task brief exceeded its bounded read deadline.'],
+        graph: { status: 'unknown', consumers: [], relationships: [] },
+        exclusions: [`Task brief exceeded its bounded read deadline during ${phase.current}.`],
         recover: ref.workItem?.id ? { tool: 'work_items:get', args: { id: ref.workItem.id } }
           : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
             ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);

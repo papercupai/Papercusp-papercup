@@ -134,6 +134,14 @@ const ALLOWLIST: Record<string, Classification> = {
       'not a current-holder claim or presence-tied reaper. Rebinding would rewrite who received a fact and ' +
       'mix the historical delivery/budget ledger of distinct session contexts.',
   },
+  'code_intel_push_skips.owner_id': {
+    status: 'exempt',
+    reason:
+      'Migration 1544 records code-intelligence facts that a recipient turn could not receive because the ' +
+      'request or turn character budget was spent (push-channel.ts recordPushSkips). It is per-turn ' +
+      'delivery evidence beside code_intel_pushes, not a current-holder claim or presence-tied reaper; ' +
+      'rebinding would rewrite which session context missed a fact.',
+  },
   'gateway_request_outcomes.owner_id': {
     status: 'exempt',
     reason:

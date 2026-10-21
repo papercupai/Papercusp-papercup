@@ -434,6 +434,32 @@ vi.mock('../test/_org-test-db', () => ({ createOrgTestDb: async () => ({
 vi.mock('./_baseline-coord-fixture', () => ({ setupBaselineCoordFixture: async () => ({ dispose: async () => {} }) }));
 vi.mock('./degradation/fallback-observations', () => ({ flushFallbackObservations: async () => ({ failed: 0 }) }));
 
+it('records a missing receipt sink as preparation failure with no worker to tear down', async () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'isolated-proof-sink-'));
+  const root = resolve(import.meta.dirname, '../../..');
+  const prepare = vi.fn(), execute = vi.fn();
+  vi.stubEnv('VH_EVIDENCE_ROOT_BASE', fixture);
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(fixture, 'locks'));
+  vi.stubEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE', join(fixture, 'receipts.ndjson'));
+  vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', undefined);
+  try {
+    await expect(recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/isolated-integration-proof.test.ts', sourcePaths: [],
+      prepare, execute,
+    })).rejects.toThrow('PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+    expect(prepare).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+    const { readdirSync } = await import('node:fs');
+    const runId = readdirSync(join(fixture, 'isolated-integration')).find(name => /^\d{8}T/.test(name));
+    expect(runId).toBeTruthy();
+    const result = JSON.parse(readFileSync(join(fixture, 'isolated-integration', runId!, 'result.json'), 'utf8'));
+    expect(result.verdict).toBe('fail');
+    expect(result.firstFailure.phase).toBe('prepare');
+    expect(result.phases.find((phase: { phase: string }) => phase.phase === 'teardown').status).toBe('passed');
+    expect(existsSync(join(fixture, 'isolated-integration', runId!, 'phases/execute/lifecycle.json'))).toBe(false);
+  } finally { vi.unstubAllEnvs(); rmSync(fixture, { recursive: true, force: true }); }
+});
+
 it.each([
   { fails: false, ended: true, valid: true },
   { fails: true, ended: true, valid: true },

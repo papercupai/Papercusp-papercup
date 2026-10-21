@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_TURN_CHARS, snapshotFirstTouchLeg, snapshotGrepLeg,
+import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_TURN_CHARS, recordIntentTaskBrief, snapshotFirstTouchLeg, snapshotGrepLeg,
   type PushFact, type PushInput, type PushLeg, type PushLegId } from './push-channel';
 import { parsePushSnapshot, type PushSnapshot } from './push-snapshot';
 import { readPushIncidentAttribution } from './push-channel';
@@ -31,6 +31,7 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     // The normal migration runner creates the ledger; re-application must also be safe.
     const sql = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1519-code-intel-pushes.sql', import.meta.url), 'utf8');
     await db.adminSql.unsafe(sql);
+    await db.adminSql.unsafe(await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1544-code-intel-push-skips.sql', import.meta.url), 'utf8'));
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });
 
@@ -112,6 +113,65 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     });
     expect(leaked).toHaveLength(0);
     expect(await deliver([fact('too-large')], workspace, 10)).toBe('');
+  });
+
+  it('WI-6554700010018440: budget drops land in the skips ledger, never the delivery ledger, and stay deliverable', async () => {
+    const workspace = 'push-integration-skips';
+    const skipsOf = () => db.adminSql<{ subject: string; site: string; chars: number; budget_left: number }[]>`
+      SELECT subject, site, chars, budget_left FROM harness_shared.code_intel_push_skips
+      WHERE workspace_id = ${workspace} ORDER BY subject`;
+    // Two ~640-char facts fit the 1,500-char turn; a third does not fit what the turn has left.
+    expect(await deliver([fact('s-1'), fact('s-2'), fact('s-3')], workspace)).not.toBe('');
+    // A small request share (memory took the rest) drops a fact the turn could still hold...
+    expect(await deliver([fact('s-4')], workspace, 10)).toBe('');
+    // ...but re-offering an already-delivered fact is not a budget loss, and a repeat
+    // drop in the same turn is one row.
+    expect(await deliver([fact('s-1'), fact('s-3')], workspace, 10)).toBe('');
+    // A fact the request dropped before the commit is classified against the turn too.
+    expect(await commitPushFacts({ ...input, workspace }, snapshot(), [], 20, new AbortController().signal, [fact('s-5')])).toBe('');
+    const skips = await skipsOf();
+    expect(skips.map(s => [s.subject, s.site])).toEqual(
+      [['s-3', 'turn-budget'], ['s-4', 'request-budget'], ['s-5', 'request-budget']]);
+    expect(skips[0].budget_left).toBeLessThan(skips[0].chars);
+    expect(skips[0].budget_left).toBe(CODE_INTEL_PUSH_TURN_CHARS - 2 * skips[0].chars);
+    expect(skips.slice(1).map(s => s.budget_left)).toEqual([10, 20]);
+    const pushed = await db.adminSql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${workspace} ORDER BY subject`;
+    expect(pushed.map(p => p.subject)).toEqual(['s-1', 's-2']);
+    const leaked = await db.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'foreign-workspace', true)`;
+      return tx`SELECT id FROM harness_shared.code_intel_push_skips WHERE workspace_id = ${workspace}`;
+    });
+    expect(leaked).toHaveLength(0);
+    // The skip row never blocks the real delivery: next turn the dropped fact goes out.
+    await db.adminSql`UPDATE harness_shared.identity_hook_turns SET turn_id = 'skips-next-turn' WHERE workspace_id = ${workspace}`;
+    expect(await deliver([fact('s-3')], workspace)).toContain('x'.repeat(550));
+  });
+
+  it('WI-6554700010018439: a delivered intent-time brief is one intent row that never spends the hook budget', async () => {
+    const workspace = 'push-integration-intent';
+    const brief = {
+      status: 'current' as const, intent: { text: 'fix target', fingerprint: 'f'.repeat(64) }, sourceFingerprint: 's'.repeat(64),
+      commit: 'a'.repeat(40), files: [{ path: 'target.ts', sha256: 'b'.repeat(64), kind: 'implementation' as const },
+        { path: '/etc/passwd', sha256: 'c'.repeat(64), kind: 'doc' as const }],
+      excerpts: [{ path: 'target.ts', text: 'y'.repeat(2_000) }],
+      recover: { tool: 'code:pack' as const, args: { op: 'pack' as const, include: ['target.ts'], rootPath: '/repo' } },
+    };
+    const owner = { workspace, owner: input.owner };
+    expect(await recordIntentTaskBrief(owner, brief)).toBe(true);
+    expect(await recordIntentTaskBrief(owner, brief)).toBe(false);
+    expect(await recordIntentTaskBrief(owner, { ...brief, status: 'unknown', sourceFingerprint: null })).toBe(false);
+    const rows = await db.adminSql<{ leg: string; subject: string; chars: number; cited_paths: string[]; suggested_call: string }[]>`
+      SELECT leg, subject, chars, cited_paths, suggested_call FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ leg: 'intent', subject: `${'f'.repeat(64)}:${'s'.repeat(64)}`, cited_paths: ['target.ts'],
+      suggested_call: 'code:pack {"op":"pack","include":["target.ts"],"rootPath":"/repo"}' });
+    expect(rows[0].chars).toBeGreaterThan(CODE_INTEL_PUSH_TURN_CHARS);
+    // Same turn: the ~2k-char brief rode in a tool result, so the hook still has its 1,500 chars.
+    expect(await deliver([fact('i-1'), fact('i-2')], workspace)).toContain('x'.repeat(550));
+    const hook = await db.adminSql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${workspace} AND leg <> 'intent' ORDER BY subject`;
+    expect(hook.map(row => row.subject)).toEqual(['i-1', 'i-2']);
   });
 
   // plan-item-code-anchors-2026-10-20 P-001: replay real tool calls through the push channel

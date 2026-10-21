@@ -17,6 +17,7 @@
  * _mcp-handler.ts (the tools:invoke dispatch engine + the tools/call fall-through).
  */
 import { listAllProjectedTools, normalizeMcpName } from '@papercusp/agent-mcp';
+import { getServingBuild, type McpBuild } from '../../serving-build';
 
 /**
  * Normalize a tool name for comparison: strip the client's `mcp__<server>__`
@@ -90,7 +91,7 @@ export function suggestClosestToolNames(requested: string, limit = 3): string[] 
  * Render the full unknown_tool error text: `unknown_tool: …` prefix (kept EXACTLY so
  * existing error-code matching keeps working), closest matches when any, and the referral.
  */
-export function unknownToolReferral(requested: string): string {
+export function unknownToolReferral(requested: string, servingBuild: McpBuild = getServingBuild()): string {
   const suggestions = suggestClosestToolNames(requested);
   const didYouMean = suggestions.length > 0 ? ` Closest catalog matches: ${suggestions.join(', ')}.` : '';
   return (
@@ -109,6 +110,14 @@ export function unknownToolReferral(requested: string): string {
     `source but not be deployed to THIS operator yet (a red release gate stalls the ` +
     `staging→live window well past its normal <=15min) — check dev:pipeline_position before ` +
     `concluding the doc or the registry itself is wrong.` +
+    // staging-build-tool-routing-2026-10-21 R-3: the not-deployed case has a route that does
+    // not wait for the deploy. On the main build, name it; on staging it would point at itself.
+    (servingBuild === 'main'
+      ? ` This operator serves the main build; to call a tool that is new on staging now, use ` +
+        `tools:invoke { name, args, build: 'staging' } (the MCP proxy sends it to the :3170 ` +
+        `staging operator; tools:find { query, build: 'staging' } searches that catalog) ` +
+        `instead of waiting for the deploy.`
+      : '') +
     // EI-22365453839629245: a FOURTH reason, specific to plugin-contributed tools and the one
     // most likely to be misdiagnosed. Plugin tools reach the projected registry through an
     // asynchronous sweep inside getPluginHost() (plugin-host-runtime.ts, SWEEP_BUDGET_MS) whose

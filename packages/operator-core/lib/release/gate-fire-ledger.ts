@@ -456,8 +456,12 @@ export async function readGateNonVerdictReasons(
   sql: Sql,
   target: GateFireTarget,
   nowMs: number = Date.now(),
+  opts: { sinceMs?: number } = {},
 ): Promise<GateNonVerdictReasons> {
-  const sinceMs = nowMs - 86_400_000;
+  // `opts.sinceMs` only NARROWS the rolling day — EI-26555742295077041 recounts a reason from the
+  // close of the item already filed for it. It can never widen the window past 24h.
+  const floorMs = typeof opts.sinceMs === 'number' && Number.isFinite(opts.sinceMs) ? opts.sinceMs : -Infinity;
+  const sinceMs = Math.max(nowMs - 86_400_000, floorMs);
   const rows = await sql<{ status: string; count: string | number; latest_ms: string | number }[]>`
     SELECT status, count(DISTINCT COALESCE(NULLIF(detail->>'gateFireId', ''), id::text)) AS count,
            extract(epoch from max(created_at)) * 1000 AS latest_ms

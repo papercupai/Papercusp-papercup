@@ -1316,7 +1316,7 @@ export default defineTool({
   description:
     'Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.',
   guidance: {
-    when: 'Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness floors, not terminal state, fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.',
+    when: 'Before editing: claim to prevent duplicate work, and declare `changeKinds` here so the close knows which proof it owes. Use ids:[…] for a swath.',
     notWhen:
       '`claim_conflict` means a peer currently holds it. If that holder is dead or stale, retry the named claim with `force:true` and a reason; the takeover is liveness-checked and audited. A live holder still requires coordination. `claim_terminal_item` means a terminal row was left unchanged; reopen it explicitly with work_items:set_state { state:"open", force:true, reason } before claiming. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person\'s job.',
     chaining:

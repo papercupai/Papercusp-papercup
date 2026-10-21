@@ -20,8 +20,12 @@
 import { setServerVintageResolver, type ServerVintage } from '@papercusp/agent-mcp';
 import { getBuildInfo } from '../build-info';
 
+// staging-build-tool-routing-2026-10-21 R-3: the MCP route is a per-call `build: 'staging'`
+// (the :9071 proxy sends it to :3170); ptool callers still pass the URL.
 const STAGING_RECOVERY_ENDPOINT =
-  'the Papercusp staging operator at :3170 (with ptool, pass --url=http://127.0.0.1:3170 explicitly)';
+  "the Papercusp staging operator at :3170 — add build: 'staging' to this call's arguments " +
+  "(or call tools:invoke { name, args, build: 'staging' }) and the MCP proxy routes it there; " +
+  'with ptool, pass --url=http://127.0.0.1:3170 explicitly';
 
 setServerVintageResolver((): ServerVintage => ({
   buildId: getBuildInfo().sha,

@@ -293,7 +293,8 @@ export default defineTool({
   guidance: {
     when:
       'You know (or just discovered via tools:find) the exact name of a tool that is NOT in your loaded ' +
-      'set and you want to call it once — the universal way to reach the long tail of the catalog.',
+      'set and you want to call it once — the universal way to reach the long tail of the catalog. ' +
+      "A tool new on staging but not yet on main: add build: 'staging' (no deploy wait).",
     notWhen:
       'When the tool IS already in your loaded set / core spine — call it directly (lower overhead, ' +
       'the model constructs the call natively). This meta-tool adds a layer of indirection; prefer a ' +

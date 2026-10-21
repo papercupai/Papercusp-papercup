@@ -46,6 +46,7 @@ it('records a real node:test child when the focused router starts without a TS l
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
+  assertPrivateIntegrationEvidence,
   buildNodeTestArgs,
   canonicalMatch,
   classifyGovernedAdmissionFailure,
@@ -113,13 +114,66 @@ import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 // the optional scope env. Otherwise its unscoped-run warning trips fail-on-console
 // before the router behavior under test can be asserted.
 const callerHarness = process.env.PAPERCUSP_TEST_RUN_HARNESS;
-beforeEach(() => { process.env.PAPERCUSP_TEST_RUN_HARNESS = 'papercusp'; });
+const callerReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+beforeEach(() => {
+  process.env.PAPERCUSP_TEST_RUN_HARNESS = 'papercusp';
+  // These cases replace test children with measured fixtures. A caller's
+  // real receipt sink belongs to the outer reporter; only receipt-contract
+  // cases opt their nested router into ledger enforcement explicitly.
+  delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+});
 afterEach(() => {
   if (callerHarness === undefined) delete process.env.PAPERCUSP_TEST_RUN_HARNESS;
   else process.env.PAPERCUSP_TEST_RUN_HARNESS = callerHarness;
+  if (callerReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+  else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = callerReceiptFile;
 });
 
 describe('test-files router', () => {
+  it('keeps the explicit private receipt sink separate from product database discovery', () => {
+    for (const key of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT']) {
+      expect(() => assertPrivateIntegrationEvidence({ [key]: '/tmp/receipt',
+        HARNESS_ADMIN_DATABASE_URL: 'postgresql://product.invalid/db' }))
+        .toThrow('PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+      expect(() => assertPrivateIntegrationEvidence({ [key]: '/tmp/receipt',
+        PAPERCUSP_TEST_RUNS_DB_URL: ' postgresql://ledger.invalid/evidence ' })).not.toThrow();
+    }
+    expect(() => assertPrivateIntegrationEvidence({})).not.toThrow();
+  });
+
+  it.each([
+    { sink: undefined, evidence: 'PAPERCUSP_TEST_RUN_RECEIPT_FILE', reason: 'is required for durable isolated test receipts' },
+    { sink: undefined, evidence: 'PC_EXECUTED_SOURCE_MAP_RESULT', reason: 'is required for durable isolated test receipts' },
+    { sink: ' ', evidence: 'PAPERCUSP_TEST_RUN_RECEIPT_FILE', reason: 'must not be blank' },
+    { sink: 'https://secret:never-print-this@ledger.invalid/evidence', evidence: 'PAPERCUSP_TEST_RUN_RECEIPT_FILE', reason: 'must be a valid PostgreSQL URL' },
+  ])('refuses private proof before source copying for $evidence / $reason', async ({ sink, evidence, reason }) => {
+    const keys = ['NODE_OPTIONS', 'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+      'PC_EXECUTED_SOURCE_MAP_RESULT'];
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const preflight = vi.fn(), frozen = vi.fn(), list = vi.fn(), run = vi.fn();
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      for (const key of keys.slice(1)) delete process.env[key];
+      if (sink !== undefined) process.env.PAPERCUSP_TEST_RUNS_DB_URL = sink;
+      process.env[evidence] = '/tmp/private-proof-test-receipt';
+      const file = 'packages/operator-core/lib/release/grading-audit-runtime.integration.test.ts';
+      expect(await main([resolve(REPO_ROOT, file)], {
+        restrictedHoldPreflightImpl: () => ({ verdict: 'admit' }),
+        preflightPrivateIntegrationPgImpl: preflight, runPrivateVerifierImpl: frozen,
+        runVitestListImpl: list, runCapturedTestProcessImpl: run,
+      })).toBe(2);
+      for (const operation of [preflight, frozen, list, run]) expect(operation).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('PAPERCUSP_TEST_RUNS_DB_URL ' + reason));
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('never-print-this');
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      warning.mockRestore();
+    }
+  });
+
   it('routes committed private proof inputs through the existing freezer before collection', () => {
     const root = mkdtempSync(join(tmpdir(), 'private-verifier-route-'));
     const env = { NODE_OPTIONS: '--import=/repo/scripts/lib/committed-source-loader.mjs' };
@@ -2538,7 +2592,7 @@ describe('main() — failed assertion details survive private report cleanup (EI
       stdoutSpy.mockRestore();
     }
 
-    expect(code).toBe(1);
+    expect(code, JSON.stringify(errSpy.mock.calls)).toBe(1);
     const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(output).toContain(
       'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="router > reports the real assertion" message="Expected 1 to be 2"',
@@ -2961,7 +3015,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     }
     const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     const errors = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
-    expect(code).toBe(3);
+    expect(code, errors).toBe(3);
     expect(output).toContain(`TEST_FILE_RESULT requested=1 executed=1 matched=1 status=${status === 0 ? 'passed' : 'failed'}`);
     expect(output).toContain('finalizationError=true');
     expect(errors).toContain('TEST_FILE_FINALIZATION_ERROR');
@@ -3004,7 +3058,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     }
     const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     const errors = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
-    expect(code).toBe(3);
+    expect(code, errors).toBe(3);
     expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
     expect(output).toContain('finalizationError=true');
     expect(errors).toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');

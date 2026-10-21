@@ -444,10 +444,9 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .datetime({ offset: true })
       .optional()
       .describe('legacy hint; authoritative approval time is always read from the post'),
-    faultInjection: z
-      .enum(['after-decision', 'after-rubric', 'after-projection', 'after-rebind'])
-      .optional()
-      .describe('test-only rollback probe'),
+    // No faultInjection arg: the rollback probe is test-only and lives on the lib input
+    // (AmendRubricInput.faultInjection) where the integration tests call it directly
+    // (WI-6554700010018783).
   }),
   (args, ctx) => {
     if (args.requirement && (args.criteria || args.criterion || args.criterionClass || args.criterionEvidencePlane)) {
@@ -623,7 +622,6 @@ export default defineTool({
       ...(args.approvalRef !== undefined ? { approvalRef: args.approvalRef } : {}),
       ...(args.approvedBy !== undefined ? { approvedBy: args.approvedBy } : {}),
       ...(args.approvedAt !== undefined ? { approvedAt: args.approvedAt } : {}),
-      ...(args.faultInjection !== undefined ? { faultInjection: args.faultInjection } : {}),
       checkPathRoot: resolveAgentWorkspaceRoot(ctx),
       actorId: identity.ownerId,
     };

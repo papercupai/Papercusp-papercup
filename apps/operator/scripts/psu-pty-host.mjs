@@ -732,6 +732,31 @@ export function stampUntaggedLifecycleCarry(text, sid, env = process.env, nowMs 
   return tagHostOriginTurn(value, sid, 'host-control', env, nowMs);
 }
 
+/** EI-26565736281520734: every control mode whose `data` becomes the FIRST typed
+ * turn of a fresh context. carry-respawn belongs here as much as reset/recycle.
+ * On 2026-10-21 an agent self-recycled by writing `{v:1, mode:'carry-respawn',
+ * data}` with no envelope. The stamp checked only reset/recycle, so the
+ * successor's first prompt was recorded as owner-typed (owner directive #2136).
+ * A live `turn` is deliberately NOT listed. Its machine senders already envelope
+ * their text, and this change does not establish that no owner-facing path uses
+ * that mode. */
+export const LIFECYCLE_CARRY_MODES = Object.freeze(['reset', 'recycle', 'carry-respawn']);
+
+/** Stamp a decoded lifecycle control message's untagged carry text in place.
+ * Returns true only when it stamped. Exported for tests.
+ * @param {{ mode?: string, data?: string } | null | undefined} msg
+ * @param {string} sid
+ * @param {EnvironmentMap} [env]
+ * @param {number} [nowMs]
+ */
+export function stampLifecycleControlCarry(msg, sid, env = process.env, nowMs = Date.now()) {
+  if (!msg || !LIFECYCLE_CARRY_MODES.includes(String(msg.mode))) return false;
+  const stamped = stampUntaggedLifecycleCarry(msg.data, sid, env, nowMs);
+  if (stamped === msg.data) return false;
+  msg.data = stamped;
+  return true;
+}
+
 /** One writer for every host-minted origin, so the row shape, hash
  * normalization and file modes cannot drift between them. Mirrors
  * turn-provenance.ts appendLedgerRow + formatEnvelope + payloadSha256.
@@ -14338,15 +14363,12 @@ export function hostThroughPty(o) {
         });
         return { ok: false, reason: 'unsupported-control-envelope' };
       }
-      // WI-6554700010017571: an untagged lifecycle carry-note gets a verified
-      // host-control envelope before any gate can defer or deliver it, so the
-      // fresh context never records machine text as the owner's.
-      if (msg.mode === 'reset' || msg.mode === 'recycle') {
-        const stamped = stampUntaggedLifecycleCarry(msg.data, ownerId, env);
-        if (stamped !== msg.data) {
-          msg.data = stamped;
-          appendHostEvent(ownerId, 'control-carry-origin-stamped', { mode: msg.mode, origin: 'host-control' });
-        }
+      // WI-6554700010017571 / EI-26565736281520734: an untagged lifecycle
+      // carry-note (reset, recycle or carry-respawn; see LIFECYCLE_CARRY_MODES)
+      // gets a verified host-control envelope before any gate can defer or
+      // deliver it, so the fresh context never records machine text as the owner's.
+      if (stampLifecycleControlCarry(msg, ownerId, env)) {
+        appendHostEvent(ownerId, 'control-carry-origin-stamped', { mode: msg.mode, origin: 'host-control' });
       }
       if ((hooksObservationActive || hooksObservationInputHeld) && msg.mode === 'raw')
         return { ok: false, reason: 'observation-input-lease-held' };
