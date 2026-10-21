@@ -1,0 +1,36 @@
+{
+  "title": "Papercusp architecture and design",
+  "snapshotDate": "2026-10-21",
+  "coreSlides": 20,
+  "appendixSlides": 7,
+  "proposedCoreSeconds": 1700,
+  "mapSources": {
+    "architecture": {
+      "publicUrl": "https://papercusp.com/architecture/",
+      "builtHtmlSha256": "fa05a52c67d109c42de434ec5d22303c9f3845ccf1db3044e94c66aaf94ee437",
+      "svgSha256": "45e2575abae7b05ee75b6b4e51c7d12758de438c799bf32d4e5df723a4848ede",
+      "origin": "Existing public-site SVG; original map-engine.js retained for local drill-down; audio disabled."
+    },
+    "cupboard": {
+      "publicUrl": "https://papercusp.com/cupboard/",
+      "builtHtmlSha256": "7e421ce19bb7852480f0a675fcd8e1101c28f39e971dd7b5014e0d52d962bc10",
+      "svgSha256": "cc5f4b3d96643f661bd385ca969ee55f4a924cb467aa3cfdc4cdf3e168e475ea",
+      "origin": "Existing public-site SVG; original map-engine.js retained for local drill-down; audio disabled."
+    }
+  },
+  "sourceFiles": [
+    "slides.json",
+    "build.mjs"
+  ],
+  "deliveryFiles": [
+    "index.html",
+    "deck.pdf",
+    "presenter-notes.md",
+    "README.md",
+    "maps/architecture.html",
+    "maps/cupboard.html",
+    "maps/architecture.svg",
+    "maps/cupboard.svg"
+  ],
+  "claims": "Prepared presentation artifact; no claim of human rehearsal, audience approval or verification of every platform implementation."
+}

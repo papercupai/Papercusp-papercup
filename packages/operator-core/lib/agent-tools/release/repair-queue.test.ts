@@ -7,7 +7,7 @@ import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-
 import type { FrozenRepairEditLedgerRow } from '../../release/frozen-repair-edit-ledger';
 import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
 import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
-import { precheckPopulation } from '../../release/admission-fix-precheck';
+import { ADMISSION_PRECHECK_MAX_FILES, precheckPopulation } from '../../release/admission-fix-precheck';
 import {
   runAdmissionPrecheckWorker,
   type AdmissionPrecheckWorkerInput,
@@ -1350,6 +1350,47 @@ describe('release:repair-queue', () => {
       expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
       expect(mocks.write).not.toHaveBeenCalled();
       expect(dryRuns()).toEqual([true]);
+    });
+
+    it('WI-6554700010019443 refuses a population above the bound before launching any pre-check', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
+      mocks.admit.mockReturnValue(admissionOf(false, ['component']));
+      const oversized = Array.from({ length: ADMISSION_PRECHECK_MAX_FILES + 1 }, (_, i) => `component/t${i}.test.ts`);
+      mocks.population.mockImplementation((input) => ({ ok: true,
+        population: precheckPopulation({ ...input, affectedTestFiles: oversized }) }));
+      const result = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({
+        refused: true,
+        admitted: false,
+        reason: 'admission-precheck-unavailable',
+        cause: 'population-over-bound',
+        populationSize: ADMISSION_PRECHECK_MAX_FILES + 1,
+        populationBound: ADMISSION_PRECHECK_MAX_FILES,
+        builtCommit: NEW_HEAD,
+      });
+      expect((result as { detail: string }).detail).toContain('skipPrecheck:true + precheckReason');
+      expect(mocks.precheckFactory).not.toHaveBeenCalled();
+      expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+      expect(mocks.transition).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(dryRuns()).toEqual([true]);
+    });
+
+    it('WI-6554700010019443 still launches a pre-check for a population exactly at the bound', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
+      mocks.admit.mockReturnValue(admissionOf(false, ['component']));
+      const atBound = Array.from({ length: ADMISSION_PRECHECK_MAX_FILES }, (_, i) => `component/t${i}.test.ts`);
+      mocks.population.mockImplementation((input) => ({ ok: true,
+        population: precheckPopulation({ ...input, affectedTestFiles: atBound }) }));
+      mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
+        ran: true as const, commit, results: files.map((path) => ({ path, status: 'pass' as const })),
+      }));
+      const started = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
+      expect(started).toMatchObject({ pending: true, verdict: 'precheck-running' });
+      expect((started as { precheckOperation: { files: string[] } }).precheckOperation.files).toHaveLength(ADMISSION_PRECHECK_MAX_FILES);
+      await settledPrecheckQueue();
     });
     const settledPrecheckQueue = async () => {
       await drainDetached();

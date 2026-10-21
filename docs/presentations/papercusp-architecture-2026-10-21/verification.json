@@ -1,0 +1,107 @@
+{
+  "status": "passed",
+  "checkedAt": "2026-10-21T19:24:57.739Z",
+  "mechanicalWalkthroughSeconds": 18,
+  "checks": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "slides": 27,
+      "offline": true,
+      "navigation": true,
+      "notes": true,
+      "overview": true,
+      "deepLinkReload": true,
+      "localMapZoom": true
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "slides": 27,
+      "offline": true,
+      "navigation": true,
+      "notes": true,
+      "overview": true,
+      "deepLinkReload": true,
+      "localMapZoom": true
+    }
+  ],
+  "pdf": {
+    "pages": 27,
+    "notesExcluded": true,
+    "titleCoverage": "every slide"
+  },
+  "networkRequests": [],
+  "browserErrors": [],
+  "files": [
+    {
+      "path": "index.html",
+      "bytes": 300083,
+      "sha256": "4fe04555f0d4adcaa18c09dfc16ab086d2acf6a076704dc2b7fe6a6b25f37fc3"
+    },
+    {
+      "path": "deck.pdf",
+      "bytes": 731851,
+      "sha256": "2d8a2a408adc0ce28be8078f24ceb9dda2ffcba4171f0a6b9278cc486fa5ed6a"
+    },
+    {
+      "path": "presenter-notes.md",
+      "bytes": 16453,
+      "sha256": "4a0e862959216cb41bed5fecca409d2a011a664a68990730606df5681f415323"
+    },
+    {
+      "path": "slides.json",
+      "bytes": 27673,
+      "sha256": "28d7710aa81b67c9ac8100d70c00caef0fffe0e4b9a9939d73d2c6669a66f099"
+    },
+    {
+      "path": "build.mjs",
+      "bytes": 21472,
+      "sha256": "6a723f748bd1c89120c9ad08c2352bd80d4d532b6a1a16aa7b47b80d242ccaa6"
+    },
+    {
+      "path": "verify.mjs",
+      "bytes": 7698,
+      "sha256": "371c3134f2959c710a65c92dad83846f978ad648ab976151fc3412482e868e51"
+    },
+    {
+      "path": "README.md",
+      "bytes": 3851,
+      "sha256": "2379dba81cf7e798903bda6c15b6f4515cd5fb40ab9a858fded85474d8e7cfb2"
+    },
+    {
+      "path": "maps/architecture.html",
+      "bytes": 679880,
+      "sha256": "22bdcac2b87979427ce34253524efe47897518b56155481f0453e3083674b349"
+    },
+    {
+      "path": "maps/cupboard.html",
+      "bytes": 162462,
+      "sha256": "70b83339b7772183490a20d9891ab62f9df44c04a94e1d838460618fc2797aed"
+    },
+    {
+      "path": "maps/architecture.svg",
+      "bytes": 30707,
+      "sha256": "45e2575abae7b05ee75b6b4e51c7d12758de438c799bf32d4e5df723a4848ede"
+    },
+    {
+      "path": "maps/cupboard.svg",
+      "bytes": 31495,
+      "sha256": "cc5f4b3d96643f661bd385ca969ee55f4a924cb467aa3cfdc4cdf3e168e475ea"
+    }
+  ],
+  "spokenTiming": {
+    "proposedContentSeconds": 1700,
+    "questionBufferSeconds": 100,
+    "humanRehearsal": "not performed"
+  },
+  "limits": [
+    "Chromium desktop rendering and local file delivery were checked; projector and other browser engines require presenter rehearsal.",
+    "Mechanical walkthrough time is not human spoken presentation time.",
+    "Page content is a development-source snapshot, not certification of all product behavior."
+  ]
+}

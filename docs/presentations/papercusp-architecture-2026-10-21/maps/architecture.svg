@@ -1,0 +1,361 @@
+<svg viewBox="0 0 1160 710" role="img" aria-label="PaperCusp system map: desktop app, agent fleets, tool fabric, coordination substrate, shared working tree and self-improvement loop, all on your machine, feeding an autonomous release pipeline to production. Each block links to its section. Zoom into a block to reveal its section's full diagram nested inside. A second row covers code intelligence, triggers and workflows, real-world integrations, plugins and the marketplace, and the eval and health loop." xmlns="http://www.w3.org/2000/svg"><defs>
+  <symbol id="cupGlyph" viewBox="0 0 15 16">
+    <path class="steam s1" d="M5.3 1.2 q1.4 1.1 0 2.5" fill="none" stroke="#5eead4" stroke-width="1.25" stroke-linecap="round"></path>
+    <path class="steam s2" d="M8.4 0.9 q1.4 1.1 0 2.5" fill="none" stroke="#5eead4" stroke-width="1.25" stroke-linecap="round"></path>
+    <path d="M11.7 6.4 Q15 6.9 15 8.8 Q15 10.7 11.3 11.1" fill="none" stroke="#dff1ff" stroke-width="1.7" stroke-linecap="round"></path>
+    <path d="M2.2 5 H11.9 L11 12.4 Q10.75 14.2 7.05 14.2 Q3.35 14.2 3.1 12.4 Z" fill="#dff1ff"></path>
+    <ellipse cx="7.05" cy="5.15" rx="4.55" ry="1.05" fill="#38bdf8"></ellipse>
+  </symbol>
+  <marker id="aB" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#38bdf8"></path>
+  </marker>
+  <marker id="aT" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#5eead4"></path>
+  </marker>
+  <marker id="aW" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#fbbf24"></path>
+  </marker>
+  <marker id="aM" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#8ea9c0"></path>
+  </marker>
+</defs>
+          <rect x="0" y="0" width="1160" height="710" fill="#0b1626"></rect>
+          <g font-family="ui-monospace,Menlo,monospace">
+            <!-- page title — the page IS this map -->
+            <text x="46" y="22" fill="#e7f7ff" font-size="15" font-weight="700" letter-spacing="2">HOW PAPERCUSP WORKS</text>
+            <text x="46" y="38" fill="#8ea9c0" font-size="9.5">fleets of AI agents on real projects — coordination + verification, everything on your machine</text>
+            <!-- machine boundary — the pipeline runs inside it too -->
+            <rect x="24" y="46" width="1016" height="626" rx="16" fill="rgba(14,29,49,.4)" stroke="rgba(96,168,214,.3)" stroke-dasharray="7 6"></rect>
+            <text x="46" y="76" fill="#8ea9c0" font-size="12" letter-spacing="3">YOUR MACHINE</text>
+
+            <!-- you: the human — OUTSIDE the machine, above the boundary -->
+            <a href="#s02"><title>You — the human at the keyboard</title>
+            <rect x="300" y="8" width="210" height="30" rx="15" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.35)"></rect>
+            <text x="405" y="27" fill="#c3dcec" font-size="10.5" text-anchor="middle">you — the human at the keyboard</text>
+            
+            </a>
+            <!-- you → machine: intent flows in · machine → you: evidence flows back -->
+            <path d="M355,40 C 335,62 298,86 250,104" stroke="#8ea9c0" stroke-width="1.3" fill="none" stroke-dasharray="4 4" marker-end="url(#aM)"></path>
+            <path d="M420,110 C 436,86 442,64 438,44" stroke="#8ea9c0" stroke-width="1.3" fill="none" stroke-dasharray="4 4" marker-end="url(#aM)"></path>
+
+            <!-- llm apis (outside the boundary, in the right margin — the top-right corner belongs to
+                 the map controls, which would otherwise sit on top of it) -->
+            <a href="#s01"><title>LLM APIs — the inference gateway</title>
+              <rect x="1054" y="60" width="98" height="84" rx="10" fill="rgba(18,38,63,.5)" stroke="rgba(96,168,214,.35)"></rect>
+              <text x="1103" y="80" fill="#c3dcec" font-size="9" text-anchor="middle">LLM APIs</text>
+              <g fill="#8ea9c0" font-size="5.4" text-anchor="middle">
+                <text x="1103" y="96">hosted providers</text>
+                <text x="1103" y="105">+ models you serve</text>
+                <text x="1103" y="114">locally — all via</text>
+                <text x="1103" y="123"><tspan fill="#cde7f5" font-weight="600">the inference</tspan></text>
+                <text x="1103" y="132"><tspan fill="#cde7f5" font-weight="600">gateway</tspan></text>
+              </g>
+              
+            </a>
+            <path d="M460,112 C 600,62 860,50 1048,96" stroke="#8ea9c0" stroke-width="1.3" fill="none" stroke-dasharray="4 4" marker-end="url(#aM)"></path>
+            <text x="556" y="96" fill="#8ea9c0" font-size="9.5">model calls —</text>
+            <text x="556" y="108" fill="#8ea9c0" font-size="9.5">hosted, or served locally</text>
+
+            <!-- desktop app card → s01 -->
+            <a href="#s01"><title>01 · The desktop app</title>
+              <rect class="nd" x="52" y="112" width="220" height="158" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2" data-f1="3" opacity="1">
+              <text x="162" y="140" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Desktop app</text>
+              <g><rect x="58" y="116" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="95" y="126.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <text x="162" y="162" fill="#8ea9c0" font-size="10.5" text-anchor="middle">native shell · web UI · operator</text>
+              <text x="162" y="180" fill="#8ea9c0" font-size="9.5" text-anchor="middle">Cupboard: install + share</text>
+              <text x="162" y="198" fill="#8ea9c0" font-size="10" text-anchor="middle">schedulers · DBOS durable workflows</text>
+              <text x="162" y="222" fill="#5eead4" font-size="10.5" text-anchor="middle">embedded Postgres</text>
+              <text x="162" y="240" fill="#8ea9c0" font-size="9.5" text-anchor="middle">every state a queryable row</text>
+              </g>
+              
+              
+              
+              <rect class="bdg" x="240" y="104" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="253" y="116" fill="#7dd3fc" font-size="9" text-anchor="middle">01</text>
+            </a>
+
+            <!-- agent fleets card → s05 -->
+            <a href="#s05"><title>05 · The coordination plane — fleets, locks, claims</title>
+              <rect class="nd" x="316" y="112" width="220" height="158" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2" data-f1="3" opacity="1">
+              <text x="426" y="140" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Agent fleets</text>
+              <g><rect x="322" y="116" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="359" y="126.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <circle cx="426" cy="172" r="11" fill="rgba(56,189,248,.25)" stroke="#38bdf8"></circle>
+              <text x="426" y="176" fill="#38bdf8" font-size="9" text-anchor="middle">L</text>
+              <g fill="rgba(94,234,212,.18)" stroke="rgba(94,234,212,.7)">
+                <circle cx="376" cy="212" r="9"></circle><circle cx="401" cy="220" r="9"></circle><circle cx="426" cy="223" r="9"></circle>
+                <circle cx="451" cy="220" r="9"></circle><circle cx="476" cy="212" r="9"></circle>
+              </g>
+              <path d="M420,183 L385,204 M424,183 L404,211 M426,183 L426,213 M428,183 L448,211 M432,183 L467,204" stroke="rgba(96,168,214,.4)" stroke-width="1"></path>
+              <text x="426" y="248" fill="#8ea9c0" font-size="10" text-anchor="middle">a leader + members, on a plan</text>
+              <text x="426" y="262" fill="#8ea9c0" font-size="8.5" text-anchor="middle">agent modes: auto · ideate · drain · +5</text>
+              </g>
+              
+              
+              
+              <rect class="bdg" x="504" y="104" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="517" y="116" fill="#7dd3fc" font-size="9" text-anchor="middle">05</text>
+            </a>
+
+            <!-- tool fabric card → s09 -->
+            <a href="#s09"><title>09 · The tool fabric</title>
+              <rect class="nd" x="580" y="112" width="192" height="158" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2" data-f1="3" opacity="1">
+              <text x="676" y="140" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Tool fabric</text>
+              <g><rect x="586" y="116" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="623" y="126.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <g fill="rgba(56,189,248,.12)" stroke="rgba(96,168,214,.45)">
+                <rect x="602" y="156" width="44" height="20" rx="5"></rect><rect x="654" y="156" width="44" height="20" rx="5"></rect>
+                <rect x="706" y="156" width="44" height="20" rx="5"></rect><rect x="602" y="184" width="44" height="20" rx="5"></rect>
+                <rect x="654" y="184" width="44" height="20" rx="5"></rect><rect x="706" y="184" width="44" height="20" rx="5"></rect>
+                <rect x="602" y="212" width="44" height="20" rx="5"></rect><rect x="654" y="212" width="44" height="20" rx="5"></rect>
+                <rect x="706" y="212" width="44" height="20" rx="5"></rect>
+              </g>
+              <text x="676" y="248" fill="#8ea9c0" font-size="10" text-anchor="middle">MCP server · 900+ typed verbs</text>
+              <text x="676" y="262" fill="#8ea9c0" font-size="8.5" text-anchor="middle">recipes · guards · rules engine</text>
+              </g>
+              
+              
+              
+              <rect class="bdg" x="740" y="104" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="753" y="116" fill="#7dd3fc" font-size="9" text-anchor="middle">09</text>
+            </a>
+
+            <!-- coordination substrate band → s03..s08 -->
+            <g>
+            <a href="#s03"><title>02–08, 12, 13 · Goals, plans, work items, coordination, events, blueprints, context &amp; memory, safety, the carry inventory</title>
+              <rect class="nd" x="52" y="316" width="720" height="92" rx="12" fill="rgba(18,38,63,.55)" stroke="rgba(94,234,212,.4)"></rect>
+              <g class="lod0" data-f0="1.15" data-f1="1.35" opacity="1">
+              <text x="412" y="336" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Coordination substrate</text>
+              <g><rect x="58" y="322" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="95" y="332.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <g font-size="8" fill="#c3dcec" text-anchor="middle" font-weight="600">
+                <rect x="77" y="346" width="100" height="24" rx="5" fill="rgba(11,22,38,.55)" stroke="rgba(96,168,214,.35)" stroke-width=".8"></rect>
+                <text x="127" y="361">goals + plans</text>
+                <rect x="191" y="346" width="100" height="24" rx="5" fill="rgba(11,22,38,.55)" stroke="rgba(96,168,214,.35)" stroke-width=".8"></rect>
+                <text x="241" y="361">work-item ledger</text>
+                <rect x="305" y="346" width="100" height="24" rx="5" fill="rgba(11,22,38,.55)" stroke="rgba(96,168,214,.35)" stroke-width=".8"></rect>
+                <text x="355" y="361">file locks</text>
+                <rect x="419" y="346" width="100" height="24" rx="5" fill="rgba(11,22,38,.55)" stroke="rgba(96,168,214,.35)" stroke-width=".8"></rect>
+                <text x="469" y="361">events + gates</text>
+                <rect x="533" y="346" width="100" height="24" rx="5" fill="rgba(11,22,38,.55)" stroke="rgba(96,168,214,.35)" stroke-width=".8"></rect>
+                <text x="583" y="361">presence</text>
+                <rect x="647" y="346" width="100" height="24" rx="5" fill="rgba(11,22,38,.55)" stroke="rgba(96,168,214,.35)" stroke-width=".8"></rect>
+                <text x="697" y="361">memory</text>
+              </g>
+              <path d="M127,370 V381 M241,370 V381 M355,370 V381 M469,370 V381 M583,370 V381 M697,370 V381" stroke="rgba(96,168,214,.4)" stroke-width="1" fill="none"></path>
+              <line x1="85" y1="381" x2="739" y2="381" stroke="rgba(56,189,248,.55)" stroke-width="1.4"></line>
+              <text x="412" y="398" fill="#5eead4" font-size="9" text-anchor="middle">one shared bus — every agent reads and writes the same rows · zoom in: every subsystem is inside</text>
+              </g>
+              <rect class="bdg" x="712" y="308" width="54" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="739" y="320" fill="#7dd3fc" font-size="9" text-anchor="middle">02–13</text>
+            </a>
+            
+            </g>
+
+            <!-- working tree band → s11 -->
+            <a href="#s11"><title>11 · The release pipeline starts at the shared tree</title>
+              <rect class="nd" x="52" y="452" width="470" height="74" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="1.6" data-f1="2" opacity="1">
+              <text x="287" y="470" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Shared working tree</text>
+              <g><rect x="58" y="458" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="95" y="468.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <g fill="rgba(94,234,212,.18)" stroke="rgba(94,234,212,.7)">
+                <circle cx="97" cy="487" r="4.5"></circle><circle cx="97" cy="500" r="4.5"></circle><circle cx="110" cy="493" r="4.5"></circle>
+              </g>
+              <path d="M101,488 L148,491 M101,499 L148,495 M114,493 L148,493" stroke="rgba(96,168,214,.4)" stroke-width=".9" fill="none"></path>
+              <text x="104" y="514" fill="#8ea9c0" font-size="7" text-anchor="middle">agents</text>
+              <rect x="150" y="479" width="84" height="28" rx="6" fill="rgba(11,22,38,.55)" stroke="rgba(96,168,214,.35)" stroke-width=".8"></rect>
+              <text x="192" y="491" fill="#c3dcec" font-size="8" font-weight="600" text-anchor="middle">file locks</text>
+              <text x="192" y="501" fill="#8ea9c0" font-size="7" text-anchor="middle">arbitrate edits</text>
+              <line x1="234" y1="493" x2="256" y2="493" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#aB)"></line>
+              <rect x="258" y="479" width="150" height="28" rx="6" fill="rgba(11,22,38,.55)" stroke="rgba(96,168,214,.5)" stroke-width=".9"></rect>
+              <text x="333" y="491" fill="#c3dcec" font-size="8" font-weight="600" text-anchor="middle">ONE checkout — staging</text>
+              <text x="333" y="501" fill="#8ea9c0" font-size="7" text-anchor="middle">agents never commit</text>
+              <line x1="408" y1="493" x2="430" y2="493" stroke="#5eead4" stroke-width="1.2" marker-end="url(#aT)"></line>
+              <rect x="432" y="479" width="84" height="28" rx="6" fill="rgba(11,22,38,.55)" stroke="rgba(94,234,212,.4)" stroke-width=".8"></rect>
+              <text x="474" y="491" fill="#c3dcec" font-size="8" font-weight="600" text-anchor="middle">git-sync robot</text>
+              <text x="474" y="501" fill="#8ea9c0" font-size="7" text-anchor="middle">commits + pushes</text>
+              </g>
+              
+              
+              
+              <rect class="bdg" x="476" y="444" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="489" y="456" fill="#7dd3fc" font-size="9" text-anchor="middle">11</text>
+            </a>
+
+            <!-- self-improvement node → s10 -->
+            <a href="#s10"><title>10 · The self-improvement loop</title>
+              <rect class="nd" x="566" y="452" width="206" height="74" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(94,234,212,.45)"></rect>
+              <g class="lod0" data-f0="3" data-f1="4" opacity="1">
+              <text x="669" y="480" fill="#e7f7ff" font-size="12.5" font-weight="600" text-anchor="middle">Self-improvement</text>
+              <g><rect x="572" y="458" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="609" y="468.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <text x="669" y="498" fill="#8ea9c0" font-size="8" text-anchor="middle">the Blender: observe→ideate→grade→build</text>
+              <text x="669" y="514" fill="#8ea9c0" font-size="8.5" text-anchor="middle">rubrics · scorecards · graded evidence</text>
+              </g>
+              
+              
+              
+              
+                
+              <rect class="bdg" x="726" y="444" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="739" y="456" fill="#7dd3fc" font-size="9" text-anchor="middle">10</text>
+            </a>
+
+            <!-- capability row — code intel · triggers · integrations · plugins · eval (y560-660) -->
+            <g stroke="#8ea9c0" stroke-width="1.2" fill="none" stroke-dasharray="4 4" opacity=".85">
+              <path d="M582,252 C 470,290 240,294 118,294 C 54,294 36,326 36,400 C 36,478 38,520 64,544 C 80,555 96,557 112,557" marker-end="url(#aM)"></path>
+              <path d="M368,408 C 470,432 540,452 542,488 C 544,520 474,549 358,556" marker-end="url(#aM)"></path>
+              <path d="M96,270 C 62,292 46,324 46,394 C 46,468 50,516 94,542 C 210,558 392,556 498,557" marker-end="url(#aM)"></path>
+              <path d="M96,270 C 62,292 46,324 46,394 C 46,468 50,516 94,542 C 300,560 540,552 688,557" marker-end="url(#aM)"></path>
+              <path d="M772,510 C 800,527 830,543 856,556" marker-end="url(#aM)"></path>
+            </g>
+
+            <!-- code intelligence card → s09 -->
+            <a href="#s09"><title>09 · Code intelligence — agents read code as a graph</title>
+              <rect class="nd" x="52" y="560" width="181" height="100" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.6" data-f1="3.6" opacity="1">
+              <text x="142.5" y="588" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Code intelligence</text>
+              <g><rect x="58" y="566" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="95" y="576.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <text x="142.5" y="610" fill="#8ea9c0" font-size="8.8" text-anchor="middle">the codebase as a graph — not grep</text>
+              <text x="142.5" y="626" fill="#8ea9c0" font-size="8.8" text-anchor="middle">graph:query · lsp · pushed briefs</text>
+              </g>
+              
+                
+                
+              <rect class="bdg" x="201" y="552" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="214" y="564" fill="#7dd3fc" font-size="9" text-anchor="middle">09</text>
+            </a>
+
+            <!-- triggers & workflows card → s02 -->
+            <a href="#s02"><title>02 · Triggers &amp; workflows — recurrence as data</title>
+              <rect class="nd" x="245" y="560" width="181" height="100" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.6" data-f1="3.6" opacity="1">
+              <text x="335.5" y="588" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Triggers &amp; workflows</text>
+              <g><rect x="251" y="566" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="288" y="576.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <text x="335.5" y="610" fill="#8ea9c0" font-size="8.8" text-anchor="middle">events · schedules · conditions</text>
+              <text x="335.5" y="626" fill="#8ea9c0" font-size="8.8" text-anchor="middle">durable workflows survive restarts</text>
+              </g>
+              
+              <rect class="bdg" x="394" y="552" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="407" y="564" fill="#7dd3fc" font-size="9" text-anchor="middle">02</text>
+            </a>
+
+            <!-- integrations card → s01 -->
+            <a href="#s01"><title>01 · Integrations — agents act in the real world</title>
+              <rect class="nd" x="438" y="560" width="181" height="100" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.6" data-f1="3.6" opacity="1">
+              <text x="528.5" y="588" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Integrations</text>
+              <g><rect x="444" y="566" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="481" y="576.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <text x="528.5" y="610" fill="#8ea9c0" font-size="8.8" text-anchor="middle">gmail · slack · calendar · social</text>
+              <text x="528.5" y="626" fill="#8ea9c0" font-size="8.8" text-anchor="middle">agents act in the real world</text>
+              </g>
+              
+              <rect class="bdg" x="587" y="552" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="600" y="564" fill="#7dd3fc" font-size="9" text-anchor="middle">01</text>
+            </a>
+
+            <!-- plugins & marketplace card → s01 -->
+            <a href="#s01"><title>01 · Plugins &amp; marketplace — extend the fabric without forking it</title>
+              <rect class="nd" x="631" y="560" width="181" height="100" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.6" data-f1="3.6" opacity="1">
+              <text x="721.5" y="588" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Plugins &amp; marketplace</text>
+              <g><rect x="637" y="566" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="674" y="576.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <text x="721.5" y="610" fill="#8ea9c0" font-size="8.8" text-anchor="middle">WASM plugin SDK · typed WIT seams</text>
+              <text x="721.5" y="626" fill="#8ea9c0" font-size="8.8" text-anchor="middle">extend the fabric, never fork it</text>
+              </g>
+              
+              <rect class="bdg" x="780" y="552" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="793" y="564" fill="#7dd3fc" font-size="9" text-anchor="middle">01</text>
+            </a>
+
+            <!-- eval · health card → s10 -->
+            <a href="#s10"><title>10 · Eval &amp; health — measured, gated, accountable</title>
+              <rect class="nd" x="824" y="560" width="181" height="100" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(94,234,212,.45)"></rect>
+              <g class="lod0" data-f0="2.6" data-f1="3.6" opacity="1">
+              <text x="914.5" y="588" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Eval · health</text>
+              <g><rect x="830" y="566" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="867" y="576.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+              <text x="914.5" y="610" fill="#8ea9c0" font-size="8.8" text-anchor="middle">gym · ablation · calibration</text>
+              <text x="914.5" y="626" fill="#8ea9c0" font-size="8.8" text-anchor="middle">flags · watchdogs · quota · purge</text>
+              </g>
+              
+              <rect class="bdg" x="973" y="552" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="986" y="564" fill="#7dd3fc" font-size="9" text-anchor="middle">10</text>
+            </a>
+
+            <!-- pipeline column → s11 (inside the machine: deploys are local) -->
+            <a href="#s11"><title>11 · The release pipeline — sweep, gate, fast-forward, deploy</title>
+              <rect class="nd" x="846" y="150" width="160" height="58" rx="11" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <text x="926" y="174" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">git-sync</text>
+              <text x="926" y="192" fill="#8ea9c0" font-size="9.5" text-anchor="middle">auto-commit + push</text>
+
+              <rect class="nd" x="846" y="252" width="160" height="58" rx="11" fill="rgba(18,38,63,.65)" stroke="rgba(251,191,36,.55)"></rect>
+              <text x="926" y="276" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">green gate</text>
+              <text x="926" y="294" fill="#8ea9c0" font-size="9.5" text-anchor="middle">tests · lint · types · perf</text>
+
+              <rect class="nd" x="846" y="354" width="160" height="58" rx="11" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <text x="926" y="378" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">main</text>
+              <text x="926" y="396" fill="#8ea9c0" font-size="9.5" text-anchor="middle">fast-forward only</text>
+
+              <rect class="nd" x="846" y="456" width="160" height="58" rx="11" fill="rgba(18,38,63,.5)" stroke="rgba(94,234,212,.7)"></rect>
+              <text x="926" y="480" fill="#5eead4" font-size="12" font-weight="600" text-anchor="middle">production</text>
+              <text x="926" y="498" fill="#8ea9c0" font-size="9.5" text-anchor="middle">deploy · probe · rollback</text>
+              <rect class="bdg" x="960" y="142" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="973" y="154" fill="#7dd3fc" font-size="9" text-anchor="middle">11</text>
+              
+              
+              
+              
+              <!-- pipeline internals — the deepest layer -->
+              
+              
+              
+              
+            </a>
+
+            <text x="1022" y="334" fill="#8ea9c0" font-size="9.5" transform="rotate(90 1022 334)" text-anchor="middle">the autonomous release pipeline</text>
+
+            <!-- your other machines — p2p pot federation (outside the boundary: it IS another machine) -->
+            <a href="#s01"><title>Your other machines — peer-to-peer federation</title>
+              <rect x="1054" y="442" width="98" height="84" rx="10" fill="rgba(18,38,63,.5)" stroke="rgba(96,168,214,.35)" stroke-dasharray="5 4"></rect>
+              <text x="1103" y="458" fill="#c3dcec" font-size="8" text-anchor="middle">your other</text>
+              <text x="1103" y="468" fill="#c3dcec" font-size="8" text-anchor="middle">machines</text>
+              <g fill="#8ea9c0" font-size="5.4" text-anchor="middle">
+                <text x="1103" y="482">pots federate</text>
+                <text x="1103" y="491">peer-to-peer</text>
+                <text x="1103" y="500">encrypted mesh</text>
+                <text x="1103" y="509">no central</text>
+                <text x="1103" y="518"><tspan fill="#cde7f5" font-weight="600">server</tspan> needed</text>
+              </g>
+              <path d="M1040,478 L1054,478" stroke="#8ea9c0" stroke-width="1.2" stroke-dasharray="4 4"></path>
+              
+            </a>
+
+            <!-- trust legend — appears once you start zooming -->
+            
+
+            <!-- flows -->
+            <g stroke="#38bdf8" stroke-width="1.5" fill="none">
+              <path d="M272,191 L316,191" marker-end="url(#aB)"></path>
+              <path d="M536,191 L580,191" marker-end="url(#aB)"></path>
+              <path d="M426,270 L426,316" marker-end="url(#aB)"></path>
+              <path d="M676,270 C 676,292 500,300 470,316" marker-end="url(#aB)"></path>
+              <path d="M162,270 L162,316" marker-end="url(#aB)"></path>
+              <path d="M287,408 L287,452" marker-end="url(#aB)"></path>
+            </g>
+            <g fill="#6f8ba3" font-size="8.5">
+              <text x="294" y="184" text-anchor="middle">spawns</text>
+              <text x="558" y="184" text-anchor="middle">calls</text>
+              <text x="168" y="297">hosts</text>
+              <text x="432" y="297">claim · coordinate</text>
+              <text x="293" y="434">edits — lock-arbitrated</text>
+              <text x="675" y="434">observations</text>
+            </g>
+            <g stroke="#5eead4" stroke-width="1.5" fill="none">
+              <path d="M669,408 L669,452" marker-end="url(#aT)"></path>
+              <path d="M926,208 L926,252" marker-end="url(#aT)"></path>
+              <path d="M926,310 L926,354" marker-end="url(#aT)"></path>
+              <path d="M926,412 L926,456" marker-end="url(#aT)"></path>
+              <path d="M522,512 C 552,512 546,540 594,540 L 768,540 C 800,540 810,528 810,478 L 810,244 C 810,216 822,200 842,194" marker-end="url(#aT)"></path>
+            </g>
+            <text x="824" y="344" fill="#6f8ba3" font-size="8.5" transform="rotate(90 824 344)" text-anchor="middle">sweep · commit · push</text>
+          </g>
+        </svg>

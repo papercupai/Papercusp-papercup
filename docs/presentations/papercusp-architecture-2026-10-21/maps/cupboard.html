@@ -1,0 +1,2435 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Papercusp cupboard map</title><style>
+  /* ============ Blue-frost token system ============ */
+  :root{
+    --bg:#07101d; --bg-2:#0b1626; --bg-3:#0e1d31;
+    --surface:rgba(18,38,63,.45); --surface-2:rgba(12,26,44,.7);
+    --border:rgba(96,168,214,.18); --border-strong:rgba(96,168,214,.34);
+    --fg:#e7f7ff; --fg-dim:#c3dcec; --muted:#8ea9c0;
+    --accent:#38bdf8; --accent-2:#5eead4; --accent-deep:#0ea5e9;
+    --glow:rgba(56,189,248,.22);
+    --good:#5eead4; --warn:#fbbf24; --bad:#fb7185;
+    --grid:rgba(120,180,220,.05);
+    --shadow:0 24px 60px -30px rgba(0,0,0,.7);
+    --maxw:1180px;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color-scheme:dark;
+  }
+  @media (prefers-color-scheme:light){
+    :root{
+      --bg:#e9f3fa; --bg-2:#f4fafe; --bg-3:#ffffff;
+      --surface:rgba(255,255,255,.72); --surface-2:rgba(255,255,255,.9);
+      --border:rgba(20,90,130,.16); --border-strong:rgba(20,90,130,.28);
+      --fg:#082033; --fg-dim:#1c3c52; --muted:#4d6c82;
+      --accent:#0284c7; --accent-2:#0d9488; --accent-deep:#0369a1;
+      --glow:rgba(2,132,199,.14);
+      --good:#0d9488; --warn:#b45309; --bad:#be123c;
+      --grid:rgba(20,90,130,.05);
+      --shadow:0 24px 60px -34px rgba(20,60,90,.4);
+      color-scheme:light;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#07101d; --bg-2:#0b1626; --bg-3:#0e1d31;
+    --surface:rgba(18,38,63,.45); --surface-2:rgba(12,26,44,.7);
+    --border:rgba(96,168,214,.18); --border-strong:rgba(96,168,214,.34);
+    --fg:#e7f7ff; --fg-dim:#c3dcec; --muted:#8ea9c0;
+    --accent:#38bdf8; --accent-2:#5eead4; --accent-deep:#0ea5e9;
+    --glow:rgba(56,189,248,.22); --good:#5eead4; --warn:#fbbf24; --bad:#fb7185;
+    --grid:rgba(120,180,220,.05); --shadow:0 24px 60px -30px rgba(0,0,0,.7);
+    color-scheme:dark;
+  }
+  :root[data-theme="light"]{
+    --bg:#e9f3fa; --bg-2:#f4fafe; --bg-3:#ffffff;
+    --surface:rgba(255,255,255,.72); --surface-2:rgba(255,255,255,.9);
+    --border:rgba(20,90,130,.16); --border-strong:rgba(20,90,130,.28);
+    --fg:#082033; --fg-dim:#1c3c52; --muted:#4d6c82;
+    --accent:#0284c7; --accent-2:#0d9488; --accent-deep:#0369a1;
+    --glow:rgba(2,132,199,.14); --good:#0d9488; --warn:#b45309; --bad:#be123c;
+    --grid:rgba(20,90,130,.05); --shadow:0 24px 60px -34px rgba(20,60,90,.4);
+    color-scheme:light;
+  }
+
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:var(--sans); line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* the chaos->rails choreography rides a real element so it composites at full frame rate */
+  .bgfx{position:fixed; inset:0; z-index:-1; pointer-events:none; contain:strict}
+  .bgfx video{width:100%; height:100%; object-fit:cover; display:block; transform:translateZ(0); backface-visibility:hidden}
+  [data-theme="light"] .bgfx{display:none}
+  [data-theme="light"] body{background-image:
+    radial-gradient(1100px 600px at 78% -8%, var(--glow), transparent 60%),
+    radial-gradient(900px 520px at 8% 12%, rgba(94,234,212,.08), transparent 55%),
+    none,
+    none' opacity='.08'/%3E%3C/svg%3E");
+    background-repeat:no-repeat, no-repeat, no-repeat, repeat;
+    background-position:0 0, 0 0, center, 0 0;
+    background-attachment:fixed, fixed, fixed, scroll;
+    background-size:auto, auto, cover, 180px 180px}
+  body.bg-degraded{background-image:
+    radial-gradient(1100px 600px at 78% -8%, var(--glow), transparent 60%),
+    radial-gradient(900px 520px at 8% 12%, rgba(94,234,212,.08), transparent 55%),
+    none,
+    none' opacity='.08'/%3E%3C/svg%3E");
+    background-repeat:no-repeat, no-repeat, no-repeat, repeat;
+    background-position:0 0, 0 0, center, 0 0;
+    background-attachment:fixed, fixed, fixed, scroll;
+    background-size:auto, auto, cover, 180px 180px}
+  .bgfx svg{width:100%; height:100%; display:block}
+  .bgsay{position:fixed; left:0; top:0; font-family:var(--mono); font-size:.62rem; letter-spacing:.02em;
+    color:#0b1420; background:rgba(255,255,255,.96); border:1px solid rgba(150,190,214,.55);
+    border-radius:7px 7px 7px 2px; padding:3px 8px; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,.35);
+    opacity:0; animation:bgsayfade 2.8s ease forwards; will-change:transform}
+  .bgsay.reply{background:rgba(240,248,255,.97); border-radius:7px 7px 2px 7px}
+  @keyframes bgsayfade{0%{opacity:0}12%{opacity:.9}78%{opacity:.9}100%{opacity:0}}
+  @media (prefers-reduced-motion:reduce){
+    .bgfx{display:none}
+    body{background-image:
+      radial-gradient(1100px 600px at 78% -8%, var(--glow), transparent 60%),
+      radial-gradient(900px 520px at 8% 12%, rgba(94,234,212,.08), transparent 55%),
+      none,
+      none' opacity='.08'/%3E%3C/svg%3E");
+      background-repeat:no-repeat, no-repeat, no-repeat, repeat;
+      background-position:0 0, 0 0, center, 0 0;
+      background-attachment:fixed, fixed, fixed, scroll;
+      background-size:auto, auto, cover, 180px 180px}
+  }
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 28px}
+  a{color:inherit; text-decoration:none}
+  h1,h2,h3{text-wrap:balance; margin:0; letter-spacing:-.02em; line-height:1.06}
+  p{margin:0}
+
+  .eyebrow{
+    font-family:var(--mono); font-size:.74rem; letter-spacing:.24em;
+    text-transform:uppercase; color:var(--accent);
+    display:inline-flex; align-items:center; gap:.55rem;
+  }
+  .eyebrow::before{content:""; width:26px; height:1px; background:linear-gradient(90deg,var(--accent),transparent)}
+
+  /* ============ Header ============ */
+  header.site{
+    position:sticky; top:0; z-index:50;
+    backdrop-filter:blur(14px) saturate(1.2);
+    background:color-mix(in srgb, var(--bg) 72%, transparent);
+    border-bottom:1px solid var(--border);
+  }
+  .nav{display:flex; align-items:center; gap:22px; height:64px}
+  /* the Frankenstein line the app itself wears in its top bar */
+  .navquote{margin-left:auto; display:inline-flex; align-items:baseline; min-width:0; overflow:hidden;
+    font-family:Georgia,'Times New Roman',serif; font-style:italic; font-size:.8rem; letter-spacing:.035em;
+    color:var(--fg-dim); white-space:nowrap}
+  .navquote .nqCaret{flex:0 0 auto; width:1.5px; height:.92em; align-self:center; margin-left:4px;
+    background:var(--accent); box-shadow:0 0 9px var(--accent); animation:nqblink 1.05s steps(1) infinite}
+  @keyframes nqblink{50%{opacity:0}}
+  .navquote.done #nqText{
+    background:linear-gradient(105deg, var(--accent-2) 0%, #93e3ff 26%, var(--accent) 50%, var(--accent-2) 74%, var(--accent) 100%);
+    background-size:230% 100%;
+    -webkit-background-clip:text; background-clip:text; color:transparent; -webkit-text-fill-color:transparent;
+    animation:emsheen 9s ease-in-out infinite;
+    filter:drop-shadow(0 0 14px rgba(56,189,248,.22))}
+  .navquote.done .nqCaret{animation:nqblink 1.05s steps(1) infinite, nqgone 1.6s ease 2.6s forwards}
+  @keyframes nqgone{to{opacity:0; width:0; margin-left:0}}
+  @media (max-width:1235px){ .navquote{display:none} }
+  /* brand lockup: cup mark + wordmark + tagline, treated as one identity */
+  .brand{display:inline-flex; align-items:center; gap:12px}
+  .brand .mark{
+    width:37px; height:37px; border-radius:9px; flex:0 0 auto; display:block;
+    box-shadow:0 8px 20px -9px var(--accent);
+    transition:box-shadow .2s, transform .2s;
+  }
+  .brand:hover .mark{box-shadow:0 12px 28px -8px var(--accent); transform:translateY(-1px)}
+  .brand .lockup{display:flex; flex-direction:column; gap:3px; line-height:1}
+  .brand .wm{font-weight:670; letter-spacing:-.02em; font-size:1.14rem; color:var(--fg)}
+  .brand .tl{
+    font-family:var(--mono); font-size:.545rem; letter-spacing:.155em;
+    text-transform:uppercase; white-space:nowrap;
+    background:linear-gradient(105deg, var(--accent-2) 0%, #93e3ff 26%, var(--accent) 50%, var(--accent-2) 74%, var(--accent) 100%);
+    background-size:230% 100%;
+    -webkit-background-clip:text; background-clip:text; color:transparent; -webkit-text-fill-color:transparent;
+    filter:drop-shadow(0 1px 6px rgba(56,189,248,.42)) drop-shadow(0 0 1px rgba(94,234,212,.55));
+    animation:emsheen 7s ease-in-out infinite;
+  }
+  .brand .tl b{font-weight:700; -webkit-text-fill-color:#eafcff; color:#eafcff;
+    filter:drop-shadow(0 0 5px rgba(94,234,212,.8))}
+  @media (max-width:420px){ .brand .tl{font-size:.5rem; letter-spacing:.11em} }
+  /* the cup's steam: two wisps rising and dissolving, staggered */
+  .steam{transform-box:fill-box; transform-origin:50% 100%; animation:steamrise 3s ease-in-out infinite}
+  .steam.s2{animation-delay:1.5s}
+  @keyframes steamrise{
+    0%{opacity:0; transform:translateY(1.9px) scaleY(.6)}
+    30%{opacity:1; transform:translateY(.2px) scaleY(1)}
+    100%{opacity:0; transform:translateY(-3.1px) scaleY(1.3)}
+  }
+  @media (prefers-reduced-motion:reduce){ .steam{animation:none} }
+  /* PaperCusp logo: "Paper" inked on a paper card; the u in "Cusp" is a cup. Scales with font-size. */
+  .logo{white-space:nowrap; font-weight:670}
+  .logo .lp-paper{
+    color:#1c2534; -webkit-text-fill-color:#1c2534;
+    display:inline-block; line-height:.78; vertical-align:-.04em;
+    background-color:#e8dab5; background-image:none;
+    background-size:.5em .5em; background-repeat:repeat;
+    padding:.09em .05em .05em; border-radius:.07em; margin-right:.02em;
+    box-shadow:0 .04em .14em rgba(0,0,0,.5), inset 0 0 0 1px rgba(120,86,30,.3);
+  }
+  /* body-copy logos: a little more breathing room than the tight display card */
+  p .lp-paper{ padding:.13em .11em .09em; line-height:.85 }
+  .logo .lp-cusp{color:var(--fg)}
+  .logo .lp-u{
+    display:inline-block; height:.94em; width:.82em; vertical-align:-.2em; margin:0 .008em;
+    overflow:visible; filter:drop-shadow(0 1px 3px rgba(56,189,248,.45));
+  }
+  .nav .links{display:flex; gap:22px; margin-left:14px; font-family:var(--mono); font-size:.8rem; color:var(--muted)}
+  .nav .links a{transition:color .2s; white-space:nowrap}
+  .nav .links a:hover{color:var(--fg)}
+  /* every page wears this same menu (build.py derives it); the current page's link is marked */
+  .nav .links a[aria-current="page"]{color:var(--fg); text-decoration:underline; text-underline-offset:5px}
+  .nav .links .pricing-link{color:var(--accent-2); font-weight:700;
+    text-decoration:underline; text-underline-offset:5px}
+  .nav .right{margin-left:auto; display:flex; align-items:center; gap:12px; flex-shrink:0}
+  .toggle{
+    font-family:var(--mono); font-size:.72rem; color:var(--muted);
+    background:var(--surface); border:1px solid var(--border); border-radius:7px;
+    padding:7px 10px; cursor:pointer; letter-spacing:.06em;
+  }
+  .toggle:hover{color:var(--fg); border-color:var(--border-strong)}
+  .btn{
+    display:inline-flex; align-items:center; gap:.5rem; font-family:var(--sans); font-weight:600;
+    font-size:.9rem; padding:10px 16px; border-radius:8px; cursor:pointer;
+    background:linear-gradient(180deg, color-mix(in srgb,var(--accent) 92%,white), var(--accent-deep));
+    color:#04121f; border:1px solid var(--accent-deep);
+    box-shadow:0 10px 26px -12px var(--accent), inset 0 1px 0 rgba(255,255,255,.35);
+    transition:transform .16s, box-shadow .2s;
+  }
+  .btn:hover{transform:translateY(-1px); box-shadow:0 16px 34px -12px var(--accent)}
+  .btn.ghost{
+    background:var(--surface); color:var(--fg); border:1px solid var(--border-strong);
+    box-shadow:none; font-weight:550;
+  }
+  .btn.ghost:hover{border-color:var(--accent); color:var(--accent)}
+
+  /* email access modal */
+  .modal{position:fixed; inset:0; z-index:110; display:none; place-content:center;
+    background:rgba(3,8,15,.86); backdrop-filter:blur(6px); padding:24px}
+  .modal.open{display:grid}
+  .modal .card{width:min(440px,94vw); background:linear-gradient(160deg,var(--bg-3),var(--bg-2));
+    border:1px solid var(--border-strong); border-radius:16px; padding:30px 28px 26px;
+    box-shadow:var(--shadow); position:relative}
+  .modal .card h3{font-size:1.3rem; font-weight:660}
+  .modal .card p.d{margin-top:10px; color:var(--fg-dim); font-size:.94rem; line-height:1.55}
+  .modal form{margin-top:20px; display:flex; flex-direction:column; gap:11px}
+  .modal input{font-family:var(--sans); font-size:.95rem; color:var(--fg); background:var(--surface-2);
+    border:1px solid var(--border-strong); border-radius:9px; padding:12px 14px; width:100%}
+  .modal input:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--glow)}
+  .modal input::placeholder{color:var(--muted)}
+  .modal form .btn{width:100%; justify-content:center; margin-top:3px}
+  .modal .x{position:absolute; top:12px; right:13px; width:32px; height:32px; border-radius:8px;
+    display:grid; place-content:center; cursor:pointer; color:var(--muted); background:transparent;
+    border:1px solid transparent; font-size:.95rem; font-family:var(--mono)}
+  .modal .x:hover{color:var(--fg); border-color:var(--border)}
+  .modal .fine{margin-top:13px; font-family:var(--mono); font-size:.68rem; color:var(--muted); letter-spacing:.02em}
+  .modal .ok{color:var(--good); font-size:.96rem; margin-top:16px; display:none; line-height:1.5}
+  .modal.done form{display:none}
+  .modal.done .ok{display:block}
+  .nav .btn{padding:8px 14px}
+  @media (max-width:900px){ .nav .links{display:none} }
+
+  /* ============ Hero ============ */
+  .hero{padding:74px 0 40px}
+  .hero-grid{display:grid; grid-template-columns:1.15fr .85fr; gap:48px; align-items:stretch}
+  h1.tag{font-size:clamp(1.95rem,4.4vw,3.25rem); font-weight:680}
+  #heroQ{white-space:nowrap}
+  h1.tag .em{
+    background:linear-gradient(105deg, var(--accent-2) 0%, #93e3ff 26%, var(--accent) 50%, var(--accent-2) 74%, var(--accent) 100%);
+    background-size:230% 100%;
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    -webkit-text-fill-color:transparent;
+    filter:drop-shadow(0 2px 20px rgba(56,189,248,.34)) drop-shadow(0 0 1px rgba(94,234,212,.5));
+    animation:emsheen 7s ease-in-out infinite;
+  }
+  @keyframes emsheen{ 0%,100%{background-position:0% 50%} 50%{background-position:100% 50%} }
+  /* hero question: dimmed setup, glowing "You?", terminal caret */
+  .qdim{color:#b9d2e2}
+  .qyou{color:#fff; text-shadow:0 0 18px rgba(94,234,212,.55), 0 0 40px rgba(56,189,248,.3)}
+  .qcursor{display:inline-block; width:.48em; height:.86em; background:var(--accent); margin-left:.1em;
+    vertical-align:-.04em; box-shadow:0 0 12px var(--accent); animation:nqblink 1.05s steps(1) infinite}
+  @media (prefers-reduced-motion:reduce){ .qcursor{animation:none} }
+  /* the robot crew in the hero question */
+  .bots{display:inline-flex; align-items:center; gap:.05em; margin:0 .13em; vertical-align:-.1em;
+    filter:drop-shadow(0 0 9px rgba(94,234,212,.4))}
+  .bots svg{width:.95em; height:.95em; display:block}
+  .bots svg:nth-child(2){transform:translateY(-.1em)}
+  .lifew{position:relative; display:inline-block}
+  .tlbots{position:absolute; left:50%; bottom:1.12em; transform:translateX(-62%); margin:0; gap:.03em; filter:none}
+  .tlbots svg{width:1.4em; height:1.4em}
+  .tlbots svg:nth-child(2){transform:translateY(-.14em)}
+  /* robots standing BEHIND the word "They" */
+  .theyw{position:relative; display:inline-block; isolation:isolate;
+    text-shadow:0 0 6px rgba(4,10,18,.95), 0 1px 14px rgba(4,10,18,.75)}
+  .bots-bg{position:absolute; left:50%; top:44%; transform:translate(-50%,-50%); z-index:-1; margin:0}
+  /* "life" is the payoff word — solid bright + a breathing bloom, distinct from the sheen sweep */
+  h1.tag .em .life{
+    display:inline-block; transform-origin:center bottom;
+    -webkit-text-fill-color:#eafdff; color:#eafdff;
+    filter:drop-shadow(0 0 11px rgba(94,234,212,.9)) drop-shadow(0 0 30px rgba(56,189,248,.55));
+    animation:lifebeat 3.2s ease-in-out infinite;
+  }
+  @keyframes lifebeat{
+    0%,100%{ transform:scale(1); filter:drop-shadow(0 0 8px rgba(94,234,212,.68)) drop-shadow(0 0 20px rgba(56,189,248,.4)); }
+    50%    { transform:scale(1.05); filter:drop-shadow(0 0 18px rgba(94,234,212,1)) drop-shadow(0 0 46px rgba(56,189,248,.75)); }
+  }
+  @media (prefers-reduced-motion:reduce){
+    h1.tag .em{animation:none; background-position:14% 50%}
+    h1.tag .em .life{animation:none; transform:none}
+    .brand .tl{animation:none; background-position:14% 50%}
+  }
+  .hero .sub{margin-top:22px; max-width:42ch; color:var(--fg-dim); font-size:1.12rem}
+  /* hero "how it works" flow — a 3-step pipeline */
+  .hero .flow{list-style:none; margin:24px 0 0; padding:0; display:flex; flex-direction:column; gap:15px; max-width:44ch}
+  .hero .flow li{position:relative; padding-left:28px; color:var(--fg-dim); font-size:1.1rem; line-height:1.38}
+  .hero .flow li::before{content:""; position:absolute; left:4px; top:.46em; width:9px; height:9px; border-radius:50%;
+    background:var(--accent); box-shadow:0 0 0 3px var(--glow), 0 0 12px -1px var(--accent)}
+  .hero .flow li::after{content:""; position:absolute; left:8px; top:1.35em; bottom:-15px; width:2px;
+    background:linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 10%, transparent))}
+  .hero .flow li:last-child::after{display:none}
+  .hero .flow li b{color:var(--fg); font-weight:640}
+  @media (prefers-reduced-motion:reduce){ .hero .flow li::before{box-shadow:0 0 0 3px var(--glow)} }
+  .hero .cta-row{margin-top:30px; display:flex; gap:14px; flex-wrap:wrap; align-items:center}
+  .hero .fineprint{margin-top:16px; font-family:var(--mono); font-size:.74rem; color:var(--muted); letter-spacing:.03em}
+  .hero .qblocks{margin-top:22px; display:grid; gap:15px}
+  .hero .qb{border-left:2px solid color-mix(in srgb, var(--accent) 50%, transparent); padding-left:15px}
+  .hero .qb .qh{font-size:1.05rem; font-weight:640; color:var(--fg); letter-spacing:-.01em; line-height:1.2}
+  .hero .qb p{margin-top:5px; color:var(--fg-dim); font-size:.99rem; max-width:46ch}
+
+  /* live loop terminal (hero) — one lap of the loop, typed on repeat */
+  .heroterm{
+    border:1px solid var(--border-strong); border-radius:14px; overflow:hidden;
+    background:#050c15; box-shadow:var(--shadow); width:100%;
+    display:flex; flex-direction:column;
+  }
+  :root[data-theme="light"] .heroterm{background:#071320}
+  @media (prefers-color-scheme:light){ :root:not([data-theme="dark"]) .heroterm{background:#071320} }
+  .heroterm .tbar{
+    display:flex; justify-content:space-between; align-items:center; gap:12px;
+    height:30px; padding:0 12px; font-family:var(--mono); font-size:.62rem; letter-spacing:.08em;
+    color:#7f93a8; background:rgba(255,255,255,.04); border-bottom:1px solid rgba(255,255,255,.08);
+  }
+  .heroterm .tbar .rep{color:var(--accent-2)}
+  .heroterm .tbody{
+    font-family:var(--mono); font-size:.74rem; line-height:1.95;
+    padding:14px 16px 16px; min-height:206px; color:#a9c3d6;
+    white-space:pre-wrap; overflow-wrap:break-word; flex:1;
+  }
+  .tp{color:#5eead4} .tc{color:#e7f7ff} .tk{color:#38bdf8}
+  .tt{color:#a9c3d6} .tg{color:#5eead4} .td{color:#6a8296}
+  .cur{color:#38bdf8; animation:blink 1.05s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  @media (prefers-reduced-motion:reduce){ .cur{animation:none} }
+  @media (max-width:900px){
+    .hero-grid{grid-template-columns:minmax(0,1fr); gap:34px}
+    .hero-grid > div{min-width:0}
+    .heroterm .tbody{font-size:.68rem; min-height:0}
+  }
+  /* 3 stacked consoles — real coordination transcripts on rotation */
+  .heroterms{display:flex; flex-direction:column; gap:12px; width:100%}
+  .heroterms .heroterm{flex:none}
+  .heroterms .tbar{height:26px; font-size:.6rem}
+  .heroterms .tbar .ct-title{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .heroterms .tbody{flex:none; height:158px; min-height:0; font-size:.66rem; line-height:1.6; padding:10px 13px 12px; overflow:hidden}
+  .ca{color:#5eead4; font-weight:620} .cb{color:#38bdf8; font-weight:620}
+  .cw{color:#fbbf24; font-weight:620} .cg{color:#4ade80; font-weight:620}
+  .termnote{font-family:var(--mono); font-size:.66rem; color:var(--muted); letter-spacing:.04em; line-height:1.5}
+  @media (max-width:900px){ .heroterms .tbody{height:136px; font-size:.64rem} }
+
+  /* ============ Section scaffold ============ */
+  section{padding:68px 0; position:relative}
+  .sec-head{max-width:60ch; margin-bottom:38px}
+  .sec-head h2{font-size:clamp(1.7rem,3.4vw,2.5rem); font-weight:660; margin-top:14px}
+  .sec-head p{margin-top:14px; color:var(--fg-dim); font-size:1.06rem; max-width:56ch}
+  .divider{height:1px; background:linear-gradient(90deg,transparent,var(--border-strong),transparent)}
+
+  /* ============ Loop stages ============ */
+  .stages{display:grid; grid-template-columns:repeat(4,1fr); gap:16px}
+  .stage{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px;
+    backdrop-filter:blur(6px); position:relative; overflow:hidden;
+  }
+  .stage::before{content:""; position:absolute; inset:0 auto 0 0; width:2px;
+    background:linear-gradient(var(--accent),var(--accent-2))}
+  .stage .n{font-family:var(--mono); font-size:.72rem; color:var(--accent); letter-spacing:.14em}
+  .stage h3{font-size:1.14rem; margin-top:10px; font-weight:620}
+  .stage p{margin-top:8px; color:var(--muted); font-size:.92rem}
+  @media (max-width:820px){ .stages{grid-template-columns:repeat(2,1fr)} }
+  @media (max-width:460px){ .stages{grid-template-columns:1fr} }
+
+  /* Business information reuses the site's stage cards and color tokens. */
+  .business-grid{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px}
+  .business-grid .stage{display:flex; flex-direction:column}
+  .business-grid .stage h3{line-height:1.3}
+  .business-grid .stage p{color:var(--fg-dim); line-height:1.6}
+  .business-grid .stage a{color:var(--accent); text-decoration:underline; text-underline-offset:3px}
+  .business-grid .stage .card-link{margin-top:auto; padding-top:16px; font-size:.9rem}
+  .business-note{margin-top:20px; color:var(--muted); font-size:.92rem; max-width:76ch}
+  #pricing{background:linear-gradient(135deg,var(--surface-2),var(--surface));
+    border-top:1px solid var(--border-strong); border-bottom:1px solid var(--border-strong)}
+  #pricing .pricing-featured{border-color:var(--accent);
+    box-shadow:0 0 0 1px var(--glow),var(--shadow)}
+  #pricing .stage .price{font-size:clamp(1.8rem,3vw,2.3rem); font-weight:700;
+    line-height:1.2; color:var(--fg); margin-top:22px; letter-spacing:-.025em}
+  #pricing .stage .price-period{font-size:.88rem; color:var(--accent-2); margin-top:6px}
+  #pricing .stage .pricing-action{align-self:flex-start; margin-top:auto}
+  #pricing .stage .pricing-action-wrap{padding-top:24px; margin-top:auto}
+  .status-pill{display:inline-flex; align-items:center; padding:6px 12px;
+    border:1px solid var(--border-strong); border-radius:999px;
+    background:var(--surface); color:var(--accent-2); font-size:.82rem}
+  .hero .status-pill{margin-top:20px}
+  .product-summary{margin-top:14px; max-width:48ch; color:var(--fg-dim); font-size:1rem}
+  .team-intro{display:grid; grid-template-columns:160px minmax(0,1fr); gap:28px;
+    align-items:center; max-width:850px}
+  .team-intro img{width:160px; height:160px; object-fit:cover; border-radius:16px;
+    border:1px solid var(--border-strong)}
+  .team-intro h3{font-size:1.4rem; line-height:1.3}
+  .team-intro p{margin-top:12px; color:var(--fg-dim)}
+  .team-intro .team-role{margin-top:6px; color:var(--accent-2); font-size:.95rem}
+  .team-intro .cta-row{margin-top:18px; display:flex; flex-wrap:wrap; gap:12px}
+  /* every top-menu target clears the 65px sticky header when its menu item is clicked */
+  #see,#results,#pricing,#team,#azure-roadmap{scroll-margin-top:80px}
+  @media (max-width:820px){ .business-grid{grid-template-columns:1fr} }
+  @media (max-width:460px){
+    .team-intro{grid-template-columns:1fr; gap:20px}
+    .team-intro img{width:120px; height:120px}
+  }
+
+  /* ============ Pot-in-pot thesis ============ */
+  .thesis{
+    background:linear-gradient(140deg, var(--bg-3), var(--bg-2));
+    border:1px solid var(--border-strong); border-radius:18px; padding:44px;
+    position:relative; overflow:hidden; box-shadow:var(--shadow);
+  }
+  .thesis::after{content:""; position:absolute; right:-120px; top:-120px; width:340px; height:340px;
+    border-radius:50%; background:radial-gradient(circle,var(--glow),transparent 65%); pointer-events:none}
+  .thesis .big{font-size:clamp(1.5rem,3vw,2.15rem); font-weight:640; max-width:26ch; line-height:1.18}
+  .thesis .big .em{color:var(--accent)}
+  .thesis p.small{margin-top:18px; color:var(--fg-dim); max-width:60ch}
+
+  /* ============ Video ============ */
+  .videoframe{
+    position:relative; border-radius:16px; overflow:hidden; border:1px solid var(--border-strong);
+    background:var(--bg-2); box-shadow:var(--shadow); aspect-ratio:16/9;
+  }
+  .videoframe video{position:absolute; inset:0; width:100%; height:100%; display:block; background:#000}
+  .vsound{position:absolute; left:50%; bottom:74px; transform:translateX(-50%); z-index:4;
+    display:inline-flex; align-items:center; gap:10px; padding:14px 26px; border-radius:32px; cursor:pointer;
+    font-family:var(--mono); font-size:.95rem; font-weight:600; letter-spacing:.03em; color:#04202b;
+    background:linear-gradient(180deg, color-mix(in srgb,var(--accent) 92%,white), var(--accent-deep));
+    border:0; box-shadow:0 14px 44px -8px var(--accent); transition:transform .15s}
+  .vsound::after{content:''; position:absolute; inset:-3px; border-radius:inherit; pointer-events:none;
+    border:2px solid rgba(94,234,212,.55); animation:vsoundring 2.2s ease-out infinite}
+  @keyframes vsoundring{0%{transform:scale(1); opacity:.9} 70%,100%{transform:scale(1.4); opacity:0}}
+  .vsound:hover{transform:translateX(-50%) scale(1.06)}
+  .vsound:focus-visible{outline:2px solid #fff; outline-offset:3px}
+  @media (prefers-reduced-motion:reduce){ .vsound::after{animation:none; opacity:0} }
+  .videoframe .poster{
+    position:absolute; inset:0; display:grid; place-content:center; text-align:center; gap:16px;
+    background:
+      radial-gradient(600px 300px at 50% 40%, var(--glow), transparent 60%),
+      repeating-linear-gradient(0deg, transparent 0 3px, rgba(120,180,220,.03) 3px 4px);
+  }
+  .play{
+    width:74px; height:74px; border-radius:50%; margin:0 auto;
+    background:linear-gradient(180deg, color-mix(in srgb,var(--accent) 92%,white), var(--accent-deep));
+    display:grid; place-content:center; box-shadow:0 16px 40px -12px var(--accent), inset 0 1px 0 rgba(255,255,255,.4);
+    cursor:pointer; transition:transform .18s;
+  }
+  .play:hover{transform:scale(1.06)}
+  .play svg{margin-left:4px}
+  .videoframe .cap{font-family:var(--mono); font-size:.78rem; color:var(--fg-dim); letter-spacing:.04em}
+  .videoframe .badge{position:absolute; top:14px; left:14px; font-family:var(--mono); font-size:.68rem;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--accent);
+    background:var(--surface-2); border:1px solid var(--border-strong); padding:5px 9px; border-radius:6px}
+  .vnote{margin-top:16px; display:flex; gap:10px; align-items:flex-start; color:var(--muted); font-size:.9rem}
+  .vnote .k{font-family:var(--mono); color:var(--accent-2); font-size:.8rem; white-space:nowrap; padding-top:1px}
+  .soonmark{width:72px; height:72px; border-radius:50%; margin:0 auto; display:grid; place-content:center; color:var(--accent);
+    background:var(--surface-2); border:1px solid var(--border-strong); box-shadow:inset 0 0 30px -8px var(--glow)}
+  .soonmark svg{margin-left:3px}
+  .videoframe .cap b{color:var(--fg); font-weight:640}
+
+  /* ============ Screenshot gallery ============ */
+  .gal{display:grid; grid-template-columns:repeat(2,1fr); gap:20px; align-items:start}
+  .shot{
+    background:var(--surface); border:1px solid var(--border); border-radius:14px; overflow:hidden;
+    display:flex; flex-direction:column; transition:border-color .2s, transform .2s;
+  }
+  .shot:hover{border-color:var(--border-strong); transform:translateY(-2px)}
+  .shot .frame{
+    background:linear-gradient(150deg,var(--bg-3),var(--bg-2));
+    border-bottom:1px solid var(--border); position:relative; overflow:hidden;
+  }
+  .shot .frame img{width:100%; display:block; height:auto}
+  .shot .tag-n{position:absolute; top:10px; left:10px; font-family:var(--mono); font-size:.66rem;
+    letter-spacing:.12em; color:var(--accent); background:var(--surface-2);
+    border:1px solid var(--border-strong); padding:3px 7px; border-radius:5px; z-index:3}
+  .shot .kind{position:absolute; top:10px; right:10px; font-family:var(--mono); font-size:.6rem;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--muted); z-index:3}
+  .shot .meta{padding:15px 17px 18px}
+  .shot .meta h3{font-size:1rem; font-weight:600}
+  .shot .meta p{margin-top:6px; color:var(--muted); font-size:.87rem; line-height:1.5}
+  .slotlabel{position:absolute; inset:0; display:grid; place-content:center; text-align:center;
+    color:var(--muted); font-family:var(--mono); font-size:.7rem; letter-spacing:.12em; text-transform:uppercase; opacity:.5}
+  @media (max-width:760px){ .gal{grid-template-columns:1fr} }
+
+  /* ============ Feature tabs ============ */
+  .galtabs{margin-top:4px}
+  .tabnav{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:26px;
+    border-bottom:1px solid var(--border)}
+  .tabbtn{appearance:none; background:transparent; border:0; border-radius:8px 8px 0 0;
+    color:var(--muted); font-family:var(--mono); font-size:.76rem; letter-spacing:.03em;
+    padding:10px 15px; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px;
+    transition:color .18s, border-color .18s, background .18s; white-space:nowrap}
+  .tabbtn:hover{color:var(--fg)}
+  .tabbtn[aria-selected="true"]{color:var(--accent); border-bottom-color:var(--accent);
+    background:linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent) 8%, transparent))}
+  .tabbtn:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  .tabpanel[hidden]{display:none}
+  .tabpanel{animation:tabfade .3s ease}
+  @keyframes tabfade{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+  @media (prefers-reduced-motion:reduce){ .tabpanel{animation:none} }
+
+  /* concept cards (text-only; the lightbox skips them) */
+  .concept{background:linear-gradient(160deg,var(--surface),var(--surface-2));
+    border:1px solid var(--border); border-radius:14px; padding:22px 22px 24px;
+    display:flex; flex-direction:column; gap:10px}
+  .concept .ctag{font-family:var(--mono); font-size:.62rem; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--accent)}
+  .concept h3{font-size:1.05rem; font-weight:600}
+  .concept p{color:var(--muted); font-size:.9rem; line-height:1.55}
+  .concept pre{margin:2px 0 0; background:var(--bg-2); border:1px solid var(--border);
+    border-radius:8px; padding:11px 13px; overflow-x:auto; font-family:var(--mono);
+    font-size:.72rem; line-height:1.5; color:var(--fg-dim); white-space:pre}
+  .concept .wip{align-self:flex-start; margin-top:2px; font-family:var(--mono);
+    font-size:.6rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+    border:1px solid var(--border-strong); border-radius:20px; padding:3px 10px}
+
+  /* ============ Lightbox (click any screenshot for full resolution) ============ */
+  .shot .frame{cursor:zoom-in}
+  .lb{position:fixed; inset:0; z-index:100; display:none; place-content:center;
+    background:rgba(3,8,15,.93); backdrop-filter:blur(6px); padding:24px}
+  .lb.open{display:grid}
+  .lb img{max-width:96vw; max-height:88vh; width:auto; height:auto; display:block;
+    border:1px solid var(--border-strong); border-radius:10px; box-shadow:var(--shadow)}
+  .lb .close{position:fixed; top:18px; right:22px; width:42px; height:42px; border-radius:50%;
+    display:grid; place-content:center; cursor:pointer; color:var(--fg); font-size:1.15rem; line-height:1;
+    background:var(--surface-2); border:1px solid var(--border-strong)}
+  .lb .close:hover{border-color:var(--accent); color:var(--accent)}
+  .lb .cap{position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    font-family:var(--mono); font-size:.8rem; color:var(--fg-dim); letter-spacing:.03em; text-align:center;
+    background:var(--surface-2); border:1px solid var(--border); padding:7px 14px; border-radius:8px; max-width:90vw}
+
+  /* representative UI sketches inside GUI frames */
+  .sketch{position:absolute; inset:0; padding:16px; display:flex; flex-direction:column; gap:8px}
+  .sk-strip{display:flex; gap:6px; align-items:center; margin-top:8px}
+  .sk-pill{flex:1; height:22px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border);
+    display:grid; place-content:center; font-family:var(--mono); font-size:.56rem; color:var(--muted); letter-spacing:.06em}
+  .sk-pill.on{border-color:var(--accent); color:var(--accent); box-shadow:0 0 0 1px var(--glow)}
+  .sk-arrow{color:var(--accent); font-size:.7rem; flex:0 0 auto}
+  .sk-rows{display:flex; flex-direction:column; gap:6px; margin-top:6px}
+  .sk-row{height:20px; border-radius:5px; background:var(--surface-2); border:1px solid var(--border);
+    display:flex; align-items:center; gap:8px; padding:0 8px; font-family:var(--mono); font-size:.55rem; color:var(--muted)}
+  .dot{width:7px; height:7px; border-radius:50%; flex:0 0 auto}
+  .dot.g{background:var(--good)} .dot.w{background:var(--warn)} .dot.b{background:var(--bad)} .dot.a{background:var(--accent)}
+  .sk-cards{display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:6px}
+  .sk-card{height:44px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border)}
+  .sk-node{position:absolute; border-radius:6px; background:var(--surface-2); border:1px solid var(--border-strong);
+    font-family:var(--mono); font-size:.52rem; color:var(--fg-dim); display:grid; place-content:center; padding:2px 6px}
+
+  /* real mini terminal (SS-9, SS-10) */
+  .term{position:absolute; inset:0; background:#050c15; display:flex; flex-direction:column; font-family:var(--mono)}
+  :root[data-theme="light"] .term{background:#071320}
+  @media (prefers-color-scheme:light){ :root:not([data-theme="dark"]) .term{background:#071320} }
+  .term .bar{height:26px; display:flex; align-items:center; gap:6px; padding:0 11px;
+    background:rgba(255,255,255,.04); border-bottom:1px solid rgba(255,255,255,.08)}
+  .term .bar i{width:9px; height:9px; border-radius:50%; display:inline-block}
+  .term .bar .t{margin-left:8px; font-size:.6rem; color:#7f93a8; letter-spacing:.08em}
+  .term .body{padding:11px 13px; font-size:.7rem; line-height:1.62; color:#cfe6f5; overflow:hidden}
+  .term .body .p{color:#5eead4}
+  .term .body .c{color:#7fb8e6}
+  .term .body .ok{color:#5eead4}
+  .term .body .pa{color:#fbbf24}
+  .term .body .dim{color:#6a8296}
+  .term .body .hi{color:#e7f7ff}
+
+  /* ============ Access CTA ============ */
+  .access{
+    text-align:center; background:linear-gradient(160deg,var(--bg-3),var(--bg-2));
+    border:1px solid var(--border-strong); border-radius:20px; padding:60px 32px; position:relative; overflow:hidden;
+    box-shadow:var(--shadow);
+  }
+  .access::before{content:""; position:absolute; inset:0;
+    background:radial-gradient(700px 340px at 50% -10%, var(--glow), transparent 60%); pointer-events:none}
+  .access h2{font-size:clamp(1.8rem,4vw,2.9rem); font-weight:670; max-width:20ch; margin-inline:auto; position:relative}
+  .access p{margin-top:16px; color:var(--fg-dim); position:relative; max-width:46ch; margin-inline:auto}
+  .access .cta-row{margin-top:28px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap; position:relative}
+  .access .mail{font-family:var(--mono); font-size:.82rem; color:var(--accent); margin-top:20px; position:relative}
+
+  /* ============ Footer ============ */
+  footer{border-top:1px solid var(--border); padding:34px 0 46px; margin-top:20px}
+  .foot{display:flex; align-items:center; gap:16px; flex-wrap:wrap; color:var(--muted); font-size:.85rem}
+  .foot .brand{color:var(--fg)}
+  .foot .r{margin-left:auto; font-family:var(--mono); font-size:.72rem; letter-spacing:.08em}
+
+  /* mockup banner */
+
+  /* showcase slideshow (single-source: harvested from the gallery shots) */
+  /* both carousels (#showcase, #deckShow) now open their own section — no divider rule */
+  .showcase{margin-top:26px}
+  .showcase .sc-head{text-align:center; margin-bottom:22px}
+  .sc-title{font-size:clamp(1.2rem,2.4vw,1.5rem); font-weight:640; margin-top:9px}
+  .sc-stage{position:relative; display:flex; align-items:center; gap:14px}
+  .sc-slides{position:relative; flex:1 1 auto; min-width:0; border:1px solid var(--border-strong);
+    border-radius:14px; overflow:hidden; background:var(--bg-2); box-shadow:var(--shadow); aspect-ratio:16/10}
+  .sc-slide{position:absolute; inset:0; opacity:0; transition:opacity .7s ease; pointer-events:none}
+  .sc-slide.on{opacity:1; pointer-events:auto}
+  .sc-slide img{width:100%; height:100%; display:block; object-fit:contain; object-position:center}
+  .sc-cap{position:absolute; left:0; right:0; bottom:0; padding:15px 20px 16px;
+    background:linear-gradient(0deg, rgba(4,10,18,.95), rgba(4,10,18,.72) 62%, transparent)}
+  .sc-cap h4{font-size:1.02rem; font-weight:640; color:var(--fg); letter-spacing:-.01em}
+  .sc-cap p{margin-top:4px; color:var(--fg-dim); font-size:.86rem; line-height:1.5; max-width:66ch}
+  .sc-nav{flex:0 0 auto; width:44px; height:44px; border-radius:50%; cursor:pointer;
+    display:grid; place-content:center; font-size:1.4rem; line-height:1; color:var(--fg);
+    background:var(--surface); border:1px solid var(--border-strong); transition:border-color .2s, color .2s, background .2s}
+  .sc-nav:hover{color:var(--accent); border-color:var(--accent); background:var(--surface-2)}
+  .sc-nav:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  .sc-fs{position:absolute; top:10px; right:70px; z-index:5; width:38px; height:38px; border-radius:10px;
+    display:grid; place-content:center; cursor:pointer; font-size:1.05rem; line-height:1; color:var(--fg-dim);
+    background:color-mix(in srgb, var(--bg-2) 82%, transparent); border:1px solid var(--border-strong);
+    transition:color .2s, border-color .2s}
+  .sc-fs:hover{color:var(--accent); border-color:var(--accent)}
+  .sc-fs:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  #showcase:fullscreen{background:var(--bg); display:flex; flex-direction:column; justify-content:center;
+    padding:26px 30px; overflow:auto}
+  #showcase:fullscreen .sc-stage{flex:1; min-height:0}
+  #showcase:fullscreen .sc-slides{aspect-ratio:auto; height:100%; align-self:stretch}
+  #showcase:fullscreen .sc-dots{margin-top:14px}
+  .sc-dots{display:flex; justify-content:center; gap:8px; margin-top:18px; flex-wrap:wrap}
+  .sc-dot{width:8px; height:8px; padding:0; border-radius:50%; cursor:pointer;
+    background:var(--border-strong); border:0; transition:background .25s, width .25s, border-radius .25s}
+  .sc-dot:hover{background:var(--muted)}
+  .sc-dot.on{background:var(--accent); width:22px; border-radius:5px}
+  .sc-dot:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  @media (max-width:640px){ .sc-nav{width:38px; height:38px; font-size:1.2rem} .sc-cap p{display:none} }
+
+  /* pitch-deck viewer — same carousel chrome as the tour, 16:9 and user-driven */
+  #deckShow .sc-slides{aspect-ratio:16/9; background:#07101d}
+  #deckShow:fullscreen{background:var(--bg); display:flex; flex-direction:column; justify-content:center;
+    padding:26px 30px; overflow:auto}
+  #deckShow:fullscreen .sc-stage{flex:1; min-height:0}
+  #deckShow:fullscreen .sc-slides{aspect-ratio:auto; height:100%; align-self:stretch}
+  #deckShow:fullscreen .deck-bar{margin-top:14px}
+  .deck-bar{display:flex; align-items:center; justify-content:center; gap:20px; flex-wrap:wrap; margin-top:18px}
+  .deck-bar .sc-dots{margin-top:0}
+  .deck-count{font-family:var(--mono); font-size:.74rem; letter-spacing:.09em; color:var(--muted)}
+  @media (max-width:640px){ .deck-bar{gap:12px} .deck-count{display:none} }
+
+  /* reveal */
+  .reveal{opacity:0; transform:translateY(16px); transition:opacity .6s ease, transform .6s ease}
+  .reveal.in{opacity:1; transform:none}
+  @media (prefers-reduced-motion:reduce){ .reveal{opacity:1; transform:none; transition:none} }
+  /* phone-size overrides — kept LAST so they win the cascade */
+  @media (max-width:760px){
+    .bgsay{display:none}
+    .vsound{font-size:.78rem; padding:9px 16px; bottom:46px; gap:7px}
+    .concept pre{font-size:.64rem; padding:9px 10px}
+  }
+  @media (max-width:420px){
+    #heroQ{white-space:normal}
+  }
+  @media (max-width:380px){
+    .nav{gap:12px; padding-left:16px; padding-right:16px}
+    .nav .brand{gap:8px}
+    .nav .btn{font-size:.8rem; padding:8px}
+    .hero .eyebrow{letter-spacing:.14em; font-size:.65rem}
+  }
+
+
+  /* ============ shared zoomable map — src/map-engine.css ============ */
+  /* The one copy of the #map figure's styles (plan papercusp-com-cupboard-diagram-2026-10-17,
+     D-001). build.py splices it AFTER the site sheet and BEFORE the page's own <style>, so a
+     page can still override any rule here. Pairs with src/map-engine.js. */
+
+  /* the figure: a full-bleed canvas. The side borders are cleared IN the .pcfig#map rule: a
+     page's own .pcfig border shorthand is 0-1-0 and this rule is 1-1-0, so clearing them only
+     in the #map rule (1-0-0) below left a 1px side border on every page that splices this in. */
+  .pcfig#map{border:1px solid var(--border); border-left:0; border-right:0; overflow:hidden;
+    box-shadow:var(--shadow)}
+  #map{position:relative; width:100vw; margin-left:calc(50% - 50vw); border-radius:0;
+    border-left:0; border-right:0; background:#0b1626}
+  #map svg{touch-action:pan-y; width:100%; height:calc(100svh - 112px); min-height:420px;
+    min-width:0; display:block; background:#0b1626}
+  #map.zoomed svg{cursor:grab; touch-action:none}
+  #map.dragging svg{cursor:grabbing}
+
+  /* every block is a link into its section */
+  #map svg a{cursor:pointer; outline:none}
+  #map svg a rect.nd{transition:stroke .18s ease, fill .18s ease}
+  #map svg a:hover rect.nd, #map svg a:focus-visible rect.nd{stroke:#7dd3fc; fill:rgba(32,62,98,.85)}
+  #map svg a:hover rect.bdg, #map svg a:focus-visible rect.bdg{fill:rgba(56,189,248,.35)}
+  @media (prefers-reduced-motion:reduce){ #map svg a rect.nd{transition:none} }
+
+  /* controls */
+  .mapctl{position:absolute; top:10px; right:14px; display:flex; gap:6px; z-index:5}
+  .mapctl button{width:34px; height:34px; border-radius:9px; border:1px solid var(--border-strong);
+    background:var(--surface-2); color:var(--fg); font-family:var(--mono); font-size:1.05rem;
+    line-height:1; cursor:pointer}
+  .mapctl button:hover{background:var(--glow)}
+  .mapctl .mz-tour,.mapctl .mz-read{width:auto; padding:0 12px; font-size:.8rem}
+  .mapctl .mz-tour.on{border-color:var(--accent); color:var(--accent)}
+  body.reading .mapctl .mz-read{border-color:var(--accent); color:var(--accent)}
+  .mapctl .mz-snd{width:auto; padding:0 12px; font-size:.8rem; border-color:var(--accent); color:var(--accent)}
+  /* universal narration toggle: ON by default; the muted state persists (localStorage) */
+  .mapctl .mz-mute{width:auto; padding:0 12px; font-size:.8rem}
+  .mapctl .mz-mute[aria-pressed="true"]{color:var(--muted); border-style:dashed}
+  .mapctl .mz-mute.talking .ic{animation:pcTalk 1s ease-in-out infinite}
+  @keyframes pcTalk{50%{opacity:.35}}
+  @media (prefers-reduced-motion:reduce){ .mapctl .mz-mute.talking .ic{animation:none} }
+  @media (max-width:640px){ .mapctl .mz-mute{padding:0; width:40px} .mapctl .mz-mute .lbl{display:none} }
+
+  /* gesture hint */
+  .maphint{position:absolute; left:14px; bottom:10px; z-index:5; font-family:var(--mono); font-size:.74rem;
+    color:var(--fg); background:var(--surface-2); border:1px solid var(--border-strong); border-radius:9px;
+    padding:7px 12px; pointer-events:none; max-width:calc(100% - 28px); line-height:1.5}
+  .maphint b{color:var(--accent)}
+  .maphint .ht{display:none}
+  /* the usage hint sits over the canvas — once the reader is zooming it only hides content */
+  .maphint{transition:opacity .25s ease}
+  #map.zoomed .maphint{opacity:0}
+
+  /* level-of-detail layers */
+  #map g.lod1{pointer-events:none}
+  #map g.lod1.on{pointer-events:auto}
+  /* dip crossfade (see src/map-engine.js): an opaque-backdrop layer raises its backdrop first
+     (--bk), then its own content (--ct) — never two legible layers stacked in one place */
+  #map g.lod1.dip > .bk, #map g.lod1.dip > a > .bk{opacity:var(--bk,1)}
+  #map g.lod1.dip > :not(.bk):not(a):not(title):not(.lod0):not(.lod1),
+  #map g.lod1.dip > a > :not(.bk):not(title){opacity:var(--ct,1)}
+
+  /* touch wording + finger-sized controls on phones */
+  @media (max-width:640px){
+    #map svg{height:calc(100svh - 150px)}
+    .maphint .hd{display:none}
+    .maphint .ht{display:inline}
+    .maphint{font-size:.7rem; max-width:76vw}
+    .mapctl button{width:40px; height:40px}
+    .mapctl .mz-tour,.mapctl .mz-read{width:auto}
+  }
+
+
+  /* ============ /cupboard — page-specific styles ============ */
+  /* Spliced AFTER the site's shared <style> by build.py, same as /about and /architecture:
+     tokens, header, nav, buttons, footer come from the site sheet.
+     Copy source: plan papercusp-com-cupboard-page-2026-10-15, decision D-002 (the content
+     brief). Anything not live on the shipped app sits inside a [data-soon] element with a
+     visible .soon badge — tests/cupboard-page.test.js fails if that ever stops being true. */
+
+  body{
+    background-image:
+      radial-gradient(1100px 600px at 78% -8%, var(--glow), transparent 60%),
+      radial-gradient(900px 520px at 8% 12%, rgba(94,234,212,.08), transparent 55%),
+      none;
+    background-repeat:no-repeat, no-repeat, no-repeat;
+    background-position:0 0, 0 0, center;
+    background-attachment:fixed, fixed, fixed;
+    background-size:auto, auto, cover;
+  }
+
+  /* accessibility: skip link + coherent keyboard focus */
+  .skiplink{position:absolute; left:-9999px; top:0; z-index:100; padding:10px 18px; background:var(--bg-3);
+    color:var(--fg); border:1px solid var(--border-strong); border-radius:0 0 12px 0;
+    font-family:var(--mono); font-size:.85rem; text-decoration:none}
+  .skiplink:focus{left:0}
+  a:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:2px}
+
+  /* hero */
+  .chero{padding:70px 0 20px}
+  .chero h1{font-size:clamp(2rem,4.6vw,3.1rem); margin-top:14px}
+  .chero .lede{margin-top:18px; font-size:1.08rem; color:var(--fg-dim);
+    color:color-mix(in oklab, var(--fg) 45%, var(--fg-dim)); max-width:64ch; line-height:1.7}
+  .chero .lede b{color:var(--fg)}
+
+  /* the make → share loop */
+  .loop{list-style:none; margin:30px 0 0; padding:18px; display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fit, minmax(min(150px,100%),1fr));
+    border:1px solid var(--border); border-radius:14px; background:var(--surface-2); box-shadow:var(--shadow);
+    counter-reset:step}
+  .loop li{position:relative; padding:14px 14px 13px; border:1px solid var(--border-strong); border-radius:12px;
+    background:var(--surface); counter-increment:step; min-width:0}
+  .loop li::before{content:counter(step, decimal-leading-zero); display:block; font-family:var(--mono);
+    font-size:.72rem; letter-spacing:.12em; color:var(--accent)}
+  .loop li b{display:block; margin-top:6px; color:var(--fg); font-size:.98rem}
+  .loop li span{display:block; margin-top:6px; color:var(--fg-dim); font-size:.86rem; line-height:1.5}
+  .loop li.back{border-style:dashed}
+  .loopcap{margin:10px 0 0; font-family:var(--mono); font-size:.76rem; color:var(--muted)}
+  .loopcap b{color:var(--accent-2)}
+
+  /* section index */
+  .ctoc{margin:22px 0 0; display:flex; flex-wrap:wrap; gap:8px 10px}
+  .ctoc a{display:inline-block; padding:6px 12px; border:1px solid var(--border); border-radius:999px;
+    background:var(--surface); color:var(--fg-dim); text-decoration:none; font-family:var(--mono);
+    font-size:.78rem; line-height:1.4; white-space:nowrap}
+  .ctoc a:hover{color:var(--fg); border-color:var(--border-strong)}
+  .ctoc a span{color:var(--accent); margin-right:6px}
+  .ctoc a .soon{font-style:normal; font-size:.62rem; padding:0 6px; margin-left:4px}
+
+  /* sections */
+  .csec{padding:46px 0 8px; scroll-margin-top:84px}
+  .csec .shead{display:flex; align-items:baseline; gap:16px; margin-bottom:12px; flex-wrap:wrap}
+  .secno{font-family:var(--mono); color:var(--accent); font-size:.95rem; letter-spacing:.08em}
+  .csec h2{font-size:clamp(1.45rem,2.6vw,1.95rem)}
+  .csec > .wrap > p{color:var(--fg-dim); color:color-mix(in oklab, var(--fg) 45%, var(--fg-dim));
+    max-width:68ch; margin-top:14px; font-size:1.03rem; line-height:1.7}
+  .csec p b{color:var(--fg)}
+  code{font-family:var(--mono); font-size:.86em; color:var(--accent-2); background:var(--surface);
+    border:1px solid var(--border); border-radius:5px; padding:1px 5px; overflow-wrap:anywhere}
+
+  /* two ways */
+  .ways{display:grid; gap:16px; margin-top:22px; grid-template-columns:repeat(auto-fit, minmax(min(300px,100%),1fr))}
+  .way{padding:20px 22px; border:1px solid var(--border); border-radius:14px; background:var(--surface-2); min-width:0}
+  .way h3{font-size:1.1rem; color:var(--fg)}
+  .way .sub{display:block; margin-top:4px; font-family:var(--mono); font-size:.74rem; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--accent-2)}
+  .way p{margin-top:10px; color:var(--fg-dim); line-height:1.6; font-size:.96rem}
+
+  /* what you can make — one card per kind */
+  .kinds{display:grid; gap:14px; margin-top:24px; grid-template-columns:repeat(auto-fill, minmax(min(270px,100%),1fr))}
+  .kind{display:flex; flex-direction:column; padding:18px 20px 16px; border:1px solid var(--border);
+    border-radius:14px; background:var(--surface-2); min-width:0; scroll-margin-top:84px}
+  .kind.named{border-color:var(--border-strong)}
+  .kind h3{font-size:1.12rem; color:var(--fg); display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .kind .what{margin-top:6px; color:var(--fg-dim); font-size:.93rem; line-height:1.55}
+  .kind dl{margin:12px 0 0; display:grid; gap:9px}
+  .kind dt{font-family:var(--mono); font-size:.68rem; letter-spacing:.16em; text-transform:uppercase; color:var(--accent)}
+  .kind dd{margin:2px 0 0; color:var(--fg-dim); color:color-mix(in oklab, var(--fg) 35%, var(--fg-dim));
+    font-size:.92rem; line-height:1.55}
+  .kind .ask{display:block; margin-top:4px; font-style:italic; color:var(--fg)}
+  .pol{display:inline-block; padding:1px 8px; border-radius:999px; font-family:var(--mono); font-size:.72rem;
+    border:1px solid var(--border-strong); color:var(--fg-dim); white-space:nowrap}
+  .pol.reviewed{border-color:color-mix(in oklab, var(--accent) 55%, transparent); color:var(--accent)}
+  .pol.instant{border-color:color-mix(in oklab, var(--accent-2) 55%, transparent); color:var(--accent-2)}
+  /* worked examples: a scrolling code block, never wider than its card */
+  .kind .example{margin:12px 0 0; min-width:0}
+  .kind .example figcaption{font-family:var(--mono); font-size:.68rem; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--accent)}
+  .kind pre, .walk pre{margin:6px 0 0; padding:10px 12px; max-width:100%; overflow-x:auto; border:1px solid var(--border);
+    border-radius:10px; background:var(--surface); font-family:var(--mono); font-size:.76rem; line-height:1.5;
+    color:var(--fg-dim)}
+  pre code{border:0; padding:0; background:none; font-size:inherit; color:inherit; overflow-wrap:normal}
+
+  /* not-live features: always inside [data-soon], always badged */
+  [data-soon]{position:relative}
+  .soon{display:inline-block; margin-left:6px; padding:1px 8px; border-radius:999px; font-family:var(--mono);
+    font-size:.7rem; letter-spacing:.06em; text-transform:lowercase; vertical-align:middle; white-space:nowrap;
+    color:var(--warn); border:1px dashed var(--warn); background:color-mix(in oklab, var(--warn) 10%, transparent)}
+  .kind .soonline{margin-top:10px; padding:8px 10px; border:1px dashed var(--border-strong); border-radius:10px;
+    color:var(--fg-dim); font-size:.88rem; line-height:1.5}
+
+  /* sharing mechanics */
+  .facts{list-style:none; margin:18px 0 0; padding:0; display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fit, minmax(min(260px,100%),1fr))}
+  .facts li{padding:16px 18px; border:1px solid var(--border); border-radius:12px; background:var(--surface); min-width:0}
+  .facts li b{display:block; color:var(--accent); font-family:var(--mono); font-size:.74rem; letter-spacing:.14em;
+    text-transform:uppercase; margin-bottom:6px}
+  .facts li span{color:var(--fg-dim); line-height:1.6; font-size:.95rem}
+  .policy{margin:20px 0 0; display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(min(300px,100%),1fr))}
+  .policy div{padding:14px 18px; border:1px solid var(--border); border-radius:12px; background:var(--surface-2); min-width:0}
+  .policy h3{font-size:1rem; color:var(--fg)}
+  .walk{margin:20px 0 0; padding:16px 18px; border:1px solid var(--border-strong); border-radius:12px;
+    background:var(--surface-2); min-width:0}
+  .walk h3{font-size:1rem; color:var(--fg)}
+  .walk ol{margin:10px 0 0; padding-left:1.3em; display:grid; gap:10px}
+  .walk li{color:var(--fg-dim); line-height:1.6; font-size:.95rem; min-width:0}
+  .policy p{margin-top:8px; color:var(--fg-dim); font-size:.93rem; line-height:1.6}
+
+  /* submissions states + what's next */
+  .states{list-style:none; margin:16px 0 0; padding:0; display:flex; flex-wrap:wrap; gap:10px}
+  .states li{padding:8px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface);
+    color:var(--fg-dim); font-size:.92rem}
+  .states li b{color:var(--fg)}
+  .soonbox{margin-top:18px; padding:18px 20px; border:1px dashed var(--border-strong); border-radius:14px;
+    background:var(--surface-2); max-width:76ch}
+  .soonbox h3{font-size:1.05rem; color:var(--fg)}
+  .soonbox p{margin-top:8px; color:var(--fg-dim); line-height:1.6}
+  .nextlist{list-style:none; margin:16px 0 0; padding:0; display:grid; gap:10px; max-width:76ch}
+  .nextlist li{padding:12px 16px; border:1px dashed var(--border-strong); border-radius:12px;
+    background:var(--surface); color:var(--fg-dim); line-height:1.55}
+  .nextlist li b{color:var(--fg)}
+
+  .cend{margin:64px 0 30px; text-align:center; font-family:var(--mono); font-size:.82rem; color:var(--muted)}
+  .cend a{color:var(--accent)}
+  .cend a:hover{color:var(--fg)}
+
+  @media (max-width:640px){
+    .chero{padding:44px 0 12px}
+    .loop{padding:12px}
+  }
+
+  /* hero map — the zoomable /architecture-style map; its engine and its #map / .mapctl styles are
+     shared (src/map-engine.js + src/map-engine.css, spliced by build.py — plan
+     papercusp-com-cupboard-diagram-2026-10-17 D-001). Only page-specific rules live here. */
+  .cmap{padding:0}
+  /* the page's .soon badge is styled for HTML text; inside the map the badge is an SVG <tspan>,
+     which must keep the size and font of the <text> it sits in */
+  #map svg .soon{display:inline; margin:0; padding:0; border:0; background:none; font-size:inherit;
+    font-family:inherit; letter-spacing:inherit; vertical-align:baseline; text-transform:none}
+  /* ============ shared zoomable map — src/map-engine.css ============ */
+  /* The one copy of the #map figure's styles (plan papercusp-com-cupboard-diagram-2026-10-17,
+     D-001). build.py splices it AFTER the site sheet and BEFORE the page's own <style>, so a
+     page can still override any rule here. Pairs with src/map-engine.js. */
+
+  /* the figure: a full-bleed canvas. The side borders are cleared IN the .pcfig#map rule: a
+     page's own .pcfig border shorthand is 0-1-0 and this rule is 1-1-0, so clearing them only
+     in the #map rule (1-0-0) below left a 1px side border on every page that splices this in. */
+  .pcfig#map{border:1px solid var(--border); border-left:0; border-right:0; overflow:hidden;
+    box-shadow:var(--shadow)}
+  #map{position:relative; width:100vw; margin-left:calc(50% - 50vw); border-radius:0;
+    border-left:0; border-right:0; background:#0b1626}
+  #map svg{touch-action:pan-y; width:100%; height:calc(100svh - 112px); min-height:420px;
+    min-width:0; display:block; background:#0b1626}
+  #map.zoomed svg{cursor:grab; touch-action:none}
+  #map.dragging svg{cursor:grabbing}
+
+  /* every block is a link into its section */
+  #map svg a{cursor:pointer; outline:none}
+  #map svg a rect.nd{transition:stroke .18s ease, fill .18s ease}
+  #map svg a:hover rect.nd, #map svg a:focus-visible rect.nd{stroke:#7dd3fc; fill:rgba(32,62,98,.85)}
+  #map svg a:hover rect.bdg, #map svg a:focus-visible rect.bdg{fill:rgba(56,189,248,.35)}
+  @media (prefers-reduced-motion:reduce){ #map svg a rect.nd{transition:none} }
+
+  /* controls */
+  .mapctl{position:absolute; top:10px; right:14px; display:flex; gap:6px; z-index:5}
+  .mapctl button{width:34px; height:34px; border-radius:9px; border:1px solid var(--border-strong);
+    background:var(--surface-2); color:var(--fg); font-family:var(--mono); font-size:1.05rem;
+    line-height:1; cursor:pointer}
+  .mapctl button:hover{background:var(--glow)}
+  .mapctl .mz-tour,.mapctl .mz-read{width:auto; padding:0 12px; font-size:.8rem}
+  .mapctl .mz-tour.on{border-color:var(--accent); color:var(--accent)}
+  body.reading .mapctl .mz-read{border-color:var(--accent); color:var(--accent)}
+  .mapctl .mz-snd{width:auto; padding:0 12px; font-size:.8rem; border-color:var(--accent); color:var(--accent)}
+  /* universal narration toggle: ON by default; the muted state persists (localStorage) */
+  .mapctl .mz-mute{width:auto; padding:0 12px; font-size:.8rem}
+  .mapctl .mz-mute[aria-pressed="true"]{color:var(--muted); border-style:dashed}
+  .mapctl .mz-mute.talking .ic{animation:pcTalk 1s ease-in-out infinite}
+  @keyframes pcTalk{50%{opacity:.35}}
+  @media (prefers-reduced-motion:reduce){ .mapctl .mz-mute.talking .ic{animation:none} }
+  @media (max-width:640px){ .mapctl .mz-mute{padding:0; width:40px} .mapctl .mz-mute .lbl{display:none} }
+
+  /* gesture hint */
+  .maphint{position:absolute; left:14px; bottom:10px; z-index:5; font-family:var(--mono); font-size:.74rem;
+    color:var(--fg); background:var(--surface-2); border:1px solid var(--border-strong); border-radius:9px;
+    padding:7px 12px; pointer-events:none; max-width:calc(100% - 28px); line-height:1.5}
+  .maphint b{color:var(--accent)}
+  .maphint .ht{display:none}
+  /* the usage hint sits over the canvas — once the reader is zooming it only hides content */
+  .maphint{transition:opacity .25s ease}
+  #map.zoomed .maphint{opacity:0}
+
+  /* level-of-detail layers */
+  #map g.lod1{pointer-events:none}
+  #map g.lod1.on{pointer-events:auto}
+  /* dip crossfade (see src/map-engine.js): an opaque-backdrop layer raises its backdrop first
+     (--bk), then its own content (--ct) — never two legible layers stacked in one place */
+  #map g.lod1.dip > .bk, #map g.lod1.dip > a > .bk{opacity:var(--bk,1)}
+  #map g.lod1.dip > :not(.bk):not(a):not(title):not(.lod0):not(.lod1),
+  #map g.lod1.dip > a > :not(.bk):not(title){opacity:var(--ct,1)}
+
+  /* touch wording + finger-sized controls on phones */
+  @media (max-width:640px){
+    #map svg{height:calc(100svh - 150px)}
+    .maphint .hd{display:none}
+    .maphint .ht{display:inline}
+    .maphint{font-size:.7rem; max-width:76vw}
+    .mapctl button{width:40px; height:40px}
+    .mapctl .mz-tour,.mapctl .mz-read{width:auto}
+  }
+body{margin:0;background:#0b1626;background-image:none!important;color:#e7f7ff}header.site,footer,.chero,.csec,.archend,.archtoc,.herotext{display:none!important}.ahero,.maphero{padding:0!important}.ahero .wrap,.maphero .wrap{max-width:none;padding:0}#map{height:calc(100vh - 48px);margin:0;border:0;border-radius:0}.mapctl{top:12px}#map svg{height:100%;width:100%}.maphint{font-size:12px}.back{display:flex;gap:24px;height:48px;align-items:center;padding:0 20px;font:14px system-ui;background:#07101d}.back a{color:#5eead4}main section.arch{position:absolute!important;width:0!important;height:0!important;overflow:hidden!important;padding:0!important;margin:0!important}body.reading main section.arch{position:static!important;width:auto!important;height:auto!important;overflow:visible!important;padding:32px!important}.mz-tour,.mz-snd,.mz-mute{display:none!important}</style></head><body><div class="back"><a href="../index.html#cupboard-overview">Return to presentation</a><span>Local snapshot · narration disabled · click a block or Ctrl+scroll to zoom</span></div><svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="cupGlyph" viewBox="0 0 15 16">
+    <path class="steam s1" d="M5.3 1.2 q1.4 1.1 0 2.5" fill="none" stroke="#5eead4" stroke-width="1.25" stroke-linecap="round"></path>
+    <path class="steam s2" d="M8.4 0.9 q1.4 1.1 0 2.5" fill="none" stroke="#5eead4" stroke-width="1.25" stroke-linecap="round"></path>
+    <path d="M11.7 6.4 Q15 6.9 15 8.8 Q15 10.7 11.3 11.1" fill="none" stroke="#dff1ff" stroke-width="1.7" stroke-linecap="round"></path>
+    <path d="M2.2 5 H11.9 L11 12.4 Q10.75 14.2 7.05 14.2 Q3.35 14.2 3.1 12.4 Z" fill="#dff1ff"></path>
+    <ellipse cx="7.05" cy="5.15" rx="4.55" ry="1.05" fill="#38bdf8"></ellipse>
+  </symbol>
+  <marker id="aB" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#38bdf8"></path>
+  </marker>
+  <marker id="aT" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#5eead4"></path>
+  </marker>
+  <marker id="aM" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#8ea9c0"></path>
+  </marker>
+</defs></svg><main id="top">
+
+  <!-- ============ HERO MAP ============ -->
+  <!-- Same format as the /architecture map, same engine (src/map-engine.js). Every block links to
+       its section below and has its own narration clip (tools/cupboard-narration.json, keyed by the
+       block's <title>). Anything not live sits inside a [data-soon] group with a "coming soon" badge
+       (plan papercusp-com-cupboard-page-2026-10-15 D-002; tests/cupboard-map.test.js). -->
+  <section class="cmap" aria-label="The Cupboard map">
+      <div class="pcfig" id="map"><script type="application/json" class="mapcfg">{"reading":false,"muteKey":"pcPresentationMuted","tourSeenKey":"pcPresentationTourSeen","audio":null}</script>
+        
+        <div class="mapctl" role="group" aria-label="Map zoom controls">
+          <button type="button" class="mz-tour" aria-label="Play guided tour">▶ tour</button>
+          <button type="button" class="mz-snd" aria-label="Enable tour narration" hidden="">🔊 sound</button>
+          <button type="button" class="mz-mute" aria-pressed="false" aria-label="Mute narration" title="Clicking a block plays its narration — this mutes (or unmutes) every block and the tour"><span class="ic">🔊</span><span class="lbl"> voice on</span></button>
+          <button type="button" class="mz-in" aria-label="Zoom in">+</button>
+          <button type="button" class="mz-out" aria-label="Zoom out">−</button>
+          <button type="button" class="mz-reset" aria-label="Reset view">⟲</button>
+        </div>
+        <div class="maphint"><span class="hd"><b>click a block</b> to dive in + hear it · <b>Ctrl+scroll</b>/pinch
+          zooms · drag pans · Esc resets · <b>🔊</b> mutes</span><span class="ht"><b>tap a block</b> to dive in and hear it · <b>pinch</b> to zoom · drag to pan · <b>▶ tour</b> plays the story</span></div>
+        <svg viewBox="0 0 1160 710" role="img" aria-label="The Cupboard map: make something in your own workspace — by asking your agent, writing the file yourself, or having it captured for you — from twelve kinds; use it privately; publish it from a public GitHub repo pinned to a commit; most kinds are reviewed before listing; anyone can then install it; push a new commit to update, or delist it. Each block links to its section below.">
+          <rect x="0" y="0" width="1160" height="710" fill="#0b1626"></rect>
+          <g font-family="ui-monospace,Menlo,monospace">
+            <text x="46" y="22" fill="#e7f7ff" font-size="15" font-weight="700" letter-spacing="2">MAKE PAPERCUSP YOURS</text>
+            <text x="46" y="38" fill="#8ea9c0" font-size="9.5">make it on your machine · share it on the Cupboard · anyone can install it</text>
+
+            <!-- regions: your workspace (left) · the Cupboard (right) -->
+            <rect x="24" y="50" width="542" height="502" rx="16" fill="rgba(14,29,49,.4)" stroke="rgba(96,168,214,.3)" stroke-dasharray="7 6"></rect>
+            <text x="46" y="76" fill="#8ea9c0" font-size="12" letter-spacing="3">YOUR WORKSPACE</text>
+            <text x="46" y="90" fill="#8ea9c0" font-size="8.5">private · instant · nothing is listed until you publish</text>
+            <rect x="772" y="50" width="364" height="502" rx="16" fill="rgba(14,40,44,.35)" stroke="rgba(94,234,212,.35)" stroke-dasharray="7 6"></rect>
+            <text x="790" y="76" fill="#5eead4" font-size="12" letter-spacing="3">THE CUPBOARD</text>
+            <text x="790" y="90" fill="#8ea9c0" font-size="8.5">shared · pinned to a commit · reviewed</text>
+
+            <!-- the flow -->
+            <path d="M286,168 L304,168" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#aB)"></path>
+            <path d="M550,168 L584,168" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#aB)"></path>
+            <path d="M748,158 L784,158" stroke="#5eead4" stroke-width="1.4" fill="none" marker-end="url(#aT)"></path>
+            <path d="M954,216 L954,231" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#aB)"></path>
+            <path d="M954,338 L954,353" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#aB)"></path>
+            <path d="M669,237 L669,266" stroke="#8ea9c0" stroke-width="1.2" fill="none" stroke-dasharray="4 4" marker-end="url(#aM)"></path>
+            <!-- update: a new commit goes back through publish -->
+            <path d="M790,404 C 758,404 774,224 753,222" stroke="#8ea9c0" stroke-width="1.2" fill="none" stroke-dasharray="4 4" marker-end="url(#aM)"></path>
+
+            <!-- 02 · make it -->
+            <a href="#make"><title>02 · Make it — on your own machine</title>
+              <rect class="nd" x="46" y="100" width="240" height="136" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.2" data-f1="3.2">
+                <g><rect x="52" y="104" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="89" y="114.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+                <text x="166" y="140" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Make it</text>
+                <text x="166" y="158" fill="#8ea9c0" font-size="10" text-anchor="middle">on your own machine</text>
+                <text x="166" y="182" fill="#cde7f5" font-size="9.5" text-anchor="middle">ask your agent in plain words</text>
+                <text x="166" y="200" fill="#8ea9c0" font-size="9.5" text-anchor="middle">or write the file yourself</text>
+                <text x="166" y="218" fill="#8ea9c0" font-size="9.5" text-anchor="middle">some are captured for you</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="2.2" data-f1="3.2">
+                <rect x="48" y="102" width="236" height="132" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"></rect>
+                <text x="166" y="114" fill="#e7f7ff" font-size="6.5" font-weight="700" text-anchor="middle">MAKE IT — four ways in</text>
+                <g fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5">
+                  <rect x="52" y="120" width="113" height="52" rx="3"></rect><rect x="167" y="120" width="113" height="52" rx="3"></rect>
+                  <rect x="52" y="176" width="113" height="52" rx="3"></rect><rect x="167" y="176" width="113" height="52" rx="3"></rect>
+                </g>
+                <g fill="#cde7f5" font-size="4.6" font-weight="600">
+                  <text x="55.5" y="129">ask your agent</text><text x="170.5" y="129">write it yourself</text>
+                  <text x="55.5" y="185">captured for you</text><text x="170.5" y="185">editors in the app</text>
+                </g>
+                <g fill="#8ea9c0" font-size="4">
+                  <text x="55.5" y="137">say what you want in plain words —</text>
+                  <text x="55.5" y="143">it calls meta:define-tool,</text>
+                  <text x="55.5" y="149">identities:create, rubrics:propose,</text>
+                  <text x="55.5" y="155">plans:new and more</text>
+                  <text x="170.5" y="137">a rule is a rule.json in its own</text>
+                  <text x="170.5" y="143">folder, read against a strict</text>
+                  <text x="170.5" y="149">schema — an invalid rule is</text>
+                  <text x="170.5" y="155">skipped, never half-applied</text>
+                  <text x="55.5" y="193">recipes save themselves when</text>
+                  <text x="55.5" y="199">your agents run multi-step</text>
+                  <text x="55.5" y="205">tool sequences (code:run)</text>
+                  <text x="170.5" y="193">themes: the theme editor in</text>
+                  <text x="170.5" y="199">Settings → Personalization</text>
+                  <text x="170.5" y="205">apps: start from a template</text>
+                  <text x="170.5" y="211">with templates:new-app</text>
+                </g>
+              </g>
+              <rect class="bdg" x="254" y="92" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="267" y="104" fill="#7dd3fc" font-size="9" text-anchor="middle">02</text>
+            </a>
+
+            <!-- 01 · use it -->
+            <a href="#ways"><title>01 · Use it — local, private, instant</title>
+              <rect class="nd" x="310" y="100" width="240" height="136" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.2" data-f1="3.2">
+                <g><rect x="316" y="104" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="353" y="114.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+                <text x="430" y="140" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Use it</text>
+                <text x="430" y="158" fill="#8ea9c0" font-size="10" text-anchor="middle">it lives in your workspace</text>
+                <text x="430" y="182" fill="#5eead4" font-size="10" text-anchor="middle">private · instant</text>
+                <text x="430" y="200" fill="#8ea9c0" font-size="9.5" text-anchor="middle">nobody else sees it</text>
+                <text x="430" y="218" fill="#8ea9c0" font-size="9.5" text-anchor="middle">until you publish</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="2.2" data-f1="3.2">
+                <rect x="312" y="102" width="236" height="132" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"></rect>
+                <text x="430" y="114" fill="#e7f7ff" font-size="6.5" font-weight="700" text-anchor="middle">TWO WAYS TO CUSTOMIZE</text>
+                <g fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5">
+                  <rect x="316" y="120" width="113" height="108" rx="3"></rect><rect x="431" y="120" width="113" height="108" rx="3"></rect>
+                </g>
+                <text x="319.5" y="130" fill="#cde7f5" font-size="5" font-weight="600">Local</text>
+                <text x="319.5" y="137" fill="#5eead4" font-size="4">private · instant</text>
+                <text x="434.5" y="130" fill="#cde7f5" font-size="5" font-weight="600">The Cupboard</text>
+                <text x="434.5" y="137" fill="#7dd3fc" font-size="4">shared · versioned · reviewed</text>
+                <g fill="#8ea9c0" font-size="4">
+                  <text x="319.5" y="147">made in your own workspace</text>
+                  <text x="319.5" y="153">and used right away</text>
+                  <text x="319.5" y="163">nothing is listed anywhere</text>
+                  <text x="319.5" y="169">until you decide to publish</text>
+                  <text x="319.5" y="183">a rule only switches on</text>
+                  <text x="319.5" y="189">when an identity pins it</text>
+                  <text x="434.5" y="147">published from a public</text>
+                  <text x="434.5" y="153">GitHub repo, pinned to a</text>
+                  <text x="434.5" y="159">commit — everyone installs</text>
+                  <text x="434.5" y="165">exactly the listed version</text>
+                  <text x="434.5" y="175">most kinds are reviewed</text>
+                  <text x="434.5" y="181">before they appear</text>
+                </g>
+              </g>
+              <rect class="bdg" x="518" y="92" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="531" y="104" fill="#7dd3fc" font-size="9" text-anchor="middle">01</text>
+            </a>
+
+            <!-- what you can make: one tile per kind (each links to its card) -->
+            <text x="46" y="262" fill="#8ea9c0" font-size="11" letter-spacing="2">WHAT YOU CAN MAKE</text>
+            <text x="200" y="262" fill="#8ea9c0" font-size="8.5">· one tile per kind · zoom in for how to make and share it</text>
+
+            <a href="#k-tools"><title>Tools — new actions your agents can take</title>
+              <rect class="nd" x="46" y="272" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(125,211,252,.7)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="104.5" y="300" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Tools</text>
+                <text x="104.5" y="315" fill="#8ea9c0" font-size="7" text-anchor="middle">new actions for agents</text>
+                <rect x="61.5" y="326" width="86" height="14" rx="7" fill="rgba(94,234,212,.12)" stroke="rgba(94,234,212,.6)" stroke-width=".8"></rect>
+                <text x="104.5" y="336" fill="#5eead4" font-size="7" text-anchor="middle">listed immediately</text>
+                <text x="154" y="285" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="47" y="273" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="51" y="282" fill="#e7f7ff" font-size="4.8" font-weight="700">TOOLS</text>
+                <text x="158" y="282" fill="#5eead4" font-size="3.6" text-anchor="end">listed immediately</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="51" y="290">MAKE IT</text><text x="51" y="311">SHARE IT</text><text x="51" y="327">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="51" y="295">ask your agent for the tool you need —</text>
+                  <text x="51" y="299.5">it defines one with meta:define-tool</text>
+                  <text x="51" y="316">package it as a code-tool pack:</text>
+                  <text x="51" y="320.5">cupboard:publish-plugin</text>
+                  <text x="51" y="332">listed immediately, pinned to a commit</text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-identities"><title>Identities — a named agent persona</title>
+              <rect class="nd" x="175" y="272" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(125,211,252,.7)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="233.5" y="300" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Identities</text>
+                <text x="233.5" y="315" fill="#8ea9c0" font-size="7" text-anchor="middle">a named agent persona</text>
+                <rect x="210.5" y="326" width="46" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="233.5" y="336" fill="#7dd3fc" font-size="7" text-anchor="middle">reviewed</text>
+                <text x="283" y="285" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="176" y="273" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="180" y="282" fill="#e7f7ff" font-size="4.8" font-weight="700">IDENTITIES</text>
+                <text x="287" y="282" fill="#7dd3fc" font-size="3.6" text-anchor="end">reviewed</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="180" y="290">MAKE IT</text><text x="180" y="311">SHARE IT</text><text x="180" y="322">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="180" y="295">identities:create — or start from an</text>
+                  <text x="180" y="299.5">existing identity and change it with</text>
+                  <text x="180" y="304">blueprint:extend</text>
+                  <text x="180" y="316">blueprint:publish</text>
+                  <text x="180" y="327">reviewed before it is listed</text>
+                </g>
+                <g data-soon="paid-identities">
+                  <rect x="179" y="335" width="109" height="12" rx="3" fill="rgba(251,191,36,.08)" stroke="#fbbf24" stroke-width=".4" stroke-dasharray="1.5 1"></rect>
+                  <text x="182" y="342.6" fill="#fbbf24" font-size="3.4">selling an identity, per use · <tspan class="soon">coming soon</tspan></text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-rules"><title>Rules — automatic reactions and guards</title>
+              <rect class="nd" x="304" y="272" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(125,211,252,.7)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="362.5" y="300" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Rules</text>
+                <text x="362.5" y="315" fill="#8ea9c0" font-size="7" text-anchor="middle">reactions and guards</text>
+                <rect x="339.5" y="326" width="46" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="362.5" y="336" fill="#7dd3fc" font-size="7" text-anchor="middle">reviewed</text>
+                <text x="412" y="285" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="305" y="273" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="309" y="282" fill="#e7f7ff" font-size="4.8" font-weight="700">RULES</text>
+                <text x="416" y="282" fill="#7dd3fc" font-size="3.6" text-anchor="end">reviewed</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="309" y="290">MAKE IT</text><text x="309" y="311">SHARE IT</text><text x="309" y="322">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="309" y="295">a rule.json + listing.json in its own</text>
+                  <text x="309" y="299.5">folder: ~/.papercusp/rules/installed/</text>
+                  <text x="309" y="304">— checked against a strict schema</text>
+                  <text x="309" y="316">cupboard:publish-rule</text>
+                  <text x="309" y="327">reviewed · on once an identity pins it</text>
+                </g>
+                <g data-soon="agent-rules">
+                  <rect x="308" y="335" width="109" height="12" rx="3" fill="rgba(251,191,36,.08)" stroke="#fbbf24" stroke-width=".4" stroke-dasharray="1.5 1"></rect>
+                  <text x="311" y="342.6" fill="#fbbf24" font-size="3.4">your agent writing rules · <tspan class="soon">coming soon</tspan></text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-events"><title>Events — named things that happen</title>
+              <rect class="nd" x="433" y="272" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(125,211,252,.7)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="491.5" y="300" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Events</text>
+                <text x="491.5" y="315" fill="#8ea9c0" font-size="7" text-anchor="middle">named things that happen</text>
+                <rect x="468.5" y="326" width="46" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="491.5" y="336" fill="#7dd3fc" font-size="7" text-anchor="middle">reviewed</text>
+                <text x="541" y="285" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="434" y="273" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="438" y="282" fill="#e7f7ff" font-size="4.8" font-weight="700">EVENTS</text>
+                <text x="545" y="282" fill="#7dd3fc" font-size="3.6" text-anchor="end">reviewed</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="438" y="290">GET THEM</text><text x="438" y="311">SHARE IT</text><text x="438" y="322">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="438" y="295">your own event types: not yet —</text>
+                  <text x="438" y="299.5">install an event package with</text>
+                  <text x="438" y="304">cupboard:install-event</text>
+                  <text x="438" y="316">cupboard:publish-event</text>
+                  <text x="438" y="327">reviewed before it is listed</text>
+                </g>
+                <g data-soon="agent-events">
+                  <rect x="437" y="335" width="109" height="12" rx="3" fill="rgba(251,191,36,.08)" stroke="#fbbf24" stroke-width=".4" stroke-dasharray="1.5 1"></rect>
+                  <text x="440" y="342.6" fill="#fbbf24" font-size="3.4">your agent defining events · <tspan class="soon">coming soon</tspan></text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-themes"><title>Themes — how your workspace looks</title>
+              <rect class="nd" x="46" y="362" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="104.5" y="390" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Themes</text>
+                <text x="104.5" y="405" fill="#8ea9c0" font-size="7" text-anchor="middle">how your workspace looks</text>
+                <rect x="61.5" y="416" width="86" height="14" rx="7" fill="rgba(94,234,212,.12)" stroke="rgba(94,234,212,.6)" stroke-width=".8"></rect>
+                <text x="104.5" y="426" fill="#5eead4" font-size="7" text-anchor="middle">listed immediately</text>
+                <text x="154" y="375" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="47" y="363" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="51" y="372" fill="#e7f7ff" font-size="4.8" font-weight="700">THEMES</text>
+                <text x="158" y="372" fill="#5eead4" font-size="3.6" text-anchor="end">listed immediately</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="51" y="380">MAKE IT</text><text x="51" y="396">SHARE IT</text><text x="51" y="407">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="51" y="385">the theme editor in</text>
+                  <text x="51" y="389.5">Settings → Personalization</text>
+                  <text x="51" y="401">cupboard:publish-theme</text>
+                  <text x="51" y="412">listed immediately</text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-templates"><title>Templates — starting points for new apps</title>
+              <rect class="nd" x="175" y="362" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="233.5" y="390" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Templates</text>
+                <text x="233.5" y="405" fill="#8ea9c0" font-size="7" text-anchor="middle">starting points for apps</text>
+                <rect x="190.5" y="416" width="86" height="14" rx="7" fill="rgba(94,234,212,.12)" stroke="rgba(94,234,212,.6)" stroke-width=".8"></rect>
+                <text x="233.5" y="426" fill="#5eead4" font-size="7" text-anchor="middle">listed immediately</text>
+                <text x="283" y="375" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="176" y="363" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="180" y="372" fill="#e7f7ff" font-size="4.8" font-weight="700">TEMPLATES</text>
+                <text x="287" y="372" fill="#5eead4" font-size="3.6" text-anchor="end">listed immediately</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="180" y="380">MAKE IT</text><text x="180" y="396">SHARE IT</text><text x="180" y="407">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="180" y="385">build the app shape you want to reuse;</text>
+                  <text x="180" y="389.5">people start from it: templates:new-app</text>
+                  <text x="180" y="401">cupboard:publish-template</text>
+                  <text x="180" y="412">listed immediately</text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-recipes"><title>Recipes — multi-step tool runs, saved for reuse</title>
+              <rect class="nd" x="304" y="362" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="362.5" y="390" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Recipes</text>
+                <text x="362.5" y="405" fill="#8ea9c0" font-size="7" text-anchor="middle">saved multi-step runs</text>
+                <rect x="339.5" y="416" width="46" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="362.5" y="426" fill="#7dd3fc" font-size="7" text-anchor="middle">reviewed</text>
+                <text x="412" y="375" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="305" y="363" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="309" y="372" fill="#e7f7ff" font-size="4.8" font-weight="700">RECIPES</text>
+                <text x="416" y="372" fill="#7dd3fc" font-size="3.6" text-anchor="end">reviewed</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="309" y="380">MAKE IT</text><text x="309" y="401">SHARE IT</text><text x="309" y="412">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="309" y="385">nothing to do: captured automatically</text>
+                  <text x="309" y="389.5">when your agents run multi-step tool</text>
+                  <text x="309" y="394">sequences (code:run)</text>
+                  <text x="309" y="406">cupboard:publish-recipe</text>
+                  <text x="309" y="417">reviewed before it is listed</text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-rubrics"><title>Rubrics — grading criteria for work</title>
+              <rect class="nd" x="433" y="362" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="491.5" y="390" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Rubrics</text>
+                <text x="491.5" y="405" fill="#8ea9c0" font-size="7" text-anchor="middle">criteria for judging work</text>
+                <rect x="468.5" y="416" width="46" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="491.5" y="426" fill="#7dd3fc" font-size="7" text-anchor="middle">reviewed</text>
+                <text x="541" y="375" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="434" y="363" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="438" y="372" fill="#e7f7ff" font-size="4.8" font-weight="700">RUBRICS</text>
+                <text x="545" y="372" fill="#7dd3fc" font-size="3.6" text-anchor="end">reviewed</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="438" y="380">MAKE IT</text><text x="438" y="396">SHARE IT</text><text x="438" y="407">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="438" y="385">ask your agent to propose one:</text>
+                  <text x="438" y="389.5">rubrics:propose</text>
+                  <text x="438" y="401">cupboard:publish-rubric</text>
+                  <text x="438" y="412">reviewed before it is listed</text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-plans"><title>Plans and goals — plans and the goals they serve</title>
+              <rect class="nd" x="46" y="452" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="104.5" y="480" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Plans &amp; goals</text>
+                <text x="104.5" y="495" fill="#8ea9c0" font-size="7" text-anchor="middle">plans and their goals</text>
+                <rect x="81.5" y="506" width="46" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="104.5" y="516" fill="#7dd3fc" font-size="7" text-anchor="middle">reviewed</text>
+                <text x="154" y="465" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="47" y="453" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="51" y="462" fill="#e7f7ff" font-size="4.8" font-weight="700">PLANS &amp; GOALS</text>
+                <text x="158" y="462" fill="#7dd3fc" font-size="3.6" text-anchor="end">reviewed</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="51" y="470">MAKE IT</text><text x="51" y="486">SHARE IT</text><text x="51" y="502">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="51" y="475">ask your agent to write a plan</text>
+                  <text x="51" y="479.5">(plans:new) or set a goal</text>
+                  <text x="51" y="491">cupboard:publish-plan</text>
+                  <text x="51" y="495.5">cupboard:publish-goal</text>
+                  <text x="51" y="507">reviewed before it is listed</text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-datatypes"><title>Datatypes — new kinds of structured data</title>
+              <rect class="nd" x="175" y="452" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="233.5" y="480" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Datatypes</text>
+                <text x="233.5" y="495" fill="#8ea9c0" font-size="7" text-anchor="middle">new kinds of data</text>
+                <rect x="210.5" y="506" width="46" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="233.5" y="516" fill="#7dd3fc" font-size="7" text-anchor="middle">reviewed</text>
+                <text x="283" y="465" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="176" y="453" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="180" y="462" fill="#e7f7ff" font-size="4.8" font-weight="700">DATATYPES</text>
+                <text x="287" y="462" fill="#7dd3fc" font-size="3.6" text-anchor="end">reviewed</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="180" y="470">MAKE IT</text><text x="180" y="486">SHARE IT</text><text x="180" y="497">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="180" y="475">ask your agent to define one:</text>
+                  <text x="180" y="479.5">meta:define-datatype</text>
+                  <text x="180" y="491">cupboard:publish-datatype</text>
+                  <text x="180" y="502">reviewed before it is listed</text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-plugins"><title>Plugins — code packages that extend PaperCusp</title>
+              <rect class="nd" x="304" y="452" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="362.5" y="480" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Plugins</text>
+                <text x="362.5" y="495" fill="#8ea9c0" font-size="7" text-anchor="middle">code that extends it</text>
+                <rect x="319.5" y="506" width="86" height="14" rx="7" fill="rgba(94,234,212,.12)" stroke="rgba(94,234,212,.6)" stroke-width=".8"></rect>
+                <text x="362.5" y="516" fill="#5eead4" font-size="7" text-anchor="middle">listed immediately</text>
+                <text x="412" y="465" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="305" y="453" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="309" y="462" fill="#e7f7ff" font-size="4.8" font-weight="700">PLUGINS</text>
+                <text x="416" y="462" fill="#5eead4" font-size="3.6" text-anchor="end">listed immediately</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="309" y="470">MAKE IT</text><text x="309" y="481">SHARE IT</text><text x="309" y="492">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="309" y="475">write it in its own public GitHub repo</text>
+                  <text x="309" y="486">cupboard:publish-plugin</text>
+                  <text x="309" y="497">listed immediately, pinned to a commit</text>
+                </g>
+              </g>
+            </a>
+
+            <a href="#k-apps"><title>Apps — whole apps built on PaperCusp</title>
+              <rect class="nd" x="433" y="452" width="117" height="80" rx="10" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="3.4" data-f1="4.6">
+                <text x="491.5" y="480" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Apps</text>
+                <text x="491.5" y="495" fill="#8ea9c0" font-size="7" text-anchor="middle">whole apps on PaperCusp</text>
+                <rect x="468.5" y="506" width="46" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="491.5" y="516" fill="#7dd3fc" font-size="7" text-anchor="middle">reviewed</text>
+                <text x="541" y="465" fill="#7dd3fc" font-size="8" text-anchor="middle">⊕</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="3.4" data-f1="4.6">
+                <rect x="434" y="453" width="115" height="78" rx="9" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)" stroke-width=".5"></rect>
+                <text x="438" y="462" fill="#e7f7ff" font-size="4.8" font-weight="700">APPS</text>
+                <text x="545" y="462" fill="#7dd3fc" font-size="3.6" text-anchor="end">reviewed</text>
+                <g fill="#7dd3fc" font-size="3.2" letter-spacing=".4"><text x="438" y="470">MAKE IT</text><text x="438" y="481">SHARE IT</text><text x="438" y="492">REVIEW</text></g>
+                <g fill="#8ea9c0" font-size="3.6">
+                  <text x="438" y="475">start one from a template: templates:new-app</text>
+                  <text x="438" y="486">cupboard:publish-app</text>
+                  <text x="438" y="497">reviewed before it is listed</text>
+                </g>
+              </g>
+            </a>
+
+            <!-- 03 · publish -->
+            <a href="#share"><title>03 · Publish — a public GitHub repo, pinned to a commit</title>
+              <rect class="nd" x="590" y="100" width="158" height="136" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.2" data-f1="3.2">
+                <g><rect x="596" y="104" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="633" y="114.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+                <text x="669" y="140" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Publish</text>
+                <text x="669" y="160" fill="#cde7f5" font-size="9.5" text-anchor="middle">a public GitHub repo</text>
+                <text x="669" y="176" fill="#8ea9c0" font-size="9.5" text-anchor="middle">pinned to one commit</text>
+                <text x="669" y="192" fill="#8ea9c0" font-size="9" text-anchor="middle">signed in with GitHub</text>
+                <text x="669" y="214" fill="#7dd3fc" font-size="8" text-anchor="middle">cupboard:publish-&lt;kind&gt;</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="2.2" data-f1="3.2">
+                <rect x="592" y="102" width="154" height="132" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"></rect>
+                <text x="669" y="113" fill="#e7f7ff" font-size="5.4" font-weight="700" text-anchor="middle">PUBLISH — the same for every kind</text>
+                <g fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5">
+                  <rect x="596" y="119" width="146" height="26" rx="3"></rect><rect x="596" y="148" width="146" height="26" rx="3"></rect>
+                  <rect x="596" y="177" width="146" height="26" rx="3"></rect><rect x="596" y="206" width="146" height="26" rx="3"></rect>
+                </g>
+                <g fill="#cde7f5" font-size="4.2" font-weight="600">
+                  <text x="599.5" y="127">one verb per kind</text><text x="599.5" y="156">pinned to a commit</text>
+                  <text x="599.5" y="185">a real author</text><text x="599.5" y="214">a new version</text>
+                </g>
+                <g fill="#8ea9c0" font-size="3.5">
+                  <text x="599.5" y="133.5">cupboard:publish-rule, -theme, -app …</text>
+                  <text x="599.5" y="139.5">identities use blueprint:publish</text>
+                  <text x="599.5" y="162.5">the listing points at your public repo</text>
+                  <text x="599.5" y="168.5">at one commit — exactly what installs</text>
+                  <text x="599.5" y="191.5">publishing signs you in with your</text>
+                  <text x="599.5" y="197.5">GitHub identity</text>
+                  <text x="599.5" y="220.5">push a new commit and publish again:</text>
+                  <text x="599.5" y="226.5">that is a new version</text>
+                </g>
+              </g>
+              <rect class="bdg" x="716" y="92" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="729" y="104" fill="#7dd3fc" font-size="9" text-anchor="middle">03</text>
+            </a>
+
+            <!-- 03 · walkthrough: publish a rule -->
+            <a href="#walkthrough"><title>03 · Walkthrough — publish a rule</title>
+              <rect class="nd" x="590" y="272" width="158" height="260" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="1.6" data-f1="2">
+                <g><rect x="596" y="276" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="633" y="286.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+                <text x="669" y="310" fill="#e7f7ff" font-size="12" font-weight="600" text-anchor="middle">Publish a rule</text>
+                <text x="669" y="325" fill="#8ea9c0" font-size="9" text-anchor="middle">a walkthrough</text>
+                <text x="610" y="350" fill="#cde7f5" font-size="9.5">my-rules/</text>
+                <text x="622" y="366" fill="#cde7f5" font-size="9.5">no-force-push/</text>
+                <text x="634" y="382" fill="#5eead4" font-size="9">rule.json</text>
+                <text x="634" y="398" fill="#5eead4" font-size="9">listing.json</text>
+                <text x="669" y="424" fill="#8ea9c0" font-size="9" text-anchor="middle">↓ push it, public</text>
+                <text x="669" y="446" fill="#7dd3fc" font-size="8.5" text-anchor="middle">cupboard:publish-rule</text>
+                <text x="669" y="468" fill="#8ea9c0" font-size="9" text-anchor="middle">↓ reviewed, then listed</text>
+                <text x="669" y="490" fill="#7dd3fc" font-size="8.5" text-anchor="middle">cupboard:install-rule</text>
+                <text x="669" y="510" fill="#8ea9c0" font-size="9" text-anchor="middle">anyone can add it</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="1.6" data-f1="2">
+                <rect x="592" y="274" width="154" height="256" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"></rect>
+                <text x="669" y="289" fill="#e7f7ff" font-size="7" font-weight="700" text-anchor="middle">PUBLISH A RULE</text>
+                <g fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5">
+                  <rect x="596" y="296" width="146" height="54" rx="3"></rect><rect x="596" y="354" width="146" height="54" rx="3"></rect>
+                  <rect x="596" y="412" width="146" height="54" rx="3"></rect><rect x="596" y="470" width="146" height="54" rx="3"></rect>
+                </g>
+                <g fill="#cde7f5" font-size="6.5" font-weight="600">
+                  <text x="600" y="306">1 · lay it out</text><text x="600" y="364">2 · push it, public</text>
+                  <text x="600" y="422">3 · publish</text><text x="600" y="480">4 · install</text>
+                </g>
+                <g fill="#8ea9c0" font-size="5.5">
+                  <text x="600" y="315">each rule in its own folder,</text>
+                  <text x="600" y="322.5">named after its ref, in a</text>
+                  <text x="600" y="330">GitHub repo: my-rules/</text>
+                  <text x="600" y="337.5">no-force-push/rule.json</text>
+                  <text x="600" y="345">+ listing.json (kind: rule)</text>
+                  <text x="600" y="373">push the repo to GitHub and</text>
+                  <text x="600" y="380.5">make it public, so the</text>
+                  <text x="600" y="388">Cupboard can read the folder</text>
+                  <text x="600" y="395.5">at the commit you publish</text>
+                  <text x="600" y="431" fill="#7dd3fc">cupboard:publish-rule {</text>
+                  <text x="606" y="438.5" fill="#7dd3fc">ref: no-force-push,</text>
+                  <text x="606" y="446" fill="#7dd3fc">githubUrl: …/you/my-rules }</text>
+                  <text x="600" y="453.5">listed once an operator</text>
+                  <text x="600" y="461">approves it</text>
+                  <text x="600" y="489">anyone adds it with</text>
+                  <text x="600" y="496.5" fill="#7dd3fc">cupboard:install-rule</text>
+                  <text x="600" y="504">— every other kind follows</text>
+                  <text x="600" y="511.5">the same steps with its</text>
+                  <text x="600" y="519">own publish verb</text>
+                </g>
+              </g>
+              <rect class="bdg" x="716" y="264" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="729" y="276" fill="#7dd3fc" font-size="9" text-anchor="middle">03</text>
+            </a>
+
+            <!-- 05 · review -->
+            <a href="#trust"><title>05 · Review — checked before it is listed</title>
+              <rect class="nd" x="790" y="100" width="328" height="116" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.2" data-f1="3.2">
+                <g><rect x="796" y="104" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="833" y="114.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+                <text x="954" y="132" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Review</text>
+                <rect x="806" y="143" width="112" height="14" rx="7" fill="rgba(56,189,248,.12)" stroke="rgba(56,189,248,.6)" stroke-width=".8"></rect>
+                <text x="862" y="153" fill="#7dd3fc" font-size="7.5" text-anchor="middle">reviewed before listing</text>
+                <text x="926" y="153" fill="#8ea9c0" font-size="7.2">identities · rules · events · recipes</text>
+                <text x="926" y="166" fill="#8ea9c0" font-size="7.2">rubrics · plans · goals · datatypes · apps</text>
+                <rect x="806" y="181" width="112" height="14" rx="7" fill="rgba(94,234,212,.12)" stroke="rgba(94,234,212,.6)" stroke-width=".8"></rect>
+                <text x="862" y="191" fill="#5eead4" font-size="7.5" text-anchor="middle">listed immediately</text>
+                <text x="926" y="191" fill="#8ea9c0" font-size="7.2">tools · plugins · themes · templates</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="2.2" data-f1="3.2">
+                <rect x="792" y="102" width="324" height="112" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"></rect>
+                <text x="954" y="114" fill="#e7f7ff" font-size="5.4" font-weight="700" text-anchor="middle">REVIEW — checked before anyone can install</text>
+                <g fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5">
+                  <rect x="796" y="120" width="104" height="90" rx="3"></rect><rect x="904" y="120" width="104" height="90" rx="3"></rect><rect x="1012" y="120" width="104" height="90" rx="3"></rect>
+                </g>
+                <g fill="#cde7f5" font-size="4.8" font-weight="600">
+                  <text x="799.5" y="130">reviewed kinds wait</text><text x="907.5" y="130">updates wait too</text><text x="1015.5" y="130">some list right away</text>
+                </g>
+                <g fill="#8ea9c0" font-size="4.2">
+                  <text x="799.5" y="140">a version is listed only</text>
+                  <text x="799.5" y="147">after an operator</text>
+                  <text x="799.5" y="154">approves it</text>
+                  <text x="907.5" y="140">while a new version waits,</text>
+                  <text x="907.5" y="147">the previously approved</text>
+                  <text x="907.5" y="154">version keeps serving</text>
+                  <text x="1015.5" y="140">tools, plugins, themes</text>
+                  <text x="1015.5" y="147">and templates list at</text>
+                  <text x="1015.5" y="154">once — still pinned to</text>
+                  <text x="1015.5" y="161">a commit</text>
+                </g>
+              </g>
+              <rect class="bdg" x="1086" y="92" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="1099" y="104" fill="#7dd3fc" font-size="9" text-anchor="middle">05</text>
+            </a>
+
+            <!-- 03 · others install -->
+            <a href="#share"><title>03 · Others install — exactly what was listed</title>
+              <rect class="nd" x="790" y="236" width="328" height="102" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.2" data-f1="3.2">
+                <g><rect x="796" y="240" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="833" y="250.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+                <text x="954" y="268" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Others install</text>
+                <text x="954" y="287" fill="#8ea9c0" font-size="9.5" text-anchor="middle">anyone adds it to their own workspace</text>
+                <text x="954" y="305" fill="#7dd3fc" font-size="8" text-anchor="middle">cupboard:install-rule · install-event · …</text>
+                <text x="954" y="323" fill="#8ea9c0" font-size="9" text-anchor="middle">exactly the commit that was listed</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="2.2" data-f1="3.2">
+                <rect x="792" y="238" width="324" height="98" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"></rect>
+                <text x="954" y="250" fill="#e7f7ff" font-size="5.4" font-weight="700" text-anchor="middle">INSTALL — from the Cupboard into a workspace</text>
+                <g fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5">
+                  <rect x="796" y="256" width="104" height="76" rx="3"></rect><rect x="904" y="256" width="104" height="76" rx="3"></rect><rect x="1012" y="256" width="104" height="76" rx="3"></rect>
+                </g>
+                <g fill="#cde7f5" font-size="4.8" font-weight="600">
+                  <text x="799.5" y="266">pinned = exact</text><text x="907.5" y="266">rules need a pin</text><text x="1015.5" y="266">new event types</text>
+                </g>
+                <g fill="#8ea9c0" font-size="4.2">
+                  <text x="799.5" y="276">you install exactly the</text>
+                  <text x="799.5" y="283">code that was listed —</text>
+                  <text x="799.5" y="290">read it first in its</text>
+                  <text x="799.5" y="297">public repo</text>
+                  <text x="907.5" y="276">an installed rule does</text>
+                  <text x="907.5" y="283">nothing until an identity</text>
+                  <text x="907.5" y="290">pins it — then it guards</text>
+                  <text x="907.5" y="297">each matching tool call</text>
+                  <text x="1015.5" y="276">come from installing an</text>
+                  <text x="1015.5" y="283">event package, or with an</text>
+                  <text x="1015.5" y="290">identity that bundles</text>
+                  <text x="1015.5" y="297">its own events</text>
+                </g>
+              </g>
+              <rect class="bdg" x="1086" y="228" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="1099" y="240" fill="#7dd3fc" font-size="9" text-anchor="middle">03</text>
+            </a>
+
+            <!-- 03 · update or delist -->
+            <a href="#share"><title>03 · Update or delist</title>
+              <rect class="nd" x="790" y="358" width="328" height="92" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="2.2" data-f1="3.2">
+                <g><rect x="796" y="362" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="833" y="372.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+                <text x="954" y="390" fill="#e7f7ff" font-size="13" font-weight="600" text-anchor="middle">Update or delist</text>
+                <text x="954" y="408" fill="#8ea9c0" font-size="9.5" text-anchor="middle">push a new commit → a new version</text>
+                <text x="954" y="425" fill="#7dd3fc" font-size="9" text-anchor="middle">cupboard:unpublish takes it down</text>
+                <text x="954" y="441" fill="#8ea9c0" font-size="8.5" text-anchor="middle">publisher or verified claimant only</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="2.2" data-f1="3.2">
+                <rect x="792" y="360" width="324" height="88" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"></rect>
+                <text x="954" y="372" fill="#e7f7ff" font-size="5.4" font-weight="700" text-anchor="middle">UPDATE OR DELIST</text>
+                <g fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5">
+                  <rect x="796" y="378" width="158" height="66" rx="3"></rect><rect x="958" y="378" width="158" height="66" rx="3"></rect>
+                </g>
+                <g fill="#cde7f5" font-size="4.8" font-weight="600"><text x="799.5" y="388">update</text><text x="961.5" y="388">delist</text></g>
+                <g fill="#8ea9c0" font-size="4.2">
+                  <text x="799.5" y="398">push a new commit and publish</text>
+                  <text x="799.5" y="405">again — that is a new version.</text>
+                  <text x="799.5" y="412">reviewed kinds go back through</text>
+                  <text x="799.5" y="419">review; the approved version</text>
+                  <text x="799.5" y="426">keeps serving meanwhile</text>
+                  <text x="961.5" y="398" fill="#7dd3fc">cupboard:unpublish</text>
+                  <text x="961.5" y="405">takes a listing down. Only the</text>
+                  <text x="961.5" y="412">publisher, or a verified</text>
+                  <text x="961.5" y="419">claimant of the repo, can</text>
+                  <text x="961.5" y="426">do it</text>
+                </g>
+              </g>
+              <rect class="bdg" x="1086" y="350" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="1099" y="362" fill="#7dd3fc" font-size="9" text-anchor="middle">03</text>
+            </a>
+
+            <!-- 04 · your submissions — not live (D-002) -->
+            <g data-soon="submissions">
+              <a href="#submissions"><title>04 · Your submissions — coming soon</title>
+                <rect class="nd" x="790" y="470" width="328" height="62" rx="12" fill="rgba(251,191,36,.05)" stroke="rgba(251,191,36,.6)" stroke-dasharray="5 4"></rect>
+                <text x="806" y="495" fill="#e7f7ff" font-size="12" font-weight="600">Your submissions</text>
+                <rect x="926" y="484" width="76" height="14" rx="7" fill="rgba(251,191,36,.1)" stroke="#fbbf24" stroke-width=".8" stroke-dasharray="3 2"></rect>
+                <text x="964" y="494" fill="#fbbf24" font-size="8" text-anchor="middle"><tspan class="soon">coming soon</tspan></text>
+                <text x="806" y="516" fill="#8ea9c0" font-size="7.6">one view of every listing you published and its review state</text>
+                <rect class="bdg" x="1086" y="462" width="26" height="16" rx="8" fill="rgba(251,191,36,.16)" stroke="rgba(251,191,36,.5)"></rect>
+                <text x="1099" y="474" fill="#fbbf24" font-size="9" text-anchor="middle">04</text>
+              </a>
+            </g>
+
+            <!-- 05 · trust -->
+            <a href="#trust"><title>05 · Trust — three guarantees</title>
+              <rect class="nd" x="46" y="572" width="520" height="68" rx="12" fill="rgba(18,38,63,.65)" stroke="rgba(96,168,214,.5)"></rect>
+              <g class="lod0" data-f0="1.5" data-f1="1.8">
+                <g><rect x="52" y="576" width="74" height="14" rx="7" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.55)" stroke-width=".8"></rect><text x="89" y="586.5" fill="#7dd3fc" font-size="8" font-weight="600" text-anchor="middle">⊕ more inside</text></g>
+                <text x="62" y="607" fill="#e7f7ff" font-size="12" font-weight="600">Trust</text>
+                <text x="62" y="628" fill="#8ea9c0" font-size="8.5">review before listing · nothing changes under you · only the owner takes it down</text>
+              </g>
+              <g class="lod1" opacity="0" data-f0="1.5" data-f1="1.8">
+                <rect x="48" y="574" width="516" height="64" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"></rect>
+                <text x="306" y="584.5" fill="#e7f7ff" font-size="6" font-weight="700" text-anchor="middle">TRUST — three guarantees</text>
+                <g fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5">
+                  <rect x="52" y="589" width="166" height="46" rx="3"></rect><rect x="222" y="589" width="166" height="46" rx="3"></rect><rect x="392" y="589" width="168" height="46" rx="3"></rect>
+                </g>
+                <g fill="#cde7f5" font-size="5.6" font-weight="600">
+                  <text x="56" y="598">review before listing</text><text x="226" y="598">nothing changes under you</text><text x="396" y="598">only the owner takes it down</text>
+                </g>
+                <g fill="#8ea9c0" font-size="5">
+                  <text x="56" y="607">identities, rules, events, recipes,</text>
+                  <text x="56" y="614">rubrics, plans, goals, datatypes and</text>
+                  <text x="56" y="621">apps are checked before anyone</text>
+                  <text x="56" y="628">can install them</text>
+                  <text x="226" y="607">every listing is pinned to a commit</text>
+                  <text x="226" y="614">in a public repo — you install</text>
+                  <text x="226" y="621">exactly the code that was listed,</text>
+                  <text x="226" y="628">and you can read it first</text>
+                  <text x="396" y="607">delisting is limited to the</text>
+                  <text x="396" y="614">publisher or a verified claimant,</text>
+                  <text x="396" y="621">and every publisher signs in</text>
+                  <text x="396" y="628">with GitHub</text>
+                </g>
+              </g>
+              <rect class="bdg" x="534" y="564" width="26" height="16" rx="8" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.45)"></rect>
+              <text x="547" y="576" fill="#7dd3fc" font-size="9" text-anchor="middle">05</text>
+            </a>
+
+            <!-- 06 · what's next — not live (D-002) -->
+            <g data-soon="paid-identities agent-rules agent-events submissions">
+              <a href="#next"><title>06 · What's next — coming soon</title>
+                <rect class="nd" x="590" y="572" width="528" height="68" rx="12" fill="rgba(251,191,36,.05)" stroke="rgba(251,191,36,.6)" stroke-dasharray="5 4"></rect>
+                <text x="606" y="601" fill="#e7f7ff" font-size="12" font-weight="600">What's next</text>
+                <rect x="694" y="590" width="76" height="14" rx="7" fill="rgba(251,191,36,.1)" stroke="#fbbf24" stroke-width=".8" stroke-dasharray="3 2"></rect>
+                <text x="732" y="600" fill="#fbbf24" font-size="8" text-anchor="middle"><tspan class="soon">coming soon</tspan></text>
+                <text x="606" y="624" fill="#8ea9c0" font-size="8">paid identities · rules and events your agent writes · your submissions view</text>
+                <rect class="bdg" x="1086" y="564" width="26" height="16" rx="8" fill="rgba(251,191,36,.16)" stroke="rgba(251,191,36,.5)"></rect>
+                <text x="1099" y="576" fill="#fbbf24" font-size="9" text-anchor="middle">06</text>
+              </a>
+            </g>
+
+            <!-- legend (right-aligned: the gesture hint sits bottom-left) -->
+            <g font-size="8" fill="#8ea9c0">
+              <rect x="760" y="676" width="10" height="10" rx="2" fill="rgba(56,189,248,.16)" stroke="rgba(56,189,248,.6)"></rect>
+              <text x="774" y="684.5">reviewed</text>
+              <rect x="822" y="676" width="10" height="10" rx="2" fill="rgba(94,234,212,.12)" stroke="rgba(94,234,212,.6)"></rect>
+              <text x="836" y="684.5">listed immediately</text>
+              <rect x="932" y="676" width="10" height="10" rx="2" fill="rgba(251,191,36,.1)" stroke="#fbbf24" stroke-dasharray="2 1.5"></rect>
+              <text x="946" y="684.5">coming soon</text>
+              <text x="1008" y="684.5" fill="#7dd3fc">⊕ zoom in for more</text>
+            </g>
+          </g>
+        </svg>
+      </div>
+  </section>
+
+  <!-- ============ OPENING ============ -->
+  <section class="chero">
+    <div class="wrap">
+      <span class="eyebrow">The Cupboard</span>
+      <h1>Make PaperCusp yours</h1>
+      <p class="lede">Everything your agents work with — <b>tools, identities, rules, events</b> and more — is
+      something you can make yourself. Keep it private in your own workspace, or share it with everyone through
+      the <b>Cupboard</b>, PaperCusp's shared shelf of things people have made.</p>
+
+      <ol class="loop" id="loop" aria-label="The make-and-share loop">
+        <li><b>Make it locally</b><span>Ask your agent, or write it yourself.</span></li>
+        <li><b>Use it</b><span>It lives in your workspace. Nobody else sees it until you publish.</span></li>
+        <li><b>Publish</b><span>Point the Cupboard at a public GitHub repo, pinned to a commit.</span></li>
+        <li><b>Review</b><span>Reviewed kinds are checked before they are listed. The rest list right away.</span></li>
+        <li><b>Others install</b><span>Anyone can add it to their own workspace from the Cupboard.</span></li>
+        <li class="back"><b>Update or delist</b><span>Push a new commit for a new version, or take it down.</span></li>
+      </ol>
+      <p class="loopcap"><b>↺</b> an update goes back through publish and review — the approved version keeps
+      serving while the new one waits.</p>
+
+      <nav class="ctoc" aria-label="On this page">
+        <a href="#ways"><span>01</span>Two ways to customize</a>
+        <a href="#make"><span>02</span>What you can make</a>
+        <a href="#share"><span>03</span>Sharing</a>
+        <a href="#submissions" data-soon="submissions"><span>04</span>Your submissions <i class="soon">coming soon</i></a>
+        <a href="#trust"><span>05</span>Trust</a>
+        <a href="#next"><span>06</span>What's next</a>
+      </nav>
+    </div>
+  </section>
+
+  <!-- ============ 01 — TWO WAYS ============ -->
+  <section class="csec" id="ways">
+    <div class="wrap">
+      <div class="shead"><span class="secno">01</span><h2>Two ways to customize</h2></div>
+      <p>The same things can live in two places. Start local; publish when it is worth sharing.</p>
+      <div class="ways">
+        <div class="way">
+          <h3>Local</h3><span class="sub">private · instant</span>
+          <p>Made in your own workspace and used right away. It stays yours: nothing is listed anywhere until you
+          decide to publish it.</p>
+        </div>
+        <div class="way">
+          <h3>The Cupboard</h3><span class="sub">shared · versioned · reviewed</span>
+          <p>Published from a public GitHub repo and pinned to a commit, so everyone installs exactly the version
+          that was listed. Most kinds are reviewed before they appear.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 02 — WHAT YOU CAN MAKE ============ -->
+  <section class="csec" id="make">
+    <div class="wrap">
+      <div class="shead"><span class="secno">02</span><h2>What you can make</h2></div>
+      <p>One card per kind: what it is, how to <b>make it</b> on your machine, and how to <b>share it</b>. The
+      verbs in <code>code</code> are the tools your agent calls — you can just ask in plain words.</p>
+
+      <div class="kinds">
+
+        <article class="kind named" id="k-tools" data-kind="tools">
+          <h3>Tools</h3>
+          <p class="what">New actions your agents can take.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Ask your agent for the tool you need. It defines one with <code>meta:define-tool</code>.
+              <span class="ask">“Make me a tool that pulls this week's invoices.”</span></dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Package it as a code-tool pack and publish it with <code>cupboard:publish-plugin</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol instant">listed immediately</span> pinned to a commit</dd>
+          </dl>
+        </article>
+
+        <article class="kind named" id="k-identities" data-kind="identities">
+          <h3>Identities</h3>
+          <p class="what">A named agent persona your agents can run as.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Ask your agent to create one with <code>identities:create</code>, or start from an
+              existing identity and change it with <code>blueprint:extend</code>.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish it with <code>blueprint:publish</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol reviewed">reviewed</span></dd>
+          </dl>
+          <p class="soonline" data-soon="paid-identities">Selling an identity so others pay per use
+            <span class="soon">coming soon</span></p>
+        </article>
+
+        <article class="kind named" id="k-rules" data-kind="rules">
+          <h3>Rules</h3>
+          <p class="what">Automatic reactions and guards: run an action when an event happens, or refuse a tool
+            call before it runs.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Give each rule its own folder,
+              <code>~/.papercusp/rules/installed/&lt;name&gt;/</code>, holding a <code>rule.json</code> and a
+              <code>listing.json</code> that says <code>"kind": "rule"</code>. A guard rule needs
+              <code>schemaVersion</code>, <code>id</code>, <code>title</code>, <code>description</code>,
+              <code>version</code>, <code>"delivery": "sync"</code>, <code>"sink": "pre-tool"</code> and a
+              <code>guard</code> with <code>deny</code> or <code>allowOnly</code>. Add <code>tools</code> to limit
+              which tools it watches.</dd>
+            <dt>Check it</dt>
+            <dd data-role="check">The file is read against a strict schema. A missing or unknown field makes the
+              rule invalid, and an invalid rule is skipped, never half-applied. <code>cupboard:publish-rule</code>
+              and <code>cupboard:install-rule</code> refuse a <code>rule.json</code> that does not parse.</dd>
+            <dt>Turn it on</dt>
+            <dd data-role="activate">An installed rule does nothing until an identity pins it. Every session
+              wearing that identity then has the guard checked before each matching tool call.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish it with <code>cupboard:publish-rule</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol reviewed">reviewed</span></dd>
+          </dl>
+          <figure class="example" data-role="example">
+            <figcaption>Example: block force-pushes</figcaption>
+            <pre><code>{
+  "schemaVersion": 1,
+  "id": "no-force-push",
+  "title": "No force-push",
+  "description": "Refuses a shell command that force-pushes a git branch.",
+  "version": "1.0.0",
+  "delivery": "sync",
+  "sink": "pre-tool",
+  "tools": ["Bash"],
+  "guard": {
+    "deny": { "input.command": { "matches": "git\\s+push\\s+.*(--force|-f\\b)" } },
+    "reason": "Force-pushing is not allowed here."
+  }
+}</code></pre>
+          </figure>
+          <p class="soonline" data-soon="agent-rules">Asking your agent to write a rule for you
+            <span class="soon">coming soon</span></p>
+        </article>
+
+        <article class="kind named" id="k-events" data-kind="events">
+          <h3>Events</h3>
+          <p class="what">Named things that happen, which rules and agents react to.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Defining your own event type is not available yet. Today you get new event types
+              by installing an event package from the Cupboard with <code>cupboard:install-event</code>, or with an
+              identity that bundles its own events.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish an event package with <code>cupboard:publish-event</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol reviewed">reviewed</span></dd>
+          </dl>
+          <p class="soonline" data-soon="agent-events">Asking your agent to define a new event for you
+            <span class="soon">coming soon</span></p>
+        </article>
+
+        <article class="kind" id="k-themes" data-kind="themes">
+          <h3>Themes</h3>
+          <p class="what">How your workspace looks.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Use the theme editor in Settings → Personalization.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish it with <code>cupboard:publish-theme</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol instant">listed immediately</span></dd>
+          </dl>
+        </article>
+
+        <article class="kind" id="k-templates" data-kind="templates">
+          <h3>Templates</h3>
+          <p class="what">Starting points for new apps.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Build the app shape you want to reuse. People start a new app from a template with
+              <code>templates:new-app</code>.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish it with <code>cupboard:publish-template</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol instant">listed immediately</span></dd>
+          </dl>
+        </article>
+
+        <article class="kind" id="k-recipes" data-kind="recipes">
+          <h3>Recipes</h3>
+          <p class="what">Multi-step tool runs, saved for reuse.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Nothing to do: recipes are captured automatically when your agents run multi-step
+              tool sequences (<code>code:run</code>).</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish one with <code>cupboard:publish-recipe</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol reviewed">reviewed</span></dd>
+          </dl>
+        </article>
+
+        <article class="kind" id="k-rubrics" data-kind="rubrics">
+          <h3>Rubrics</h3>
+          <p class="what">Grading criteria agents use to judge work.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Ask your agent to propose one with <code>rubrics:propose</code>.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish it with <code>cupboard:publish-rubric</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol reviewed">reviewed</span></dd>
+          </dl>
+        </article>
+
+        <article class="kind" id="k-plans" data-kind="plans">
+          <h3>Plans &amp; goals</h3>
+          <p class="what">Multi-step plans and the goals they serve.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Ask your agent to write a plan (<code>plans:new</code>) or set a goal.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish with <code>cupboard:publish-plan</code> or
+              <code>cupboard:publish-goal</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol reviewed">reviewed</span></dd>
+          </dl>
+        </article>
+
+        <article class="kind" id="k-datatypes" data-kind="datatypes">
+          <h3>Datatypes</h3>
+          <p class="what">New kinds of structured data your agents can store and use.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Ask your agent to define one with <code>meta:define-datatype</code>.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish it with <code>cupboard:publish-datatype</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol reviewed">reviewed</span></dd>
+          </dl>
+        </article>
+
+        <article class="kind" id="k-plugins" data-kind="plugins">
+          <h3>Plugins</h3>
+          <p class="what">Code packages that extend PaperCusp.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Write the plugin in its own public GitHub repo.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish it with <code>cupboard:publish-plugin</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol instant">listed immediately</span> pinned to a commit</dd>
+          </dl>
+        </article>
+
+        <article class="kind" id="k-apps" data-kind="apps">
+          <h3>Apps</h3>
+          <p class="what">Whole apps built on PaperCusp.</p>
+          <dl>
+            <dt>Make it</dt>
+            <dd data-role="make">Ask your agent to start one from a template with <code>templates:new-app</code>.</dd>
+            <dt>Share it</dt>
+            <dd data-role="share">Publish it with <code>cupboard:publish-app</code>.</dd>
+            <dt>Review</dt>
+            <dd><span class="pol reviewed">reviewed</span></dd>
+          </dl>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 03 — SHARING ============ -->
+  <section class="csec" id="share">
+    <div class="wrap">
+      <div class="shead"><span class="secno">03</span><h2>Sharing on the Cupboard</h2></div>
+      <p>Every kind shares the same way: a listing points at your public GitHub repo, pinned to a commit.</p>
+      <ul class="facts">
+        <li data-topic="publish"><b>Publish</b><span>Run the kind's publish verb (or ask your agent to). Publishing
+          signs you in with your GitHub identity, so every listing has a real author.</span></li>
+        <li data-topic="versions"><b>Versions</b><span>A listing is pinned to one commit. Push a new commit and
+          publish again: that is a new version.</span></li>
+        <li data-topic="review"><b>Review</b><span>Reviewed kinds wait for approval before a version is listed.
+          While a new version waits, the previously approved version keeps serving.</span></li>
+        <li data-topic="delist"><b>Delist</b><span>Take a listing down with <code>cupboard:unpublish</code>. Only the
+          publisher, or a verified claimant of the repo, can do it.</span></li>
+      </ul>
+      <div class="walk" id="walkthrough">
+        <h3>Walkthrough: publish a rule</h3>
+        <ol>
+          <li data-step="layout">Keep each rule in its own folder, named after its ref, inside a GitHub repo:
+            <pre><code>my-rules/
+  no-force-push/
+    rule.json
+    listing.json</code></pre></li>
+          <li data-step="push">Push the repo to GitHub and make it public, so the Cupboard can read the folder at the
+            commit you publish.</li>
+          <li data-step="publish">Publish it, naming the rule and the repo:
+            <pre><code>cupboard:publish-rule {
+  "ref": "no-force-push",
+  "githubUrl": "https://github.com/you/my-rules"
+}</code></pre>
+            Rules are a reviewed kind, so the listing appears once an operator approves it.</li>
+          <li data-step="install">Anyone can then add it to their workspace with <code>cupboard:install-rule</code>.
+            The other kinds follow the same steps with their own publish verb.</li>
+        </ol>
+      </div>
+      <div class="policy">
+        <div>
+          <h3><span class="pol reviewed">reviewed</span> before listing</h3>
+          <p>Identities, rules, events, recipes, rubrics, plans and goals, datatypes and apps.</p>
+        </div>
+        <div>
+          <h3><span class="pol instant">listed immediately</span></h3>
+          <p>Tools (as code-tool packs), plugins, themes and templates. Each is still pinned to a commit.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 04 — YOUR SUBMISSIONS ============ -->
+  <section class="csec" id="submissions">
+    <div class="wrap">
+      <div class="shead" data-soon="submissions"><span class="secno">04</span><h2>Your submissions</h2>
+        <span class="soon">coming soon</span></div>
+      <div class="soonbox" data-soon="submissions">
+        <h3>One place to watch everything you've published <span class="soon">coming soon</span></h3>
+        <p>A view of your own listings and where each one stands in review. These are the states it will show:</p>
+        <ul class="states">
+          <li><b>Pending review</b> — waiting for a reviewer</li>
+          <li><b>Approved</b> — listed and installable</li>
+          <li><b>Rejected</b> — with the reviewer's reason</li>
+          <li><b>Delisted</b> — taken down</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 05 — TRUST ============ -->
+  <section class="csec" id="trust">
+    <div class="wrap">
+      <div class="shead"><span class="secno">05</span><h2>Trust</h2></div>
+      <p><b>Review before listing.</b> Identities, rules, events, recipes, rubrics, plans, goals, datatypes and
+      apps are checked before anyone can install them. Tools, plugins, themes and templates list immediately.</p>
+      <p><b>Nothing changes under you.</b> Every listing is pinned to a commit in a public repo, so what you install
+      is exactly the code that was listed, and you can read it first.</p>
+      <p><b>Only the owner can take it down.</b> Delisting is limited to the publisher or a verified claimant, and
+      every publisher signs in with GitHub.</p>
+    </div>
+  </section>
+
+  <!-- ============ 06 — WHAT'S NEXT ============ -->
+  <section class="csec" id="next">
+    <div class="wrap">
+      <div class="shead"><span class="secno">06</span><h2>What's next</h2></div>
+      <p>These are being built. Each one is labelled until it ships.</p>
+      <ul class="nextlist">
+        <li data-soon="paid-identities"><b>Paid identities.</b> Sell an identity you made, so others pay per use.
+          <span class="soon">coming soon</span></li>
+        <li data-soon="agent-rules agent-events"><b>Rules and events, written by your agent.</b> Describe the
+          reaction you want in plain words and get the rule and event made for you.
+          <span class="soon">coming soon</span></li>
+        <li data-soon="submissions"><b>Your submissions view.</b> Every listing you published and its review state
+          in one place. <span class="soon">coming soon</span></li>
+      </ul>
+      <p class="cend">See how the rest of PaperCusp fits together on the <a>architecture
+      page</a>.</p>
+    </div>
+  </section>
+
+</main><script>  // SHARED ZOOMABLE MAP ENGINE — the one copy (plan papercusp-com-cupboard-diagram-2026-10-17,
+  // decision D-001). build.py splices this file into every page whose source carries the
+  // empty data-map-engine script slot (and splices src/map-engine.css ahead of the page's
+  // own styles), so /architecture and /cupboard can never drift into two hand-kept copies.
+  // This file is INLINED into a script element: it must never contain a closing script tag,
+  // not even in a comment — the HTML parser ends the element there (build.py refuses it).
+  //
+  // The page supplies: a div#map figure holding the .mapctl buttons, the .maphint, one <svg>
+  // whose viewBox sets the map's size (W x H come from it — never configured twice), and a
+  // <script type="application/json" class="mapcfg"> block:
+  //   audio       { base, v }        per-block clip = base + slug(<title>) + '.mp3?v=' + v
+  //   tour        { src, stops, o, d } guided tour: [cx, cy, width] per stop + sprite offsets
+  //   muteKey     localStorage key for the universal 🔊 toggle (site-wide: pcArchMute)
+  //   tourSeenKey localStorage key marking "the auto tour already played here"
+  //   reading     true when the page folds an article behind the ☰ article button
+  //   maxZoom     deepest zoom factor (default 64)
+  //
+  // Ctrl+scroll / Ctrl+± / pinch zoom, drag pan, click-to-dive with animated zoom, LOD
+  // crossfade into nested layers (g.lod0 / g.lod1 with data-f0..f3 zoom windows).
+  (function(){
+    var fig = document.getElementById('map'); if (!fig) return;
+    var svg = fig.querySelector('svg'); if (!svg) return;
+    var cfg = {};
+    try {
+      var cfgEl = fig.querySelector('script.mapcfg');
+      cfg = (cfgEl && JSON.parse(cfgEl.textContent)) || {};
+    } catch(_){ cfg = {}; }
+    var vb0 = String(svg.getAttribute('viewBox') || '0 0 1160 710').split(/[\s,]+/).map(Number);
+    // Deep flow labels must remain readable on a phone; LOD still settles by 16x.
+    var W = vb0[2] || 1160, H = vb0[3] || 710, MINW = W / (cfg.maxZoom || 64);
+    var vb = { x: 0, y: 0, w: W, h: H };
+    var lod1 = [].slice.call(svg.querySelectorAll('g.lod1'));
+    var lod0 = [].slice.call(svg.querySelectorAll('g.lod0'));
+    var anim = null;
+    // CROSSFADE DISCIPLINE — no zoom level may show two legible text layers in one place.
+    // A plain symmetric crossfade (old 1→0 while new 0→1 over the same window) left BOTH layers
+    // half-visible across the whole window, stacked on top of each other: unreadable exactly
+    // when a reader stops zooming mid-band (owner report 2026-10-15). Instead:
+    //   · an OUTGOING layer (lod0, or a lod1 data-f2..f3 fade-out) is gone by HANDOFF (30% in);
+    //   · an INCOMING lod1 layer only starts AT the handoff and is fully legible by 80%;
+    //   · an incoming layer with an opaque backdrop (rect.bk) DIPS: the backdrop rises over the
+    //     first 30% and covers what is beneath, then its own content fades in.
+    // A short cover phase keeps the "nothing legible" instant to a single point in the band.
+    var HANDOFF = 0.3, SETTLE = 0.8;
+    function ramp(z, a, b){ return Math.max(0, Math.min(1, (z - a) / (b - a))); }
+    function outgoing(t){ return 1 - Math.min(1, t / HANDOFF); }
+    function incoming(t){ return Math.max(0, Math.min(1, (t - HANDOFF) / (SETTLE - HANDOFF))); }
+    function fin(g, z){
+      return ramp(z, parseFloat(g.getAttribute('data-f0')) || 2.2, parseFloat(g.getAttribute('data-f1')) || 3.2);
+    }
+    function fout(g, z){
+      var f2 = g.getAttribute('data-f2'), f3 = g.getAttribute('data-f3');
+      return (f2 !== null && f3 !== null) ? ramp(z, parseFloat(f2), parseFloat(f3)) : 0;
+    }
+    // backdrops belong to the NEAREST lod1 group only (the tiles group nests the internals group)
+    lod1.forEach(function(g){
+      var bk = [].filter.call(g.querySelectorAll('rect[fill-opacity="1"]'), function(r){
+        return r.closest('g.lod1') === g;
+      });
+      bk.forEach(function(r){ r.classList.add('bk'); });
+      if (bk.length) g.classList.add('dip');
+    });
+    function apply(){
+      svg.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h);
+      var z = W / vb.w;
+      lod1.forEach(function(g){
+        var u = fout(g, z), i = fin(g, z), o = outgoing(u), dip = g.classList.contains('dip');
+        if (dip){
+          // on the way OUT, content leaves first and the backdrop holds until the window's
+          // end — fading both together let the layer BENEATH show through its own text
+          var hold = 1 - Math.max(0, Math.min(1, (u - SETTLE) / (1 - SETTLE)));
+          g.setAttribute('opacity', i > 0 && u < 1 ? '1' : '0');
+          g.style.setProperty('--bk', (Math.min(1, i / HANDOFF) * hold).toFixed(3));
+          g.style.setProperty('--ct', (incoming(i) * o).toFixed(3));
+        } else {
+          g.setAttribute('opacity', (incoming(i) * o).toFixed(3));
+        }
+        g.classList.toggle('on', i > 0.5 && o > 0.5);
+      });
+      lod0.forEach(function(g){ g.setAttribute('opacity', outgoing(fin(g, z)).toFixed(3)); });
+      fig.classList.toggle('zoomed', z > 1.02);
+    }
+    // the viewBox height tracks the CONTAINER's aspect (not the map's fixed W:H),
+    // so a zoomed view fills the viewport edge-to-edge — on portrait phones the fixed
+    // aspect rendered a small letterboxed strip at EVERY zoom level (65% dead space).
+    function asp(){
+      var r = svg.getBoundingClientRect();
+      return (r.width > 1 && r.height > 1) ? r.height / r.width : H / W;
+    }
+    function fitW(){ return Math.max(W, H / asp()); }
+    function clamp(){
+      var fw = fitW();
+      if (vb.w > fw) vb.w = fw;
+      if (vb.w < MINW) vb.w = MINW;
+      vb.h = vb.w * asp();
+      vb.x = vb.w <= W ? Math.max(0, Math.min(W - vb.w, vb.x)) : (W - vb.w) / 2;
+      vb.y = vb.h <= H ? Math.max(0, Math.min(H - vb.h, vb.y)) : (H - vb.h) / 2;
+    }
+    function stopAnim(){ if (anim){ cancelAnimationFrame(anim); anim = null; } }
+    function animateTo(tx, ty, tw){
+      stopAnim();
+      var s = { x: vb.x, y: vb.y, w: vb.w }, t0 = performance.now(), D = 420;
+      var th = tw * asp();
+      tx = tw <= W ? Math.max(0, Math.min(W - tw, tx)) : (W - tw) / 2;
+      ty = th <= H ? Math.max(0, Math.min(H - th, ty)) : (H - th) / 2;
+      function step(now){
+        var t = Math.min(1, (now - t0) / D);
+        var e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        vb.x = s.x + (tx - s.x) * e; vb.y = s.y + (ty - s.y) * e; vb.w = s.w + (tw - s.w) * e;
+        clamp(); apply();
+        if (t < 1) anim = requestAnimationFrame(step); else anim = null;
+      }
+      anim = requestAnimationFrame(step);
+    }
+    function zoomAt(px, py, factor){
+      stopAnim();
+      var nw = Math.max(MINW, Math.min(fitW(), vb.w * factor));
+      var k = nw / vb.w;
+      vb.x = px - (px - vb.x) * k;
+      vb.y = py - (py - vb.y) * k;
+      vb.w = nw; clamp(); apply();
+    }
+    function fitAll(){ var fw = fitW(); animateTo((W - fw) / 2, 0, fw); }
+    // client px -> viewBox coords, letterbox-correct (full-bleed svg uses meet fitting)
+    function toSvg(cx, cy){
+      try {
+        var m = svg.getScreenCTM(); if (m){ var p = new DOMPoint(cx, cy).matrixTransform(m.inverse()); return { x: p.x, y: p.y }; }
+      } catch(_){}
+      var r = svg.getBoundingClientRect();
+      return { x: vb.x + (cx - r.left) / r.width * vb.w, y: vb.y + (cy - r.top) / r.height * vb.h };
+    }
+    // Ctrl+scroll (and trackpad pinch, which arrives as ctrl+wheel) zooms; plain scroll scrolls the page
+    svg.addEventListener('wheel', function(e){
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      var p = toSvg(e.clientX, e.clientY);
+      zoomAt(p.x, p.y, e.deltaY < 0 ? 0.8 : 1.25);
+    }, { passive: false });
+    // Ctrl +/- and Ctrl+0 control the map while it is on screen
+    function mapInView(){
+      var r = fig.getBoundingClientRect();
+      return r.bottom > 80 && r.top < innerHeight - 40;
+    }
+    document.addEventListener('keydown', function(e){
+      if (e.key === 'Escape' && vb.w < W){ fitAll(); return; }
+      if (!(e.ctrlKey || e.metaKey) || !mapInView()) return;
+      if (e.key === '=' || e.key === '+'){ e.preventDefault(); var c = center(); zoomAt(c.x, c.y, 0.7); }
+      else if (e.key === '-' || e.key === '_'){ e.preventDefault(); var c2 = center(); zoomAt(c2.x, c2.y, 1.43); }
+      else if (e.key === '0'){ e.preventDefault(); fitAll(); }
+    });
+    // click a block/tile: animated dive into it; click again when already there -> follow the link
+    svg.addEventListener('click', function(e){
+      if (moved > 6){ e.preventDefault(); e.stopPropagation(); moved = 0; return; }
+      var a = e.target && e.target.closest ? e.target.closest('a') : null;
+      if (!a || !svg.contains(a)) return;
+      var r = a.querySelector('rect'); if (!r) return;
+      var rx = +r.getAttribute('x'), ry = +r.getAttribute('y'),
+          rw = +r.getAttribute('width'), rh = +r.getAttribute('height');
+      var needW = Math.max(rw * 1.18, (rh * 1.18) / asp());
+      var cx = rx + rw / 2, cy = ry + rh / 2;
+      e.preventDefault();
+      animateTo(cx - needW / 2, cy - (needW * asp()) / 2, needW);
+      sayBox(a);
+    });
+    // PER-BOX NARRATION — every clickable block has its own short clip (cfg.audio.base +
+    // <slug(title)>.mp3, built by tools/build-box-narration.py from the page's narration spec).
+    // ON by default; ONE universal toggle (🔊, .mz-mute) mutes every block and the tour, and the
+    // choice persists across visits and pages (cfg.muteKey). boxSlug() MUST match slug() in
+    // tools/build-box-narration.py.
+    var AUDIO = cfg.audio || null;
+    var MUTE_KEY = cfg.muteKey || 'pcArchMute', muted = false, boxAud = null, boxKey = null;
+    try { muted = localStorage.getItem(MUTE_KEY) === '1'; } catch(_){}
+    var bM = fig.querySelector('.mz-mute');
+    function boxSlug(t){
+      return String(t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '').slice(0, 64).replace(/-+$/, '');
+    }
+    function talking(on){ if (bM) bM.classList.toggle('talking', !!on); }
+    function stopBox(){
+      if (boxAud){ try { boxAud.pause(); } catch(_){} }
+      boxKey = null; talking(false);
+    }
+    function sayBox(a){
+      if (muted || !AUDIO) return;
+      var t = a.querySelector('title'), key = boxSlug(t && t.textContent);
+      if (!key) return;
+      if (key === boxKey && boxAud && !boxAud.paused) return;   // same block still talking: let it finish
+      if (tourTimer) tourStop();
+      stopBox();
+      boxKey = key;
+      try {
+        if (!boxAud){
+          boxAud = new Audio(); boxAud.preload = 'auto';
+          boxAud.addEventListener('ended', function(){ boxKey = null; talking(false); });
+          boxAud.addEventListener('error', function(){ boxKey = null; talking(false); });
+        }
+        boxAud.src = AUDIO.base + key + '.mp3?v=' + AUDIO.v;   // build.py: content hash
+        var p = boxAud.play(); talking(true);
+        if (p && p.catch) p.catch(function(){ boxKey = null; talking(false); });
+      } catch(_){ boxKey = null; talking(false); }
+    }
+    function setMuted(m){
+      muted = !!m;
+      try { localStorage.setItem(MUTE_KEY, muted ? '1' : '0'); } catch(_){}
+      if (bM){
+        bM.setAttribute('aria-pressed', muted ? 'true' : 'false');
+        bM.setAttribute('aria-label', muted ? 'Unmute narration' : 'Mute narration');
+        var ic = bM.querySelector('.ic'), lb = bM.querySelector('.lbl');
+        if (ic) ic.textContent = muted ? '🔇' : '🔊';
+        if (lb) lb.textContent = muted ? ' muted' : ' voice on';
+      }
+      if (muted){
+        stopBox();
+        if (audPause){ clearTimeout(audPause); audPause = null; }
+        if (aud){ try { aud.pause(); } catch(_){} }
+        sndChip(false);
+      }
+    }
+    if (bM) bM.addEventListener('click', function(){ setMuted(!muted); });
+    // pointer drag pan + touch pinch; suppress clicks after a real drag
+    var ptrs = {}, moved = 0, pinchD = 0;
+    svg.addEventListener('pointerdown', function(e){
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
+      if (Object.keys(ptrs).length === 1) moved = 0;
+      pinchD = 0;
+    });
+    svg.addEventListener('pointermove', function(e){
+      var p = ptrs[e.pointerId]; if (!p) return;
+      var ids = Object.keys(ptrs);
+      if (ids.length === 2){
+        var a = ptrs[ids[0]], b = ptrs[ids[1]];
+        p.x = e.clientX; p.y = e.clientY;
+        var d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (pinchD > 0 && d > 0){
+          var mid = toSvg((a.x + b.x) / 2, (a.y + b.y) / 2);
+          zoomAt(mid.x, mid.y, pinchD / d);
+        }
+        pinchD = d; moved += 10;
+        return;
+      }
+      var p0 = toSvg(p.x, p.y), p1 = toSvg(e.clientX, e.clientY);
+      moved += Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y);
+      if (moved > 6 && vb.w < W){
+        try { svg.setPointerCapture(e.pointerId); } catch(_){}
+        stopAnim();
+        fig.classList.add('dragging');
+        vb.x -= (p1.x - p0.x); vb.y -= (p1.y - p0.y);
+        clamp(); apply();
+      }
+      p.x = e.clientX; p.y = e.clientY;
+    });
+    function up(e){ delete ptrs[e.pointerId]; pinchD = 0; fig.classList.remove('dragging'); }
+    svg.addEventListener('pointerup', up);
+    svg.addEventListener('pointercancel', up);
+    // double-click: quick dive / reset at max zoom
+    svg.addEventListener('dblclick', function(e){
+      e.preventDefault();
+      var p = toSvg(e.clientX, e.clientY);
+      if (vb.w <= MINW * 1.05) fitAll();
+      else zoomAt(p.x, p.y, 0.45);
+    });
+    // buttons
+    function center(){ return { x: vb.x + vb.w / 2, y: vb.y + vb.h / 2 }; }
+    var bIn = fig.querySelector('.mz-in'), bOut = fig.querySelector('.mz-out'), bR = fig.querySelector('.mz-reset');
+    if (bIn) bIn.addEventListener('click', function(){ var c = center(); zoomAt(c.x, c.y, 0.62); });
+    if (bOut) bOut.addEventListener('click', function(){ var c = center(); zoomAt(c.x, c.y, 1.6); });
+    if (bR) bR.addEventListener('click', function(){ fitAll(); });
+    // guided tour — glides through the story; any interaction hands control back
+    var TOUR = cfg.tour || {};
+    var tourStops = TOUR.stops || [[W / 2, H / 2, W]];
+    var tourTimer = null, tourIdx = 0, bT = fig.querySelector('.mz-tour');
+    // narrated walkthrough — kokoro af_heart sprite; offsets index-aligned with tourStops.
+    // Plays when the tour starts from a gesture; autoplay-blocked or missing audio -> silent glide.
+    // ?v= busts the 300s edge/browser cache so a rebuilt sprite never plays against new offsets.
+    var NARR = { src: TOUR.src || '', o: TOUR.o || [], d: TOUR.d || [] };
+    var aud = null, audOk = false, audPause = null;
+    function tourStop(){
+      if (tourTimer){ clearTimeout(tourTimer); tourTimer = null; }
+      if (audPause){ clearTimeout(audPause); audPause = null; }
+      if (aud){ try { aud.pause(); } catch(_){} }
+      sndChip(false);
+      if (bT){ bT.textContent = '▶ tour'; bT.classList.remove('on'); }
+    }
+    var bS = fig.querySelector('.mz-snd');
+    function sndChip(show){ if (bS) bS.hidden = !show; }
+    if (bS) bS.addEventListener('click', function(){
+      setMuted(false); audOk = true; sndChip(false);
+      if (tourTimer){ clearTimeout(tourTimer); tourIdx--; tourStep(); }
+    });
+    function narrate(i){
+      if (muted || !aud || !audOk || i >= NARR.o.length) return 0;   // muted: the tour glides silently
+      stopBox();
+      if (audPause){ clearTimeout(audPause); audPause = null; }
+      try {
+        if (aud.readyState >= 1) aud.currentTime = NARR.o[i];
+        else if (NARR.o[i] > 0) aud.addEventListener('loadedmetadata', function once(){
+          aud.removeEventListener('loadedmetadata', once);
+          try { aud.currentTime = NARR.o[i]; } catch(_){}
+        });
+        var p = aud.play();
+        if (p && p.catch) p.catch(function(){ audOk = false; sndChip(!!tourTimer || tourIdx > 0); });
+        audPause = setTimeout(function(){ try { aud.pause(); } catch(_){} }, NARR.d[i] * 1000 + 120);
+        return NARR.d[i];
+      } catch(_){ audOk = false; return 0; }
+    }
+    function tourStep(){
+      if (tourIdx >= tourStops.length){ tourStop(); return; }
+      var s = tourStops[tourIdx++];
+      var tw = s[2], th = tw * asp();
+      animateTo(s[0] - tw / 2, s[1] - th / 2, tw);
+      var nd = narrate(tourIdx - 1);
+      tourTimer = setTimeout(tourStep, nd > 0 ? nd * 1000 + 700 : (tourIdx === 1 ? 1200 : 2400));
+    }
+    function tourStart(){
+      tourIdx = 0;
+      if (!aud && NARR.src){
+        try {
+          aud = new Audio(NARR.src); aud.preload = 'auto'; audOk = true;
+          aud.addEventListener('error', function(){ audOk = false; });
+        } catch(_){ audOk = false; }
+      } else { audOk = !!aud; }
+      if (bT){ bT.textContent = '■ stop'; bT.classList.add('on'); }
+      tourStep();
+    }
+    if (bT) bT.addEventListener('click', function(){
+      if (tourTimer){ tourStop(); fitAll(); return; }
+      tourStart();
+    });
+    var touched = false;
+    svg.addEventListener('wheel', function(){ touched = true; if (tourTimer) tourStop(); }, { passive: true });
+    svg.addEventListener('pointerdown', function(){ touched = true; if (tourTimer) tourStop(); });
+    document.addEventListener('keydown', function(){ touched = true; if (tourTimer) tourStop(); });
+    addEventListener('resize', function(){ clamp(); apply(); });
+    vb.w = fitW(); clamp(); apply();
+    // test seam (tests/*-map.test.js): jump the view to a centre + zoom level
+    fig.__map = {
+      set: function(cx, cy, z){ stopAnim(); vb.w = W / z; vb.h = vb.w * asp(); vb.x = cx - vb.w / 2; vb.y = cy - vb.h / 2; clamp(); apply(); },
+      z: function(){ return W / vb.w; }
+    };
+    setMuted(muted);                  // render the persisted narration choice on the 🔊 toggle
+    // AUTO walkthrough: on a first visit the tour starts by itself after a short beat.
+    // Guards: once per visitor per page (cfg.tourSeenKey, set only when it actually fires),
+    // skipped if the visitor already interacted, the tab is hidden, or the visitor
+    // prefers reduced motion. The ▶ tour button replays it any time.
+    var SEEN_KEY = cfg.tourSeenKey || 'pcArchTourAuto', seen = false;
+    try { seen = !!localStorage.getItem(SEEN_KEY); } catch(_){}
+    if (!seen && !(typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches)){
+      setTimeout(function(){
+        if (touched || tourTimer || document.hidden) return;
+        try { localStorage.setItem(SEEN_KEY, '1'); } catch(_){}
+        tourStart();
+      }, 1600);
+    }
+    if (!cfg.reading) return;
+    // READING MODE — the full formatted article ships in the page but is folded to 0-size by the
+    // page's map-hero CSS; body.reading unfolds it. Entered via the header section links, any
+    // #sNN link outside the map, the ☰ article button, or a #sNN deep link. "The map" / #top
+    // folds it back.
+    var bRead = fig.querySelector('.mz-read');
+    function readingEnter(){
+      touched = true;                 // a reader took over — never auto-start the tour under them
+      if (tourTimer) tourStop();      // and stop a running one: narration over prose is noise
+      stopBox();
+      document.body.classList.add('reading');
+      if (bRead) bRead.textContent = '⌃ map only';
+    }
+    function readingLeave(){
+      document.body.classList.remove('reading');
+      if (bRead) bRead.textContent = '☰ article';
+    }
+    if (bRead) bRead.addEventListener('click', function(){
+      if (document.body.classList.contains('reading')){
+        readingLeave(); fig.scrollIntoView({ block: 'start' });
+      } else {
+        readingEnter();
+        // land at the section index (pills), not past it — s01 sits right below;
+        // deep links (#sNN) still land on their exact section
+        var landing = document.querySelector('.archtoc') || document.getElementById('s01');
+        if (landing) requestAnimationFrame(function(){ landing.scrollIntoView({ block: 'start' }); });
+      }
+    });
+    document.addEventListener('click', function(e){
+      var a = e.target && e.target.closest ? e.target.closest('a[href^="#"]') : null;
+      if (!a || fig.contains(a)) return;               // map dives stay the map's business
+      var h = a.getAttribute('href') || '';
+      if (/^#s\d/.test(h)) readingEnter();             // class lands before the default anchor scroll
+      else if ((h === '#map' || h === '#top') && document.body.classList.contains('reading')) readingLeave();
+    });
+    window.addEventListener('hashchange', function(){ if (/^#s\d/.test(location.hash)) readingEnter(); });
+    if (/^#s\d/.test(location.hash)){                  // deep link: open unfolded at the section
+      readingEnter();
+      var dl = document.querySelector(location.hash);
+      if (dl) requestAnimationFrame(function(){ dl.scrollIntoView({ block: 'start' }); });
+    }
+  })();
+</script></body></html>

@@ -518,6 +518,16 @@ export const ADMISSION_PRECHECK_SETUP_BUDGET_MS = 40 * 60_000;
 /** No setup output for this long = stalled (the gate's own setup watchdog is 30 min idle). */
 export const ADMISSION_PRECHECK_SETUP_IDLE_MS = 15 * 60_000;
 export const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
+/**
+ * WI-6554700010019443: the largest population the admit door will launch a managed pre-check
+ * for. An admitted gitlink expands to every test file under its submodule (measured 2026-10-21:
+ * 6614 files), and the runner measures one file at a time, so such a run cannot finish before
+ * several queue verify ticks (two of them measured 0 files before being abandoned). Above this
+ * bound the door refuses BEFORE launch and names the reasoned skipPrecheck opt-out.
+ * The value is a judgment, not a measurement: an ordinary admission is already held near this
+ * size (signature tests + admitted tests + an ADMISSION_RADIUS_CAP related-test radius).
+ */
+export const ADMISSION_PRECHECK_MAX_FILES = 200;
 /** Bound queue writes from chatty children; silent children never manufacture a heartbeat. */
 export const ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS = 5_000;
 /** Output kept in memory: the first HEAD bytes plus the LAST TAIL bytes. */

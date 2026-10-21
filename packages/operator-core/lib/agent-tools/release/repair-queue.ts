@@ -69,6 +69,7 @@ import {
 import type { AdmissionJobKind, AdmissionJobOf } from '../../release/admission-jobs';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
+  ADMISSION_PRECHECK_MAX_FILES,
   ADMISSION_PRECHECK_PER_FILE_BUDGET_MS,
   ADMISSION_PRECHECK_SETUP_BUDGET_MS,
   evaluateFixPrecheck,
@@ -1796,6 +1797,32 @@ export default defineTool({
         });
       }
       let precheck: FixPrecheckVerdict | null = null;
+      // WI-6554700010019443: never launch a pre-check the one-file-at-a-time runner cannot
+      // finish. An admitted gitlink expands to its submodule's whole test population (6614
+      // files measured), which used to start anyway and measured nothing before it was abandoned.
+      if (precheckApplies && outcome.ok && population.files.length > ADMISSION_PRECHECK_MAX_FILES) {
+        return json({
+          ...base,
+          ok: false,
+          admitted: false,
+          refused: true,
+          dryRun: false,
+          verdict: 'refused',
+          reason: 'admission-precheck-unavailable',
+          cause: 'population-over-bound',
+          populationSize: population.files.length,
+          populationBound: ADMISSION_PRECHECK_MAX_FILES,
+          detail:
+            `REFUSED before launch: the R6 pre-check population is ${population.files.length} test file(s), above the ` +
+            `${ADMISSION_PRECHECK_MAX_FILES}-file bound the one-file-at-a-time runner can finish. Nothing was published and no pre-check started. ` +
+            'Split the admission into narrower ones (an admitted gitlink pulls in every test under its submodule), ' +
+            'or opt out deliberately with skipPrecheck:true + precheckReason; the queue verify still judges the new repairHead over the full suite.',
+          builtCommit: outcome.commit,
+          judgedSha: queue.repairHead,
+          containment: await containmentAt(queue.repairHead),
+          mode,
+        });
+      }
       if (precheckApplies && outcome.ok) {
         const builtCommit = outcome.commit;
         // The serving host's root may be a LINKED worktree (`:3170` runs from papercusp-staging);
