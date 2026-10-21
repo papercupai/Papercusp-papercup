@@ -26,7 +26,11 @@ let db: { sql: Sql; cleanup: () => Promise<void> };
 beforeAll(async () => {
   const org = await createOrgTestDb();
   db = { sql: org.adminSql, cleanup: () => org.cleanup() };
-  await applyMigrationsForTest(db.sql, ['1510-gateway-request-outcomes.sql', '1533-gateway-response-usage-attribution.sql'], {
+  await applyMigrationsForTest(db.sql, [
+    '1510-gateway-request-outcomes.sql',
+    '1533-gateway-response-usage-attribution.sql',
+    '1554-gateway-request-outcome-attempt-account-ids.sql',
+  ], {
     label: 'gateway request outcome store integration test',
     runtimeTables: ['harness_shared.gateway_request_outcomes'],
   });
@@ -62,6 +66,7 @@ function outcomeRecord(input: {
     transport: 'oauth-http',
     model: 'claude-sonnet-4',
     selectedAccountId: 'account-a',
+    attemptAccountIds: ['account-a'],
     outcomeClass: input.outcomeClass,
     finalStatus,
     requestTimestampMs: input.startedAt,
@@ -78,14 +83,20 @@ function outcomeRecord(input: {
 }
 
 describe('Postgres gateway request outcome store', () => {
-  it('persists provider response identity across a writer restart', async () => {
+  it('persists provider identity and ordered attempt accounts across a writer restart', async () => {
     const record = outcomeRecord({ processId: PROCESS_BEFORE_RESTART, ordinal: 1, ownerId: 'owner-a',
       startedAt: BASE, outcomeClass: 'ok' });
     record.providerResponseId = 'resp-durable';
+    record.selectedAccountId = 'account-b';
+    record.attemptAccountIds = ['account-a', 'account-b'];
     await createPostgresGatewayRequestOutcomeStore(db.sql).record(record);
     const report = await createPostgresGatewayRequestOutcomeStore(db.sql).report({ ownerId: 'owner-a', nowMs: BASE + 1000 });
     expect(report.rows).toHaveLength(1);
-    expect(report.rows[0]).toMatchObject({ providerResponseId: 'resp-durable', selectedAccountId: 'account-a' });
+    expect(report.rows[0]).toMatchObject({
+      providerResponseId: 'resp-durable',
+      selectedAccountId: 'account-b',
+      attemptAccountIds: ['account-a', 'account-b'],
+    });
   });
 
   it('joins mixed owner outcomes after a writer restart and beyond the 4h stall-event TTL', async () => {

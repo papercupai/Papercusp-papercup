@@ -291,6 +291,17 @@ async function emitRetiredUnjudgedRepairHeadTerminal(
   };
 }
 
+/**
+ * Upper bound on `paths` for one admit/converge call. Admission refuses an incomplete
+ * sibling closure (`admission-incomplete`) and pairs sources with their tests, so a
+ * cohort must land in ONE call. If this bound sat below a real closure, that fix could
+ * never be admitted at all. The old bound of 50 did exactly that on 2026-10-21: the
+ * plan-types cohort needed 52 and a sources-only split was refused and grew its tests
+ * back (WI-6554700010019489). Keep it well above observed closures; the call's cost
+ * scales with path count, so callers on a short transport deadline should batch.
+ */
+export const REPAIR_QUEUE_ADMIT_MAX_PATHS = 200;
+
 const argsSchema = z.preprocess(
   (value) => {
     // The read branch has no arguments. Treat an omitted op on an otherwise
@@ -320,7 +331,7 @@ const argsSchema = z.preprocess(
       z.object({
         op: z.literal('admit'),
         /** Repo-relative paths your fix touched — the admission allowlist. REQUIRED: an admission is by explicit path. */
-        paths: z.array(z.string().min(1)).min(1).max(50),
+        paths: z.array(z.string().min(1)).min(1).max(REPAIR_QUEUE_ADMIT_MAX_PATHS),
         reason: z.string().min(8).max(2000).optional(),
         confirm: z.boolean().optional(),
         /** Optional work-item reference linking this admission to its tracked fix. */
@@ -348,7 +359,7 @@ const argsSchema = z.preprocess(
       z.object({
         /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
         op: z.literal('converge'),
-        paths: z.array(z.string().min(1)).min(1).max(50),
+        paths: z.array(z.string().min(1)).min(1).max(REPAIR_QUEUE_ADMIT_MAX_PATHS),
         reason: z.string().min(8).max(2000).optional(),
         confirm: z.boolean().optional(),
         /** Optional work-item reference linking this aliased admission to its tracked fix. */

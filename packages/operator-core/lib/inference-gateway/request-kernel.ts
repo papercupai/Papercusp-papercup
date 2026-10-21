@@ -1024,6 +1024,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           // fresh account did not land inside the throttle window it was fleeing.
           // `selectInitial` carries no delay, so the first attempt never waits.
           await delayBeforeAttempt(currentRoute.delayMs ?? 0, requestController.signal);
+          span.recordAttemptAccountId(currentRoute.accountId);
           const attemptContext: GatewayKernelAttemptContext<TRoute> = {
             ...base,
             route: currentRoute,

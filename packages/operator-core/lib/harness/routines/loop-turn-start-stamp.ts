@@ -23,7 +23,12 @@
  */
 import type { ActivityRecord, TelemetryStore } from '@papercusp/activity-bridge';
 import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
-import { parseEnvelope } from '../../turn-provenance/turn-provenance';
+import { parseEnvelope, readLedgerRows } from '../../turn-provenance/turn-provenance';
+
+export interface LoopFireIdentity {
+  routineId: string;
+  wakeCount: number;
+}
 
 /** True when the prompt OPENS with a loop-fire turn-origin envelope. Uses the one
  *  shared envelope grammar (`parseEnvelope`), so an envelope quoted mid-text, or
@@ -38,6 +43,22 @@ export interface LoopTurnStartInput {
   workspaceId: string;
   cwd?: string | null;
   client?: string | null;
+  /** Optional test seam; production resolves this from the provenance ledger nonce. */
+  loopFire?: LoopFireIdentity | null;
+}
+
+/** Resolve the typed loop identity enrolled alongside the prompt's provenance nonce.
+ *  A missing/expired/malformed row is deliberately unknown: reconciliation keeps its
+ *  bounded legacy retry path instead of guessing from wake text or timestamps. */
+export function resolveLoopFireIdentity(owner: string, prompt: string): LoopFireIdentity | null {
+  const envelope = parseEnvelope(prompt ?? '');
+  if (!envelope || envelope.origin !== 'loop-fire') return null;
+  const row = readLedgerRows(owner, { includeExpired: false }).find((candidate) => candidate.nonce === envelope.nonce);
+  if (!row?.loopFire) return null;
+  return {
+    routineId: row.loopFire.routineId,
+    wakeCount: row.loopFire.wakeCount,
+  };
 }
 
 /** Build the activity row for a loop-fire turn start, or null when the prompt is
@@ -47,6 +68,7 @@ export function loopTurnStartRecord(input: LoopTurnStartInput): ActivityRecord |
   const owner = (input.owner ?? '').trim();
   if (!owner || !isLoopFirePrompt(input.prompt)) return null;
   const envelope = parseEnvelope(input.prompt);
+  const loopFire = input.loopFire === undefined ? resolveLoopFireIdentity(owner, input.prompt) : input.loopFire;
   return {
     owner,
     agent: input.client || null,
@@ -58,7 +80,14 @@ export function loopTurnStartRecord(input: LoopTurnStartInput): ActivityRecord |
     toolUseId: null,
     summary: LOOP_TURN_START_MARKER,
     status: null,
-    detail: envelope ? { origin: envelope.origin, nonce: envelope.nonce, source: 'turn-start' } : null,
+    detail: envelope
+      ? {
+          origin: envelope.origin,
+          nonce: envelope.nonce,
+          source: 'turn-start',
+          ...(loopFire ? { loopFire } : {}),
+        }
+      : null,
     cwd: input.cwd ?? null,
     workspaceId: input.workspaceId,
   };

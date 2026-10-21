@@ -954,7 +954,8 @@ export async function openAcceptanceBarAmendmentReview(
         ? `The retained outside-lineage reviewer is blocked (${freshReviewer.reason}): ${freshReviewer.evidence}. ` +
           `Task ${freshReviewer.taskId ?? 'unknown'}, transcript ${freshReviewer.nativeRef}. ` +
           (freshReviewer.recovery?.state === 'stopped'
-            ? `The rejected task is confirmed terminal (${freshReviewer.recovery.evidence}). Repeat the same rubrics:amend dry run with reviewPreviewPost:'${previewPostRef}' and a permitted reviewerModel with available capacity; the screened system recruiter owns replacement. `
+            ? `The rejected task is confirmed terminal (${freshReviewer.recovery.evidence}). Repeat the same rubrics:amend dry run with reviewPreviewPost:'${previewPostRef}' and a permitted reviewerModel with available capacity; the screened system recruiter owns replacement. ` +
+              `If anything was posted on that thread after ${previewPostRef} (your own notes count), the repeat recruits nobody until you post a short evidence note there saying why the review is repeated and also pass reviewEvidencePost:'thread-post:<that note>'. `
             : `Containment is unverified (${freshReviewer.recovery?.evidence ?? 'no terminal task proof'}). Resolve the exact rejected task through the review recruiter before repeating this dry run. `) +
           'Do not resume or fork the reviewer yourself: that records your identity as its launcher and can invalidate independence. ' +
           'No decision was obtained. Do not wait for an approval from this rejected turn, countersign it, or post another preview to duplicate the reviewer.'

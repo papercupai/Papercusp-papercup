@@ -35,8 +35,11 @@ import {
   POST_VERDICT_WATCHDOG_MS,
   REPAIR_TICK_LEGS_ABORT_GRACE_MS,
   REPAIR_TICK_LEGS_DEADLINE_MS,
+  REPAIR_TICK_LEGS_MIN_WINDOW_MS,
+  REPAIR_TICK_LEGS_TAIL_RESERVE_MS,
   REPAIR_TICK_SETUP_LOCK_MAX_RETRIES,
   repairTickLegFailureTails,
+  repairTickLegsDeadline,
   type CheckpointDeps,
   type CheckpointResult,
   type RepairTickLegs,
@@ -813,6 +816,105 @@ describe("augmentWithRepairTickLegs", () => {
       expect(result.repairTickLegs).toEqual(measured);
       expect(result.repairQueue).toBe(queue);
       expect(log).toHaveBeenCalledWith(expect.stringContaining("leg lifecycle write failed"));
+    });
+  });
+
+  // WI-6554700010019444: run 113fe179 (2026-10-21) settled its retest ~2h20m into the run. The
+  // POST_VERDICT_WATCHDOG_MS tighten only pulls the ceiling IN, so the fixed 40m legs deadline sat
+  // PAST the 3h ceiling; leg 25/36 was still running at 180m and the kill replaced the recorded
+  // still-red hold with a tip-labelled no-verdict that raised WEDGED.
+  describe("WI-6554700010019444: the legs deadline clamps to the self-watchdog's remaining budget", () => {
+    const fixed = {
+      run: true,
+      deadlineMs: REPAIR_TICK_LEGS_DEADLINE_MS,
+      clampedByCeiling: false,
+    };
+
+    it("keeps the fixed deadline when no ceiling is known or it is far enough away", () => {
+      expect(repairTickLegsDeadline({ fixedMs: REPAIR_TICK_LEGS_DEADLINE_MS })).toEqual(fixed);
+      expect(
+        repairTickLegsDeadline({
+          fixedMs: REPAIR_TICK_LEGS_DEADLINE_MS,
+          remainingMs: Number.POSITIVE_INFINITY,
+        }),
+      ).toEqual(fixed);
+      expect(
+        repairTickLegsDeadline({
+          fixedMs: REPAIR_TICK_LEGS_DEADLINE_MS,
+          remainingMs: POST_VERDICT_WATCHDOG_MS,
+        }),
+      ).toEqual(fixed);
+    });
+
+    it("clamps to what is left minus the tail reserve when the ceiling is closer (113fe179's shape)", () => {
+      const remainingMs = 41 * 60_000;
+      expect(
+        repairTickLegsDeadline({ fixedMs: REPAIR_TICK_LEGS_DEADLINE_MS, remainingMs }),
+      ).toEqual({
+        run: true,
+        deadlineMs: remainingMs - REPAIR_TICK_LEGS_TAIL_RESERVE_MS,
+        clampedByCeiling: true,
+      });
+    });
+
+    it("skips the pass when the usable window is below the minimum", () => {
+      const remainingMs = REPAIR_TICK_LEGS_TAIL_RESERVE_MS + REPAIR_TICK_LEGS_MIN_WINDOW_MS - 1;
+      expect(
+        repairTickLegsDeadline({ fixedMs: REPAIR_TICK_LEGS_DEADLINE_MS, remainingMs }),
+      ).toEqual({ run: false, availableMs: REPAIR_TICK_LEGS_MIN_WINDOW_MS - 1 });
+    });
+
+    it("reserves exactly the slack the fixed deadline already assumed inside the post-verdict ceiling", () => {
+      expect(REPAIR_TICK_LEGS_DEADLINE_MS + REPAIR_TICK_LEGS_TAIL_RESERVE_MS).toBe(
+        POST_VERDICT_WATCHDOG_MS,
+      );
+      expect(REPAIR_TICK_LEGS_TAIL_RESERVE_MS).toBeGreaterThan(REPAIR_TICK_LEGS_ABORT_GRACE_MS);
+    });
+
+    it("does not start the legs when the remaining budget cannot fit them; the hold stays as recorded", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const log = vi.fn();
+      const hold = holdResult();
+      const result = await augmentWithRepairTickLegs(hold, {
+        runRepairTickLegs,
+        log,
+        postVerdictRemainingMs: () => REPAIR_TICK_LEGS_TAIL_RESERVE_MS + 60_000,
+      });
+      expect(runRepairTickLegs).not.toHaveBeenCalled();
+      expect(result).toBe(hold);
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining("NOT measured: post-verdict budget"),
+      );
+    });
+
+    it("runs the legs under the clamped deadline when the ceiling is closer than the fixed deadline", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const log = vi.fn();
+      const result = await augmentWithRepairTickLegs(holdResult(), {
+        runRepairTickLegs,
+        log,
+        postVerdictRemainingMs: () => REPAIR_TICK_LEGS_TAIL_RESERVE_MS + 10 * 60_000,
+      });
+      expect(runRepairTickLegs).toHaveBeenCalledTimes(1);
+      expect(result.repairTickLegs).toEqual(measured);
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining(`deadline clamped to ${10 * 60_000}ms`),
+      );
+    });
+
+    it("a throwing budget read degrades to the fixed deadline instead of skipping the measurement", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const log = vi.fn();
+      const result = await augmentWithRepairTickLegs(holdResult(), {
+        runRepairTickLegs,
+        log,
+        postVerdictRemainingMs: () => {
+          throw new Error("watchdog gone");
+        },
+      });
+      expect(runRepairTickLegs).toHaveBeenCalledTimes(1);
+      expect(result.repairTickLegs).toEqual(measured);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("budget read failed"));
     });
   });
 });

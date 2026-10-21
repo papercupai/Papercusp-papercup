@@ -69,6 +69,7 @@ vi.mock('../../edit-attribution', () => ({
 }));
 // P-014: the pre-release restricted-edit hold. Default: an unrestricted owner (nothing written).
 vi.mock('../../personal-vault/git-sync-hold', () => ({ recordRestrictedEditBeforeRelease: vi.fn(async () => false) }));
+vi.mock('./file-lock-authority-wiring', () => ({ routeHookOperationFinish: vi.fn(async () => ({ ok: true })) }));
 
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
@@ -83,6 +84,8 @@ import {
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { recordEditAttribution, recordEditAttributionStrict } from '../../edit-attribution';
 import { recordRestrictedEditBeforeRelease } from '../../personal-vault/git-sync-hold';
+import { routeHookOperationFinish } from './file-lock-authority-wiring';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 const routeM = vi.mocked(routeFileLockOp);
 const releaseGranularM = vi.mocked(releaseGranular);
@@ -722,5 +725,35 @@ describe('locks:release retain (WI-10006831)', () => {
     }).success).toBe(false);
     // An operator without `retain` strips the key and must REFUSE, never release.
     expect(schema.safeParse({ native_edit_proof: proof(['a.ts']) }).success).toBe(false);
+  });
+});
+
+/**
+ * WI-6554700010019499 — the hook-operation finish (every Codex apply_patch release) wrote its
+ * edit-attribution row with workspace_id NULL because this branch never passed the caller's
+ * identity. git-sync's roster read is workspace-scoped, so those authors vanished from commit
+ * attribution and from the migration-dependency fence.
+ */
+describe('locks:release hook_operation threads caller identity (WI-6554700010019499)', () => {
+  it('passes the resolved workspace + contributor to routeHookOperationFinish', async () => {
+    vi.mocked(resolveAgentIdentity).mockReturnValueOnce(
+      { ownerId: 'me', workspaceId: 'ws-1', userId: 'user-1' } as ReturnType<typeof resolveAgentIdentity>,
+    );
+    const finish = vi.mocked(routeHookOperationFinish);
+    finish.mockClear();
+
+    await call({
+      hook_operation: {
+        id: '71d933be-413a-48b0-83af-8856650a917b', deadline: '2026-06-05T00:30:00Z',
+        paths: ['a.ts'], intent: 'PreToolUse:apply_patch', ttl_sec: 600, authority: 'auth-1',
+      },
+      native_edit_proof: { success: true, source: 'codex', tool: 'apply_patch', paths: ['a.ts'] },
+    });
+
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'me', workspaceId: 'ws-1', contributor: 'user-1' }),
+      'auth-1',
+    );
   });
 });

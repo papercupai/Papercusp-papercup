@@ -365,6 +365,30 @@ export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSet
 export function addDirArgs(agent: any, dirs?: any[]): string[];
 export function forkUnsupportedMessage(agent: any): string;
 /**
+ * The stderr notice for `--allow-subagents` / `--no-subagents` on a Codex
+ * resume or fork (D-008): the flag cannot change a session that already exists,
+ * so say so instead of implying it worked. Pure; null when there is nothing to
+ * say (another agent, or the flag unset).
+ *
+ * @param {string | null | undefined} agent
+ * @param {boolean | null | undefined} allowSubagents
+ * @param {{ fork?: boolean }} [opts]
+ * @returns {string | null}
+ */
+export function codexResumeSubagentNotice(agent: string | null | undefined, allowSubagents: boolean | null | undefined, { fork }?: {
+    fork?: boolean;
+}): string | null;
+/**
+ * The stderr notice for `--allow-subagents` / `--no-subagents` on a fresh launch
+ * of a backend psu does not gate. Claude (the deny flag) and Codex (the home +
+ * CODEX_SUBAGENT_OPT_IN_ARGS) are gated; omp has no native subagent tool. Pure.
+ *
+ * @param {string | null | undefined} agent
+ * @param {boolean | null | undefined} allowSubagents
+ * @returns {string | null}
+ */
+export function ungatedSubagentFlagNotice(agent: string | null | undefined, allowSubagents: boolean | null | undefined): string | null;
+/**
  * Is claude's NATIVE schema deferral REACHABLE on a psu launch?
  *
  * DERIVED from {@link NATIVE_TOOL_SEARCH_DENY_FLAG} rather than hand-set, so the deny and the
@@ -1566,8 +1590,10 @@ export function probeOmpOperatorMcp(operatorMcpUrl: any, timeoutMs?: number, fet
  * preserve the already-resolved proxy/discovery target without adding a
  * network request to ordinary launches. Caller-supplied writer pins bypass
  * this helper in writeOmpSessionConfigDirAsync.
+ *
+ * @param {string} [operatorUrl]
  */
-export function resolveOmpOperatorUrl(operatorUrl?: undefined, { env, probe, onRecovery, probeTimeoutMs, }?: {
+export function resolveOmpOperatorUrl(operatorUrl?: string, { env, probe, onRecovery, probeTimeoutMs, }?: {
     env?: NodeJS.ProcessEnv | undefined;
     probe?: typeof probeOmpOperatorMcp | undefined;
     onRecovery?: (({ configuredBase, recoveredBase, configuredPort }: {
@@ -1788,9 +1814,17 @@ export function applyOmpResumeAccountRoute({ session, env, accountRoute, model, 
  * so a LIVE `accounts:pin { agent: ownerId, account }` (already durable, already live-effective
  * per-request — no new mechanism) can dynamically re-route this resumed session with no respawn.
  * Omit to keep today's exact behavior (no identity header) — used by existing callers/tests.
+ *
+ * The `@param` types below are load-bearing for the same reason as gatewayAutoEnv's (WI-39692):
+ * without them the generated psu-launcher.d.mts publishes `ownerId?: undefined`, so no
+ * TypeScript caller can pass an ownerId.
+ *
+ * @param {string} account
+ * @param {string} [provider]
+ * @param {string} [ownerId]
  */
-export function gatewayPinEnv(account: any, provider?: string, ownerId?: undefined): {
-    PAPERCUSP_ACCOUNT_ID: any;
+export function gatewayPinEnv(account: string, provider?: string, ownerId?: string): {
+    PAPERCUSP_ACCOUNT_ID: string;
     ANTHROPIC_BASE_URL?: undefined;
     ANTHROPIC_AUTH_TOKEN?: undefined;
     ANTHROPIC_CUSTOM_HEADERS?: undefined;
@@ -1799,7 +1833,7 @@ export function gatewayPinEnv(account: any, provider?: string, ownerId?: undefin
     ANTHROPIC_BASE_URL: string;
     ANTHROPIC_AUTH_TOKEN: string;
     ANTHROPIC_CUSTOM_HEADERS: string;
-    PAPERCUSP_ACCOUNT_ID: any;
+    PAPERCUSP_ACCOUNT_ID: string;
     PAPERCUSP_ACCOUNT_ROUTING_MODE: string;
 };
 /**
@@ -1823,7 +1857,7 @@ export function gatewayPinEnv(account: any, provider?: string, ownerId?: undefin
  * account. So never emit '' / null / `default` on a path whose intent is "the machine's own login":
  * emit `system`. (That is why the picker's default row carries `system`.)
  */
-export function accountRoutingMode(value: any): "default" | "auto" | "pin";
+export function accountRoutingMode(value: any): "auto" | "default" | "pin";
 /**
  * Return whether raw Codex auth.json content contains a usable ChatGPT access
  * token. Pure and secret-free: this only parses the shape needed by the Codex
@@ -2717,7 +2751,7 @@ export function chooseResumeAccount(session: any, args: any): Promise<{
     id: any;
     provider: any;
     env: {
-        PAPERCUSP_ACCOUNT_ID: any;
+        PAPERCUSP_ACCOUNT_ID: string;
         ANTHROPIC_BASE_URL?: undefined;
         ANTHROPIC_AUTH_TOKEN?: undefined;
         ANTHROPIC_CUSTOM_HEADERS?: undefined;
@@ -2726,8 +2760,10 @@ export function chooseResumeAccount(session: any, args: any): Promise<{
         ANTHROPIC_BASE_URL: string;
         ANTHROPIC_AUTH_TOKEN: string;
         ANTHROPIC_CUSTOM_HEADERS: string;
-        PAPERCUSP_ACCOUNT_ID: any;
+        PAPERCUSP_ACCOUNT_ID: string;
         PAPERCUSP_ACCOUNT_ROUTING_MODE: string;
+    } | {
+        PAPERCUSP_ACCOUNT_ID: any;
     };
     notice: string;
     forward?: undefined;
@@ -3360,7 +3396,7 @@ export function applyHeadlessCodexBrowserPolicy(env: any): any;
  * executable-on-disk. Unknown/unparseable states report the specific miss —
  * the caller decides loudness. Exported for unit tests.
  */
-export function ccHookEnrollment(settingsText: any, { event, hookName, scriptExists }?: {}): {
+export function ccHookEnrollment(settingsText: any, { event, hookName, scriptExists, readFile }?: {}): {
     enrolled: boolean;
     misses: string[];
 };
@@ -3381,6 +3417,21 @@ export function ccTurnStartMemoryHookEnrollment(settingsText: any, { scriptExist
     enrolled: boolean;
     misses: string[];
 };
+/**
+ * client-native-features-adoption-2026-10-21 P-004 (D-012): the papercusp
+ * Claude hooks ship as the generated `papercusp` plugin. Detect a launch whose
+ * plugin rails are missing or disabled, or whose hooks are enrolled both inline
+ * and by the plugin (each would fire twice), BEFORE the spawn: self-repair once
+ * through the operator's install route (it rewrites the plugin, re-enrolls it
+ * and strips inline duplicates), re-verify, and print a loud banner if a
+ * problem remains. Never blocks the launch. Returns the final verdict.
+ */
+export function ensureClaudePluginRails(env: any, { settingsPath, readFile, repair, log, }?: {
+    settingsPath?: string | undefined;
+    readFile?: typeof readTextOrNull | undefined;
+    repair?: typeof repairCcHooksViaInstallRoute | undefined;
+    log?: ((line: any) => void) | undefined;
+}): import("../../../packages/operator-core/lib/claude-plugin/plugin-rails.mjs").ClaudeHookCarrierVerdict | null;
 /** Terminate a plain-launch process group, retaining a direct-child fallback.
  * `spawnInherit` uses `detached:true`, making the wrapper the leader of its own
  * process group on POSIX. The wrapper can leave a native backend descendant
@@ -4685,9 +4736,13 @@ export const NO_SUBAGENTS_DENY_FLAG: "--disallowedTools=Task,Agent,Workflow";
  * D-003/D-005). Every managed CODEX_HOME says `[features] multi_agent = false`
  * and `goals = false` and runs on a model catalog stripped of the multi_agent
  * fields, so Codex native subagents are off by default. `--allow-subagents`
- * re-enables them for THIS launch only with a top-level `-c` override (v1
- * subagent tools on the stripped catalog); the home stays deny-by-default for
- * every later resume, exactly like the Claude deny flag. Mirrors
+ * re-enables them for a NEW session with a top-level `-c` override (v1 subagent
+ * tools on the stripped catalog). Codex fixes the setting when the session is
+ * created (D-008, measured on codex-cli 0.163.0 from the rollout's
+ * turn_context.multi_agent_version): every resume and fork of that session
+ * inherits it, and a `-c` on `resume`/`fork` changes nothing in either
+ * direction. So only the fresh su/role launch emits this; resumeArgsFor does
+ * not. The home stays deny-by-default for every new session. Mirrors
  * CODEX_SUBAGENT_OPT_IN_CONFIG in orchestrator codex-gateway-config.ts; a
  * lockstep test pins the two copies together.
  */
@@ -5354,6 +5409,22 @@ declare function slowRequestNoticeOncePerLaunch({ url }: {
 }): Promise<string | null>;
 import { appendHostEvent } from "./psu-pty-host.mjs";
 import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
+/**
+ * The I/O half: verify enrollment for a claude launch; on a miss, self-repair
+ * ONCE through the operator's existing idempotent install route
+ * (POST /api/desktop/install/papercusp-files — the same merge every operator
+ * boot runs), re-verify, and print a LOUD banner if still unenrolled. Never
+ * blocks or fails the launch (worst case ~4s on the already-broken path;
+ * healthy path is one readFileSync). The session still works degraded-but-
+ * launched either way — this is best-effort self-heal + loud disclosure, not
+ * a launch gate.
+ */
+/** A file's text, or null when it cannot be read. */
+declare function readTextOrNull(path: any): string | null;
+/** Re-run the operator's idempotent hook install (the same merge every operator
+ *  boot runs). Loopback-only; short timeout; failure is left to the caller's
+ *  re-verify. */
+declare function repairCcHooksViaInstallRoute(): void;
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 import { resolveLinuxCodexStartupPid } from "./psu-pty-host.mjs";
 declare function defaultListProcPids(): number[];

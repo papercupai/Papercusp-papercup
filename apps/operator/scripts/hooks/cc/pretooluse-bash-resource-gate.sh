@@ -140,7 +140,7 @@ else:
 '
 
 python3 -c "$GATE_BOOTSTRAP" "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
-import hashlib, json, os, re, shlex, sys, tempfile, time
+import hashlib, json, os, re, shlex, subprocess, sys, tempfile, time
 
 # ── urllib is imported LAZILY: it is ~34ms of a ~140ms invocation, on a path most
 # calls never reach (WI-38077).
@@ -4588,12 +4588,13 @@ def _canonical_tree_root():
 # obvious moves, so an agent mid-verification had nowhere legal to land.
 #
 # This guard exists because a raw shell write into the tree skips the file-lock
-# hook and can be swept into a commit by git-sync. NEITHER hazard can reach
-# `<tree>/.papercusp/scratch/`: it is gitignored (`.gitignore` carries
-# `**/.papercusp/scratch/`), so git-sync can never commit anything under it, and
-# a throwaway probe no peer edits has no lock worth contending for.
+# hook and can be swept into a commit by git-sync.
+# Both hazards are avoided only when Git ignores the exact target in the
+# repository that owns it. A parent repository's rule does not cross a nested
+# Git or submodule boundary, so the directory name alone cannot grant access.
 #
-# Exempting it is what makes this guard's OWN remediation followable. The old advice
+# Exempting an exact target after its owning repository confirms it is ignored
+# is what makes this guard's OWN remediation followable. The old advice
 # was "write it outside the tree (~/.papercusp/scratch or /tmp)" — but the single
 # most common scratch case on this repo, a tsx/node probe that IMPORTS repo
 # modules, cannot run from either: module resolution walks up from the FILE's
@@ -4625,19 +4626,75 @@ def _sanctioned_scratch_roots(canon):
     return tuple(roots)
 
 
-def _is_sanctioned_scratch(resolved, canon):
-    """True only for a path STRICTLY UNDER <tree>/.papercusp/scratch/.
-
-    Strictly-under is deliberate: the directory itself is not a write target,
-    and requiring the separator stops a sibling like `.papercusp/scratchpad`
-    from inheriting the exemption by prefix.
-    """
+def _is_under_sanctioned_scratch(resolved, canon):
+    """True only for a path strictly under the tree's scratch directory."""
     if not resolved:
         return False
     for _root in _sanctioned_scratch_roots(canon):
         if resolved.startswith(_root + os.sep):
             return True
     return False
+
+
+_SCRATCH_IGNORE_CACHE = {}
+
+
+def _scratch_ignore_status(resolved, canon):
+    """Return ignored, not-ignored, unknown, or outside for the exact target."""
+    if not _is_under_sanctioned_scratch(resolved, canon):
+        return 'outside'
+    _key = (resolved, canon)
+    if _key in _SCRATCH_IGNORE_CACHE:
+        return _SCRATCH_IGNORE_CACHE[_key]
+
+    # Start from the nearest existing parent, then find its nearest Git root.
+    # This crosses neither a submodule boundary nor a Git worktree boundary.
+    _parent = os.path.dirname(resolved)
+    while _parent and not os.path.isdir(_parent):
+        _next = os.path.dirname(_parent)
+        if _next == _parent:
+            _parent = ''
+            break
+        _parent = _next
+    _canonical = os.path.realpath(canon)
+    _repo_root = None
+    while _parent:
+        if os.path.lexists(os.path.join(_parent, '.git')):
+            _repo_root = _parent
+            break
+        if _parent == _canonical:
+            break
+        _next = os.path.dirname(_parent)
+        if _next == _parent:
+            break
+        _parent = _next
+
+    _status = 'unknown'
+    if _repo_root:
+        _relative = os.path.relpath(resolved, _repo_root)
+        try:
+            _check = subprocess.run(
+                ['git', 'check-ignore', '--quiet', '--', _relative],
+                cwd=_repo_root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1,
+                check=False,
+            )
+            if _check.returncode == 0:
+                _status = 'ignored'
+            elif _check.returncode == 1:
+                _status = 'not-ignored'
+        except Exception:
+            _status = 'unknown'
+    _SCRATCH_IGNORE_CACHE[_key] = _status
+    return _status
+
+
+def _is_sanctioned_scratch(resolved, canon):
+    """Allow only when Git ignores this exact target in its owning repository."""
+    return _scratch_ignore_status(resolved, canon) == 'ignored'
 
 
 # The scratch remedy BOTH write-guards hand back. Kept as ONE constant so the
@@ -4651,10 +4708,38 @@ _SCRATCH_REMEDY = (
     'overwrite it. But if it must IMPORT repo modules (the '
     'usual tsx/node probe), neither of those can resolve them — there is no repo '
     '`node_modules` above either — so either run it through `code:run` (executes '
-    'in-tree with the tool namespace available), or write it under '
-    '`.papercusp/scratch/` INSIDE the tree: that path is gitignored, is exempt '
-    'from this guard, and resolves workspace imports normally. '
+    'in-tree with the tool namespace available), or use '
+    '`.papercusp/scratch/` INSIDE the tree only when Git ignores the exact target '
+    'in its own repository (`git check-ignore -q -- <exact-target>`). A parent '
+    'repository rule does not apply inside an app submodule; add '
+    '`**/.papercusp/scratch/` to that repository `.gitignore` when needed. '
 )
+
+
+_SCRATCH_NOT_IGNORED_REMEDY = (
+    'This target is under `.papercusp/scratch/`, but the exact target is not '
+    'ignored in the Git repository that owns it, so this path is not exempt. '
+    'Add `**/.papercusp/scratch/` to that repository `.gitignore` (each app '
+    'submodule needs its own rule), then verify with '
+    '`git check-ignore -v -- <exact-target>` before retrying. '
+)
+_SCRATCH_UNVERIFIED_REMEDY = (
+    'This target is under `.papercusp/scratch/`, but the guard could not verify '
+    'the exact target with `git check-ignore`; it is not exempt. Verify the '
+    'target in its owning repository and add `**/.papercusp/scratch/` to that '
+    'repository `.gitignore` if needed. '
+)
+
+
+def _scratch_remedy_for_target(target, canon, cwd=None):
+    if cwd and target and not os.path.isabs(target):
+        target = _resolve_write_target(target, cwd) or target
+    _status = _scratch_ignore_status(target, canon)
+    if _status == 'not-ignored':
+        return _SCRATCH_NOT_IGNORED_REMEDY
+    if _status == 'unknown':
+        return _SCRATCH_UNVERIFIED_REMEDY
+    return _SCRATCH_REMEDY
 
 
 # EI-18760311552821358: a `NAME:PATH` target is a REMOTE/CONTAINER destination
@@ -5371,7 +5456,7 @@ def _shell_write_guard():
                 'leading heredoc write) — re-issue the whole command after fixing the '
                 'target, do not assume an earlier part of it already ran.'
                 % (_construct, _raw, _relative_target_cd_note(_raw, _at, _clean, _has_paren),
-                   _SCRATCH_REMEDY)
+                   _scratch_remedy_for_target(_resolved, _canon))
             )
         # EI-19966359020779598 — `_resolve_write_target` bailed on `_raw`
         # because it carries an expansion marker ($/`/~/*/?/[), the same
@@ -6384,7 +6469,7 @@ def _interpreter_write_guard():
                     _interp,
                     _hit,
                     _relative_target_cd_note(_hit, _interp_m.start(), _clean, _has_paren),
-                    _SCRATCH_REMEDY,
+                    _scratch_remedy_for_target(_hit, _canon, _eff_cwd),
                 )
             )
         elif _has_computed_write_path(_body):

@@ -39,6 +39,23 @@ describe('loop-turn-start-stamp', () => {
     expect(loopTurnStartRecord({ owner: 'su-1', prompt: 'hello', workspaceId: 'ws-1' })).toBeNull();
   });
 
+  it('keeps the typed routine fire identity in the existing activity detail', () => {
+    expect(
+      loopTurnStartRecord({
+        owner: 'su-1',
+        prompt: LOOP_PROMPT,
+        workspaceId: 'ws-1',
+        loopFire: { routineId: 'routine-10', wakeCount: 10 },
+      }),
+    ).toMatchObject({
+      detail: {
+        origin: 'loop-fire',
+        nonce: '8ed10949adab325d',
+        loopFire: { routineId: 'routine-10', wakeCount: 10 },
+      },
+    });
+  });
+
   it('appends one row for a loop-fire prompt and none otherwise', async () => {
     const append = vi.fn(async (_record: ActivityRecord) => ({ id: '1' as string | null }));
     expect(await recordLoopTurnStart({ owner: 'su-1', prompt: LOOP_PROMPT, workspaceId: 'ws-1' }, { append })).toBe(true);

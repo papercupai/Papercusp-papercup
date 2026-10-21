@@ -59,6 +59,16 @@ describe('hook operation authority store adapter', () => {
     }));
   });
 
+  // WI-6554700010019499: git-sync reads the edit ledger scoped by workspace_id, so a hook-
+  // operation finish that drops the caller's workspace makes the author invisible (Codex
+  // apply_patch edits all took this path: 242 NULL-workspace rows in 24h).
+  it('stamps the caller workspace + contributor onto the ledger row', async () => {
+    await finishHookOperationAtAuthority({ ...params, workspaceId: 'ws-1', contributor: 'user-1' });
+    expect(recordEditAttributionStrict).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'A', dispatchCallId: operation.id, workspaceId: 'ws-1', contributor: 'user-1',
+    }));
+  });
+
   it('reuses the stable ledger key on duplicate completion', async () => {
     await finishHookOperationAtAuthority(params);
     await finishHookOperationAtAuthority(params);

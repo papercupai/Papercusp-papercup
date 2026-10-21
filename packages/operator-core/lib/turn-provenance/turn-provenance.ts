@@ -270,6 +270,11 @@ export interface LedgerRow {
   origin: string;
   sha256: string;
   ts: number;
+  /** Typed identity of the loop fire that enrolled this prompt, when the
+   *  delivery came from a loop marker. Kept on the existing provenance row so
+   *  completion readers can reject a delayed earlier fire without parsing the
+   *  rendered wake prose. */
+  loopFire?: { routineId: string; wakeCount: number };
   /** Optional PER-ROW liveness override (ms), used instead of the global
    *  `ledgerTtlMs()` when checking whether this row is still live. Needed
    *  for injectors whose delivery delay can exceed the 10-minute default
@@ -299,9 +304,18 @@ function parseRows(raw: string): LedgerRow[] {
     if (!t) continue;
     try {
       const r = JSON.parse(t) as LedgerRow;
-      if (r && typeof r.nonce === 'string' && typeof r.sha256 === 'string' && Number.isFinite(r.ts)) {
-        out.push(r);
+      if (!r || typeof r.nonce !== 'string' || typeof r.sha256 !== 'string' || !Number.isFinite(r.ts)) continue;
+      if (
+        r.loopFire !== undefined &&
+        (!r.loopFire ||
+          typeof r.loopFire.routineId !== 'string' ||
+          r.loopFire.routineId.length === 0 ||
+          !Number.isInteger(r.loopFire.wakeCount) ||
+          r.loopFire.wakeCount <= 0)
+      ) {
+        delete r.loopFire;
       }
+      out.push(r);
     } catch {
       /* torn/partial line — skip it, never the file */
     }
@@ -542,6 +556,7 @@ export async function tagTurnForInjection(args: {
   sid: string;
   origin: TurnOrigin | string;
   text: string;
+  loopFire?: { routineId: string; wakeCount: number };
   dir?: string;
   nowMs?: number;
   ttlMs?: number;
@@ -551,7 +566,14 @@ export async function tagTurnForInjection(args: {
   const envelope = formatEnvelope(origin, nonce);
   const nowMs = args.nowMs ?? Date.now();
   const ledgerWritten = await appendLedgerRow(
-    { sid: args.sid, nonce, origin, sha256: payloadSha256(args.text), ts: nowMs },
+    {
+      sid: args.sid,
+      nonce,
+      origin,
+      sha256: payloadSha256(args.text),
+      ts: nowMs,
+      ...(args.loopFire ? { loopFire: args.loopFire } : {}),
+    },
     { dir: args.dir, nowMs, ttlMs: args.ttlMs },
   );
   return { taggedText: `${envelope}\n${args.text}`, envelope, nonce, origin, ledgerWritten };

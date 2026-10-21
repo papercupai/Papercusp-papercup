@@ -57,12 +57,24 @@ describe('gateway request outcome store', () => {
   it('retains the exact provider response and its serving account over a stale routing observation', () => {
     const value = timeline({ requestId: 1, startedAt: BASE, outcome: 'ok', finalStatus: 200 });
     value.cache.servingAccountId = 'prior-attempt-account';
+    value.attemptAccountIds = ['attempt-account-a', 'attempt-account-b'];
     value.providerIdentity = { responseId: 'resp-exact', model: 'gpt-6', effort: null, accountId: 'actual-account' };
     expect(gatewayRequestOutcomeRecord('process', value, workspaceId)).toMatchObject({
-      providerResponseId: 'resp-exact', selectedAccountId: 'actual-account',
+      providerResponseId: 'resp-exact',
+      selectedAccountId: 'actual-account',
+      attemptAccountIds: ['attempt-account-a', 'attempt-account-b'],
     });
     value.providerIdentity = null;
-    expect(gatewayRequestOutcomeRecord('process', value, workspaceId).providerResponseId).toBeNull();
+    expect(gatewayRequestOutcomeRecord('process', value, workspaceId)).toMatchObject({
+      providerResponseId: null,
+      selectedAccountId: 'attempt-account-b',
+      attemptAccountIds: ['attempt-account-a', 'attempt-account-b'],
+    });
+    value.attemptAccountIds = ['attempt-account-a', null];
+    expect(gatewayRequestOutcomeRecord('process', value, workspaceId)).toMatchObject({
+      selectedAccountId: null,
+      attemptAccountIds: ['attempt-account-a', null],
+    });
   });
 
   it('captures each completed telemetry span without waiting for durable storage', () => {

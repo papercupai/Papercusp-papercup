@@ -415,3 +415,131 @@ describe('WI-38349 — an unresolvable config dir is UNKNOWN, not de-enrollment'
     }
   });
 });
+
+/**
+ * client-native-features-adoption-2026-10-21 P-004 (D-012): the papercusp hooks ship in a
+ * Claude plugin the settings enable, so the global `hooks` block no longer lists them. A
+ * session rewrite that drops `enabledPlugins` / `extraKnownMarketplaces` kills every
+ * plugin-carried hook while the inline diff sees nothing missing.
+ */
+describe('P-004 — a session that lost the papercusp plugin enrollment', () => {
+  const MARKETPLACE = '/home/u/.papercusp/claude-plugins';
+  const PLUGIN_HOOKS = {
+    PreToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: '/h/pretooluse-locks-acquire.sh' }] }],
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: '/h/userpromptsubmit-memory.sh' }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: '/h/lifecycle-report.sh' }] }],
+  };
+  const FOREIGN_STOP = [{ hooks: [{ type: 'command', command: '/foreign/stop-check' }] }];
+  const enrollment = (root = MARKETPLACE) => ({
+    enabledPlugins: { 'papercusp@papercusp-local': true },
+    extraKnownMarketplaces: { 'papercusp-local': { source: { source: 'directory', path: root } } },
+  });
+  const PLUGIN_GLOBAL = {
+    theme: 'dark',
+    ...enrollment(),
+    hooks: { Stop: FOREIGN_STOP },
+  };
+  const HEALTHY_PLUGIN_SESSION = {
+    model: 'opus[1m]',
+    permissions: { defaultMode: 'bypassPermissions' },
+    ...enrollment(),
+    hooks: { Stop: FOREIGN_STOP, SessionStart: [{ hooks: [{ type: 'command', command: 'recover' }] }] },
+  };
+  const DISENROLLED_SESSION = {
+    model: 'opus[1m]',
+    permissions: { defaultMode: 'bypassPermissions' },
+    hooks: { Stop: FOREIGN_STOP },
+  };
+  const pluginState = (over: Partial<SessionConfigState> = {}) =>
+    state({
+      settings: HEALTHY_PLUGIN_SESSION,
+      claudeJson: { mcpServers: { [PSU_MCP_SERVER]: GLOBAL_CLAUDE_JSON.mcpServers[PSU_MCP_SERVER] } },
+      globalSettings: PLUGIN_GLOBAL,
+      globalPluginHooks: PLUGIN_HOOKS,
+      ...over,
+    });
+
+  it('passes a session whose plugin enrollment is intact', () => {
+    const v = checkSessionConfigIntegrity(pluginState());
+    expect(v).toMatchObject({ ok: true, pluginDisenrolled: false, missingHookEvents: [] });
+  });
+
+  it('reports the disenrollment AND the plugin-carried events it kills, cause line first', () => {
+    const v = checkSessionConfigIntegrity(pluginState({ settings: DISENROLLED_SESSION }));
+    expect(v.ok).toBe(false);
+    expect(v.pluginDisenrolled).toBe(true);
+    // Stop survives inline (a foreign hook); the plugin's three events are gone.
+    expect(v.missingHookEvents).toEqual(['PreToolUse', 'SessionStart', 'UserPromptSubmit']);
+    expect(v.consequences[0]).toMatch(/PAPERCUSP PLUGIN DISENROLLED/);
+    expect(v.consequences[1]).toMatch(/NO EDIT LOCKS/);
+  });
+
+  it('an explicitly disabled plugin (enabledPlugins false) counts as disenrolled', () => {
+    const settings = { ...HEALTHY_PLUGIN_SESSION, enabledPlugins: { 'papercusp@papercusp-local': false } };
+    expect(checkSessionConfigIntegrity(pluginState({ settings })).pluginDisenrolled).toBe(true);
+  });
+
+  it('still reports the disenrollment when the plugin hooks.json could not be loaded', () => {
+    const v = checkSessionConfigIntegrity(pluginState({ settings: DISENROLLED_SESSION, globalPluginHooks: null }));
+    expect(v.ok).toBe(false);
+    expect(v.pluginDisenrolled).toBe(true);
+  });
+
+  it('never invents an enrollment when the GLOBAL settings do not enable the plugin', () => {
+    const v = checkSessionConfigIntegrity(
+      pluginState({ settings: DISENROLLED_SESSION, globalSettings: { hooks: { Stop: FOREIGN_STOP } } }),
+    );
+    expect(v.pluginDisenrolled).toBe(false);
+    expect(v.ok).toBe(true);
+  });
+
+  it('repairs by re-enrolling the plugin — never by copying its hooks inline (that fires them twice)', () => {
+    const repair = computeSessionConfigRepair(pluginState({ settings: DISENROLLED_SESSION }));
+    expect(repair.settings).not.toBeNull();
+    const next = repair.settings as Record<string, unknown>;
+    expect(next).toMatchObject({ model: 'opus[1m]', ...enrollment() });
+    expect(JSON.stringify(next.hooks)).not.toContain('pretooluse-locks-acquire.sh');
+    expect(next.hooks).toEqual(DISENROLLED_SESSION.hooks);
+    expect(repair.fixed).toEqual(
+      expect.arrayContaining(['enabledPlugins.papercusp@papercusp-local', 'hooks.PreToolUse', 'hooks.SessionStart']),
+    );
+    expect(checkSessionConfigIntegrity(pluginState({ settings: next })).ok).toBe(true);
+  });
+
+  it('on disk: loads the plugin hooks from the global marketplace, repairs, and the re-read passes', () => {
+    const SID = 'su-test-p004-0000-0000-0000-000000000000';
+    const home = mkdtempSync(join(tmpdir(), 'p004-integrity-'));
+    try {
+      const root = join(home, '.papercusp', 'claude-plugins');
+      mkdirSync(join(root, 'plugins', 'papercusp', 'hooks'), { recursive: true });
+      writeFileSync(join(root, 'plugins', 'papercusp', 'hooks', 'hooks.json'), JSON.stringify({ hooks: PLUGIN_HOOKS }));
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(
+        join(home, '.claude', 'settings.json'),
+        JSON.stringify({ ...PLUGIN_GLOBAL, ...enrollment(root) }),
+      );
+      writeFileSync(join(home, '.claude.json'), JSON.stringify(GLOBAL_CLAUDE_JSON));
+      const dir = join(home, '.papercusp', 'session-claude', SID);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify(DISENROLLED_SESSION));
+      writeFileSync(join(dir, '.claude.json'), JSON.stringify({ mcpServers: GLOBAL_CLAUDE_JSON.mcpServers }));
+
+      const loaded = loadSessionConfigState(SID, home);
+      expect(loaded.globalPluginHooks).toEqual(PLUGIN_HOOKS);
+      expect(checkSessionConfigIntegrity(loaded).missingHookEvents).toEqual([
+        'PreToolUse',
+        'SessionStart',
+        'UserPromptSubmit',
+      ]);
+
+      const res = repairSessionConfigOnDisk(SID, home, 'claude');
+      expect(res).toMatchObject({ repaired: true, wrote: ['settings.json'], stillBroken: [] });
+      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+      expect(written.enabledPlugins['papercusp@papercusp-local']).toBe(true);
+      expect(written.extraKnownMarketplaces['papercusp-local'].source.path).toBe(root);
+      expect(checkSessionConfigIntegrity(loadSessionConfigState(SID, home)).ok).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});

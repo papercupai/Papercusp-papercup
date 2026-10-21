@@ -528,6 +528,22 @@ describe('ledger write/read/GC', () => {
     expect(readLedgerRows(SID, { dir, nowMs: NOW + 1000, ttlMs: TTL })).toEqual([r]);
   });
 
+  it('preserves a typed loop-fire identity on the existing provenance row', async () => {
+    const identity = { routineId: 'routine-10', wakeCount: 10 };
+    await appendLedgerRow(row({ origin: 'loop-fire', loopFire: identity }), { dir, nowMs: NOW, ttlMs: TTL });
+    expect(readLedgerRows(SID, { dir, nowMs: NOW + 1000, ttlMs: TTL })).toEqual([
+      expect.objectContaining({ origin: 'loop-fire', loopFire: identity }),
+    ]);
+  });
+
+  it('drops malformed typed loop-fire identity instead of making it authoritative', async () => {
+    await appendLedgerRow(
+      row({ origin: 'loop-fire', loopFire: { routineId: '', wakeCount: 0 } }),
+      { dir, nowMs: NOW, ttlMs: TTL },
+    );
+    expect(readLedgerRows(SID, { dir, nowMs: NOW + 1000, ttlMs: TTL })[0]?.loopFire).toBeUndefined();
+  });
+
   it('expired rows are dropped on read; includeExpired keeps them', async () => {
     await appendLedgerRow(row({ nonce: 'aaaaaaaaaaaaaaaa', ts: NOW - TTL - 1000 }), { dir, nowMs: NOW, ttlMs: TTL });
     await appendLedgerRow(row({ nonce: 'bbbbbbbbbbbbbbbb', ts: NOW }), { dir, nowMs: NOW, ttlMs: TTL });
@@ -669,6 +685,20 @@ describe('tagTurnForInjection (the injector one-call API)', () => {
     const res = classify(tagged.taggedText, rows, { nowMs: NOW + 1000 });
     expect(res.verdict).toBe('verified-agent');
     expect(res.matchedBy).toBe('nonce+hash');
+  });
+
+  it('enrolls loop-fire identity alongside the nonce', async () => {
+    const tagged = await tagTurnForInjection({
+      sid: SID,
+      origin: 'loop-fire',
+      text: 'loop wake 10',
+      loopFire: { routineId: 'routine-10', wakeCount: 10 },
+      dir,
+      nowMs: NOW,
+    });
+    expect(readLedgerRows(SID, { dir, nowMs: NOW + 1, includeExpired: true })).toEqual([
+      expect.objectContaining({ nonce: tagged.nonce, loopFire: { routineId: 'routine-10', wakeCount: 10 } }),
+    ]);
   });
 
   it('fail-soft: unwritable ledger still returns deliverable tagged text', async () => {

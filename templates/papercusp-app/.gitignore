@@ -10,6 +10,8 @@ coverage-*/
 .env.*
 *.log
 logs/
+# Shell probes belong in scratch, which must stay out of git-sync commits.
+**/.papercusp/scratch/
 .DS_Store
 # The desktop sidecar build copies a ~124MB node runtime here; never commit it.
 # Left untracked it also marks every test run in this repo worktreeDirty.

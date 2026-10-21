@@ -74,6 +74,7 @@ import {
 import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
+  getAdvSessionInWorkspace,
   latestAdvSessionByCoordOwner,
   workspaceForCoordOwner,
   claimAdvSessionResume,
@@ -2596,7 +2597,8 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
 // Export the existing boundary so callers' regression suites can carry their
 // actual wake payload through enrollment instead of reconstructing an envelope.
 export async function tagWakeText(d: Pick<DeliveryWork, 'payload' | 'subscriberId'>, text: string, tag: WakeTurnTagger): Promise<EnrolledWakeText> {
-  const origin = readLoopDeliveryMarker(d.payload)
+  const loopMarker = readLoopDeliveryMarker(d.payload);
+  const origin = loopMarker
     ? 'loop-fire'
     : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
       // owner INBOX reply — both are authored by the authenticated human through an
@@ -2615,7 +2617,15 @@ export async function tagWakeText(d: Pick<DeliveryWork, 'payload' | 'subscriberI
       : 'wake-pump';
   const provenanceIssuedAtMs = Date.now();
   try {
-    const tagged = await tag({ sid: d.subscriberId, origin, text, nowMs: provenanceIssuedAtMs });
+    const tagged = await tag({
+      sid: d.subscriberId,
+      origin,
+      text,
+      nowMs: provenanceIssuedAtMs,
+      ...(loopMarker?.routineId && Number.isInteger(loopMarker.wakeCount) && (loopMarker.wakeCount ?? 0) > 0
+        ? { loopFire: { routineId: loopMarker.routineId, wakeCount: loopMarker.wakeCount! } }
+        : {}),
+    });
     return enrolledWakeText(tagged.taggedText, provenanceIssuedAtMs, origin);
   } catch {
     // The wake itself is fail-soft, but returning it without an envelope turns a
@@ -3108,6 +3118,8 @@ export interface ExecuteWakeDeps {
   carryRefBlockFn?: typeof defaultCarryRefBlock;
   /** Injected for tests; default real implementations below. */
   getSession?: typeof getAdvSession;
+  /** Re-read an elected owner session in its persisted tenant, not the pump's ambient workspace. */
+  getSessionInWorkspace?: typeof getAdvSessionInWorkspace;
   /** Delivery-time owner-session election used when a captured session is no longer live. */
   getLatestSessionForOwner?: typeof latestAdvSessionByCoordOwner;
   findPty?: typeof findPtyByPid;
@@ -4139,6 +4151,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const lockGrantOwnershipLookupTimeoutMs =
     deps.lockGrantOwnershipLookupTimeoutMs ?? LOCK_GRANT_OWNERSHIP_LOOKUP_TIMEOUT_MS;
   const getCurrentWorkItem = deps.getCurrentWorkItem ?? getWorkItem;
+  const getSessionInWorkspace = deps.getSessionInWorkspace ?? getAdvSessionInWorkspace;
   const fleetClaimReleasedLookupTimeoutMs =
     deps.fleetClaimReleasedLookupTimeoutMs ?? FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS;
   const claimableLookupTimeoutMs = deps.claimableLookupTimeoutMs ?? CLAIMABLE_LOOKUP_TIMEOUT_MS;
@@ -4799,14 +4812,23 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         };
       }
       if (latest.id === handle.advSessionId) {
-        if (!fresh || fresh.id !== latest.id || fresh.coordOwnerId !== d.subscriberId) {
+        // The pump may be running in DEFAULT_COORD_WORKSPACE while the globally
+        // elected row belongs to the owner's tenant. `getSession(id)` filters by
+        // activeWorkspaceId(), so a valid row can look missing here. Re-read using
+        // the workspace carried by the owner-scoped election before failing closed.
+        const current =
+          fresh && fresh.id === latest.id && fresh.coordOwnerId === d.subscriberId
+            ? fresh
+            : await getSessionInWorkspace(latest.id, latest.workspaceId).catch(() => null);
+        if (!current || current.id !== latest.id || current.coordOwnerId !== d.subscriberId) {
           return {
             kind: 'park',
             reason: `current owner adv-session #${latest.id} could not be re-read; parked before resume`,
           };
         }
+        fresh = current;
       } else {
-        const current = await getSession(latest.id).catch(() => null);
+        const current = await getSessionInWorkspace(latest.id, latest.workspaceId).catch(() => null);
         if (!current || current.id !== latest.id || current.coordOwnerId !== d.subscriberId) {
           return {
             kind: 'park',

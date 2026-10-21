@@ -787,6 +787,52 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(readNativeCache).toHaveBeenCalledTimes(2);
   });
 
+  // client-native-features-adoption-2026-10-21 P-001 (D-005 route 1): the account's
+  // native catalog switches Codex subagent tools on through these two fields,
+  // whatever the session's [features] say, so the gateway never serves them.
+  it('codex /v1/models strips multi_agent fields from every served model', async () => {
+    const readNativeCache = vi.fn(async () => ({
+      models: [
+        {
+          slug: 'gpt-6-astra',
+          display_name: 'Native Astra',
+          multi_agent_version: 'v2',
+          multi_agent_reasoning_effort: 'low',
+        },
+        { slug: 'gpt-native-only', display_name: 'Native only', multi_agent_version: 'v1' },
+      ],
+    }));
+    await bootCodex(
+      (_req, res) => {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'should not reach upstream' }));
+      },
+      [codexAcct('cdx-1')],
+      {
+        codexCliAccounts: () => [{ accountId: 'chatgpt-a', home: '/native/chatgpt-a' }],
+        codexCliPool: createFailoverPool([{ accountId: 'chatgpt-a', token: async () => '' }]),
+        codexModelsCacheRead: readNativeCache,
+      },
+    );
+
+    for (const account of ['chatgpt-a', 'cdx-1']) {
+      const res = await ask('/v1/models', { method: 'GET', headers: { [ACCOUNT_HEADER]: account } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { models: Array<Record<string, unknown>> };
+      expect(body.models.length).toBeGreaterThan(0);
+      for (const model of body.models) {
+        expect(model).not.toHaveProperty('multi_agent_version');
+        expect(model).not.toHaveProperty('multi_agent_reasoning_effort');
+      }
+      if (account === 'chatgpt-a') {
+        // Stripping removes only the two fields; native metadata survives.
+        expect(body.models.find((model) => model.slug === 'gpt-6-astra')).toMatchObject({ display_name: 'Native Astra' });
+        expect(body.models.find((model) => model.slug === 'gpt-native-only')).toMatchObject({ display_name: 'Native only' });
+      }
+    }
+    expect(readNativeCache).toHaveBeenCalled();
+  });
+
   it('fetches the selected subscription account live catalog, overrides a stale cache, and coalesces concurrent callers', async () => {
     const home = await makeCodexHome('upstream-account');
     // Test placeholder: the word "placeholder" keeps git-sync's secret-assignment rule from quarantining this file.

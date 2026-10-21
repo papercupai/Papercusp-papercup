@@ -33,6 +33,12 @@ import { standardToolDirs } from '../tool-path';
 // WI-37920 / P-006: the ONE list of where a backend CLI can live, shared with
 // psu's own detection and the operator's spawn-PATH injection.
 import { BACKEND_AGENTS, backendSearchDirs, resolveOnPath } from '../backend-bin-resolve.mjs';
+import {
+  applyPapercuspClaudePluginCarrier,
+  papercuspClaudePluginRoot,
+  type ClaudeHookMap,
+  type PapercuspClaudePluginCarrierResult,
+} from '../claude-plugin/papercusp-claude-plugin';
 export { resolveBundledNode };
 import {
   readInstallStamp,
@@ -1345,6 +1351,10 @@ export const CC_HOOK_FILES = [
   // POST plumbing imported by posttooluse-failure-record.mjs. Imported, never executed,
   // so 0644. Omit it and that hook fails to load: no failed tool call is recorded.
   'pc_activity_report.mjs',
+  // The dialog-answer provenance helper ask-gate-mirror.sh runs as `node "$(dirname "$0")/…"`
+  // (read by node, never exec'd, so 0644). Omit it and the installed ask-gate-mirror.sh
+  // silently falls back to no dialog provenance — the orphaned-cc-hooks sweep caught it.
+  'dialog-answer-provenance.mjs',
 ] as const;
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x.
@@ -1358,6 +1368,7 @@ export const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
   'pc_nested_cli.sh',
   'pc_nested_cli.mjs',
   'pc_activity_report.mjs',
+  'dialog-answer-provenance.mjs',
 ]);
 
 /** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */
@@ -3584,7 +3595,7 @@ export async function checkHookSyntax(
 export async function installClaudeHooks(
   home: string,
   srcDir: string,
-): Promise<{ installed: string[]; settingsMerged: boolean }> {
+): Promise<{ installed: string[]; settingsMerged: boolean; plugin?: PapercuspClaudePluginCarrierResult }> {
   const destDir = path.join(home, '.papercusp', 'hooks', 'cc');
   await fs.mkdir(destDir, { recursive: true, mode: 0o755 });
 
@@ -3776,11 +3787,34 @@ export async function installClaudeHooks(
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     cfg = {};
   }
-  mergeClaudeHookSettings(cfg, destDir, { present: new Set(installed), isClaudeSettings: true });
+  const present = new Set(installed);
+  mergeClaudeHookSettings(cfg, destDir, { present, isClaudeSettings: true });
+  // client-native-features-adoption-2026-10-21 P-004 (D-012): the generated `papercusp` Claude
+  // plugin carries these hooks. Write it, enroll it, and strip the inline copies so no hook fires
+  // twice. If the plugin cannot be written, the inline enrollment above stays as the carrier.
+  const plugin = await applyPapercuspClaudePluginCarrier({
+    cfg,
+    hooks: papercuspClaudePluginHooks(destDir, present),
+    root: papercuspClaudePluginRoot(home),
+  });
+  if (!plugin.ok) {
+    console.warn(
+      `[desktop-install] papercusp Claude plugin not installed (${plugin.error}); hooks stay inline in settings.json`,
+    );
+  }
   await fs.mkdir(path.dirname(settingsPath), { recursive: true });
   await fs.writeFile(settingsPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
   await fs.chmod(settingsPath, 0o600);
-  return { installed, settingsMerged: true };
+  return { installed, settingsMerged: true, plugin };
+}
+
+/**
+ * The hooks the `papercusp` Claude plugin carries: exactly what `mergeClaudeHookSettings` enrolls
+ * for these installed scripts. This is the single derivation the installer, the bash-installer CLI
+ * and the drift test all use (P-004, D-012), so the plugin cannot diverge from the enrollment source.
+ */
+export function papercuspClaudePluginHooks(destDir: string, present?: ReadonlySet<string>): ClaudeHookMap {
+  return mergeClaudeHookSettings({}, destDir, { present }).hooks as ClaudeHookMap;
 }
 
 /**

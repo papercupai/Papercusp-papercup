@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
-import { hostThroughPty, metaPathFor, socketPathFor, nativeLatestExecution } from '../scripts/psu-pty-host.mjs';
+import { hostThroughPty, metaPathFor, socketPathFor, nativeLatestExecution, eventLogPathForOwner } from '../scripts/psu-pty-host.mjs';
 import { injectIntoHostWithConfirmation, type PsuPtyHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 import {
   fallbackObservationCounters, flushFallbackObservations, observeFallback,
@@ -52,7 +52,7 @@ async function until(check: () => boolean, timeoutMs = 10_000) {
 }
 
 /** Real PTY and socket, sanitized native event shapes, no model or live DB. */
-async function fixture(agent: string, autoStart: boolean, failInitially = false) {
+async function fixture(agent: string, autoStart: boolean, failInitially: boolean | 'capacity' = false) {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-recovery-'));
   const config = join(root, '.papercusp', `session-${agent}`);
   const nativeDir = agent === 'omp' ? join(config, 'agent', 'sessions')
@@ -63,6 +63,7 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
   if (agent === 'codex') writeFileSync(join(config, 'config.toml'), '');
   const ownerId = `rx-${process.pid}-${agent[0]}-${++ownerCounter}`;
   const sock = socketPathFor(ownerId);
+  const normalizedLogPath = join(root, 'headless.log');
   expect(Buffer.byteLength(sock), 'fixture Unix socket path must fit the platform bound').toBeLessThan(104);
   let output = '';
   const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
@@ -75,8 +76,10 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
       timestamp: new Date().toISOString()})+'\\n'); }
     function start() {
       if (!pending) return; pending = false;
-      if (${failInitially} && count === 1) {
-        append(agent === 'codex' ? {type:'event_msg',payload:{type:'turn_aborted'}} :
+      if (${Boolean(failInitially)} && count === 1) {
+        append(agent === 'codex' ? {type:'event_msg',payload: ${failInitially === 'capacity'
+          ? JSON.stringify({type:'task_complete',turn_id:'capacity-turn',error:{codex_error_info:'server_overloaded',message:'Selected model is at capacity.'}})
+          : "{type:'turn_aborted'}"}} :
           agent === 'claude' ? {type:'system',subtype:'api_error'} :
           {type:'message',message:{role:'assistant',stopReason:'aborted',content:[]}});
         process.stdout.write('NATIVE_FAILED\\n'); return;
@@ -117,7 +120,7 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
   expect(nativeLatestExecution({ agent, env, nativeSessionId: nativeId }).phase,
     `${agent} fixture exact native binding preflight`).toBe('settled');
   const done = hostThroughPty({ command: process.execPath, args: ['-e', code], cwd: root,
-    ownerId, env, io: { stdin, stdout }, bridgeTty: false, activityPersistMs: 25,
+    ownerId, env, io: { stdin, stdout }, bridgeTty: false, activityPersistMs: 25, normalizedLogPath,
     resolveRespawnNativeId: nativeId ? () => nativeId : null, onExit: () => {} });
   await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)) && existsSync(sock));
   const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
@@ -126,7 +129,9 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
     expectedChildGeneration: meta.execution.childGeneration, expectedHostStartedAt: meta.startedAt,
     data: '⟦turn-origin:loop-fire nonce:1234567890abcdef⟧\nContinue approved recovery.' };
   const readHost = (): PsuPtyHost => JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
-  return { message, sock, readHost, output: () => output, async close() {
+  return { message, sock, readHost, normalizedLogPath,
+    events: () => readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line)),
+    output: () => output, async close() {
     await injectIntoHostWithConfirmation(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => null);
     await done;
     expect(existsSync(metaPathFor(ownerId))).toBe(false);
@@ -136,6 +141,49 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
 }
 
 describe('cross-client native recovery handshake', () => {
+  it('surfaces a post-start capacity failure once and recovers the same non-loop native session', async () => {
+    const f = await fixture('codex', true, 'capacity');
+    try {
+      const original = f.readHost();
+      const first = { ...f.message, deliveryId: 'capacity-first', requireNativeTurnStart: false,
+        data: '⟦turn-origin:coord-wake nonce:1234567890abcdef⟧\nReview the approved plan.' };
+      expect(first.data, 'the fixture must provide native-verifiable wake provenance').toMatch(/^⟦turn-origin:coord-wake nonce:[a-f0-9]{16}⟧\n/);
+      expect(await injectIntoHostWithConfirmation(f.sock, first)).toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => f.readHost().execution?.phase === 'failed' && f.output().includes('[psu] native-turn-failed'));
+      expect(f.readHost().execution).toMatchObject({ pendingTools: 0,
+        failure: { code: 'server_overloaded', retryable: true, retryAfterMs: 60_000 } });
+      await delay(150); // Multiple existing activity ticks must not repeat the edge.
+      const events = f.events().filter(row => row.kind === 'native-turn-failed');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ nativeSessionId: original.nativeSessionId,
+        childGeneration: original.execution!.childGeneration,
+        failure: { code: 'server_overloaded', retryable: true } });
+      expect(f.output().match(/\[psu\] native-turn-failed/g)).toHaveLength(1);
+      expect(readFileSync(f.normalizedLogPath, 'utf8')).toContain('native-turn-failed agent=codex code=server_overloaded');
+      // This explicit bounded wake exercises the same host/socket. There is no
+      // routine, automatic retry, new child, model substitution, or new session.
+      const retry = { ...f.message, deliveryId: 'capacity-recovery',
+        data: '⟦turn-origin:coord-wake nonce:fedcba0987654321⟧\nContinue the same approved review.' };
+      expect(retry.data, 'the recovery fixture must satisfy native-start preflight').toMatch(/^⟦turn-origin:coord-wake nonce:[a-f0-9]{16}⟧\n/);
+      expect(await injectIntoHostWithConfirmation(f.sock, retry)).toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => f.output().includes('NATIVE_STARTED'));
+      await until(() => f.readHost().execution?.phase === 'running');
+      let confirmed = false;
+      for (let n = 0; n < 20 && !confirmed; n++) {
+        confirmed = (await injectIntoHostWithConfirmation(f.sock, retry)).reason === 'duplicate-delivery-id';
+        if (!confirmed) await delay(30);
+      }
+      expect(confirmed).toBe(true);
+      expect(f.output().match(/SUBMIT:/g)).toHaveLength(2);
+      expect(f.readHost()).toMatchObject({ pid: original.pid, ptyPid: original.ptyPid,
+        nativeSessionId: original.nativeSessionId, execution: { childGeneration: original.execution!.childGeneration } });
+      expect(f.readHost().execution).not.toHaveProperty('failure');
+      const terminalEvents = f.events().filter(row => row.kind === 'native-turn-failed');
+      expect(terminalEvents, JSON.stringify({ terminalEvents, execution: f.readHost().execution,
+        output: f.output() })).toHaveLength(1);
+    } finally { await f.close(); }
+  }, 25_000);
+
   it('persists implicit fallback telemetry through the real timer into the private database', async () => {
     const mechanism = `native-recovery-isolation-${process.pid}`;
     expect(observeFallback(mechanism, { eligible: 1, applied: 1, reason: 'applied' })).toBe(true);

@@ -4,6 +4,7 @@ import type { CheckpointResult } from './green-checkpoint';
 import {
   armSelfWatchdog,
   buildCrashCheckpointResult,
+  buildPostVerdictSelfWatchdogResult,
   buildSelfWatchdogCheckpointResult,
   buildTerminalFailureCheckpointResult,
   buildTerminationCheckpointResult,
@@ -457,5 +458,123 @@ describe('CLASS GUARD: no terminal builder that rendered no verdict may be class
     const defective = { ...build(), reason: 'not-green' as const };
     expect(defective.green).toBeNull();
     expect(classifyGateStallStatus(defective.reason, false)).toBe('red');
+  });
+});
+
+// WI-6554700010019444 — run 113fe179 (2026-10-21) retested frozen repairHead 875d0d4b still red,
+// then the self-watchdog killed it during the post-verdict P-009 legs. The kill published
+// reason:'error' with the TIP candidate, release-actions counted a no-verdict run, and WEDGED fired.
+describe('WI-6554700010019444: a kill after the verdict publishes that verdict', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  type Fired = Parameters<typeof buildPostVerdictSelfWatchdogResult>[0]['watchdog'];
+  const FROZEN = '4224bf7c'.padEnd(40, '0');
+  const REPAIR_HEAD = '875d0d4b'.padEnd(40, '0');
+
+  /** A real fire context from a real watchdog, not a hand-built literal. */
+  function fireOnce(): Fired {
+    vi.setSystemTime(0);
+    let fired: Fired | undefined;
+    armSelfWatchdog({ release: vi.fn() }, {
+      ms: 1_000,
+      hardCeilingMs: 100,
+      trigger: 'scheduled-parent-backstop',
+      pid: 999,
+      kill: vi.fn(),
+      log: () => {},
+      snapshotProcessGroup: () => null,
+      onFire: (reason, context) => {
+        fired = { reason, context };
+      },
+    });
+    vi.advanceTimersByTime(100);
+    if (!fired) throw new Error('watchdog did not fire');
+    return fired;
+  }
+
+  const hold = (): CheckpointResult => ({
+    ...build(['apps/operator-vite/src/x.test.ts']),
+    candidate: FROZEN,
+    green: null,
+    reason: 'repair-in-progress',
+    summary: 'frozen repair head 875d0d4b is still red at its own sha',
+    frozenCandidate: FROZEN,
+    repairHead: REPAIR_HEAD,
+  });
+
+  it('publishes the recorded hold unchanged, with only the kill noted in the summary', () => {
+    const verdict = hold();
+    const out = buildPostVerdictSelfWatchdogResult({
+      verdict,
+      runId: 'scheduled-113fe179',
+      watchdog: fireOnce(),
+    });
+    const { summary, ...rest } = out;
+    const { summary: original, ...verdictRest } = verdict;
+    expect(rest).toEqual(verdictRest);
+    expect(out.candidate).toBe(FROZEN);
+    expect(summary).toContain(original as string);
+    expect(summary).toContain('post-verdict self-watchdog kill (absolute-hard-ceiling');
+    // The `self-watchdog fired:` prefix marks a run that rendered NO verdict; never reuse it.
+    expect(summary?.startsWith('self-watchdog fired:')).toBe(false);
+  });
+
+  it('is not classified as the no-verdict class release-actions counts toward WEDGED', () => {
+    const fired = fireOnce();
+    const carried = buildPostVerdictSelfWatchdogResult({
+      verdict: hold(),
+      runId: 'scheduled-113fe179',
+      watchdog: fired,
+    });
+    const noVerdict = buildSelfWatchdogCheckpointResult({
+      candidate: 'tip'.padEnd(40, '0'),
+      runId: 'scheduled-113fe179',
+      summary: '',
+      failingTests: [],
+      candidateSource: 'tip',
+      watchdog: fired,
+    });
+    expect(carried.reason).toBe('repair-in-progress');
+    expect(classifyGateStallStatus(carried.reason, false)).not.toBe(
+      classifyGateStallStatus(noVerdict.reason, false),
+    );
+  });
+
+  it('remainingMs tracks the live ceiling: elapses, ignores a no-op tighten, follows a real one', () => {
+    vi.setSystemTime(0);
+    const watchdog = armSelfWatchdog({ release: vi.fn() }, {
+      ms: 5_000,
+      hardCeilingMs: 10_000,
+      pid: 999,
+      kill: vi.fn(),
+      log: () => {},
+      snapshotProcessGroup: () => null,
+    });
+    expect(watchdog.remainingMs()).toBe(10_000);
+    vi.advanceTimersByTime(4_000);
+    watchdog.progress();
+    expect(watchdog.remainingMs()).toBe(6_000);
+    // The 113fe179 trap: a cap past the current deadline is a no-op, and remainingMs says so.
+    expect(watchdog.tighten({ hardCeilingMs: 60_000, reason: 'late verdict' })).toBe(false);
+    expect(watchdog.remainingMs()).toBe(6_000);
+    expect(watchdog.tighten({ hardCeilingMs: 2_000, reason: 'post-verdict' })).toBe(true);
+    expect(watchdog.remainingMs()).toBe(2_000);
+    watchdog.cancel();
+    expect(watchdog.remainingMs()).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('remainingMs is 0 once the watchdog has fired', () => {
+    vi.setSystemTime(0);
+    const watchdog = armSelfWatchdog({ release: vi.fn() }, {
+      ms: 1_000,
+      hardCeilingMs: 100,
+      pid: 999,
+      kill: vi.fn(),
+      log: () => {},
+      snapshotProcessGroup: () => null,
+    });
+    vi.advanceTimersByTime(100);
+    expect(watchdog.remainingMs()).toBe(0);
   });
 });

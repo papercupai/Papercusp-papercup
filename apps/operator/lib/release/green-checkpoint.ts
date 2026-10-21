@@ -52,6 +52,7 @@ import {
   type RangeChangeSet,
 } from "./git-ops";
 import {
+  resolveEarlyTypecheckBase,
   resolveSelectionBase,
   selectionBaseGitFor,
   selectionBaseLine,
@@ -173,6 +174,10 @@ import {
   type GateVerdictTarget,
 } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
+import {
+  inheritUpstreamGateLegs,
+  upstreamInstallFromEnv,
+} from "@papercusp/operator-core/lib/release/upstream-inherited-legs";
 import { routineFireIdentityFromEnv } from "@papercusp/operator-core/lib/release/in-flight-candidate";
 import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import type { FleetLogsGcResult } from "@papercusp/operator-core/lib/fleet-logs-gc";
@@ -299,12 +304,12 @@ import {
 import { runDeltaGate, deltaGatePolicyFromEnv } from "./delta-gate";
 import { heldGateAlert } from "./held-gate-alarm";
 import {
-  applyLockfileConvergence,
   convergeLockfileDrift,
   describeLockfileConvergence,
+  lockfileConvergenceTransition,
 } from "./green-checkpoint-lockfile-convergence";
 import {
-  applyGenCheckHeal,
+  genCheckHealTransition,
   describeGenCheckHeal,
   healGenCheckLegs,
   makeRealGenCheckHealIo,
@@ -1474,8 +1479,19 @@ export interface CheckpointDeps {
    * branch that can start another suite) and before the post-verdict steps. The CLI wires it to
    * tighten its self-watchdog to POST_VERDICT_WATCHDOG_MS. ABSENT means nothing happens.
    * Synchronous and best-effort: a throw is logged, never fatal.
+   *
+   * WI-6554700010019444: `verdict` is the result this pass already rendered. The CLI keeps it so a
+   * self-watchdog kill DURING the post-verdict steps publishes that verdict (frozen candidate,
+   * repairHead, hold reason) instead of a tip-labelled no-verdict that counts toward WEDGED.
    */
-  enterPostVerdictPhase?(): void;
+  enterPostVerdictPhase?(verdict?: CheckpointResult): void;
+  /**
+   * WI-6554700010019444: ms left before the self-watchdog's absolute ceiling (production:
+   * `watchdog.remainingMs()`). The POST_VERDICT_WATCHDOG_MS tighten only pulls the ceiling IN, so a
+   * verdict that lands late in a run keeps only the remainder of the 3h ceiling; post-verdict steps
+   * with their own fixed deadline clamp to this. ABSENT means unbounded (the fixed deadlines apply).
+   */
+  postVerdictRemainingMs?(): number;
   /**
    * WI-6554700010010213: record ONE post-verdict step that hit its deadline (production: a
    * `green_checkpoint_post_verdict` pipeline event). Called at most once per overrun, bounded by
@@ -2596,6 +2612,37 @@ function describeIntegrationCheckoutDefect(detail: string): IntegrationCheckoutD
 }
 
 /**
+ * WI-6554700010019444 — the terminal result when the self-watchdog fires AFTER this run already
+ * rendered its verdict (the return funnel handed it to `enterPostVerdictPhase`). Everything
+ * past that point — freeze disposition, P-009 repair-tick legs, leg routing, finalize — is
+ * bookkeeping about a verdict that already exists, so a kill there must not re-label the run.
+ * Run 113fe179 (2026-10-21) did exactly that: it retested frozen repairHead 875d0d4b still red,
+ * then died in the legs at the 3h ceiling and published `reason:'error'`, the TIP candidate and
+ * `candidateSource:'tip'`. release-actions counted it as no-verdict and raised WEDGED.
+ *
+ * The verdict is published unchanged (candidate, repair identity, green, reason, failingTests);
+ * only the summary gains the kill note. The note deliberately avoids the `self-watchdog fired:`
+ * prefix of buildSelfWatchdogCheckpointResult, which marks a run that rendered NO verdict.
+ */
+export function buildPostVerdictSelfWatchdogResult(opts: {
+  verdict: CheckpointResult;
+  runId: string;
+  watchdog: { reason: SelfWatchdogFireReason; context: SelfWatchdogFireContext };
+}): CheckpointResult {
+  const c = opts.watchdog.context;
+  const note =
+    `post-verdict self-watchdog kill (${opts.watchdog.reason}; ` +
+    `elapsedMs=${c.firedAtMs - c.startedAtMs}; idleForMs=${c.firedAtMs - c.lastProgressAtMs}` +
+    (c.tightenedBecause ? `; tightenedBecause=${c.tightenedBecause}` : '') +
+    `): the verdict this run rendered before the kill is published unchanged`;
+  return {
+    ...opts.verdict,
+    runId: opts.verdict.runId ?? opts.runId,
+    summary: opts.verdict.summary ? `${opts.verdict.summary} [${note}]` : note,
+  };
+}
+
+/**
  * WI-40916 / EI-212278 / WI-41252 — distinguish measured pre-suite
  * infrastructure refusals from an unknown checkpoint crash.
  *
@@ -3037,6 +3084,12 @@ export interface SelfWatchdogHandle {
    * against the tightened one, so it cannot push past it. True only when the deadline moved.
    */
   tighten: (opts: { hardCeilingMs: number; reason: string }) => boolean;
+  /**
+   * WI-6554700010019444: ms until the absolute ceiling fires (0 once fired; +Infinity once
+   * cancelled). `tighten` is a no-op when its cap lands past the current deadline, so a step that
+   * budgets against POST_VERDICT_WATCHDOG_MS alone can still outrun a run that is already late.
+   */
+  remainingMs: () => number;
 }
 
 /** The two ways a progress-aware self-watchdog can terminate a run. */
@@ -3614,6 +3667,11 @@ export function armSelfWatchdog(
           `${formatSelfWatchdogDuration(cappedAtMs - nowMs)} from now`,
       );
       return true;
+    },
+    remainingMs: () => {
+      if (cancelled) return Number.POSITIVE_INFINITY;
+      if (firedAlready) return 0;
+      return Math.max(0, hardDeadlineAtMs - Date.now());
     },
   };
 }
@@ -13667,9 +13725,22 @@ async function runGreenCheckpointInner(
           `repair head ${candidate.slice(0, 8)}: lockfile-drift convergence — ${describeLockfileConvergence(convergence)}`,
         );
         if (convergence.kind === "converged") {
-          const expectedUpdatedAtMs = repairQueue.updatedAtMs;
-          repairQueue = applyLockfileConvergence(repairQueue, convergence);
-          await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
+          // WI-6554700010019277: persist through the fresh-row transition (see the gen:*:check
+          // heal below) — a field-only peer write since this run's read must not crash the run.
+          const convergenceBase = repairQueue;
+          repairQueue = await commitFrozenRepairQueueTransition(
+            deps,
+            convergenceBase,
+            (fresh) => lockfileConvergenceTransition(fresh, convergenceBase, convergence),
+            "lockfile-convergence-admission",
+          );
+          if (repairQueue.repairHead !== convergence.toRepairHead) {
+            deps.log(
+              `repair head ${candidate.slice(0, 8)}: ⚠ lockfile-drift convergence NOT recorded on the ` +
+                `queue row — the fresh row is at ${repairQueue.repairHead.slice(0, 8)}, not ` +
+                `${convergence.toRepairHead.slice(0, 8)}; verifying the row's head`,
+            );
+          }
           candidate = repairQueue.repairHead;
         }
       }
@@ -13734,11 +13805,30 @@ async function runGreenCheckpointInner(
           // A concurrent fixer may have advanced the lineage while the selective
           // suite ran. The healer re-runs the writer at that fresh head; apply its
           // admission to the SAME fresh queue, never to this run's stale snapshot.
+          //
+          // WI-6554700010019277: the persist goes through the fresh-row transition, never a
+          // fixed-version write of that snapshot. A peer write that does NOT move the lineage
+          // ref (an admit's R6 pre-check marker / dispatch reservation, a manifest refresh)
+          // leaves `refreshedQueue` unset, so the snapshot's `updatedAtMs` is stale by the
+          // time the selective suite ends; a fixed-version write then threw
+          // FrozenRepairQueueWriteConflictError and discarded the whole run's verdict
+          // (run 425120c3: 2h45m of suite, no verdict). The reducer applies the heal only to
+          // a row still at the head the healer admitted onto.
           const admissionBase = heal.refreshedQueue ?? repairQueue;
-          const expectedUpdatedAtMs = admissionBase.updatedAtMs;
-          repairQueue = applyGenCheckHeal(admissionBase, heal);
-          await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
-          if (signatureWithoutHealed(verification.signature, heal).length === 0) {
+          repairQueue = await commitFrozenRepairQueueTransition(
+            deps,
+            admissionBase,
+            (fresh) => genCheckHealTransition(fresh, admissionBase, heal),
+            "gen-check-heal-admission",
+          );
+          if (repairQueue.repairHead !== heal.toRepairHead) {
+            deps.log(
+              `repair head ${candidate.slice(0, 8)}: ⚠ gen:*:check self-heal admission NOT recorded on ` +
+                `the queue row — the fresh row is at ${repairQueue.repairHead.slice(0, 8)}, not the ` +
+                `healed head ${heal.toRepairHead.slice(0, 8)}; keeping this run's red at ` +
+                `${candidate.slice(0, 8)} (the next run judges the row's head)`,
+            );
+          } else if (signatureWithoutHealed(verification.signature, heal).length === 0) {
             candidate = repairQueue.repairHead;
             verification = await verifyRepairHead(verifyDeps, repairQueue);
             deps.log(
@@ -14571,11 +14661,31 @@ async function runGreenCheckpointInner(
   // round. The early check is provisional, so use the cumulative candidate..repairHead
   // delta; the mandatory unscoped post-suite typechecks still judge the whole head.
   // Initial candidates and heads without a frozen repair lineage keep the full diff.
-  const earlyTypecheckBase = repairVerification && repairQueue &&
+  const earlyTypecheckRepairBase = repairVerification && repairQueue &&
     repairQueue.candidate !== candidate
       ? repairQueue.candidate
-      : lastReady;
+      : null;
+  let earlyTypecheckBase: string | null = earlyTypecheckRepairBase ?? lastReady;
   if (deps.runChangedFileTypecheckPreflight && deps.changedFilesForRange) {
+    // D-064 (WI-6554700010019329): a fork-mode pot's lastReady is a fork-only commit, so
+    // diffing from it typechecked the whole fork (run a9992c54: 12,235 files, 22m26s).
+    // Diff from the upstream integration anchor instead, as the suite selection does;
+    // every other case, and every resolver fault, keeps the historical base.
+    const early = await resolveEarlyTypecheckBase({
+      lastReady,
+      candidate,
+      repairBase: earlyTypecheckRepairBase,
+      env: process.env as Record<string, string | undefined>,
+      git: selectionBaseGitFor(cfg.checkpointRoot),
+    });
+    earlyTypecheckBase = early.base;
+    if (early.source === "upstream-integration") {
+      deps.log(
+        `early changed-file typecheck preflight: base=${early.base?.slice(0, 12) ?? "null"} ` +
+          `source=upstream-integration (D-064: fork pot judges only its own delta; lastReady ` +
+          `${lastReady ? lastReady.slice(0, 12) : "null"})`,
+      );
+    }
     const preflightStartedAtMs = Date.now();
     const elapsed = () =>
       `${((Date.now() - preflightStartedAtMs) / 1000).toFixed(1)}s`;
@@ -17403,6 +17513,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
     | "writeFrozenRepairQueue"
     | "checkDiskHeadroom"
     | "recordPostVerdictStepDeadline"
+    | "postVerdictRemainingMs"
   >,
   bounds: { deadlineMs?: number; abortGraceMs?: number } = {},
 ): Promise<T> {
@@ -17448,7 +17559,34 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   // the self-watchdog SIGKILLed the whole run — erasing a verdict it had already recorded (run
   // fc4e96c0, 2026-10-20 22:15→23:15Z). Bound it well inside the ceiling; on the deadline abort
   // the in-flight leg (killed, not abandoned) and leave the tick honestly UNMEASURED.
-  const deadlineMs = bounds.deadlineMs ?? REPAIR_TICK_LEGS_DEADLINE_MS;
+  // WI-6554700010019444: and never past what is LEFT on the self-watchdog ceiling (see
+  // repairTickLegsDeadline) — a late verdict leaves less than the fixed deadline assumes.
+  let remainingMs: number | undefined;
+  try {
+    remainingMs = deps.postVerdictRemainingMs?.();
+  } catch (e) {
+    deps.log(
+      `warn: post-verdict watchdog budget read failed: ${e instanceof Error ? e.message : e}`,
+    );
+  }
+  const budget = repairTickLegsDeadline({
+    fixedMs: bounds.deadlineMs ?? REPAIR_TICK_LEGS_DEADLINE_MS,
+    remainingMs,
+  });
+  if (!budget.run) {
+    deps.log(
+      `P-009 repair-tick legs NOT measured: post-verdict budget — ${budget.availableMs}ms usable ` +
+        `before the self-watchdog ceiling (needs ${REPAIR_TICK_LEGS_MIN_WINDOW_MS}ms); ` +
+        `tick stays unmeasured, recorded verdict unaffected`,
+    );
+    return result;
+  }
+  if (budget.clampedByCeiling) {
+    deps.log(
+      `P-009 repair-tick legs deadline clamped to ${budget.deadlineMs}ms by the self-watchdog ceiling`,
+    );
+  }
+  const deadlineMs = budget.deadlineMs;
   const abortGraceMs = bounds.abortGraceMs ?? REPAIR_TICK_LEGS_ABORT_GRACE_MS;
   const controller = new AbortController();
   const startedAtMs = Date.now();
@@ -17623,6 +17761,50 @@ export const REPAIR_TICK_LEGS_DEADLINE_MS = 40 * 60_000;
 /** WI-6554700010018556: after the legs deadline aborts the in-flight leg, how long to wait for
  * the measurement to unwind (its child SIGKILLed) before moving on regardless. */
 export const REPAIR_TICK_LEGS_ABORT_GRACE_MS = 10_000;
+
+/** WI-6554700010019444: what a legs pass must leave on the self-watchdog ceiling for everything
+ * after it (abort grace, leg routing, the CLI finalizer). The fixed 40m deadline already assumed
+ * exactly this slack inside POST_VERDICT_WATCHDOG_MS; the pinned budget sum keeps it honest. */
+export const REPAIR_TICK_LEGS_TAIL_RESERVE_MS =
+  POST_VERDICT_WATCHDOG_MS - REPAIR_TICK_LEGS_DEADLINE_MS;
+
+/** WI-6554700010019444: below this a legs pass measures nothing useful (lint:tsc alone was 90s on
+ * run 113fe179), so the tick is left unmeasured rather than started and aborted. */
+export const REPAIR_TICK_LEGS_MIN_WINDOW_MS = 5 * 60_000;
+
+/**
+ * WI-6554700010019444 — the legs deadline for THIS pass. The fixed deadline assumes the
+ * POST_VERDICT_WATCHDOG_MS tighten took effect, but `tighten` only ever pulls the ceiling IN: a
+ * verdict that lands late keeps just the remainder of the 3h ceiling. Run 113fe179 (2026-10-21)
+ * settled its retest ~2h20m in; the 40m legs deadline sat past the ceiling, leg 25/36 was still
+ * running at 180m, and the kill replaced the recorded still-red hold with a tip-labelled
+ * no-verdict that tripped the WEDGED alarm. Pure so the clamp is pinned without a real timer.
+ */
+export function repairTickLegsDeadline(opts: {
+  fixedMs: number;
+  /** `deps.postVerdictRemainingMs()`; undefined/non-finite means no ceiling is known. */
+  remainingMs?: number;
+  reserveMs?: number;
+  minWindowMs?: number;
+}):
+  | { run: true; deadlineMs: number; clampedByCeiling: boolean }
+  | { run: false; availableMs: number } {
+  const remaining = opts.remainingMs;
+  if (remaining === undefined || !Number.isFinite(remaining)) {
+    return { run: true, deadlineMs: opts.fixedMs, clampedByCeiling: false };
+  }
+  const availableMs = Math.max(
+    0,
+    remaining - (opts.reserveMs ?? REPAIR_TICK_LEGS_TAIL_RESERVE_MS),
+  );
+  if (availableMs >= opts.fixedMs) {
+    return { run: true, deadlineMs: opts.fixedMs, clampedByCeiling: false };
+  }
+  if (availableMs < (opts.minWindowMs ?? REPAIR_TICK_LEGS_MIN_WINDOW_MS)) {
+    return { run: false, availableMs };
+  }
+  return { run: true, deadlineMs: availableMs, clampedByCeiling: true };
+}
 
 /**
  * WI-6554700010009547: bound ONE observational post-verdict step. Once a suite verdict
@@ -18008,7 +18190,7 @@ export async function runGreenCheckpoint(
   // lost-run sweep can flag a live run parked here (its heartbeat stays fresh through a hang).
   deps.reportProgress?.("phase:finalizing");
   try {
-    deps.enterPostVerdictPhase?.();
+    deps.enterPostVerdictPhase?.(finalResult);
   } catch (e) {
     deps.log(
       `warn: post-verdict watchdog tighten failed: ${e instanceof Error ? e.message : e}`,
@@ -23436,6 +23618,31 @@ export function realCheckpointDeps(
           }
         }
       }
+      // plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 #D-065 (WI-6554700010019417):
+      // a review-mode (fork) pot's gate does not hold on a NON-TEST leg its upstream gate's own
+      // measured result also shows red. Tests never inherit; buildOk=false never inherits; no
+      // upstream install, an unmeasured/stale upstream result, or a read error keeps the red.
+      if (!green && buildOk && failingTests.length) {
+        const upstreamInstall = upstreamInstallFromEnv();
+        const inheritTarget = upstreamInstall ? gateVerdictTargetFromEnv() : null;
+        if (upstreamInstall && inheritTarget) {
+          const inherit = await inheritUpstreamGateLegs({
+            failingTests,
+            upstreamInstall,
+            workspaceId: inheritTarget.workspaceId,
+            nowMs: Date.now(),
+          });
+          log(inherit.logLine);
+          if (inherit.inherited.length) {
+            failingTests = inherit.blocking;
+            const note =
+              `\n\nInherited from upstream gate ${upstreamInstall} (${inherit.source}, ` +
+              `observed ${new Date(inherit.observedAtMs ?? 0).toISOString()}): ${inherit.inherited.join(", ")}`;
+            summary = `${summary}${note}`.slice(-2000);
+            if (!failingTests.length) green = true;
+          }
+        }
+      }
       // green-main-ratchet-convergence-2026-10-17 #D-025 (P-007 shadow): which commit since the
       // green pin each remaining blocking test failure would be attributed to by radius, and the
       // ejection that would follow. Planning only: no build, no routing, the verdict above stands.
@@ -25308,6 +25515,9 @@ if (require.main === module) {
       // scheduled parent-death backstop. Keep this ceiling explicit at the CLI seam so progress
       // can never become an unbounded keepalive.
       const hardCeilingMs = SELF_WATCHDOG_MS;
+      // WI-6554700010019444: the verdict the return funnel already rendered (set by
+      // enterPostVerdictPhase below). Non-null means a kill from here on is post-verdict.
+      let postVerdictResult: CheckpointResult | null = null;
       const watchdog = armSelfWatchdog(lock, {
         ms: selfWatchdog.ms,
         hardCeilingMs,
@@ -25361,8 +25571,17 @@ if (require.main === module) {
           // DISCRIMINATOR (release-actions.ts): a watchdog kill is reason 'error' with `crashed`
           // ABSENT plus this distinctive summary; a crash is reason 'error' with `crashed: true`.
           // The builder never sets `crashed` — an absent leg stays absent, not written falsey.
-          const inconclusive: CheckpointResult =
-            buildSelfWatchdogCheckpointResult({
+          // WI-6554700010019444: a kill AFTER the return funnel rendered a verdict publishes that
+          // verdict (frozen candidate, repairHead, hold reason) — never the tip-labelled no-verdict
+          // below, which release-actions counts toward WEDGED.
+          const recordedVerdict = postVerdictResult;
+          const inconclusive: CheckpointResult = recordedVerdict
+            ? buildPostVerdictSelfWatchdogResult({
+                verdict: recordedVerdict,
+                runId,
+                watchdog: { reason: fireReason, context: fireContext },
+              })
+            : buildSelfWatchdogCheckpointResult({
               candidate: prewarmedDependencyGeneration.candidate,
               runId,
               summary: carried.note ?? '',
@@ -25391,7 +25610,9 @@ if (require.main === module) {
           // eventually resolve and the next cron may well green it. No wake is lost: `checkpoint:await`
           // arms all three verdict keys (agent-tools/events/sugar.ts, release-checkpoint-launch.ts),
           // and the normal red path still emits the red pair.
+          // The WEDGED page says "no verdict" — false once a verdict was carried above.
           if (
+            !recordedVerdict &&
             candidateSource !== "pinned" &&
             diagnostic !== "candidate-pinned"
           ) {
@@ -25527,12 +25748,15 @@ if (require.main === module) {
       );
       flushTerminalEvents = checkpointDeps.flushTerminalEvents;
       // WI-6554700010009615 stage 1: past the admission refire the run is post-verdict.
-      checkpointDeps.enterPostVerdictPhase = () => {
+      checkpointDeps.enterPostVerdictPhase = (verdict) => {
+        if (verdict) postVerdictResult = verdict;
         watchdog.tighten({
           hardCeilingMs: POST_VERDICT_WATCHDOG_MS,
           reason: "post-verdict return funnel",
         });
       };
+      // WI-6554700010019444: post-verdict steps clamp their own deadlines to what is left.
+      checkpointDeps.postVerdictRemainingMs = () => watchdog.remainingMs();
       // Same durable verdict target/ledger as normal recording. The reader is memoized for
       // auto-refires; direct realCheckpointDeps test callers never gain a new ambient DB read.
       let previousSuiteReplay: Promise<GateSuiteVerdictReplay | null> | undefined;

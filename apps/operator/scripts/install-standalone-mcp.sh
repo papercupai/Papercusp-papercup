@@ -1863,6 +1863,18 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_NUL_BYTE_EDIT_GUARD_HOOK" ] && merge_nul_byte_edit_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK" ] && merge_schedule_wakeup_provenance_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_WRITE_OVERWRITE_GUARD_HOOK" ] && merge_write_overwrite_guard_hook "$CLAUDE_SETTINGS"
+  # client-native-features-adoption-2026-10-21 P-004 (D-012): the generated `papercusp` Claude plugin
+  # carries these hooks, as in the desktop installer (installClaudeHooks). Write and enroll it, then
+  # strip the inline copies merged above, so no hook fires twice. If it cannot run, the inline
+  # enrollment above stays as the only carrier.
+  CC_PLUGIN_TSX="${CC_STAMP_TSX:-${REPO_ROOT}/node_modules/.bin/tsx}"
+  if [ -x "$CC_PLUGIN_TSX" ]; then
+    "$CC_PLUGIN_TSX" "${REPO_ROOT}/packages/operator-core/lib/claude-plugin/install-claude-plugin-cli.ts" \
+      "$CLAUDE_SETTINGS" "$CC_HOOK_DEST_DIR" "${HOME}/.papercusp/claude-plugins" \
+      || echo "! papercusp Claude plugin not installed; hooks stay inline in $CLAUDE_SETTINGS"
+  else
+    echo "! tsx not found under ${REPO_ROOT}/node_modules; papercusp Claude plugin not installed, hooks stay inline"
+  fi
   chmod 600 "$CLAUDE_SETTINGS"
   echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"
 else

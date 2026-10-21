@@ -115,7 +115,8 @@ import {
   __setCacheProxyReachable,
   CACHE_PROXY_URL,
   defaultClaudeAuthSettings,
-  applyDefaultClaudeAuthSettingsArgs,
+  applyPsuClaudeSettingsArgs,
+  psuClaudeLaunchSettings,
   enforceDefaultClaudeAccount,
   sanitizeInheritedEnv,
   applyCodexDiagnosticEnv,
@@ -241,6 +242,9 @@ import {
   nativeDeferralReachable,
   healContextTrimmingEnv,
   NO_SUBAGENTS_DENY_FLAG,
+  CODEX_SUBAGENT_OPT_IN_ARGS,
+  codexResumeSubagentNotice,
+  ungatedSubagentFlagNotice,
   subagentGatewayRiskNotice,
   OWNER_DESKTOP_NOTIFY_DENY_FLAG,
   BRAIN_TOMBSTONE_MESSAGE,
@@ -332,6 +336,7 @@ import {
   nativeDeferralEnv as canonicalNativeDeferralEnv,
 } from "@papercusp/orchestrator/native-tool-search-deny";
 import { noSubagentToolsDenyFlag } from "@papercusp/orchestrator/no-subagent-deny";
+import { CODEX_SUBAGENT_OPT_IN_CONFIG } from "@papercusp/orchestrator/codex-gateway-config";
 import { ownerDesktopNotifyDenyFlag } from "@papercusp/orchestrator/owner-desktop-notify-deny";
 import {
   ACCOUNT_HEADER,
@@ -561,6 +566,21 @@ describe("normalizeOperatorBaseUrl (WI-6821 DEFECT A — a suffixed pin killed p
     });
     expect(t.url).toBe("http://localhost:3070");
     expect(t.source).toBe("env");
+  });
+});
+
+describe("generated psu-launcher declarations", () => {
+  it("types resolveOmpOperatorUrl's optional operatorUrl as string", () => {
+    const declaration = readFileSync(
+      fileURLToPath(new URL("../scripts/psu-launcher.d.mts", import.meta.url)),
+      "utf8",
+    );
+    expect(declaration).toMatch(
+      /export function resolveOmpOperatorUrl\(operatorUrl\?: string,/,
+    );
+    expect(declaration).not.toMatch(
+      /export function resolveOmpOperatorUrl\(operatorUrl\?: undefined,/,
+    );
   });
 });
 
@@ -7397,6 +7417,78 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(
       roleLaunchArgs("claude", { ...files, allowSubagents: true }).args,
     ).not.toContain(NO_SUBAGENTS_DENY_FLAG);
+  });
+
+  // client-native-features-adoption-2026-10-21 P-001: every managed Codex home says
+  // `[features] multi_agent = false`; the psu opt-in is a `-c` override on a NEW
+  // session's launch, never a home edit, because later sessions share the home.
+  it("codex su and role argv add features.multi_agent=true only with --allow-subagents", () => {
+    const optInCount = (args: readonly string[]) =>
+      args.filter((arg, i) => arg === "-c" && args[i + 1] === CODEX_SUBAGENT_OPT_IN_CONFIG).length;
+    const model = "gpt-5.5:high";
+    const builders: Array<[string, (allowSubagents: boolean | null) => readonly string[]]> = [
+      ["su", (allowSubagents) => suLaunchArgs("codex", { promptFile: "/p.md", model, allowSubagents }).args],
+      ["role", (allowSubagents) => roleLaunchArgs("codex", { ...files, model, allowSubagents }).args],
+    ];
+    for (const [label, build] of builders) {
+      for (const deny of [null, false]) {
+        const args = build(deny);
+        expect(optInCount(args), `${label} allowSubagents:${deny}`).toBe(0);
+        expect(args.join(" "), label).not.toContain("multi_agent");
+      }
+      const optedIn = build(true);
+      expect(optInCount(optedIn), label).toBe(1);
+      // Never re-enables goals: the opt-in is subagents only.
+      expect(optedIn.join(" "), label).not.toContain("goals");
+      // A fresh launch has no subcommand, so the root `-c` is the TUI's own
+      // (measured live: v1 with it, disabled without — D-008).
+      expect(optedIn.some((arg) => arg === "resume" || arg === "fork" || arg === "exec"), label).toBe(false);
+    }
+  });
+
+  // D-008 (measured, codex-cli 0.163.0, rollout turn_context.multi_agent_version):
+  // Codex fixes native subagents when a session is created; resume and fork inherit
+  // it and ignore a `-c` in either position. So resume/fork argv carries no opt-in
+  // and the launcher says the flag had no effect instead of implying it worked.
+  it("codex resume/fork argv never carries the subagent opt-in; the flag gets a no-effect notice instead", () => {
+    const model = "gpt-5.5:high";
+    for (const fork of [false, true]) {
+      for (const allowSubagents of [null, false, true]) {
+        const args = resumeArgsFor({ agent: "codex", cwd: "/x", sessionId: "01a15f65-38f8-7c92-8665-b443a20d0264" }, { model, fork, allowSubagents }).args;
+        expect(args, `fork:${fork} allowSubagents:${allowSubagents}`).toContain(fork ? "fork" : "resume");
+        expect(args.join(" "), `fork:${fork} allowSubagents:${allowSubagents}`).not.toContain("multi_agent");
+      }
+      expect(codexResumeSubagentNotice("codex", true, { fork })).toMatch(
+        new RegExp(`--allow-subagents has no effect on a Codex ${fork ? "fork" : "resume"}`),
+      );
+      expect(codexResumeSubagentNotice("codex", false, { fork })).toMatch(/--no-subagents has no effect/);
+      expect(codexResumeSubagentNotice("codex", null, { fork })).toBeNull();
+      expect(codexResumeSubagentNotice("codex", undefined, { fork })).toBeNull();
+    }
+    // Claude's resume still honours the flag (the deny flag is per launch), so no notice.
+    expect(codexResumeSubagentNotice("claude", true)).toBeNull();
+    expect(codexResumeSubagentNotice("omp", true)).toBeNull();
+    // launchResume prints it before building the resume argv.
+    const src = readFileSync(join(__dirname, "../scripts/psu-launcher.mjs"), "utf8");
+    const launchResume = src.slice(src.indexOf("async function launchResume("));
+    const noticeAt = launchResume.indexOf("codexResumeSubagentNotice(session.agent, allowSubagents, { fork })");
+    expect(noticeAt).toBeGreaterThan(-1);
+    expect(noticeAt).toBeLessThan(launchResume.indexOf("resumeArgsFor(session, {"));
+  });
+
+  it("the fresh-launch notice for an ungated backend names omp only, never claude or codex", () => {
+    for (const allowSubagents of [true, false]) {
+      expect(ungatedSubagentFlagNotice("claude", allowSubagents)).toBeNull();
+      expect(ungatedSubagentFlagNotice("codex", allowSubagents)).toBeNull();
+      expect(ungatedSubagentFlagNotice("omp", allowSubagents)).toMatch(/applies to claude and codex only; omp sessions are unaffected/);
+    }
+    expect(ungatedSubagentFlagNotice("omp", null)).toBeNull();
+    expect(ungatedSubagentFlagNotice("omp", undefined)).toBeNull();
+  });
+
+  it("psu-launcher's Codex opt-in argv stays in lockstep with the orchestrator's CODEX_SUBAGENT_OPT_IN_CONFIG", () => {
+    expect([...CODEX_SUBAGENT_OPT_IN_ARGS]).toEqual(["-c", CODEX_SUBAGENT_OPT_IN_CONFIG]);
+    expect(Object.isFrozen(CODEX_SUBAGENT_OPT_IN_ARGS)).toBe(true);
   });
 
   describe("subagentGatewayRiskNotice (EI-3294)", () => {
@@ -17813,17 +17905,20 @@ describe("default-account Claude OAuth token inheritance (psu-login-inherit / ma
 
     it("adds a highest-precedence settings override for every explicit Claude route", () => {
       const args = ["--resume", "session-id"];
-      const applied = applyDefaultClaudeAuthSettingsArgs(
+      const applied = applyPsuClaudeSettingsArgs(
         "claude",
         args,
         defaultAccountEnv(),
       );
       expect(applied.slice(0, 2)).toEqual([
         "--settings",
-        JSON.stringify(defaultClaudeAuthSettings()),
+        JSON.stringify(psuClaudeLaunchSettings(defaultAccountEnv())),
       ]);
       expect(applied.slice(2)).toEqual(args);
-      expect(JSON.parse(applied[1]!)).toEqual(defaultClaudeAuthSettings());
+      expect(JSON.parse(applied[1]!)).toEqual({
+        ...defaultClaudeAuthSettings(),
+        idleCompaction: false,
+      });
       expect(defaultClaudeAuthSettings().apiKeyHelper).toBe("");
       expect(Object.keys(defaultClaudeAuthSettings().env)).toEqual([
         ...CLAUDE_DEFAULT_AUTH_ENV_KEYS,
@@ -17849,13 +17944,17 @@ describe("default-account Claude OAuth token inheritance (psu-login-inherit / ma
         defaultClaudeAuthSettings().env.CLAUDE_CODE_OAUTH_TOKEN,
       ).toBeUndefined();
 
-      expect(applyDefaultClaudeAuthSettingsArgs("claude", args, {})).toBe(args);
+      // Without an explicit route the overlay carries only the per-session
+      // settings (D-004) — no auth override, so direct user credentials stand.
+      const unrouted = applyPsuClaudeSettingsArgs("claude", args, {});
+      expect(unrouted.slice(2)).toEqual(args);
+      expect(JSON.parse(unrouted[1]!)).toEqual({ idleCompaction: false });
       expect(
-        applyDefaultClaudeAuthSettingsArgs("omp", args, defaultAccountEnv()),
+        applyPsuClaudeSettingsArgs("omp", args, defaultAccountEnv()),
       ).toBe(args);
 
       const auto = gatewayAutoEnv("claude", "su-auto");
-      const autoApplied = applyDefaultClaudeAuthSettingsArgs(
+      const autoApplied = applyPsuClaudeSettingsArgs(
         "claude",
         args,
         auto,

@@ -140,6 +140,7 @@ describe('parkVerdict (P-016)', () => {
     [{ agent: 'codex' }, 'agent-not-parkable'],
     [{ parked: true }, 'already-parked'],
     [{ busy: true }, 'busy'],
+    [{ nativeBusy: true }, 'native-tool-pending'],
     // D-005: a quota-walled TUI may hold an auto-continue that a SIGKILL would drop.
     [{ quotaBlocked: true }, 'quota-wait'],
     [{ resumable: false }, 'no-resumable-session-id'],
@@ -163,6 +164,7 @@ describe('parkVerdict (P-016)', () => {
     parkVerdict({ ...base, childPromptReady: false, descendants });
     parkVerdict({ ...base, lastActivityAt: 9_999, descendants });
     parkVerdict({ ...base, quotaBlocked: true, descendants });
+    parkVerdict({ ...base, nativeBusy: true, descendants });
     expect(walked).toBe(0);
     parkVerdict({ ...base, descendants });
     expect(walked).toBe(1);

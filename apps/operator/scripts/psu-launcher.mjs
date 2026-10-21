@@ -46,7 +46,15 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { join, dirname, delimiter, basename, relative, isAbsolute } from "node:path";
+import {
+  join,
+  dirname,
+  delimiter,
+  basename,
+  relative,
+  isAbsolute,
+  resolve as resolvePath,
+} from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from "@papercusp/operator-core/lib/agent-kickoff/prompt-transport.mjs";
 import { launchWithHostedAgentSlot } from "@papercusp/operator-core/lib/workspace-host/hosted-agent-admission-client";
@@ -182,6 +190,10 @@ import {
 // su-role-addendum.ts. Plain .mjs so this bare-node script and the tsx/bundled
 // operator import the SAME definition — a second copy here would drift silently.
 import { SU_TIER_ROLES } from "../../../packages/operator-core/lib/su-tier-roles.mjs";
+import {
+  claudeHookCarrierVerdict,
+  effectiveClaudeHookCommands,
+} from "../../../packages/operator-core/lib/claude-plugin/plugin-rails.mjs";
 // P-021/D-013: the ONE local-model predicate, shared with the server-side
 // OMP_NATIVE_LSP_BUILTIN tier gate in bootstrap-{su,role}.ts. This file used to
 // carry two byte-identical copies of its regex pair (cloudModelBackendHint,
@@ -1308,8 +1320,10 @@ export function parseArgs(argv) {
     // explicit opt-OUT alias. Tri-state: null = unset (picker prompts; falls back
     // to deny), true = allow, false = deny. Threaded into roleLaunchArgs /
     // suLaunchArgs / resumeArgsFor, and re-emitted by fleet:launch-on-plan
-    // ({ allowSubagents } → `--allow-subagents`). claude-only (the deny flag is a
-    // claude CLI flag; omp/codex have no equivalent and are unaffected).
+    // ({ allowSubagents } → `--allow-subagents`). Claude: the deny flag. Codex:
+    // the home denies by default and a NEW session's opt-in adds
+    // CODEX_SUBAGENT_OPT_IN_ARGS; a Codex resume/fork keeps the setting its
+    // session was created with (D-008). omp has no native subagent tool.
     else if (a === "--allow-subagents") out.allowSubagents = true;
     else if (a === "--no-subagents") out.allowSubagents = false;
     // improve-fleet-launch-autokickoff (EI-5503): opt OUT of the auto-kickoff first
@@ -2014,6 +2028,54 @@ export const SU_SCHEDULER_TOOLS_DENY_FLAG =
 export const NO_SUBAGENTS_DENY_FLAG = "--disallowedTools=Task,Agent,Workflow";
 
 /**
+ * Codex half of the same opt-in (plan client-native-features-adoption-2026-10-21
+ * D-003/D-005). Every managed CODEX_HOME says `[features] multi_agent = false`
+ * and `goals = false` and runs on a model catalog stripped of the multi_agent
+ * fields, so Codex native subagents are off by default. `--allow-subagents`
+ * re-enables them for a NEW session with a top-level `-c` override (v1 subagent
+ * tools on the stripped catalog). Codex fixes the setting when the session is
+ * created (D-008, measured on codex-cli 0.163.0 from the rollout's
+ * turn_context.multi_agent_version): every resume and fork of that session
+ * inherits it, and a `-c` on `resume`/`fork` changes nothing in either
+ * direction. So only the fresh su/role launch emits this; resumeArgsFor does
+ * not. The home stays deny-by-default for every new session. Mirrors
+ * CODEX_SUBAGENT_OPT_IN_CONFIG in orchestrator codex-gateway-config.ts; a
+ * lockstep test pins the two copies together.
+ */
+export const CODEX_SUBAGENT_OPT_IN_ARGS = Object.freeze(["-c", "features.multi_agent=true"]);
+
+/**
+ * The stderr notice for `--allow-subagents` / `--no-subagents` on a Codex
+ * resume or fork (D-008): the flag cannot change a session that already exists,
+ * so say so instead of implying it worked. Pure; null when there is nothing to
+ * say (another agent, or the flag unset).
+ *
+ * @param {string | null | undefined} agent
+ * @param {boolean | null | undefined} allowSubagents
+ * @param {{ fork?: boolean }} [opts]
+ * @returns {string | null}
+ */
+export function codexResumeSubagentNotice(agent, allowSubagents, { fork = false } = {}) {
+  if (agent !== "codex" || allowSubagents == null) return null;
+  const flag = allowSubagents ? "--allow-subagents" : "--no-subagents";
+  return `psu: ${flag} has no effect on a Codex ${fork ? "fork" : "resume"}: Codex fixes native subagents when a session is created, so this session keeps the setting it started with. Start a new session with ${flag} to change it.`;
+}
+
+/**
+ * The stderr notice for `--allow-subagents` / `--no-subagents` on a fresh launch
+ * of a backend psu does not gate. Claude (the deny flag) and Codex (the home +
+ * CODEX_SUBAGENT_OPT_IN_ARGS) are gated; omp has no native subagent tool. Pure.
+ *
+ * @param {string | null | undefined} agent
+ * @param {boolean | null | undefined} allowSubagents
+ * @returns {string | null}
+ */
+export function ungatedSubagentFlagNotice(agent, allowSubagents) {
+  if (allowSubagents == null || agent === "claude" || agent === "codex") return null;
+  return `psu: subagent allow/deny applies to claude and codex only; ${agent} sessions are unaffected (no native subagent tool to gate).`;
+}
+
+/**
  * Native client tool-search lockout (owner directive 2026-09-11): every psu
  * launch loses claude's built-in `ToolSearch`, forcing discovery through
  * papercusp's `tools:find` (result-door-capped) and `tools:invoke` (zero schema
@@ -2390,6 +2452,7 @@ export function roleLaunchArgs(
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
         "--no-alt-screen",
+        ...(allowSubagents ? CODEX_SUBAGENT_OPT_IN_ARGS : []),
         ...modelArgsFor("codex", model),
       ],
     };
@@ -2530,6 +2593,7 @@ export function suLaunchArgs(
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
         "--no-alt-screen",
+        ...(allowSubagents ? CODEX_SUBAGENT_OPT_IN_ARGS : []),
       ],
     };
   }
@@ -2987,6 +3051,10 @@ export function resumeArgsFor(
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
         "--no-alt-screen",
+        // No CODEX_SUBAGENT_OPT_IN_ARGS here, whatever allowSubagents says: Codex
+        // fixes native subagents at session creation and resume/fork inherit it
+        // (D-008), so a `-c` here would be inert. launchResume prints
+        // codexResumeSubagentNotice instead.
         ...modelArgsFor("codex", model, { compactionLimit }),
         ...addDirArgs("codex", addDir),
         ...target,
@@ -6117,6 +6185,8 @@ function runtimeOmpOperatorBase(operatorUrl, env) {
  * preserve the already-resolved proxy/discovery target without adding a
  * network request to ordinary launches. Caller-supplied writer pins bypass
  * this helper in writeOmpSessionConfigDirAsync.
+ *
+ * @param {string} [operatorUrl]
  */
 export async function resolveOmpOperatorUrl(
   operatorUrl = undefined,
@@ -6979,6 +7049,14 @@ export const GATEWAY_CLIENT_AUTH_TOKEN = "papercusp-gateway";
  * so a LIVE `accounts:pin { agent: ownerId, account }` (already durable, already live-effective
  * per-request — no new mechanism) can dynamically re-route this resumed session with no respawn.
  * Omit to keep today's exact behavior (no identity header) — used by existing callers/tests.
+ *
+ * The `@param` types below are load-bearing for the same reason as gatewayAutoEnv's (WI-39692):
+ * without them the generated psu-launcher.d.mts publishes `ownerId?: undefined`, so no
+ * TypeScript caller can pass an ownerId.
+ *
+ * @param {string} account
+ * @param {string} [provider]
+ * @param {string} [ownerId]
  */
 export function gatewayPinEnv(
   account,
@@ -8160,23 +8238,110 @@ export function defaultClaudeAuthSettings(routeEnv = {}) {
   };
 }
 
-/** Add the default-account settings override at the central wrapper seam
- * shared by fresh, resume, and fork launches. Pure; exported for regression
+/**
+ * Settings every psu Claude launch carries in its per-session layer, on every
+ * account route (client-native-features-adoption-2026-10-21 D-004, P-006).
+ *
+ * Papercusp owns compaction (P-022 carry-respawn). nativeCompactionEnv already
+ * sets DISABLE_AUTO_COMPACT and DISABLE_COMPACT; on CLI 2.1.293 and 2.1.306 the
+ * idle-compaction decision also returns "compaction_off" under either variable.
+ * `idleCompaction: false` keeps idle compaction off if a later CLI separates it
+ * from that gate. It is written only to the per-launch `--settings` overlay and
+ * the isolated per-session settings.json, never to ~/.claude/settings.json,
+ * which would change the owner's own non-psu Claude sessions.
+ */
+export const PSU_CLAUDE_SESSION_SETTINGS = Object.freeze({
+  idleCompaction: false,
+});
+
+/** Account routes that carry the default-account auth override. */
+export const EXPLICIT_CLAUDE_ACCOUNT_ROUTES = Object.freeze([
+  "default",
+  "auto",
+  "pin",
+]);
+
+const isClaudeWrapperBin = (wrapperBin) =>
+  /(^|\/)claude(-su)?$/.test(String(wrapperBin || ""));
+
+/** The per-launch `--settings` overlay for a psu Claude launch: the session
+ * settings above on every route, plus the default-account auth override
+ * (defaultClaudeAuthSettings) on an explicit default/auto/pin route. Pure;
+ * exported for regression coverage. */
+export function psuClaudeLaunchSettings(routeEnv = {}) {
+  const explicitRoute = EXPLICIT_CLAUDE_ACCOUNT_ROUTES.includes(
+    routeEnv?.[ACCOUNT_ROUTING_MODE_ENV],
+  );
+  return {
+    ...(explicitRoute ? defaultClaudeAuthSettings(routeEnv) : {}),
+    ...PSU_CLAUDE_SESSION_SETTINGS,
+  };
+}
+
+/** Prepend the per-launch settings overlay at the central wrapper seam shared
+ * by fresh, resume, and fork launches (runWrapper) and by the background SDK
+ * engine (su-session-claude-engine). Every Claude launch gets it; other
+ * backends' argv is returned unchanged. Pure; exported for regression
  * coverage. */
-export function applyDefaultClaudeAuthSettingsArgs(wrapperBin, args, env) {
+export function applyPsuClaudeSettingsArgs(wrapperBin, args, env) {
   const list = Array.isArray(args) ? args : [];
-  if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ""))) return list;
-  if (!["default", "auto", "pin"].includes(env?.[ACCOUNT_ROUTING_MODE_ENV]))
-    return list;
+  if (!isClaudeWrapperBin(wrapperBin)) return list;
   // Global options must precede subcommands (`claude auth status --settings`
   // is rejected), so prepend rather than append. This is also valid for the
   // normal interactive/resume argv where every remaining token is an option or
   // the optional kickoff prompt.
   return [
     "--settings",
-    JSON.stringify(defaultClaudeAuthSettings(env)),
+    JSON.stringify(psuClaudeLaunchSettings(env)),
     ...list,
   ];
+}
+
+/**
+ * Re-exec-durable half of applyPsuClaudeSettingsArgs for the session settings:
+ * a Claude self-relaunch drops argv but re-reads the isolated per-session
+ * settings.json, so merge PSU_CLAUDE_SESSION_SETTINGS into it. Writes only when
+ * this launch has an isolated CLAUDE_CONFIG_DIR that is not the owner's own
+ * user-level Claude dir (`userClaudeDir`, default ~/.claude). Read-modify-write
+ * preserving every other key; atomic (tmp + rename). Fail-open: a write failure
+ * warns and the launch continues on the argv overlay and env switches.
+ * Returns true when it wrote. Exported for tests.
+ */
+export function persistPsuClaudeSessionSettings({
+  wrapperBin,
+  env,
+  userClaudeDir = join(homedir(), ".claude"),
+  log = (m) => process.stderr.write(m),
+}) {
+  try {
+    if (!isClaudeWrapperBin(wrapperBin)) return false;
+    const dir = (env?.CLAUDE_CONFIG_DIR ?? "").trim();
+    if (!dir) return false;
+    if (resolvePath(dir) === resolvePath(userClaudeDir)) return false;
+    const path = join(dir, "settings.json");
+    let current = {};
+    try {
+      current = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      current = {};
+    }
+    if (!current || typeof current !== "object" || Array.isArray(current))
+      current = {};
+    const next = { ...current, ...PSU_CLAUDE_SESSION_SETTINGS };
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(next, null, 2));
+    renameSync(tmp, path);
+    return true;
+  } catch (e) {
+    try {
+      log(
+        `psu: could not persist per-session Claude settings (${e?.message ?? e}) — launch continues on the --settings overlay and env switches.\n`,
+      );
+    } catch {
+      /* diagnostic only */
+    }
+    return false;
+  }
 }
 
 /**
@@ -10368,8 +10533,8 @@ export function persistReExecSafePermissions({
 
 /**
  * Remove copied user-level auth routing from an isolated default-account
- * session's settings.json. This is the re-exec-durable half of
- * applyDefaultClaudeAuthSettingsArgs: Claude self-relaunches can drop argv, but
+ * session's settings.json. This is the re-exec-durable half of the auth part of
+ * applyPsuClaudeSettingsArgs: Claude self-relaunches can drop argv, but
  * they re-read this file. We DELETE credential env keys instead of persisting
  * empty values because an empty CLAUDE_CODE_OAUTH_TOKEN suppresses the normal
  * file/Keychain login fallback.
@@ -12193,7 +12358,7 @@ export function applyHeadlessCodexBrowserPolicy(env) {
  */
 export function ccHookEnrollment(
   settingsText,
-  { event, hookName, scriptExists } = {},
+  { event, hookName, scriptExists, readFile } = {},
 ) {
   const misses = [];
   let cfg = null;
@@ -12205,10 +12370,11 @@ export function ccHookEnrollment(
       misses: ["settings.json missing or unparseable"],
     };
   }
-  const entries = Array.isArray(cfg?.hooks?.[event]) ? cfg.hooks[event] : [];
-  const cmds = entries
-    .flatMap((e) => (Array.isArray(e?.hooks) ? e.hooks : []))
-    .map((h) => (typeof h?.command === "string" ? h.command : ""));
+  // client-native-features-adoption-2026-10-21 P-004 (D-012): the hook may be
+  // carried by the enabled `papercusp` Claude plugin instead of an inline
+  // settings.json entry. `readFile` reads the plugin's hooks.json; without it
+  // only inline entries count.
+  const cmds = effectiveClaudeHookCommands({ settings: cfg, readFile }, event);
   const hookCmd = cmds.find((c) => c.includes(hookName));
   if (!hookCmd) {
     misses.push(`no ${event} entry runs ${hookName}`);
@@ -12259,6 +12425,78 @@ export function ccTurnStartMemoryHookEnrollment(
  * launched either way — this is best-effort self-heal + loud disclosure, not
  * a launch gate.
  */
+/** A file's text, or null when it cannot be read. */
+function readTextOrNull(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * client-native-features-adoption-2026-10-21 P-004 (D-012): the papercusp
+ * Claude hooks ship as the generated `papercusp` plugin. Detect a launch whose
+ * plugin rails are missing or disabled, or whose hooks are enrolled both inline
+ * and by the plugin (each would fire twice), BEFORE the spawn: self-repair once
+ * through the operator's install route (it rewrites the plugin, re-enrolls it
+ * and strips inline duplicates), re-verify, and print a loud banner if a
+ * problem remains. Never blocks the launch. Returns the final verdict.
+ */
+export function ensureClaudePluginRails(
+  env,
+  {
+    settingsPath = join(homedir(), ".claude", "settings.json"),
+    readFile = readTextOrNull,
+    repair = repairCcHooksViaInstallRoute,
+    log = (line) => console.error(line),
+  } = {},
+) {
+  if ((env.PAPERCUSP_AGENT || "") !== "claude") return null;
+  const check = () =>
+    claudeHookCarrierVerdict({ settings: readFile(settingsPath), readFile });
+  let verdict = check();
+  if (verdict.problems.length === 0) return verdict;
+  const before = verdict.problems;
+  repair();
+  verdict = check();
+  if (verdict.problems.length === 0) {
+    log(`psu: papercusp Claude plugin rails repaired via the operator install route (${before.join("; ")}).`);
+    return verdict;
+  }
+  log(
+    [
+      "",
+      `⚠⚠ PAPERCUSP CLAUDE PLUGIN RAILS: ${verdict.carrier === "double" ? "HOOKS ENROLLED TWICE" : verdict.carrier === "inline" ? "PLUGIN NOT INSTALLED (hooks still inline)" : "MISSING OR DISABLED"} ⚠⚠`,
+      ...verdict.problems.map((p) => `   ${p}`),
+      verdict.carrier === "none"
+        ? "   This session has NO papercusp hooks: no file-lock arbitration, no coord delivery, no guards."
+        : verdict.carrier === "double"
+          ? "   Every hook listed above fires twice in this session."
+          : "   Hooks still run, from settings.json.",
+      `   Fix: curl -X POST ${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`,
+      "   Launching anyway.",
+      "",
+    ].join("\n"),
+  );
+  return verdict;
+}
+
+/** Re-run the operator's idempotent hook install (the same merge every operator
+ *  boot runs). Loopback-only; short timeout; failure is left to the caller's
+ *  re-verify. */
+function repairCcHooksViaInstallRoute() {
+  try {
+    spawnSync(
+      "curl",
+      ["-fsS", "-m", "4", "-X", "POST", `${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`],
+      { encoding: "utf8", timeout: 6000 },
+    );
+  } catch {
+    /* unreachable operator → the caller's banner */
+  }
+}
+
 function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
   if ((env.PAPERCUSP_AGENT || "") !== "claude") return; // codex bakes per-session hooks.json; omp uses its own coord-hook
   const settingsPath = join(homedir(), ".claude", "settings.json");
@@ -12270,10 +12508,12 @@ function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
     }
   };
   const probe = (p) => existsSync(p);
+  const readFile = readTextOrNull;
   let verdict = ccHookEnrollment(read(), {
     event,
     hookName,
     scriptExists: probe,
+    readFile,
   });
   if (verdict.enrolled) return;
   // Self-repair: the operator re-runs the same idempotent hook merge its boot
@@ -12298,7 +12538,7 @@ function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
   } catch {
     /* unreachable operator → banner below */
   }
-  verdict = ccHookEnrollment(read(), { event, hookName, scriptExists: probe });
+  verdict = ccHookEnrollment(read(), { event, hookName, scriptExists: probe, readFile });
   if (verdict.enrolled) {
     console.error(
       `psu: ${hookName} was missing from ~/.claude/settings.json — repaired via the operator install route.`,
@@ -12772,9 +13012,12 @@ export function runWrapper(options) {
   // gateway even after the inherited process env is clean. Add a
   // highest-precedence override for this launch, and scrub the isolated copied
   // user settings so a Claude self-reexec (which drops argv) stays on the same
-  // explicit default-account route.
-  args = applyDefaultClaudeAuthSettingsArgs(wrapperBin, args, env);
+  // explicit default-account route. The same overlay carries the per-session
+  // settings every psu Claude launch needs on every route (idleCompaction:false,
+  // D-004), mirrored into the isolated settings.json for the same re-exec reason.
+  args = applyPsuClaudeSettingsArgs(wrapperBin, args, env);
   persistDefaultClaudeAuthSettings({ wrapperBin, env });
+  persistPsuClaudeSessionSettings({ wrapperBin, env });
   // The GitHub Copilot MCP plugin (a Claude plugin OMP also discovers) needs
   // GITHUB_PERSONAL_ACCESS_TOKEN; unset → "Authorization header is badly formatted" (HTTP 400) on
   // every claude/omp launch. Export the gh CLI token when unset (verified it authenticates the MCP).
@@ -12804,6 +13047,17 @@ export function runWrapper(options) {
   ensureCcMidTurnContextHookEnrollment(env);
   // P-011: and the identity hook sinks (pre-tool guard, stop, compaction).
   ensureCcIdentityHookEnrollment(env);
+  // client-native-features-adoption-2026-10-21 P-004: the hooks above ship as the
+  // generated `papercusp` Claude plugin — detect missing/disabled plugin rails or
+  // a double enrollment, and guard the file-lock rail itself.
+  ensureClaudePluginRails(env);
+  ensureCcHookEnrollment(env, {
+    event: "PreToolUse",
+    hookName: "pretooluse-locks-acquire.sh",
+    label: "FILE-LOCK HOOK",
+    degradedNote:
+      "THIS SESSION'S EDITS TAKE NO FILE LOCK — a peer editing the same file on the shared tree is not arbitrated",
+  });
   // turn-lifecycle-control Phase 3: when enabled + interactive, host the agent
   // through a managed pty + owner-only control socket so the operator can inject
   // a wake (or, Phase 4, an interrupt) into the LIVE session rather than parking
@@ -14515,6 +14769,8 @@ async function launchResume(
             env.PAPERCUSP_SID,
           )
         : null;
+    const resumeSubagentNotice = codexResumeSubagentNotice(session.agent, allowSubagents, { fork });
+    if (resumeSubagentNotice) console.error(resumeSubagentNotice);
     const { bin, args } = resumeArgsFor(session, {
       coordExtPath,
       injectHookPath,
@@ -18568,11 +18824,8 @@ export async function launchFreshSu(selections, args, {
       "psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.",
     );
   }
-  if (args.allowSubagents != null && res.agent !== "claude") {
-    console.error(
-      `psu: subagent allow/deny is claude-only; ${res.agent} sessions are unaffected (no deny flag wired up — they keep their native subagent tool).`,
-    );
-  }
+  const ungatedNotice = ungatedSubagentFlagNotice(res.agent, args.allowSubagents);
+  if (ungatedNotice) console.error(ungatedNotice);
   // First-class --add-dir (claude/codex) then the generic `--` passthrough — both
   // forwarded verbatim to the backend CLI after psu's own flags.
   // A managed Codex compaction budget also owns its native override. A stale

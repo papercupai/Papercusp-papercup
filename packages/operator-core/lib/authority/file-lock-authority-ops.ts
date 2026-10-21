@@ -74,6 +74,11 @@ export interface FileLockReleaseParams {
   /** Positive proof that a recognized native edit completed before release. */
   nativeEditProof?: NativeEditProof;
   operation?: HookLockOperation & { paths: string[]; intent: string; ttlSec: number; outcome: 'cancelled' | 'completed' };
+  /** WI-6554700010019499: the releasing caller's workspace + contributor, stamped onto the
+   *  edit-attribution row a hook-operation finish writes. Without it that row lands with
+   *  workspace_id NULL, and git-sync's workspace-scoped roster read never sees the author. */
+  workspaceId?: string;
+  contributor?: string;
 }
 
 /** Hook-only extension on the maintained acquire/release/cancel surfaces. */

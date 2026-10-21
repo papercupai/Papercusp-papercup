@@ -843,7 +843,17 @@ describe('installPapercuspFiles', () => {
       expect(result.claudeSettingsMerged).toBe(true);
       expect(result.extensionWritten).toBe(true);
       const settings = JSON.parse(await fs.readFile(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
-      expect(JSON.stringify(settings.hooks?.UserPromptSubmit ?? [])).toContain('userpromptsubmit-memory.sh');
+      // client-native-features-adoption-2026-10-21 P-004 (D-012): the hook ships in the generated
+      // papercusp Claude plugin, which settings.json enables; it is no longer enrolled inline.
+      const pluginHooks = JSON.parse(
+        await fs.readFile(
+          path.join(tmpHome, '.papercusp', 'claude-plugins', 'plugins', 'papercusp', 'hooks', 'hooks.json'),
+          'utf8',
+        ),
+      ).hooks;
+      expect(JSON.stringify(pluginHooks.UserPromptSubmit ?? [])).toContain('userpromptsubmit-memory.sh');
+      expect(settings.enabledPlugins?.['papercusp@papercusp-local']).toBe(true);
+      expect(JSON.stringify(settings.hooks?.UserPromptSubmit ?? [])).not.toContain('userpromptsubmit-memory.sh');
     } finally {
       process.chdir(prevCwd);
     }

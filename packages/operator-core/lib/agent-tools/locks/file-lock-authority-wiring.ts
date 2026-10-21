@@ -187,10 +187,14 @@ export async function finishHookOperationAtAuthority(p: FileLockReleaseParams): 
     if (proof) {
       // Covers a lost acquire reply and a deliberately retained hold as well as
       // paths released now. Only the validated operation's requested scope wins.
+      // WI-6554700010019499: workspaceId is load-bearing — git-sync reads this ledger
+      // scoped by workspace, so a NULL here makes the author invisible to commit
+      // attribution and to the migration-dependency fence.
       await recordEditAttributionStrict({
         repoRoot: p.coordinationDomain, files: result.requestedPaths, agentId: p.owner,
         intent: `PostToolUse:${proof.source}:${proof.tool ?? proof.tools?.join(',')}`,
         goalRef: result.goalRef ?? undefined, dispatchCallId: operation.id,
+        workspaceId: p.workspaceId, contributor: p.contributor,
       });
     }
     return { ...result, operationId: operation.id, attributed: proof ? result.requestedPaths : [] };

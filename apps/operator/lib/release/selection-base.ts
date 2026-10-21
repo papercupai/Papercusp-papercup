@@ -253,3 +253,51 @@ export function selectionBaseLine(
     `set ${SELECTION_BASE_DISABLE_ENV}=0 to disable)`
   );
 }
+
+export interface EarlyTypecheckBaseResult {
+  base: string | null;
+  source: "repair-candidate" | "upstream-integration" | "last-ready";
+  /** Why the upstream anchor was not used (last-ready only). */
+  reason?: string;
+}
+
+/**
+ * D-064 (WI-6554700010019329): the diff base for the early changed-file typecheck preflight.
+ *
+ * A frozen repair round keeps its frozen-candidate base (P-035). A fork-mode pot
+ * (`PAPERCUSP_GATE_UPSTREAM_REF` set) anchors at merge-base(candidate, upstream) — the same
+ * anchor its suite selection uses — so the preflight checks the fork's own delta, not the
+ * upstream history between the fork's last green and the candidate. Measured on
+ * papercusp-pr-drill-20261014 run a9992c54 before this: 12,235 files, 1,346s. The unscoped
+ * post-suite typechecks still judge the whole head, so nothing goes unchecked.
+ *
+ * Every other case — not a fork pot, no prior green pin, the selection base disabled, an anchor
+ * miss, a git fault — keeps `lastReady`, so the preflight is never narrower than its historical
+ * radius except through the one D-064 anchor.
+ */
+export async function resolveEarlyTypecheckBase(input: {
+  lastReady: string | null;
+  candidate: string;
+  repairBase: string | null;
+  env: Record<string, string | undefined>;
+  git: SelectionBaseGit;
+}): Promise<EarlyTypecheckBaseResult> {
+  if (input.repairBase) return { base: input.repairBase, source: "repair-candidate" };
+  const keep = (reason: string): EarlyTypecheckBaseResult => ({
+    base: input.lastReady,
+    source: "last-ready",
+    reason,
+  });
+  if (!input.lastReady) return keep("no-last-ready");
+  if (input.env[SELECTION_BASE_DISABLE_ENV] === "0") return keep("disabled");
+  const upstreamRef = input.env[GATE_UPSTREAM_REF_ENV]?.trim();
+  if (!upstreamRef) return keep("not-a-fork-pot");
+  try {
+    const up = await resolveUpstreamIntegrationAnchor(input.git, upstreamRef, input.candidate);
+    return "anchor" in up
+      ? { base: up.anchor, source: "upstream-integration" }
+      : keep(up.reason);
+  } catch (e) {
+    return keep(`resolver-error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}

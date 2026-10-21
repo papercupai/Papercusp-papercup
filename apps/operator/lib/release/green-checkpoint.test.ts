@@ -2271,6 +2271,97 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     }
   });
 
+  // WI-6554700010019277 (run 425120c3, 2026-10-21): an admit's R6 pre-check marker wrote the
+  // row mid-run WITHOUT moving the lineage ref, so the healer never refreshed its snapshot; the
+  // gen:*:check heal admission was then persisted with that snapshot's stale version, threw
+  // FrozenRepairQueueWriteConflictError, and the whole verification produced no verdict.
+  it("WI-6554700010019277: a field-only peer write during verification does not crash the run — the gen:*:check heal is recorded on the fresh row", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const admitted = await commit("b", "still broken", "admitted repair");
+    const healed = await commit("gen.json", "regenerated", "gate gen:*:check heal");
+    const requestedAtMs = Date.now();
+    const cell = {
+      queue: {
+        ...p027Queue(frozen, ready),
+        repairHead: admitted,
+        failingTests: ["lint:tsc"],
+        signature: [{
+          id: "lint:tsc", kind: "lint-leg", recipe: "npm run lint:tsc",
+          admittedRound: 1, measuredHead: frozen,
+        }],
+        retestRequested: { candidate: frozen, repairHead: admitted, requestedAtMs },
+      } as FrozenCandidateRepairQueue | null,
+    };
+    const { deps } = stubDeps(false);
+    const { writes } = wireP027Transition(deps, cell);
+    // The real writer is compare-and-set on updatedAtMs; a stale expected version throws.
+    const casMisses: number[] = [];
+    deps.writeFrozenRepairQueue = async (next, options) => {
+      const current = cell.queue?.updatedAtMs ?? null;
+      if (options.expectedUpdatedAtMs !== current) {
+        casMisses.push(options.expectedUpdatedAtMs ?? -1);
+        throw new Error(
+          `frozen repair queue write conflict: expected ${options.expectedUpdatedAtMs}, found ${current}`,
+        );
+      }
+      if (next) writes.push(next);
+      cell.queue = next;
+    };
+    const peerReservation = { token: "peer-admit-precheck", claimedAtMs: requestedAtMs, expiresAtMs: requestedAtMs + 60_000 };
+    deps.runGateAtRef = async () => {
+      // Mid-verification, a peer's admit persists its pre-check marker: the row version moves,
+      // repairHead and the lineage ref do not.
+      if (cell.queue && !cell.queue.dispatchReservation) {
+        cell.queue = {
+          ...cell.queue,
+          dispatchReservation: peerReservation,
+          updatedAtMs: cell.queue.updatedAtMs + 7,
+        };
+      }
+      return { pass: false, summary: "lint:tsc FAIL at the requested head" };
+    };
+    deps.consumeFrozenRepairRetestRequest = async (input) => {
+      if (!cell.queue) return { kind: "absent", queue: null, request: null };
+      const decision = settleFrozenRepairRetestRequest(cell.queue, input.judgedRepairHead);
+      cell.queue = decision.queue;
+      return decision;
+    };
+    const genId = "@papercusp/operator-core :: gen:prompt-projections:check";
+    deps.healGenCheckLegs = async (queue) => ({
+      kind: "healed",
+      healedIds: [genId],
+      entry: {
+        atMs: Date.now(),
+        actor: "gate",
+        source: { ref: healed, sha: healed },
+        fromRepairHead: queue.repairHead,
+        toRepairHead: healed,
+        paths: ["gen.json"],
+        unchanged: [],
+        blobs: {},
+      },
+      fromRepairHead: queue.repairHead,
+      toRepairHead: healed,
+      paths: ["gen.json"],
+      reason: "gen:prompt-projections:check self-heal (test)",
+    });
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(casMisses).toEqual([]);
+    expect(logs.some((l) => l.includes("write conflict"))).toBe(false);
+    expect(result).toMatchObject({ candidate: frozen, frozenCandidate: frozen, green: null });
+    expect(result.reason).not.toBe("error");
+    // The heal admission landed on the row as it exists now, carrying the peer's marker.
+    expect(cell.queue?.repairHead).toBe(healed);
+    expect(cell.queue?.admissions?.at(-1)).toMatchObject({ actor: "gate", fromRepairHead: admitted, toRepairHead: healed });
+    expect(cell.queue?.dispatchReservation?.token).toBe(peerReservation.token);
+  });
+
   it.each([
     {
       reason: "shared gate-run wall budget",
@@ -6840,6 +6931,45 @@ describe("runGreenCheckpoint", () => {
     expect(calls.indexOf("runGreen")).toBeGreaterThan(
       calls.indexOf("runChangedFileTypecheckPreflight"),
     );
+  });
+
+  it("D-064 (WI-6554700010019329): a fork pot's early typecheck diffs from the upstream merge-base, not the fork-only lastReady", async () => {
+    const upstreamBase = await commit("packages/operator-core/lib/a.ts", "export const a = 1;\n", "upstream base");
+    await git(repo, ["update-ref", "refs/remotes/origin/staging", upstreamBase]);
+    const forkOnly = await commit("packages/operator-core/lib/fork.ts", "export const fork = 1;\n", "fork-only");
+    await git(repo, ["branch", "ready", forkOnly]);
+    const c2 = await commit("packages/operator-core/lib/a.ts", "export const a = 2;\n", "fork delta");
+    const prior = process.env.PAPERCUSP_GATE_UPSTREAM_REF;
+    process.env.PAPERCUSP_GATE_UPSTREAM_REF = "refs/remotes/origin/staging";
+    try {
+      const { deps, calls } = stubDeps(true);
+      const logs: string[] = [];
+      deps.log = (line: string) => { logs.push(line); };
+      const ranges: Array<{ from: string; to: string }> = [];
+      deps.changedFilesForRange = async (from, to) => {
+        ranges.push({ from, to });
+        return ["packages/operator-core/lib/a.ts"];
+      };
+      deps.runChangedFileTypecheckPreflight = async (_files, range) => {
+        calls.push("runChangedFileTypecheckPreflight");
+        expect(range).toEqual({ from: upstreamBase, to: c2 });
+        return { status: "passed", summary: "LINT_TSC_RESULT status=clean" };
+      };
+
+      await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(ranges[0]).toEqual({ from: upstreamBase, to: c2 });
+      expect(ranges[0]?.from).not.toBe(forkOnly);
+      expect(calls).toContain("runChangedFileTypecheckPreflight");
+      expect(
+        logs.some((l) =>
+          l.includes(`early changed-file typecheck preflight: base=${upstreamBase.slice(0, 12)} source=upstream-integration`),
+        ),
+      ).toBe(true);
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_GATE_UPSTREAM_REF;
+      else process.env.PAPERCUSP_GATE_UPSTREAM_REF = prior;
+    }
   });
 
   it.each([true, false])("P-035: repair preflight uses the frozen delta and preserves the full gate verdict (green=%s)", async (fullGateGreen) => {

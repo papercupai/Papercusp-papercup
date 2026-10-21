@@ -254,6 +254,13 @@ vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: (ids: string[]) => fetchContextPressureMock(ids),
 }));
 
+const neutralSuccessorGuardMock = vi.hoisted(() => vi.fn());
+vi.mock('../../lineage-neutral-successor-guard', () => ({
+  findLineageNeutralSuccessorRefusal: (...args: unknown[]) => neutralSuccessorGuardMock(...args),
+  renderLineageNeutralSuccessorRefusal: (refusal: { message: string }) =>
+    `lineage_neutral_successor_refused: ${refusal.message}`,
+}));
+
 const clearContextEstimateMock = vi.hoisted(() => vi.fn(async (_ownerId: string) => {}));
 vi.mock('../coordination/presence', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -378,6 +385,7 @@ beforeEach(() => {
   fetchPresenceFleetMock.mockResolvedValue(new Map());
   latestFleetMembershipMock.mockResolvedValue(null);
   fetchContextPressureMock.mockResolvedValue(new Map());
+  neutralSuccessorGuardMock.mockReset().mockResolvedValue(null);
   clearContextEstimateMock.mockReset().mockResolvedValue(undefined);
   buildCarryBriefMock.mockResolvedValue({ ownerId: 'su-a1a71' });
   renderCarryBriefTextMock.mockReturnValue('');
@@ -844,6 +852,7 @@ describe('GOAL admission receipt (EI-25166050736574344)', () => {
 describe('published launch args schema', () => {
   it('publishes the conditional non-empty brief requirement at the tool level', () => {
     expect(launchAgent.description).toContain('`resume`/`fork` require a non-empty top-level `brief`');
+    expect(launchAgent.description).toContain('system:lineage-neutral-successor');
   });
 
   it('publishes successor/restoreVisible mutual exclusion and the visible successor default', () => {
@@ -885,6 +894,22 @@ describe('published launch args schema', () => {
       launchAgent.args.safeParse({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }).success,
     ).toBe(true);
     expect(launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' } }).success).toBe(true);
+  });
+
+  it('permits the brief-free neutral mode only on a resume and rejects prompt overrides', () => {
+    const request = {
+      resume: { agentId: 'su-a1a71' },
+      successorLineageMode: 'system:lineage-neutral-successor',
+    };
+    expect(launchAgent.args.safeParse(request).success).toBe(true);
+    expect(launchAgent.args.safeParse({ ...request, brief: 'caller prompt' }).success).toBe(false);
+    expect(launchAgent.args.safeParse({ ...request, extraArgs: [] }).success).toBe(false);
+    expect(launchAgent.args.safeParse({ ...request, carry: 'cold' }).success).toBe(false);
+    expect(launchAgent.args.safeParse({
+      successor: { agentId: 'su-a1a71' },
+      successorLineageMode: 'system:lineage-neutral-successor',
+    }).success).toBe(false);
+    expect(launchAgent.args.safeParse({ ...request, fork: true }).success).toBe(false);
   });
 
   it('accepts the explicit independent fresh-launch mode', () => {
@@ -3493,6 +3518,123 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('current context is CRITICAL');
     expect(textOf(res)).toContain('launch a FRESH agent with a context-seeded brief');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('uses a neutral system lineage only for an eligible dormant critical frozen-tests author', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead,
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      feature: 'WI-6554700010017145',
+    });
+    fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
+    buildCarryBriefMock.mockResolvedValue({ ownerId: 'su-a1a71' });
+    renderCarryBriefTextMock.mockReturnValue('source checkpoint: rebind the frozen tests');
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-neutral-successor', successfulCalls: 1 }],
+      note: 'neutral successor verified',
+    });
+
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-a1a71' },
+      successorLineageMode: 'system:lineage-neutral-successor',
+    }, ctx);
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledOnce();
+    expect(spawnedCommand()).toContain('system:lineage-neutral-successor');
+    expect(spawnedCommand()).not.toContain('--launched-by=su-caller');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('source checkpoint: rebind the frozen tests');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).not.toContain('caller prompt');
+    expect(neutralSuccessorGuardMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      workItemId: 'WI-6554700010017145',
+      sourceOwnerId: 'su-a1a71',
+    });
+    expect(claimAgentLaunchMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-test',
+      launchedBy: 'su-caller',
+    }));
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ launchedBy: 'su-caller' }),
+    }), expect.any(Function));
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'successor', resumedOwnerId: 'su-a1a71' });
+  });
+
+  it('uses system process provenance for headless neutral successors but keeps caller task attribution', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead,
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      feature: 'WI-6554700010017145',
+    });
+    fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
+    buildCarryBriefMock.mockResolvedValue({ ownerId: 'su-a1a71' });
+    renderCarryBriefTextMock.mockReturnValue('source checkpoint: rebind the frozen tests');
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-neutral-headless', successfulCalls: 1 }],
+      note: 'neutral headless successor verified',
+    });
+
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-a1a71' },
+      successorLineageMode: 'system:lineage-neutral-successor',
+      headless: true,
+    }, ctx);
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledOnce();
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('system:lineage-neutral-successor');
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_KICKOFF_PROMPT).toContain('source checkpoint: rebind the frozen tests');
+    expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({ launchedBy: 'system:lineage-neutral-successor' });
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ launchedBy: 'su-caller' }),
+    }), expect.any(Function));
+    expect(claimAgentLaunchMock).toHaveBeenCalledWith(expect.objectContaining({ launchedBy: 'su-caller' }));
+  });
+
+  it.each([
+    ['brief', { brief: 'caller prompt' }],
+    ['extraArgs', { extraArgs: ['--append-system-prompt=caller text'] }],
+    ['carry', { carry: 'cold' }],
+    ['launchContext', { launchContext: '/tmp/caller-context.md' }],
+  ])('refuses a caller-authored %s override in neutral lineage mode', async (_label, override) => {
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-a1a71' },
+      successorLineageMode: 'system:lineage-neutral-successor',
+      ...override,
+    } as never, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('Caller-authored prompt/profile overrides are refused');
+    expect(resolveResumeTargetMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses neutral lineage when the source does not need a critical-context successor', async () => {
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead,
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      feature: 'WI-6554700010017145',
+    });
+
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-a1a71' },
+      successorLineageMode: 'system:lineage-neutral-successor',
+    }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('requires the source to be dormant at critical context pressure');
+    expect(neutralSuccessorGuardMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 

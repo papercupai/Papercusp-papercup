@@ -36,6 +36,7 @@ import {
   GATE_UPSTREAM_REF_ENV,
   SELECTION_BASE_DISABLE_ENV,
   TEST_CERTIFIED_REF,
+  resolveEarlyTypecheckBase,
   resolveSelectionBase,
   selectionBaseGitFor,
   selectionBaseLine,
@@ -414,5 +415,78 @@ describe("selection base: a real fork history selects only the fork's own delta 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── D-064 (WI-6554700010019329): the early typecheck preflight uses the same anchor ──
+// Measured on papercusp-pr-drill-20261014 run a9992c54 before this: the preflight diffed from
+// the fork's last green and typechecked 12,235 files in 1,346s, all of which the unscoped
+// post-suite typecheck re-checks anyway.
+
+function earlyInput(overrides: Record<string, unknown> = {}) {
+  return {
+    lastReady: LAST_READY,
+    candidate: HEAD,
+    repairBase: null as string | null,
+    env: {} as Record<string, string | undefined>,
+    ...overrides,
+  };
+}
+
+describe("early typecheck base: fork pots anchor at the upstream merge-base (D-064)", () => {
+  it("anchors a fork pot's initial candidate at merge-base(candidate, upstream)", async () => {
+    const { git } = fakeGit(HEALTHY_UPSTREAM);
+    const r = await resolveEarlyTypecheckBase({ ...earlyInput({ env: forkEnv() }), git });
+    expect(r).toEqual({ base: MERGE_BASE, source: "upstream-integration" });
+  });
+
+  it("keeps the frozen repair candidate on a repair round, without asking git", async () => {
+    const { git, calls } = fakeGit(HEALTHY_UPSTREAM);
+    const r = await resolveEarlyTypecheckBase({
+      ...earlyInput({ env: forkEnv(), repairBase: FROZEN }),
+      git,
+    });
+    expect(r).toEqual({ base: FROZEN, source: "repair-candidate" });
+    expect(calls).toEqual([]);
+  });
+
+  it("keeps lastReady for an ordinary (direct) pot, without asking git", async () => {
+    const { git, calls } = fakeGit(HEALTHY_UPSTREAM);
+    const r = await resolveEarlyTypecheckBase({ ...earlyInput(), git });
+    expect(r).toEqual({ base: LAST_READY, source: "last-ready", reason: "not-a-fork-pot" });
+    expect(calls).toEqual([]);
+  });
+
+  it("keeps lastReady when the selection base is disabled", async () => {
+    const { git } = fakeGit(HEALTHY_UPSTREAM);
+    const env = { ...forkEnv(), [SELECTION_BASE_DISABLE_ENV]: "0" };
+    const r = await resolveEarlyTypecheckBase({ ...earlyInput({ env }), git });
+    expect(r).toEqual({ base: LAST_READY, source: "last-ready", reason: "disabled" });
+  });
+
+  it("keeps a null lastReady (the preflight skips) even on a fork pot", async () => {
+    const { git } = fakeGit(HEALTHY_UPSTREAM);
+    const r = await resolveEarlyTypecheckBase({ ...earlyInput({ env: forkEnv(), lastReady: null }), git });
+    expect(r).toEqual({ base: null, source: "last-ready", reason: "no-last-ready" });
+  });
+
+  it("falls back to lastReady with the anchor's reason when the upstream ref is missing", async () => {
+    const { git } = fakeGit({});
+    const r = await resolveEarlyTypecheckBase({ ...earlyInput({ env: forkEnv() }), git });
+    expect(r).toEqual({ base: LAST_READY, source: "last-ready", reason: "upstream-ref-missing" });
+  });
+
+  it("falls back to lastReady when the candidate is already on the upstream branch", async () => {
+    const { git } = fakeGit({ [UPSTREAM_REV_PARSE]: UPSTREAM_TIP, [UPSTREAM_MERGE_BASE]: HEAD });
+    const r = await resolveEarlyTypecheckBase({ ...earlyInput({ env: forkEnv() }), git });
+    expect(r).toEqual({ base: LAST_READY, source: "last-ready", reason: "upstream-integration-at-head" });
+  });
+
+  it("falls back to lastReady when git throws", async () => {
+    const git = async (): Promise<string | null> => {
+      throw new Error("boom");
+    };
+    const r = await resolveEarlyTypecheckBase({ ...earlyInput({ env: forkEnv() }), git });
+    expect(r).toEqual({ base: LAST_READY, source: "last-ready", reason: "resolver-error: boom" });
   });
 });

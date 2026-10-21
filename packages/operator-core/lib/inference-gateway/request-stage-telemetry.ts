@@ -785,6 +785,8 @@ export interface GatewayRequestTimeline {
   providerIdentity?: { responseId: string; model: string; effort: string | null; accountId: string } | null;
   cacheRouting: GatewayCacheRoutingDecision;
   cache: GatewayCacheObservation;
+  /** Account selected for each kernel attempt, in order; absent on older snapshots. */
+  attemptAccountIds?: readonly (string | null)[];
   nativeCorrelation: GatewayNativeCorrelation;
   /** Opted-in HTTP lanes only. Empty calls do not prove no provider request.
    * Undici write observations are not remote receipt, billing or admission. */
@@ -1013,6 +1015,7 @@ export class GatewayRequestSpan {
   private providerIdentity: GatewayRequestTimeline['providerIdentity'] = null;
   private cacheRouting: GatewayCacheRoutingDecision = 'not-applicable';
   private readonly cache = emptyCacheObservation();
+  private readonly attemptAccountIds: Array<string | null> = [];
   private nativeCorrelation = emptyNativeCorrelation();
   private readonly upstreamWrites: GatewayRequestTimeline['upstreamWrites'] = { calls: [], droppedCalls: 0 };
   private readonly previousObservedRequestGapMs: number | null;
@@ -1171,6 +1174,11 @@ export class GatewayRequestSpan {
     if (!this.finished) this.cache.servingAccountId = boundedIdentifier(accountId, 120);
   }
 
+  recordAttemptAccountId(accountId: string | null | undefined): void {
+    if (this.finished) return;
+    this.attemptAccountIds.push(boundedIdentifier(accountId, 120));
+  }
+
   /** Observe the actual HTTP client's write lifecycle around one upstream
    * fetch. Buffered gateway requests finish writing before response headers;
    * absent/late/unsupported diagnostics stay absent, never inferred from a
@@ -1303,6 +1311,7 @@ export class GatewayRequestSpan {
       providerIdentity: this.providerIdentity ? { ...this.providerIdentity } : null,
       cacheRouting: this.cacheRouting,
       cache: cloneCacheObservation(this.cache),
+      attemptAccountIds: [...this.attemptAccountIds],
       nativeCorrelation: { ...this.nativeCorrelation },
       upstreamWrites: cloneUpstreamWrites(this.upstreamWrites),
       previousObservedRequestGapMs: this.previousObservedRequestGapMs,

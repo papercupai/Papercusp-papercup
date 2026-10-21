@@ -261,8 +261,10 @@ export default defineTool({
     if (args.hook_operation) {
       const op = args.hook_operation;
       const { routeHookOperationFinish } = await import('./file-lock-authority-wiring');
+      const identity = resolveAgentIdentity(ctx);
       return textResult(await routeHookOperationFinish({
         owner: ownerId, coordinationDomain, nativeEditProof: args.native_edit_proof,
+        workspaceId: identity.workspaceId ?? undefined, contributor: identity.userId ?? undefined,
         operation: { id: op.id, deadline: op.deadline, paths: op.paths, intent: op.intent,
           ttlSec: op.ttl_sec, outcome: 'completed' },
       }, op.authority));

@@ -507,6 +507,19 @@ describe('release:repair-queue', () => {
     }
   });
 
+  it('admits a sibling closure larger than 50 paths in one call (WI-6554700010019489)', () => {
+    // Measured 2026-10-21: the plan-types cohort needed 52 paths in ONE admission (sources and
+    // their tests are a single closure), and the old 50-path bound made it unadmittable.
+    const paths = (n: number) => Array.from({ length: n }, (_, i) => `lib/cohort/file-${i}.ts`);
+    const max = repairQueueModule.REPAIR_QUEUE_ADMIT_MAX_PATHS;
+    expect(max).toBeGreaterThanOrEqual(150);
+    for (const op of ['admit', 'converge'] as const) {
+      expect(tool.args.safeParse({ op, paths: paths(52) }).success).toBe(true);
+      expect(tool.args.safeParse({ op, paths: paths(max) }).success).toBe(true);
+      expect(tool.args.safeParse({ op, paths: paths(max + 1) }).success).toBe(false);
+    }
+  });
+
   it('accepts workItem on both admission variants', () => {
     const workItem = 'WI-10000288';
     expect(tool.args.safeParse({ op: 'admit', paths: ['lib/red.test.ts'], workItem }).success).toBe(true);

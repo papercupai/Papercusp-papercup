@@ -67,6 +67,16 @@ vi.mock('../../../harness-registry', async (original) => {
 vi.mock('../../../scaffold-harness-schema', () => ({
   scaffoldHarnessSchema: async (slug: string) => { io.schema(slug); io.schemas.add(slug); },
 }));
+vi.mock('../../../blueprint/materialize-triggers', () => ({
+  materializeBlueprintTriggers: async () => [],
+}));
+vi.mock('../../blueprint/_resolve', () => ({
+  resolveAndValidate: (blueprint: Record<string, unknown>) => ({
+    ok: true,
+    blueprint: { ...blueprint, knobs: { requiresRepo: false }, dependencies: {} },
+    validation: { ok: true, errors: [], warnings: [] },
+  }),
+}));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => { throw new Error('Unit controls must not open a database'); },
@@ -123,6 +133,21 @@ beforeEach(() => {
 });
 
 describe('registration-only unit contract controls', () => {
+  it('ADM-P006-ORDINARY-MANAGEMENT provisions the schema for ordinary managed creation', async () => {
+    const slug = 'ordinary-control';
+    const result = await invoke({
+      slug,
+      path: '/unit-proof/ordinary',
+      blueprint: { id: slug },
+    });
+
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provisioning: { ok: true } });
+    expect(io.schema).toHaveBeenCalledExactlyOnceWith(slug);
+    expect(io.schemas).toEqual(new Set(['existing-schema', slug]));
+    expect(io.registry.projects).toEqual([{ slug, path: '/unit-proof/ordinary' }]);
+    expect(io.exec).not.toHaveBeenCalled();
+  });
+
   it('ADM-P006-ROOT-LOOKUP resolves the canonical registered checkout', async () => {
     expect(await invoke({ ...args(), path: '/unit-proof/alias' })).toMatchObject({ ok: true, path: root });
     expect(resolveHarnessContentPath(io.registry, 'proof-root')).toBe(root);

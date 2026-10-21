@@ -1475,10 +1475,10 @@ export async function reconcileLoopRoutines(
            lw.last_wake_created_at,
            lw.status AS last_wake_status,
            lw.channel AS last_wake_channel,
-           -- EI-21743034835075378: pair each loop-fire USER prompt with the
-           -- assistant output before the next user prompt. Unlike the
-           -- owner-wide lifecycle/journal/presence clocks below, this proves
-           -- that THIS routine's delivered wake became an actual loop turn.
+           -- EI-21743034835075378 / WI-6554700010019416: pair only the
+           -- loop-fire USER prompt whose real-time start stamp carries THIS
+           -- routine's current wakeCount. A timestamp-only max can select a
+           -- delayed earlier fire after a newer dispatch (stale9/current10).
            (SELECT max((
               SELECT max(a2.ts)
                 FROM harness_shared.session_turns a2
@@ -1497,11 +1497,25 @@ export async function reconcileLoopRoutines(
                           AND u2.turn_idx > u.turn_idx
                      ), 2147483647)
             ))
-              FROM harness_shared.session_turns u
+            FROM harness_shared.session_turns u
              WHERE u.owner = r.target_owner_id
                AND u.speaker = 'user'
                AND u.turn_origin = 'loop-fire'
-               AND u.ts > r.last_fired_at) AS last_loop_turn_at,
+               AND u.ts > r.last_fired_at
+               AND EXISTS (
+                 SELECT 1
+                   FROM harness_shared.agent_activity start_stamp
+                  WHERE start_stamp.owner_id = r.target_owner_id
+                    AND start_stamp.kind = 'lifecycle'
+                    AND start_stamp.summary = ${LOOP_TURN_START_MARKER}
+                    AND start_stamp.created_at > r.last_fired_at
+                    AND start_stamp.detail->'loopFire'->>'routineId' = r.id
+                    AND CASE
+                          WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
+                          THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
+                        END = COALESCE((r.metadata->>'fire_count')::int, 0)
+                    AND u.ts >= start_stamp.created_at
+               )) AS last_loop_turn_at,
            (SELECT max(a.created_at)
               FROM harness_shared.agent_activity a
              WHERE a.owner_id = r.target_owner_id
@@ -1538,7 +1552,12 @@ export async function reconcileLoopRoutines(
              WHERE a.owner_id = r.target_owner_id
                AND a.kind = 'lifecycle'
                AND a.summary = ${LOOP_TURN_START_MARKER}
-               AND a.created_at > r.last_fired_at) AS loop_turn_started_at,
+               AND a.created_at > r.last_fired_at
+               AND a.detail->'loopFire'->>'routineId' = r.id
+               AND CASE
+                     WHEN a.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
+                     THEN (a.detail->'loopFire'->>'wakeCount')::int
+                   END = COALESCE((r.metadata->>'fire_count')::int, 0)) AS loop_turn_started_at,
            (SELECT a.id
               FROM harness_shared.adv_sessions a
              WHERE a.coord_owner_id = r.target_owner_id

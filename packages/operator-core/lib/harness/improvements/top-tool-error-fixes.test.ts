@@ -118,6 +118,19 @@ const ctx = {
 type ToolResult = { content: Array<{ text: string }>; isError?: boolean };
 const parse = (r: ToolResult) => JSON.parse(r.content[0]!.text) as Record<string, unknown>;
 const read = async (args: Record<string, unknown>) => (await readTool.handler!(args as never, ctx)) as ToolResult;
+const writeExtraSpill = (basename: string) => {
+  const filePath = join(SCRATCH, WS, TOOL, RUN, basename);
+  writeScratchReference({
+    filePath,
+    payload: PREFIX + BODY,
+    workspaceId: WS,
+    mediaType: 'text/plain',
+    content: [{ index: 0, type: 'text', byteCount: Buffer.byteLength(BODY) }],
+    evidence: [{ evidenceClass: 'work-item', contentIndex: 0, jsonPointers: ['/results/0/workItem'] }],
+    bodyOffsetInPayload: Buffer.byteLength(PREFIX),
+  });
+  return filePath;
+};
 
 let previousScratchRoot: string | undefined;
 beforeAll(() => {
@@ -155,6 +168,63 @@ describe('D-023 rank 2 (capability:read read_failed, 448): ENOENT on a hand-rety
     });
     const retried = await read((body.did_you_mean as { args: Record<string, unknown> }).args);
     expect(retried.isError).not.toBe(true);
+  });
+
+  it.each(['.spill', '.md'])(
+    'an omitted %s suffix returns the unique matching cursor, and the cursor reads',
+    async (extension) => {
+      const basename =
+        'result-door-1792444058123' + (extension === '.spill' ? '-a1b2c3d4' : '') + extension;
+      const spill = writeExtraSpill(basename);
+      const refused = await read({
+        file_path: spill.slice(0, -extension.length),
+        byte_offset: 0,
+        byte_limit: 64,
+      });
+      expect(refused.isError).toBe(true);
+      const body = parse(refused);
+      expect(body).toMatchObject({
+        ok: false,
+        reason: 'scratch_path_mistyped',
+        did_you_mean: {
+          tool: 'capability:read',
+          args: { file_path: spill, byte_offset: 0, byte_limit: 64 },
+        },
+      });
+      const retried = await read(
+        (body.did_you_mean as { args: Record<string, unknown> }).args,
+      );
+      expect(retried.isError).not.toBe(true);
+    },
+  );
+
+  it('recovers one mistyped hex character in the random suffix', async () => {
+    const spill = writeExtraSpill('result-door-1792444058124-a1b2c3d4.spill');
+    const typo = join(SCRATCH, WS, TOOL, RUN, 'result-door-1792444058124-a1b2c3e4.spill');
+    const refused = await read({ file_path: typo, byte_offset: 0, byte_limit: 64 });
+    expect(refused.isError).toBe(true);
+    const body = parse(refused);
+    expect(body).toMatchObject({
+      reason: 'scratch_path_mistyped',
+      did_you_mean: {
+        args: { file_path: spill, byte_offset: 0, byte_limit: 64 },
+      },
+    });
+    const retried = await read(
+      (body.did_you_mean as { args: Record<string, unknown> }).args,
+    );
+    expect(retried.isError).not.toBe(true);
+  });
+
+  it('keeps same-timestamp basename matches ambiguous', async () => {
+    writeExtraSpill('result-door-1792444058125-a1b2c3d4.spill');
+    writeExtraSpill('result-door-1792444058125-a1b2c3d5.spill');
+    const ambiguous = parse(
+      await read({
+        file_path: join(SCRATCH, WS, TOOL, RUN, 'result-door-1792444058125-a1b2c3d6.spill'),
+      }),
+    );
+    expect(ambiguous.reason).toBe('read_failed');
   });
 
   it('a wrong workspace segment in a scratch URI is recovered under the caller’s uri key', async () => {

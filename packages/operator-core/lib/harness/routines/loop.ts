@@ -41,7 +41,7 @@ import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
 import { extractGoalWorkItemIds } from './loop-goal-staleness';
 import { recordLoopTransition } from './loop-transition-log';
-import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import { LOOP_TURN_START_MARKER, SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { boundedPgReadTxn } from '../../pg-read-query';
 // Import from the dependency-free automatic-tool-names.ts, NOT from
 // '../../agent-tools/sessions/timeline' (which re-exports the same constant) — timeline.ts
@@ -2308,10 +2308,11 @@ export async function getLoopStatuses(
                WHERE st3.owner = r.target_owner_id
                  AND st3.speaker = 'assistant'
             ) real_turn_sources)                                          AS last_real_turn_at,
-           -- EI-21303383797798186: a manual owner prompt can produce arbitrarily many
-           -- assistant rows while an armed loop delivers zero autonomous turns. Pair
-           -- each authored loop-fire USER envelope with assistant output before the
-           -- next user prompt; only that proves the loop wake became a real turn.
+           -- EI-21303383797798186 / WI-6554700010019416: a manual owner prompt can
+           -- produce arbitrarily many assistant rows while an armed loop delivers zero
+           -- autonomous turns. Pair only the loop-fire prompt whose typed activity
+           -- detail matches this routine's latest wakeCount; timestamp-only selection
+           -- can let delayed fire9 repair current fire10.
            -- The owner predicate uses session_turns_owner_ts_idx, while each bounded
            -- same-session range uses the table's (session/source/turn_idx/workspace)
            -- primary key. Restrict to the current arm to keep the correlated read lean.
@@ -2340,7 +2341,20 @@ export async function getLoopStatuses(
                AND u.ts >= COALESCE(
                      (r.metadata->>'armed_at')::timestamptz,
                      '-infinity'::timestamptz
-                   ))                                                    AS last_loop_turn_at,
+                   )
+               AND EXISTS (
+                 SELECT 1
+                   FROM harness_shared.agent_activity start_stamp
+                  WHERE start_stamp.owner_id = r.target_owner_id
+                    AND start_stamp.kind = 'lifecycle'
+                    AND start_stamp.summary = ${LOOP_TURN_START_MARKER}
+                    AND start_stamp.detail->'loopFire'->>'routineId' = r.id
+                    AND CASE
+                          WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
+                          THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
+                        END = COALESCE((r.metadata->>'fire_count')::int, 0)
+                    AND u.ts >= start_stamp.created_at
+               ))                                                    AS last_loop_turn_at,
            -- WI-6554700010012442: the earliest prompt after the arm proves the arming turn
            -- ended, which lifts fire-starvation's presence suppression past the floor.
            -- A NULL armed_at compares against +infinity, so it yields NULL (no evidence).
@@ -2382,7 +2396,20 @@ export async function getLoopStatuses(
                  WHERE u.owner = r.target_owner_id
                    AND u.speaker = 'user'
                    AND u.turn_origin = 'loop-fire'
-                   AND u.ts > lw.created_at)
+                   AND u.ts > lw.created_at
+                   AND EXISTS (
+                     SELECT 1
+                       FROM harness_shared.agent_activity start_stamp
+                      WHERE start_stamp.owner_id = r.target_owner_id
+                        AND start_stamp.kind = 'lifecycle'
+                        AND start_stamp.summary = ${LOOP_TURN_START_MARKER}
+                        AND start_stamp.detail->'loopFire'->>'routineId' = r.id
+                        AND CASE
+                              WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
+                              THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
+                            END = COALESCE((r.metadata->>'fire_count')::int, 0)
+                        AND u.ts >= start_stamp.created_at
+                   ))
                 ELSE NULL
            END                                                               AS last_suppressed_wake_loop_turn_at,
            -- EI-24933871787030971: lastLoopTurnAt is arm-scoped for turnsStalled, so a
@@ -2418,7 +2445,20 @@ export async function getLoopStatuses(
                  WHERE u.owner = r.target_owner_id
                    AND u.speaker = 'user'
                    AND u.turn_origin = 'loop-fire'
-                   AND u.ts > r.last_fired_at)
+                   AND u.ts > r.last_fired_at
+                   AND EXISTS (
+                     SELECT 1
+                       FROM harness_shared.agent_activity start_stamp
+                      WHERE start_stamp.owner_id = r.target_owner_id
+                        AND start_stamp.kind = 'lifecycle'
+                        AND start_stamp.summary = ${LOOP_TURN_START_MARKER}
+                        AND start_stamp.detail->'loopFire'->>'routineId' = r.id
+                        AND CASE
+                              WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
+                              THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
+                            END = COALESCE((r.metadata->>'fire_count')::int, 0)
+                        AND u.ts >= start_stamp.created_at
+                   ))
                 ELSE NULL
            END                                                               AS last_failed_fire_loop_turn_completed_at,
            -- EI-20217869515819188: compute the largest observed gap in this arm's

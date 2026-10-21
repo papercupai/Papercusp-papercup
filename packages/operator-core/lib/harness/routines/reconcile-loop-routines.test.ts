@@ -87,6 +87,32 @@ describe('reconcileLoopRoutines — expected execution recovery accounting', () 
   });
 });
 
+describe('reconcileLoopRoutines — exact fire identity query contract', () => {
+  it('requires typed routineId+wakeCount activity detail before pairing a loop turn', async () => {
+    const statements: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      statements.push(strings.join(' ? '));
+      return Promise.resolve([
+        {
+          id: 'rt-identity', target_owner_id: 'su-identity', interval_sec: 60, parked: false,
+          is_cron: false, install_slug: 'papercusp', name: 'loop-su-identity',
+          routine_workspace_id: 'ws-test', last_fired_at: null,
+          fire_state_last_fired_at: null, fire_state_last_withheld_at: null,
+          last_wake_at: null, last_wake_created_at: null, last_wake_status: null,
+          last_wake_channel: null, last_loop_turn_at: null, lifecycle_completed_at: null,
+          lifecycle_started_at: null, turn_journal_completed_at: null,
+          loop_turn_started_at: null, carry: null, armed_at: null, note_updated_ts: null,
+          presence_last_active_at: null, last_assistant_text_after_fire: null,
+          turns_ingest_watermark: null, payload_template: null, monitor_delta_at: null,
+        },
+      ]);
+    }) as unknown as Sql;
+    await reconcile({ sql, nowMs: Date.now(), checkUnreachableTerminalGuard: NEVER_BREACH_GUARD });
+    expect(statements[0]).toContain("detail->'loopFire'->>'routineId'");
+    expect(statements[0]).toContain("detail->'loopFire'->>'wakeCount'");
+  });
+});
+
 describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled prepare:false connection, EI-2549)', () => {
   const T0 = 1_782_000_000_000;
   // The exact shape postgres-js yields on a prepare:false connection: a raw PG timestamp string.

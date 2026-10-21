@@ -28,6 +28,7 @@ export interface GatewayRequestOutcomeRecord {
   transport: GatewayRequestTimeline['transport'];
   model: string | null;
   selectedAccountId: string | null;
+  attemptAccountIds: Array<string | null>;
   /** Exact provider completion identity; absent on historical or unobserved completions. */
   providerResponseId?: string | null;
   outcomeClass: GatewayRequestTimeline['outcome'];
@@ -91,7 +92,9 @@ export function gatewayRequestOutcomeRecord(
   workspaceId = activeWorkspaceId(),
 ): GatewayRequestOutcomeRecord {
   const recordedAtMs = Math.max(0, timeline.finalizedAt);
-  const selectedAccountId = timeline.providerIdentity?.accountId ?? timeline.cache.servingAccountId ?? null;
+  const attemptAccountIds = timeline.attemptAccountIds ?? [];
+  const selectedAccountId = timeline.providerIdentity?.accountId ??
+    (attemptAccountIds.length > 0 ? attemptAccountIds.at(-1) ?? null : timeline.cache.servingAccountId ?? null);
   return {
     requestId: `${gatewayProcessInstanceId}:${timeline.requestId}`,
     gatewayProcessInstanceId,
@@ -103,6 +106,7 @@ export function gatewayRequestOutcomeRecord(
     transport: timeline.transport,
     model: timeline.model,
     selectedAccountId,
+    attemptAccountIds: [...attemptAccountIds],
     providerResponseId: timeline.providerIdentity?.responseId ?? null,
     outcomeClass: timeline.outcome,
     finalStatus: timeline.finalStatus,
@@ -123,13 +127,14 @@ function sqlOf(inject?: Sql): Sql {
   return inject ?? getOrgPg().sql;
 }
 
-type GatewayRequestOutcomeRow = Omit<GatewayRequestOutcomeRecord, 'workspaceId' | 'ownerId'> & {
+type GatewayRequestOutcomeRow = Omit<GatewayRequestOutcomeRecord, 'workspaceId' | 'ownerId' | 'attemptAccountIds'> & {
   workspace_id: string;
   owner_id: string | null;
   request_id: string;
   gateway_process_instance_id: string;
   request_ordinal: number | string;
   selected_account_id: string | null;
+  attempt_account_ids: unknown;
   provider_response_id: string | null;
   outcome_class: GatewayRequestOutcomeRecord['outcomeClass'];
   final_status: number | string | null;
@@ -155,6 +160,9 @@ function fromRow(row: GatewayRequestOutcomeRow): GatewayRequestOutcomeRecord {
     transport: row.transport,
     model: row.model,
     selectedAccountId: row.selected_account_id,
+    attemptAccountIds: Array.isArray(row.attempt_account_ids)
+      ? row.attempt_account_ids.map((accountId): string | null => typeof accountId === 'string' ? accountId : null)
+      : [],
     providerResponseId: row.provider_response_id,
     outcomeClass: row.outcome_class,
     finalStatus: row.final_status == null ? null : Number(row.final_status),
@@ -182,14 +190,15 @@ class PgGatewayRequestOutcomeStore implements GatewayRequestOutcomeStore {
          provider, protocol, transport, model, selected_account_id, outcome_class, final_status,
          request_timestamp_ms, finalized_at_ms, attempts, failovers,
          native_session_id, native_thread_id, native_turn_id, native_window_id,
-         recorded_at_ms, retention_expires_at_ms, provider_response_id)
+         recorded_at_ms, retention_expires_at_ms, provider_response_id, attempt_account_ids)
       VALUES
         (${record.requestId}, ${record.workspaceId}, ${record.gatewayProcessInstanceId}, ${record.requestOrdinal},
          ${record.ownerId}, ${record.provider}, ${record.protocol}, ${record.transport}, ${record.model},
          ${record.selectedAccountId}, ${record.outcomeClass}, ${record.finalStatus}, ${record.requestTimestampMs},
          ${record.finalizedAtMs}, ${record.attempts}, ${record.failovers}, ${record.nativeSessionId},
          ${record.nativeThreadId}, ${record.nativeTurnId}, ${record.nativeWindowId}, ${record.recordedAtMs},
-         ${record.retentionExpiresAtMs}, ${record.providerResponseId ?? null})
+         ${record.retentionExpiresAtMs}, ${record.providerResponseId ?? null},
+         ${JSON.stringify(record.attemptAccountIds)}::jsonb)
       ON CONFLICT (gateway_process_instance_id, request_ordinal) DO NOTHING
     `;
     // Pruning is row-bounded by the indexed retention key and happens only on a write.
@@ -219,7 +228,7 @@ class PgGatewayRequestOutcomeStore implements GatewayRequestOutcomeStore {
              provider, protocol, transport, model, selected_account_id, outcome_class, final_status,
              request_timestamp_ms, finalized_at_ms, attempts, failovers,
              native_session_id, native_thread_id, native_turn_id, native_window_id,
-             recorded_at_ms, retention_expires_at_ms, provider_response_id
+             recorded_at_ms, retention_expires_at_ms, provider_response_id, attempt_account_ids
         FROM harness_shared.gateway_request_outcomes
        WHERE ${where}
        ORDER BY request_timestamp_ms ASC, request_ordinal ASC
@@ -250,7 +259,7 @@ export class InMemoryGatewayRequestOutcomeStore implements GatewayRequestOutcome
   constructor(public rows: GatewayRequestOutcomeRecord[] = []) {}
   async record(record: GatewayRequestOutcomeRecord): Promise<void> {
     if (!this.rows.some((row) => row.gatewayProcessInstanceId === record.gatewayProcessInstanceId && row.requestOrdinal === record.requestOrdinal)) {
-      this.rows.push({ ...record });
+      this.rows.push({ ...record, attemptAccountIds: [...record.attemptAccountIds] });
     }
     // Preserve the public array identity. Tests and callers can seed a store with a
     // shared row buffer to model a process restart; replacing the array here leaves
@@ -270,7 +279,7 @@ export class InMemoryGatewayRequestOutcomeStore implements GatewayRequestOutcome
       .sort((a, b) => a.requestTimestampMs - b.requestTimestampMs || a.requestOrdinal - b.requestOrdinal);
     const selected = matching
       .slice(0, limit)
-      .map((row) => ({ ...row }));
+      .map((row) => ({ ...row, attemptAccountIds: [...row.attemptAccountIds] }));
     const byOutcome = emptyCounts();
     for (const row of selected) byOutcome[row.outcomeClass]++;
     return {

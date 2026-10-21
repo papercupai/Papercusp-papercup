@@ -468,12 +468,12 @@ function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
   return { profileArgs, modeArgs };
 }
 
-const RESUME_FORK_BRIEF_CALL_CONSTRAINT = 'resume or fork => non-empty top-level brief required';
+const RESUME_FORK_BRIEF_CALL_CONSTRAINT = 'resume or fork => non-empty top-level brief required, except guarded system:lineage-neutral-successor resume';
 
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    "Launch an ad-hoc agent, resume, or fork. `resume`/`fork` require a non-empty top-level `brief`; fresh plan-bound or successor launches may omit it. A spawn is not proof of registration, a first turn, or a work claim—read launch verification.",
+    "Launch an ad-hoc agent, resume, or fork. `resume`/`fork` require a non-empty top-level `brief`, except for the guarded system:lineage-neutral-successor recovery of a dormant critical frozen-tests author; fresh plan-bound or successor launches may omit it. A spawn is not proof of registration, a first turn, or a work claim—read launch verification.",
   guidance: {
     when: 'AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.',
     notWhen:
@@ -535,7 +535,7 @@ export default defineTool({
         .max(8000)
         .optional()
         .describe(
-          'First-turn request; REQUIRED for resume/fork. Optional for fresh plan-bound or per-member briefs, or a successor with seeded carry. Delivery does not prove a turn started or claimed work; read launch verification.',
+          'First-turn request; REQUIRED for resume/fork except a guarded system:lineage-neutral-successor resume. Optional for fresh plan-bound or per-member briefs, or a successor with seeded carry. Delivery does not prove a turn started or claimed work; read launch verification.',
         ),
       plan: z
         .string()
@@ -592,7 +592,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume full context with a required non-empty brief. For ordinary in-place continuation, send `{ resume, brief }`. Add `fork:false` for strict in-place recovery that refuses a live source instead of auto-forking. Choose agentId (latest) OR sessionId (exact). Omitted settings use the target/saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; overrides may conflict with the saved fleet profile. Use successor for fresh context with retained identity and explicit runtime/carry.',
+          'Resume full context with a required non-empty brief, except a guarded system:lineage-neutral-successor resume for a dormant critical frozen-tests author. For ordinary in-place continuation, send `{ resume, brief }`. Add `fork:false` for strict in-place recovery that refuses a live source instead of auto-forking. Choose agentId (latest) OR sessionId (exact). Omitted settings use the target/saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; overrides may conflict with the saved fleet profile. Use successor for fresh context with retained identity and explicit runtime/carry.',
         ),
       successor: z
         .object({
@@ -606,6 +606,12 @@ export default defineTool({
         .optional()
         .describe(
           'Fresh context for an ENDED predecessor, preserving owner identity, claims and seeded recovery brief. Allows explicit fresh-context `account`, `model`, or `carry` settings. Visible by default when `headless` is omitted or `false`; headless:true hides the window. Cannot combine with restoreVisible. Live sources are refused; resume auto-forks them for a parallel branch.',
+        ),
+      successorLineageMode: z
+        .literal('system:lineage-neutral-successor')
+        .optional()
+        .describe(
+          'Request the system lineage parent only for a dormant critical frozen-tests author recovered through `resume`. The handler requires an identity-preserving successor, verifies the exact non-terminal manifest author and independence, and rejects caller-authored prompt/profile overrides. Not valid for ordinary resume, fork, or explicit successor.',
         ),
       originalRouting: z.object({
         ownerId: z.string().min(1).max(120),
@@ -747,6 +753,37 @@ export default defineTool({
       .superRefine((value, refinement) => {
         const hasResume = Boolean(value.resume?.agentId || value.resume?.sessionId);
         const hasSuccessor = Boolean(value.successor?.agentId || value.successor?.sessionId);
+        const neutralLineage = value.successorLineageMode === 'system:lineage-neutral-successor';
+        if (neutralLineage && (!hasResume || hasSuccessor || value.fork === true)) {
+          refinement.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['successorLineageMode'],
+            message: '`system:lineage-neutral-successor` requires a resume that the handler promotes from a dormant critical source; it cannot be combined with `successor` or `fork:true`.',
+          });
+        }
+        if (neutralLineage) {
+          const blockedOverrides: Array<[string, boolean]> = [
+            ['brief', Boolean(value.brief?.trim())],
+            ['extraArgs', value.extraArgs !== undefined],
+            ['carry', value.carry !== undefined],
+            ['members', value.members !== undefined],
+            ['role', value.role !== undefined],
+            ['stack', value.stack !== undefined],
+            ['plan', Boolean(value.plan?.trim())],
+            ['workItem', Boolean(value.workItem?.trim())],
+            ['feature', Boolean(value.feature?.trim())],
+            ['goalVerifier', value.goalVerifier !== undefined],
+            ['originalRouting', value.originalRouting !== undefined],
+            ['restoreVisible', value.restoreVisible !== undefined],
+          ];
+          for (const [field, present] of blockedOverrides) {
+            if (present) refinement.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [field],
+              message: 'caller-authored prompt and profile overrides are not accepted in `system:lineage-neutral-successor` mode.',
+            });
+          }
+        }
         if (hasResume && hasSuccessor) {
           refinement.addIssue({
             code: z.ZodIssueCode.custom,
@@ -768,14 +805,14 @@ export default defineTool({
             message: '`plan` is for a FRESH launch; resumed and successor sessions keep their own context.',
           });
         }
-        if (hasResume && value.carry) {
+        if (hasResume && value.carry && !neutralLineage) {
           refinement.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['carry'],
             message: '`carry` is not valid for an in-place resume/fork; the target session preserves its loop/profile carry. Use `successor` to start a fresh identity-preserving context with an explicit carry.',
           });
         }
-        if (hasResume && !value.brief?.trim()) {
+        if (hasResume && !value.brief?.trim() && !neutralLineage) {
           refinement.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['brief'],
@@ -909,6 +946,31 @@ export default defineTool({
       (args as typeof args & { __respawnReplacesOwnerId?: string }).__respawnReplacesOwnerId?.trim() || null;
     let isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     let isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
+    const neutralLineageRequested = args.successorLineageMode === 'system:lineage-neutral-successor';
+    if (neutralLineageRequested) {
+      const rawArgs = args as unknown as Record<string, unknown>;
+      const blockedOverrides = [
+        ...(args.brief?.trim() ? ['brief'] : []),
+        ...(args.extraArgs !== undefined ? ['extraArgs'] : []),
+        ...(args.carry !== undefined ? ['carry'] : []),
+        ...(args.members !== undefined ? ['members / launchContext'] : []),
+        ...(args.role !== undefined ? ['role'] : []),
+        ...(args.stack !== undefined ? ['stack'] : []),
+        ...(args.plan?.trim() ? ['plan'] : []),
+        ...(args.workItem?.trim() ? ['workItem'] : []),
+        ...(args.feature?.trim() ? ['feature'] : []),
+        ...(args.goalVerifier !== undefined ? ['goalVerifier'] : []),
+        ...(args.originalRouting !== undefined ? ['originalRouting'] : []),
+        ...(args.restoreVisible !== undefined ? ['restoreVisible'] : []),
+        ...(rawArgs.launchContext !== undefined ? ['launchContext'] : []),
+      ];
+      if (!isResume || isSuccessor || args.fork === true) {
+        return err('`system:lineage-neutral-successor` is available only on a resume that becomes a dormant-critical identity-preserving successor; it is not valid with `successor` or `fork:true`.');
+      }
+      if (blockedOverrides.length) {
+        return err(`Caller-authored prompt/profile overrides are refused in \`system:lineage-neutral-successor\` mode: ${blockedOverrides.join(', ')}.`);
+      }
+    }
     const expectedSuccessorBinding = (ctx as typeof ctx & {
       [INTERNAL_EXPECTED_SUCCESSOR_BINDING]?: InternalExpectedSuccessorBinding;
     })[INTERNAL_EXPECTED_SUCCESSOR_BINDING];
@@ -980,7 +1042,7 @@ export default defineTool({
         'A session cannot be resumed more than once (a second CLI on one transcript collides). Use `fork: true` with `count` to branch N agents off it, or launch fresh agents with a `brief`.',
       );
     }
-    if (isResume && !args.brief?.trim()) {
+    if (isResume && !args.brief?.trim() && !neutralLineageRequested) {
       return err(
         '`resume`/`fork` requires a non-empty `brief` — it is the resumed session\'s actionable next turn. A no-brief resume would open an idle CLI and report an ambiguous launch; use a fresh `plan` launch if no next-turn direction is available.',
       );
@@ -1067,9 +1129,11 @@ export default defineTool({
     // DRAIN is a durable caller overlay. Resolve it before composing either a
     // fresh command or a resume/fork command so every capability launch path
     // carries the same mode into bootstrap-su.
-    const launchMode = args.goalVerifier
-      ? normalizeLaunchMode({ mode: args.goalVerifier })
-      : await readCallerLaunchMode(workspaceId, callerOwnerId);
+    let launchMode = neutralLineageRequested
+      ? null
+      : args.goalVerifier
+        ? normalizeLaunchMode({ mode: args.goalVerifier })
+        : await readCallerLaunchMode(workspaceId, callerOwnerId);
 
     // Resolve the resume/fork/successor target: an agent id (usual) or an exact
     // session uuid. D-007 keeps ordinary resume/fork behavior unchanged; the
@@ -1081,6 +1145,7 @@ export default defineTool({
     let resumeAgent: string | null = null;
     let resumeRole: string | null = null;
     let resumeFeature: string | null = null;
+    let resumeHarnessSlug: string | null = null;
     let resumeSourceAdvSessionId: number | null = null;
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
@@ -1116,9 +1181,15 @@ export default defineTool({
       // resume by their adv_sessions row id through psu's isolated CODEX_HOME.
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
+      if (neutralLineageRequested && resumeOwnerId) {
+        // A neutral successor inherits the predecessor's registered mode, not
+        // the recovering caller's owner-directed launch mode.
+        launchMode = await readCallerLaunchMode(workspaceId, resumeOwnerId);
+      }
       resumeAgent = target.agent;
       resumeRole = target.role;
       resumeFeature = target.feature;
+      resumeHarnessSlug = target.harnessSlug ?? null;
       resumeSourceAdvSessionId = target.advSessionId;
       resumeModel = target.model;
       resumeAccount = target.account;
@@ -1734,7 +1805,7 @@ export default defineTool({
     } | null = null;
     if (fleetSlug) {
       if (sourceAction) {
-        const requestedExtraArgs = args.extraArgs;
+        const requestedExtraArgs = neutralLineageRequested ? undefined : args.extraArgs;
         const { profileArgs, modeArgs } = splitSavedProfileExtraArgs(requestedExtraArgs);
         // A mode-only array is an explicit launch-posture request, not an
         // explicit replacement for the fleet's saved profile. An empty array
@@ -1783,12 +1854,14 @@ export default defineTool({
             savedLaunchSpec.effective.member.model,
             savedLaunchSpec.effective.member.effort,
           );
-          if (requestedExtraArgs === undefined) {
-            args.extraArgs ??= savedLaunchSpec.effective.member.extraArgs;
-          } else if (requestedExtraArgs.length > 0 && profileArgs.length === 0) {
-            // Mode-only requests inherit the canonical profile while retaining
-            // the explicit posture flags in the actual resume/fork command.
-            args.extraArgs = [...(savedLaunchSpec.effective.member.extraArgs ?? []), ...modeArgs];
+          if (!neutralLineageRequested) {
+            if (requestedExtraArgs === undefined) {
+              args.extraArgs ??= savedLaunchSpec.effective.member.extraArgs;
+            } else if (requestedExtraArgs.length > 0 && profileArgs.length === 0) {
+              // Mode-only requests inherit the canonical profile while retaining
+              // the explicit posture flags in the actual resume/fork command.
+              args.extraArgs = [...(savedLaunchSpec.effective.member.extraArgs ?? []), ...modeArgs];
+            }
           }
           savedLaunchCarry ??= savedLaunchSpec.effective.member.carry;
           savedLaunchSpecMeta = {
@@ -1872,7 +1945,26 @@ export default defineTool({
     // Screen the source identity for both retaining and forked recovery, before
     // writing an edge that would put the reviewer under its plan's implementer.
     const reviewerSourceOwnerId = isSuccessor || isResume ? resumeOwnerId : null;
-    if (reviewerSourceOwnerId && callerOwnerId) {
+    if (neutralLineageRequested && !isSuccessor) {
+      return err('`system:lineage-neutral-successor` requires the source to be dormant at critical context pressure so this request becomes an identity-preserving successor.');
+    }
+    if (neutralLineageRequested) {
+      const guard = await import('../../lineage-neutral-successor-guard');
+      let refusal: Awaited<ReturnType<typeof guard.findLineageNeutralSuccessorRefusal>>;
+      try {
+        refusal = await guard.findLineageNeutralSuccessorRefusal({
+          workspaceId,
+          harnessSlug: resumeHarnessSlug ?? slug,
+          workItemId: resumeFeature,
+          sourceOwnerId: resumeOwnerId,
+        });
+      } catch (e) {
+        return err(
+          `lineage_neutral_successor_unreadable: could not verify the exact frozen-tests author binding and eligibility (${e instanceof Error ? e.message : String(e)}). No process was opened.`,
+        );
+      }
+      if (refusal) return err(guard.renderLineageNeutralSuccessorRefusal(refusal));
+    } else if (reviewerSourceOwnerId && callerOwnerId) {
       const guard = await import('../../acceptance-reviewer-relaunch-guard');
       let conflict: Awaited<ReturnType<typeof guard.findReviewerRelaunchConflict>>;
       try {
@@ -1965,17 +2057,19 @@ export default defineTool({
       // caller's explicit role still wins; a null source role stays generic SU
       // instead of inheriting an unrelated saved headcount profile.
       role: isSuccessor
-        ? (args.role ?? resumeRole ?? undefined)
+        ? (neutralLineageRequested ? resumeRole ?? undefined : args.role ?? resumeRole ?? undefined)
         : (args.role ?? persistedHeadcountProfile?.config.role),
       feature: isSuccessor
-        ? (args.feature ?? resumeFeature ?? undefined)
+        ? (neutralLineageRequested ? resumeFeature ?? undefined : args.feature ?? resumeFeature ?? undefined)
         : (sourceAction ? undefined : args.feature ?? undefined),
-      stack: args.stack ?? undefined,
+      stack: neutralLineageRequested ? undefined : args.stack ?? undefined,
       // A flat carry setting applies to every fresh member unless that member
       // supplies its own override in `members[i].carry`.
-      carry: goalLaunch.effective.carry ?? args.carry ?? undefined,
-      launchContext: persistedHeadcountProfile?.config.launchContext,
-      extraArgs: args.extraArgs ?? undefined,
+      carry: neutralLineageRequested
+        ? savedLaunchCarry ?? undefined
+        : goalLaunch.effective.carry ?? args.carry ?? undefined,
+      launchContext: neutralLineageRequested ? undefined : persistedHeadcountProfile?.config.launchContext,
+      extraArgs: neutralLineageRequested ? undefined : args.extraArgs ?? undefined,
     };
     const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) => {
       // A successor is a fresh process even though it has a source identity.
@@ -2260,7 +2354,10 @@ export default defineTool({
       }
       // The same injectors capability:terminal uses — fleet membership + who launched me.
       cmd = injectFleetArg(cmd, fleetSlug).command;
-      cmd = injectLaunchedByArg(cmd, callerOwnerId).command;
+      cmd = injectLaunchedByArg(
+        cmd,
+        neutralLineageRequested ? 'system:lineage-neutral-successor' : callerOwnerId,
+      ).command;
       memberCommands.push(cmd);
     }
     // Back-compat: `command` (singular) is the representative reported/recorded command
@@ -2473,7 +2570,12 @@ export default defineTool({
                 writeMcpJson: true,
                 label: memberLabel,
                 logDir: headlessLogDir,
-                launchedBy: callerOwnerId ?? undefined,
+                // Process lineage follows the system marker only for the guarded
+                // neutral successor; governed task metadata above still records
+                // the real caller.
+                launchedBy: neutralLineageRequested
+                  ? 'system:lineage-neutral-successor'
+                  : callerOwnerId ?? undefined,
                 fleetSlug,
                 ...(gradingAuditTaskDetail
                   ? { ledgerDetail: { gradingAudit: gradingAuditTaskDetail, ...(auditRuntime ? { gradingAuditRuntimeBinding: auditRuntime } : {}) } }

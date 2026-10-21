@@ -136,6 +136,17 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
     expect(wire).toContain('resp_healthy');
     expect(wire).not.toContain('resp_pre_output_eof');
     expect(routed).toEqual(['chatgpt-a', 'chatgpt-b']);
+    const ownerReportResponse = await fetch(
+      'http://127.0.0.1:' + port + '/admin/owner-report?owner=pre-output-eof-owner',
+    );
+    const ownerReport = await ownerReportResponse.json() as {
+      requestOutcomes: { rows: Array<{ selectedAccountId: string | null; attemptAccountIds: Array<string | null> }> };
+    };
+    expect(ownerReport.requestOutcomes.rows).toHaveLength(1);
+    expect(ownerReport.requestOutcomes.rows[0]).toMatchObject({
+      selectedAccountId: 'chatgpt-b',
+      attemptAccountIds: ['chatgpt-a', 'chatgpt-b'],
+    });
   });
 
   it.each([true, false])('returns a truthful terminal after visible-output EOF without replay (provider id known: %s)', async (knownId) => {
@@ -324,6 +335,16 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
     await response.text();
 
     expect(new Set(routed)).toEqual(new Set(accountIds));
+    const ownerReportResponse = await fetch(
+      'http://127.0.0.1:' + port + '/admin/owner-report?owner=dns-outage-session',
+    );
+    const ownerReport = await ownerReportResponse.json() as {
+      requestOutcomes: { rows: Array<{ selectedAccountId: string | null; attemptAccountIds: Array<string | null> }> };
+    };
+    expect(ownerReport.requestOutcomes.rows).toHaveLength(1);
+    expect(ownerReport.requestOutcomes.rows[0]?.attemptAccountIds).toEqual(routed);
+    expect(ownerReport.requestOutcomes.rows[0]?.selectedAccountId).toBe(routed[routed.length - 1]);
+
     const statsResponse = await fetch("http://127.0.0.1:" + port + "/stats");
     expect(statsResponse.status).toBe(200);
     const stats = await statsResponse.json() as {

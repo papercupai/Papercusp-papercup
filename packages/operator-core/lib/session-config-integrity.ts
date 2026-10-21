@@ -82,6 +82,13 @@ import {
 } from './session-config-dir';
 
 import { PSU_MCP_SERVER } from './papercusp-mcp-servers';
+import {
+  PAPERCUSP_CLAUDE_MARKETPLACE_NAME,
+  PAPERCUSP_CLAUDE_PLUGIN_HOOKS_RELPATH,
+  PAPERCUSP_CLAUDE_PLUGIN_ID,
+  papercuspMarketplaceRoot,
+  papercuspPluginEnabledState,
+} from './claude-plugin/plugin-rails.mjs';
 
 /** The psu-owned MCP server. `playwright` is deliberately NOT restored (P-020 prunes it).
  *  Defined once in `papercusp-mcp-servers` so the transcript canonicalizer shares it. */
@@ -109,6 +116,15 @@ export interface SessionConfigState {
   configDirSource: SessionConfigDirSource | null;
   /** Why the dir could not be observed. Non-null exactly when `configDir` is null. */
   configDirUnresolvedReason: string | null;
+  /**
+   * client-native-features-adoption-2026-10-21 P-004 (D-012): the `hooks` map of the
+   * papercusp Claude plugin that the GLOBAL settings enable, read from the global
+   * marketplace's `hooks.json`. Those hooks are no longer listed inline in the global
+   * `hooks` block, so this is what the diff compares the session against when the session
+   * lost its plugin enrollment. `null`/absent = not enabled globally, or not loaded; then the
+   * enrollment itself is still compared (`pluginDisenrolled`), only the per-event list is not.
+   */
+  globalPluginHooks?: Record<string, unknown> | null;
 }
 
 export interface ConfigIntegrityVerdict {
@@ -125,8 +141,19 @@ export interface ConfigIntegrityVerdict {
   unknown: boolean;
   /** Why the check could not run. Non-null exactly when `unknown` is true. */
   unknownReason: string | null;
-  /** Hook events present in the global block but MISSING from the session (e.g. ['PreToolUse']). */
+  /**
+   * Hook events present in the global block but MISSING from the session (e.g. ['PreToolUse']).
+   * Both sides count the hooks of an ENABLED papercusp plugin, so an event the plugin carries
+   * is missing when the session lost the plugin's enrollment.
+   */
   missingHookEvents: string[];
+  /**
+   * The global settings enable the papercusp Claude plugin (P-004, D-012) but the session's
+   * settings no longer do: `enabledPlugins["papercusp@papercusp-local"]` or the
+   * `extraKnownMarketplaces["papercusp-local"]` declaration is gone. Every hook the plugin
+   * carries is then dead for the session.
+   */
+  pluginDisenrolled: boolean;
   /** The papercusp-su MCP server is absent from the session's .claude.json. */
   mcpServerMissing: boolean;
   /** permissions.defaultMode is no longer the bypassPermissions grant psu materialized with. */
@@ -146,6 +173,29 @@ function hooksOf(cfg: Record<string, unknown> | null): HookMap {
 function hasHookEvent(hooks: HookMap, event: string): boolean {
   const groups = hooks[event];
   return Array.isArray(groups) && groups.length > 0;
+}
+
+/** The papercusp plugin is live for a settings document: enabled AND its marketplace declared. */
+function papercuspPluginLive(cfg: Record<string, unknown> | null): boolean {
+  return papercuspPluginEnabledState(cfg) === 'enabled' && papercuspMarketplaceRoot(cfg) !== null;
+}
+
+/**
+ * The hooks a settings document actually runs: its inline `hooks` plus, when the papercusp
+ * plugin is live for it, the plugin's hooks (P-004, D-012). Event-level union only.
+ */
+function effectiveHooksOf(cfg: Record<string, unknown> | null, pluginHooks: HookMap | null): HookMap {
+  const inline = hooksOf(cfg);
+  if (!pluginHooks || !papercuspPluginLive(cfg)) return inline;
+  const merged: HookMap = { ...inline };
+  for (const event of Object.keys(pluginHooks)) {
+    if (!hasHookEvent(pluginHooks, event)) continue;
+    merged[event] = [
+      ...(Array.isArray(inline[event]) ? (inline[event] as unknown[]) : []),
+      ...(pluginHooks[event] as unknown[]),
+    ];
+  }
+  return merged;
 }
 
 /**
@@ -173,13 +223,18 @@ export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIn
         state.configDirUnresolvedReason ??
         'the session config dir could not be observed, so nothing was checked',
       missingHookEvents: [],
+      pluginDisenrolled: false,
       mcpServerMissing: false,
       permissionsDowngraded: false,
       consequences: [],
     };
   }
-  const globalHooks = hooksOf(state.globalSettings);
-  const sessionHooks = hooksOf(state.settings);
+  const pluginHooks =
+    state.globalPluginHooks && typeof state.globalPluginHooks === 'object' ? (state.globalPluginHooks as HookMap) : null;
+  const globalHooks = effectiveHooksOf(state.globalSettings, pluginHooks);
+  const sessionHooks = effectiveHooksOf(state.settings, pluginHooks);
+  // P-004 (D-012): only a concern when the global enrolls the plugin — never invent one.
+  const pluginDisenrolled = papercuspPluginLive(state.globalSettings) && !papercuspPluginLive(state.settings);
 
   const missingHookEvents = Object.keys(globalHooks)
     .filter((event) => hasHookEvent(globalHooks, event))
@@ -204,6 +259,13 @@ export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIn
   const permissionsDowngraded = state.settings !== null && perms.defaultMode !== 'bypassPermissions';
 
   const consequences: string[] = [];
+  // The cause line leads: the per-event lines below are its effects.
+  if (pluginDisenrolled) {
+    consequences.push(
+      `PAPERCUSP PLUGIN DISENROLLED: this session's settings.json no longer enables ${PAPERCUSP_CLAUDE_PLUGIN_ID} ` +
+        `(enabledPlugins / extraKnownMarketplaces["${PAPERCUSP_CLAUDE_MARKETPLACE_NAME}"]), so every papercusp hook the plugin carries is not running.`,
+    );
+  }
   // Worst first: the shared-tree lock is a DATA-LOSS hazard, not an inconvenience.
   if (missingHookEvents.includes('PreToolUse')) {
     consequences.push(
@@ -237,10 +299,11 @@ export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIn
   }
 
   return {
-    ok: missingHookEvents.length === 0 && !mcpServerMissing && !permissionsDowngraded,
+    ok: missingHookEvents.length === 0 && !pluginDisenrolled && !mcpServerMissing && !permissionsDowngraded,
     unknown: false,
     unknownReason: null,
     missingHookEvents,
+    pluginDisenrolled,
     mcpServerMissing,
     permissionsDowngraded,
     consequences,
@@ -316,14 +379,20 @@ export function loadSessionConfigState(
       procRoot: locator.procRoot,
     });
   const dir = resolution.dir;
+  const globalSettings = readJson(join(realHome, '.claude', 'settings.json'));
+  // P-004 (D-012): the plugin is read from its marketplace SOURCE folder, so that is the
+  // hooks.json the global enrollment actually runs.
+  const marketplaceRoot = papercuspMarketplaceRoot(globalSettings);
+  const pluginDoc = marketplaceRoot ? readJson(join(marketplaceRoot, PAPERCUSP_CLAUDE_PLUGIN_HOOKS_RELPATH)) : null;
   return {
     settings: dir ? readJson(join(dir, 'settings.json')) : null,
     claudeJson: dir ? readJson(join(dir, '.claude.json')) : null,
-    globalSettings: readJson(join(realHome, '.claude', 'settings.json')),
+    globalSettings,
     globalClaudeJson: readJson(join(realHome, '.claude.json')),
     configDir: dir,
     configDirSource: resolution.source,
     configDirUnresolvedReason: resolution.unresolvedReason,
+    globalPluginHooks: pluginDoc && typeof pluginDoc.hooks === 'object' && pluginDoc.hooks ? (pluginDoc.hooks as HookMap) : null,
   };
 }
 
@@ -353,15 +422,41 @@ export function computeSessionConfigRepair(state: SessionConfigState): SessionCo
   let settings: Record<string, unknown> | null = null;
   let claudeJson: Record<string, unknown> | null = null;
 
-  if (state.settings && (verdict.missingHookEvents.length > 0 || verdict.permissionsDowngraded)) {
+  if (
+    state.settings &&
+    (verdict.missingHookEvents.length > 0 || verdict.pluginDisenrolled || verdict.permissionsDowngraded)
+  ) {
+    // Inline restore uses the global INLINE block only. A plugin-carried event comes back by
+    // re-enrolling the plugin below — an inline copy as well would fire it twice (D-012).
     const globalHooks = hooksOf(state.globalSettings);
+    const pluginHooks =
+      state.globalPluginHooks && typeof state.globalPluginHooks === 'object' ? (state.globalPluginHooks as HookMap) : {};
     const nextHooks: HookMap = { ...hooksOf(state.settings) };
+    let inlineRestored = false;
     for (const event of verdict.missingHookEvents) {
-      nextHooks[event] = globalHooks[event];
-      fixed.push(`hooks.${event}`);
+      if (hasHookEvent(globalHooks, event)) {
+        nextHooks[event] = globalHooks[event];
+        inlineRestored = true;
+        fixed.push(`hooks.${event}`);
+      } else if (verdict.pluginDisenrolled && hasHookEvent(pluginHooks, event)) {
+        fixed.push(`hooks.${event}`);
+      }
     }
-    settings = { ...state.settings };
-    if (verdict.missingHookEvents.length > 0) settings.hooks = nextHooks;
+    const next: Record<string, unknown> = { ...state.settings };
+    settings = next;
+    if (inlineRestored) next.hooks = nextHooks;
+    if (verdict.pluginDisenrolled && state.globalSettings) {
+      // pluginDisenrolled implies the global declares the marketplace (papercuspPluginLive).
+      const own = (key: string): Record<string, unknown> =>
+        typeof next[key] === 'object' && next[key] ? (next[key] as Record<string, unknown>) : {};
+      const globalMarketplaces = state.globalSettings.extraKnownMarketplaces as Record<string, unknown>;
+      next.enabledPlugins = { ...own('enabledPlugins'), [PAPERCUSP_CLAUDE_PLUGIN_ID]: true };
+      next.extraKnownMarketplaces = {
+        ...own('extraKnownMarketplaces'),
+        [PAPERCUSP_CLAUDE_MARKETPLACE_NAME]: globalMarketplaces[PAPERCUSP_CLAUDE_MARKETPLACE_NAME],
+      };
+      fixed.push(`enabledPlugins.${PAPERCUSP_CLAUDE_PLUGIN_ID}`);
+    }
     if (verdict.permissionsDowngraded) {
       const perms =
         typeof state.settings.permissions === 'object' && state.settings.permissions
@@ -498,6 +593,7 @@ export function repairSessionConfigOnDisk(
   );
   if (after && !after.ok) {
     for (const ev of after.missingHookEvents) stillBroken.push(`hooks.${ev}`);
+    if (after.pluginDisenrolled) stillBroken.push(`enabledPlugins.${PAPERCUSP_CLAUDE_PLUGIN_ID}`);
     if (after.mcpServerMissing) stillBroken.push(`mcpServers.${PSU_MCP_SERVER}`);
     if (after.permissionsDowngraded) stillBroken.push('permissions.defaultMode');
   }

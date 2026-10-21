@@ -5345,6 +5345,9 @@ describe('executeWake — the liveness ladder', () => {
     });
     const getSession = vi.fn(async (id: number) => (id === 42 ? predecessor : successor));
     const getLatestSessionForOwner = vi.fn(async () => successor);
+    const getSessionInWorkspace = vi.fn(async (id: number, workspaceId: string) =>
+      id === successor.id && workspaceId === successor.workspaceId ? successor : null,
+    );
     const claimResume = vi.fn(async () => true);
     const spawnDetached = vi.fn(() => 4321);
     const out = await executeWake(
@@ -5352,6 +5355,7 @@ describe('executeWake — the liveness ladder', () => {
       deps({
         getSession: getSession as never,
         getLatestSessionForOwner: getLatestSessionForOwner as never,
+        getSessionInWorkspace: getSessionInWorkspace as never,
         alive: vi.fn((pid: number | null) => pid === successor.pid),
         findPsuHost: vi.fn(() => null) as never,
         findPty: vi.fn(() => null) as never,
@@ -5362,10 +5366,39 @@ describe('executeWake — the liveness ladder', () => {
 
     expect(getLatestSessionForOwner).toHaveBeenCalledWith('su-abc');
     expect(getSession).toHaveBeenNthCalledWith(1, predecessor.id);
-    expect(getSession).toHaveBeenNthCalledWith(2, successor.id);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(getSessionInWorkspace).toHaveBeenCalledWith(successor.id, successor.workspaceId);
     expect(out).toMatchObject({ kind: 'park' });
     expect(claimResume).not.toHaveBeenCalled();
     expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('re-reads the same elected owner session in its tenant when the pump ambient workspace misses it', async () => {
+    const current = session({ workspaceId: 'tenant-ws', pid: 8888 });
+    const getSession = vi.fn(async () => null);
+    const getLatestSessionForOwner = vi.fn(async () => current);
+    const getSessionInWorkspace = vi.fn(async (id: number, workspaceId: string) =>
+      id === current.id && workspaceId === current.workspaceId ? current : null,
+    );
+    const injectPsuHost = vi.fn(async () => true);
+
+    const out = await executeWake(
+      work({ workspaceId: DEFAULT_COORD_WORKSPACE, wakeHandle: advHandle({ pid: 9999 }) }),
+      deps({
+        getSession: getSession as never,
+        getLatestSessionForOwner: getLatestSessionForOwner as never,
+        getSessionInWorkspace: getSessionInWorkspace as never,
+        alive: vi.fn((pid: number | null) => pid === current.pid),
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/su-abc.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+      }),
+    );
+
+    expect(getSession).toHaveBeenCalledWith(current.id);
+    expect(getLatestSessionForOwner).toHaveBeenCalledWith('su-abc');
+    expect(getSessionInWorkspace).toHaveBeenCalledWith(current.id, 'tenant-ws');
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(injectPsuHost).toHaveBeenCalledTimes(1);
   });
 
   it('parks a captured adv-session whose owner differs from the wake subscriber before any side effect', async () => {
@@ -5862,7 +5895,10 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     const injectPsuHost = vi.fn(async () => true);
     const { calls, tag } = spyTagger();
     await executeWake(
-      work({ wakeHandle: advHandle(), payload: { carry: 'warm', wakeCount: 3, harness: 'papercusp' } }),
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'warm', wakeCount: 3, harness: 'papercusp', routineId: 'routine-3' },
+      }),
       deps({
         findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
         injectPsuHost: injectPsuHost as never,
@@ -5870,6 +5906,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
       }),
     );
     expect(calls[0]).toMatchObject({ origin: 'loop-fire' });
+    expect(calls[0]).toMatchObject({ loopFire: { routineId: 'routine-3', wakeCount: 3 } });
   });
 
   it('an owner-Inbox-reply wake (inboxOwnerReply marker on the payload) tags origin coord-inject:owner (owner-inbox-single-pane-2026-07-17 D-006)', async () => {

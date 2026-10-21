@@ -8,7 +8,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage, type Settings } from '@anthropic-ai/claude-agent-sdk';
-import { applyDefaultClaudeAuthSettingsArgs, applyDefaultClaudeOAuthToken, applyGithubTokenEnv, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { applyDefaultClaudeOAuthToken, applyGithubTokenEnv, applyPsuClaudeSettingsArgs, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, persistPsuClaudeSessionSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { SuApprovalsMode } from '@papercusp/chat-protocol';
 import { splitModelSpec } from './agent-config-constants';
@@ -411,8 +411,10 @@ export function startClaudeSuEngine(
   healContextTrimmingEnv(env, 'claude');
   enforceDefaultClaudeAccount('claude', env);
   applyDefaultClaudeOAuthToken('claude', env);
-  const authSettings = applyDefaultClaudeAuthSettingsArgs('claude', [], env);
-  const settings: Settings = authSettings[0] === '--settings' ? JSON.parse(authSettings[1]) : {};
+  // The same per-launch overlay runWrapper prepends: default-account auth on an
+  // explicit route plus the per-session settings (idleCompaction:false, D-004).
+  const launchSettings = applyPsuClaudeSettingsArgs('claude', [], env);
+  const settings: Settings = launchSettings[0] === '--settings' ? JSON.parse(launchSettings[1]) : {};
   if (systemPrompt) {
     const guidesInPrompt = claudeMemoryFilesInPrompt(boot.cwd, systemPrompt);
     if (guidesInPrompt.length) settings.claudeMdExcludes = [...(settings.claudeMdExcludes ?? []), ...guidesInPrompt];
@@ -425,6 +427,7 @@ export function startClaudeSuEngine(
   // The on-disk per-session settings are also used on native exact resume.
   if (!options.query) {
     persistDefaultClaudeAuthSettings({ wrapperBin: 'claude', env });
+    persistPsuClaudeSessionSettings({ wrapperBin: 'claude', env });
     applyGithubTokenEnv(env);
     recordSessionOwner(nativeId, binding.ownerId, { advSessionId: binding.advSessionId });
     // Claude Code's own agent reads the user's personal CLAUDE.md like stock
