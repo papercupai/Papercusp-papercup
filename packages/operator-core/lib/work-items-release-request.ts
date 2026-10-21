@@ -67,6 +67,32 @@ export type ReleaseRequestResolution =
    *  resolves without the announced onSilence consequence ever needing to fire. */
   | 'superseded';
 
+export type ReleaseRequestConsequenceResolution =
+  | 'consequence-reclaim'
+  | 'consequence-escalate'
+  | 'consequence-nothing';
+
+/** A consequence job is written in the same CAS as its request resolution. */
+export interface ReleaseRequestConsequenceJob {
+  id: string;
+  resolution: ReleaseRequestConsequenceResolution;
+  by: string;
+  holder: string;
+  reason: string;
+  onSilence: ReleaseRequestOnSilence;
+  deadlineAt: number;
+  requestedAt: number;
+  reclaimHolder: string;
+  paths: string[];
+}
+
+export interface PendingReleaseRequestConsequence {
+  id: string;
+  harness: string | null;
+  workspaceId: string;
+  job: ReleaseRequestConsequenceJob;
+}
+
 export interface WorkItemReleaseRequest {
   by: string;
   holder: string;
@@ -217,8 +243,13 @@ export async function resolveWorkItemReleaseRequest(
     expectedDeadlineAt?: number;
     /** CAS the progress snapshot used to decide whether the holder responded. */
     expectedLastProgressAt?: string | Date | null;
+    /** Persist the deadline consequence alongside the resolution CAS for replay. */
+    consequenceJob?: ReleaseRequestConsequenceJob;
   },
 ): Promise<WorkItemReleaseRequest | null> {
+  if (opts.consequenceJob && opts.consequenceJob.resolution !== opts.resolution) {
+    throw new Error('Release-request consequence job must match the CAS resolution');
+  }
   const { sql } = getOrgPg();
   const located = await locateWorkItem(sql, id, opts.harness);
   if (!located) return null;
@@ -227,6 +258,7 @@ export async function resolveWorkItemReleaseRequest(
   const expectedHolder = opts.expectedHolder?.trim() || null;
   const expectedDeadlineAt = Number.isFinite(opts.expectedDeadlineAt) ? opts.expectedDeadlineAt! : null;
   const checkLastProgressAt = opts.expectedLastProgressAt !== undefined;
+  const consequenceJobJson = opts.consequenceJob ? JSON.stringify(opts.consequenceJob) : null;
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
        SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
@@ -250,7 +282,16 @@ export async function resolveWorkItemReleaseRequest(
                ELSE payload->'release_request_condition'
              END,
              'release_request_resolved_at', ${resolvedAt}::bigint
-           ),
+           ) || CASE
+             WHEN ${consequenceJobJson}::jsonb IS NOT NULL
+               AND NOT (COALESCE(status, '') = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+             THEN jsonb_build_object(
+               'release_request_consequence_outbox',
+               COALESCE(payload->'release_request_consequence_outbox', '{}'::jsonb)
+                 || jsonb_build_object(${opts.consequenceJob?.id ?? null}::text, ${consequenceJobJson}::jsonb)
+             )
+             ELSE '{}'::jsonb
+           END,
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${located.workspaceId} AND feature_id = ${id}
        AND payload ? 'release_request_by'
@@ -333,6 +374,83 @@ export async function findDueReleaseRequests(
     });
   }
   return out;
+}
+
+/** Read durable consequence jobs left by a process that stopped after the request CAS. */
+export async function findPendingReleaseRequestConsequences(
+  sql: Sql,
+  opts: { limit?: number } = {},
+): Promise<PendingReleaseRequestConsequence[]> {
+  const rows = await sql<{
+    feature_id: string;
+    harness_slug: string | null;
+    workspace_id: string;
+    job_id: string;
+    job: unknown;
+  }[]>`
+    SELECT feature_id, harness_slug, workspace_id, consequence.job_id, consequence.job
+      FROM harness_shared.work_items
+      CROSS JOIN LATERAL jsonb_each(
+        CASE
+          WHEN jsonb_typeof(payload->'release_request_consequence_outbox') = 'object'
+            THEN payload->'release_request_consequence_outbox'
+          ELSE '{}'::jsonb
+        END
+      ) AS consequence(job_id, job)
+     ORDER BY updated_ts ASC, feature_id ASC
+     LIMIT ${opts.limit ?? 200}`;
+  return rows.map((row) => {
+    const job = row.job as Partial<ReleaseRequestConsequenceJob> | null;
+    if (
+      !job ||
+      job.id !== row.job_id ||
+      (job.resolution !== 'consequence-reclaim' &&
+        job.resolution !== 'consequence-escalate' &&
+        job.resolution !== 'consequence-nothing') ||
+      typeof job.by !== 'string' ||
+      typeof job.holder !== 'string' ||
+      typeof job.reason !== 'string' ||
+      (job.onSilence !== 'reclaim' && job.onSilence !== 'escalate' && job.onSilence !== 'nothing') ||
+      !Number.isFinite(job.deadlineAt) ||
+      !Number.isFinite(job.requestedAt) ||
+      typeof job.reclaimHolder !== 'string' ||
+      !Array.isArray(job.paths) ||
+      job.paths.some((path) => typeof path !== 'string')
+    ) {
+      throw new Error('Invalid pending release-request consequence for ' + row.feature_id);
+    }
+    return {
+      id: row.feature_id,
+      harness: row.harness_slug,
+      workspaceId: row.workspace_id,
+      job: job as ReleaseRequestConsequenceJob,
+    };
+  });
+}
+
+/** Remove one consequence job only after all replayable effects have completed. */
+export async function settleReleaseRequestConsequence(
+  sql: Sql,
+  row: PendingReleaseRequestConsequence,
+): Promise<boolean> {
+  const changed = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items
+       SET payload = jsonb_set(
+             COALESCE(payload, '{}'::jsonb),
+             '{release_request_consequence_outbox}',
+             CASE
+               WHEN jsonb_typeof(payload->'release_request_consequence_outbox') = 'object'
+                 THEN payload->'release_request_consequence_outbox' - ${row.job.id}
+               ELSE '{}'::jsonb
+             END,
+             true
+           ),
+           updated_ts = ${Date.now()}
+     WHERE workspace_id = ${row.workspaceId} AND feature_id = ${row.id}
+       AND jsonb_typeof(payload->'release_request_consequence_outbox') = 'object'
+       AND (payload->'release_request_consequence_outbox') ? ${row.job.id}
+     RETURNING feature_id`;
+  return changed.length > 0;
 }
 
 /** CAS only the measured episode; never retire a replacement timeout. Refreshing

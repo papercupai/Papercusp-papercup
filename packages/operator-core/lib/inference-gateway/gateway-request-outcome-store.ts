@@ -198,7 +198,7 @@ class PgGatewayRequestOutcomeStore implements GatewayRequestOutcomeStore {
          ${record.finalizedAtMs}, ${record.attempts}, ${record.failovers}, ${record.nativeSessionId},
          ${record.nativeThreadId}, ${record.nativeTurnId}, ${record.nativeWindowId}, ${record.recordedAtMs},
          ${record.retentionExpiresAtMs}, ${record.providerResponseId ?? null},
-         ${JSON.stringify(record.attemptAccountIds)}::jsonb)
+         ${sql.json(record.attemptAccountIds)})
       ON CONFLICT (gateway_process_instance_id, request_ordinal) DO NOTHING
     `;
     // Pruning is row-bounded by the indexed retention key and happens only on a write.

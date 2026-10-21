@@ -65,6 +65,7 @@ import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOper
 import { BlueprintOperationClient, createPgBlueprintOperationPort } from './blueprint/operation-client';
 import { createInferenceGateway, OWNER_HEADER } from './inference-gateway/gateway';
 import { createFailoverPool } from './inference-gateway/account-failover';
+import { createPostgresGatewayRequestOutcomeStore, type GatewayRequestOutcomeRecord } from './inference-gateway/gateway-request-outcome-store';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -242,9 +243,13 @@ beforeAll(async () => {
       id bigserial PRIMARY KEY, workspace_id text NOT NULL, session_id text,
       source text NOT NULL, provider text NOT NULL, model text,
       input_tokens bigint, output_tokens bigint,
-      cache_read_tokens bigint, cache_creation_tokens bigint,
+      cache_read_tokens bigint, cache_creation_tokens bigint, account_id text,
       usage_provenance jsonb);
   `);
+  for (const migration of ['1510-gateway-request-outcomes.sql',
+    '1533-gateway-response-usage-attribution.sql', '1554-gateway-request-outcome-attempt-account-ids.sql']) {
+    await applyMigrationForTest(db.sql, resolve(SQL_DIR, migration));
+  }
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
@@ -314,7 +319,7 @@ beforeEach(async () => {
                        harness_shared.blueprints, harness_shared.blueprint_specifications,
                        harness_shared.blueprint_operation_invocations, harness_shared.plan_runs RESTART IDENTITY`;
   await db.sql`TRUNCATE harness_shared.adv_sessions, harness_shared.session_briefs,
-                        harness_shared.agent_usage_samples RESTART IDENTITY`;
+                        harness_shared.agent_usage_samples, harness_shared.gateway_request_outcomes RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   await setLeaseFlag(false);
   fh.spy.mockClear();
@@ -671,9 +676,76 @@ describe('blueprint direct-item revision pin', () => {
     await db.sql`UPDATE harness_shared.agent_usage_samples
       SET usage_provenance = jsonb_set(usage_provenance, '{inputTotalTokens}', '120'::jsonb)
       WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+
+    // Historical gateways stamped hidden Codex threads with the accepted main
+    // session. Reconcile only an exact provider response in the existing outcome
+    // ledger; neither token similarity nor the shared owner proves its origin.
+    const auxiliary = { ...evidence, providerResponseId: 'resp-codex-auxiliary',
+      requestId: '123e4567-e89b-42d3-a456-426614174005',
+      usage: { ...evidence.usage, inputTokens: 22, outputTokens: 3 } };
+    const auxiliaryReceipt = await recordDirectOperationModelAttestation(db.sql, binding.attestation, auxiliary);
+    const [originalEvent] = await db.sql`SELECT body FROM harness_shared.coord_event_log
+      WHERE id = ${auxiliaryReceipt.id}`;
+    await expect(close()).rejects.toThrow('unmatched request-grain');
+    const outcome: GatewayRequestOutcomeRecord = {
+      requestId: '00000000-0000-4000-8000-000000000001:1',
+      gatewayProcessInstanceId: '00000000-0000-4000-8000-000000000001', requestOrdinal: 1,
+      workspaceId: 'default', ownerId: owner, provider: 'codex', protocol: 'openai-responses',
+      transport: 'oauth-http', model: 'gpt-5.6-sol', selectedAccountId: null, attemptAccountIds: [],
+      providerResponseId: auxiliary.providerResponseId, outcomeClass: 'ok', finalStatus: 200,
+      requestTimestampMs: 1000, finalizedAtMs: 1100, attempts: 1, failovers: 0,
+      nativeSessionId: 'auxiliary-thread', nativeThreadId: 'auxiliary-thread',
+      nativeTurnId: null, nativeWindowId: null, recordedAtMs: 1100,
+      retentionExpiresAtMs: Date.now() + 60_000,
+    };
+    const outcomes = createPostgresGatewayRequestOutcomeStore(db.sql);
+    for (const patch of [
+      { workspaceId: 'another-workspace' }, { ownerId: 'another-owner' },
+      { providerResponseId: 'another-response' }, { provider: 'claude' as const },
+      { nativeSessionId: null }, { nativeThreadId: null },
+      { nativeThreadId: 'inconsistent-thread' },
+      { nativeSessionId: sessionId, nativeThreadId: sessionId },
+      { outcomeClass: 'upstream-error' as const, finalStatus: 502 },
+    ]) {
+      await outcomes.record({ ...outcome, ...patch });
+      await expect(close(), JSON.stringify(patch)).rejects.toThrow('unmatched request-grain');
+      await db.sql`DELETE FROM harness_shared.gateway_request_outcomes`;
+    }
+    await outcomes.record(outcome);
+    await outcomes.record({ ...outcome, requestId: '00000000-0000-4000-8000-000000000001:2', requestOrdinal: 2 });
+    await expect(close()).rejects.toThrow('unmatched request-grain');
+    await db.sql`DELETE FROM harness_shared.gateway_request_outcomes WHERE request_ordinal = 2`;
+    // Even proven auxiliary evidence cannot bypass the accepted model or effort.
+    for (const [field, value, refusal] of [
+      ['actualModel', 'gpt-5.6-terra', 'outside the exact policy'],
+      ['forwardedEffort', 'low', 'differs from the accepted level'],
+    ]) {
+      await db.sql`UPDATE harness_shared.coord_event_log
+        SET body = jsonb_set(body, ${[field]}, ${db.sql.json(value)}) WHERE id = ${auxiliaryReceipt.id}`;
+      await expect(close()).rejects.toThrow(refusal);
+      await db.sql`UPDATE harness_shared.coord_event_log SET body = ${db.sql.json(originalEvent.body)}
+        WHERE id = ${auxiliaryReceipt.id}`;
+    }
     expect((await close())?.state).toBe('done');
+    // The origin proof lives on the operation receipt, not the diagnostic
+    // outcome retention window. A later result read must remain verifiable.
+    await db.sql`DELETE FROM harness_shared.gateway_request_outcomes`;
     expect(await getBlueprintOperationResult(db.sql, handle, 'codex-consumer'))
       .toMatchObject({ state: 'ready', output: {} });
+    const originEvents = (await getBlueprintOperationEvents(db.sql, handle, 'codex-consumer')).events
+      .filter(event => event.kind === 'model-attestation-origin');
+    expect(originEvents).toHaveLength(1);
+    expect(originEvents[0]).toMatchObject({ originalEventId: auxiliaryReceipt.id,
+      providerResponseId: auxiliary.providerResponseId,
+      gatewayOutcome: { requestId: outcome.requestId, nativeSessionId: 'auxiliary-thread' } });
+    const [preserved] = await db.sql`SELECT body FROM harness_shared.coord_event_log WHERE id = ${auxiliaryReceipt.id}`;
+    expect(preserved.body).toEqual(originalEvent.body);
+    await db.sql`UPDATE harness_shared.coord_event_log
+      SET body = jsonb_set(body, '{usage,inputTokens}', '23'::jsonb) WHERE id = ${auxiliaryReceipt.id}`;
+    expect(await getBlueprintOperationResult(db.sql, handle, 'codex-consumer')).not.toMatchObject({ state: 'ready' });
+    await db.sql`UPDATE harness_shared.coord_event_log SET body = ${db.sql.json(originalEvent.body)}
+      WHERE id = ${auxiliaryReceipt.id}`;
+    expect(await getBlueprintOperationResult(db.sql, handle, 'codex-consumer')).toMatchObject({ state: 'ready' });
   });
 
   it('joins a real Codex gateway response to its applied receipt and transcript before completion', async () => {

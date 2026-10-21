@@ -714,6 +714,21 @@ export const OperationEventBodySchema = z.discriminatedUnion('kind', [
       inputTokenBasis: z.enum(['uncached', 'inclusive']).optional() }).strict(),
     source: z.literal('gateway'),
   }),
+  z.object({
+    // Preserve the original attestation and the verified origin after the
+    // gateway's shorter-lived diagnostic outcome ledger expires.
+    kind: z.literal('model-attestation-origin'), receiptId: z.number().int().positive(),
+    workItemId: z.string().min(1), runId: z.null(),
+    originalEventId: z.string().regex(/^[1-9][0-9]*$/),
+    attestationHash: z.string().regex(/^[0-9a-f]{64}$/),
+    ownerId: z.string().min(1), nativeSessionId: z.string().min(1), providerResponseId: z.string().min(1),
+    gatewayOutcome: z.object({
+      requestId: z.string().min(1), provider: z.literal('codex'), protocol: z.literal('openai-responses'),
+      outcomeClass: z.literal('ok'), finalStatus: z.number().int().min(200).max(299),
+      nativeSessionId: z.string().min(1), nativeThreadId: z.string().min(1),
+    }).strict(),
+    source: z.literal('gateway-outcomes'),
+  }),
 ]);
 
 export type BlueprintOperationEvent = z.infer<typeof OperationEventBodySchema> & {
@@ -1067,6 +1082,7 @@ async function verifyDirectOperationModel(
   workItemId: string,
   pin: Record<string, unknown>,
   policy: { mode: 'exact' | 'allowed' | 'preferred'; models: readonly string[]; effort?: string },
+  persistOrigins = false,
 ): Promise<string | null> {
   if (pin.kind !== 'blueprint-operation' || typeof pin.harnessSlug !== 'string' ||
       typeof pin.operationId !== 'string' || typeof pin.specificationRevision !== 'string') {
@@ -1112,25 +1128,35 @@ async function verifyDirectOperationModel(
   `;
   if (!rows.length) return 'no accepted worker session reported an actual model';
   if (rows.length > 1000) return 'model evidence exceeds the bounded verification window';
-  const eventRows = await sql<Array<{ body: unknown }>>`
-    SELECT body FROM harness_shared.coord_event_log
+  const eventRows = await sql<Array<{ id: string | number; body: unknown }>>`
+    SELECT id, body FROM harness_shared.coord_event_log
      WHERE workspace_id = ${workspaceId} AND surface = 'blueprint-operation'
        AND writer_key = ${`receipt:${receiptId}`}
-       AND body->>'kind' = 'model-attestation'
+       AND body->>'kind' IN ('model-attestation', 'model-attestation-origin')
        AND body->>'workItemId' = ${workItemId}
      ORDER BY id LIMIT 1001
   `;
   if (eventRows.length > 1000) return 'model attestation events exceed the bounded verification window';
   const events = new Map<string, Extract<z.infer<typeof OperationEventBodySchema>, { kind: 'model-attestation' }>>();
+  const eventIds = new Map<string, string>();
+  type AttestationOrigin = Extract<z.infer<typeof OperationEventBodySchema>, { kind: 'model-attestation-origin' }>;
+  const origins = new Map<string, AttestationOrigin>();
   for (const row of eventRows) {
     const parsed = OperationEventBodySchema.safeParse(row.body);
-    if (!parsed.success || parsed.data.kind !== 'model-attestation' || parsed.data.receiptId !== receiptId) {
+    if (!parsed.success || parsed.data.receiptId !== receiptId ||
+        (parsed.data.kind !== 'model-attestation' && parsed.data.kind !== 'model-attestation-origin')) {
       return 'accepted worker has malformed model attestation';
+    }
+    if (parsed.data.kind === 'model-attestation-origin') {
+      if (origins.has(parsed.data.originalEventId)) return 'accepted worker has duplicate model attestation origin';
+      origins.set(parsed.data.originalEventId, parsed.data);
+      continue;
     }
     const event = parsed.data;
     const key = `${event.nativeSessionId}:${event.providerResponseId}`;
     if (events.has(key)) return 'accepted worker has duplicate model attestation';
     events.set(key, event);
+    eventIds.set(key, String(row.id));
   }
   const unmatched = new Set(events.keys());
   const nonnegative = (value: string | number | null) => value !== null && Number.isSafeInteger(Number(value)) && Number(value) >= 0;
@@ -1159,6 +1185,18 @@ async function verifyDirectOperationModel(
           : canonicalClaudeModel(entry) === canonicalClaudeModel(model)) &&
         (!listedEffort || listedEffort === effort);
     });
+  };
+  const policyFailure = (event: (typeof events extends Map<string, infer T> ? T : never)): string | null => {
+    if (!modelAllowed(event.requestedModel, event.provider, event.forwardedEffort) ||
+        !modelAllowed(event.actualModel, event.provider, event.forwardedEffort)) {
+      return `accepted worker reported a model outside the ${policy.mode} policy`;
+    }
+    if (policy.effort && (event.effortSource !== 'forwarded-request' ||
+        event.forwardedEffort !== policy.effort.toLowerCase() ||
+        (event.providerEffort != null && event.providerEffort !== policy.effort.toLowerCase()))) {
+      return 'forwarded or provider-reported reasoning effort differs from the accepted level';
+    }
+    return null;
   };
   for (const row of rows) {
     if ((row.agent !== 'claude' && row.agent !== 'codex') ||
@@ -1201,15 +1239,10 @@ async function verifyDirectOperationModel(
             canonicalClaudeModel(event.actualModel) !== canonicalClaudeModel(row.model)))) {
       return 'accepted worker transcript differs from its provider model attestation';
     }
-    if (!modelAllowed(event.requestedModel, row.provider, event.forwardedEffort) ||
-        !modelAllowed(event.actualModel, row.provider, event.forwardedEffort) ||
-        !modelAllowed(row.model, row.provider, event.forwardedEffort)) {
+    const eventPolicyFailure = policyFailure(event);
+    if (eventPolicyFailure) return eventPolicyFailure;
+    if (!modelAllowed(row.model, row.provider, event.forwardedEffort)) {
       return `accepted worker reported a model outside the ${policy.mode} policy`;
-    }
-    if (policy.effort && (event.effortSource !== 'forwarded-request' ||
-        event.forwardedEffort !== policy.effort.toLowerCase() ||
-        (event.providerEffort != null && event.providerEffort !== policy.effort.toLowerCase()))) {
-      return 'forwarded or provider-reported reasoning effort differs from the accepted level';
     }
     if ((row.agent === 'claude' && (!nonnegative(row.input_tokens) ||
           event.usage.inputTokens === null || Number(row.input_tokens) !== event.usage.inputTokens)) ||
@@ -1221,7 +1254,67 @@ async function verifyDirectOperationModel(
       return 'accepted worker usage differs from provider request attestation';
     }
   }
-  if (unmatched.size) return 'accepted worker has unmatched request-grain model evidence';
+  if (unmatched.size) {
+    const refusal = 'accepted worker has unmatched request-grain model evidence';
+    const acceptedSessions = new Set(rows.map(row => row.native_session_id));
+    const pending: AttestationOrigin[] = [];
+    const unresolved = [...unmatched].filter(key => !origins.has(eventIds.get(key)!));
+    // Only exact response identities can establish a historical auxiliary
+    // origin. Missing/ambiguous history, same-thread evidence and accepted
+    // worker sessions still require the ordinary transcript multiset.
+    const outcomes = unresolved.length ? await sql<Array<{
+      request_id: string; owner_id: string; provider_response_id: string;
+      provider: string; protocol: string; outcome_class: string; final_status: number | null;
+      native_session_id: string | null; native_thread_id: string | null;
+    }>>`
+      SELECT request_id, owner_id, provider_response_id, provider, protocol,
+             outcome_class, final_status, native_session_id, native_thread_id
+        FROM harness_shared.gateway_request_outcomes
+       WHERE workspace_id = ${workspaceId}
+         AND provider_response_id IN ${sql(unresolved.map(key => events.get(key)!.providerResponseId))}
+         AND owner_id IN ${sql([...new Set(unresolved.map(key => events.get(key)!.ownerId))])}
+       ORDER BY request_id LIMIT 1001
+    ` : [];
+    if (outcomes.length > 1000) return refusal;
+    for (const key of unmatched) {
+      const event = events.get(key)!;
+      if (event.backend !== 'codex' || event.provider !== 'openai' || event.usage.inputTokenBasis !== 'inclusive') return refusal;
+      const eventId = eventIds.get(key)!;
+      const attestationHash = createHash('sha256').update(canonicalJson(event)).digest('hex');
+      let origin = origins.get(eventId);
+      if (!origin) {
+        const matches = outcomes.filter(row => row.owner_id === event.ownerId && row.provider_response_id === event.providerResponseId);
+        if (matches.length !== 1) return refusal;
+        const row = matches[0];
+        const parsed = OperationEventBodySchema.safeParse({
+          kind: 'model-attestation-origin', receiptId, workItemId, runId: null,
+          originalEventId: eventId, attestationHash, ownerId: event.ownerId,
+          nativeSessionId: event.nativeSessionId, providerResponseId: event.providerResponseId,
+          gatewayOutcome: { requestId: row.request_id, provider: row.provider, protocol: row.protocol,
+            outcomeClass: row.outcome_class, finalStatus: row.final_status,
+            nativeSessionId: row.native_session_id, nativeThreadId: row.native_thread_id },
+          source: 'gateway-outcomes',
+        });
+        if (!parsed.success || parsed.data.kind !== 'model-attestation-origin') return refusal;
+        origin = parsed.data;
+        pending.push(origin);
+      }
+      if (origin.attestationHash !== attestationHash || origin.ownerId !== event.ownerId ||
+          origin.nativeSessionId !== event.nativeSessionId || origin.providerResponseId !== event.providerResponseId ||
+          origin.gatewayOutcome.nativeSessionId !== origin.gatewayOutcome.nativeThreadId ||
+          acceptedSessions.has(origin.gatewayOutcome.nativeSessionId)) return refusal;
+      const eventPolicyFailure = policyFailure(event);
+      if (eventPolicyFailure) return eventPolicyFailure;
+    }
+    if (persistOrigins) {
+      const handle: BlueprintOperationHandle = { workspaceId, harnessSlug: acceptedPin.harnessSlug,
+        receiptId, operationId: acceptedPin.operationId, specificationRevision: acceptedPin.specificationRevision,
+        target: { kind: 'work-item', id: workItemId } };
+      for (const origin of pending) {
+        await appendControlEvent(sql, handle, eventIdentity('model-attestation-origin', handle, origin.originalEventId), origin);
+      }
+    }
+  }
   return null;
 }
 
@@ -1345,7 +1438,7 @@ export async function prepareDirectOperationCompletion(
   }
   if (operation.policy.model) {
     const modelFailure = await verifyDirectOperationModel(
-      sql, workspaceId, item.id, pin as Record<string, unknown>, operation.policy.model,
+      sql, workspaceId, item.id, pin as Record<string, unknown>, operation.policy.model, true,
     );
     if (modelFailure) throw new Error(`blueprint operation model attestation failed: ${modelFailure}`);
   }
