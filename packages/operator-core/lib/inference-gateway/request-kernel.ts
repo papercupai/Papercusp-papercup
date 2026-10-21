@@ -177,6 +177,11 @@ export interface GatewayKernelAdmissionController<TRoute, TChunk, TMetadata> {
     context: GatewayKernelContext & { route: GatewayKernelRoute<TRoute> },
     task: () => Promise<TResult>,
   ): Promise<TResult>;
+  /** Acquire a provider/account permit immediately before each upstream attempt.
+   * The wait runs before the TTFB timer and is released as soon as the upstream
+   * attempt settles, so pacing cannot be charged to upstream latency or leak on
+   * abort/error paths. */
+  acquireAttempt?(context: GatewayKernelAttemptContext<TRoute>): MaybePromise<() => void>;
   /** AIMD/rate feedback remains lane-specific data, but the kernel guarantees one callback per attempt. */
   observeAttempt?(feedback: GatewayKernelAttemptFeedback<TRoute, TChunk, TMetadata>): MaybePromise<void>;
   /**
@@ -1071,7 +1076,6 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           }
 
           span.recordAttempt();
-          span.beginStage('upstreamTtfb');
           // D-014: the body-derived deadline above is constant for the request;
           // a lane's wedge-prevention BUDGET is not, so re-read the cap here —
           // inside the loop — and give this attempt only what is left of it.
@@ -1096,6 +1100,24 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
             typeof cap === 'number' && Number.isFinite(cap)
               ? Math.max(1, Math.min(ttfbTimeoutMs, Math.floor(cap)))
               : ttfbTimeoutMs;
+          let attemptPermitRelease: (() => void) | null = null;
+          if (opts.admission.acquireAttempt) {
+            try {
+              attemptPermitRelease = await abortable(
+                Promise.resolve(opts.admission.acquireAttempt(attemptContext)),
+                requestController.signal,
+              );
+            } catch (error) {
+              const admissionFailure = normalizeError(error, requestController.signal);
+              await opts.admission.observeAttempt?.({
+                context: attemptContext,
+                response: null,
+                error: admissionFailure,
+              });
+              throw admissionFailure;
+            }
+          }
+          span.beginStage('upstreamTtfb');
           let response!: GatewayKernelUpstreamResponse<TChunk, TMetadata>;
           let attemptFailure: GatewayRequestKernelError | null = null;
           /**
@@ -1150,6 +1172,8 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
             attemptFailure = normalizeError(error, requestController.signal);
           } finally {
             span.endStage('upstreamTtfb');
+            attemptPermitRelease?.();
+            attemptPermitRelease = null;
           }
           if (attemptFailure) {
             await opts.admission.observeAttempt?.({

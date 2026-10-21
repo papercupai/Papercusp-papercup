@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION } from '@papercusp/test-config/execution-details';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { judgeTestsFromLedger, productionConformanceDeps } from './conformance-run-deps';
 import * as ledger from '../check-results-ledger';
@@ -19,16 +20,49 @@ describe('conformance test-ledger evidence population', () => {
     db = await createFreshPgDb('conformance-test-sources');
     await db.sql`CREATE TABLE harness_shared.test_runs (
       id bigserial PRIMARY KEY, file_path text NOT NULL, workspace_id text,
-      framework text, source text, status text NOT NULL, finished_at timestamptz
+      framework text, source text, status text NOT NULL, finished_at timestamptz,
+      commit_sha text, worktree_dirty boolean, execution_details jsonb
     )`;
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });
   beforeEach(async () => { await db.sql`TRUNCATE harness_shared.test_runs`; });
 
-  async function record(source: string | null, status: string, minute: number, workspace: string | null = input.workspaceId) {
+  async function record(
+    source: string | null,
+    status: string,
+    minute: number,
+    workspace: string | null = input.workspaceId,
+    options: {
+      testNamePattern?: string | null;
+      worktreeDirty?: boolean;
+      commitSha?: string | null;
+      skipped?: number;
+      includeDetails?: boolean;
+    } = {},
+  ) {
     const finishedAt = new Date(Date.UTC(2026, 9, 15, 0, minute));
-    await db.sql`INSERT INTO harness_shared.test_runs(file_path, workspace_id, framework, source, status, finished_at)
-      VALUES (${file}, ${workspace}, 'vitest', ${source}, ${status}, ${finishedAt})`;
+    const commitSha = options.commitSha === undefined ? 'a'.repeat(40) : options.commitSha;
+    const worktreeDirty = options.worktreeDirty ?? false;
+    const executionDetails = options.includeDetails === false ? null : {
+      schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+      root: '/repo',
+      filePath: file,
+      runGroupId: 'conformance-run',
+      workspaceId: workspace,
+      harnessSlug: 'papercusp',
+      testNamePattern: options.testNamePattern ?? null,
+      passed: status === 'pass' ? 1 : 0,
+      failed: status === 'fail' ? 1 : 0,
+      skipped: options.skipped ?? 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha,
+      worktreeDirty,
+    };
+    await db.sql`INSERT INTO harness_shared.test_runs
+      (file_path, workspace_id, framework, source, status, finished_at, commit_sha, worktree_dirty, execution_details)
+      VALUES (${file}, ${workspace}, 'vitest', ${source}, ${status}, ${finishedAt}, ${commitSha}, ${worktreeDirty},
+        ${executionDetails === null ? null : db.sql.json(executionDetails as never)})`;
   }
 
   it('keeps a production pass after a newer intentional mutant failure', async () => {
@@ -43,6 +77,35 @@ describe('conformance test-ledger evidence population', () => {
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'fail', value: 0 });
   });
 
+  it('rejects a newer name-filtered pass instead of falling back to an older full-file run', async () => {
+    await record('local', 'pass', 1);
+    await record('local', 'pass', 2, input.workspaceId, {
+      testNamePattern: 'delivers no-claim declare/orient scope',
+      skipped: 10,
+    });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({
+      verdict: 'error',
+      value: null,
+      detail: expect.stringContaining('name-filtered test run'),
+    });
+  });
+
+  it('rejects a passing row whose worktree was dirty during the run', async () => {
+    await record('local', 'pass', 1, input.workspaceId, { worktreeDirty: true });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({
+      verdict: 'error',
+      detail: expect.stringContaining('worktree was not proven clean'),
+    });
+  });
+
+  it('rejects a passing row without a pinned commit SHA', async () => {
+    await record('local', 'pass', 1, input.workspaceId, { commitSha: null });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({
+      verdict: 'error',
+      detail: expect.stringContaining('commit SHA is absent or inconsistent'),
+    });
+  });
+
   it('reports missing production evidence when only mutation evidence exists', async () => {
     await record('mutation-probe', 'pass', 1);
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'error', detail: expect.stringContaining('no test-run ledger row') });
@@ -50,7 +113,7 @@ describe('conformance test-ledger evidence population', () => {
 
   it.each(['local', 'ci', 'admin-ui', null])('retains genuine failures from source %s, including legacy rows', async source => {
     await record(source, 'pass', 1);
-    await record(source, 'error', 2);
+    await record(source, 'error', 2, input.workspaceId, { includeDetails: false });
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'fail', value: 0 });
   });
 

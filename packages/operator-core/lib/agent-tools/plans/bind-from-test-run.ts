@@ -349,6 +349,7 @@ export type TestRunBindingError =
   | 'test_run_canonical_path_mismatch'
   | 'source_paths_underivable'
   | 'run_contradicts_declared_adequacy'
+  | 'mutation_caught_case_claim_mismatch'
   | 'mutation_causal_controls_invalid'
   | 'mutation_causal_controls_unlinked'
   | 'mutation_reaim_unjustified'
@@ -799,6 +800,75 @@ function mutationCausalControlsRefusal(
   return null;
 }
 
+function stringLeaves(value: unknown): string[] {
+  const strings: string[] = [];
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === 'string') {
+      strings.push(current);
+      continue;
+    }
+    if (current === null || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    pending.push(...(Array.isArray(current) ? current : Object.values(current)));
+  }
+  return strings;
+}
+
+/**
+ * Caller-authored details are useful context, but a mutation's "caught by:" case list must
+ * agree with the test-run ledger. The evaluator already reads failedCaseTitles separately;
+ * guarding this prose prevents a reader from seeing a larger catch than the run measured.
+ */
+function mutationCaughtCaseClaimRefusal(
+  input: TestRunBindingInput,
+  row: TestRunEvidenceRow,
+): Extract<TestRunExpansion, { ok: false }> | null {
+  if ((input.evidenceKind ?? deriveKind(row)) !== 'mutation'
+    || row.source !== 'mutation-probe'
+    || executionDetails(row.execution_details).mutationPhase !== 'mutant') return null;
+
+  const testRunId = Number(row.id);
+  const failedCaseTitles = parseTestRunExecutionDetails(row.execution_details)?.failedCaseTitles;
+  const expected = failedCaseTitles?.length ? `caught by: ${failedCaseTitles.join(' | ')}` : null;
+  const proseFields = ['observations', 'calibration'] as const;
+  for (const field of proseFields) {
+    for (const prose of stringLeaves(input.details?.[field])) {
+      const marker = /\bcaught by:/gi;
+      let match = marker.exec(prose);
+      while (match) {
+        const start = match.index ?? 0;
+        const actual = prose.slice(start);
+        const matchesLedger = expected !== null
+          && actual.slice('caught by:'.length, expected.length) === expected.slice('caught by:'.length)
+          // The established prose list uses " | " between cases; a further separator after
+          // the canonical list is another claimed case and must not slip through as a prefix.
+          && !/^\s*\|\s*/.test(actual.slice(expected.length));
+        if (!matchesLedger) {
+          return {
+            ok: false,
+            error: 'mutation_caught_case_claim_mismatch',
+            testRunId,
+            message:
+              `details.${field} contains a "caught by:" case claim that does not match the mutant test-run ${testRunId} ` +
+              `failedCaseTitles${failedCaseTitles === undefined ? ' (no canonical case list was recorded)' : ` ${JSON.stringify(failedCaseTitles)}`}. ` +
+              (expected
+                ? `Use the measured list exactly as "${expected}", or remove the caught-case claim.`
+                : 'Remove the caught-case claim because this run has no measured failed cases.'),
+          };
+        }
+        // A test title may itself contain the words "caught by:". Skip the verified title
+        // list as a unit before searching for another caller-authored claim.
+        marker.lastIndex = start + expected!.length;
+        match = marker.exec(prose);
+      }
+    }
+  }
+  return null;
+}
+
 /** The calibration leg each named causal control must have recorded, in controlIds order. */
 const CAUSAL_CONTROL_LEGS = ['baseline', 'copy-baseline'] as const;
 
@@ -853,6 +923,8 @@ export function deriveBindingFromTestRun(
       message: `test-run ${testRunId} has status ${row.status ?? 'null'}; bind it once it has finished.`,
     };
   }
+  const caughtCaseClaimRefusal = mutationCaughtCaseClaimRefusal(input, row);
+  if (caughtCaseClaimRefusal) return caughtCaseClaimRefusal;
   const testPath = row.file_path ? repoRelativeTestPath(root, row.file_path) : null;
   if (!testPath) {
     return {

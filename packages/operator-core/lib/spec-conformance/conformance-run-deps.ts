@@ -18,6 +18,7 @@
  * Plan: spec-conformance-loop-2026-10-14 (P-018).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { readPlanBySlug } from '../agent-tools/plans/source';
 import { approvedDeviations } from './deviation';
 import {
@@ -106,7 +107,7 @@ function foldResults(kind: EvaluatedConformanceCheck['kind'], results: ReadonlyA
   };
 }
 
-/** Judge a tests check from the latest repository-health run of each named file. */
+/** Judge a tests check from each named file's latest complete, clean, unfiltered run. */
 export async function judgeTestsFromLedger(
   input: {
     files: readonly string[];
@@ -119,7 +120,8 @@ export async function judgeTestsFromLedger(
   sql: Sql = getOrgPg().sql,
 ): Promise<EvaluatedConformanceCheck> {
   const rows = (await sql`
-    SELECT DISTINCT ON (file_path) id, file_path, status, finished_at
+    SELECT DISTINCT ON (file_path)
+           id, file_path, status, finished_at, commit_sha, worktree_dirty, execution_details
       FROM harness_shared.test_runs
      WHERE file_path = ANY(${[...input.files]})
        AND framework IS DISTINCT FROM 'rubric-check'
@@ -129,7 +131,15 @@ export async function judgeTestsFromLedger(
        AND (workspace_id = ${input.workspaceId} OR workspace_id IS NULL)
        AND status IN ('pass', 'fail', 'error')
      ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
-  `) as Array<{ id: number | string; file_path: string; status: string; finished_at: Date | string | null }>;
+  `) as Array<{
+    id: number | string;
+    file_path: string;
+    status: string;
+    finished_at: Date | string | null;
+    commit_sha: string | null;
+    worktree_dirty: boolean | null;
+    execution_details: unknown;
+  }>;
   const byFile = new Map(rows.map((row) => [row.file_path, row] as const));
   const missing = input.files.filter((file) => !byFile.has(file));
   const now = input.now?.() ?? new Date();
@@ -142,16 +152,38 @@ export async function judgeTestsFromLedger(
       || finishedMs > nowMs + SPEC_CONFORMANCE_TEST_EVIDENCE_MAX_FUTURE_SKEW_MS;
   });
   const failing = rows.filter((row) => row.status !== 'pass').map((row) => `${row.file_path} (${row.status}, test_runs #${row.id})`);
+  // A passing status is not enough for file-wide evidence: filtered or dirty runs
+  // can pass only a subset or a moving source tree. Legacy failure rows remain
+  // useful negative evidence above, but legacy pass rows cannot prove coverage.
+  const unprovenPasses = rows.flatMap((row) => {
+    if (row.status !== 'pass') return [];
+    const details = parseTestRunExecutionDetails(row.execution_details);
+    if (!details) {
+      return [`${row.file_path} (missing or invalid execution details, test_runs #${row.id})`];
+    }
+    const reasons: string[] = [];
+    if (details.filePath !== row.file_path) reasons.push('execution details file path mismatch');
+    if (details.testNamePattern !== null) reasons.push('name-filtered test run');
+    if (details.collectionFailed) reasons.push('test collection failed');
+    if (row.worktree_dirty !== false || details.worktreeDirty) reasons.push('worktree was not proven clean');
+    if (!row.commit_sha || details.commitSha !== row.commit_sha) reasons.push('commit SHA is absent or inconsistent');
+    if (details.failed > 0) reasons.push('execution details report failed cases');
+    if (details.passed === 0) reasons.push('no passing cases recorded');
+    return reasons.length > 0
+      ? [`${row.file_path} (${reasons.join(', ')}, test_runs #${row.id})`]
+      : [];
+  });
   const latest = rows
     .map((row) => (row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at ?? '')))
     .sort()
     .at(-1);
   const measuredAt = latest || new Date().toISOString();
   const passing = rows.length - failing.length;
-  if (missing.length > 0 || stale.length > 0) {
+  if (missing.length > 0 || stale.length > 0 || unprovenPasses.length > 0) {
     const unavailable = [
       ...missing.map((file) => `${file} (no test-run ledger row)`),
       ...stale.map((row) => `${row.file_path} (stale test-run evidence, test_runs #${row.id})`),
+      ...unprovenPasses,
     ];
     return {
       kind: 'tests',
@@ -159,7 +191,7 @@ export async function judgeTestsFromLedger(
       value: null,
       unit: 'files',
       measuredAt,
-      detail: `test-run evidence unavailable or stale: ${unavailable.join('; ')}`,
+      detail: `test-run evidence unavailable, stale, or incomplete: ${unavailable.join('; ')}`,
     };
   }
   if (failing.length > 0) {

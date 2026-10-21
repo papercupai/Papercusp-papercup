@@ -363,6 +363,45 @@ describe('deriveBindingFromTestRun', () => {
     });
   });
 
+  it('refuses mutation caught-case prose that lists cases absent from the mutant ledger', () => {
+    const failedCase = 'suite > rejects an invalid request';
+    const passedCases = [
+      'suite > accepts a valid request',
+      'suite > reports a missing field',
+      'suite > preserves the default response',
+    ];
+    const mutant = run({
+      status: 'fail',
+      source: 'mutation-probe',
+      execution_details: {
+        schemaVersion: 1, root, filePath: TEST, runGroupId: null, workspaceId: 'ws-1',
+        harnessSlug: 'web', testNamePattern: null, passed: 0, failed: 1, skipped: 0,
+        collectionFailed: false, mutationPhase: 'mutant', commitSha: 'abcdef0123456789',
+        worktreeDirty: false, failedCaseTitles: [failedCase],
+      },
+    });
+    const overclaimed = deriveBindingFromTestRun(input({ details: {
+      observations: { scope: `The mutant was caught by: ${[failedCase, ...passedCases].join(' | ')}` },
+      calibration: 'The copy-out mutant fails these cases.',
+    } }), mutant, root, 'run');
+    expect(overclaimed).toMatchObject({ ok: false, error: 'mutation_caught_case_claim_mismatch', testRunId: 42 });
+    expect(!overclaimed.ok && overclaimed.message).toContain(`caught by: ${failedCase}`);
+
+    const canonical = deriveBindingFromTestRun(input({ details: {
+      observations: `The mutant was caught by: ${failedCase}`,
+    } }), mutant, root, 'run');
+    expect(canonical).toMatchObject({
+      ok: true,
+      binding: { details: { observations: `The mutant was caught by: ${failedCase}` } },
+    });
+
+    // Ordinary test observations have no mutant failed-case population to compare against.
+    expect(deriveBindingFromTestRun(
+      input({ details: { observations: 'This branch is caught by the ordinary test suite.' } }),
+      run(), root, 'run',
+    )).toMatchObject({ ok: true });
+  });
+
   it('adds a valid mutant subject to derived sourcePaths while preserving an explicit override', () => {
     const mutation = {
       schemaVersion: 1,

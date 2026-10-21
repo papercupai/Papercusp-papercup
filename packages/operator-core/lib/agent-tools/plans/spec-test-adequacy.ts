@@ -2875,7 +2875,36 @@ export function mutationMeasuredFailedCase(mutation: SpecEvidenceForAdequacy, ca
   });
 }
 
-/** A shared mutant run must have a measured failing case for each claimed scenario target. */
+/** A shared mutant run must link each target to its canonical scenario and measured failing case. */
+function mutationTargetScenarioMatchesMeasuredCase(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  caseTitle: string,
+): boolean {
+  const target = detailsOf(mutation).targeted;
+  if (typeof target !== 'string') return false;
+  const targetRequirement = mutationTargetRequirement(clause);
+  if (targetRequirement.selfTarget !== null) return clause.falsifier === null;
+  if (!targetRequirement.acceptedTargets.includes(target)) return false;
+
+  const requiredScenarios = clause.falsifier?.requiredScenarios ?? [];
+  const mutationDetails = detailsOf(mutation);
+  const scenarioIds = mutationDetails.scenarioIds;
+  const declaredCases = mutationDetails.testCases;
+  const explicitScenarioCaseLink =
+    Array.isArray(scenarioIds) &&
+    scenarioIds.length === 1 &&
+    scenarioIds[0] === target &&
+    Array.isArray(declaredCases) &&
+    declaredCases.some((title) => hasSameCaseTitleIdentity(title, caseTitle));
+  const separator = caseTitle.lastIndexOf(' > ');
+  const scenarioCase = separator >= 0 ? caseTitle.slice(separator + 3) : caseTitle;
+  const labelEnd = scenarioCase.indexOf(': ');
+  const measuredScenario = labelEnd >= 0 ? scenarioCase.slice(0, labelEnd).trim() : scenarioCase.trim();
+  return requiredScenarios.includes(target) &&
+    (explicitScenarioCaseLink || (measuredScenario.length > 0 && measuredScenario === target));
+}
+
 function mutationTargetMatchesMeasuredCase(
   clause: SpecClauseRevision,
   mutation: SpecEvidenceForAdequacy,
@@ -2900,27 +2929,25 @@ function mutationTargetMatchesMeasuredCase(
     .map((row) => detailsOf(row).targeted)
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
     .map(normalizedTarget));
-  if (targetsOnRun.size <= 1) return true;
+
+  if (targetRequirement.selfTarget !== null) {
+    // Preserve the legacy identity fallback only when there is no structured falsifier to align.
+    // For an explicit falsifier, an own-specId target identifies the clause but names no canonical
+    // scenario, so it cannot prove that the measured failure exercises that falsifier.
+    return clause.falsifier === null && targetsOnRun.size <= 1;
+  }
+  if (!mutationTargetScenarioMatchesMeasuredCase(clause, mutation, caseTitle)) return false;
 
   const declaredCases = detailsOf(mutation).testCases;
-  if (declaredCases !== undefined) {
-    if (!declaredCases.some((title) => hasSameCaseTitleIdentity(title, caseTitle))) return false;
-    // Ambiguous explicit associations fail closed, including titles that would
-    // otherwise match the legacy colon convention below.
-    return !sameRunRows.some((row) => {
-      const details = detailsOf(row);
-      return typeof details.targeted === 'string' && normalizedTarget(details.targeted) !== normalizedTarget(target) &&
-        (details.testCases ?? []).some((title) => hasSameCaseTitleIdentity(title, caseTitle));
-    });
-  }
-
-  const separator = caseTitle.lastIndexOf(' > ');
-  const scenarioCase = separator >= 0 ? caseTitle.slice(separator + 3) : caseTitle;
-  const labelEnd = scenarioCase.indexOf(': ');
-  const measuredScenario = labelEnd >= 0 ? scenarioCase.slice(0, labelEnd).trim() : '';
-  return measuredScenario.length > 0 &&
-    (clause.falsifier?.requiredScenarios ?? []).includes(measuredScenario) &&
-    measuredScenario === target;
+  if (declaredCases !== undefined && !declaredCases.some((title) => hasSameCaseTitleIdentity(title, caseTitle)))
+    return false;
+  // Ambiguous explicit associations fail closed, including titles that would otherwise match by
+  // scenario label alone.
+  return !sameRunRows.some((row) => {
+    const details = detailsOf(row);
+    return typeof details.targeted === 'string' && normalizedTarget(details.targeted) !== normalizedTarget(target) &&
+      (details.testCases ?? []).some((title) => hasSameCaseTitleIdentity(title, caseTitle));
+  });
 }
 
 function summarizeMutationFailedCaseTitles(mutations: readonly SpecEvidenceForAdequacy[]): string {
@@ -2958,6 +2985,34 @@ function isClauseBoundMutationTest(
   evidence: readonly SpecEvidenceForAdequacy[],
 ): boolean {
   return clauseBoundMutationTest(clause, mutation, evidence) !== null;
+}
+
+function hasClauseBoundMutationCase(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): boolean {
+  if (mutation.evidenceKind !== 'mutation' && mutation.evidenceKind !== 'counterexample') return false;
+  return clauseBoundCurrentTests(clause, mutation, evidence).some((testBinding) =>
+    (detailsOf(testBinding).testCases ?? []).some((caseTitle) =>
+      mutationMeasuredFailedCase(mutation, caseTitle) && hasPassingTestBaselineCase(testBinding, caseTitle),
+    ),
+  );
+}
+
+function hasClauseBoundScenarioCase(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): boolean {
+  if (mutation.evidenceKind !== 'mutation' && mutation.evidenceKind !== 'counterexample') return false;
+  return clauseBoundCurrentTests(clause, mutation, evidence).some((testBinding) =>
+    (detailsOf(testBinding).testCases ?? []).some((caseTitle) =>
+      mutationMeasuredFailedCase(mutation, caseTitle) &&
+      hasPassingTestBaselineCase(testBinding, caseTitle) &&
+      mutationTargetScenarioMatchesMeasuredCase(clause, mutation, caseTitle),
+    ),
+  );
 }
 
 function isClauseBoundMutationProof(
@@ -3289,6 +3344,18 @@ export function evaluateSpecTestAdequacy(input: {
     (row) =>
       isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
       clauseBoundCurrentTest(clause, row, evidence) !== null &&
+      !hasClauseBoundMutationCase(clause, row, evidence),
+  );
+  const targetedMutationWithoutScenarioCaseLink = boundMutationOrCounterexample.filter(
+    (row) =>
+      isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
+      hasClauseBoundMutationCase(clause, row, evidence) &&
+      !hasClauseBoundScenarioCase(clause, row, evidence),
+  );
+  const targetedMutationWithoutExplicitCaseAssociation = boundMutationOrCounterexample.filter(
+    (row) =>
+      isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
+      hasClauseBoundScenarioCase(clause, row, evidence) &&
       !isClauseBoundMutationTest(clause, row, evidence),
   );
   const clauseScopedProofBindings = [
@@ -3344,8 +3411,12 @@ export function evaluateSpecTestAdequacy(input: {
           ? targetedMutationWithoutMatchingCase.length +
             ' successful mutation or counterexample binding(s) name ' +
             clauseIdentity(clause) +
-            ', but the measured failed case is missing or is not an exact member of the successful current same-clause adequacy.testCases binding. ' +
+            ', but the measured failed case is missing from a successful current same-clause adequacy.testCases binding or its passing baseline. ' +
             summarizeMutationFailedCaseTitles(targetedMutationWithoutMatchingCase)
+        : targetedMutationWithoutScenarioCaseLink.length > 0
+          ? `The exact measured failed case has a passing current same-clause binding for ${clauseIdentity(clause)}, but its scenario label does not align with a canonical falsifier.requiredScenarios id and adequacy.targeted; an own-specId target establishes identity only.`
+        : targetedMutationWithoutExplicitCaseAssociation.length > 0
+          ? `The measured failed case has the canonical scenario label for ${clauseIdentity(clause)}, but mutation adequacy.testCases does not associate that exact case with the target or the run has conflicting target-to-case claims.`
         : boundMutationOrCounterexample.length > 0
           ? clauseSelfTarget !== null
             ? `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not target this clause's own specId.`
@@ -3374,6 +3445,10 @@ export function evaluateSpecTestAdequacy(input: {
                 ? `Bind a successful test result for the mutation run's canonical test file to ${clauseIdentity(clause)}; adequacy.targeted alone cannot establish that link.`
                 : targetedMutationWithoutMatchingCase.length > 0
                   ? 'Add the exact measured failed case title from the mutation run to adequacy.testCases on the successful current same-clause test binding; missing or mismatched case identity cannot establish falsifiability.'
+                  : targetedMutationWithoutScenarioCaseLink.length > 0
+                    ? 'Use a real clause falsifier.requiredScenarios id as adequacy.targeted and bind a measured failed case whose exact scenario label is that id; a self-specId target remains identity only.'
+                  : targetedMutationWithoutExplicitCaseAssociation.length > 0
+                    ? 'Add the exact measured failed case title to mutation adequacy.testCases for its canonical scenario target; conflicting target-to-case claims must be resolved.'
                 : `Set adequacy.targeted to ${clauseTargetRequirement}; a boolean or sibling-case target is insufficient.`,
           }
       : attestedFalsifiableOnly.length > 0

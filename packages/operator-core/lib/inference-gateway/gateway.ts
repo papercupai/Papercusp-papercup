@@ -3034,13 +3034,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // authority, so make the governor's own concurrency cap non-binding (raise it to the queue cap)
   // and let the governor enforce only rate/pause/pace — safe in the gateway's own process.
   const accountGovernors = new Map<string, Set<RateLimitGovernor>>();
-  const governorForAccount = (model: string, accountId: string): RateLimitGovernor => {
+  const governorForAccount = (
+    model: string,
+    accountId: string,
+    backend: 'claude-code' | 'codex' = 'claude-code',
+  ): RateLimitGovernor => {
     // EI-2648: thread `accountId` into the injected factory too. The default branch already keys
     // by account; without this the injected branch could not, so a test double had no way to make
     // a penalty persist for one account across retries (the absorb's whole subject).
-    const g = deps.governorFor
+    const g = deps.governorFor && backend === 'claude-code'
       ? deps.governorFor(model, accountId)
-      : governorForBackend('claude-code', model, undefined, accountId);
+      : governorForBackend(backend, model, undefined, accountId);
     let buckets = accountGovernors.get(accountId);
     if (!buckets) accountGovernors.set(accountId, (buckets = new Set()));
     buckets.add(g);
@@ -3048,13 +3052,70 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // limit must stay non-binding. It now tracks the LIVE learned window rather
     // than a configured cap, so a lane that grows past its seed does not start
     // tripping the governor it was supposed to have been freed from.
-    const liveWindow = providerAdmission.windowFor('claude');
-    if (g.state.limits.maxConcurrent < liveWindow) g.state.limits.maxConcurrent = liveWindow;
+    const liveWindow = providerAdmission.windowFor(backend === 'codex' ? 'codex' : 'claude');
+    if (liveWindow !== null && g.state.limits.maxConcurrent < liveWindow) g.state.limits.maxConcurrent = liveWindow;
     // Smooth the static-floor RPM allowance into an even pace (subscription accounts return no per-minute
     // headers, so paceDelayMs stays 0 → the count gate alone lets effRpm fire as an instant burst that trips
     // the sub-minute burst limit). Gateway-only opt-in; the fleet concurrency governor is left untouched.
     g.state.smoothRpm = smoothRpm;
     return g;
+  };
+
+  /** Per-attempt Codex pacing. The governor wait is deliberately outside the
+   * kernel's upstream TTFB timer and uses the kernel request signal so a client
+   * abort releases the waiter without charging an upstream timeout. */
+  const acquireCodexAttemptPermit = async (
+    model: string,
+    accountId: string,
+    signal: AbortSignal,
+  ): Promise<() => void> => {
+    const governor = governorForAccount(model || SERVICEABLE_CLAMP_MODEL, accountId, 'codex');
+    const release = await governor.acquire({}, {
+      maxWaitMs: maxQueueWaitMs,
+      signal,
+      allowSoftPaused: true,
+    });
+    if (release) return release;
+    if (signal.aborted) {
+      throw new GatewayRequestKernelError('codex attempt pacing aborted', {
+        code: 'cancelled',
+        outcome: 'cancelled',
+        status: 499,
+        retryable: false,
+      });
+    }
+    throw new GatewayRequestKernelError(`codex account '${accountId}' pacing wait exceeded ${maxQueueWaitMs}ms`, {
+      code: 'upstream-error',
+      outcome: 'shed',
+      status: 429,
+      retryable: false,
+    });
+  };
+
+  const observeCodexGovernorResponse = (
+    model: string,
+    accountId: string,
+    headers: Record<string, string>,
+    status: number,
+  ): void => {
+    const governor = governorForAccount(model || SERVICEABLE_CLAMP_MODEL, accountId, 'codex');
+    governor.recordResponse(headers);
+    if (status !== 429) return;
+    const parsed = parseCodexRateReset(headers);
+    // Only a transient/burst 429 changes learned RPM. Account quota walls are
+    // isolated to the account pause and must not shrink sibling capacity.
+    if (parsed.transient) {
+      governor.penalize({
+        retryAfterMs: parsed.retryAfterMs ?? undefined,
+        resetAt: parsed.resetAt ?? undefined,
+        rateLimited: true,
+      });
+    }
+  };
+
+  const observeCodexCliGovernorFailure = (model: string, accountId: string, detail: string): void => {
+    if (codexCliRateLimitScope(detail) !== 'transient') return;
+    governorForAccount(model || SERVICEABLE_CLAMP_MODEL, accountId, 'codex').penalize({ rateLimited: true });
   };
 
   // The SINGLE pool-wide serviceability count (EI-11511): accounts that can SERVE a request right now — in
@@ -8611,6 +8672,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // the slot this request already holds. It is also why the slot cannot move down to
           // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
+          acquireAttempt: ({ route, signal }) =>
+            acquireCodexAttemptPermit(model, route.accountId ?? cli.accountId, signal),
           // R-3 / P-003: hand the lane slot back once the response streams.
           ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
           observeAttempt: ({ context, error }) => {
@@ -8631,6 +8694,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (isCodexRateLimitFailure(error.message)) {
               codexUpstream429++;
               recordRoutingUpstream429('codex', account);
+              observeCodexCliGovernorFailure(model, account, error.message);
               // Admission hears this 429 only if the request ENDS on it (the terminal
               // handler below): a 429 the kernel fails over past is a routing event,
               // not congestion (WI-6554700010011426).
@@ -9234,6 +9298,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // the slot this request already holds. It is also why the slot cannot move down to
             // this seam: this transport commits its response head BEFORE the kernel call below.
             run: (context, task) => kernelAdmission.run(context, task),
+            acquireAttempt: ({ route, signal }) =>
+              acquireCodexAttemptPermit(bodyModel, route.accountId ?? cli.accountId, signal),
             // R-3 / P-003: hand the lane slot back once the response streams.
             ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
@@ -9294,6 +9360,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // the SAME observer the Anthropic path uses. Every attempt counts — a
               // 429 carries the authoritative window too.
               deps.onResponse?.(response.metadata.headers, response.status, bodyModel, account);
+              observeCodexGovernorResponse(bodyModel, account, response.metadata.headers, response.status);
               if (response.status === 429) {
                 codexUpstream429++;
                 recordRoutingUpstream429('codex', account);
@@ -10375,6 +10442,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // whole body, so exactly one of the two admits and re-admitting here would deadlock
             // against the slot this request already holds.
             run: (context, task) => kernelAdmission.run(context, task),
+            acquireAttempt: ({ route, signal }) =>
+              acquireCodexAttemptPermit(requestModel ?? '', route.accountId ?? active.accountId, signal),
             // R-3 / P-003: hand the lane slot back once the response streams.
             ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
@@ -10408,6 +10477,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // OAuth lane; a 429 still carries authoritative credit and window headers.
               const responseModel = parseCodexRequestShape(context.body).model ?? '';
               deps.onResponse?.(response.metadata.headers, response.status, responseModel, account);
+              observeCodexGovernorResponse(responseModel, account, response.metadata.headers, response.status);
               if (response.status === 429) {
                 // Counted here even when the kernel goes on to rotate: the old path
                 // recorded the throttle against the account that emitted it. Admission

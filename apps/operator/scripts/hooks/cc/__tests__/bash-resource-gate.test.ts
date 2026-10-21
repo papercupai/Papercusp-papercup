@@ -89,11 +89,14 @@ function ensureGateCredentials(): void {
 
 beforeAll(() => {
   fakeHome = mkdtempSync(join(tmpdir(), 'gate-home-'));
+  writeFileSync(join(CANON, '.gitignore'), '**/.papercusp/scratch/\n');
+  execFileSync('git', ['init', '--quiet'], { cwd: CANON, stdio: 'ignore' });
   ensureGateCredentials();
 });
 
 afterAll(() => {
   rmSync(fakeHome, { recursive: true, force: true });
+  rmSync(CANON, { recursive: true, force: true });
 });
 
 // Advisories are SAY-ONCE per session (context-injection-audit P-020): the
@@ -550,7 +553,7 @@ const FLEET = { PAPERCUSP_FLEET_SLUG: 'nonp2p-bug-drain-0727' };
 // resolves the canonical tree from PAPERCUSP_CANONICAL_TREE (or ~/papercupai-
 // workspace/papercusp); we pin it via env + pass an explicit payload `cwd` so
 // the tree-based git guard (EI-7872) is tested independent of where vitest runs.
-const CANON = '/ws/papercupai-workspace/papercusp';
+const CANON = mkdtempSync(join(tmpdir(), 'gate-canonical-'));
 const CANON_ENV = { PAPERCUSP_CANONICAL_TREE: CANON };
 const bashCmd = (
   command: string,
@@ -5336,6 +5339,18 @@ describe('read-only tree references do not trip the write guard (EI-188983659953
 describe('sanctioned in-tree scratch exemption (EI-19372138838008750)', () => {
   const scratchRemedy = /\.papercusp\/scratch\/` INSIDE/;
   const uniqueExternalScratchRemedy = /per-session\/task-unique directory/;
+  const nestedScratchRepo = (ignoreInNestedRoot: boolean) => {
+    const outer = mkdtempSync(join(tmpdir(), 'gate-scratch-outer-'));
+    const root = join(outer, 'apps', 'nested-app');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(outer, '.gitignore'), '**/.papercusp/scratch/\n');
+    execFileSync('git', ['init', '--quiet'], { cwd: outer, stdio: 'ignore' });
+    execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'ignore' });
+    if (ignoreInNestedRoot) {
+      writeFileSync(join(root, '.gitignore'), '**/.papercusp/scratch/\n');
+    }
+    return { root, cleanup: () => rmSync(outer, { recursive: true, force: true }) };
+  };
 
   it('ALLOWS a shell redirect into <tree>/.papercusp/scratch/', () => {
     expectAllow(
@@ -5356,6 +5371,37 @@ describe('sanctioned in-tree scratch exemption (EI-19372138838008750)', () => {
         CANON_ENV,
       ),
     );
+  });
+
+  it('allows scratch writes ignored by their nested Git root', () => {
+    const repo = nestedScratchRepo(true);
+    try {
+      const env = { ...CANON_ENV, PAPERCUSP_CANONICAL_TREE: repo.root };
+      expectAllow(
+        runGate(
+          bashCmd('echo hi > .papercusp/scratch/probe.mts', { cwd: repo.root }),
+          env,
+        ),
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('denies scratch writes ignored only by the parent Git root', () => {
+    const repo = nestedScratchRepo(false);
+    try {
+      const env = { ...CANON_ENV, PAPERCUSP_CANONICAL_TREE: repo.root };
+      const reason = denyReason(
+        runGate(
+          bashCmd('echo hi > .papercusp/scratch/probe.mts', { cwd: repo.root }),
+          env,
+        ),
+      );
+      expect(reason).toContain('not ignored in the Git repository that owns it');
+    } finally {
+      repo.cleanup();
+    }
   });
 
   // NEGATIVE CONTROLS — the exemption must be strictly-under, never a prefix match.

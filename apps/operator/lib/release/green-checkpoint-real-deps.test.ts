@@ -5116,3 +5116,112 @@ describe("clearEscalation — sweeps the release-not-green CLASS, not the whole 
     openEscalationRows = [];
   });
 });
+
+// plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 #D-066 (WI-6554700010019508): the
+// WIRING inside runGreen. The pure rules live in fork-base-inherited-tests.test.ts; this proves
+// the placement — a red suite defers the post-suite legs, so an inherited red must still PAY
+// for them (exactly like an absorbed one), and only a fork run reaches the pass at all.
+describe("#D-066: a fork pot's red suite that also fails at its upstream base", () => {
+  const FORK_RED =
+    ">>> @example/fixture-pkg :: npm run test\n" +
+    " FAIL  lib/upstream-red-a.test.ts > a\n" +
+    " FAIL  lib/upstream-red-b.test.ts > b\n" +
+    "AFFECTED_TESTS_RESULT status=failed tasks=1 failed=1 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0\n" +
+    "1 non-quarantined task(s) failed.";
+  const BASE = "f".repeat(40);
+  const CAND = "e".repeat(40);
+  const ENV_KEYS = ["PAPERCUSP_GATE_UPSTREAM_INSTALL", "PAPERCUSP_GATE_UPSTREAM_REF"] as const;
+  const saved = ENV_KEYS.map((k) => process.env[k]);
+  const setFork = (on: boolean) => {
+    if (on) {
+      process.env.PAPERCUSP_GATE_UPSTREAM_INSTALL = "papercusp";
+      process.env.PAPERCUSP_GATE_UPSTREAM_REF = "refs/remotes/origin/staging";
+    } else {
+      for (const k of ENV_KEYS) delete process.env[k];
+    }
+  };
+  afterAll(() => {
+    ENV_KEYS.forEach((k, i) => {
+      if (saved[i] === undefined) delete process.env[k];
+      else process.env[k] = saved[i];
+    });
+  });
+
+  function forkExec(passAtBase: string[]) {
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    let atBase = false;
+    const exec: CheckpointExec = async (cmd, args) => {
+      calls.push({ cmd, args });
+      const isSuite =
+        cmd === GREEN_CMD0 &&
+        args.length === GREEN_ARGS.length &&
+        args.every((arg, index) => arg === GREEN_ARGS[index]);
+      if (isSuite) return { code: 1, stdout: FORK_RED, stderr: "" };
+      if (cmd === "git" && args[0] === "-C") {
+        const sub = args[2];
+        if (sub === "rev-parse") return { code: 0, stdout: `${CAND}\n`, stderr: "" };
+        if (sub === "diff") {
+          return { code: 0, stdout: ":100644 100644 aaa bbb M\0lib/fork-change.ts\0", stderr: "" };
+        }
+        if (sub === "checkout") atBase = args[3] === BASE;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (cmd === "npm" && args.includes("build")) return { code: 0, stdout: "", stderr: "" };
+      if (cmd === "git") return { code: 1, stdout: "", stderr: "" };
+      // One file re-run alone: by the load-flake absorber at the candidate, or by #D-066 at base.
+      const file = args.find((a) => a.endsWith(".test.ts"));
+      if (atBase && file && passAtBase.includes(file)) return { code: 0, stdout: "", stderr: "" };
+      return { code: 1, stdout: ` FAIL  ${file} > x\n`, stderr: "" };
+    };
+    return { exec, calls };
+  }
+  const run = (exec: CheckpointExec) =>
+    realCheckpointDeps(cfg, exec, undefined, { retryMax: 0, sleep: async () => {} }).runGreen(
+      cpTree,
+      BASE,
+      { candidate: CAND } as Parameters<CheckpointDeps["runGreen"]>[2],
+    );
+  const index = (calls: Array<{ cmd: string; args: string[] }>, pred: (c: { cmd: string; args: string[] }) => boolean) =>
+    calls.findIndex(pred);
+  const lastIndex = (calls: Array<{ cmd: string; args: string[] }>, pred: (c: { cmd: string; args: string[] }) => boolean) =>
+    calls.map(pred).lastIndexOf(true);
+
+  it("every failure also fails at base → the legs run AFTER the candidate is restored, and green is not clean", async () => {
+    setFork(true);
+    const { exec, calls } = forkExec([]);
+    const r = await run(exec);
+    expect(r.green).toBe(true);
+    expect(r.cleanGreen).toBe(false);
+    expect(r.failingTests).toEqual([]);
+    expect(r.summary).toContain("Inherited test failures");
+    expect(r.summary).toContain("lib/upstream-red-a.test.ts");
+    const overlay = index(calls, (c) => c.cmd === "git" && c.args[2] === "checkout" && c.args[3] === BASE);
+    const restore = index(calls, (c) => c.cmd === "git" && c.args[2] === "checkout" && c.args[3] === CAND);
+    const build = index(calls, (c) => c.cmd === "npm" && c.args.includes("build"));
+    expect(overlay).toBeGreaterThan(-1);
+    expect(restore).toBeGreaterThan(overlay);
+    // The legs a red suite deferred are PAID for, on the restored candidate tree.
+    expect(build).toBeGreaterThan(restore);
+  });
+
+  it("a file that passes at base is the fork's own failure → red, legs still deferred", async () => {
+    setFork(true);
+    const { exec, calls } = forkExec(["lib/upstream-red-b.test.ts"]);
+    const r = await run(exec);
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain("lib/upstream-red-b.test.ts");
+    expect(index(calls, (c) => c.cmd === "npm" && c.args.includes("build"))).toBe(-1);
+    // Restored even though the verdict stays red.
+    expect(lastIndex(calls, (c) => c.cmd === "git" && c.args[2] === "checkout" && c.args[3] === CAND)).toBeGreaterThan(
+      lastIndex(calls, (c) => c.cmd === "git" && c.args[2] === "checkout" && c.args[3] === BASE),
+    );
+  });
+
+  it("CONTROL: a non-fork pot never reaches the pass — no overlay, red as measured", async () => {
+    setFork(false);
+    const { exec, calls } = forkExec([]);
+    const r = await run(exec);
+    expect(r.green).toBe(false);
+    expect(index(calls, (c) => c.cmd === "git" && c.args[2] === "checkout")).toBe(-1);
+  });
+});

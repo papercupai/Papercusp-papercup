@@ -52,6 +52,7 @@ import {
   type RangeChangeSet,
 } from "./git-ops";
 import {
+  GATE_UPSTREAM_REF_ENV,
   resolveEarlyTypecheckBase,
   resolveSelectionBase,
   selectionBaseGitFor,
@@ -59,6 +60,10 @@ import {
   type SelectionBaseInput,
   type SelectionBaseResult,
 } from "./selection-base";
+import {
+  attemptForkBaseInheritance,
+  type ForkBaseDecision,
+} from "./fork-base-inherited-tests";
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
 import { extractSubjectPathsFromLegOutput, REPAIR_MANIFEST_SUBJECT_PATH_CAP, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
@@ -23175,6 +23180,10 @@ export function realCheckpointDeps(
       // WI-6053: did absorption prove the suite's red was flakes? If so the SUITE is no
       // longer what is failing — but the five legs it skipped have still never run.
       let suiteAbsorbed = false;
+      // plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 #D-066 (WI-6554700010019508):
+      // set when a fork pot's red suite was proven to fail identically at its upstream base.
+      // Like absorption, the suite is then CONSIDERED passing and the legs must still be paid for.
+      let suiteInheritedFromBase: ForkBaseDecision | undefined;
       // A directly signaled checkpoint child has no trustworthy file-level failure set for
       // isolation to re-run. Keep that signal red and visible instead of letting an empty
       // parser result become a load-flake absorption candidate.
@@ -23263,14 +23272,76 @@ export function realCheckpointDeps(
         writeCheckpointRunPhase(_phaseLockDir, "suite");
         notifyProgress("phase:suite");
 
-        if (suiteAbsorbed) {
+        // plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 #D-066 (WI-6554700010019508):
+        // a review-mode (fork) pot inherits every upstream red in each workspace its delta
+        // touches. When EVERY failure of this red suite also fails re-run at the fork's upstream
+        // selection base, the suite is considered passing and the legs below still judge it.
+        // Only a fork run (upstream install env set) reaches it; every step fails closed (see
+        // fork-base-inherited-tests.ts). Placed here, not after runGreen returns: a red suite
+        // defers the legs, so inheriting later would skip every one of them.
+        const forkUpstreamInstall = suiteAbsorbed ? null : upstreamInstallFromEnv();
+        if (forkUpstreamInstall) {
+          const forkCandidate = resolvedHeadAtStart ?? execution?.candidate ?? null;
+          const remainingMs = () =>
+            (this as CheckpointDeps | undefined)?.postVerdictRemainingMs?.();
+          writeCheckpointRunPhase(_phaseLockDir, "isolating");
+          const fork = await attemptForkBaseInheritance(
+            {
+              suiteOutput,
+              failingTests: checkpointFailureSignature(suiteOutput, false, true),
+              failingFiles: parseFailingFilesByWorkspace(suiteOutput),
+              base: base ?? null,
+              candidate: forkCandidate,
+              upstreamInstall: forkUpstreamInstall,
+              upstreamRef: process.env[GATE_UPSTREAM_REF_ENV]?.trim() || null,
+              treeIsCheckpointRoot: path.resolve(treeDir) === checkpointRoot,
+            },
+            {
+              git: (gitArgs) =>
+                exec("git", ["-C", treeDir, ...gitArgs], { allowNonZero: true }).then(
+                  (g) => ({
+                    code: Number.isInteger(g.code) ? g.code : 1,
+                    stdout: g.stdout,
+                  }),
+                  () => ({ code: 1, stdout: "" }),
+                ),
+              runFile: async (f) => {
+                notifyProgress("phase:fork-base-rerun");
+                try {
+                  return await isolationRun(f);
+                } finally {
+                  notifyProgress("phase:fork-base-rerun");
+                }
+              },
+              remainingMs,
+              log,
+            },
+          );
+          writeCheckpointRunPhase(_phaseLockDir, "suite");
+          notifyProgress("phase:suite");
+          if (fork.restoreFailure) {
+            // The checkout no longer matches the candidate, so nothing below may judge it.
+            throw new Error(
+              `fork-base inheritance could not restore candidate ${forkCandidate ?? "unknown"} ` +
+                `in ${treeDir} (${fork.restoreFailure}) — no verdict for this run`,
+            );
+          }
+          if (fork.status === "inherited" && fork.decision) {
+            suiteInheritedFromBase = fork.decision;
+          }
+        }
+
+        if (suiteAbsorbed || suiteInheritedFromBase) {
           // EI-20669541349219660: the red was PROVEN load-flake — update the marker so a
-          // kill during the legs below does not report proven-flaky files as failing.
-          writeFailingFilesMarker(_phaseLockDir, {
-            runId,
-            files: flakeSuspects ?? [],
-            absorbed: true,
-          });
+          // kill during the legs below does not report proven-flaky files as failing. An
+          // inherited red keeps its marker: those files really are failing.
+          if (suiteAbsorbed) {
+            writeFailingFilesMarker(_phaseLockDir, {
+              runId,
+              files: flakeSuspects ?? [],
+              absorbed: true,
+            });
+          }
           // WI-6053 — THE FIX. Absorption is not a bypass. The suite is now considered
           // passing, so this candidate must clear exactly the same bar a natively-green one
           // clears: PAY for the legs the red suite skipped, instead of inheriting their
@@ -23301,7 +23372,8 @@ export function realCheckpointDeps(
               legs.failingSignatures.join(", ") ||
               `${cfg.spaBuildWorkspace} (SPA build)`;
             log(
-              `suite red was absorbed as a load-flake, but a post-suite leg FAILED — holding the gate: ${failed}`,
+              `suite red was ${suiteAbsorbed ? "absorbed as a load-flake" : "inherited from the fork's upstream base (#D-066)"}, ` +
+                `but a post-suite leg FAILED — holding the gate: ${failed}`,
             );
           }
         }
@@ -23426,8 +23498,12 @@ export function realCheckpointDeps(
       // that were actually red — and the stale-candidate re-triage then re-ran a file that
       // absorption had already proven passing. A suite whose own terminal verdict is PASSED
       // contributes nothing to the failing signature: the legs are what is red.
+      // #D-066: an inherited suite red is not what holds the gate either; it is reported in
+      // the summary below, and the legs are what is judged.
       const signatureOutput =
-        suiteAbsorbed || suiteCompleted ? legs.output : fullOutput;
+        suiteAbsorbed || suiteCompleted || suiteInheritedFromBase
+          ? legs.output
+          : fullOutput;
       const buildOk = legs.build.status !== "failed";
       let failingTests = checkpointFailureSignature(
         signatureOutput,
@@ -23437,6 +23513,11 @@ export function realCheckpointDeps(
       for (const sig of legs.failingSignatures)
         if (!failingTests.includes(sig)) failingTests.push(sig);
       let summary = summarizeSuiteOutput(fullOutput);
+      if (suiteInheritedFromBase) {
+        summary =
+          `${summary}\n\nInherited test failures (also fail at the fork's upstream base ` +
+          `${(base ?? "none").slice(0, 12)}, #D-066): ${suiteInheritedFromBase.inheritedFiles.join(", ")}`.slice(-2000);
+      }
       // EI-19340004308033958 wanted to stop a MANGLED failingTests path (a truncated
       // suffix of a real file) misleading a triager, and DROPPED any FILE-shaped entry
       // that did not resolve under `treeDir`.
@@ -23784,7 +23865,9 @@ export function realCheckpointDeps(
         // `retriedTests === undefined` is the discriminator, not `flakeSuspects`: no
         // absorber ran at all, so nothing was re-run. An absorber that ran and declined
         // yields a non-empty list, which correctly makes this false.
-        ...(green ? { cleanGreen: !retriedTests?.length } : {}),
+        ...(green
+          ? { cleanGreen: !retriedTests?.length && !suiteInheritedFromBase }
+          : {}),
         ...(infraFault ? { infraFault } : {}),
         ...(testPassReuse ? { testPassReuse } : {}),
         ...(promotionRatchet ? { promotionRatchet } : {}),

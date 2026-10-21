@@ -236,3 +236,106 @@ describe('grader-visible mutation provenance (R-8)', () => {
     expect(rating(row).evidence).toContain(`mutationAgainstCommit="${'f'.repeat(40)}"`);
   });
 });
+
+describe('canonical falsifier scenario to mutation case alignment', () => {
+  const publishScenario = 'publish-via-gateway';
+  const publishFile = 'packages/operator-core/lib/providers/x/x-provider.test.ts';
+  const mentionsCase = 'X provider > maps mentions without publishing';
+  const publishCase = 'X provider > publish-via-gateway: publishes through the gateway';
+
+  function publishClause(): SpecClauseRevision {
+    return {
+      ...clause,
+      specId: 'SPEC-P-023',
+      currentRevision: 2,
+      revision: 2,
+      planItemId: 'P-023',
+      behavior: 'The X provider publishes through the configured gateway.',
+      falsifier: {
+        observation: 'A publish attempt bypasses the configured gateway.',
+        requiredScenarios: [publishScenario],
+      },
+      contentHash: 'spec-p-023-rev-2',
+    };
+  }
+
+  function scenarioProof(
+    kind: 'test' | 'mutation',
+    caseTitle: string,
+    options: { targeted?: string; scenarioIds?: string[]; declaredCases?: string[] } = {},
+  ): SpecEvidenceForAdequacy {
+    const row = proof(kind);
+    row.specId = 'SPEC-P-023';
+    row.specRevision = 2;
+    row.specFingerprint = 'spec-p-023-rev-2';
+    row.evidenceRef = `test-run:${kind}:p023:${caseTitle}`;
+    row.testRunProvenance!.filePath = publishFile;
+    row.testRunExecution!.passedCaseTitles = kind === 'test' ? [caseTitle] : [];
+    (row.details.currentMeasurement as { testPaths: string[] }).testPaths = [publishFile];
+
+    const adequacy = row.details.adequacy as Record<string, unknown>;
+    adequacy.targeted = options.targeted ?? 'SPEC-P-023';
+    adequacy.testCases = options.declaredCases ?? [caseTitle];
+    if (options.scenarioIds) adequacy.scenarioIds = options.scenarioIds;
+    else delete adequacy.scenarioIds;
+
+    if (kind === 'mutation') {
+      row.testRunProvenance!.mutationFailureLines = [`${caseTitle}: expected gateway publish`];
+      row.testRunProvenance!.mutationFailedCaseTitles = [caseTitle];
+      row.testRunProvenance!.mutationBaseline!.passedCaseTitles = [caseTitle];
+    }
+    return row;
+  }
+
+  function rate(clauseUnderTest: SpecClauseRevision, measuredCase: string, mutationOptions: {
+    targeted?: string; scenarioIds?: string[]; declaredCases?: string[];
+  } = {}) {
+    return evaluateSpecTestAdequacy({
+      clause: clauseUnderTest,
+      evidence: [
+        scenarioProof('test', measuredCase),
+        scenarioProof('mutation', measuredCase, mutationOptions),
+      ],
+      classRef: 'plan-class-feature-ship',
+    }).ratings.falsifiability;
+  }
+
+  it('does not let a same-spec self-targeted mentions case prove publish-via-gateway', () => {
+    const result = rate(publishClause(), mentionsCase, {
+      targeted: 'SPEC-P-023', scenarioIds: ['mentions-mapping'],
+    });
+
+    expect(result.rating).toBe('unknown');
+    expect(result.evidence).toContain('do not name a scenario declared in falsifier.requiredScenarios');
+  });
+
+  it('credits a publish mutation only when target, canonical scenario label, failed case, and passing baseline align', () => {
+    const result = rate(publishClause(), publishCase, {
+      targeted: publishScenario, scenarioIds: [publishScenario],
+    });
+
+    expect(result.rating).toBe('pass');
+    expect(result.evidence).toContain('declared falsifier scenario');
+    expect(result.evidence).toContain(publishCase);
+  });
+
+  it('rejects an explicit case association that omits the exact measured failed case', () => {
+    const result = rate(publishClause(), publishCase, {
+      targeted: publishScenario,
+      scenarioIds: [publishScenario],
+      declaredCases: [mentionsCase],
+    });
+
+    expect(result.rating).toBe('unknown');
+    expect(result.evidence).toContain('mutation adequacy.testCases does not associate that exact case');
+  });
+
+  it('rejects a matching target when the measured failed case label belongs to another scenario', () => {
+    const result = rate(publishClause(), mentionsCase, {
+      targeted: publishScenario, scenarioIds: ['mentions-mapping'],
+    });
+
+    expect(result.rating).toBe('unknown');
+    expect(result.evidence).toContain('scenario label does not align with a canonical falsifier.requiredScenarios id');
+  });
+});

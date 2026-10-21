@@ -174,15 +174,24 @@ export function corpusEmbedBudgetMs(): number {
 const CORPUS_MIN_SOURCE_STAGE_BUDGET_MS = 80;
 
 /**
- * Keep a per-stage share so a stalled source leaves time for healthy siblings
- * and the optional cascade. Under short native-hook deadlines, the old share
- * fell below the measured time of successful lexical calls; keep an 80ms floor
- * for the non-reranked path while the shared parent deadline remains the hard
- * bound for the whole recall.
+ * Bound one source stage against the remaining corpus lifetime.
+ *
+ * The non-reranked cascade is sequential at the caller level, but every source
+ * and ranker inside one `runHybridSearch` call is fanned out concurrently. A
+ * half-life split therefore needlessly caps each healthy source when stage 1
+ * under-fills: the optional stage 2 is only useful if stage 1 returns early.
+ * Give stage 1 the remaining lifetime minus two minimum windows, then let the
+ * stage-2 gate decide whether that reserve is still available after selection.
+ * One window covers the second source call itself; the second is the
+ * conservative cushion required by `corpusCanRunSecondSearch`.
+ * The reranked path keeps its tighter quarter share because reranking is an
+ * additional bounded stage between the two searches.
  */
 export function corpusSearchStageBudgetMs(remainingMs: number, rerank: boolean): number {
-  const share = remainingMs / (rerank ? 4 : 2);
   const floor = rerank ? 1 : CORPUS_MIN_SOURCE_STAGE_BUDGET_MS;
+  const share = rerank
+    ? remainingMs / 4
+    : remainingMs - CORPUS_MIN_SOURCE_STAGE_BUDGET_MS * 2;
   return Math.max(1, Math.min(remainingMs, Math.max(floor, share)));
 }
 
@@ -803,8 +812,9 @@ async function recallCorpusContextInner(
 
       const search = async (lexicalMode: 'and' | 'coverage-graded', queryFor: string) => {
         input.signal?.throwIfAborted();
-        // Preserve the bounded share, with a small floor for the short hot path.
-        // The outer deadline remains the hard bound for this stage and the recall.
+        // Give stage 1 the largest safe source window; the helper reserves the
+        // minimum room needed for the optional cascade. The outer deadline
+        // remains the hard bound for this stage and the recall.
         const stageBudget = corpusSearchStageBudgetMs(remainingMs(), input.rerank === true);
         const result = await runHybridSearch(sources, {
           signal: input.signal,

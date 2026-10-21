@@ -1282,6 +1282,7 @@ export type IndependentVerificationRefusalStatus =
 
 /** Refuse evidence that targets a work-item not promoted from this clause's plan item. */
 export type WorkItemPlanItemRefusalStatus = 'work_item_plan_item_mismatch';
+export type MutationCaughtCaseClaimRefusalStatus = 'mutation_caught_case_claim_mismatch';
 
 export type BindSpecEvidenceResult =
   | {
@@ -1347,6 +1348,13 @@ export type BindSpecEvidenceResult =
       source?: 'case-ledger' | 'passed-case-titles';
       /** Declared titles that matched no executed recorded case (case-ledger source only). */
       unmatchedTestCases?: string[];
+      message: string;
+    }
+  | {
+      status: MutationCaughtCaseClaimRefusalStatus;
+      testRunId: number;
+      field: 'observations' | 'calibration';
+      failedCaseTitles?: string[];
       message: string;
     }
   | {
@@ -1629,6 +1637,15 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         parsedRunExecution?.mutationPhase === 'mutant'
           ? mutationFailedCaseTitles(rows[0].execution_details)
           : undefined;
+      const caughtCaseClaim = mutationCaughtCaseProseMismatch(input.details ?? {}, mutationCases);
+      if (caughtCaseClaim) {
+        return {
+          status: 'mutation_caught_case_claim_mismatch',
+          testRunId: input.testRunId,
+          ...caughtCaseClaim,
+          message: mutationCaughtCaseClaimMessage(input.testRunId, caughtCaseClaim),
+        };
+      }
       // A mutation binding claims a measured failing assertion, so its adequacy.testCases
       // must name the failed mutant's canonical case identities. The evaluator already uses
       // these same identities; checking only evidenceKind='test' here let a binder attach an
@@ -2533,6 +2550,79 @@ export function mutationFailedCaseTitles(executionDetails?: unknown): string[] |
   const execution = parseTestRunExecutionDetails(executionDetails);
   if (!execution) return [];
   return execution.failedCaseTitles === undefined ? undefined : [...execution.failedCaseTitles];
+}
+
+export interface MutationCaughtCaseProseMismatch {
+  field: 'observations' | 'calibration';
+  failedCaseTitles?: string[];
+  expectedClaim: string | null;
+}
+
+function stringLeaves(value: unknown): string[] {
+  const strings: string[] = [];
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === 'string') {
+      strings.push(current);
+      continue;
+    }
+    if (current === null || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    pending.push(...(Array.isArray(current) ? current : Object.values(current)));
+  }
+  return strings;
+}
+
+/** Refuse caller prose that claims more caught mutant cases than the canonical ledger. */
+export function mutationCaughtCaseProseMismatch(
+  details: Record<string, unknown>,
+  failedCaseTitles: string[] | undefined,
+): MutationCaughtCaseProseMismatch | null {
+  const expectedClaim = failedCaseTitles?.length
+    ? `caught by: ${failedCaseTitles.join(' | ')}`
+    : null;
+  for (const field of ['observations', 'calibration'] as const) {
+    for (const prose of stringLeaves(details[field])) {
+      const marker = /\bcaught by:/gi;
+      let match = marker.exec(prose);
+      while (match) {
+        const start = match.index ?? 0;
+        const actual = prose.slice(start);
+        const matchesLedger = expectedClaim !== null
+          && actual.slice('caught by:'.length, expectedClaim.length) === expectedClaim.slice('caught by:'.length)
+          // The observed list style uses " | " between cases; a following separator
+          // adds a further caller-claimed case after the complete measured list.
+          && !/^\s*\|\s*/.test(actual.slice(expectedClaim.length));
+        if (!matchesLedger) {
+          return {
+            field,
+            ...(failedCaseTitles === undefined ? {} : { failedCaseTitles: [...failedCaseTitles] }),
+            expectedClaim,
+          };
+        }
+        // A test title may itself contain "caught by:". Skip the verified title list as a unit.
+        marker.lastIndex = start + expectedClaim!.length;
+        match = marker.exec(prose);
+      }
+    }
+  }
+  return null;
+}
+
+export function mutationCaughtCaseClaimMessage(
+  testRunId: number,
+  mismatch: MutationCaughtCaseProseMismatch,
+): string {
+  const measured = mismatch.failedCaseTitles === undefined
+    ? ' (no canonical case list was recorded)'
+    : ` ${JSON.stringify(mismatch.failedCaseTitles)}`;
+  return `details.${mismatch.field} contains a "caught by:" case claim that does not match mutant test-run ${testRunId} ` +
+    `failedCaseTitles${measured}. ` +
+    (mismatch.expectedClaim
+      ? `Use the measured list exactly as "${mismatch.expectedClaim}", or remove the caught-case claim.`
+      : 'Remove the caught-case claim because this run has no measured failed cases.');
 }
 
 interface EvidenceRow extends CurrentnessRow {

@@ -258,7 +258,8 @@ it('uses the owning SQL client cache so a second session_turn call skips only th
 describe('recallCorpusContext — the contract handed to the search engine', () => {
   it('keeps a useful source window without consuming the later-stage reserve', () => {
     expect(corpusSearchStageBudgetMs(95, false)).toBe(80);
-    expect(corpusSearchStageBudgetMs(1_000, false)).toBe(500);
+    expect(corpusSearchStageBudgetMs(432, false)).toBe(272);
+    expect(corpusSearchStageBudgetMs(1_000, false)).toBe(840);
     expect(corpusSearchStageBudgetMs(1_000, true)).toBe(250);
     expect(corpusSearchStageBudgetMs(0, false)).toBe(1);
   });
@@ -278,6 +279,29 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
       expect(result.outcome).toBe('ok');
       expect(result.block).toContain('http2 transport regression');
       expect(runHybridSearch).toHaveBeenCalledOnce();
+    } finally {
+      deadline.close();
+    }
+  });
+
+  it('keeps a healthy first-stage source above the old half-budget cap', async () => {
+    const deadline = createMemoryWorkDeadline(432);
+    runHybridSearch.mockImplementation(async (_sources: unknown, options: { sourceTimeoutMs?: number }) => {
+      // This source takes longer than the old 216ms cap, but still fits inside
+      // the caller deadline when stage 1 receives the dynamic allocation.
+      if ((options.sourceTimeoutMs ?? 0) < 260) {
+        throw new Error('source budget too short for a healthy query');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 260));
+      return ok(Array.from({ length: 6 }, (_, index) => hit({ source_id: `WI-${index}` })));
+    });
+    try {
+      const result = await recallCorpusContext({ ...base, signal: deadline.signal, deadline });
+      expect(result.outcome).toBe('ok');
+      expect(result.lines).toHaveLength(6);
+      expect(runHybridSearch).toHaveBeenCalledOnce();
+      expect((runHybridSearch.mock.calls[0][1] as { sourceTimeoutMs: number }).sourceTimeoutMs)
+        .toBeGreaterThan(250);
     } finally {
       deadline.close();
     }
@@ -444,7 +468,9 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
         excludeOwnerId: 'su-me', signal: deadline.signal, deadline });
       expect(result.outcome).toBe('ok');
       expect(result.block).toContain('keep snapshot');
-      expect(result.stages).toHaveLength(2);
+      // The enlarged stage-1 source window lets healthy siblings finish; the
+      // remaining caller budget is then below the conservative stage-2 gate.
+      expect(result.stages).toHaveLength(1);
       for (const stage of result.stages!) {
         expect(stage.lexical.sourceCalls).toEqual(expect.arrayContaining([
           expect.objectContaining({ source: 'plan', status: 'timed-out', rows: null }),
