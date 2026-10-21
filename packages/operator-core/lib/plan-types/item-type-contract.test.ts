@@ -4,7 +4,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ItemTypeContract, ItemTypeCriterion } from '../plan-verification-profile';
-import { checkTypeFields, deriveItemTypeBars, itemTypeBarKey } from './item-type-contract';
+import { checkTypeFields, deriveItemTypeBars, itemTypeBarKey, rubricCriterion } from './item-type-contract';
+import { parseItemTypeDefinition } from './definitions';
 
 const noDatatypes = vi.fn(async () => undefined);
 
@@ -143,5 +144,60 @@ describe('deriveItemTypeBars (R-11)', () => {
   it('derives nothing for items whose type asks for no criteria', () => {
     const result = deriveItemTypeBars([{ itemId: 'P-001', contract: contract() }, { itemId: 'P-002', contract: undefined }], rubric);
     expect(result).toEqual({ ok: true, bars: [] });
+  });
+
+  it('carries a criterion verification onto its bar, and leaves it off a criterion without one (D-011)', () => {
+    const verification = {
+      method: 'Run the source checker over the memo.',
+      check: { kind: 'tests', params: { files: ['packages/memo/sources.test.ts'] } },
+      replication: 'npm run test:file -- packages/memo/sources.test.ts',
+    };
+    const verified = contract({ id: 'acme/verified', criteriaTemplate: [{ ...template[0]!, verification }, template[1]!] });
+    const result = deriveItemTypeBars([{ itemId: 'P-001', contract: verified }], new Map());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.bars[0]!.verification).toEqual(verification);
+    expect(result.bars[1]).not.toHaveProperty('verification');
+  });
+});
+
+describe('rubricCriterion (D-011)', () => {
+  it('reads the METHOD, check and replication a named rubric criterion already carries', () => {
+    expect(rubricCriterion({
+      key: 'reproducible', title: 'Reproducible', model: 'A reader can re-run it.',
+      method: 'Re-run the steps.', check: { kind: 'tests', files: ['a.test.ts'] }, replication: 'npm test',
+    })).toEqual({
+      key: 'reproducible', title: 'Reproducible', description: 'A reader can re-run it.',
+      verification: { method: 'Re-run the steps.', check: { kind: 'tests', params: { files: ['a.test.ts'] } }, replication: 'npm test' },
+    });
+  });
+
+  it('carries no verification for a criterion without a METHOD, even when it has a check', () => {
+    expect(rubricCriterion({ key: 'k', title: 'K', check: { kind: 'tests', files: ['a.test.ts'] } })).toEqual({ key: 'k', title: 'K' });
+  });
+});
+
+describe('criteria-template verification in the definition schema (D-011)', () => {
+  const definition = (verification: unknown) => ({
+    schemaVersion: 1,
+    id: 'acme/memo',
+    revision: 1,
+    title: 'Memo',
+    criteriaTemplate: [{ key: 'sourced', title: 'Sourced', verification }],
+  });
+
+  it('accepts a METHOD with a declarative check and a replication note', () => {
+    const parsed = parseItemTypeDefinition(definition({
+      method: 'Read the memo.', check: { kind: 'tests', params: { files: ['a.test.ts'] } }, replication: 'npm test',
+    }));
+    expect(parsed.ok, JSON.stringify(parsed)).toBe(true);
+  });
+
+  it.each([
+    ['an empty METHOD', { method: '  ' }],
+    ['a check outside the declarative shape', { method: 'Read it.', check: { kind: 'tests', run: 'rm -rf /' } }],
+    ['an unknown verification key', { method: 'Read it.', postInstall: 'sh x' }],
+  ])('refuses %s', (_label, verification) => {
+    expect(parseItemTypeDefinition(definition(verification)).ok).toBe(false);
   });
 });

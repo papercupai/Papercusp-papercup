@@ -37,6 +37,26 @@ describe('bounded work-item resume', () => {
       .toEqual({ status: 'oversized', text: null });
   });
 
+  it('blocks a stored action while the live item has a pending admission review or hold', () => {
+    const saved = { ...checkpoint, checkpoint: renderCarryNote({ next: 'Close as resolved.' }) };
+    const pendingReview = build({
+      item: { ...item, payload: { ...item.payload, admissionReview: { state: 'pending' } } },
+      checkpoint: saved,
+    });
+    const admissionHold = build({
+      item: { ...item, payload: { ...item.payload, admissionHold: { reason: 'deferred to review-gated twin' } } },
+      checkpoint: saved,
+    });
+    const reviewed = build({
+      item: { ...item, payload: { ...item.payload, admissionReview: { state: 'reviewed' }, admissionHold: null } },
+      checkpoint: saved,
+    });
+
+    expect(pendingReview.nextAction).toMatchObject({ status: 'blocked', text: null, reason: expect.stringContaining('pending') });
+    expect(admissionHold.nextAction).toMatchObject({ status: 'blocked', text: null, reason: expect.stringContaining('hold') });
+    expect(reviewed.nextAction).toEqual({ status: 'available', text: 'Close as resolved.' });
+  });
+
   it.each(['append', 'refresh'])('uses the stored latest update, independent of %s history order', order => {
     const previous = renderCarryNote({ next: 'Acquire run.ts; add recheckReason.' });
     const latest = renderCarryNote({ next: 'The wiring is complete. Review the saved acceptance evidence.' });

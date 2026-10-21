@@ -36,6 +36,7 @@ import {
   repairStaleAdvSessionTerminalMarkers,
 } from '../../../adv-sessions';
 import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
+import { turnProvenanceDir } from '../../../turn-provenance/turn-provenance';
 import {
   claimAgentLaunch,
   recordAgentLaunchResult,
@@ -966,11 +967,11 @@ const post = defineTool({
       compositionSource: spec.compositionSource,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
-        // Keep host-local stores on the selected workspace. The launcher and
-        // the child UserPromptSubmit hook both use this value for the
-        // turn-provenance ledger, even when the launcher was started from a
-        // different active workspace.
+        // Keep workspace-local state on the selected workspace. Turn
+        // provenance uses the explicit shared host ledger below, because
+        // server injectors write there before this child is launched.
         PAPERCUSP_HOME: papercuspPathForWorkspace(workspace),
+        PAPERCUSP_TURN_PROVENANCE_DIR: turnProvenanceDir(),
         ...(modelSource ? { PAPERCUSP_MODEL_SOURCE: modelSource } : {}),
         PAPERCUSP_ROLE: role,
         // deriveAgentRole reads this durable fine-grained key on the role's

@@ -265,6 +265,24 @@ async function copyOmpFile(src: string, dst: string, contents?: Uint8Array): Pro
   }
 }
 
+/**
+ * Publish generated executable scripts with a same-directory rename. The
+ * installer can run while another session invokes one of these shims; writing
+ * directly to the live path truncates its inode and can make Linux reject an
+ * overlapping launch with ETXTBSY.
+ */
+async function writeExecutableAtomically(filePath: string, contents: string): Promise<void> {
+  const tempPath = filePath + '.psu-install.' + process.pid + '.' + crypto.randomUUID() + '.tmp';
+  try {
+    await fs.writeFile(tempPath, contents, { mode: 0o755 });
+    await fs.chmod(tempPath, 0o755);
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 async function ompRuntimeImports(source: string): Promise<string[]> {
   // Use the existing compiler's import metadata: prose in strings/comments can
   // contain "from '...'", and TypeScript-only imports never load at runtime.
@@ -965,6 +983,13 @@ export const CC_HOOK_FILES = [
   // pings journal:record-turn at each Stop; the server extracts the agent's
   // ⟦journal⟧ line (mechanical first-line fallback, flagged).
   'stop-turn-journal.sh',
+  // client-native-features-adoption-2026-10-21 P-002 (R-2): a Claude turn that dies
+  // on an API error fires StopFailure INSTEAD of Stop, so the Stop hooks never saw it.
+  'stop-failure-record.mjs',
+  // client-native-features-adoption-2026-10-21 P-003 (R-3): a native tool call that
+  // FAILS fires PostToolUseFailure INSTEAD of PostToolUse, so the activity hook never
+  // saw it.
+  'posttooluse-failure-record.mjs',
   // EI-21844056581395228 (a repeat of EI-19944806095285549): an artifact URL was
   // twice reported to the owner as delivered when no artifact existed. The prompt
   // rail was present both times, so this is the mechanical layer under it —
@@ -1316,6 +1341,10 @@ export const CC_HOOK_FILES = [
   // (stop-owner-directive-check, precompact-managed-carry, schedule-wakeup provenance) and
   // by the inject dispatcher. Imported, never executed, so 0644.
   'pc_nested_cli.mjs',
+  // client-native-features-adoption-2026-10-21 P-003 (D-011): the shared activity:report
+  // POST plumbing imported by posttooluse-failure-record.mjs. Imported, never executed,
+  // so 0644. Omit it and that hook fails to load: no failed tool call is recorded.
+  'pc_activity_report.mjs',
 ] as const;
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x.
@@ -1328,6 +1357,7 @@ export const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
   'pc_nested_cli.py',
   'pc_nested_cli.sh',
   'pc_nested_cli.mjs',
+  'pc_activity_report.mjs',
 ]);
 
 /** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */
@@ -1910,9 +1940,7 @@ export async function writeShim(
         )}"$psu_reexecs)" >&2\n` +
         '  launcher="$(resolve_launcher)" || exit $?\n' +
         'done\n');
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  // writeFile honors mode only on creation; chmod to guarantee on overwrite.
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -1965,8 +1993,7 @@ async function writeDispatcherShim(
     projectHistoryHelp +
     '    exit 2 ;;\n' +
     'esac\n';
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -2006,8 +2033,7 @@ async function writeSentinelShim(shimPath: string, psuShimPath: string): Promise
     'fi\n' +
     'model_args=("--model=$spec")\n' +
     `exec ${JSON.stringify(psuShimPath)} --no-picker --agent=claude --role=papercup "\${model_args[@]}"\n`;
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -2077,9 +2103,7 @@ export async function writeRipgrepShim(
     '\n' +
     '# exec -a rg: the claude binary dispatches to its embedded ripgrep purely on argv[0].\n' +
     'exec -a rg "${_cc}" "$@"\n';
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  // writeFile honors mode only on creation; chmod to guarantee on overwrite.
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -2111,8 +2135,7 @@ async function writeSentinelDeepShim(shimPath: string, psuShimPath: string): Pro
     'fi\n' +
     'model_args=("--model=$spec")\n' +
     `exec ${JSON.stringify(psuShimPath)} --no-picker --agent=claude --role=papercup-deep "\${model_args[@]}"\n`;
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -2189,8 +2212,7 @@ async function writeMacTutorialApp(appPath: string): Promise<boolean> {
     '[ -d "/Applications/iTerm.app" ] && TERM_APP="iTerm.app"\n' +
     'open -na "$TERM_APP" "$TMP"\n';
   const execPath = path.join(macosDir, 'papercusp-tutorial');
-  await fs.writeFile(execPath, executable, { mode: 0o755 });
-  await fs.chmod(execPath, 0o755);
+  await writeExecutableAtomically(execPath, executable);
   return true;
 }
 
@@ -3316,6 +3338,22 @@ export function mergeClaudeHookSettings(
     hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-turn-journal.sh'), {
       hooks: cmd('stop-turn-journal.sh'),
     });
+  // merge_stop_failure_record_hook — StopFailure, no matcher (every API-error kind:
+  // Claude matches StopFailure on the error kind). client-native-features-adoption-
+  // 2026-10-21 P-002 (R-2): records the failed turn as one agent_activity row.
+  if (has('stop-failure-record.mjs'))
+    hooks.StopFailure = replaceOurHookEntries(ev('StopFailure'), ours('stop-failure-record.mjs'), {
+      hooks: cmd('stop-failure-record.mjs'),
+    });
+  // merge_posttooluse_failure_record_hook — PostToolUseFailure, no matcher (every
+  // tool's failure counts). client-native-features-adoption-2026-10-21 P-003 (R-3,
+  // D-011): records the failed call as one post-phase agent_activity tool row.
+  if (has('posttooluse-failure-record.mjs'))
+    hooks.PostToolUseFailure = replaceOurHookEntries(
+      ev('PostToolUseFailure'),
+      ours('posttooluse-failure-record.mjs'),
+      { hooks: cmd('posttooluse-failure-record.mjs') },
+    );
   // merge_artifact_url_delivery_guard_hook — EI-21844056581395228 (prose) and
   // EI-21890940999877469 (durable surfaces). THREE branches of ONE script:
   // PostToolUse (matcher scoped to the Artifact tool) harvests the ids that

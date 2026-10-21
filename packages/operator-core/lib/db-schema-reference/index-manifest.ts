@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-21T05:09:23.874Z",
-  "migrationCountAtGeneration": 1326,
+  "generatedAt": "2026-10-21T16:36:55.534Z",
+  "migrationCountAtGeneration": 1333,
   "indexes": [
     {
       "schema": "audit",
@@ -8582,6 +8582,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "plan_type_pins_pkey",
+      "table": "plan_type_pins",
+      "definition": "CREATE UNIQUE INDEX plan_type_pins_pkey ON harness_shared.plan_type_pins USING btree (workspace_id, harness_slug, plan_slug, kind, type_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "plan_work_group_members_pkey",
       "table": "plan_work_group_members",
       "definition": "CREATE UNIQUE INDEX plan_work_group_members_pkey ON harness_shared.plan_work_group_members USING btree (workspace_id, harness_slug, plan_slug, member_user)",
@@ -11144,9 +11151,9 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
-      "name": "test_executed_sources_pkey",
+      "name": "test_executed_sources_proof_key",
       "table": "test_executed_sources",
-      "definition": "CREATE UNIQUE INDEX test_executed_sources_pkey ON harness_shared.test_executed_sources USING btree (workspace_name, test_file, recorded_sha)",
+      "definition": "CREATE UNIQUE INDEX test_executed_sources_proof_key ON harness_shared.test_executed_sources USING btree (workspace_name, test_file, recorded_sha, run_context, recorded_git_dir) NULLS NOT DISTINCT",
       "constraintBacked": true
     },
     {
@@ -11826,6 +11833,20 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "tui_view_state_pkey",
       "table": "tui_view_state",
       "definition": "CREATE UNIQUE INDEX tui_view_state_pkey ON harness_shared.tui_view_state USING btree (workspace_id, owner_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "type_pack_installations_listing_key",
+      "table": "type_pack_installations",
+      "definition": "CREATE UNIQUE INDEX type_pack_installations_listing_key ON harness_shared.type_pack_installations USING btree (workspace_id, listing_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "type_pack_installations_pkey",
+      "table": "type_pack_installations",
+      "definition": "CREATE UNIQUE INDEX type_pack_installations_pkey ON harness_shared.type_pack_installations USING btree (id)",
       "constraintBacked": true
     },
     {

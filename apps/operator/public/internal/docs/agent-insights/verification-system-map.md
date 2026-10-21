@@ -3,6 +3,30 @@ URL: /internal/docs/agent-insights/verification-system-map
 
 One map of everything that enforces a plan's requirement contract: the six doors that refuse (plans:start, plans:bind-spec-evidence, plans:set-plan-status shipped, plans:acceptance-disposition, plans:promote), the layer order, every contract refusal code with its meaning, the tables, tools and evidence kinds. Refusal codes are pinned to source by a doc-claims test.
 
+# whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
+
+title: "Verification-system map: doors, layers, refusal codes, tables, tools, evidence kinds"
+description: "One map of everything that enforces a plan's requirement contract: the six doors that refuse (plans:start, plans:bind-spec-evidence, plans:set-plan-status shipped, plans:acceptance-disposition, plans:promote), the layer order, every contract refusal code with its meaning, the tables, tools and evidence kinds. Refusal codes are pinned to source by a doc-claims test."
+type: Convention
+discovered: 2026-10-11
+tags: \["verification", "acceptance", "requirement-contract", "refusal-codes"]
+status: active
+documents:
+
+* "packages/operator-core/lib/doc-claims/verification-system-map.ts"
+* "packages/operator-core/lib/plan-acceptance-gate.ts"
+* "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts"
+* "packages/operator-core/lib/agent-tools/plans/start.ts"
+* "packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts"
+* "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts"
+* "packages/operator-core/lib/agent-tools/work\_items/spec-test-adequacy-gate.ts"
+* "packages/operator-core/lib/agent-tools/plans/val-retirement.test.ts"
+  plans:
+* "verification-system-improvements-2026-10-10"
+* "verification-postship-followups-2026-10-11"
+
+***
+
 A plan's **requirement contract** is the set of things it promises and how each promise is proven. This page maps every part of the system that enforces that contract, in one place: the doors that refuse, the order the layers run in, every refusal code those doors return, the tables behind them, the tools you call, and the kinds of evidence that count.
 
 The refusal-code list below is checked against the code by `packages/operator-core/lib/doc-claims/verification-system-map.test.ts`. That test derives every code from the typed unions registered in `CONTRACT_GATE_CODE_TYPES` (`packages/operator-core/lib/doc-claims/verification-system-map.ts`). It fails when this page names a code no gate emits, omits one a gate does emit, or names a code that has no source definition or no test that triggers it.
@@ -111,6 +135,12 @@ From `BindSpecEvidenceRefusalCode` (`packages/operator-core/lib/agent-tools/plan
 | `mutation_target_rejected`                    | The mutation target named for the binding was rejected.                                                                                                                                                                                   |
 | `declared_configuration_fingerprint_missing`  | The clause's source bar declares a `productionConfiguration`, but the bound test run has no valid configuration snapshot (no run, a NULL `test_runs.configuration_snapshot`, or a snapshot whose fingerprint does not recompute) (P-011). |
 | `declared_configuration_fingerprint_mismatch` | The bound test run's configuration snapshot resolves a declared flag or env key differently from the bar's `productionConfiguration`; the refusal names the differing keys (P-011).                                                       |
+
+From `WorkItemPlanItemRefusalStatus` (`packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts`):
+
+| code                           | meaning                                                                                                                                        |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `work_item_plan_item_mismatch` | The work-item was not promoted from the plan item that owns the clause revision, so the evidence is refused before any binding row is written. |
 
 From `IndependentVerificationRefusalStatus` (`packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts`), returned as the result `status` (P-008, D-005):
 

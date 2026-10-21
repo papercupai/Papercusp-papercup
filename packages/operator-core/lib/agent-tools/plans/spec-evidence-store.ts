@@ -22,6 +22,7 @@ import { defaultEvidenceRoot, legacyEvidenceRoot } from '@papercusp/verification
 import { pgTimestampToIso } from '../../pg-timestamp';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '../../acceptance-author-identity';
 import { planItemRef } from '../../issue-blocks-merge';
+import { planItemProvenanceFromRow } from '../../plan-item-provenance';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import type { SpecClauseSql } from './spec-clauses-store';
@@ -1279,6 +1280,9 @@ export type IndependentVerificationRefusalStatus =
   // WI-6554700010018061: a fixture-free review fixture-absence certification would never pair.
   | 'fixture_absence_pairing_mismatch';
 
+/** Refuse evidence that targets a work-item not promoted from this clause's plan item. */
+export type WorkItemPlanItemRefusalStatus = 'work_item_plan_item_mismatch';
+
 export type BindSpecEvidenceResult =
   | {
       status: 'created' | 'unchanged';
@@ -1293,6 +1297,16 @@ export type BindSpecEvidenceResult =
       advisory?: DuplicateLiveTestRunBindingAdvisory;
     }
   | { status: 'work_item_not_found'; workItemId: string }
+  | {
+      status: WorkItemPlanItemRefusalStatus;
+      workItemId: string;
+      planSlug: string;
+      specId: string;
+      planItemId: string;
+      actualPlanSlug: string | null;
+      actualPlanItemIds: string[];
+      message: string;
+    }
   | { status: 'spec_not_found'; specId?: string; sourceValId?: string; message?: string }
   | { status: 'spec_revision_not_found'; specId: string; specRevision: number }
   | { status: 'coverage_evidence_not_found'; coverageEvidenceRef: number }
@@ -1428,6 +1442,7 @@ interface SpecIdentityRow {
 
 interface SpecRevisionRow {
   content_hash: string;
+  plan_item_id: string;
 }
 
 interface PriorTestRunBindingRow {
@@ -1451,8 +1466,16 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     const lockKey = `${scope.workspaceId}:${scope.harnessSlug}:${input.workItemId}:${planSlug}:${input.specId ?? input.sourceValId}`;
     await tx`SELECT pg_advisory_xact_lock(hashtext('spec_evidence_binding'), hashtext(${lockKey}))`;
 
-    const workItems = await tx<{ feature_id: string }[]>`
-      SELECT feature_id
+    const workItems = await tx<{
+      feature_id: string;
+      source_plan_slug: string | null;
+      source_plan_item_ids: string[] | null;
+      stamped_plan_slug: string | null;
+      stamped_item_id: string | null;
+    }[]>`
+      SELECT feature_id, source_plan_slug, source_plan_item_ids,
+             payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
+             payload -> 'plan_item' ->> 'item_id' AS stamped_item_id
         FROM harness_shared.work_items
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
@@ -1485,7 +1508,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
 
     const specRevision = input.specRevision ?? Number(identity.current_revision);
     const revisions = await tx<SpecRevisionRow[]>`
-      SELECT content_hash
+      SELECT content_hash, plan_item_id
         FROM harness_shared.plan_spec_clause_revisions
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
@@ -1494,6 +1517,29 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
          AND revision = ${specRevision}`;
     const revision = revisions[0];
     if (!revision) return { status: 'spec_revision_not_found', specId: identity.spec_id, specRevision };
+
+    // A named plan clause can only be evidenced by the work-item promoted from
+    // that clause's plan item. Resolve provenance through the shared precedence
+    // rule (legacy columns, then the payload stamp); ad-hoc evidence has no plan
+    // item to enforce and retains its existing scope semantics.
+    if (planSlug !== ADHOC_WORK_ITEM_SPEC_SCOPE) {
+      const provenance = planItemProvenanceFromRow(workItems[0]);
+      if (provenance.planSlug !== planSlug || !provenance.itemIds.includes(revision.plan_item_id)) {
+        return {
+          status: 'work_item_plan_item_mismatch',
+          workItemId: input.workItemId,
+          planSlug,
+          specId: identity.spec_id,
+          planItemId: revision.plan_item_id,
+          actualPlanSlug: provenance.planSlug,
+          actualPlanItemIds: provenance.itemIds,
+          message:
+            `work item ${input.workItemId} is not promoted from ${planSlug} plan item ${revision.plan_item_id}; ` +
+            `its provenance resolves to ${provenance.planSlug ?? 'no plan'} ` +
+            `[${provenance.itemIds.join(', ') || 'no plan items'}].`,
+        };
+      }
+    }
 
     if (input.coverageEvidenceRef != null) {
       const rows = await tx<{ id: number }[]>`

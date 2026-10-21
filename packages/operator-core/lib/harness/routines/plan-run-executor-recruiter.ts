@@ -278,14 +278,16 @@ export async function runPlanRunExecutorRecruiter(
 /** Production deps: lazily imported so this module and its tests never load PG or the launch door. */
 export const defaultPlanRunRecruiterDeps: PlanRunRecruiterDeps = {
   async listCandidates() {
-    const [{ getOrgPg }, { resolveStableAgentTarget }] = await Promise.all([
+    const [{ getOrgPg }, { resolveStableAgentTarget }, { awaitingExecutorRunFragment }] = await Promise.all([
       import('@papercusp/db-org'),
       import('../../agent-tools/coordination/actionable-work-item-dispatch'),
+      import('./reconcile-plan-runs'),
     ]);
     const { sql } = getOrgPg();
-    // Driven from RUNNING plan runs (a small set); an item belongs to its run through
-    // payload.plan_run.runId, and is stranded when it is still assigned to the run's
-    // declared executor name.
+    // Driven from plan runs still awaiting an executor (a small set): RUNNING, or
+    // orphan-failed and therefore provisional (WI-6554700010019287). An item belongs to its
+    // run through payload.plan_run.runId, and is stranded when it is still assigned to the
+    // run's declared executor name.
     const rows = await sql<
       Array<{
         workspace_id: string;
@@ -305,7 +307,7 @@ export const defaultPlanRunRecruiterDeps: PlanRunRecruiterDeps = {
           ON w.workspace_id = pr.workspace_id
          AND w.source_plan_slug = pr.plan_slug
          AND (w.payload->'plan_run'->>'runId') = pr.id::text
-       WHERE pr.status = 'running'
+       WHERE ${awaitingExecutorRunFragment(sql, 'pr')}
          AND w.closed_ts IS NULL
          AND w.lane IS DISTINCT FROM 'observation'
          AND w.taken_by IS NOT NULL

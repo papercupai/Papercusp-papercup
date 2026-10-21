@@ -313,9 +313,15 @@ describe('runSyncLintGuardTick', () => {
   });
 
   it('routes the real design-lint record to the UI editor and retains assertion evidence', async () => {
-    const path = 'apps/operator/app/settings/storage/page.tsx';
-    const message = 'Error: Native <table> found in unapproved files:\n  operator/app/settings/storage/page.tsx\n\nUse the shared primitive.';
-    const assertion = `TEST_FILE_ASSERTION_FAILURE file="${ROOT}/apps/operator/app/_lints/design-primitives.test.ts" name="blocks new native tables" message=${JSON.stringify(message)}`;
+    const path = 'apps/operator/app/_components/plans/ItemTypeCompletionForm.tsx';
+    const message = [
+      'Error: Native <select> found in unapproved files:',
+      '  operator/app/_components/plans/ItemTypeCompletionForm.tsx',
+      '',
+      'Use the shared primitive.',
+      '    at warnOrFail (' + ROOT + '/apps/operator/app/_lints/design-primitives.test.ts:699:9)',
+    ].join('\n');
+    const assertion = `TEST_FILE_ASSERTION_FAILURE file="${ROOT}/apps/operator/app/_lints/design-primitives.test.ts" name="blocks new native <select> controls in app UI" message=${JSON.stringify(message)}`;
     const f = fake({
       head: 'h2', prior: allPass('h1'),
       runs: { 'lint:design-primitives': { exitCode: 1, output: `COMMITTED_SOURCE substituted scripts/npm-install-safe.mjs: working tree differs\n${assertion}` } },
@@ -324,7 +330,8 @@ describe('runSyncLintGuardTick', () => {
         { file: 'scripts/npm-install-safe.mjs', agent: 'su-wrapper-editor', tsMs: 950_000 },
       ],
     });
-    await runSyncLintGuardTick(f.deps);
+    const result = await runSyncLintGuardTick(f.deps);
+    expect(result.verdicts['lint:design-primitives']).toBe('fail');
     expect(f.filed).toHaveLength(1);
     expect(f.filed[0]).toMatchObject({
       conditionKey: `sync-delta-guard:lint:design-primitives:${path}`,

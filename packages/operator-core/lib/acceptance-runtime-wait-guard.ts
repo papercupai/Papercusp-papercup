@@ -30,6 +30,35 @@ export function isDeployWaitEvent(key: string | null | undefined): boolean {
   return /^(release:deployed|release:deploy-|deploy:await|release:green(?::|$)|green-checkpoint:(?:red|inconclusive|held)(?::|$))/.test(key.trim());
 }
 
+/**
+ * Return the pipeline segment only for gate families whose suffix is a pipeline.
+ * `release:deployed:<sha>` is deliberately excluded: its suffix is a candidate
+ * SHA, not a pipeline identity.
+ */
+export function deployWaitPipeline(key: string | null | undefined): string | null {
+  const match = key
+    ?.trim()
+    .match(/^(?:release:green|green-checkpoint:(?:red|inconclusive|held)):(?!\*)([^:]+)$/);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Main-wait review is for this caller's release plane. A gate key explicitly
+ * naming another pipeline is a product event from that pot and must not be
+ * treated as a wait on the caller's Papercusp main. Bare/global keys retain the
+ * existing review behavior because their pipeline is not knowable from the key.
+ */
+export function isDeployWaitEventForHarness(
+  key: string | null | undefined,
+  harnessSlug: string | null | undefined,
+): boolean {
+  if (!isDeployWaitEvent(key)) return false;
+  const pipeline = deployWaitPipeline(key);
+  const harness = harnessSlug?.trim();
+  if (!pipeline || !harness || harness === '*' || harness.toLowerCase() === 'all') return true;
+  return pipeline.toLowerCase() === harness.toLowerCase();
+}
+
 export interface MainWaitPlanItem {
   id: string;
   text: string;
@@ -294,11 +323,17 @@ async function realPlanSnapshotIn(ownerId: string, workspaceId: string, slug: st
 
 /** Run before registering a release wait; absent plan state never invents a refusal. */
 export async function mainWaitPlanReviewForWait(
-  input: { ownerId: string | null | undefined; event?: string | null; goal?: string | null; note?: string | null },
+  input: {
+    ownerId: string | null | undefined;
+    event?: string | null;
+    goal?: string | null;
+    note?: string | null;
+    harnessSlug?: string | null;
+  },
   deps: WaitGuardDeps = REAL_WAIT_GUARD_DEPS,
 ): Promise<MainWaitPlanReview | null> {
   const ownerId = input.ownerId;
-  if (!ownerId || (!isDeployWaitEvent(input.event) && !goalNamesDeployWait(input.goal))) return null;
+  if (!ownerId || (!isDeployWaitEventForHarness(input.event, input.harnessSlug) && !goalNamesDeployWait(input.goal))) return null;
   try {
     if (!deps.planSnapshot) return null;
     const probe = await withBoundedTimeout(() => deps.planSnapshot!(ownerId), {
@@ -391,11 +426,17 @@ const MAX_ADVISORY_PLANS = 6;
  * not see. Never throws and never refuses; a failed read degrades to the generic advice.
  */
 export async function mainWaitAdvisoryForWait(
-  input: { ownerId: string | null | undefined; event?: string | null; goal?: string | null; note?: string | null },
+  input: {
+    ownerId: string | null | undefined;
+    event?: string | null;
+    goal?: string | null;
+    note?: string | null;
+    harnessSlug?: string | null;
+  },
   deps: WaitGuardDeps = REAL_WAIT_GUARD_DEPS,
 ): Promise<string | null> {
   const ownerId = input.ownerId;
-  if (!ownerId || (!isDeployWaitEvent(input.event) && !goalNamesDeployWait(input.goal))) return null;
+  if (!ownerId || (!isDeployWaitEventForHarness(input.event, input.harnessSlug) && !goalNamesDeployWait(input.goal))) return null;
   const text = [input.note, input.goal].filter(Boolean).join('\n');
   // A release fixer operating the gate legitimately waits for the verdict it drives.
   if (text && isLiveGateOperationText(text)) return null;
@@ -452,11 +493,16 @@ export const REAL_WAIT_GUARD_DEPS: WaitGuardDeps = {
  * and it never throws — a failed read degrades to "no advisory", never to a refused wait.
  */
 export async function acceptancePlaneAdvisoryForWait(
-  input: { ownerId: string | null | undefined; event?: string | null; goal?: string | null },
+  input: {
+    ownerId: string | null | undefined;
+    event?: string | null;
+    goal?: string | null;
+    harnessSlug?: string | null;
+  },
   deps: WaitGuardDeps = REAL_WAIT_GUARD_DEPS,
 ): Promise<string | null> {
   if (!input.ownerId) return null;
-  if (!isDeployWaitEvent(input.event) && !goalNamesDeployWait(input.goal)) return null;
+  if (!isDeployWaitEventForHarness(input.event, input.harnessSlug) && !goalNamesDeployWait(input.goal)) return null;
   try {
     return buildAcceptancePlaneAdvisory(await loadHeldLiveBars(input.ownerId, deps));
   } catch {

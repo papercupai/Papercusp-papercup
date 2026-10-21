@@ -35,7 +35,7 @@ import {
   parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
-import { measureToolDeliveryAcceptance, TOOL_DELIVERY_INSTRUMENTS, TOOL_DELIVERY_PLAN } from './tool-delivery-acceptance';
+import { measureToolDeliveryAcceptance, toolDeliveryExperiment, TOOL_DELIVERY_INSTRUMENTS, TOOL_DELIVERY_PLAN } from './tool-delivery-acceptance';
 import { measureProviderPackageAcceptance, PROVIDER_PACKAGE_INSTRUMENT_KEYS, PROVIDER_PACKAGE_PLAN } from './integrations/provider-package-acceptance';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
@@ -595,19 +595,31 @@ export async function resolveScorecardInstrumentSnapshots(
     }
     const overheadCriterion = workOverheadCriterionForInstrument(key);
     if (TOOL_DELIVERY_INSTRUMENTS.some(instrumentKey => instrumentKey === key)) {
-      const evidenceRef = 'harness_shared.llm_test_runs:session-tool-delivery-ab-20261021';
+      const selectedCriteria = input.rubric.criteria.filter(c => c.check?.kind === 'instrument' &&
+        c.check.instrumentKey === key);
+      const experimentId = selectedCriteria[0]?.check?.kind === 'instrument' ? selectedCriteria[0].check.experimentId : undefined;
+      let evidenceRef = 'harness_shared.llm_test_runs:session-tool-delivery-ab-20261021';
       if (subject.kind !== 'plan' || subject.ref !== TOOL_DELIVERY_PLAN || input.rubric.subjectPlan !== subject.ref ||
           !input.rubric.workspaceId || start >= end || end > Date.parse(measuredAt)) {
         snapshots[key] = { ...unknown('The exact tool-delivery plan and a completed observation window are required.'), evidenceRef };
         continue;
       }
       try {
+        if (experimentId !== undefined && typeof experimentId !== 'string') throw new Error('experimentId must be a registered string');
+        const experiment = toolDeliveryExperiment(experimentId);
+        const selection = input.rubric.criteria.filter(c => {
+          const check = c.check;
+          return check?.kind === 'instrument' && TOOL_DELIVERY_INSTRUMENTS.some(instrumentKey => instrumentKey === check.instrumentKey);
+        })
+          .map(c => c.check?.kind === 'instrument' ? c.check.experimentId ?? 'session-tool-delivery-ab-20261021' : 'session-tool-delivery-ab-20261021');
+        if (selection.some(id => id !== experiment.id)) throw new Error('R6/R9 must explicitly select the same experiment');
+        evidenceRef = `harness_shared.llm_test_runs:${experiment.id}`;
         toolDeliveryMeasured ??= (deps.toolDelivery ?? measureToolDeliveryAcceptance)({ workspaceId: input.rubric.workspaceId,
-          windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd, experimentId: experiment.id });
         const measurement = await toolDeliveryMeasured;
         const outcome = key === TOOL_DELIVERY_INSTRUMENTS[0] ? measurement.comprehension : measurement.invalidArguments;
         snapshots[key] = { verdict: outcome.verdict, measuredAt, provenance: 'platform-computed', evidenceRef, window,
-          value: { resolver: key, resolverVersion: 1, ...outcome, measurement } };
+          value: { resolver: key, resolverVersion: 2, experimentId: experiment.id, ...outcome, measurement } };
       } catch (error) {
         snapshots[key] = { ...unknown(`Tool-delivery evidence unavailable: ${String(error)}`), evidenceRef };
       }

@@ -946,7 +946,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
-  it.each(['donor-change', 'child-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal'] as const)
+  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -971,7 +971,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         "  options: process.env.NODE_OPTIONS, path: process.env.NODE_PATH, flag: process.argv[5] }));",
         "if (mode === 'frozen-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
         "if (mode === 'dependency-tamper') writeFileSync('node_modules/@native-proof/runtime/index.mjs', 'tampered installed bytes');",
-        "if (mode === 'child-failure') process.exitCode = 37;",
+        "if (mode === 'child-failure' || mode === 'child-output-overflow') {",
+        "  if (mode === 'child-output-overflow') { process.stdout.write('x'.repeat(131072)); process.stderr.write('y'.repeat(131072)); }",
+        "  console.log('provider bootstrap stdout'); console.error('provider bootstrap stderr'); process.exitCode = 37;",
+        "}",
+        "if (mode === 'output-io-failure') { const path = process.env.VERIFY_TAURI_SOURCE_RECEIPT + '.child.json'; rmSync(path); mkdirSync(path); }",
         "if (mode === 'phase-io-failure') { const path = process.env.VERIFY_TAURI_SOURCE_RECEIPT + '.phases.jsonl'; rmSync(path); mkdirSync(path); }",
       ].join('\n'));
       git(fixture.repo, ['add', preflight, provider, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
@@ -1018,10 +1022,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         else expect(existsSync(receiptPath + '.dependencies.json')).toBe(true);
         return;
       }
-      if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
-      else if (mode === 'dependency-tamper') await expect(invocation).rejects.toThrow('Verifier materialized dependencies changed during command');
-      else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
-      else await expect(invocation).resolves.toBe(mode === 'child-failure' ? 37 : 0);
+      const stdout = mode === 'child-output-overflow' ? vi.spyOn(process.stdout, 'write').mockImplementation(() => true) : null;
+      const stderr = mode === 'child-output-overflow' ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true) : null;
+      try {
+        if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
+        else if (mode === 'dependency-tamper') await expect(invocation).rejects.toThrow('Verifier materialized dependencies changed during command');
+        else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
+        else if (mode === 'output-io-failure') await expect(invocation).rejects.toThrow('Verifier child diagnostics path changed');
+        else await expect(invocation).resolves.toBe(['child-failure', 'child-output-overflow'].includes(mode) ? 37 : 0);
+        if (mode === 'child-output-overflow') {
+          expect(stdout?.mock.calls.some(([chunk]) => String(chunk).includes('provider bootstrap stdout'))).toBe(true);
+          expect(stderr?.mock.calls.some(([chunk]) => String(chunk).includes('provider bootstrap stderr'))).toBe(true);
+        }
+      } finally { stdout?.mockRestore(); stderr?.mockRestore(); }
       const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
       expect(proof).toMatchObject({ value: 'private-snapshot', ref, receipt: receiptPath,
         source: original, options: '', path: '', flag: '--provider-flag=literal' });
@@ -1032,6 +1045,20 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(readFileSync(join(fixture.repo, provider), 'utf8')).toBe('peer edit after allocation');
       expect(existsSync(join(fixture.repo, 'node_modules'))).toBe(false);
       expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
+      if (mode === 'output-io-failure') return; // Failed retention still joins the child and cleans its tree.
+      if (mode === 'child-failure' || mode === 'child-output-overflow') {
+        const diagnostics = JSON.parse(readFileSync(receiptPath + '.child.json', 'utf8'));
+        expect(diagnostics).toMatchObject({ schemaVersion: 'verifier-child-v1', exitCode: 37, signal: null, error: null });
+        for (const stream of ['stdout', 'stderr'] as const) {
+          const log = readFileSync(diagnostics[stream].path);
+          expect(log.byteLength).toBeLessThanOrEqual(64 * 1024);
+          expect(log.toString()).toMatch(new RegExp(`provider bootstrap ${stream}\\n$`));
+          expect(diagnostics[stream]).toMatchObject({ retainedBytes: log.byteLength,
+            truncated: mode === 'child-output-overflow' });
+          expect(statSync(diagnostics[stream].path).mode & 0o777).toBe(0o600);
+        }
+        expect(statSync(receiptPath + '.child.json').mode & 0o777).toBe(0o600);
+      }
       const phasePath = receiptPath + '.phases.jsonl';
       if (mode === 'phase-io-failure') {
         expect(statSync(phasePath).isDirectory()).toBe(true);
@@ -1058,7 +1085,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       if (mode === 'dependency-tamper') expect(afterDependencies).not.toEqual(beforeDependencies);
       else expect(afterDependencies).toEqual(beforeDependencies);
       expect(phases.find(row => row.phase === 'child.run' && row.event === 'completed'))
-        .toMatchObject({ exitCode: mode === 'child-failure' ? 37 : 0 });
+        .toMatchObject({ exitCode: ['child-failure', 'child-output-overflow'].includes(mode) ? 37 : 0,
+          diagnosticsPath: receiptPath + '.child.json' });
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
     });
 
@@ -1154,6 +1182,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         }
         const outcome = await result;
         const task = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+        const diagnostics = JSON.parse(readFileSync(receiptPath + '.child.json', 'utf8'));
+        expect(diagnostics.status).toBe(mode === 'unverified' ? 'incomplete' : 'completed');
+        if (mode === 'unverified') expect(diagnostics).toMatchObject({ exitCode: null, signal: null });
         expect(task.budget).toMatchObject({ deadlineEpochMs: mode === 'no-deadline' ? null : deadline,
           cleanupReserveMs: 120_000, childCutoffEpochMs: mode === 'no-deadline' ? null : deadline - 120_000 });
         if (successful) {

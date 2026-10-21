@@ -719,17 +719,13 @@ export function nativeTurnCompletedInTranscript({ agent, env, transcriptPath, re
  * Tool calls remain active until their matching result; PTY repaint is not progress.
  * @param {any[]} rows
  * @param {{agent: string, receivedAtMs?: number, nowMs?: number}} options
+ * @returns {NativeExecutionObservation}
  */
 export function nativeExecutionFromRows(rows: any[], { agent, receivedAtMs, nowMs }: {
     agent: string;
     receivedAtMs?: number;
     nowMs?: number;
-}): {
-    phase: string;
-    turnStartedAt: number | null;
-    lastProgressAt: number | null;
-    pendingTools: number;
-};
+}): NativeExecutionObservation;
 /**
  * Preserve a verified running turn when a bounded transcript tail no longer
  * contains its start row. The caller must scope `previous` to the same child
@@ -737,25 +733,39 @@ export function nativeExecutionFromRows(rows: any[], { agent, receivedAtMs, nowM
  * deliberately one-way: missing or unreadable evidence cannot create a
  * running verdict, but it also cannot erase positive evidence already seen for
  * the current turn.
- * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}|null} previous
- * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}} current
+ * @param {NativeExecutionObservation|null} previous
+ * @param {NativeExecutionObservation} current
  */
-export function retainRunningNativeExecution(previous: {
-    phase: string;
-    turnStartedAt: number | null;
-    lastProgressAt: number | null;
-    pendingTools: number;
-} | null, current: {
-    phase: string;
-    turnStartedAt: number | null;
-    lastProgressAt: number | null;
-    pendingTools: number;
-}): {
-    phase: string;
-    turnStartedAt: number | null;
-    lastProgressAt: number | null;
-    pendingTools: number;
-};
+export function retainRunningNativeExecution(previous: NativeExecutionObservation | null, current: NativeExecutionObservation): NativeExecutionObservation;
+/** Preserve an unresolved native owner gate when a real terminal keystroke
+ * advances the observation floor past the original tool_use row. The normal
+ * floor is correct for rejecting predecessor turns, but it can hide the open
+ * AskUserQuestion that is still waiting for its matching tool_result. Only
+ * same-child observations may use this carry; a new child or native writer
+ * must start unknown. A later matching tool_result is an explicit clearing
+ * receipt and wins over the retained state.
+ *
+ * @param {NativeExecutionObservation|null} previous
+ * @param {NativeExecutionObservation} current
+ * @param {{sameChild?: boolean}} [options]
+ * @returns {NativeExecutionObservation}
+ */
+export function retainPendingNativeExecution(previous: NativeExecutionObservation | null, current: NativeExecutionObservation, { sameChild }?: {
+    sameChild?: boolean;
+}): NativeExecutionObservation;
+/** Apply the bounded-tail retention rules for one native observation. A same-fence
+ * observation may retain ordinary running evidence, but an explicit result for a
+ * previously retained owner gate must clear that carry first.
+ *
+ * @param {NativeExecutionObservation|null} previous
+ * @param {NativeExecutionObservation} current
+ * @param {{sameChild?: boolean, sameFence?: boolean}} [options]
+ * @returns {NativeExecutionObservation}
+ */
+export function retainNativeExecutionObservation(previous: NativeExecutionObservation | null, current: NativeExecutionObservation, { sameChild, sameFence }?: {
+    sameChild?: boolean;
+    sameFence?: boolean;
+}): NativeExecutionObservation;
 /** Read only this child's isolated current transcript. Missing/partial proof is unknown.
  * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number,
  *   nativeSessionId?: string|null}} options
@@ -772,6 +782,12 @@ export function nativeLatestExecution({ agent, env, receivedAtMs, nowMs, nativeS
     turnStartedAt: number | null;
     lastProgressAt: number | null;
     pendingTools: number;
+    pendingToolIds?: string[];
+    completedToolIds?: string[];
+    pendingGateTools?: number;
+    pendingGateToolIds?: string[];
+    completedGateToolIds?: string[];
+    failure?: NativeExecutionFailure;
 };
 /** Positive native work always vetoes a quiet-PTY inject. Unknown evidence
  * retains the existing bounded prompt gate; it is never certified as idle.
@@ -1175,6 +1191,22 @@ export function terminalPidFromEnv(value: any): number | null;
  *  recycle) now ALSO append one JSONL row per outcome here, so "did the carry
  *  ever get typed, and if not why" is a one-file read. */
 export function eventLogPathForOwner(ownerId: any, dir?: string): string;
+/** The env a carry-respawn successor needs so Claude Code's native compactors
+ *  (threshold auto-compact and the /compact command) stay off. It is keyed on the
+ *  child's backend, NOT on whether this cut carries a system-prompt addendum: a
+ *  Claude successor recycled without one (freshChildOnly, or a host whose env
+ *  predates the P-022 cutover) would otherwise inherit an env where both still
+ *  exist (client-native-features-adoption-2026-10-21 P-006, critique 2 R-6a).
+ *  An unset PAPERCUSP_AGENT is Claude, psu's default backend. Mirrors
+ *  nativeCompactionEnv in psu-launcher.mjs; psu-native-compaction-switches.test.ts
+ *  pins the two together. */
+export function successorNativeCompactionEnv(agent: any): {
+    DISABLE_AUTO_COMPACT: string;
+    DISABLE_COMPACT: string;
+} | {
+    DISABLE_AUTO_COMPACT?: undefined;
+    DISABLE_COMPACT?: undefined;
+};
 /** Append one durable host-event row ({ ts, kind, ...extra }) for `ownerId`.
  *  FAIL-SOFT by contract: an event-log write must never break the session —
  *  any fs error is swallowed (the stderr diagnostic still fires next to it). */
@@ -1846,6 +1878,7 @@ export function countProcessDescendants(rootPid: number, { procRoot, readdir, re
  *   childPromptReady: boolean,
  *   parked?: boolean,
  *   busy?: boolean,
+ *   nativeBusy?: boolean,
  *   quotaBlocked?: boolean,
  *   composerPending?: boolean,
  *   resumable?: boolean,
@@ -1853,7 +1886,7 @@ export function countProcessDescendants(rootPid: number, { procRoot, readdir, re
  * }} input
  * @returns {{ park: boolean, reason: string, idleForMs?: number, descendants?: number | null }}
  */
-export function parkVerdict({ idleMs, agent, now, lastActivityAt, childPromptReady, parked, busy, quotaBlocked, composerPending, resumable, descendants, }: {
+export function parkVerdict({ idleMs, agent, now, lastActivityAt, childPromptReady, parked, busy, nativeBusy, quotaBlocked, composerPending, resumable, descendants, }: {
     idleMs: number;
     agent?: string | null;
     now: number;
@@ -1861,6 +1894,7 @@ export function parkVerdict({ idleMs, agent, now, lastActivityAt, childPromptRea
     childPromptReady: boolean;
     parked?: boolean;
     busy?: boolean;
+    nativeBusy?: boolean;
     quotaBlocked?: boolean;
     composerPending?: boolean;
     resumable?: boolean;
@@ -4707,6 +4741,22 @@ export function mcpDialogShowsServerDetail(visible: any, name: any): boolean;
  *  only one server). Scans freshest-line-first; the first decisive row wins.
  *  Pure — exported for tests. */
 export function mcpConnectedVerdict(visible: any, name: any): boolean;
+/**
+ * Keep a forced no-op from entering the host's recovered event lane.
+ * @param {{ ok: boolean, step: string, detail?: string }} result
+ * @param {boolean} force
+ * @returns {{ ok: boolean, event: 'mcp-reconnect-completed' | 'mcp-reconnect-failed', step: string, detail: string }}
+ */
+export function classifyMcpReconnectHostOutcome(result: {
+    ok: boolean;
+    step: string;
+    detail?: string;
+}, force?: boolean): {
+    ok: boolean;
+    event: "mcp-reconnect-completed" | "mcp-reconnect-failed";
+    step: string;
+    detail: string;
+};
 /** A scripted, fresh headless role must have its signed MCP server before its
  * first task turn. Claude does not reliably retry a failed startup catalog fetch. */
 export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKickoff, isResume }: {
@@ -4763,9 +4813,8 @@ export function mcpDialogRowSelected(visible: any, test: any): any;
  * scripted fake TUI. Steps (each bounded, each verified off the screen):
  *   1. type `/mcp`, settle, CR (separate keystroke — paste-detector, WI-2930).
  *   2. wait for the dialog to paint (target server name visible).
- *      Already-connected ⇒ close + ok('already-connected') — the benign-misfire
- *      no-op the watchdog relies on. `force:true` skips that short circuit and
- *      presses the existing Reconnect action for connected-but-toolless sessions.
+ *      Already-connected is a benign no-op only for non-forced requests.
+ *      `force:true` bypasses every connected-state exit and presses Reconnect.
  *   3. arrow-down until the ❯ cursor sits on the target row (re-parse after
  *      every keypress; bounded), then Enter.
  *   4. if a reconnect action row paints, cursor onto it the same way + Enter
@@ -5958,6 +6007,24 @@ export type EnvironmentMap = Record<string, string | undefined>;
  * the file/IO/safety logic (which is exactly how this stayed codex-only).
  */
 export type TurnRowVerdict = "turn-completed" | "turn-started" | "ignore";
+export type NativeExecutionFailure = {
+    code: string;
+    retryable: boolean;
+    retryAfterMs: number | null;
+    atMs: number;
+};
+export type NativeExecutionObservation = {
+    phase: string;
+    turnStartedAt: number | null;
+    lastProgressAt: number | null;
+    pendingTools: number;
+    pendingToolIds?: string[];
+    completedToolIds?: string[];
+    pendingGateTools?: number;
+    pendingGateToolIds?: string[];
+    completedGateToolIds?: string[];
+    failure?: NativeExecutionFailure;
+};
 /**
  * Defaults of runMcpReconnectMacro, shared with its worst-case bound. Typed
  * as plain numbers: an inferred literal type would leak into the generated

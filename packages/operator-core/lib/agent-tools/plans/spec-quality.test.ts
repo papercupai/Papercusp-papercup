@@ -713,8 +713,17 @@ describe('evaluatePlanSpecQuality', () => {
       behavior: 'FAQ content stays synchronized through the existing source-linked maintenance pipeline.',
       expected: 'coupled', actual: 'coupled', passed: true,
     });
+    expect(controls).toContainEqual({
+      behavior: 'The private field condition_key retains episode coalescing.',
+      expected: 'coupled', actual: 'coupled', passed: true,
+    });
+    expect(controls).toContainEqual({
+      behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.',
+      expected: 'coupled', actual: 'coupled', passed: true,
+    });
     expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceClauseDiagnostics');
     expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceDetectorControls');
+    expect(result.ratings['implementation-independence'].evidence).toContain('explicitly qualified/quoted construct symbols');
     expect(result.ratings['implementation-independence'].evidence).toContain('structural pattern detection');
   });
 

@@ -65,7 +65,7 @@ export function createFootprintDeps(input: FootprintDepsInput): FootprintDeps {
       } else {
         const created = (await sql()`
           SELECT created_at FROM harness_shared.harness_plans
-           WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug} AND slug = ${input.planSlug}
+           WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug} AND plan_slug = ${input.planSlug}
            LIMIT 1
         `) as Array<{ created_at: Date | string | null }>;
         const since = created[0]?.created_at ? new Date(created[0].created_at).toISOString() : null;
@@ -115,7 +115,7 @@ export function createFootprintDeps(input: FootprintDepsInput): FootprintDeps {
     async resolvePlanDriver(): Promise<string | null> {
       const rows = (await sql()`
         SELECT owner FROM harness_shared.harness_plans
-         WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug} AND slug = ${input.planSlug}
+         WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug} AND plan_slug = ${input.planSlug}
          LIMIT 1
       `) as Array<{ owner: string | null }>;
       const owner = rows[0]?.owner?.trim();

@@ -378,6 +378,13 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
   },
   {
     context: 'fleet-leader',
+    watch: { kind: 'event', family: 'fleet-launch-failed' },
+    tier: 'auto-arm',
+    of: ['fleet.slug'],
+    why: 'A launch that returned `pending` finishes detached. If it then records failed, never-opened or unconfirmed members, the fleet is short-handed and nothing else reports it: the leader owns the relaunch (the payload names the recovery nextAction).',
+  },
+  {
+    context: 'fleet-leader',
     watch: { kind: 'event', family: 'fleet-item-completed' },
     tier: 'fold',
     of: ['fleet.slug'],

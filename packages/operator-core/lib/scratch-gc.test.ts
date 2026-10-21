@@ -1491,10 +1491,21 @@ describe('deferred scratch quota recovery', () => {
     const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     const phases: ScratchWriteTimings[] = [];
     const writes: Promise<void>[] = [];
+    const workspaceRoot = resolve(scratchRootForWorkspace('ws-Q'));
+    const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const quotaMutexName = `papercusp-scratch-quota-${mutexDigest}`;
+    let quotaProbe: Promise<void> | undefined;
     try {
       writes.push(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(scratchRootForWorkspace('ws-Q'), 'first'), bytes: 16,
         onTiming: (row) => { phases[0] = row; } }, async () => {}));
       await atRoot;
+      let quotaEntered = false;
+      quotaProbe = withFsMutex(quotaMutexName, async () => { quotaEntered = true; }, {
+        timeoutMs: 500,
+        retryMs: 5,
+      });
+      await quotaProbe;
+      expect(quotaEntered).toBe(true);
       writes.push(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(scratchRootForWorkspace('ws-Q'), 'second'), bytes: 16,
         onTiming: (row) => { phases[1] = row; } }, async () => {}));
       clock = 40; release(); await Promise.all(writes);
@@ -1544,6 +1555,7 @@ describe('deferred scratch quota recovery', () => {
       expect(phases[1].totalMs).toBeGreaterThanOrEqual(phases[1].quotaWaitMs);
     } finally {
       release(); await Promise.allSettled(writes);
+      await Promise.allSettled(quotaProbe ? [quotaProbe] : []);
       readdirMock.mockImplementation(originalRead); now.mockRestore();
       statMock.mockImplementation(originalStat);
     }

@@ -937,19 +937,21 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
   // aliases. Validator-owned constraints consume part of the root budget, so
   // merely moving controls just before completion still lets preceding legacy
   // fields evict completion.verification.coverage at the final text cutoff.
-  // Keep identity, shallow controls, the current-evidence selector and the
-  // canonical record together before expendable aliases. Generic root unions
-  // retain their source order.
+  // Keep identity, shallow controls, required change-kind declarations, the
+  // current-evidence selector and the canonical record together before
+  // expendable aliases. Generic root unions retain their source order.
   const completionIndex = entries.findIndex(([name]) => name === 'completion');
-  const completionControls = new Set(['specAdequacy', 'validateOnly', 'assumptions']);
+  const completionControls = new Set([
+    'specAdequacy', 'validateOnly', 'assumptions', 'changeKinds', 'changeKindReason',
+  ]);
   if (completionIndex >= 0 && entries.some(([name]) => completionControls.has(name))) {
     const canonicalFields = new Set([
-      'id', 'workItem', 'harness', 'state', 'recordOnly', 'validateOnly',
-      'assumptions', 'specAdequacy', 'completion',
+      'id', 'workItem', 'harness', 'state', 'changeKinds', 'changeKindReason',
+      'recordOnly', 'validateOnly', 'assumptions', 'specAdequacy', 'completion',
     ]);
     const canonicalOrder = [
-      'id', 'workItem', 'harness', 'state', 'recordOnly', 'validateOnly',
-      'assumptions', 'specAdequacy', 'completion',
+      'id', 'workItem', 'harness', 'state', 'changeKinds', 'changeKindReason',
+      'recordOnly', 'validateOnly', 'assumptions', 'specAdequacy', 'completion',
     ];
     const canonicalByName = new Map(entries);
     const canonical = canonicalOrder.flatMap((name) => {
@@ -999,6 +1001,10 @@ export function compactSchemaForResult(
   const root = inputSchema as JsonSchemaNode;
   const projection = topLevelSchemaProjection(root);
   if (!projection) return null;
+  const hasCompletionRecord = projection.entries.some(([name]) => name === 'completion');
+  const completionControlDescriptions = new Set([
+    'changeKinds', 'changeKindReason', 'recordOnly', 'validateOnly', 'assumptions', 'specAdequacy',
+  ]);
   const parts = projection.entries.map(([name, raw], index) => {
     const node = raw && typeof raw === 'object' ? (raw as JsonSchemaNode) : {};
     // Root unions commonly carry verbose branch descriptions (the completion
@@ -1009,12 +1015,17 @@ export function compactSchemaForResult(
     return {
       index,
       base: `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
-      description: compactTopLevelDescription(node, name),
+      // Completion controls are structurally small but carry long prose. Keep
+      // their names and types ahead of nested verification evidence; the prose
+      // duplicates their call-site constraints without adding callable shape.
+      description: hasCompletionRecord && completionControlDescriptions.has(name)
+        ? null
+        : compactTopLevelDescription(node, name),
     };
   });
   if (parts.length === 0) return null;
   const aliasHint = schemaAliasAnnotation(root);
-  const callConstraints = schemaCallConstraintAnnotation(root, { compact: true });
+  const callConstraints = compactCallConstraintAnnotationForResult(root);
   const prefix = `${callConstraints ? `${callConstraints}; ` : ''}${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}`;
   const withDescriptions = new Set(parts.filter((part) => part.description).map((part) => part.index));
   const render = (includedDescriptions: ReadonlySet<number>): string =>
@@ -1037,6 +1048,25 @@ export function compactSchemaForResult(
     }
   }
   return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
+}
+
+/**
+ * Keep the complete validator annotations in the corpus, but shorten the
+ * root-cause rule in the bounded result. The full wording otherwise consumes
+ * enough of the 2,200-character budget to clip the canonical nested coverage
+ * shape from work_items:complete.
+ */
+function compactCallConstraintAnnotationForResult(inputSchema: unknown): string {
+  return schemaCallConstraintAnnotation(inputSchema, { compact: true }).replaceAll(
+    'contractVersion=2; required fields: hypothesis, alternativeHypothesis, distinguishingTest, testResult, ' +
+      'testProcedure, predictedObservations.hypothesis, predictedObservations.alternativeHypothesis, ' +
+      'actualObservation, evidenceRefs; hypothesis!=alternativeHypothesis; ' +
+      'predictedObservations arms must be meaningfully different; ' +
+      'distinguishingTest: non-empty procedure; no prose template required',
+    'contract v2; required: hypothesis, alternativeHypothesis, distinguishingTest, testResult, testProcedure, ' +
+      'predictedObservations.{hypothesis,alternativeHypothesis}, actualObservation, evidenceRefs; ' +
+      'hypotheses differ; predictions differ meaningfully; distinguishingTest: non-empty procedure',
+  );
 }
 
 /** Project a registered RESULT schema, including array/scalar-rooted shapes. */
@@ -1101,6 +1131,21 @@ export function exactToolNamesInQuery(query: string): string[] {
   const pattern = /(?:^|[^a-z0-9_.-])([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)(?=$|[^a-z0-9_-])/gi;
   for (const match of query.matchAll(pattern)) names.add(match[1].toLowerCase());
   return [...names];
+}
+
+/**
+ * Omit names that are not in the current projected catalog from exact-hit
+ * recovery. `omittedTools` is an actionable list for callers: each name is
+ * expected to be callable through `tools:invoke`. Treating an arbitrary
+ * colon-form token as a catalog name makes discovery teach callers to invoke
+ * unknown tools (for example a stale `routines:statvfs` token).
+ */
+export function exactToolNamesInCorpus(
+  exactNames: readonly string[],
+  corpus: readonly Pick<ToolDiscoveryEntry, 'tool'>[],
+): string[] {
+  const catalogNames = new Set(corpus.map((entry) => entry.tool.toLowerCase()));
+  return exactNames.filter((name) => catalogNames.has(name.toLowerCase()));
 }
 
 /** Keep explicitly named catalog entries ahead of generic token-overlap hits. */
@@ -1609,7 +1654,7 @@ export default defineTool({
     // `warming` and use the lexical leg until the matching revision is ready.
     const activeEmbeddings = indexedRevision === revision ? embIndex : null;
 
-    const exactNames = exactToolNamesInQuery(args.query);
+    const exactNames = exactToolNamesInCorpus(exactToolNamesInQuery(args.query), corpus);
     const resultLimit = args.limit ?? TOOLS_FIND_DEFAULT_LIMIT;
     const rankedHits = await findTools(corpus, args.query, {
       limit: resultLimit,

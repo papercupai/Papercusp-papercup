@@ -117,7 +117,7 @@ const DOOR_BUDGET_CHARS = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIM
 
 describe('EI-25801373601150765: capability:read async filesystem contract', () => {
   it('keeps filesystem calls on the byte-page path asynchronous', () => {
-    const source = readFileSync(new URL('./read.ts', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('./read-handler.ts', import.meta.url), 'utf8');
 
     expect(source).toMatch(/import\s+\{\s*open,\s*readFile,\s*stat\s*\}\s+from\s+['\"]node:fs\/promises['\"]/);
     expect(source).toMatch(
@@ -177,9 +177,9 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
   });
 
   it('keeps scratch-reference pages lossless through the outer tools:invoke door', async () => {
-    const referencePath = join(sandbox, 'scratch', 'nested-reference.md');
+    const referencePath = filePath;
     const original = payload(40_000);
-    writeScratchReference({
+    const reference = writeScratchReference({
       filePath: referencePath,
       payload: original,
       workspaceId: 'ws-1',
@@ -187,6 +187,7 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
       mediaType: 'text/plain',
       content: [{ index: 0, type: 'text', byteCount: original.length }],
     });
+    expect(doorSafePageBytes(referencePath, MAX_BYTE_PAGE, reference)).toBeLessThan(MAX_BYTE_PAGE);
 
     const { parsed } = await readThroughNestedInvokeDoor(
       { file_path: referencePath, byte_offset: 0, byte_limit: MAX_BYTE_PAGE },
@@ -199,6 +200,10 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     const decoded = Buffer.from(data, 'base64');
     expect(decoded.length).toBe(parsed.byte_length);
     expect(decoded.toString('base64')).toBe(data);
+    expect(parsed.byte_limit_clamped).toEqual({
+      requested: MAX_BYTE_PAGE,
+      applied: decoded.length,
+    });
     expect(decoded.equals(original.subarray(0, decoded.length))).toBe(true);
     expect((parsed.next_cursor as { args: { byte_offset: number } }).args.byte_offset).toBe(decoded.length);
   });
@@ -309,6 +314,10 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect(byteLength).toBeLessThanOrEqual(MAX_BYTE_PAGE);
     // Clamping is only lossless if the cursor advances by the REAL page size.
     const cursor = parsed.next_cursor as { args: { byte_offset: number; byte_limit: number } };
+    expect(parsed.byte_limit_clamped).toEqual({
+      requested: MAX_BYTE_PAGE,
+      applied: byteLength,
+    });
     expect(cursor.args.byte_offset).toBe(byteLength);
     // ...and only stable if it stops asking for a size that will be clamped again.
     expect(cursor.args.byte_limit).toBe(byteLength);
@@ -327,6 +336,7 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect(parsed).not.toHaveProperty('_projection');
     expect(parsed.ok).toBe(true);
     expect(parsed.byte_length).toBe(256);
+    expect(parsed).not.toHaveProperty('byte_limit_clamped');
     expect(Buffer.from(parsed.data as string, 'base64')).toEqual(original.subarray(0, 256));
   });
 

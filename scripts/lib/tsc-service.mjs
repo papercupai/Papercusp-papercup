@@ -14,6 +14,7 @@
 // needs checked, how an API diagnostic is rendered in the CLI's own text format (so the gate's
 // existing parser reads service output unchanged), and the socket client.
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -42,6 +43,11 @@ export function resolveTscServiceTimeoutMs(value) {
 
 /** Queue wait plus check; timeout falls back to the CLI within a bounded foreground window. */
 export const TSC_SERVICE_TIMEOUT_MS = resolveTscServiceTimeoutMs(process.env.PAPERCUSP_TSC_SERVICE_TIMEOUT_MS);
+
+/** A bounded, single-token correlation key, also safe in the service journal. */
+export function tscServiceRequestId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(value) ? value : randomUUID();
+}
 
 /**
  * The unix socket the service listens on (systemd passes it pre-bound; see
@@ -680,17 +686,18 @@ export function baselineWithinScope(baselineByFile, judged) {
  * @returns {Promise<TscServiceResponse>}
  */
 export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE_TIMEOUT_MS }) {
+  const requestId = tscServiceRequestId(request.requestId);
   return new Promise((resolvePromise, rejectPromise) => {
     const socket = createConnection(socketPath);
     let buffer = '';
     const fail = (error) => {
       clearTimeout(timer);
       socket.destroy();
-      rejectPromise(error);
+      rejectPromise(new Error(`${error.message} requestId=${requestId}`, { cause: error }));
     };
     const timer = setTimeout(() => fail(new Error(`no answer within ${timeoutMs} ms`)), timeoutMs);
     socket.setEncoding('utf8');
-    socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
+    socket.on('connect', () => socket.write(`${JSON.stringify({ ...request, requestId })}\n`));
     socket.on('data', (chunk) => {
       buffer += chunk;
       const newline = buffer.indexOf('\n');

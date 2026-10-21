@@ -296,6 +296,9 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('instrument'),
+      experimentId: z.string().trim().min(1).max(200).optional().describe(
+        'Optional preregistered experiment identity interpreted by the instrument. Omitted preserves its historical default; unknown identities fail closed.',
+      ),
       instrumentKey: z
         .string()
         .min(1)

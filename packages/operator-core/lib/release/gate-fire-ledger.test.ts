@@ -79,8 +79,8 @@ describe('first required suite after named pure capture', () => {
           runContext: 'green-checkpoint', runGroupId: 'capture-run:pure-proof-capture' }] } } });
   const rows = (runId: string, start: number, reused: number, cmd = command): PipelineEventWindowRead['rows'] => {
     const counts = { candidates: 1, reused, audited: 0, noProof: 1 - reused, otherContext: 0,
-      otherRunner: 0, expired: 0, notCaptured: 0, opaque: 0, unknownDrift: 0, globalInput: 0,
-      inputChanged: 0, expiredClean: 0 };
+      otherRunner: 0, notCaptured: 0, opaque: 0, unknownDrift: 0, globalInput: 0,
+      inputChanged: 0 };
     const runtime = { version: 1 as const, judgedSha: sha, runnerIdentity: 'runner-1',
       runContext: 'green-checkpoint', runGroupId: runId, dirty: false };
     const output = [formatTestReuseLine('core::test:unit:pure', counts, ' auditRate=0.05 lane=pure', runtime),
@@ -179,7 +179,7 @@ describe('reuse audit population from immutable gate events', () => {
   const sampledFile = Array.from({ length: 500 }, (_, i) => `lib/audit-${i}.test.ts`)
     .find((file) => auditDraw(file, sha) < 0.05)!;
   const fixture = (verdict = 'pass'): PipelineEventWindowRead => {
-    const counts = { candidates: 20, reused: 19, audited: 1, expiredClean: 0 };
+    const counts = { candidates: 20, reused: 19, audited: 1 };
     const output = [formatTestReuseLine(ws, counts, ' auditRate=0.05 lane=pure'),
       formatTestReuseTotalLine({ tasks: 1, summaries: [counts], savedMs: 100, unmeasured: 0 }),
       'TEST_PASS_REUSE_AUDIT_RESULT ' + JSON.stringify({ version: 1, ws, file: sampledFile, verdict,
@@ -218,7 +218,7 @@ describe('reuse audit population from immutable gate events', () => {
 
   const withZeroDrawFire = (runtime?: Record<string, unknown>) => {
     const r = fixture();
-    const counts = { candidates: 1, reused: 1, audited: 0, expiredClean: 0 };
+    const counts = { candidates: 1, reused: 1, audited: 0 };
     const identity = { version: 1 as const, judgedSha: sha, runnerIdentity: 'proof-v2 node25 linux x64',
       runContext: 'green-checkpoint', runGroupId: 'run-2', dirty: false, ...runtime };
     const output = [formatTestReuseLine(ws, counts, ' auditRate=0.05 lane=pure', identity),

@@ -695,7 +695,9 @@ describe('owned private PG router supervision', () => {
       delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
       const result = await runTestFilesCore({
         root, files: [file], privatePg, runId: 'owned-private-pg-control',
-        workspaceId: 'owned-private-pg-workspace', harnessSlug: 'owned-private-pg-harness', timeoutMs: 15_000,
+        workspaceId: 'owned-private-pg-workspace', harnessSlug: 'owned-private-pg-harness',
+        // The canned fixture owns no databases; reserve 1s for cleanup so the router gets 14s.
+        timeoutMs: 15_000, cleanupReserveMs: 1_000,
       });
       expect(result, JSON.stringify(result)).toMatchObject({ ok: true, passed: 1, skipped: 0 });
       const observed = JSON.parse(await readFile(capture, 'utf8'));

@@ -50,7 +50,7 @@ import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
 import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
+import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync, writeSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -684,9 +684,10 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
  * must leave the last started phase readable without claiming it completed.
  * @param {string} path
  * @param {NodeJS.ProcessEnv} env
+ * @param {string} childDiagnosticsPath
  * @returns {VerifierPhaseRunner}
  */
-function verifierPhaseRunner(path, env) {
+function verifierPhaseRunner(path, env, childDiagnosticsPath) {
   writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
   const started = performance.now();
   let sequence = 0;
@@ -702,13 +703,70 @@ function verifierPhaseRunner(path, env) {
       const result = await operation();
       record(phase, 'completed', { durationMs: Math.round(performance.now() - before),
         ...(['source.admission', 'child.admission'].includes(phase) ? { budget: result } : {}),
-        ...(phase === 'child.run' ? { exitCode: result } : {}) });
+        ...(phase === 'child.run' ? { exitCode: result, diagnosticsPath: childDiagnosticsPath } : {}) });
       return result;
     } catch (error) {
       record(phase, 'failed', { durationMs: Math.round(performance.now() - before),
+        ...(phase === 'child.run' ? { diagnosticsPath: childDiagnosticsPath } : {}),
         error: String(error?.message ?? error).slice(0, 2000) });
       throw error;
     }
+  };
+}
+
+/** Retain bounded child tails outside the cleaned source tree, including failures
+ * before a fixture can allocate its own worker artifacts. Open exclusively and
+ * verify each path still names its original file before publishing the receipt.
+ * @param {string} receiptPath
+ */
+function verifierChildDiagnostics(receiptPath) {
+  const limit = 64 * 1024;
+  const files = [];
+  const create = path => {
+    const file = { path, fd: openSync(path, 'wx', 0o600), tail: Buffer.alloc(0), totalBytes: 0 };
+    files.push(file);
+    return file;
+  };
+  const close = () => { for (const file of files) closeSync(file.fd); };
+  const write = (file, bytes) => {
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = writeSync(file.fd, bytes, offset, bytes.length - offset, offset);
+      if (!written) throw new Error('Verifier child diagnostics write made no progress');
+      offset += written;
+    }
+    ftruncateSync(file.fd, bytes.length);
+  };
+  let receipt, stdout, stderr;
+  try {
+    receipt = create(`${receiptPath}.child.json`);
+    stdout = create(`${receiptPath}.stdout.log`);
+    stderr = create(`${receiptPath}.stderr.log`);
+    write(receipt, Buffer.from(JSON.stringify({ schemaVersion: 'verifier-child-v1', status: 'started',
+      stdout: { path: stdout.path }, stderr: { path: stderr.path } }) + '\n'));
+  } catch (error) { close(); throw error; }
+  return {
+    collect(stream, chunk) {
+      const file = stream === 'stdout' ? stdout : stderr;
+      file.totalBytes += chunk.length;
+      file.tail = Buffer.concat([file.tail, chunk]).subarray(-limit);
+      write(file, file.tail);
+      process[stream].write(chunk);
+    },
+    finish(outcome) {
+      try {
+        for (const file of files) {
+          const actual = lstatSync(file.path), opened = fstatSync(file.fd);
+          if (!actual.isFile() || actual.dev !== opened.dev || actual.ino !== opened.ino)
+            throw new Error(`Verifier child diagnostics path changed: ${file.path}`);
+        }
+        const summary = file => ({ path: file.path, totalBytes: file.totalBytes,
+          retainedBytes: file.tail.length, truncated: file.totalBytes > file.tail.length });
+        write(receipt, Buffer.from(JSON.stringify({ schemaVersion: 'verifier-child-v1',
+          status: outcome.exitCode === null && outcome.signal === null ? 'incomplete' : 'completed',
+          ...outcome, stdout: summary(stdout), stderr: summary(stderr) }) + '\n'));
+      } finally { close(); }
+    },
   };
 }
 
@@ -973,7 +1031,8 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   try {
     assertOutsideArchive(owned, resolve(receiptPath));
     ownership = writeVerifierTaskReceipt(owned, sourceRepo, env, taskReceiptPath);
-    const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env);
+    const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env,
+      `${receiptPath}.child.json`);
     const measurements = {};
     runPhase = async (phase, operation) => {
       // Synchronous archive/census work delays JS signal delivery. Yield before
@@ -1015,8 +1074,15 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       // spawn boundary, then keep the absolute cutoff until the WHOLE group exits.
       admitBudget(childEstimate);
       const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv,
-        detached: process.platform !== 'win32', stdio: 'inherit' });
+        detached: process.platform !== 'win32', stdio: ['inherit', 'pipe', 'pipe'] });
       const lifetime = processGroupLifetime(child, message => process.stderr.write(`${message}\n`));
+      let diagnostics, captureError;
+      const outcome = { pid: child.pid ?? null, exitCode: null, signal: null, error: null };
+      const collect = stream => chunk => {
+        if (captureError) return;
+        try { diagnostics.collect(stream, chunk); }
+        catch (error) { captureError = error; rejectStopped(error); }
+      };
       let termination;
       let timer;
       let finished = false;
@@ -1052,10 +1118,17 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       };
       let onError, onClose;
       try {
+        diagnostics = verifierChildDiagnostics(receiptPath);
+        child.stdout.on('data', collect('stdout'));
+        child.stderr.on('data', collect('stderr'));
         /** @type {Promise<number>} */
         const closed = new Promise((done, reject) => {
           onError = reject;
-          onClose = (code, signal) => done(code ?? (128 + (constants.signals[signal] || 0)));
+          onClose = (code, signal) => {
+            outcome.exitCode = code;
+            outcome.signal = signal;
+            done(code ?? (128 + (constants.signals[signal] || 0)));
+          };
           child.once('error', onError);
           child.once('close', onClose);
         });
@@ -1067,8 +1140,10 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         if (termination) await termination;
         budget.childExitVerifiedAtMs = clock.now();
         if (budget.cutoffTriggeredAtMs !== null) throw cutoffError();
+        if (captureError) throw captureError;
         return code;
       } catch (error) {
+        outcome.error = String(error?.message ?? error).slice(0, 2000);
         try { await (termination ?? lifetime.terminate({ graceMs: 1_000, killWaitMs: 5_000 })); }
         catch (exitError) {
           throw new AggregateError([error, exitError], `${error.message}; ${exitError.message}`,
@@ -1081,6 +1156,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         cancellation.signal.removeEventListener('abort', onAbort);
         if (onError) child.removeListener('error', onError);
         if (onClose) child.removeListener('close', onClose);
+        diagnostics?.finish(outcome);
       }
     });
     await runPhase('deps.postverify', async () => {

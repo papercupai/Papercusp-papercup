@@ -21,6 +21,7 @@ import type { AttentionNotifyResult, ReplaySafeAttentionNotifyInput } from '../a
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import type { ConditionState } from '../agent-tools/coordination/tools/conditions';
+import { isAdmissionSyntheticCommitDate } from './admission-commit-date';
 import { frozenRepairLatency } from './frozen-candidate-repair-queue';
 import { readGateNonVerdictReasons, type GateNonVerdictReasons } from './gate-fire-ledger';
 import type { GreenMainSloBreach } from './green-main-slo';
@@ -94,13 +95,22 @@ function measuredQueue(queue: GreenMainSloQueue | null, nowMs: number): boolean 
     !['ready-to-test', 'awaiting-fixer', 'ready-to-verify', 'ready-to-promote', 'blocked'].includes(queue.phase)) return false;
   for (const clock of ['fixerSpawnedAtMs', 'lastAdmittedAtMs', 'lastResumeRunStartedAtMs', 'lastVerdictAtMs'] as const) {
     const stamp = queue[clock];
-    if (stamp != null && (!epoch(stamp, nowMs) || stamp < queue.openedAtMs)) return false;
+    // Older reconciliation builds persisted the deterministic admission commit date as an
+    // event clock. frozenRepairLatency already drops a pre-open lastAdmittedAtMs as unknown.
+    const legacySyntheticAdmissionClock = clock === 'lastAdmittedAtMs' &&
+      typeof stamp === 'number' && isAdmissionSyntheticCommitDate(stamp);
+    if (stamp != null && (!epoch(stamp, nowMs) ||
+      (stamp < queue.openedAtMs && !legacySyntheticAdmissionClock))) return false;
   }
   return Array.isArray(queue.convergenceRounds ?? []) && Array.isArray(queue.admissions ?? []) &&
     (queue.convergenceRounds ?? []).every((r) => epoch(r.atMs, nowMs) && r.atMs >= queue.openedAtMs &&
       Number.isInteger(r.round) && r.round > 0 && Number.isInteger(r.failingCount) && r.failingCount >= 0) &&
-    (queue.admissions ?? []).every((a) => epoch(a.atMs, nowMs) && a.atMs >= queue.openedAtMs &&
-      typeof a.toRepairHead === 'string' && !!a.toRepairHead);
+    (queue.admissions ?? []).every((a) => {
+      const legacySyntheticAdmission = isAdmissionSyntheticCommitDate(a.atMs) &&
+        a.provenance === 'reconciled-from-ref';
+      return epoch(a.atMs, nowMs) && (a.atMs >= queue.openedAtMs || legacySyntheticAdmission) &&
+        typeof a.toRepairHead === 'string' && !!a.toRepairHead;
+    });
 }
 
 async function readSloConditions(): Promise<readonly SloCondition[]> {

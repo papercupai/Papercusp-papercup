@@ -142,6 +142,13 @@ export interface PsuPtyHost {
     turnStartedAt: number | null;
     lastProgressAt: number | null;
     pendingTools: number;
+    /** Terminal native error, scoped to this child and submission floor. */
+    failure?: {
+      code: string;
+      retryable: boolean;
+      retryAfterMs: number | null;
+      atMs: number;
+    };
     observedAt: number;
     ownerId?: string;
     hostPid?: number;

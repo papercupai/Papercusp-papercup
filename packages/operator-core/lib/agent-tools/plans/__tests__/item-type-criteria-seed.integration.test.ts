@@ -30,6 +30,7 @@ const { hashPlanContent } = await import('../content-hash');
 const { seedAcceptanceBarsInTransaction } = await import('../../../acceptance-bar-seed');
 const { defineTypeDefinition } = await import('../../../plan-types/authoring');
 const { itemTypeBarKey } = await import('../../../plan-types/item-type-contract');
+const { synchronizeAcceptanceBarSubjectRevision } = await import('../../../acceptance-bar-amendment');
 import type { SpecClauseSql } from '../spec-clauses-store';
 
 const WORKSPACE = 'acceptance-bar-seed-item-types-test';
@@ -185,6 +186,42 @@ describe('R-11: activation seeds acceptance bars from item-type criteria', () =>
     expect(cites, JSON.stringify(criteria)).toMatchObject({ title: 'Cites its sources', model: TEMPLATE[0]!.description });
     const reproducible = criteria.find((criterion) => criterion.barKey === itemTypeBarKey(REVIEWED, 'reproducible'));
     expect(reproducible, JSON.stringify(criteria)).toMatchObject({ title: 'Reproducible', model: RUBRIC_CRITERIA[0]!.model });
+  });
+
+  // D-010: every BAR-seed rebuild must derive the item-type bars the way activation does. A
+  // neutral post-activation write (here an item status change, as plans:set-status makes)
+  // rebuilds the seed with preserveExistingBars; without the item-type bars that rebuild
+  // refuses bar_rubric_conflict and the contract's subject-revision pin never advances.
+  it('a neutral plan write after activation keeps the item-type bars and advances the contract pin', async () => {
+    const planSlug = `${NS}-neutral-write-plan`;
+    const before = contentFor(planSlug, [SOURCED, REVIEWED]);
+    await insertSubject(planSlug, before, 2);
+    const seeded = await seed(planSlug, before, 'su-seeder');
+    expect(seeded.ok, JSON.stringify(seeded)).toBe(true);
+    if (!seeded.ok) throw new Error(JSON.stringify(seeded));
+
+    const after = before.replace('- **P-001** `todo`', '- **P-001** `wip`');
+    expect(after).not.toBe(before);
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${after}, content_hash = ${hashPlanContent(after)}, version = 2
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${planSlug}`;
+
+    const advanced = await db.adminSql.begin((tx) => synchronizeAcceptanceBarSubjectRevision(tx as never, {
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug,
+      previousBody: before, nextBody: after, previousVersion: 1, nextVersion: 2,
+    }));
+    expect(advanced, 'the neutral write must advance the bar contract').toBe(true);
+
+    const [rubric] = await db.adminSql<{ template_data: { barContract?: { subjectPlanRevision?: number }; criteria?: Array<{ barKey?: string }> } }[]>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WORKSPACE} AND plan_slug = ${seeded.rubricSlug} AND template = 'rubric'`;
+    expect(rubric?.template_data.barContract?.subjectPlanRevision).toBe(2);
+    const typeBars = (rubric?.template_data.criteria ?? []).map((criterion) => criterion.barKey).filter((key) => key?.startsWith('T-'));
+    expect(typeBars.sort()).toEqual([
+      itemTypeBarKey(SOURCED, 'cites-sources'), itemTypeBarKey(SOURCED, 'dated'),
+      itemTypeBarKey(REVIEWED, 'bounded'), itemTypeBarKey(REVIEWED, 'reproducible'),
+    ].sort());
   });
 
   it('refuses the seed when an item type names a rubric that is not installed', async () => {

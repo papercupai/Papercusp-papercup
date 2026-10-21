@@ -385,6 +385,75 @@ describe('writeRoleCodexHome', () => {
     expect(readFileSync(history, 'utf8')).toBe('retained transcript');
   });
 
+  // client-native-features-adoption-2026-10-21 P-001 (D-003/D-005).
+  it('managed role and SU homes deny native subagents and goals, run off-gateway homes on a stripped catalog, and repair a pre-change home on resume', async () => {
+    // The user's own cache, newer than anything a fresh home holds; its models carry
+    // the multi_agent fields that switch Codex subagent tools on.
+    mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+    writeFileSync(join(fakeHome, '.codex', 'models_cache.json'), JSON.stringify({
+      fetched_at: '2099-01-01T00:00:00Z',
+      models: [
+        { slug: 'gpt-x', multi_agent_version: 'v2', multi_agent_reasoning_effort: 'low' },
+        { slug: 'gpt-y', multi_agent_version: 'v1' },
+      ],
+    }));
+    const mod = await loadMod();
+    const features = (configPath: string) =>
+      (parseToml(readFileSync(configPath, 'utf8')) as { features?: Record<string, unknown> }).features ?? {};
+    const catalogOf = (codexHome: string) => join(codexHome, 'papercusp-model-catalog.json');
+    const expectStrippedCatalogHome = (out: { codexHome: string; configPath: string }) => {
+      expect(features(out.configPath)).toMatchObject({ multi_agent: false, goals: false });
+      const config = parseToml(readFileSync(out.configPath, 'utf8')) as { model_catalog_json?: unknown };
+      expect(config.model_catalog_json).toBe(catalogOf(out.codexHome));
+      expect(JSON.parse(readFileSync(catalogOf(out.codexHome), 'utf8'))).toEqual({
+        models: [{ slug: 'gpt-x' }, { slug: 'gpt-y' }],
+      });
+      const diagnostics = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
+      expect(diagnostics.modelCatalog).toMatchObject({
+        source: 'user-cache',
+        sourcePath: join(fakeHome, '.codex', 'models_cache.json'),
+        modelCount: 2,
+      });
+    };
+
+    const role = mod.writeRoleCodexHome({ sessionKey: 'subagents-role', mcpUrl: 'http://x/api/mcp?role=worker&sig=z', promptText: 'P' });
+    expectStrippedCatalogHome(role);
+
+    const gatewayRole = mod.writeRoleCodexHome({
+      sessionKey: 'subagents-role-gw',
+      mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
+      promptText: 'P',
+      codexGatewayAccountId: 'acct-1',
+    });
+    expect(features(gatewayRole.configPath)).toMatchObject({ multi_agent: false, goals: false });
+    expect(readFileSync(gatewayRole.configPath, 'utf8')).not.toMatch(/^model_catalog_json\s*=/m);
+    expect(existsSync(catalogOf(gatewayRole.codexHome))).toBe(false);
+
+    const opts = {
+      sessionKey: 'subagents-su',
+      sid: 'su-subagents',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      token: 'fixture-token',
+      promptText: 'P',
+    };
+    const su = mod.writeSuCodexHome(opts);
+    expectStrippedCatalogHome(su);
+    expect(mod.ensureSuCodexHomeConfig(opts).repaired).toBe(false);
+
+    // A home written before this change: no subagent/goals keys, no catalog line, no catalog.
+    const preChange = readFileSync(su.configPath, 'utf8')
+      .replace('multi_agent = false\n', '')
+      .replace('goals = false\n', '')
+      .replace(/^model_catalog_json = .*\n/m, '');
+    expect(preChange).not.toMatch(/multi_agent|goals|model_catalog_json/);
+    writeFileSync(su.configPath, preChange);
+    rmSync(catalogOf(su.codexHome));
+    const repaired = mod.ensureSuCodexHomeConfig(opts);
+    expect(repaired.repaired).toBe(true);
+    expectStrippedCatalogHome(su);
+    expect(mod.ensureSuCodexHomeConfig(opts).repaired).toBe(false);
+  });
+
   it('codexGatewayAccountId → gateway provider block WITH the x-papercusp-account pin header', async () => {
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({

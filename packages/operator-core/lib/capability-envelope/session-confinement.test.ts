@@ -206,6 +206,21 @@ describe('session confinement — exact assignment arguments', () => {
     for (const extra of [{ checks: [{ tool: 'consult:get_feedback' }] }, { dependsOn: ['WI-other'] }, { learned: 'publish', learnedLevel: 'plan' }])
       expect(evaluate('work_items:checkpoint', { ...own, checkpoint: 'progress', ...extra }).allowed).toBe(false);
   });
+  it('admits the change-kind declaration a successful close requires, on the assigned item only', () => {
+    const declared = { ...own, state: 'done', assumptions: 'none', completion };
+    expect(evaluate('work_items:complete', { ...declared, changeKinds: ['logic'] }).allowed).toBe(true);
+    expect(evaluate('work_items:complete', { ...declared, changeKinds: ['logic', 'test-only'],
+      changeKindReason: 'first declared at close' }).allowed).toBe(true);
+    expect(evaluate('work_items:complete', { ...declared, id: 'F-neighbor', changeKinds: ['logic'] }).allowed).toBe(false);
+    for (const extra of [{ changeKinds: [] }, { changeKinds: 'logic' }, { changeKinds: ['not-a-kind'] }, { changeKinds: [{ kind: 'logic' }] },
+      { changeKinds: ['logic'], changeKindReason: '' }, { changeKinds: ['logic'], changeKindReason: '   ' },
+      { changeKinds: ['logic'], changeKindReason: 'x'.repeat(1001) }, { changeKinds: ['logic'], changeKindReason: ['why'] },
+      { changeKinds: ['logic'], changeKindRefs: ['WI-other'] }])
+      expect(evaluate('work_items:complete', { ...declared, ...extra }).allowed).toBe(false);
+    // Per-kind proof can name artifacts the server reads; it stays outside the boundary.
+    expect(evaluate('work_items:complete', { ...declared, changeKinds: ['ui'],
+      completion: { ...completion, kindEvidence: [{ kind: 'ui', artifacts: ['/etc/passwd'] }] } }).allowed).toBe(false);
+  });
   it('denies completion side effects, reference assumptions and file proof escapes', () => {
     for (const extra of [{ items: [{ id: 'F-neighbor' }] }, { outputPayload: {} }, { assumptions: ['fact:other'] }])
       expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none', completion, ...extra }).allowed).toBe(false);

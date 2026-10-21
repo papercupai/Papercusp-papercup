@@ -70,6 +70,11 @@ describe('local rules on the real emission path', () => {
     await emit.handler({ event: 'demo:ready', announce: true, announceScope: 'global' } as never, ctx);
     expect(matcher).not.toHaveBeenCalled(); expect(fire).not.toHaveBeenCalled();
     await emit.handler({ event: 'demo:ready', payload: { kind: 'bug', source: 'agent' } } as never, ctx);
+    // The production post-invoke hook reloads local rules asynchronously; await that promise
+    // before treating a delayed downstream fire as a missing emission.
+    await vi.waitFor(() => expect(matcher).toHaveBeenCalledTimes(1));
+    const agentMatches = await matcher.mock.results[0]!.value;
+    expect(agentMatches).toHaveLength(1);
     await vi.waitFor(() => expect(fire).toHaveBeenCalledTimes(1));
     expect(fire.mock.calls[0]![0]).toMatchObject({ tool: 'event:demo:ready', args: { payload: { source: 'agent' } }, ctx: { workspaceId: h.ws, harnessSlug: 'demo' } });
     await emitAwaitedEvent({ key: 'demo:ready', workspaceId: h.ws, harnessSlug: 'demo', source: 'code', payload: { kind: 'bug', source: 'code' } });

@@ -608,6 +608,92 @@ export function trialTaskMonth(input: TrialTaskMonthInput) {
     censoredStrata, unknownBindings, sourceRefs: input.strata.map((s) => s.sourceRef) };
 }
 
+/** Closed D-081 population. These are workspace task counts, never per-agent counts. */
+export const TRIAL_MONTH_PROFILES = [
+  { id: 'near-idle', activeVmHours: 5, monthlyTasks: 10 },
+  { id: '60h', activeVmHours: 60, monthlyTasks: 120 },
+  { id: '120h', activeVmHours: 120, monthlyTasks: 240 },
+  { id: '240h', activeVmHours: 240, monthlyTasks: 480 },
+] as const;
+export const TRIAL_COST_CATEGORIES = ['compute', 'retained-disks', 'backups',
+  'network', 'control-plane', 'inference'] as const;
+export interface TrialMonthlyCostInput {
+  profileId: string;
+  workload: TrialTaskMonthInput;
+  /** USD micros before credits, including this workspace's allocated shared costs.
+   * A source reference alone does not authenticate a bill; reviewers must resolve it. */
+  costs: Partial<Record<typeof TRIAL_COST_CATEGORIES[number], {
+    amountMicros: number | null;
+    currency: string;
+    basis: 'measured-usage' | 'catalog-only' | 'unknown';
+    usageRef: string | null;
+    rateRef: string | null;
+    allocationRef: string | null;
+  }>>;
+}
+
+/** Supporting R-14 cost detector. It cannot qualify a VM or authenticate evidence.
+ * Reuses task-workload validation; no missing/estimated cost becomes an observed zero.
+ * Compare integer micros to the strict $20 bound, retaining incomplete profiles.
+ */
+export function trialMonthlyCostCoverage(inputs: readonly TrialMonthlyCostInput[]) {
+  if (!Array.isArray(inputs)) throw new Error('trial monthly costs must be an array');
+  const byId = new Map<string, TrialMonthlyCostInput>();
+  for (const input of inputs) {
+    if (!input || !TRIAL_MONTH_PROFILES.some((p) => p.id === input.profileId)) throw new Error('unknown trial monthly profile');
+    if (byId.has(input.profileId)) throw new Error('duplicate trial monthly profile');
+    byId.set(input.profileId, input);
+  }
+  const profiles = TRIAL_MONTH_PROFILES.map((profile) => {
+    const input = byId.get(profile.id);
+    const gaps: string[] = [];
+    if (!input) return { ...profile, status: 'unknown' as const, totalMicros: null,
+      knownMicros: 0, gaps: ['missing-profile'] };
+    const workload = trialTaskMonth(input.workload);
+    const populationMatches = !(workload.assignedAgents !== 50 || workload.activeVmHours !== profile.activeVmHours
+      || workload.monthlyTasks !== profile.monthlyTasks
+      || workload.taskCounts.light * 5 !== profile.monthlyTasks * 2
+      || workload.taskCounts.typical * 5 !== profile.monthlyTasks * 2
+      || workload.taskCounts.heavy * 5 !== profile.monthlyTasks);
+    if (!populationMatches) gaps.push('workload-population');
+    if (workload.censoredStrata.length) gaps.push('censored-workload');
+    if (workload.unknownBindings.length) gaps.push('unknown-model-effort');
+    if (!input.costs || typeof input.costs !== 'object' || Array.isArray(input.costs)) throw new Error('invalid trial costs');
+    if (Object.keys(input.costs).some((key) => !TRIAL_COST_CATEGORIES.includes(key as typeof TRIAL_COST_CATEGORIES[number]))) {
+      throw new Error('unknown trial cost category');
+    }
+    let known = 0n;
+    for (const category of TRIAL_COST_CATEGORIES) {
+      const cost = input.costs[category];
+      if (cost === undefined) { gaps.push(`${category}:missing`); continue; }
+      if (!cost || !['measured-usage', 'catalog-only', 'unknown'].includes(cost.basis)) throw new Error('invalid trial cost basis');
+      if (cost.currency !== 'USD') throw new Error('trial cost currency must be USD');
+      if (cost.amountMicros !== null && (!Number.isSafeInteger(cost.amountMicros) || cost.amountMicros < 0)) {
+        throw new Error('invalid trial cost micros');
+      }
+      for (const key of ['usageRef', 'rateRef', 'allocationRef'] as const) {
+        if (cost[key] !== null && (typeof cost[key] !== 'string' || !cost[key]!.trim())) throw new Error('invalid trial cost reference');
+      }
+      if (cost.amountMicros === null || cost.basis !== 'measured-usage'
+        || !cost.usageRef || !cost.rateRef || !cost.allocationRef) {
+        gaps.push(`${category}:unmeasured`);
+        continue;
+      }
+      known += BigInt(cost.amountMicros);
+    }
+    if (known > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('trial cost total overflow');
+    const knownMicros = Number(known);
+    // A known subtotal already at the bound disproves under-$20 even with gaps.
+    const status = populationMatches && known >= 20_000_000n ? 'over-limit' as const
+      : gaps.length ? 'unknown' as const : 'under-limit' as const;
+    return { ...profile, status, totalMicros: gaps.length ? null : knownMicros, knownMicros, gaps };
+  });
+  return { costOnly: true as const, qualification: 'not-evaluated' as const,
+    status: profiles.some((p) => p.status === 'over-limit') ? 'over-limit' as const
+      : profiles.every((p) => p.status === 'under-limit') ? 'under-limit' as const : 'unknown' as const,
+    profiles };
+}
+
 /** Supporting comparison inputs, not an activated tariff or a qualified trial profile.
  * Each value is the additional monthly cost beyond the legacy compute/Server row;
  * do not count a disk or a warm Server already included in that row twice.
@@ -618,6 +704,8 @@ export type CostReportMonth = Partial<Record<typeof MONTH_COST_KEYS[number], num
   busyAgentHours?: number;
   /** Optional corpus-based monthly scenario; does not fill inferenceUsd or qualify D-076. */
   taskWorkload?: TrialTaskMonthInput;
+  /** Optional complete D-081 census; does not qualify R-15 or activate a price. */
+  trialCostProfiles?: readonly TrialMonthlyCostInput[];
   /** Binds the supplied monthly inputs/usage to their evidence; no inference from its presence. */
   sourceRef?: string;
 };
@@ -693,6 +781,14 @@ export function renderMarkdown(rows: Row[], month: CostReportMonth = {}): string
     );
   }
   const comparison = pricingComparison(rows, month);
+  if (month.trialCostProfiles !== undefined) {
+    const coverage = trialMonthlyCostCoverage(month.trialCostProfiles);
+    out.push('', '## Trial monthly cost coverage', '',
+      `Cost coverage: ${coverage.status}. VM qualification and evidence authenticity require separate verification.`, '',
+      '| profile | tasks | active VM hours | cost status | total USD | gaps |',
+      '|---|---|---|---|---|---|');
+    for (const p of coverage.profiles) out.push(`| ${p.id} | ${p.monthlyTasks} | ${p.activeVmHours} | ${p.status} | ${p.totalMicros === null ? 'UNKNOWN' : (p.totalMicros / 1e6).toFixed(6)} | ${p.gaps.join(', ') || 'none'} |`);
+  }
   const money = (value: number | null) => value === null ? 'UNKNOWN' : value.toFixed(2);
   out.push('', '## Pricing alternatives (cost basis; no customer price activated)', '',
     'Base plus agent = packed Server base + assigned agents × agent-month cost. Busy-hours = the same base + summed busy-agent-hours × busy-agent-hour cost.',
@@ -723,6 +819,7 @@ if (process.argv[1] && /cost-model\.ts$/.test(process.argv[1])) {
   const month: CostReportMonth = reportPath === undefined ? {} : JSON.parse(readFileSync(reportPath, 'utf8'));
   if (!month || typeof month !== 'object' || Array.isArray(month)) throw new Error('report-month must be an object');
   console.log(process.argv.includes('--json')
-    ? JSON.stringify(reportPath === undefined ? rows : { rows, pricing: pricingComparison(rows, month) }, null, 2)
+    ? JSON.stringify(reportPath === undefined ? rows : { rows, pricing: pricingComparison(rows, month),
+      trialCostCoverage: month.trialCostProfiles === undefined ? null : trialMonthlyCostCoverage(month.trialCostProfiles) }, null, 2)
     : renderMarkdown(rows, month));
 }

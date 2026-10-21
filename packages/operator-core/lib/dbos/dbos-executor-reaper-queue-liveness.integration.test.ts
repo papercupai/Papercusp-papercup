@@ -167,6 +167,43 @@ describe('routinesTick staleness is judged by step progress, not updated_at (EI-
   });
 });
 
+describe('routinesSweepTick is reaped only past the overlap guard window (WI-6554700010019234, real PG)', () => {
+  // The sweep tick's first step (loop-rebase-sweep) is ONE DBOS step that legitimately
+  // runs past the 90s scheduler window (measured 2026-10-21: up to 292s). Reaping it
+  // there did not stop the step; it removed the PENDING row the overlap guard keys on,
+  // so a second pass started concurrently, every pass slowed past 90s and was reaped,
+  // and the sweep's later steps (incl. the plan-run executor recruiter) never ran.
+  // These calls use the PRODUCTION default sweep window (no 6th/7th positional arg).
+  async function reapWithDefaultSweepWindow() {
+    return reapDeadExecutorWorkflows(sql, LIVENESS_MS, SCHEDULER_MS, NO_OUTPUT_MS, ORPHAN_MS);
+  }
+
+  it('leaves a sweep tick alone while its first long step is still inside the guard window', async () => {
+    // 150s silent with no step checkpoint yet: past the 90s scheduler window, inside 5 min.
+    await seedWf({ uuid: 'sweep-long-step', name: 'routinesSweepTick', status: 'PENDING', queue: 'q-sweep', createdAgoMs: 150_000, updatedAgoMs: 150_000 });
+    await reapWithDefaultSweepWindow();
+    expect(await wfStatus('sweep-long-step')).toBe('PENDING');
+  });
+
+  it('still reaps a dispatch routinesTick at the same age (the 90s window is unchanged for it)', async () => {
+    await seedWf({ uuid: 'dispatch-same-age', name: 'routinesTick', status: 'PENDING', queue: 'q-tick', createdAgoMs: 150_000, updatedAgoMs: 150_000 });
+    await reapWithDefaultSweepWindow();
+    expect(await wfStatus('dispatch-same-age')).toBe('CANCELLED');
+  });
+
+  it('reaps a sweep tick once it has been silent past the guard window (wedged)', async () => {
+    await seedWf({ uuid: 'sweep-wedged', name: 'routinesSweepTick', status: 'PENDING', queue: 'q-sweep', createdAgoMs: 7 * 60_000, updatedAgoMs: 7 * 60_000 });
+    await reapWithDefaultSweepWindow();
+    expect(await wfStatus('sweep-wedged')).toBe('CANCELLED');
+  });
+
+  it('honours an explicit sweep window override', async () => {
+    await seedWf({ uuid: 'sweep-override', name: 'routinesSweepTick', status: 'PENDING', queue: 'q-sweep', createdAgoMs: 150_000, updatedAgoMs: 150_000 });
+    await reapDeadExecutorWorkflows(sql, LIVENESS_MS, SCHEDULER_MS, NO_OUTPUT_MS, ORPHAN_MS, undefined, 120_000);
+    expect(await wfStatus('sweep-override')).toBe('CANCELLED');
+  });
+});
+
 describe('fast-orphan reap requires no live workflow_status sibling (WI-3519, real PG)', () => {
   it('leaves a backlogged ENQUEUED fire alone while a sibling PENDING worker is live on the queue', async () => {
     const target = await seedBackloggedTarget('q-live-pending', 'rt-live-pending');

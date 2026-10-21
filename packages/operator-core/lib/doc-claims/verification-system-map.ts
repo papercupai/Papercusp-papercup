@@ -72,6 +72,7 @@ export const CONTRACT_GATE_CODE_TYPES: readonly ContractGateCodeType[] = [
   { door: 'plans:start', module: 'agent-tools/plans/start.ts', type: 'PlanStartDoorRefusalCode' },
   { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/instrument-provenance.ts', type: 'InstrumentRefusalCode' },
   { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/bind-spec-evidence.ts', type: 'BindSpecEvidenceRefusalCode' },
+  { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/spec-evidence-store.ts', type: 'WorkItemPlanItemRefusalStatus' },
   // P-008: independent-verification refusals, returned as BindSpecEvidenceResult.status.
   { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/spec-evidence-store.ts', type: 'IndependentVerificationRefusalStatus' },
   { door: 'plans:acceptance-disposition', module: 'agent-tools/plans/acceptance-drain-disposition.ts', type: 'AcceptanceDispositionRefusalCode' },

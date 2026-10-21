@@ -71,6 +71,7 @@ const MIGRATIONS_IN_ORDER = [
   '1174-spec-evidence-binding-retraction.sql',
   '1175-spec-evidence-dedup-partial-on-live.sql',
   '1176-spec-evidence-drop-total-dedup-contract-phase.sql',
+  '1445-spec-evidence-independent-verification.sql',
 ].map(migration);
 
 const CTX = {
@@ -82,6 +83,7 @@ const CTX = {
 
 const SPEC_ID = 'SPEC-043-01';
 const SIBLING_SPEC_ID = 'SPEC-044-01';
+const UNRELATED_WORK_ITEM = 'WI-144';
 const KILLED = { collected: true, skipped: false, executed: true, outcome: 'killed', testLayer: 'integration' };
 
 let db: FreshPgDb;
@@ -113,17 +115,21 @@ async function seedTestRun(): Promise<number> {
 
 type BindResult = Record<string, unknown> & { ok: boolean };
 
-async function bindMutation(targeted: unknown): Promise<BindResult> {
+async function bindEvidence(
+  targeted: unknown,
+  workItemId = 'WI-143',
+  evidenceKind: 'mutation' | 'test' = 'mutation',
+): Promise<BindResult> {
   const testRunId = await seedTestRun();
   const out = (await bindTool.handler(
     {
       harness: HARNESS,
       slug: PLAN,
       binding: {
-        workItemId: 'WI-143',
+        workItemId,
         specId: SPEC_ID,
         sourceFingerprint: 'git:abc123',
-        evidenceKind: 'mutation',
+        evidenceKind,
         evidenceRef: `mutation-probe:targeting-guard#target=${String(targeted)}`,
         testRunId,
         details: { adequacy: { ...KILLED, ...(targeted === undefined ? {} : { targeted }) } },
@@ -133,6 +139,10 @@ async function bindMutation(targeted: unknown): Promise<BindResult> {
   )) as { data: { results: BindResult[] } };
   expect(out.data.results).toHaveLength(1);
   return out.data.results[0]!;
+}
+
+async function bindMutation(targeted: unknown, workItemId = 'WI-143'): Promise<BindResult> {
+  return bindEvidence(targeted, workItemId, 'mutation');
 }
 
 async function liveBindingCount(): Promise<number> {
@@ -186,6 +196,13 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       feature_id text NOT NULL,
       source_plan_slug text,
+      source_plan_item_ids text[],
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      status text,
+      taken_by text,
+      item_kind text NOT NULL DEFAULT 'task',
+      origin text,
+      updated_ts bigint,
       admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)
     );
@@ -244,8 +261,11 @@ beforeEach(async () => {
     INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq)
     VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN}, 'P-043', 1)`;
   await db.sql`
-    INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, source_plan_slug)
-    VALUES (${WORKSPACE}, ${HARNESS}, 'WI-143', ${PLAN})`;
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, source_plan_slug, source_plan_item_ids, payload)
+    VALUES
+      (${WORKSPACE}, ${HARNESS}, 'WI-143', ${PLAN}, ARRAY['P-043']::text[], ${db.sql.json({ plan_item: { plan_slug: PLAN, item_id: 'P-043' } })}),
+      (${WORKSPACE}, ${HARNESS}, ${UNRELATED_WORK_ITEM}, ${PLAN}, ARRAY['P-044']::text[], ${db.sql.json({ plan_item: { plan_slug: PLAN, item_id: 'P-044' } })})`;
   await specs.setSpecClause(clause());
 });
 
@@ -261,7 +281,7 @@ describe('plans:bind-spec-evidence targeting refusal against the real clause sto
       });
       // This clause declares no falsifier scenarios, so its own specId is the ONE accepted target.
       const accepted = result.acceptedTargets as string[];
-      expect(accepted).toHaveLength(1);
+      expect(accepted).toEqual([SPEC_ID, SPEC_ID.toLowerCase()]);
       expect(accepted[0]!.toUpperCase()).toBe(SPEC_ID);
       expect(String(result.reason)).toContain(accepted[0]!);
       // The refusal hands back a corrected call whose only change is the accepted target.
@@ -281,6 +301,22 @@ describe('plans:bind-spec-evidence targeting refusal against the real clause sto
     const accepted = await bindMutation((refused.acceptedTargets as string[])[0]);
     expect(accepted).toMatchObject({ ok: true, status: 'created', specId: SPEC_ID, specRevision: 1 });
     expect(await liveBindingCount()).toBe(1);
+  });
+
+  it('refuses a work-item promoted from an unrelated plan item before writing evidence', async () => {
+    const result = await bindEvidence(undefined, UNRELATED_WORK_ITEM, 'test');
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'work_item_plan_item_mismatch',
+      workItemId: UNRELATED_WORK_ITEM,
+      planSlug: PLAN,
+      specId: SPEC_ID,
+      planItemId: 'P-043',
+      actualPlanSlug: PLAN,
+      actualPlanItemIds: ['P-044'],
+    });
+    expect(String(result.message)).toContain('P-043');
+    expect(await liveBindingCount()).toBe(0);
   });
 
   it('judges the target against the clause REVISION being bound, not a stale one', async () => {

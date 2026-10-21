@@ -115,6 +115,9 @@ const tryAcquireResourceMock = vi.fn(
 const tryReleaseResourceMock = vi.fn(
   async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; released?: number }> => ({ ok: true }),
 );
+const tryHeartbeatResourceMock = vi.fn(async (
+  _tx: unknown, _domain: string, _owner: string, _lockId: string, _ttlSec: number,
+): Promise<{ extended: boolean; expires_ts: Date | null }> => ({ extended: true, expires_ts: new Date() }));
 const releaseAllResourcesForOwnerMock = vi.fn(
   async (
     _tx: unknown,
@@ -149,8 +152,9 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
       if (!held.includes(opts.resource)) held.push(opts.resource);
       heldResourcesByOwner.set(opts.owner, held);
     }
-    return result;
+    return result.ok ? { lock_id: `lease:${opts.resource}`, ...result } : result;
   },
+  tryHeartbeatResource: (...a: Parameters<typeof tryHeartbeatResourceMock>) => tryHeartbeatResourceMock(...a),
   tryReleaseResource: async (...a: unknown[]) => {
     const opts = a[1] as { owner: string; resource?: string };
     if (opts.resource) releaseTrace.push({ owner: opts.owner, resource: opts.resource });
@@ -205,7 +209,7 @@ const recordingTx: FakeTx = (strings, ...values) => {
 let fakeTxImpl: FakeTx = recordingTx;
 const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
 const lockReadPool: FakeTx = () => Promise.resolve([]);
-const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string }> = [];
+const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string; options?: { leaseRenewal?: boolean } }> = [];
 let workspaceTxnFailure: Error | null = null;
 // EI-22078335832051825: the session half of the dead-holder reclaim. Mocked so
 // no test here reaches the presence store / liveness oracle; the adapter's own
@@ -223,8 +227,8 @@ vi.mock('../../dbos/checkpointed-step', () => ({
     replayedSteps.has(name) ? (replayedSteps.get(name) as T) : fn(),
 }));
 vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
-  inWorkspaceTxn: (coordinationDomain: string, owner: string, fn: (tx: unknown) => unknown) => {
-    workspaceTxnCalls.push({ coordinationDomain, owner });
+  inWorkspaceTxn: (coordinationDomain: string, owner: string, fn: (tx: unknown) => unknown, options?: { leaseRenewal?: boolean }) => {
+    workspaceTxnCalls.push({ coordinationDomain, owner, ...(options ? { options } : {}) });
     if (workspaceTxnFailure) return Promise.reject(workspaceTxnFailure);
     return fn(fakeTx);
   },
@@ -1048,6 +1052,7 @@ beforeEach(() => {
     return repoPath;
   });
   tryAcquireResourceMock.mockReset();
+  tryHeartbeatResourceMock.mockReset().mockResolvedValue({ extended: true, expires_ts: new Date() });
   tryReleaseResourceMock.mockReset();
   releaseAllResourcesForOwnerMock.mockReset();
   releaseAllResourcesForOwnerMock.mockResolvedValue({ released: 3, exclusiveResources: [], waiters: {} });
@@ -2488,16 +2493,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
           lease.assertHeld();
           writes.push('before-loss');
           // Another owner now holds the per-install resource.
-          tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
-            (opts as { resource: string }).resource === 'git-sync:papercup'
-              ? { ok: false, reason: 'held by system:git-sync:other-fire' }
-              : { ok: true },
-          );
+          const acquisitions = tryAcquireResourceMock.mock.calls.length;
+          tryHeartbeatResourceMock.mockResolvedValueOnce({ extended: false, expires_ts: null });
           expect(heartbeat).not.toBeNull();
           heartbeat!();
           await vi.waitFor(() =>
             expect(error).toHaveBeenCalledWith(expect.stringContaining('LOST exclusive lock git-sync:papercup')),
           );
+          expect(tryAcquireResourceMock.mock.calls).toHaveLength(acquisitions);
           lease.assertHeld();
           writes.push('after-loss');
           return 'must-not-finish';
@@ -2540,7 +2543,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       try {
         const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
           expect(heartbeat).not.toBeNull();
-          tryAcquireResourceMock.mockImplementationOnce(() => new Promise(() => undefined));
+          tryHeartbeatResourceMock.mockImplementationOnce(() => new Promise(() => undefined));
           heartbeat!();
           await vi.advanceTimersByTimeAsync(45_000);
           vi.setSystemTime(start + 480_000);
@@ -2607,10 +2610,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         expect(heartbeats.map((timer) => timer.stopped)).toEqual([false, true]);
         for (let tick = 1; tick <= 10; tick += 1) {
           vi.setSystemTime(start + tick * 60_000);
-          const previous = tryAcquireResourceMock.mock.calls.length;
+          const previous = tryHeartbeatResourceMock.mock.calls.length;
           heartbeats[0]!.cb();
-          await vi.waitFor(() => expect(tryAcquireResourceMock.mock.calls.length).toBeGreaterThan(previous));
-          expect(tryAcquireResourceMock.mock.calls.at(-1)![1]).toMatchObject({ owner: ownerA });
+          await vi.waitFor(() => expect(tryHeartbeatResourceMock.mock.calls.length).toBeGreaterThan(previous));
+          expect(tryHeartbeatResourceMock.mock.calls.at(-1)?.slice(1, 3)).toEqual(['ws-a', ownerA]);
           // The refresh result must reach the fence before the next minute advances.
           await new Promise<void>((resolve) => setTimeout(resolve, 0));
         }
@@ -3308,7 +3311,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule']);
   });
 
-  it('EI-20224276977835463: refreshes every held lease during a long run and stops refreshing before release', async () => {
+  it('EI-26603342700879810: uses TTL renewals without acquisition or workspace expiry sweeps and stops before release', async () => {
     // The scheduled-registry's production/default backend is intentionally inert under
     // Vitest. Inject a deterministic backend for this test instead of opting the
     // production call site into real timers; this exercises the actual heartbeat seam
@@ -3356,11 +3359,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       heartbeatTimer!.cb();
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(acquiredResources()).toEqual([...initialResources, ...initialResources]);
-      for (const [, opts] of tryAcquireResourceMock.mock.calls.slice(3)) {
-        expect(opts).toMatchObject({ owner: initialOwner, ttlSec: 600 });
-      }
-      expect(acquiredLockModes().slice(3)).toEqual(['shared', 'exclusive', 'exclusive']);
+      expect(acquiredResources()).toEqual(initialResources);
+      expect(tryHeartbeatResourceMock.mock.calls.map(([, domain, owner, lockId, ttl]) => ({ domain, owner, lockId, ttl })))
+        .toEqual(initialResources.map(resource => ({ domain: 'ws-42', owner: initialOwner, lockId: `lease:${resource}`, ttl: 600 })));
+      expect(workspaceTxnCalls.at(-1)?.options).toEqual({ leaseRenewal: true });
       // Initial acquisition uses one transaction per resource. The entire
       // three-resource heartbeat adds exactly ONE more, not three.
       expect(workspaceTxnCalls).toHaveLength(4);
@@ -3371,11 +3373,11 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       // Primary cleanup plus the settlement barrier's acquire/release transactions.
       expect(workspaceTxnCalls).toHaveLength(7);
 
-      const callsAfterRelease = tryAcquireResourceMock.mock.calls.length;
+      const callsAfterRelease = tryHeartbeatResourceMock.mock.calls.length;
       expect(heartbeatTimer!.stopped).toBe(true);
       heartbeatTimer!.cb();
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(tryAcquireResourceMock).toHaveBeenCalledTimes(callsAfterRelease);
+      expect(tryHeartbeatResourceMock).toHaveBeenCalledTimes(callsAfterRelease);
     } finally {
       resetScheduledRegistry();
     }
@@ -3409,28 +3411,28 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       });
       const running = action(ctx);
       await runStartedPromise;
-      const initialCalls = tryAcquireResourceMock.mock.calls.length;
+      const initialCalls = tryHeartbeatResourceMock.mock.calls.length;
       const heartbeat = timers.find((timer) => timer.ms === 60_000);
       expect(heartbeat).toBeDefined();
 
       // The first refresh's lock-store call never settles.
-      tryAcquireResourceMock.mockImplementationOnce(() => new Promise(() => undefined));
+      tryHeartbeatResourceMock.mockImplementationOnce(() => new Promise(() => undefined));
       heartbeat!.cb();
       await vi.advanceTimersByTimeAsync(0);
-      const afterHungStart = tryAcquireResourceMock.mock.calls.length;
+      const afterHungStart = tryHeartbeatResourceMock.mock.calls.length;
       expect(afterHungStart).toBe(initialCalls + 1);
 
       // Before the deadline the hung pass still blocks a new one (one refresh in flight).
       heartbeat!.cb();
       await vi.advanceTimersByTimeAsync(0);
-      expect(tryAcquireResourceMock.mock.calls.length).toBe(afterHungStart);
+      expect(tryHeartbeatResourceMock.mock.calls.length).toBe(afterHungStart);
 
       // Past the deadline the pass is abandoned and logged; the next tick refreshes again.
       await vi.advanceTimersByTimeAsync(45_000);
       expect(warn.mock.calls.some(([line]) => String(line).includes('lease refresh still unsettled'))).toBe(true);
       heartbeat!.cb();
       await vi.advanceTimersByTimeAsync(0);
-      expect(tryAcquireResourceMock.mock.calls.length).toBeGreaterThan(afterHungStart);
+      expect(tryHeartbeatResourceMock.mock.calls.length).toBeGreaterThan(afterHungStart);
 
       finishRun();
       await running;
@@ -3705,11 +3707,11 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         phase: 'error',
         completed_at: null,
       });
-      const acquisitions = acquiredResources().length;
+      const renewals = tryHeartbeatResourceMock.mock.calls.length;
       heartbeat();
       await Promise.resolve();
       await Promise.resolve();
-      expect(acquiredResources().length).toBeGreaterThan(acquisitions);
+      expect(tryHeartbeatResourceMock.mock.calls.length).toBeGreaterThan(renewals);
       finishChild();
       expect(await running).toBeInstanceOf(GitSyncActionTimeoutError);
       expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
@@ -3772,11 +3774,11 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(releasedResources()).toEqual([]);
       expect(heartbeatStopped).toBe(false);
       expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: true, phase: 'error', completed_at: null });
-      const acquisitions = acquiredResources().length;
+      const renewals = tryHeartbeatResourceMock.mock.calls.length;
       heartbeat();
       await Promise.resolve();
       await Promise.resolve();
-      expect(acquiredResources().length).toBeGreaterThan(acquisitions);
+      expect(tryHeartbeatResourceMock.mock.calls.length).toBeGreaterThan(renewals);
       finishChild();
       expect(await running).toBe(failure);
       expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
@@ -3830,10 +3832,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       await firstCommand;
       expect(heartbeat).not.toBeNull();
       // Another owner now holds the per-slug resource: the next refresh is refused.
-      tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
-        (opts as { resource: string }).resource === 'git-sync:papercup'
-          ? { ok: false, reason: 'held by system:git-sync:other-fire' }
-          : { ok: true },
+      tryHeartbeatResourceMock.mockImplementation(async (_tx, _domain, _owner, lockId) =>
+        lockId === 'lease:git-sync:papercup'
+          ? { extended: false, expires_ts: null }
+          : { extended: true, expires_ts: new Date() },
       );
       heartbeat!();
       await vi.waitFor(() =>

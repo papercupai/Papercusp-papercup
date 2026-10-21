@@ -348,6 +348,60 @@ describe('clusterTurns — the turn-clustering primitive', () => {
   });
 });
 
+describe('maybeBatchNudge — same-object revision dependencies (EI-26608718475648175)', () => {
+  const revise = (id: string, expectedRevision: string, now: number, durationMs?: number) =>
+    maybeBatchNudge({
+      ...cap,
+      toolName: 'recipes:revise',
+      args: { id, expectedRevision, script: 'x', reason: 'Fix recipe.' },
+      now,
+      durationMs,
+    });
+
+  it('sequences successive CAS revisions of the same recipe in their observed order', () => {
+    revise('same-recipe', 'a'.repeat(64), 0);
+    const hit = revise('same-recipe', 'b'.repeat(64), 1_000);
+    expect(hit?.kind).toBe('pipeline');
+    expect(hit?.suggestedScript).toBeDefined();
+    expect(hit?.suggestedScript).not.toContain('Promise.all');
+    expect(hit?.suggestedScript).toContain('const r0 = await tools.recipes.revise(');
+    expect(hit?.suggestedScript).toContain('const r1 = await tools.recipes.revise(');
+    expect(hit!.suggestedScript!.indexOf('a'.repeat(64))).toBeLessThan(
+      hit!.suggestedScript!.indexOf('b'.repeat(64)),
+    );
+  });
+
+  it('keeps independent recipe revisions eligible for parallel batching', () => {
+    revise('first-recipe', 'a'.repeat(64), 0);
+    const hit = revise('other-recipe', 'b'.repeat(64), 1_000);
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.suggestedScript).toContain('Promise.all');
+  });
+
+  it('detects the dependency before oversized arguments are omitted from the example', () => {
+    for (const [i, expectedRevision] of ['a'.repeat(64), 'b'.repeat(64)].entries()) {
+      const hit = maybeBatchNudge({
+        ...cap,
+        toolName: 'tools:invoke',
+        args: {
+          name: 'recipes:revise',
+          args: { id: 'same-recipe', expectedRevision, script: 'x'.repeat(300) },
+        },
+        now: i * 1_000,
+      });
+      if (i === 1) {
+        expect(hit?.kind).toBe('pipeline');
+        expect(hit?.suggestedScript).toBeUndefined();
+      }
+    }
+  });
+
+  it('uses the sum of dependent calls when checking the foreground script budget', () => {
+    revise('same-recipe', 'a'.repeat(64), 0, 25_000);
+    expect(revise('same-recipe', 'b'.repeat(64), 26_000, 25_000)).toBeNull();
+  });
+});
+
 describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
   it('does NOT fire when the same tool is called ≥ threshold times but all within ONE turn (parallel dispatch)', () => {
     // BATCH_NUDGE_THRESHOLD calls, all landing inside the same inference turn (near-simultaneous

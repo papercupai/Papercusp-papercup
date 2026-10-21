@@ -705,6 +705,23 @@ describe('WI-10000846 — dispatch is decoupled from the periodic sweeps', () =>
     // A sweep added here delays every dispatch slot by its runtime: put it in routinesSweepTickImpl.
     expect(new Set(stepNames)).toEqual(new Set(['list-due-routines', 'routine-dispatch-feedback-epoch', 'claim-routine']));
   });
+
+  it('routinesSweepTick takes the in-process pass guard before running any sweep step (WI-6554700010019234)', () => {
+    const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
+    const wrapper =
+      source.split('async function routinesSweepTickImpl(): Promise<void> {')[1]?.split('async function routinesSweepPassImpl')[0] ??
+      '';
+    // Positive control: the wrapper was extracted and it delegates to the pass body.
+    expect(wrapper).toContain('await routinesSweepPassImpl()');
+    const enter = wrapper.indexOf('tryEnterInProcessPass(');
+    expect(enter).toBeGreaterThan(-1);
+    expect(enter).toBeLessThan(wrapper.indexOf('await routinesSweepPassImpl()'));
+    // The entry is released in a finally, so a throwing pass cannot block every later pass.
+    expect(wrapper).toMatch(/finally\s*\{\s*exitInProcessPass\(/);
+    // No DBOS step may run before the guard decides.
+    expect(wrapper).not.toContain('DBOS.runStep');
+    expect(source).toContain("DBOS.registerWorkflow(routinesSweepTickImpl, { name: 'routinesSweepTick' })");
+  });
 });
 
 describe('learning-loop-health-sweep — durable operation output', () => {

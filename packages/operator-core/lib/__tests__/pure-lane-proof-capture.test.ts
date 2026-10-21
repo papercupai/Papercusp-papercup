@@ -27,7 +27,6 @@ const SHA = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
 const NOW = Date.parse('2026-10-01T12:00:00Z');
 const HOUR = 3600_000;
-const MAX_AGE = 24 * HOUR;
 const RUNNER = 'p1 v25.9.0 linux x64';
 const WS = 'packages/operator-core';
 const rr = (f: string) => `${WS}/${f}`;
@@ -60,8 +59,6 @@ describe('env switches', () => {
 describe('orderCaptureCandidates', () => {
   const base = {
     sha: SHA,
-    nowMs: NOW,
-    maxAgeMs: MAX_AGE,
     runnerIdentity: RUNNER,
     failedAtSha: new Set<string>(),
     passedInSuite: new Set<string>(),
@@ -111,19 +108,34 @@ describe('orderCaptureCandidates', () => {
     expect(r.tiers).toEqual({ ranPassed: 2, unproven: 2, refresh: 2 });
   });
 
-  it('treats an expired proof, an unreadable timestamp or another runner identity as no proof', () => {
+  it('treats a proof from another runner identity as no proof', () => {
     const r = orderCaptureCandidates({
       ...base,
-      laneFiles: ['expired.test.ts', 'nan.test.ts', 'other-node.test.ts', 'other-node-at-sha.test.ts'],
+      laneFiles: ['other-node.test.ts', 'other-node-at-sha.test.ts'],
       proofs: new Map([
-        ['expired.test.ts', proof(OLD, MAX_AGE + 1)],
-        ['nan.test.ts', { recordedSha: OLD, recordedAtMs: Number.NaN, runnerIdentity: RUNNER }],
         ['other-node.test.ts', proof(OLD, HOUR, 'p1 v24.0.0 linux x64')],
         ['other-node-at-sha.test.ts', proof(SHA, HOUR, 'p1 v24.0.0 linux x64')],
       ]),
     });
-    expect(r.tiers).toEqual({ ranPassed: 0, unproven: 4, refresh: 0 });
+    expect(r.tiers).toEqual({ ranPassed: 0, unproven: 2, refresh: 0 });
     expect(r.excluded.proven).toBe(0);
+  });
+
+  it('owner #2143: a proof never expires, so an old one is proven at its sha and refreshed elsewhere', () => {
+    const r = orderCaptureCandidates({
+      ...base,
+      laneFiles: ['old-at-sha.test.ts', 'old.test.ts', 'nan.test.ts', 'recent.test.ts'],
+      proofs: new Map([
+        ['old-at-sha.test.ts', proof(SHA, 90 * 24 * HOUR)],
+        ['old.test.ts', proof(OLD, 30 * 24 * HOUR)],
+        ['nan.test.ts', { recordedSha: OLD, recordedAtMs: Number.NaN, runnerIdentity: RUNNER }],
+        ['recent.test.ts', proof(OLD, HOUR)],
+      ]),
+    });
+    expect(r.excluded).toEqual({ failed: 0, proven: 1 });
+    // An unreadable timestamp sorts as the oldest, so it is refreshed first.
+    expect(r.order).toEqual(['nan.test.ts', 'old.test.ts', 'recent.test.ts']);
+    expect(r.tiers).toEqual({ ranPassed: 0, unproven: 0, refresh: 3 });
   });
 
   it('de-duplicates the lane list', () => {
@@ -257,6 +269,21 @@ describe('runPureLaneProofCapture', () => {
     } });
     return h;
   }
+
+  it('reads proofs only for the lane files it judges (WI-6554700010019200)', async () => {
+    const scopes: unknown[] = [];
+    const h = harness({
+      loadProofs: async ({ files }: { files?: string[] }) => {
+        scopes.push(files);
+        return { proofs: new Map([[rr('lib/a.test.ts'), proof(SHA, HOUR)]]), rows: 1 };
+      },
+    });
+    await run(h);
+    expect(scopes).toHaveLength(1);
+    expect([...(scopes[0] as string[])].sort()).toEqual(
+      ['lib/a.test.ts', 'lib/b.test.ts', 'lib/c.test.ts', 'lib/d.test.ts', 'lib/e.test.ts'].map(rr),
+    );
+  });
 
   it('retains the exact named local proof population before removing its temporary result files', async () => {
     const h = namedHarness();

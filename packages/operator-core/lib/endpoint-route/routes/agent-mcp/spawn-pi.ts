@@ -14,6 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { getCatalog } from '@papercusp/agent-mcp';
 import { DEFAULT_PI_CAPABILITIES, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { papercuspRoot } from '../../../papercusp-root';
+import { turnProvenanceDir } from '../../../turn-provenance/turn-provenance';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { operatorApiBase } from '../../../operator-api-base';
 import { join } from 'node:path';
@@ -53,6 +54,7 @@ export default defineTool({
         AGENT_MCP_BEARER: result.bearer,
         OPERATOR_BASE_URL: operatorApiBase(),
         PAPERCUSP_HOME: papercuspRoot(),
+        PAPERCUSP_TURN_PROVENANCE_DIR: turnProvenanceDir(),
       } as Record<string, string>,
     };
 

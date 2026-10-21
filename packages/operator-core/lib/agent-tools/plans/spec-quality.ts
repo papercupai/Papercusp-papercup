@@ -832,6 +832,8 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'Reuse the runtime usage ledger for per-call token counts.', expected: 'coupled' as const },
     { behavior: 'Reuse PostHog for consented portal events.', expected: 'coupled' as const },
     { behavior: 'Reuse prior clean receipts when current; reuse PostHog for consented portal events.', expected: 'coupled' as const },
+    { behavior: 'The private field condition_key retains episode coalescing.', expected: 'coupled' as const },
+    { behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.', expected: 'coupled' as const },
     { behavior: 'A clickable block has no clip in src/cup-audio/.', expected: 'coupled' as const },
     { behavior: 'Wording from tests/fixtures/cupboard-brief.json appears outside a label.', expected: 'coupled' as const },
     { behavior: 'The built out/*/index.html leaves a placeholder behind.', expected: 'coupled' as const },
@@ -848,7 +850,7 @@ export function evaluatePlanSpecQuality(input: {
   const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
   const implementationIndependenceCoverage =
     ' Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).' +
-    ' Detector coverage: implementation filenames/symbols, repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, pipelines, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, pipelines, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
     behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
     ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +

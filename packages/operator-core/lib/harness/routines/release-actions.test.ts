@@ -3680,9 +3680,9 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     const ws = 'core::test:unit:pure';
     const file = Array.from({ length: 500 }, (_, i) => `lib/audit-${i}.test.ts`)
       .find((name) => auditDraw(name, sha) < 0.05)!;
-    const output = [formatTestReuseLine(ws, { candidates: 20, reused: 19, audited: 1, expiredClean: 0 },
+    const output = [formatTestReuseLine(ws, { candidates: 20, reused: 19, audited: 1 },
       ' auditRate=0.05 lane=pure'),
-      formatTestReuseTotalLine({ tasks: 1, summaries: [{ candidates: 20, reused: 19, audited: 1, expiredClean: 0 }],
+      formatTestReuseTotalLine({ tasks: 1, summaries: [{ candidates: 20, reused: 19, audited: 1 }],
         savedMs: 100, unmeasured: 0 }),
       'TEST_PASS_REUSE_AUDIT_RESULT ' + JSON.stringify({ version: 1, ws, file, verdict: 'pass',
         judgedSha: sha, runnerIdentity: 'proof-v2 node25 linux x64', runContext: 'green-checkpoint',

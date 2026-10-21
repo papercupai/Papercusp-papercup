@@ -17,6 +17,7 @@ import { join } from 'node:path';
 
 import { loadHarnessRegistry } from './harness-registry';
 import { resolveLongLivedSessionMcpBaseUrl } from './mcp-base-url';
+import { turnProvenanceDir } from './turn-provenance/turn-provenance';
 
 /**
  * Resolve a harness's filesystem project dir via the harness registry.
@@ -61,9 +62,10 @@ export function resolveSpawnCwd(opts: {
  *   - Pi pty spawns (the existing pty bridge)
  *   - Native console launches (the `+` button)
  *
- * The console-launcher additionally folds in `PAPERCUSP_WORKSPACE` and
- * `PAPERCUSP_HOME`; those aren't included here because the pty bridge
- * doesn't currently set them and we want pure-refactor behavior parity.
+ * The console-launcher additionally folds in `PAPERCUSP_WORKSPACE` and a
+ * workspace-scoped `PAPERCUSP_HOME`. Set the explicit shared provenance
+ * directory here before that scoped home is added, so server injectors and
+ * the child UserPromptSubmit hook read the same ledger.
  */
 export function resolveContextEnv(opts: {
   slug: string;
@@ -71,6 +73,7 @@ export function resolveContextEnv(opts: {
   requestUrl?: string;
 }): Record<string, string> {
   const env: Record<string, string> = {};
+  env.PAPERCUSP_TURN_PROVENANCE_DIR = turnProvenanceDir();
   if (opts.stateDir) env.PI_CODING_AGENT_DIR = join(opts.stateDir, 'pi-sessions');
   env.PAPERCUSP_HARNESS_SLUG = opts.slug;
   // Browser PTYs inherit the operator host's ambient process env. On staging

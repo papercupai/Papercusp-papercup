@@ -5473,8 +5473,17 @@ async function amendAcceptanceBarRubric(
           idempotencyKey: '',
         };
         const { buildAcceptanceBarSeed } = await import('./acceptance-bar-seed');
+        // Same item-type bar input as the activation seeder (plan-item-types-registry-cupboard
+        // D-010): without it a plan carrying criteria-template bars refuses as a conflict.
+        const { deriveSeedItemTypeBars } = await import('./plan-types/item-type-contract');
+        const typeBars = await deriveSeedItemTypeBars(
+          tx as never,
+          { workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug, planSlug: subjectPlanHint },
+          requirementsRerender.content,
+        );
+        if (!typeBars.ok) throw new Error('acceptance_bar_projection_repair_invalid');
         const validated = buildAcceptanceBarSeed({
-          planSlug: subjectPlanHint, planContent: requirementsRerender.content, actorId,
+          planSlug: subjectPlanHint, planContent: requirementsRerender.content, itemTypeBars: typeBars.bars, actorId,
           declaredAt: stored.barContract!.seededAt, cohort: stored.barContract!.cohort,
           adoptionEpoch: stored.barContract!.adoptionEpoch,
           subjectPlanRevision: nextSubjectRevision, planStatus: subjectRow.status,

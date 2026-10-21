@@ -6,8 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   acceptancePlaneAdvisoryForWait,
   buildAcceptancePlaneAdvisory,
+  deployWaitPipeline,
   goalNamesDeployWait,
   isDeployWaitEvent,
+  isDeployWaitEventForHarness,
   loadHeldLiveBars,
   mainWaitAdvisoryForWait,
   mainWaitPlanReviewForWait,
@@ -66,6 +68,15 @@ describe('deploy-wait detection', () => {
     expect(goalNamesDeployWait('finish once it lands on main')).toBe(true);
     expect(goalNamesDeployWait('the main risk is the parser; fix it')).toBe(false);
     expect(goalNamesDeployWait('Carry plan X to shipped')).toBe(false);
+  });
+
+  it('keeps a different pot gate out of the Papercusp main-wait guard', () => {
+    expect(deployWaitPipeline('release:green:slack-asana-bug-drill')).toBe('slack-asana-bug-drill');
+    expect(deployWaitPipeline('green-checkpoint:red:papercusp')).toBe('papercusp');
+    expect(deployWaitPipeline('release:deployed:abc123')).toBeNull();
+    expect(isDeployWaitEventForHarness('release:green:papercusp', 'papercusp')).toBe(true);
+    expect(isDeployWaitEventForHarness('release:green:slack-asana-bug-drill', 'papercusp')).toBe(false);
+    expect(isDeployWaitEventForHarness('release:green', 'papercusp')).toBe(true);
   });
 
   it('allows checkpoint development goals that name the system without waiting for a live verdict', () => {
@@ -204,6 +215,31 @@ describe('plan frontier before a main wait', () => {
     expect(await mainWaitPlanReviewForWait({ ownerId: 'su-x', event: 'release:green' }, d)).toMatchObject({ allowWait: false });
     expect(reads).toBe(1);
   });
+
+  it('does not read the plan for a gate belonging to another pipeline', async () => {
+    let reads = 0;
+    const d: WaitGuardDeps = {
+      ...deps([]),
+      planSnapshot: async () => {
+        reads += 1;
+        return { slug: 'plan-a', items: [item('P-001', 'todo')] };
+      },
+    };
+    expect(
+      await mainWaitPlanReviewForWait(
+        { ownerId: 'su-x', event: 'release:green:slack-asana-bug-drill', harnessSlug: 'papercusp' },
+        d,
+      ),
+    ).toBeNull();
+    expect(reads).toBe(0);
+    expect(
+      await mainWaitPlanReviewForWait(
+        { ownerId: 'su-x', event: 'release:green:papercusp', harnessSlug: 'papercusp' },
+        d,
+      ),
+    ).toMatchObject({ allowWait: false });
+    expect(reads).toBe(1);
+  });
 });
 
 describe('advisory construction', () => {
@@ -311,7 +347,7 @@ describe('mainWaitAdvisoryForWait — every main wait gets the reminder (WI-6554
   });
 
   it('gives an agent with no plan anywhere the generic reminder instead of silence', async () => {
-    const advisory = await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green:papercusp' }, plansDeps([], {}));
+    const advisory = await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green:papercusp', harnessSlug: 'papercusp' }, plansDeps([], {}));
     expect(advisory).toMatch(/MAIN-WAIT ADVISORY/);
     expect(advisory).toContain('No plan was found');
     expect(advisory).toContain('do it now');
@@ -324,7 +360,7 @@ describe('mainWaitAdvisoryForWait — every main wait gets the reminder (WI-6554
       'plan-b-2026-10-02': { slug: 'plan-b-2026-10-02', items: [{ ...open('P-005'), liveHeld: true }] },
     });
     const note = 'carry plans; WI-10007221 needs the deployed check';
-    const advisory = await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green:papercusp', note }, d);
+    const advisory = await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green:papercusp', harnessSlug: 'papercusp', note }, d);
     expect(d.relatedCalls).toEqual([note]);
     expect(advisory).toContain('plan-a-2026-10-01 (2 open; staging-ready: P-006, P-008)');
     expect(advisory).not.toContain('plan-b-2026-10-02 (1 open; staging-ready');
@@ -333,10 +369,10 @@ describe('mainWaitAdvisoryForWait — every main wait gets the reminder (WI-6554
 
   it('stays silent for a non-main wait and for the fixer operating the gate', async () => {
     const d = plansDeps(['plan-a-2026-10-01'], { 'plan-a-2026-10-01': { slug: 'plan-a-2026-10-01', items: [open('P-001')] } });
-    expect(await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'work-item:done:WI-1' }, d)).toBeNull();
+    expect(await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'work-item:done:WI-1', harnessSlug: 'papercusp' }, d)).toBeNull();
     expect(
       await mainWaitAdvisoryForWait(
-        { ownerId: 'su-x', event: 'release:green:papercusp', note: 'repair the green-checkpoint gate red and rerun' },
+        { ownerId: 'su-x', event: 'release:green:papercusp', harnessSlug: 'papercusp', note: 'repair the green-checkpoint gate red and rerun' },
         d,
       ),
     ).toBeNull();
@@ -354,7 +390,7 @@ describe('mainWaitAdvisoryForWait — every main wait gets the reminder (WI-6554
     // withBoundedTimeout reports the swallowed read failure; that warning is the expected trace.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      await expect(mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green' }, broken)).resolves.toContain(
+      await expect(mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green', harnessSlug: 'papercusp' }, broken)).resolves.toContain(
         'No plan was found',
       );
       expect(warn.mock.calls.some((call) => String(call[0]).includes('main-wait-advisory'))).toBe(true);
@@ -368,17 +404,17 @@ describe('acceptancePlaneAdvisoryForWait — the call events:await and loop:arm 
   const live = [{ key: 'r-1', barKey: 'R-1', evidencePlane: 'live' as const, evidenceRuntime: 'bg-host' as const }];
 
   it('advises on a release:deployed await and on a deploy-shaped loop goal', async () => {
-    expect(await acceptancePlaneAdvisoryForWait({ ownerId: 'su-x', event: 'release:deployed' }, deps(live))).toMatch(
+    expect(await acceptancePlaneAdvisoryForWait({ ownerId: 'su-x', event: 'release:deployed', harnessSlug: 'papercusp' }, deps(live))).toMatch(
       /ACCEPTANCE-PLANE ADVISORY/,
     );
     expect(
-      await acceptancePlaneAdvisoryForWait({ ownerId: 'su-x', goal: 'wait for green main then grade' }, deps(live)),
+      await acceptancePlaneAdvisoryForWait({ ownerId: 'su-x', goal: 'wait for green main then grade', harnessSlug: 'papercusp' }, deps(live)),
     ).toMatch(/bg-host/);
   });
 
   it('does no I/O at all for a wait that is not deploy-shaped', async () => {
     const d = deps(live);
-    expect(await acceptancePlaneAdvisoryForWait({ ownerId: 'su-x', event: 'work-item:done:WI-1' }, d)).toBeNull();
+    expect(await acceptancePlaneAdvisoryForWait({ ownerId: 'su-x', event: 'work-item:done:WI-1', harnessSlug: 'papercusp' }, d)).toBeNull();
     expect(d.reads).toBe(0);
   });
 
@@ -389,7 +425,7 @@ describe('acceptancePlaneAdvisoryForWait — the call events:await and loop:arm 
       },
       acceptanceCriteria: async () => null,
     };
-    await expect(acceptancePlaneAdvisoryForWait({ ownerId: 'su-x', event: 'release:deployed' }, broken)).resolves.toBeNull();
-    await expect(acceptancePlaneAdvisoryForWait({ ownerId: null, event: 'release:deployed' }, deps(live))).resolves.toBeNull();
+    await expect(acceptancePlaneAdvisoryForWait({ ownerId: 'su-x', event: 'release:deployed', harnessSlug: 'papercusp' }, broken)).resolves.toBeNull();
+    await expect(acceptancePlaneAdvisoryForWait({ ownerId: null, event: 'release:deployed', harnessSlug: 'papercusp' }, deps(live))).resolves.toBeNull();
   });
 });

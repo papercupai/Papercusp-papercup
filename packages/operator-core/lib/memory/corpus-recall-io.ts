@@ -27,7 +27,7 @@
  *     this a separate leg rather than a fourth mem0 pool — see D-037.
  */
 
-import { getOrgPg, pgResultDiagnosticSnapshot } from '@papercusp/db-org';
+import { acquireSnapshot, acquireTicketSnapshot, getOrgPg, pgResultDiagnosticSnapshot } from '@papercusp/db-org';
 import { runHybridSearch, type SearchHit, type SearchLegs, type SourceCallInstrumentation } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 import { createDocSearchSource, createPlanSearchSource } from '../agent-tools/search/knowledge-sources';
@@ -79,7 +79,19 @@ function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
   return {
     run: action => withStageAttempt(attempt, action),
     finish: outcome => {
-      attempt.finish(outcome);
+      attempt.finish(outcome === 'timed-out' ? 'expired' : outcome);
+      let acquisitionAtTimeout: NonNullable<ReturnType<SourceCallInstrumentation['finish']>>['acquisitionAtTimeout'];
+      if (outcome === 'timed-out') {
+        try {
+          acquisitionAtTimeout = {
+            timing: 'source-timeout-before-abort',
+            counters: acquireSnapshot('org-admin'),
+            tickets: acquireTicketSnapshot('org-admin'),
+          };
+        } catch {
+          // The bounded acquisition view is diagnostic-only; it cannot block recall.
+        }
+      }
       try {
         const snapshot = pgResultDiagnosticSnapshot('org-admin', 32);
         const queries = snapshot.results
@@ -94,6 +106,7 @@ function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
           snapshotCapacity: snapshot.capacity,
           snapshotDropped: snapshot.dropped,
           queries,
+          ...(acquisitionAtTimeout ? { acquisitionAtTimeout } : {}),
         };
       } catch {
         return undefined;
@@ -157,17 +170,25 @@ export function corpusEmbedBudgetMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 1_200;
 }
 
+/** Minimum non-reranked source window, sized above the observed 67–74ms timeouts. */
+const CORPUS_MIN_SOURCE_STAGE_BUDGET_MS = 80;
+
 /**
- * Per-search budget inside the corpus leg's remaining lifetime.
- *
- * The normal cascade has at most two search calls (the AND stage and the
- * coverage-graded fill stage), so each call can use half of the remaining
- * lifetime. A rerank adds another bounded stage between those searches; keep
- * the tighter quarter allocation in that mode so reranking cannot starve the
- * second search or consume the whole-leg bound.
+ * Keep a per-stage share so a stalled source leaves time for healthy siblings
+ * and the optional cascade. Under short native-hook deadlines, the old share
+ * fell below the measured time of successful lexical calls; keep an 80ms floor
+ * for the non-reranked path while the shared parent deadline remains the hard
+ * bound for the whole recall.
  */
 export function corpusSearchStageBudgetMs(remainingMs: number, rerank: boolean): number {
-  return Math.max(1, remainingMs / (rerank ? 4 : 2));
+  const share = remainingMs / (rerank ? 4 : 2);
+  const floor = rerank ? 1 : CORPUS_MIN_SOURCE_STAGE_BUDGET_MS;
+  return Math.max(1, Math.min(remainingMs, Math.max(floor, share)));
+}
+
+/** Do not start a second source search unless it can retain one minimum window. */
+export function corpusCanRunSecondSearch(remainingMs: number): boolean {
+  return remainingMs >= CORPUS_MIN_SOURCE_STAGE_BUDGET_MS * 2;
 }
 
 /**
@@ -782,8 +803,8 @@ async function recallCorpusContextInner(
 
       const search = async (lexicalMode: 'and' | 'coverage-graded', queryFor: string) => {
         input.signal?.throwIfAborted();
-        // Reserve time for embedding, source queries, selection and the optional cascade.
-        // Each query uses the remaining request lifetime, never a fresh whole-leg budget.
+        // Preserve the bounded share, with a small floor for the short hot path.
+        // The outer deadline remains the hard bound for this stage and the recall.
         const stageBudget = corpusSearchStageBudgetMs(remainingMs(), input.rerank === true);
         const result = await runHybridSearch(sources, {
           signal: input.signal,
@@ -975,7 +996,8 @@ async function recallCorpusContextInner(
       // stage 1's lines are computed first and never revisited, so the admitted
       // set can only grow. `bench/corpus-leg-lexical-acceptance-cli.ts` asserts
       // exactly that (admitted-containment violations must be 0).
-      if (stage1.lines.length >= maxItems) {
+      if (stage1.lines.length >= maxItems
+        || (input.deadline !== undefined && !corpusCanRunSecondSearch(remainingMs()))) {
         return { lines: stage1.lines, dropped: stage1.dropped, fused: andFused, count: andHits.length };
       }
 

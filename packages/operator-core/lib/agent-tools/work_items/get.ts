@@ -671,6 +671,14 @@ const workItemsGetResultRowSchema = z.object({
   // and validate it instead of accepting any resume value via passthrough.
   resume: z.object({
     schemaVersion: z.literal('work-item-resume-v1'),
+    nextAction: z.object({
+      status: z.enum(['unknown', 'missing', 'available', 'oversized', 'blocked']),
+      text: z.string().nullable(),
+      reason: z.string().optional(),
+      source: z.string().optional(),
+    }).passthrough().describe(
+      'Blocked means the live item has a pending admission review or an active admission hold; the stored checkpoint action is withheld until that gate is cleared.',
+    ).optional(),
     checks: z.object({
       rows: z.array(z.object({
         id: z.string().optional(),

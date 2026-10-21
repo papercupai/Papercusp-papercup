@@ -3,6 +3,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -10,7 +11,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 import {
+  FORCED_RECONNECT_CAP,
   forcedReconnectEnvelope,
+  hostHonoursForcedReconnect,
   reconnectCurrentSession,
   resolveOwnDiscovery,
 } from '../../../scripts/mcp-reconnect.mjs';
@@ -77,7 +80,11 @@ describe('mcp-reconnect native-Bash self-serve CLI', () => {
     });
     await new Promise<void>((resolve) => server.listen(socketPath, resolve));
     chmodSync(socketPath, 0o600);
-    writeFileSync(metadataPath, JSON.stringify({ ownerId, sock: socketPath }), { mode: 0o600 });
+    writeFileSync(
+      metadataPath,
+      JSON.stringify({ ownerId, sock: socketPath, caps: ['mcp-reconnect', FORCED_RECONNECT_CAP] }),
+      { mode: 0o600 },
+    );
     chmodSync(metadataPath, 0o600);
     cleanups.push(() => server.close());
 
@@ -90,5 +97,55 @@ describe('mcp-reconnect native-Bash self-serve CLI', () => {
       force: true,
       ownerId,
     });
+  });
+
+  // EI-26553022496923180: an interactive host never adopts newer host code, so a
+  // host loaded before the forced-reconnect fix reads "connected" and no-ops.
+  // Sending to it would leave the agent waiting on a heal that never runs.
+  it.each([
+    ['no caps field (pre-WI-1804 host)', undefined],
+    ['caps without the force cap (pre-EI-26532826938565424 host)', ['carry-respawn', 'mcp-reconnect']],
+  ])('sends nothing and names the carry-respawn rung for a host with %s', async (_label, caps) => {
+    const dir = fixtureDir();
+    const ownerId = 'su-stale-host';
+    const socketPath = join(dir, 'current.sock');
+    const metadataPath = join(dir, `${ownerId}.json`);
+    let connections = 0;
+    const server = net.createServer((conn) => {
+      connections += 1;
+      conn.end();
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    chmodSync(socketPath, 0o600);
+    writeFileSync(
+      metadataPath,
+      JSON.stringify({ ownerId, sock: socketPath, hostCodeVersion: 'loaded-old', ...(caps ? { caps } : {}) }),
+      { mode: 0o600 },
+    );
+    chmodSync(metadataPath, 0o600);
+    cleanups.push(() => server.close());
+
+    const result = await reconnectCurrentSession({ ownerId, dir, timeoutMs: 500 });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'host-cannot-force-reconnect',
+      ownerId,
+      socketPath,
+      hostCodeVersion: 'loaded-old',
+    });
+    expect(result.next).toContain('node scripts/mcp-call.mjs session:request-compaction');
+    expect(result.next).toContain(`--client ${ownerId}`);
+    const argsJson = /session:request-compaction '([^']*)'/.exec(result.next)?.[1];
+    expect(JSON.parse(argsJson ?? 'null')).toMatchObject({ autoContinue: true });
+    expect(connections).toBe(0);
+  });
+
+  it('pins the host advertising the force cap the script checks for', () => {
+    expect(hostHonoursForcedReconnect({ caps: [FORCED_RECONNECT_CAP] })).toBe(true);
+    expect(hostHonoursForcedReconnect({ caps: 'mcp-reconnect-force' })).toBe(false);
+    expect(hostHonoursForcedReconnect(null)).toBe(false);
+    const hostSource = readFileSync(new URL('./psu-pty-host.mjs', import.meta.url), 'utf8');
+    const baseCaps = /\bcaps:\s*\[([^\]]*)\]/.exec(hostSource)?.[1] ?? '';
+    expect(baseCaps).toContain(`'${FORCED_RECONNECT_CAP}'`);
   });
 });

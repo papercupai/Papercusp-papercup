@@ -24,7 +24,7 @@ import {
   type LivenessVerdict,
   type ResolveSessionStatesOpts,
 } from './liveness-oracle';
-import type { WakeabilitySignals } from './presence-wakeability';
+import { WARM_IDLE_ACTIVITY_MS, type WakeabilitySignals } from './presence-wakeability';
 import type { HostTailEvent } from '../../events/await/turn-proof';
 
 const NOW = Date.parse('2026-10-11T03:00:00.000Z');
@@ -331,3 +331,57 @@ describe('applyHostCondition (pure)', () => {
     expect(applyHostCondition(base, null)).toBe(base);
   });
 });
+
+describe('EI-26597499932248750 — a confirmed wake miss on a warm-idle owner is not rescued by a live host', () => {
+  const DAY = 24 * 60 * 60_000;
+  // Measured shape: Codex host up 5.7 days, child idle 4.96 days, a turn-burning
+  // wake sent and never consumed. Heartbeat fresh, wake-await armed.
+  const WEDGED_MISS: WakeabilitySignals = {
+    wakeable: true,
+    liveTurn: false,
+    wakeAttemptMiss: true,
+    lastActivityMs: NOW - Math.round(4.96 * DAY),
+  };
+
+  it('POSITIVE CONTROL: the same live host still rescues a warm-idle owner with NO wake miss to `parked`', async () => {
+    // A legitimately parked owner can sit warm-idle for hours and wake fine (D-007).
+    const { o } = opts({ ...WEDGED_MISS, wakeAttemptMiss: false }, healthyHost);
+    const v = await verdictFor(subject, o);
+    expect(v.sessionState).toBe('parked');
+    expect(v.warmIdle).toBe(true);
+    expect(v.wedged).toBeUndefined();
+  });
+
+  it('a wake miss that is NOT warm-idle is still rescued (the miss alone is the ambiguity the rescue exists for)', async () => {
+    const recent: WakeabilitySignals = { ...WEDGED_MISS, lastActivityMs: NOW - (WARM_IDLE_ACTIVITY_MS - 60_000) };
+    const { o } = opts(recent, healthyHost);
+    const v = await verdictFor(subject, o);
+    expect(v.wakeAttemptMiss).toBe(true);
+    expect(v.warmIdle).toBe(false);
+    expect(v.sessionState).toBe('parked');
+    expect(v.wedged).toBeUndefined();
+  });
+
+  it('wake miss + warm-idle + live host → suspect, wedged pending-turn-stuck (never a dispatch target)', async () => {
+    const { o } = opts(WEDGED_MISS, healthyHost);
+    const v = await verdictFor(subject, o);
+    expect(v.sessionState).toBe('suspect');
+    expect(v.wedged).toBe('pending-turn-stuck');
+    expect(v.wakeAttemptMiss).toBe(true);
+    expect(v.warmIdle).toBe(true);
+    expect(v.confirmLiveness).toBe(true);
+  });
+
+  it('consumers with and without positive host authority now agree the owner is not dispatchable', async () => {
+    const withHost = await verdictFor(subject, opts(WEDGED_MISS, healthyHost).o);
+    const bare = await verdictFor(
+      subject,
+      opts(WEDGED_MISS, healthyHost, [], { psuHostPositiveAuthority: false, hostCondition: false }).o,
+    );
+    expect(bare.sessionState).toBe('ended');
+    for (const v of [withHost, bare]) {
+      expect(['parked', 'draining', 'live', 'recorded']).not.toContain(v.sessionState);
+    }
+  });
+});
+

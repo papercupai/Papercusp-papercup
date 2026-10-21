@@ -169,9 +169,21 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     }
   }
   const { buildAcceptanceBarSeed } = await import('./acceptance-bar-seed');
+  // Item-type bars (R-11) come from the items' criteria templates, not the Requirements
+  // block, so the rebuild needs the same input the activation seeder derives; without it
+  // every plan carrying them refused bar_rubric_conflict here and its pin never advanced
+  // (plan-item-types-registry-cupboard D-010). A derivation failure proves nothing: refuse.
+  const { deriveSeedItemTypeBars } = await import('./plan-types/item-type-contract');
+  const typeBars = await deriveSeedItemTypeBars(
+    sql as never,
+    { workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, planSlug: args.planSlug },
+    args.nextBody,
+  );
+  if (!typeBars.ok) return false;
   const rebuilt = buildAcceptanceBarSeed({
     planSlug: args.planSlug,
     planContent: args.nextBody,
+    itemTypeBars: typeBars.bars,
     actorId: 'system:acceptance-bar-subject-revision',
     declaredAt: parsedRubric.data.barContract.seededAt,
     cohort: parsedRubric.data.barContract.cohort,

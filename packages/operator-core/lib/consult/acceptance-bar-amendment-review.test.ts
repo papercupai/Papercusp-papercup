@@ -427,10 +427,11 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       barKey: `R-${index + 1}`,
       model: `Existing requirement ${index + 1}.`,
     }));
-    const preview = {
+    const preview: Parameters<typeof buildAmendmentReviewBrief>[0]['preview'] = {
       ...baseInput.preview,
       approval: {
         ...approval,
+        schemaVersion: 1,
         kind: 'acceptance-bar-amendment-approval',
         subjectPlan: 'acceptance-demo',
         bars: [{ barKey: 'R-32', priorBarHash: null, nextBarHash: 'a'.repeat(64) }],

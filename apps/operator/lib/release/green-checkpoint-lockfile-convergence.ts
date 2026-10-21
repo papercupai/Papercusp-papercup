@@ -534,6 +534,24 @@ export function applyLockfileConvergence(
   return markFrozenRepairAdmitted(queue, outcome.entry);
 }
 
+/**
+ * WI-6554700010019277: the fresh-row reducer that persists a `converged` outcome — the same
+ * contract as `genCheckHealTransition`. The convergence already moved the lineage ref; record
+ * it on the row as it exists now, only while that row is the same queue at the head the
+ * convergence was built on. Already at `toRepairHead` ⇒ as-is (idempotent); any other head or
+ * candidate ⇒ untouched.
+ */
+export function lockfileConvergenceTransition(
+  fresh: FrozenCandidateRepairQueue,
+  base: FrozenCandidateRepairQueue,
+  outcome: Extract<LockfileConvergenceOutcome, { kind: "converged" }>,
+): FrozenCandidateRepairQueue {
+  if (fresh.candidate !== base.candidate) return fresh;
+  if (fresh.repairHead === outcome.toRepairHead) return fresh;
+  if (fresh.repairHead !== outcome.fromRepairHead) return fresh;
+  return applyLockfileConvergence(fresh, outcome);
+}
+
 /** One log line per outcome; the not-convergeable/refused shapes are LOUD by design (R-7). */
 export function describeLockfileConvergence(outcome: LockfileConvergenceOutcome): string {
   switch (outcome.kind) {

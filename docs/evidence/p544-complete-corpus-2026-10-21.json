@@ -1,0 +1,1095 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-10-21T15:33:42.440Z",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "workItem": "WI-6554700010016277",
+  "scope": "Complete native coding-task sample on the shared host. Not real-VM capacity, VM qualification, observed monthly billing, or shipment evidence.",
+  "root": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456",
+  "admissionRef": "docs/evidence/p544-coding-admission-2026-10-17.json",
+  "corpusSha256": "16ad574eb07115457089c7fbae36820361647b7c533774ed1905878006dfc704",
+  "expectedTaskIds": [
+    "exc-heavy-1",
+    "exc-heavy-2",
+    "exc-light-1",
+    "exc-light-2",
+    "exc-light-3",
+    "exc-light-4",
+    "exc-typical-1",
+    "exc-typical-2",
+    "exc-typical-3",
+    "exc-typical-4",
+    "mea-heavy-1",
+    "mea-heavy-2",
+    "mea-light-1",
+    "mea-light-2",
+    "mea-light-3",
+    "mea-light-4",
+    "mea-typical-1",
+    "mea-typical-2",
+    "mea-typical-3",
+    "mea-typical-4"
+  ],
+  "completeTaskPopulation": true,
+  "outcome": {
+    "observedTasks": 20,
+    "completedTasks": 6,
+    "failedTasks": 14,
+    "capacityFailureTasks": 14,
+    "timedOutTasks": 0
+  },
+  "budget": {
+    "maxAttempts": 650,
+    "maxUsdMicros": 466895000,
+    "admitted": 127,
+    "denied": 0,
+    "stopped": true,
+    "attemptedReservationUsdMicros": 91224100,
+    "measuredInvoiceUsd": null,
+    "fullAdmissionReservationRetainedUsdMicros": 466895000,
+    "journalPath": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/recording-budget.jsonl",
+    "journalSha256": "6c92f0bd56d3b87099115a493c9da44e7324ac9f09a927f9a85cecc6dc3085aa",
+    "requestLimitPath": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/recording-limit.json",
+    "requestLimitSha256": "e1baeaa504008c2e25cf0d657b46138672427a4bb2171a92cc05b638cb7ff6b8",
+    "requestLimit": {
+      "model": "gpt-6-luna",
+      "effort": "low",
+      "maxRequests": 650,
+      "admitted": 127,
+      "denied": 0
+    }
+  },
+  "cost": {
+    "costSource": "list-price-estimate",
+    "estimatedInferenceUsd": null,
+    "knownEstimatedInferenceUsd": 0.05096022,
+    "billedInferenceUsd": null
+  },
+  "monthlyWorkloads": [
+    {
+      "profileId": "near-idle",
+      "assignedAgents": 50,
+      "activeVmHours": 5,
+      "monthlyTasks": 10,
+      "taskCounts": {
+        "light": 4,
+        "typical": 4,
+        "heavy": 2
+      },
+      "busyAgentHours": 0.2797472222222222,
+      "busyHoursLowerBound": true,
+      "modeledInferenceEstimateUsd": null,
+      "modeledInferenceBilledBasisUsd": null,
+      "censoredStrata": [
+        "codex-light",
+        "codex-typical",
+        "codex-heavy"
+      ],
+      "unknownBindings": [],
+      "sourceRefs": [
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#light",
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#typical",
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#heavy"
+      ]
+    },
+    {
+      "profileId": "60h",
+      "assignedAgents": 50,
+      "activeVmHours": 60,
+      "monthlyTasks": 120,
+      "taskCounts": {
+        "light": 48,
+        "typical": 48,
+        "heavy": 24
+      },
+      "busyAgentHours": 3.3569666666666667,
+      "busyHoursLowerBound": true,
+      "modeledInferenceEstimateUsd": null,
+      "modeledInferenceBilledBasisUsd": null,
+      "censoredStrata": [
+        "codex-light",
+        "codex-typical",
+        "codex-heavy"
+      ],
+      "unknownBindings": [],
+      "sourceRefs": [
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#light",
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#typical",
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#heavy"
+      ]
+    },
+    {
+      "profileId": "120h",
+      "assignedAgents": 50,
+      "activeVmHours": 120,
+      "monthlyTasks": 240,
+      "taskCounts": {
+        "light": 96,
+        "typical": 96,
+        "heavy": 48
+      },
+      "busyAgentHours": 6.713933333333333,
+      "busyHoursLowerBound": true,
+      "modeledInferenceEstimateUsd": null,
+      "modeledInferenceBilledBasisUsd": null,
+      "censoredStrata": [
+        "codex-light",
+        "codex-typical",
+        "codex-heavy"
+      ],
+      "unknownBindings": [],
+      "sourceRefs": [
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#light",
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#typical",
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#heavy"
+      ]
+    },
+    {
+      "profileId": "240h",
+      "assignedAgents": 50,
+      "activeVmHours": 240,
+      "monthlyTasks": 480,
+      "taskCounts": {
+        "light": 192,
+        "typical": 192,
+        "heavy": 96
+      },
+      "busyAgentHours": 13.427866666666667,
+      "busyHoursLowerBound": true,
+      "modeledInferenceEstimateUsd": null,
+      "modeledInferenceBilledBasisUsd": null,
+      "censoredStrata": [
+        "codex-light",
+        "codex-typical",
+        "codex-heavy"
+      ],
+      "unknownBindings": [],
+      "sourceRefs": [
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#light",
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#typical",
+        "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456#heavy"
+      ]
+    }
+  ],
+  "monthlyCostCoverage": {
+    "costOnly": true,
+    "qualification": "not-evaluated",
+    "status": "unknown",
+    "profiles": [
+      {
+        "id": "near-idle",
+        "activeVmHours": 5,
+        "monthlyTasks": 10,
+        "status": "unknown",
+        "totalMicros": null,
+        "knownMicros": 0,
+        "gaps": [
+          "censored-workload",
+          "compute:missing",
+          "retained-disks:missing",
+          "backups:missing",
+          "network:missing",
+          "control-plane:missing",
+          "inference:missing"
+        ]
+      },
+      {
+        "id": "60h",
+        "activeVmHours": 60,
+        "monthlyTasks": 120,
+        "status": "unknown",
+        "totalMicros": null,
+        "knownMicros": 0,
+        "gaps": [
+          "censored-workload",
+          "compute:missing",
+          "retained-disks:missing",
+          "backups:missing",
+          "network:missing",
+          "control-plane:missing",
+          "inference:missing"
+        ]
+      },
+      {
+        "id": "120h",
+        "activeVmHours": 120,
+        "monthlyTasks": 240,
+        "status": "unknown",
+        "totalMicros": null,
+        "knownMicros": 0,
+        "gaps": [
+          "censored-workload",
+          "compute:missing",
+          "retained-disks:missing",
+          "backups:missing",
+          "network:missing",
+          "control-plane:missing",
+          "inference:missing"
+        ]
+      },
+      {
+        "id": "240h",
+        "activeVmHours": 240,
+        "monthlyTasks": 480,
+        "status": "unknown",
+        "totalMicros": null,
+        "knownMicros": 0,
+        "gaps": [
+          "censored-workload",
+          "compute:missing",
+          "retained-disks:missing",
+          "backups:missing",
+          "network:missing",
+          "control-plane:missing",
+          "inference:missing"
+        ]
+      }
+    ]
+  },
+  "records": [
+    {
+      "taskId": "exc-heavy-1",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "heavy",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-heavy-1-20261021T151327",
+      "wallMs": 202681,
+      "exitCode": 0,
+      "timedOut": false,
+      "completed": true,
+      "failureClass": null,
+      "requests": 20,
+      "pricedRequests": 20,
+      "servedModels": [
+        "gpt-6-luna"
+      ],
+      "estimatedInferenceUsd": 0.00648382,
+      "knownEstimatedInferenceUsd": 0.00648382,
+      "billedInferenceUsd": null,
+      "costGaps": [],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-heavy-1-20261021T151327/meta.json",
+        "metaSha256": "8c67b561bbf7540cce08866854cf26ea49feac4ba65d043c7a88f9b12a27a386",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-heavy-1-20261021T151327/exchanges.jsonl",
+        "exchangesSha256": "655225cc55077c414ffa02fc0da1536e35cb78d9afe30b4f0d1ffcab51ee9546",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-heavy-1-20261021T151327/cli.jsonl",
+        "cliSha256": "3d1450bd474b72265618ac431fdf156606c8e56310b9873d0c06964aa93c41a3"
+      }
+    },
+    {
+      "taskId": "exc-heavy-2",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "heavy",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-heavy-2-20261021T151449",
+      "wallMs": 28275,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 2,
+      "pricedRequests": 1,
+      "servedModels": [
+        "gpt-6-luna",
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0.00037228,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-heavy-2-20261021T151449/meta.json",
+        "metaSha256": "e009adba4e908078aac1be14c0ce1c03d0cde8e0d681156eddd979f46a090ac2",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-heavy-2-20261021T151449/exchanges.jsonl",
+        "exchangesSha256": "c401118778280f11dc18cdd3e320868e3e1b6da7381cb50136651274127d2b69",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-heavy-2-20261021T151449/cli.jsonl",
+        "cliSha256": "40954dbffa8cfcac84b1577a600037131c54e049b494158b1e75bac664c06d1e"
+      }
+    },
+    {
+      "taskId": "exc-light-1",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "light",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-light-1-20261021T150644",
+      "wallMs": 104875,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 4,
+      "pricedRequests": 3,
+      "servedModels": [
+        "gpt-6-luna",
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0.00173354,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-1-20261021T150644/meta.json",
+        "metaSha256": "5bb8daffe5bd5bc5d79321320195e5a7dc3910f927d9de4c4f00925a6e52d133",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-1-20261021T150644/exchanges.jsonl",
+        "exchangesSha256": "b392b0c880da398a0a5a2084598021e408ecbc07df8357f950854e0ee7b94f40",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-1-20261021T150644/cli.jsonl",
+        "cliSha256": "d078abc72521366a6e2a2fc02f8ffea4327e0124dc673fd38a5911066d878588"
+      }
+    },
+    {
+      "taskId": "exc-light-2",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "light",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-light-2-20261021T150644",
+      "wallMs": 206877,
+      "exitCode": 0,
+      "timedOut": false,
+      "completed": true,
+      "failureClass": null,
+      "requests": 8,
+      "pricedRequests": 7,
+      "servedModels": [
+        null,
+        "gpt-6-luna"
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0.00608298,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-2-20261021T150644/meta.json",
+        "metaSha256": "fd52722511afe0e9824a6ab0ff439127dab617b23b571f49b90b615e161f0748",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-2-20261021T150644/exchanges.jsonl",
+        "exchangesSha256": "a63d729c5137292110b356ac31718d008049bd3efe09730761f3b7f521ef9e97",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-2-20261021T150644/cli.jsonl",
+        "cliSha256": "26418c99e2badb524fc12d5baf1c25e32769fafaa1ff4f6774e1dd5acf0f3326"
+      }
+    },
+    {
+      "taskId": "exc-light-3",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "light",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-light-3-20261021T150907",
+      "wallMs": 19792,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 1,
+      "pricedRequests": 0,
+      "servedModels": [
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-3-20261021T150907/meta.json",
+        "metaSha256": "b548ab0cd5c21c11766363e1348926a9a4c3590bcb84fe0db59cab3bcd2344ff",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-3-20261021T150907/exchanges.jsonl",
+        "exchangesSha256": "dd6e5f8d690a126e045c1bd5cd0392e3211066361a799c02ef9ebb295c76b9a6",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-3-20261021T150907/cli.jsonl",
+        "cliSha256": "2b29cc0a3ad877d0c8fbdd4ccd8e19019497f7dcad23d59053b7fa69d78c55fc"
+      }
+    },
+    {
+      "taskId": "exc-light-4",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "light",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-light-4-20261021T150950",
+      "wallMs": 11332,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 1,
+      "pricedRequests": 0,
+      "servedModels": [
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-4-20261021T150950/meta.json",
+        "metaSha256": "bd6da12934442b41d977adab4dc93e992f6e19b51ede6abc41f21b48903e4089",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-4-20261021T150950/exchanges.jsonl",
+        "exchangesSha256": "1068fc90da22bc27259d15e7e524e2feb479a544a904a75534e781f65716a273",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-light-4-20261021T150950/cli.jsonl",
+        "cliSha256": "180acd4d851c6572ccbba3381fa30ee73bfdd434d1892546d9371008bb65ad09"
+      }
+    },
+    {
+      "taskId": "exc-typical-1",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "typical",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-typical-1-20261021T151021",
+      "wallMs": 11076,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 1,
+      "pricedRequests": 0,
+      "servedModels": [
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-1-20261021T151021/meta.json",
+        "metaSha256": "b257bce6b396408d0b5f57204679dd850ee692459ac19813e25422dcfeea7b39",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-1-20261021T151021/exchanges.jsonl",
+        "exchangesSha256": "e67e80df6dcb9f6cb6b1c8e28f01d3c27c23e5ff4c33e19f0ea06e32f34f4a74",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-1-20261021T151021/cli.jsonl",
+        "cliSha256": "8cd8fe1df8d952faf2aefbdf4c726e877a9f5720a79599783d10d330a78ffc65"
+      }
+    },
+    {
+      "taskId": "exc-typical-2",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "typical",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-typical-2-20261021T151057",
+      "wallMs": 121729,
+      "exitCode": 0,
+      "timedOut": false,
+      "completed": true,
+      "failureClass": null,
+      "requests": 10,
+      "pricedRequests": 10,
+      "servedModels": [
+        "gpt-6-luna"
+      ],
+      "estimatedInferenceUsd": 0.00798048,
+      "knownEstimatedInferenceUsd": 0.00798048,
+      "billedInferenceUsd": null,
+      "costGaps": [],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-2-20261021T151057/meta.json",
+        "metaSha256": "7bdbb190132fec07d654017e89fae920c641d7d973bf5abe0f7ed2a9cbf8a137",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-2-20261021T151057/exchanges.jsonl",
+        "exchangesSha256": "4e6109ad39d1b4c072c3f90acaf09c259b15e7aa4958607e10cb4cfab26d898d",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-2-20261021T151057/cli.jsonl",
+        "cliSha256": "e3dd4adfe665fd7137ef475743d576b0ca7d654e888962e75d92d24f30b0c7a7"
+      }
+    },
+    {
+      "taskId": "exc-typical-3",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "typical",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-typical-3-20261021T151100",
+      "wallMs": 13261,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 1,
+      "pricedRequests": 0,
+      "servedModels": [
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-3-20261021T151100/meta.json",
+        "metaSha256": "969dc2c173e14bdb36c0a9fdbcd01aa9c557a25dbb02f39ec810e6bf312f2272",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-3-20261021T151100/exchanges.jsonl",
+        "exchangesSha256": "50374e1bdb66584175c01921f4aff202a74dd202d9478d986c97ee123cbdc920",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-3-20261021T151100/cli.jsonl",
+        "cliSha256": "209de3702553ff52e176965381a5fea5a9f12c7fa9dd3de43e5ce7130d06b6ea"
+      }
+    },
+    {
+      "taskId": "exc-typical-4",
+      "repo": {
+        "name": "excalidraw",
+        "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "kind": "typescript-web-app"
+      },
+      "profile": "typical",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-exc-typical-4-20261021T151137",
+      "wallMs": 169313,
+      "exitCode": 0,
+      "timedOut": false,
+      "completed": true,
+      "failureClass": null,
+      "requests": 13,
+      "pricedRequests": 13,
+      "servedModels": [
+        "gpt-6-luna"
+      ],
+      "estimatedInferenceUsd": 0.0054994,
+      "knownEstimatedInferenceUsd": 0.0054994,
+      "billedInferenceUsd": null,
+      "costGaps": [],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-4-20261021T151137/meta.json",
+        "metaSha256": "b9216f385992612048dc71b7a5eeb32bb110c2776ea4b14eb890f4a69db32d0b",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-4-20261021T151137/exchanges.jsonl",
+        "exchangesSha256": "af37fc734875123bbebfb64578631039efb3d4d1a10b0fe97221210d2cf4bdd0",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-exc-typical-4-20261021T151137/cli.jsonl",
+        "cliSha256": "088ea91623bddc7b8eb9b2f10b20c23377f31753c0ca79cd8e327429a442c8be"
+      }
+    },
+    {
+      "taskId": "mea-heavy-1",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "heavy",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-heavy-1-20261021T152214",
+      "wallMs": 59978,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 4,
+      "pricedRequests": 3,
+      "servedModels": [
+        "gpt-6-luna",
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0.0013255,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-heavy-1-20261021T152214/meta.json",
+        "metaSha256": "4371bf80afb1c4a96e85851e6caffeaa4066e70a45e91d5a6f2334f405f86d6f",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-heavy-1-20261021T152214/exchanges.jsonl",
+        "exchangesSha256": "eed426581388f979ab3934939273d2e4b454e456a9a6767d7576f6123f1db969",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-heavy-1-20261021T152214/cli.jsonl",
+        "cliSha256": "51f30b99f390c7102b156489f7a61305d0aa22e64c4e7b676bd2336b5e54ab60"
+      }
+    },
+    {
+      "taskId": "mea-heavy-2",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "heavy",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-heavy-2-20261021T152324",
+      "wallMs": 201648,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 10,
+      "pricedRequests": 9,
+      "servedModels": [
+        "gpt-6-luna",
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0.0054471,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-heavy-2-20261021T152324/meta.json",
+        "metaSha256": "1e4f61515d5ed7f45921071a20f59318b6554c33b3cc38ba8344a20dc37cd97e",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-heavy-2-20261021T152324/exchanges.jsonl",
+        "exchangesSha256": "244a398c97d1b367853a3524d59e1886dccf95200212d7c5a777e5481e856db4",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-heavy-2-20261021T152324/cli.jsonl",
+        "cliSha256": "9a1dd9287dd442ef33ad2189a5cfac35d3f902bc6c747e15f0174816dccdafce"
+      }
+    },
+    {
+      "taskId": "mea-light-1",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "light",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-light-1-20261021T151538",
+      "wallMs": 30972,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 2,
+      "pricedRequests": 1,
+      "servedModels": [
+        "gpt-6-luna",
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0.00062088,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-1-20261021T151538/meta.json",
+        "metaSha256": "71aea5683611de869338773fbbbea741bd278c199a737e0373a0943fad215c6a",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-1-20261021T151538/exchanges.jsonl",
+        "exchangesSha256": "d5369a9d5a8fe12b8531dd3706c4af1e7c334c89d1f3f912f5d61becf3747564",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-1-20261021T151538/cli.jsonl",
+        "cliSha256": "d1f6ec130a4a67f81832c77aefb607768ed277d0e20fb04fa5b99392e6d6abe4"
+      }
+    },
+    {
+      "taskId": "mea-light-2",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "light",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-light-2-20261021T151622",
+      "wallMs": 117145,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 4,
+      "pricedRequests": 2,
+      "servedModels": [
+        "gpt-6-luna",
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0.0010346,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-or-invalid-usage",
+        "unpriced",
+        "missing-served-model"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-2-20261021T151622/meta.json",
+        "metaSha256": "c8bd4e6cc149104b633c6520eadccfdcba9284bf88771a57391bfb0690371bbe",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-2-20261021T151622/exchanges.jsonl",
+        "exchangesSha256": "bd013c3f5c082de3f23a5333c7af1e4db58f34459509474b404e7d530c695056",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-2-20261021T151622/cli.jsonl",
+        "cliSha256": "466051aa08c9175d1a9c6980f90396f25adf893000e0eaa9d46a04e2cd8c4f1e"
+      }
+    },
+    {
+      "taskId": "mea-light-3",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "light",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-light-3-20261021T151711",
+      "wallMs": 20082,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 1,
+      "pricedRequests": 0,
+      "servedModels": [
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-3-20261021T151711/meta.json",
+        "metaSha256": "29098caee04e4040cb81219f0338e89624d97d3cf806988cb3274c128005428f",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-3-20261021T151711/exchanges.jsonl",
+        "exchangesSha256": "411b378a9c3fe9e084a6d2dbe15baf81c8bb6f06e7ef804caaa5d19a3b3415cc",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-3-20261021T151711/cli.jsonl",
+        "cliSha256": "b69034ac83cb1b6e7741469cb592f6dcd8b171204d3cded27f329c2b0fe832a4"
+      }
+    },
+    {
+      "taskId": "mea-light-4",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "light",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-light-4-20261021T151742",
+      "wallMs": 54091,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 1,
+      "pricedRequests": 0,
+      "servedModels": [
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-4-20261021T151742/meta.json",
+        "metaSha256": "10ea1353eec56abd423e961bd7ada26976463b1855df95340bf050b71ce8a4cf",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-4-20261021T151742/exchanges.jsonl",
+        "exchangesSha256": "a58a7025d4a365377ca53d712e25677f304f9680f6dc211199fb1a69fdc3345b",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-light-4-20261021T151742/cli.jsonl",
+        "cliSha256": "549f44c318f48dc9b547b563a8864f15187d48b927b119d41481d91c338d0658"
+      }
+    },
+    {
+      "taskId": "mea-typical-1",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "typical",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-typical-1-20261021T151839",
+      "wallMs": 200066,
+      "exitCode": 0,
+      "timedOut": false,
+      "completed": true,
+      "failureClass": null,
+      "requests": 13,
+      "pricedRequests": 13,
+      "servedModels": [
+        "gpt-6-luna"
+      ],
+      "estimatedInferenceUsd": 0.006415679999999999,
+      "knownEstimatedInferenceUsd": 0.006415679999999999,
+      "billedInferenceUsd": null,
+      "costGaps": [],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-1-20261021T151839/meta.json",
+        "metaSha256": "ed1a0c912282a0353bf44092bf4fc76c6aad58280466c45a022f0cde2d82581e",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-1-20261021T151839/exchanges.jsonl",
+        "exchangesSha256": "5ba935478d27eba992f197b48d7f8432822feefb0dd6584bbc4cf35b2d91d4d2",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-1-20261021T151839/cli.jsonl",
+        "cliSha256": "0d1c702cbafe73efa51438e83ce59d0de290536d08360199803c70b270b9f9ee"
+      }
+    },
+    {
+      "taskId": "mea-typical-2",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "typical",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-typical-2-20261021T151851",
+      "wallMs": 7129,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 1,
+      "pricedRequests": 0,
+      "servedModels": [
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-served-model",
+        "missing-or-invalid-usage",
+        "unpriced"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-2-20261021T151851/meta.json",
+        "metaSha256": "8e9f70867f7661795c90a03c03e49831e00f53c2f612a062940c0e4f2ecda603",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-2-20261021T151851/exchanges.jsonl",
+        "exchangesSha256": "7d5d196c4232646af050e30ffc34be390a0e59edfc10faa48ce2239157de0bd9",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-2-20261021T151851/cli.jsonl",
+        "cliSha256": "668c98e2848a03674279ac506be292e650685cc5db872d4963ad8df02777e94a"
+      }
+    },
+    {
+      "taskId": "mea-typical-3",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "typical",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-typical-3-20261021T151908",
+      "wallMs": 171774,
+      "exitCode": 1,
+      "timedOut": false,
+      "completed": false,
+      "failureClass": "model-capacity",
+      "requests": 9,
+      "pricedRequests": 6,
+      "servedModels": [
+        "gpt-6-luna",
+        null
+      ],
+      "estimatedInferenceUsd": null,
+      "knownEstimatedInferenceUsd": 0.00167804,
+      "billedInferenceUsd": null,
+      "costGaps": [
+        "request-error",
+        "incomplete-response",
+        "missing-or-invalid-usage",
+        "unpriced",
+        "missing-served-model"
+      ],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-3-20261021T151908/meta.json",
+        "metaSha256": "34742936ea0a00eec67f46f0447e22cabe1c8791fbe9c59000fa9c8b4ad51bc3",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-3-20261021T151908/exchanges.jsonl",
+        "exchangesSha256": "f01b421e4b49de709ffdacee38df4243a2514e365db468383635037b39172a89",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-3-20261021T151908/cli.jsonl",
+        "cliSha256": "7a865d7ba9c80e223da6dbfbec1f5b5226aa584701e0fd1bc8b8b36d5fceb6a0"
+      }
+    },
+    {
+      "taskId": "mea-typical-4",
+      "repo": {
+        "name": "mealie",
+        "sha": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "kind": "python-service"
+      },
+      "profile": "typical",
+      "cli": "codex",
+      "selection": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "sessionId": "codex-mea-typical-4-20261021T152212",
+      "wallMs": 262084,
+      "exitCode": 0,
+      "timedOut": false,
+      "completed": true,
+      "failureClass": null,
+      "requests": 21,
+      "pricedRequests": 21,
+      "servedModels": [
+        "gpt-6-luna"
+      ],
+      "estimatedInferenceUsd": 0.00628592,
+      "knownEstimatedInferenceUsd": 0.00628592,
+      "billedInferenceUsd": null,
+      "costGaps": [],
+      "evidence": {
+        "meta": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-4-20261021T152212/meta.json",
+        "metaSha256": "13a3d9724a3b171c96320e6d39f66a470e72cf5ae2e21647b650e0c3c54b07b6",
+        "exchanges": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-4-20261021T152212/exchanges.jsonl",
+        "exchangesSha256": "fa851bb78eb986899406bd66fc62681b7c73c92b547c980fa477296f5a6abb52",
+        "cli": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456/codex-mea-typical-4-20261021T152212/cli.jsonl",
+        "cliSha256": "8273965ca1708a01b0cf1139d0035edfe9e64a5778ec8746033481d22ebbf382"
+      }
+    }
+  ],
+  "stillOpen": [
+    "EI-26602891632970280 model-capacity failures",
+    "Actual billed inference and all-category provider costs",
+    "D-075 real-VM qualification",
+    "Independent acceptance and exact-artifact shipment"
+  ],
+  "completionSemantics": "completedTasks means native CLI exitCode0 and not timedOut. It does not establish independent correctness or acceptance of the requested repository task."
+}

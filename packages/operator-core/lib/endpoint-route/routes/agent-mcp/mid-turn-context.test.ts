@@ -28,6 +28,8 @@ import { join } from 'node:path';
 const {
   buildMemoryContextBlockMock,
   withMidTurnMemoryAdmissionMock,
+  withIdentityBoundedMemoryAdmissionMock,
+  readAppliedIdentityRecallMock,
   recordInjectionCoverageMock,
   resolveClaimedWorkItemIdForOwnerMock,
   takePendingFailureLoopHintMock,
@@ -37,6 +39,8 @@ const {
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   withMidTurnMemoryAdmissionMock: vi.fn(),
+  withIdentityBoundedMemoryAdmissionMock: vi.fn(),
+  readAppliedIdentityRecallMock: vi.fn(),
   recordInjectionCoverageMock: vi.fn(),
   resolveClaimedWorkItemIdForOwnerMock: vi.fn(),
   takePendingFailureLoopHintMock: vi.fn(),
@@ -54,6 +58,10 @@ vi.mock('../../../memory/injection-delivery-coverage', () => ({
 }));
 vi.mock('../../../memory/mid-turn-admission', () => ({
   withMidTurnMemoryAdmission: withMidTurnMemoryAdmissionMock,
+  withIdentityBoundedMemoryAdmission: withIdentityBoundedMemoryAdmissionMock,
+}));
+vi.mock('../../../agent-identities/identity-recall', () => ({
+  readAppliedIdentityRecall: readAppliedIdentityRecallMock,
 }));
 vi.mock('../../../memory/agent-signals', () => ({
   resolveClaimedWorkItemIdForOwner: resolveClaimedWorkItemIdForOwnerMock,
@@ -123,6 +131,13 @@ beforeEach(() => {
   withMidTurnMemoryAdmissionMock
     .mockReset()
     .mockImplementation(async (run: () => Promise<unknown>) => ({ admitted: true, value: await run() }));
+  readAppliedIdentityRecallMock.mockReset().mockResolvedValue(null);
+  withIdentityBoundedMemoryAdmissionMock
+    .mockReset()
+    .mockImplementation(async (readBounds: () => Promise<unknown>, run: (bounds: unknown) => Promise<unknown>) => {
+      const bounds = await readBounds();
+      return withMidTurnMemoryAdmissionMock(() => run(bounds));
+    });
   recordInjectionCoverageMock.mockReset();
   resolveClaimedWorkItemIdForOwnerMock.mockReset().mockResolvedValue(undefined);
   takePendingFailureLoopHintMock.mockReset().mockReturnValue(null);

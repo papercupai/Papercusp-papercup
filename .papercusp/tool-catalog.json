@@ -3469,7 +3469,7 @@
           "POST"
         ]
       },
-      "description": "Launch an ad-hoc agent, resume, or fork. `resume`/`fork` require a non-empty top-level `brief`; fresh plan-bound or successor launches may omit it. A spawn is not proof of registration, a first turn, or a work claim—read launch verification.",
+      "description": "Launch an ad-hoc agent, resume, or fork. `resume`/`fork` require a non-empty top-level `brief`, except for the guarded system:lineage-neutral-successor recovery of a dormant critical frozen-tests author; fresh plan-bound or successor launches may omit it. A spawn is not proof of registration, a first turn, or a work claim—read launch verification.",
       "capabilities": [
         "capability:terminal"
       ],
@@ -7898,7 +7898,7 @@
         "researcher"
       ],
       "guidance": {
-        "when": "Share context or ask. `summary` is the required inbox headline; `body` is detail. For the dispatch advisory, put the work-item action target in `body[].forYouBecause.ref`; summary ids can be contextual. A complete active-GOAL owner report (MOVED/COST/OWNER-WALLED/KILLED) must fit in one body of at most 600 characters; longer ones are refused unsent (see returns). Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on a section gives a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. ",
+        "when": "Share context or ask. `summary` is the required inbox headline; `body` is detail. Dispatch advisory work-item target: `body[].forYouBecause.ref`. Complete active-GOAL owner reports (MOVED/COST/OWNER-WALLED/KILLED): one body, at most 600 chars; over-cap reports are refused (returns). Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on a section gives a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. ",
         "notWhen": "Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff."
       }
     },

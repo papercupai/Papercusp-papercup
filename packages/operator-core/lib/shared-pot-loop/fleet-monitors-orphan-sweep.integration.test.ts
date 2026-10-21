@@ -236,3 +236,34 @@ describe('EI-20723522274831539 — sweepOrphanedTakenBy must not rob a live hold
     expect(await takenBy('F-BATCH-LIVE')).toBe('su-live');
   });
 });
+
+describe('WI-6554700010019271 — a plan run assignment to its executor NAME is not an orphan', () => {
+  async function seedPlanRunItem(featureId: string, takenBy: string, agentName: string) {
+    const payload = { plan_run: { runId: '1356', execution: { agentName } } };
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, taken_by, taken_at, updated_ts, payload)
+      VALUES (${WS}, ${H}, ${featureId}, ${'t ' + featureId}, 'open', 'feature', ${takenBy},
+              now() - interval '30 minutes', ${STALE_WRITE_MS}, ${sql.json(payload)})`;
+  }
+
+  it('THE REGRESSION: an unadopted executor name (no presence row, stale write) keeps the assignment', async () => {
+    // Plan run 1356 (2026-10-21): the item was assigned to 'bug-triage', nobody had adopted
+    // the name yet, and the sweep cleared it 32 minutes after mint, so the plan-run executor
+    // recruiter (which only recruits for items still assigned to the name) never fired.
+    await seedPlanRunItem('F-RUN-NAME', 'bug-triage', 'bug-triage');
+
+    expect((await sweep()).cleared).toEqual([]);
+    expect(await takenBy('F-RUN-NAME')).toBe('bug-triage');
+  });
+
+  it('POSITIVE CONTROL: a plan-run item claimed by a dead SESSION (not the executor name) is still swept', async () => {
+    await seedPlanRunItem('F-RUN-SESSION', 'su-dead-adopter', 'bug-triage');
+    await seedPresence('su-dead-adopter', '3 hours');
+
+    const swept = await sweep();
+
+    expect(swept.cleared.map((c) => c.workItemId)).toEqual(['F-RUN-SESSION']);
+    expect(await takenBy('F-RUN-SESSION')).toBeNull();
+  });
+});

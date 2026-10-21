@@ -1384,15 +1384,16 @@ legacy_lock_arguments = dict(lock_arguments)
 operation_path = (_batch_path('.operation.json') if batch_info else
                   os.path.join(cache_dir, tool_use_id + '.operation.json'))
 # D-003/D-004(4): use the operation protocol only at an origin whose locks
-# schemas declare hook_operation (read-only, cached per origin). An unqualified
-# origin gets the legacy acquire and no operation record. An existing record is
-# never stripped, whatever the origin reads now — unless it is inert (D-005):
+# schemas declare hook_operation (read-only, cached per origin, owner and native
+# session). An unqualified origin gets the legacy acquire and no operation
+# record. An existing record is never stripped, whatever the origin reads now —
+# unless it is inert (D-005):
 # never pinned and past its admission deadline, so nothing under it was ever
 # admitted or ever can be. A recurring native tool id must not replay it.
 retire_inert_lock_operation(operation_path)
 operation_record = None
 if os.path.exists(operation_path) or origin_operation_protocol_qualified(
-        cache_dir, operator_url, token, owner):
+        cache_dir, operator_url, token, owner, native_session_id):
     try:
         operation_record = prepare_lock_operation(
             operation_path, owner, native_session_id,
@@ -2094,7 +2095,7 @@ if inner.get('_hook_operation_unsupported'):
             'locks: running operator rejected the native operation scope without a persisted operation; '
             'no legacy acquire retry is safe.',
             settle=False)
-    forget_origin_operation_protocol(cache_dir, operator_url)
+    forget_origin_operation_protocol(cache_dir, operator_url, owner, native_session_id)
     if not isinstance(operation, dict):
         mark_error('compatibility', detail)
         _batch_deny(
@@ -2125,7 +2126,7 @@ if inner.get('_hook_compatibility_error'):
         # The rejection is argument validation, so the authority admitted
         # nothing: do not settle, which would send a second acquire to an
         # origin that just refused the scope.
-        forget_origin_operation_protocol(cache_dir, operator_url)
+        forget_origin_operation_protocol(cache_dir, operator_url, owner, native_session_id)
         _batch_deny('locks: running operator rejected the operation scope; retry after the maintained protocol is available.',
                     settle=False)
     if req_without_coordination_domain is None:

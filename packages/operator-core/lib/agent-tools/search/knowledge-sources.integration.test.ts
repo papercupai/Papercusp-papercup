@@ -96,6 +96,13 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
     }
   });
 
+  it('keeps semantic doc ranking on a bounded nearest-section candidate set', async () => {
+    const source = createDocSearchSource({ harnessSlugs: ['pot-a'] });
+    const rows = await source.embedding!({ ...params(), limit: 2 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].row.source_id).toBe('harness:pot-a:late-doc');
+  });
+
   it('keeps the doc lexical predicate backed by its GIN expression index', async () => {
     const rows = await db.adminSql`
       SELECT indexdef FROM pg_indexes

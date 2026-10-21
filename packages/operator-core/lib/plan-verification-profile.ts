@@ -255,11 +255,22 @@ export interface VerificationResolution {
 /** The completion fields an item type declares: an inline JSON Schema, or a datatype reference. */
 export type ItemTypeCompletion = { schema: Record<string, unknown> } | { datatypeRef: string };
 
+/**
+ * How the bar a criterion seeds is verified (D-011). `check` is the registry's declarative
+ * `{ kind, params }` form; the seed turns it into a structured rubric check.
+ */
+export interface ItemTypeCriterionVerification {
+  method: string;
+  check?: { kind: string; params?: Record<string, unknown> };
+  replication?: string;
+}
+
 /** One criterion an item type seeds into its plan's acceptance bars. */
 export interface ItemTypeCriterion {
   key: string;
   title: string;
   description?: string;
+  verification?: ItemTypeCriterionVerification;
 }
 
 /**

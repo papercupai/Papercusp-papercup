@@ -228,15 +228,39 @@ function disabled(reason: HiveReleaseEnv['reason']): HiveReleaseEnv {
  * a member's `hive_slug`, else a self_repo home's own slug. Dynamically imported so this
  * module stays free of a static settings-store dependency.
  */
-async function workingCopyIntegrationBranchFor(
+export async function workingCopyGateRefsFor(
   workspaceId: string,
   entry: { slug: string; hive_slug?: string; self_repo?: boolean },
-): Promise<string | undefined> {
+): Promise<WorkingCopyGateRefs> {
   const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
-  if (!potHomeSlug) return undefined;
-  const { readPotIntegrationMode, WORKING_COPY_INTEGRATION_BRANCH } = await import('../git-sync/pot-integration-mode');
+  if (!potHomeSlug) return { gateEnv: {} };
+  const {
+    readPotIntegrationMode,
+    readPotUpstreamInstall,
+    WORKING_COPY_INTEGRATION_BRANCH,
+    potUpstreamTrackingRef,
+    GATE_UPSTREAM_REF_ENV,
+  } = await import('../git-sync/pot-integration-mode');
   const read = await readPotIntegrationMode(workspaceId, potHomeSlug);
-  return read.mode === 'review' ? WORKING_COPY_INTEGRATION_BRANCH : undefined;
+  if (read.mode !== 'review') return { gateEnv: {} };
+  const gateEnv: Record<string, string> = { [GATE_UPSTREAM_REF_ENV]: potUpstreamTrackingRef(read) };
+  // D-065: name the upstream install whose measured gate result the fork may inherit non-test
+  // legs from. Unset ⇒ no env ⇒ no inheritance (the gate holds on every red it measures).
+  const upstreamInstall = await readPotUpstreamInstall(workspaceId, potHomeSlug);
+  if (upstreamInstall) {
+    const { GATE_UPSTREAM_INSTALL_ENV } = await import('../../release/upstream-inherited-legs');
+    gateEnv[GATE_UPSTREAM_INSTALL_ENV] = upstreamInstall;
+  }
+  return { integrationBranch: WORKING_COPY_INTEGRATION_BRANCH, gateEnv };
+}
+
+/** What a working-copy (review-mode) pot's gate needs beyond a direct pot's: the branch its
+ *  git-sync commits on (WI-10006301) and the env overlay naming the upstream tracking ref
+ *  its selection base anchors to (D-064), plus the upstream install it may inherit non-test
+ *  legs from when the pot names one (D-065). `gateEnv` is empty for a direct pot. */
+export interface WorkingCopyGateRefs {
+  integrationBranch?: string;
+  gateEnv: Record<string, string>;
 }
 
 /**
@@ -249,10 +273,11 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   const entry = reg.projects.find((p) => p.slug === slug);
   if (!entry) return disabled('not_found');
 
+  const workingCopy = await workingCopyGateRefsFor(workspaceId, entry);
   const gate = resolveHiveReleaseGate(
     entry.path,
     entry.github_default_branch,
-    await workingCopyIntegrationBranchFor(workspaceId, entry),
+    workingCopy.integrationBranch,
   );
   if (!gate) return disabled('no_blueprint');
   if (!gate.enabled) return disabled('gate_disabled');
@@ -297,6 +322,9 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     PAPERCUSP_RELEASE_ROOT: releaseRoot,
     PAPERCUSP_CHECKPOINT_ROOT: checkpointRoot,
     PAPERCUSP_CHECKPOINT_LOG_DIR: papercuspPath('checkpoint-logs', slug),
+    // D-064 (WI-6554700010019329): a working copy's gate judges only the fork's own delta,
+    // anchored at the newest upstream commit its head contains (selection-base.ts).
+    ...workingCopy.gateEnv,
   };
   // WI-2828: ALWAYS thread the resolved value (now always a string — resolveHiveReleaseGate
   // defaults it to '' rather than null) so a subject hive can never fall through to

@@ -1,0 +1,284 @@
+{
+ "schemaVersion": 2,
+ "kind": "operational-test-evidence",
+ "framework": "operational",
+ "name": "slack-asana-p007-real-repair-2026-10-21",
+ "plan": "slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08",
+ "planItem": "P-007",
+ "workItem": "WI-10007668",
+ "specs": [
+  "AUTO-BAR-R-7-P-007@4",
+  "SPEC-PILOT-real-repair@1"
+ ],
+ "governingDecisions": [
+  "D-013",
+  "D-047",
+  "D-048",
+  "D-049",
+  "D-050",
+  "D-053",
+  "D-054",
+  "D-057",
+  "D-058",
+  "D-059",
+  "D-060",
+  "D-062",
+  "D-063"
+ ],
+ "supersedes": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json (bindings 63052/63053; withdrawn under D-062)",
+ "command": [
+  "Live drill in test pot slack-asana-bug-drill (repo papercupai/slack-asana-bug-drill-20261009, nested checkout apps/slack-asana-bug-drill) driven through the real Slack and Asana providers, the admission rules, and actual agents.",
+  ".papercusp/scratch/p007-duplicate-redelivery.mts (REPLAY=1), control (b)",
+  "TASKS=1219721194024513 npx tsx .papercusp/scratch/p007-asana-readback.mts (independent read-only Asana GET through the production source-bound host fetch)",
+  "node scripts/mcp-call.mjs work_items:list --port 3170 --harness slack-asana-bug-drill with prDeliveryAudit {ruleIds:['8392b127-74c5-4bb8-a8df-bbbc4ab611f6']}",
+  "dev:pg_query: SELECT id::text FROM generate_series(1,12) ORDER BY id DESC LIMIT 5 vs ORDER BY <table>.id (independent ground truth for BD011)",
+  "gh pr view 5 --repo papercupai/slack-asana-bug-drill-20261009; git ls-remote origin refs/heads/main",
+  "TASKS=1219728396748493 FULL=1 npx tsx .papercusp/scratch/p007-asana-readback.mts (BD016; outputs .papercusp/scratch/p007-asana-readback.bd016.json and .bd016.v2.json)",
+  "dev:pg_query: SELECT task_id, launched_by, label FROM harness_shared.task_ledger WHERE detail->>'label' LIKE 'admission-recruit:%EI-26578049744916274%'",
+  "POST http://127.0.0.1:3170/api/harness/slack-asana-bug-drill/prs/6/action {action:'merge'} (product PR viewer merge; pressed twice: test, then merge)",
+  "node -e (Unicode oracle for BD016: U+200B code point class, String.prototype.trim, \\p{Default_Ignorable_Code_Point})",
+  "gh pr view 6 --repo papercupai/slack-asana-bug-drill-20261009 --json state,mergedAt,mergeCommit,headRefOid; git ls-remote origin refs/heads/main",
+  "node scripts/mcp-call.mjs work_items:list --port 3170 --harness slack-asana-bug-drill with prDeliveryAudit {ruleIds:['8392b127-74c5-4bb8-a8df-bbbc4ab611f6']} (re-run 2026-10-21T10:56Z, .papercusp/scratch/r4-8392-audit.bd016.json)",
+  "dev:pg_query: SELECT id, status, outcome, inputs FROM harness_shared.plan_runs WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND id=1355 (BD017 Slack trigger and triage run)",
+  "dev:pg_query: SELECT task_id, launched_by, detail->>'label', session_id FROM harness_shared.task_ledger WHERE task_id IN ('0mvi21ury6dw2rx1585','0mvi2hpc8ak8evt1zfb','0mvi1c6hddow3dsa3yb')",
+  "dev:pg_query: SELECT id, file_path, status, commit_sha FROM harness_shared.test_runs WHERE id IN (21570077,21570085,21570086) and commit_sha IN ('092d639357a9...','8002c662d142...')",
+  "POST http://127.0.0.1:3170/api/harness/slack-asana-bug-drill/prs/7/action {action:'merge'} (product PR viewer merge; pressed at 13:17:56Z (testing), 13:18:26Z and 13:18:59Z (waiting), 13:19:15Z (merged))",
+  "gh pr view 7 --repo papercupai/slack-asana-bug-drill-20261009 --json state,mergedAt,mergeCommit,headRefOid; git ls-remote origin refs/heads/main",
+  "TASKS=1219732446657031 FULL=1 npx tsx .papercusp/scratch/p007-asana-readback.mts (BD017; output .papercusp/scratch/p007-asana-readback.bd017.json, read at 2026-10-21T13:23:41Z)",
+  "node -e (Unicode oracle for BD017: code points, String.prototype.normalize('NFKC'), trim/toUpperCase; Node v25.9.0 at 2026-10-21T13:27:06Z)",
+  "node scripts/mcp-call.mjs work_items:list --port 3170 --harness slack-asana-bug-drill with prDeliveryAudit {ruleIds:['8392b127-74c5-4bb8-a8df-bbbc4ab611f6']} (re-run 2026-10-21T13:26Z, .papercusp/scratch/r4-8392-audit.bd017.json)",
+  "dev:pg_query over harness_shared.tool_invocations and harness_shared.coord_event_log for coord_owner_id su-3950c392 between 11:30Z and 13:26Z (no message, wake, dispatch or launch to the BD017 reviewer or implementer)"
+ ],
+ "commandCwd": ".",
+ "startedAt": "2026-10-20T13:07:00Z",
+ "finishedAt": "2026-10-21T18:40:00Z",
+ "exitCode": 0,
+ "summary": "Both bug entry paths ran end to end on the test pot with real Slack, Asana and GitHub, and in each proof run the platform launched every agent that triaged, reviewed and repaired. Slack path: BD018 (Slack ts 1792591860.948869 -> plan run 1356 -> recruited triage executor -> Asana task 1219746550707909 -> recruited reviewer and implementer -> fix 764f476 -> gate green -> standing PR #8 -> merge 6d72936 -> Asana 'Merged fix' story). Direct-Asana path: BD016 (Asana task 1219728396748493 -> recruited reviewer and implementer -> PR #6). Each defect was latent upstream and is confirmed by an oracle independent of the drill code. The file is split by class (D-062): disclosedGaps lists known clause failures and is empty; roleSubstitutions and supervisorActions list what the supervising agent did in the proof runs, for the grader to rule on; excludedRuns lists runs that are not used as proof and why; evidenceNotes lists evidence-form caveats with their substitute measurements.",
+ "assertions": [
+  {
+   "id": "direct-asana-path-bd016-repaired",
+   "passed": true,
+   "evidence": "BD016 Asana task 1219728396748493 'BD016: SAVE10 copied from the promo email is rejected as not recognized' was created directly in project 1219381686283984 (no Slack). The defect was latent on upstream main efb7c80, so nothing was planted (D-059). Rule 8392b127 admitted it to slack-asana-bug-drill as EI-26578049744916274 (payload.agentReview.submittedBy admission-rule:8392b127-74c5-4bb8-a8df-bbbc4ab611f6). Agent review round 1 approved 5/5 by su-75c466f2 at 09:14:30Z (thread post 1192873). Implementer su-5ef2d2a5 reproduced it at HEAD with the unfixed source: npm run test:unit gave 9 failed | 25 passed, all 9 being the new invisible-character cases (thread post 1192881, 09:34:03Z). The fix in src/quote.ts adds normalizeCoupon(), which strips \\p{Default_Ignorable_Code_Point} before trim and toUpperCase. Regression tests are in src/quote.test.ts (the reported bytes, leading, internal and trailing invisible characters, an invisible-only box treated as none, and visibly different codes still rejected) and tests/host-smoke.test.ts. CI test_runs 21553894-21553904 on 61b47af all pass (2026-10-21T10:25Z), including src/quote.test.ts 21553899 and tests/host-smoke.test.ts 21553894. The drill green-checkpoint admitted the 10:24:09Z run and is green on 61b47af. Standing PR #6 (https://github.com/papercupai/slack-asana-bug-drill-20261009/pull/6) had head 61b47af. The PR viewer merge action ran the exact-merge suite on 80628d26 (local test_runs 21557052-21557062, all pass, 10:45:15-10:45:28Z), then merged exactly that result at 2026-10-21T10:45:43Z (gh: state MERGED, mergeCommit 80628d26). Upstream main is 80628d267b52ccf2c4e73136a6f0497d4f0c97e1 with parents efb7c80 and 61b47af. 61b47af is not an ancestor of the pre-merge main efb7c80, so the fix reached upstream only through PR #6. payload.standingPr (written 10:49:58Z) has testedSha 61b47af, mergedSha 80628d26, targetSha efb7c80. EI-26578049744916274 is done."
+  },
+  {
+   "id": "bd016-platform-recruited-agents",
+   "passed": true,
+   "evidence": "Both BD016 agents were launched by the platform (D-058; recruiter source committed in 9c1afa65c8, admission rule 8392b127 lifecycle.recruit:true set 08:20:03Z). harness_shared.task_ledger shows task 0mvhw9dzc1itt7tccys, label admission-recruit:review:EI-26578049744916274:r1:1, launched_by system:admission-recruiter, started 09:12:53Z. That reviewer session is su-75c466f2, which approved round 1. It also shows task 0mvhwy3i7155li238h8, label admission-recruit:repair:EI-26578049744916274:a1:1, launched_by system:admission-recruiter, started 09:32:06Z. That implementer session is su-5ef2d2a5, the terminal owner of EI-26578049744916274. The supervising agent did not launch, wake or brief either agent and did not edit drill code."
+  },
+  {
+   "id": "direct-asana-bd016-asana-sync-back",
+   "passed": true,
+   "evidence": "Independent read-only Asana GET at 2026-10-21T10:56:25Z (.papercusp/scratch/p007-asana-readback.bd016.v2.json): task 1219728396748493 completed=true, completed_at 2026-10-21T09:45:15Z. Story 1219729751302804 (09:38:44Z) 'Picked up in Papercusp as EI-26578049744916274; su-5ef2d2a5... is working on it.' Story 1219729760174326 (09:45:05Z) 'Completed in Papercusp (EI-26578049744916274). BD016 fixed...'. Story 1219729760312534 marked_complete at 09:45:15Z. Story 1219731236945932 (10:49:50Z) 'Merged fix for EI-26578049744916274: .../pull/6 Verified the recorded fix in PR head 61b47af... and merge 80628d26...'."
+  },
+  {
+   "id": "bd016-independent-ground-truth",
+   "passed": true,
+   "evidence": "The oracle does not depend on the drill code. Node v25.9.0 at about 2026-10-21T10:51Z decodes the reported bytes 53 41 56 45 31 30 E2 80 8B to code points 53,41,56,45,31,30,200b. trim().toUpperCase() of that string is not 'SAVE10'. U+200B fails /\\s/u, so it is not WhiteSpace and String.prototype.trim keeps it. It matches /\\p{Cf}/u and /\\p{Default_Ignorable_Code_Point}/u, and removing Default_Ignorable code points yields exactly 'SAVE10'. The defect exists exactly as reported, and the fix's normalization is correct for the reported input. Earlier, at 08:00Z, the drill's own calculateQuote on origin/main efb7c80 returned invalid (8000) for 'SAVE10' + U+200B and applied (7200) for 'SAVE10'."
+  },
+  {
+   "id": "slack-path-bd018-repaired",
+   "passed": true,
+   "evidence": "BD018 Slack path, end to end. Slack message ts 1792591860.948869 in channel C0C8836LU5C (occurredAt 2026-10-21T14:11:00.948Z) arrived through connector f0566e25-ec24-4c51-8388-74ebf49fb6fc as trigger ext:slack:message (externalId C0C8836LU5C:1792591860.948869). Plan run 1356 (template bug-triage, instance bug-triage@run-1139588512785268826, execution.agentName bug-triage) minted triage item WI-6554700010019228 at 14:12:56Z. The recruited triage executor filed Asana task 1219746550707909 'Promo code SAVE10 rejected when typed with Eastern Arabic or Persian digits' in project 1219381686283984 and closed WI-6554700010019228 done at 16:02:47Z (completionAuthority committed). The defect was latent on upstream main 8002c66; nothing was planted. Admission rule 8392b127 sent the drill bug EI-26605626428905870 to agent review (payload.agentReview.submittedBy admission-rule:8392b127-74c5-4bb8-a8df-bbbc4ab611f6); round 1 status approved; system:work-item-admission-promoter admitted it at 16:31:29Z. The implementer su-215e9829 reproduced it with a direct calculateQuote probe on the unfixed tree (comment 1193182: 'SAVE١٠' and 'SAVE۱۰' gave invalid/0/8000, 'SAVE10' gave applied/800/7200) and added six regression cases that failed before the fix. The fix maps every \\p{Nd} digit to its Western value after NFKC (src/quote.ts, src/quote.test.ts); post-fix src/quote.test.ts 50/50 and npm test 11 files pass. EI-26605626428905870 closed done at 16:44:24Z (completionAuthority committed, terminalOwner su-215e9829, nested rootCauseVerification). git-sync committed the fix as drill 764f476 at 16:46:30Z (src/quote.ts, src/quote.test.ts only). The drill green-checkpoint judged 764f476: CI test_runs 21609901-21609911, 11 files, 11 pass, worktree_dirty false, finished 17:15:18-17:15:23Z. Standing PR #8 (https://github.com/papercupai/slack-asana-bug-drill-20261009/pull/8, head 764f476, cross-repo from Papercusp/slack-asana-bug-drill-20261009 branch papercusp/working-copy) opened 17:15:38Z with exactly one commit, 764f476. It merged at 18:33:00Z as 6d7293640b12f8f2859f6ef0700fa30e72563932, the exact merge result the product tested first (see roleSubstitutions for who pressed merge). origin/main is 6d72936."
+  },
+  {
+   "id": "bd018-platform-recruited-agents",
+   "passed": true,
+   "evidence": "The platform launched every BD018 agent. harness_shared.task_ledger, measured 18:38Z: task 0mviauo5g1ml77fftag, launched_by system:plan-run-recruiter, label plan-run-recruit:bug-triage:1356:1, started 16:01:23Z (the triage executor, su-5d6d1df8); task 0mvibgskzqxb0akl3ea, launched_by system:admission-recruiter, label admission-recruit:review:EI-26605626428905870:r1:1, started 16:18:33Z (reviewer su-9c77333d, round 1 approved); task 0mvic2ty9ei7iim1hhj, launched_by system:admission-recruiter, label admission-recruit:repair:EI-26605626428905870:a1:1, started 16:35:41Z (implementer su-215e9829, terminal owner of EI-26605626428905870). The supervising session su-3950c392 launched no agent session for BD018 (D-063); its 64 bash jobs from 15:30Z to 16:48Z belong to WI-6554700010013625 (P-016). Its actions that touched the chain are listed under supervisorActions for the grader to rule on."
+  },
+  {
+   "id": "bd018-asana-sync-back",
+   "passed": true,
+   "evidence": "Independent read-only Asana GET at 2026-10-21T18:38:20.351Z (.papercusp/scratch/p007-asana-readback.mts, output .papercusp/scratch/p007-asana-readback.bd018.json): task 1219746550707909 completed=true, completed_at 2026-10-21T16:50:09.265Z, storyCount 6. Story 1219749625827890 (16:50:04Z) 'Completed in Papercusp (EI-26605626428905870). SAVE10 typed with Eastern Arabic ... Root cause: normalizeCoupon ...'. Story 1219749596781207 marked_complete at 16:50:09Z. Story 1219750888679344 (17:17:44Z) 'Tested fix for EI-26605626428905870: .../pull/8 Passed the pot checks at 764f4764097944fd1df70e2035de9b40a237cdf3. Awaiting the PR merge ...'. Story 1219753800547744 (18:35:56Z) 'Merged fix for EI-26605626428905870: .../pull/8 Verified the recorded fix in PR head 764f4764097944fd1df70e2035de9b40a237cdf3 and merge 6d7293640b12f8f2859f6ef0700fa30e72563932.', about 3 minutes after the 18:33:00Z merge. harness_shared.admission_write_backs for EI-26605626428905870: claim (16:41:36Z/16:41:41Z), complete (16:50:05Z/16:50:09Z), standing-pr:16e1915e2411 (17:17:46Z)."
+  },
+  {
+   "id": "bd018-independent-ground-truth",
+   "passed": true,
+   "evidence": "The oracle does not depend on the drill code. Python 3.14.7 (unicodedata, Unicode 16.0.0, run with -I) at about 18:39Z: U+0661 ARABIC-INDIC DIGIT ONE and U+0660 ARABIC-INDIC DIGIT ZERO, U+06F1/U+06F0 EXTENDED ARABIC-INDIC DIGIT ONE/ZERO are General_Category Nd with decimal values 1 and 0, and NFKC leaves each unchanged, so normalize('NFKC') of 'SAVE١٠' is a no-op. Folding each Nd character to its decimal value gives exactly 'SAVE10'. The drill's own calculateQuote({subtotalCents:8000}), extracted with git show from drill 8002c66 (pre-fix main) and 6d72936 (the merge) into /tmp/su3950-bd018/{pre,post}/quote.ts and run with tsx: pre-fix 'SAVE١٠' invalid 0 8000, 'SAVE۱۰' invalid 0 8000, 'SAVE10' applied 800 7200; merged 'SAVE١٠' applied 800 7200, 'SAVE۱۰' applied 800 7200, 'SAVE10' applied 800 7200. Different numbers stay rejected at the merge: 'SAVE١١' invalid 0 8000 and 'SAVE۱۰۰' invalid 0 8000. The defect existed as reported and the merged fix is correct for it."
+  },
+  {
+   "id": "drill-pot-review-fork-mode",
+   "passed": true,
+   "evidence": "The test pot runs in review (fork) mode. apps/slack-asana-bug-drill has remotes origin https://github.com/papercupai/slack-asana-bug-drill-20261009.git and pot-fork https://github.com/Papercusp/slack-asana-bug-drill-20261009.git. Standing PRs #6 and #8 are cross-repo (isCrossRepository true) from Papercusp/slack-asana-bug-drill-20261009 branch papercusp/working-copy into papercupai main. The drill repo has no .gitmodules, so no submodule fork is required. The Papercusp superproject's own fork-mode drill is plan item P-016, not this item."
+  },
+  {
+   "id": "r4-audit-rule-8392b127",
+   "passed": true,
+   "evidence": "work_items:list prDeliveryAudit {ruleIds:['8392b127-74c5-4bb8-a8df-bbbc4ab611f6']} on :3170, re-run at 2026-10-21T13:26Z (.papercusp/scratch/r4-8392-audit.bd017.json): population 4, checked 4, pending 0, complete true. EI-26589157901220927 (BD017) passes: 'Fix reached upstream through the matching merged standing PR' (prUrl .../pull/7, upstreamSha and fixSha 8002c66). The 10:56Z run (.papercusp/scratch/r4-8392-audit.bd016.json) had population 3. EI-26578049744916274 (BD016) passes: 'Fix reached upstream through the matching merged standing PR' (prUrl .../pull/6, upstreamSha and fixSha 80628d26). EI-26554629962517531 (BD011) passes the same way (prUrl .../pull/5, fixSha efb7c80). EI-26514226735300284 (BD004) fails: 'Fix reached upstream without a valid standing PR receipt'. That is the retained direct-staging delivery failure ruled in D-053, and the overall verdict is fail only because of that row. The first run at 05:06:09Z (.papercusp/scratch/r4-8392-audit.json) had population 2, with the same BD011 pass and BD004 fail."
+  },
+  {
+   "id": "control-a-chatter-non-bug",
+   "passed": true,
+   "evidence": "2026-10-20 13:27Z: Slack ts 1792502367.989409 from the D-010 reporter -> trigger run 95ddb229-f26d-4526-ac51-7f03e7f9798b (binding 209f8c45) -> plan run 1353 -> WI-6554700010018101 dispatched to bug-triage -> ticket:file recorded classification non-bug (ok:true, no ticket, no Asana task) -> item done. The three bug-triage-report bindings did not fire. Executor su-9e3d3d13 (MCP on :3170, spawn-host)."
+  },
+  {
+   "id": "control-b-duplicate-delivery",
+   "passed": true,
+   "evidence": "2026-10-20 13:31:24Z: REPLAY=1 of the exact socket record for ts 1792502367.989409 (a dry run reproduced the stored dedupe key byte for byte) through the real ingress admitConnectorRecord -> admission 'deduped'. Plan runs for the ts stayed at 1 and deliveries at 1. trigger_runs and trigger_deliveries since 13:31:24Z = 0; plan_runs id>=1353 = only 1353; no new bug-triage work items."
+  },
+  {
+   "id": "control-c-unreproduced",
+   "passed": true,
+   "evidence": "SAVE10 re-reports EI-25787384190405689 (Asana 1219415599574122) and EI-25796688665303837 (Asana 1219420511913612): claimed 2026-10-20 13:38Z -> reproduction on the current build on live host :4392 (9999 + SAVE10 -> 1000/0/8999 at 13:36:53Z; test_runs 21444601 18/18, 21444626 2/2) -> not reproduced, closed dropped/verified-existing 13:46:24Z, no fix PR -> Asana sync-back 13:49Z ('Verified existing resolution' stories 1219697632177800 / 1219697760607868; both tasks completed=true at 13:49:15Z / 13:49:18Z on an independent GET at 13:55:51Z)."
+  },
+  {
+   "id": "control-d-failed-check",
+   "passed": true,
+   "evidence": "Red seed 650c7af has test_runs local=fail (2026-10-12 06:43Z). No PR was open while it was HEAD: PR #2 merged 2026-10-11 18:27Z; fix 6c022c7 passed ci x10 at 13:16:12Z and PR #3 opened 11s later at head 6c022c7 (GitHub events and issues/3/timeline: no head_ref_force_pushed). The standing PR head never advanced to a red commit."
+  },
+  {
+   "id": "merge-sync-back-lifecycle",
+   "passed": true,
+   "evidence": "WI-6554700010018138 fixed lifecycle.ts so a tested receipt upgrades to merged. bg-host rebuilt 2026-10-20 14:36:45Z; source 75b23324 sync 14:38:42Z wrote 'Merged fix' stories automatically (lifecycle_key standing-pr:<id>:merged), read back independently at 14:39:23Z (.papercusp/scratch/p007-asana-readback.v2.out.json). BD011's merged-fix story 1219722779631725 came through the same path."
+  },
+  {
+   "id": "tree-tests-current",
+   "passed": true,
+   "evidence": "Re-run 2026-10-21 05:10Z on head 929afaefb1 with all subject and test files clean: packages/operator-core/lib/work-admission/lifecycle.test.ts run 21512129 pass 21/0; packages/operator-core/lib/harness/git-sync/standing-pr-merge.test.ts run 21512127 pass 23/0; packages/operator-core/lib/attention/bug-reproduction.test.ts run 21512128 pass 18/0."
+  }
+ ],
+ "disclosedGaps": [],
+ "roleSubstitutions": [
+  {
+   "text": "The standing PR is designed to be merged by a person ('Merging it is up to you'). The drill pot's pr-poll routine is inactive and has never fired (EI-26585068280376643), so it cannot merge on a GitHub approval. The supervising agent therefore pressed the product's PR viewer merge for PR #6 and PR #7, acting for the owner under directive #2035. It used the same route the viewer's Merge button calls: POST /api/harness/slack-asana-bug-drill/prs/<n>/action {action:'merge'} on :3170. Each time the product ran the exact-merge suite and merged only the tested result (80628d26 for #6, 8002c66 for #7). The supervisor did not use gh or git to merge, and did not choose or alter the merged content. BD011's PR #5 merge was pressed by its implementer.",
+   "appliesTo": [
+    "BD016 (PR #6)"
+   ],
+   "classifiedBecause": "Who pressed merge, not what was merged: the product merged only its tested result.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[2] (verbatim)"
+  },
+  {
+   "text": "PR #8 (BD018) merge was pressed by the supervising agent su-3950c392 under directive #2035, as for PR #6 and PR #7. Avi was asked at 16:48Z (D-063) to press it himself; by 18:30:23Z the PR had 0 comments and 0 reviews and no reply had arrived. The supervisor used the PR viewer's own route, POST 127.0.0.1:3170/api/harness/slack-asana-bug-drill/prs/8/action {action:'merge'}. The first call at 18:30:23Z returned {action:'testing', reason:'never-tested', mergeSha:6d7293640b...}; the second at 18:32:56Z returned {action:'merged', detail:'Merging exactly the tested result (6d7293640b)'}. GitHub records mergedAt 18:33:00Z, merge commit 6d7293640b12f8f2859f6ef0700fa30e72563932. The supervisor did not use gh or git to merge and did not choose or alter the merged content.",
+   "appliesTo": [
+    "BD018 (PR #8)"
+   ],
+   "classifiedBecause": "Who pressed merge, not what was merged.",
+   "source": "measured 2026-10-21 18:30-18:33Z; WI-10007668 comment 1193261"
+  },
+  {
+   "text": "The BD016 Asana report was written by the supervising agent acting as the drill's support desk (D-059). The defect it reports was already latent on upstream main, so no drill code was planted. Everything after the task existed (admission, recruitment, review, reproduction, fix, gate, PR and sync-back) ran in the product without supervisor input, apart from the merge press disclosed above.",
+   "appliesTo": [
+    "BD016"
+   ],
+   "classifiedBecause": "Who wrote the end-user report: the defect was latent upstream, not planted.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[3] (verbatim)"
+  },
+  {
+   "text": "The BD018 Slack message (ts 1792591860.948869, channel C0C8836LU5C, 14:11:00Z) was posted by the supervising agent as the D-010 reporter, acting as the drill's end user (D-060), as with BD017. The defect it reports was latent on upstream main 8002c66 (bd018-independent-ground-truth shows the pre-fix rejection); nothing was planted. Everything after the post (trigger, plan run, triage, Asana task, review, repair, gate, PR) ran without the supervisor apart from supervisorActions.",
+   "appliesTo": [
+    "BD018"
+   ],
+   "classifiedBecause": "Who wrote the end-user report.",
+   "source": "plan decisions D-060, D-063; trigger payload of WI-6554700010019228"
+  }
+ ],
+ "supervisorActions": [
+  {
+   "text": "work_items:claim { id:'WI-6554700010019228', assignee:'bug-triage', force:true } by su-3950c392 at 15:36:50Z and again at 15:58:54Z (harness_shared.tool_invocations). Each restored the plan run's own name assignment (taken_by = payload.plan_run.execution.agentName = 'bug-triage', set by the platform at mint, 14:12:56Z) after reaper:orphan-sweep had cleared it on pre-fix code (14:45:20Z and 15:51:46Z). Neither call triaged, reviewed, launched or repaired anything; after the second restore the plan-run recruiter launched the executor on its own at 16:01:23Z.",
+   "appliesTo": [
+    "BD018"
+   ],
+   "supervisorPosition": "Not a gap against SPEC-PILOT-real-repair ('repaired outside the triggered agent execution') or R-7: the repair is the recruited implementer's own work. This is the supervisor's position, not a finding; the grader is asked to rule (D-063).",
+   "source": "plan decision D-063"
+  },
+  {
+   "text": "su-3950c392 restarted papercusp-bg-host at 15:55:39Z to load the platform fixes WI-6554700010019234, WI-6554700010019271 and WI-6554700010019287 (reaper and recruiter starvation), which BD018's triage needed to be recruited without a hand launch.",
+   "appliesTo": [
+    "BD018"
+   ],
+   "supervisorPosition": "Platform maintenance, not part of the repair; grader to rule.",
+   "source": "plan decision D-063"
+  }
+ ],
+ "excludedRuns": [
+  {
+   "text": "BD003 was repaired by the supervising session, not by a triggered agent (D-060). Its fix 6c022c7 was written on 2026-10-12 by su-2a4e1f4a-e579-4f68-b90f-69f3b26b8641, an interactive codex psu session (adv_sessions 40745: launch_spec.launchedBy null, autoMode false). task_ledger has no row for EI-25743328355072016, and the admission recruiter did not exist until 9c1afa65c8 (2026-10-21). Assertion slack-path-bd003-repaired is therefore Slack entry-path evidence only, not real-repair evidence. BD017 replaces it as the Slack-path real-repair proof.",
+   "appliesTo": [
+    "BD003"
+   ],
+   "classifiedBecause": "Not used as real-repair proof; BD018 is the Slack proof (D-060, D-063).",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[0] (verbatim)"
+  },
+  {
+   "text": "BD011's reviewer was hand-recruited and its implementer was launched by the supervising agent (D-054), as for BD004. The independent grading audit EI-26571279898181048 failed SPEC-PILOT-real-repair on that point (D-057). BD016 replaces BD011 as the real-repair proof: the platform recruiter launched both of its agents (assertion bd016-platform-recruited-agents). BD011 stays here as an earlier direct-Asana run, not as the real-repair proof.",
+   "appliesTo": [
+    "BD011"
+   ],
+   "classifiedBecause": "Not used as real-repair proof; BD016 is the direct-Asana proof.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[1] (verbatim)"
+  },
+  {
+   "text": "BD011's regression test was committed with the fix in c1eaee3, so test_runs has no separate red row for it. The independent ground-truth query above and the implementer's reproduction on the live drill host stand in for a red row.",
+   "appliesTo": [
+    "BD011"
+   ],
+   "classifiedBecause": "Belongs to excluded run BD011.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[5] (verbatim)"
+  },
+  {
+   "text": "Local test run 21505712 (host-smoke on c1eaee3, 04:42:45Z, fail 1/1) is an environment failure ('Source changed after build. Run npm run build before starting.'): an absolute-path invocation skipped the package pretest build (observation EI-26562834011634779). It is not the BD011 defect. CI run 21498762 on c1eaee3 and local run 21504929 on the merge both pass.",
+   "appliesTo": [
+    "BD011"
+   ],
+   "classifiedBecause": "Belongs to excluded run BD011.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[6] (verbatim)"
+  },
+  {
+   "text": "BD004 (EI-26514226735300284) is a retained direct-staging delivery failure (D-053, D-033 class). It does not stand in for the direct-Asana path. BD011 does.",
+   "appliesTo": [
+    "BD004"
+   ],
+   "classifiedBecause": "Retained delivery failure; not proof of either path.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[7] (verbatim)"
+  },
+  {
+   "text": "BD017's bug-triage executor was launched by the supervising agent. Plan run 1355 had no executor, because trigger-fired plan runs are not recruited the way D-058 recruits review and repair, so it would have waited indefinitely. su-3950c392 launched su-565a6f80 (task_ledger 0mvi1c6hddow3dsa3yb, label bug-triage-executor-p007-bd017, 11:35:01Z; adv_sessions 48670 launch_parent_owner su-3950c392) to execute the run. It filed the Asana task and finished the run done/success at 11:38:43Z. It was stopped at 13:23:24Z after sitting idle. The executor did triage only. It did not review, reproduce, fix, test or merge. The durable fix is WI-6554700010019116: a plan-run executor recruiter (packages/operator-core/lib/harness/routines/plan-run-executor-recruiter.ts, committed in 62dd3cf078, wired into the routines sweep in 7f512bed21). It is committed but not yet live on bg-host, so this run could not use it.",
+   "appliesTo": [
+    "BD017"
+   ],
+   "classifiedBecause": "Not used as real-repair proof; replaced by BD018 (D-062, D-063).",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[8] (verbatim)"
+  },
+  {
+   "text": "The BD017 Slack message was posted by the supervising agent as the D-010 reporter, acting as the drill's end user (D-060), as with the BD016 Asana report (D-059). The defect it reports was already latent on upstream main 80628d2, so no drill code was planted. After the post, the trigger, the triage plan run (apart from the hand-launched executor above), admission, recruitment, review, reproduction, fix, gate, PR and sync-back all ran in the product without supervisor input, apart from the merge press disclosed above.",
+   "appliesTo": [
+    "BD017"
+   ],
+   "classifiedBecause": "Belongs to excluded run BD017; the same substitution for BD018 is listed under roleSubstitutions.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[9] (verbatim)"
+  },
+  {
+   "text": "PR #7 also carries two drill-repo commits written by the supervising session under WI-6554700010019088, a security fix for git-sync committing the pot's generated MCP bearer config. c4d8a1e adds .gitignore rules, and 092d639 untracks .mcp.json.papercusp.bak, .mcp.json.su-parked and .papercup-console-active.464633. Neither touches src/ or tests/. The BD017 fix is c9f73a0 alone (src/quote.ts, src/quote.test.ts, tests/host-smoke.test.ts), recorded in EI-26589157901220927's completion (filesChanged, terminalOwner su-531b6244). The implementer's reproduction post and test runs (12:10Z) come before the 12:16:30Z git-sync commit of c9f73a0.",
+   "appliesTo": [
+    "BD017 (PR #7)"
+   ],
+   "classifiedBecause": "Belongs to excluded run BD017's PR.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[10] (verbatim)"
+  }
+ ],
+ "evidenceNotes": [
+  {
+   "text": "BD016's regression tests were committed with the fix, so test_runs has no separate red row for them. Two things stand in for one: the implementer's run against the unfixed source (9 failed | 25 passed, thread post 1192881) and the independent Unicode oracle. Also, the implementer's first full npm test at 09:35:55Z failed only in tests/host-smoke.test.ts, because another fixture host was answering on the shared smoke port 4320. That collision is unrelated to the fix and is filed as EI-26581196942853849. The re-run passed.",
+   "appliesTo": [
+    "BD016"
+   ],
+   "classifiedBecause": "Evidence form: the red measurement exists outside test_runs (implementer run, thread post 1192881) plus an independent oracle.",
+   "source": "docs/evidence/slack-asana-p007-live-drill-2026-10-21.json disclosedGaps[4] (verbatim)"
+  },
+  {
+   "text": "BD018's regression cases were committed with the fix in 764f476, so test_runs has no separate red row for them. Three measurements stand in: the implementer's pre-fix vitest run of src/quote.test.ts with the six new cases failing (EI-26605626428905870 completion.testResult); the implementer's direct probe on the unfixed tree (comment 1193182); and the supervisor's extraction of src/quote.ts at 8002c66 vs 6d72936 in bd018-independent-ground-truth.",
+   "appliesTo": [
+    "BD018"
+   ],
+   "classifiedBecause": "Evidence form, with substitute measurements named.",
+   "source": "EI-26605626428905870 completion; measured 2026-10-21 18:39Z"
+  },
+  {
+   "text": "PR #6 (BD016) also carried drill commit bd0f06056 (2026-10-21T09:15:54Z, 'sync(root): .mcp.json (1 file, +0/-10)'), which deletes the drill's .mcp.json. Its author is not attributable from git (git-sync commits under one identity). It touches neither src/ nor tests/; the BD016 fix commits are 412039872 (src/quote.ts, src/quote.test.ts) and 61b47af02 (tests/host-smoke.test.ts).",
+   "appliesTo": [
+    "BD016 (PR #6)"
+   ],
+   "classifiedBecause": "Non-fix content in a proof PR, disclosed.",
+   "source": "gh pr view 6 --json commits; git show --stat bd0f06056"
+  }
+ ]
+}

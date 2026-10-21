@@ -25,7 +25,6 @@ const {
   moduleSchemaUse,
 } = driftSubject;
 import {
-  TEST_REUSE_MAX_AGE_MS_DEFAULT,
   formatTestReuseLine,
   selectReusablePasses,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
@@ -165,8 +164,6 @@ describe('selectReusablePasses with a schema drift judge', () => {
       changedBetween: () => new Set(drift),
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
       schemaDriftJudge,
     });
 
@@ -211,8 +208,6 @@ describe('selectReusablePasses with a schema drift judge', () => {
       changedBetween: () => new Set([GEN]),
       runContext: CTX,
       runnerIdentity: RUNNER,
-      nowMs: NOW,
-      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
       auditRate: 0,
       schemaDriftJudge,
     });

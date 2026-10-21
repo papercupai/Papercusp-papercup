@@ -102,6 +102,7 @@ import {
 } from '../../scheduler/claim-spec-store';
 import { getPresence, heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
 import { declareCoupling } from '../../coord/couplings';
+import { publishDetachedLaunchOutcome } from '../../fleet-transition-events';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
 import { checkPlanStartable, startVerdictForRow } from '../plans/plan-start-gate';
@@ -5630,6 +5631,10 @@ export default defineTool({
       : null;
     if (responseRace.timedOut) {
       stampLaunchOutcome(ctx, fleetSlug, launchTransaction);
+      // WI-6554700010019256: this response says `pending` and the launch finishes
+      // DETACHED. Publish whatever it leaves failed, unopened or unconfirmed the
+      // moment it settles, so the leader is woken instead of polling fleet:status.
+      void publishDetachedLaunchOutcome(launchCompletion, fleetSlug, launchTransaction);
       const launchEvidence = currentLaunchEvidence();
       const completionHandle = {
         transactionId: launchTransaction.transactionId,

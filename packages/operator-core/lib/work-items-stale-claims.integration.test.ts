@@ -240,6 +240,23 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect(row.taken_by).toBeNull();
   });
 
+  it('WI-6554700010019271: a plan run assignment to its executor NAME is kept; a dead session on the same run is still freed', async () => {
+    // The name is KNOWN and stale, so without the exemption the DEAD leg frees it exactly like F-001.
+    await seedItem('F-RUN-NAME', 'bug-triage', 30);
+    await seedItem('F-RUN-SESSION', 'opspawn-dead-run', 30);
+    await markKnown('bug-triage');
+    await markKnown('opspawn-dead-run');
+    const payload = { plan_run: { runId: '1356', execution: { agentName: 'bug-triage' } } };
+    await sql`
+      UPDATE harness_shared.harness_features_consolidated SET payload = ${sql.json(payload)}
+       WHERE feature_id IN ('F-RUN-NAME', 'F-RUN-SESSION')`;
+
+    const r = await reclaimStaleWorkItemClaims(sql);
+
+    expect(r.released.map((x) => x.feature_id)).toEqual(['F-RUN-SESSION']);
+    expect((await statusOf('F-RUN-NAME')).taken_by).toBe('bug-triage');
+  });
+
   it('EI-18838076935151132: a reaper-released claim is attributed to the REAPER, not the former holder', async () => {
     // Attribution defect #2: before the fix, the reaper never touched
     // last_released_by/at at all, so an involuntary release was indistinguishable

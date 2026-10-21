@@ -11,6 +11,7 @@ import { parsePlan } from '@papercusp/plan-parser';
 import { isNonAutomatedBehaviorClass } from './plan-verification-profile';
 import {
   acceptanceRubricCriterionSchema,
+  rubricCriterionCheckSchema,
   rubricTemplateDataAuthoringSchema,
   requirementSectionsSchema,
   type AcceptanceEvidencePlane,
@@ -83,6 +84,8 @@ export type AcceptanceBarSeedCode =
   // contract would force a later barHash-changing amendment (after proof is bound).
   | 'bar_contract_method_missing'
   | 'bar_contract_check_missing'
+  // D-011: an item type's criterion declares a check that is not a declarative rubric check.
+  | 'bar_contract_check_invalid'
   | 'bar_contract_test_layers_missing'
   | 'bar_contract_check_layer_mismatch';
 
@@ -483,6 +486,48 @@ function seededCriterion(
   return criterion;
 }
 
+/**
+ * D-011: the METHOD fields an item-type bar carries from its criterion's `verification`. The
+ * registry stores a check as `{ kind, params }`; the rubric holds it structured, so it is
+ * validated here as a declarative rubric check. A check that does not parse refuses the seed,
+ * naming the type, instead of seeding a bar whose check could never run.
+ */
+export function itemTypeBarMethodFields(bar: ItemTypeBar):
+  | { ok: true; fields?: Record<string, unknown> }
+  | { ok: false; problem: AcceptanceBarSeedProblem } {
+  const verification = bar.verification;
+  if (!verification) return { ok: true };
+  let check: unknown;
+  if (verification.check) {
+    const parsed = rubricCriterionCheckSchema.safeParse({
+      ...(verification.check.params ?? {}),
+      kind: verification.check.kind,
+    });
+    if (!parsed.success) {
+      return {
+        ok: false,
+        problem: {
+          code: 'bar_contract_check_invalid',
+          barKey: bar.barKey,
+          detail:
+            `${bar.barKey}: item type ${bar.source.itemType} (revision ${bar.source.revision}) criterion ` +
+            `'${bar.source.criterionKey}' declares check '${verification.check.kind}', which is not a ` +
+            `declarative rubric check (${parsed.error.issues[0]?.message ?? 'invalid'})`,
+        },
+      };
+    }
+    check = parsed.data;
+  }
+  return {
+    ok: true,
+    fields: {
+      method: verification.method,
+      ...(check !== undefined ? { check } : {}),
+      ...(verification.replication ? { replication: verification.replication } : {}),
+    },
+  };
+}
+
 function methodProjection(existing: Record<string, unknown>): Record<string, unknown> {
   const fields = [
     'method', 'replication', 'instrumentKey', 'window', 'criterionClass', 'check', 'ratingScale',
@@ -794,8 +839,15 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     } as ProposeRubricCriterion;
   });
   for (const bar of typeBars) {
+    const method = itemTypeBarMethodFields(bar);
+    if (!method.ok) return refusal([method.problem]);
     const seeded = seededCriterion(
-      { barKey: bar.barKey, title: bar.title, model: bar.model },
+      {
+        barKey: bar.barKey,
+        title: bar.title,
+        model: bar.model,
+        ...(method.fields ? { criterion: method.fields as unknown as ProposeRubricCriterion } : {}),
+      },
       mappingByKey.get(bar.barKey)!,
       input,
       existing?.ratingScale,

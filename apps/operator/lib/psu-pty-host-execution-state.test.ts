@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decideLoopExecutionRecovery, type ExecutionRecoveryInput } from '@papercusp/operator-core/lib/harness/routines/loop-execution-recovery';
 import { makeAgentBusyGate, nativeExecutionBlocksInjection, nativeExecutionFromRows, nativeTurnVerifierSupport,
-  nativeLatestExecution, nativeLatestTurnCompleted, retainRunningNativeExecution } from '../scripts/psu-pty-host.mjs';
+  nativeLatestExecution, nativeLatestTurnCompleted, retainNativeExecutionObservation,
+  retainPendingNativeExecution, retainRunningNativeExecution } from '../scripts/psu-pty-host.mjs';
 
 const timestamp = new Date(1000).toISOString();
 const ctx = { receivedAtMs: 900, nowMs: 2000 };
@@ -30,17 +31,36 @@ describe('native execution observations', () => {
         error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } },
     ];
     const failed = nativeExecutionFromRows(rows, { agent: 'codex', ...ctx });
-    expect(failed).toMatchObject({ phase: 'failed', pendingTools: 1 });
+    expect(failed).toMatchObject({ phase: 'failed', pendingTools: 1,
+      failure: { code: 'server_overloaded', retryable: true, retryAfterMs: 60_000, atMs: 1000 } });
     expect(nativeExecutionBlocksInjection(failed)).toBe(true);
     rows.push({ type: 'response_item', timestamp, payload: { type: 'function_call_output', call_id: 'effect' } });
     expect(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx })).toMatchObject({ phase: 'failed', pendingTools: 0 });
 
     for (const error of [null, undefined]) {
-      expect(nativeExecutionFromRows([
+      const success = nativeExecutionFromRows([
         { type: 'event_msg', timestamp, payload: { type: 'task_started', turn_id: 'successful-turn' } },
         { type: 'event_msg', timestamp, payload: { type, turn_id: 'successful-turn', error } },
-      ], { agent: 'codex', ...ctx })).toMatchObject({ phase: 'settled', pendingTools: 0 });
+      ], { agent: 'codex', ...ctx });
+      expect(success).toMatchObject({ phase: 'settled', pendingTools: 0 });
+      expect(success).not.toHaveProperty('failure');
     }
+  });
+
+  it('scopes failure metadata to the current turn and submission floor', () => {
+    const failure = { type: 'event_msg', timestamp, payload: { type: 'task_complete', turn_id: 'failed',
+      error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity. Try again in 2 minutes.' } } };
+    const observe = (rows: any[], receivedAtMs = 900) => nativeExecutionFromRows(rows,
+      { agent: 'codex', nowMs: 2000, receivedAtMs });
+    expect(observe([failure]).failure?.retryAfterMs).toBe(120_000);
+    expect(observe([failure], 1001)).not.toHaveProperty('failure');
+    for (const type of ['task_started', 'task_complete']) {
+      const next = { ...failure, timestamp: new Date(1100).toISOString(), payload: { type, turn_id: 'next' } };
+      expect(observe([failure, next])).not.toHaveProperty('failure');
+    }
+    const permanent = { ...failure, payload: { ...failure.payload,
+      error: { codex_error_info: 'invalid_request', message: 'Invalid request' } } };
+    expect(observe([permanent]).failure).toEqual({ code: 'invalid_request', retryable: false, retryAfterMs: null, atMs: 1000 });
   });
 
   it('keeps a silent Codex tool active until its matching result', () => {
@@ -126,6 +146,43 @@ describe('native execution observations', () => {
     });
   });
 
+  it('retains an unresolved AskUserQuestion across a later terminal-input floor until its result lands', () => {
+    const ask = {
+      type: 'assistant', timestamp: new Date(1000).toISOString(),
+      message: { role: 'assistant', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'ask-1', name: 'AskUserQuestion', input: { questions: [] } }] },
+    };
+    const previous = nativeExecutionFromRows([ask], { agent: 'claude', receivedAtMs: 900, nowMs: 2000 });
+    expect(previous).toMatchObject({ phase: 'running', pendingTools: 1, pendingGateTools: 1,
+      pendingGateToolIds: ['ask-1'] });
+
+    const laterOwnerInput = {
+      type: 'user', timestamp: new Date(3000).toISOString(),
+      message: { role: 'user', content: 'typed after the dialog opened' },
+    };
+    const afterFloor = nativeExecutionFromRows([laterOwnerInput], {
+      agent: 'claude', receivedAtMs: 3000, nowMs: 4000,
+    });
+    expect(afterFloor.phase).toBe('unknown');
+    const retained = retainPendingNativeExecution(previous, afterFloor, { sameChild: true });
+    expect(retained).toMatchObject({ phase: 'running', pendingTools: 1, pendingGateTools: 1,
+      pendingGateToolIds: ['ask-1'] });
+    expect(nativeExecutionBlocksInjection(retained)).toBe(true);
+
+    const result = {
+      ...laterOwnerInput,
+      timestamp: new Date(3500).toISOString(),
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'ask-1', content: 'answered' }] },
+    };
+    const afterResult = nativeExecutionFromRows([result], {
+      agent: 'claude', receivedAtMs: 3000, nowMs: 4000,
+    });
+    const resolved = retainPendingNativeExecution(previous, afterResult, { sameChild: true });
+    expect(resolved).toMatchObject({ phase: 'unknown', pendingTools: 0, pendingGateTools: 0 });
+    expect(nativeExecutionBlocksInjection(resolved)).toBe(false);
+    expect(retainPendingNativeExecution(previous, afterFloor, { sameChild: false })).toBe(afterFloor);
+  });
+
   it.each(['running', 'settled'])('observes the bound Codex writer when a newer sibling is %s', siblingPhase => {
     const root = mkdtempSync(join(tmpdir(), 'codex-native-execution-sibling-'));
     const sessionDir = join(root, 'sessions', '2026', '10', '17');
@@ -163,6 +220,23 @@ describe('native execution observations', () => {
     const previous = { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 };
     const current = { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 };
     expect(retainRunningNativeExecution(previous, current)).toBe(current);
+  });
+
+  it('clears a retained owner gate when its result arrives on the same observation fence', () => {
+    const previous = {
+      phase: 'running', turnStartedAt: 1000, lastProgressAt: 1500, pendingTools: 1,
+      pendingToolIds: ['ask-1'], pendingGateTools: 1, pendingGateToolIds: ['ask-1'],
+    };
+    const result = {
+      phase: 'unknown', turnStartedAt: null, lastProgressAt: 2000, pendingTools: 0,
+      pendingToolIds: [], completedToolIds: ['ask-1'], pendingGateTools: 0,
+      pendingGateToolIds: [], completedGateToolIds: ['ask-1'],
+    };
+    const observed = retainNativeExecutionObservation(previous, result, {
+      sameChild: true, sameFence: true,
+    });
+    expect(observed).toBe(result);
+    expect(nativeExecutionBlocksInjection(observed)).toBe(false);
   });
 
   it('does not treat OMP tool-use as terminal and recognizes arbitrary failed outcomes', () => {

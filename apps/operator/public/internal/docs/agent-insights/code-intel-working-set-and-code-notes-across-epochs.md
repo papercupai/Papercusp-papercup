@@ -1,0 +1,45 @@
+# Code-intelligence across session epochs: the derived working set and file-anchored code notes
+URL: /internal/docs/agent-insights/code-intel-working-set-and-code-notes-across-epochs
+
+What survives a carry-respawn or epoch bump for code work: a DERIVED working set (handles, re-run to trust), a resume push leg, a work-item stamp for handoff, and code-note: facts re-surfaced only while every anchored file still hashes the same.
+
+## The problem this solves
+
+A carry-respawn or a context-epoch bump throws away the transcript. For code work the expensive loss is not the answers you got from `lsp:query` / `graph:query`, which go stale the moment someone edits a file. It is *where you were looking* and *what you concluded about it*. The plan `code-intel-epoch-carry-2026-10-20` carries exactly those two things and nothing else.
+
+## Tier 1 — raw answers are NOT carried (D-001)
+
+No code-intelligence result text is copied across an epoch. Re-run the query. A carried answer reads as current code truth and is not.
+
+## Tier 2 — the derived working set (D-002)
+
+`deriveCodeWorkingSet` in `packages/operator-core/lib/code-intelligence/working-set.ts` reads three existing ledgers for one owner and one epoch window: `code_intel_pushes`, `edit_attribution_ledger`, and `tool_invocations` for `lsp:query`, `graph:query`, `capability:read`, `capability:edit` and `capability:write`. It ranks files **edited > queried > read**, capped at `WORKING_SET_MAX_FILES` (8) files and `WORKING_SET_MAX_SYMBOLS` (6) symbols, with a `truncated` flag. There is no new table and nothing is agent-authored. The previous-epoch window starts `WORKING_SET_PREVIOUS_EPOCH_LOOKBACK_MS` (6h) before the bump.
+
+It reaches you three ways:
+
+1. **Carry document.** `buildCarryDoc` renders a `## Code you were working in (derived — re-run, do not trust)` section with handles only (paths, symbol names, reason) and no content. It is the FIRST slot shed by `CARRY_DOC_SHED_LADDER` when the carry budget is tight.
+2. **Resume push leg** (`resume`, flag `CODE_INTEL_PUSH_RESUME`, default ON). On your first tool batches after a bump, the push channel emits at most `RESUME_FACTS_PER_BATCH` (2) first-touch facts per batch, computed from the CURRENT snapshot, for previous-epoch working-set files not yet pushed this epoch (subject `resume:<path>`). They are freshly computed, not replayed.
+3. **Work-item handoff.** When the carry document is built, the set is stamped as `payload.codeWorkingSet` on the owner's non-terminal held work items. The resume leg also reads stamps written by a DIFFERENT owner on items you now hold, so a successor who claims the item inherits the predecessor's handles.
+
+## Tier 3 — interpretations as `code-note:` facts (D-003)
+
+A conclusion about code ("this function is the only writer of X", "the retry here is load-bearing because…") is a fact whose key starts with `code-note:`.
+
+* `facts:assert` **refuses** a `code-note:` key unless `dependsOn` contains at least one `file:<repo-relative path>` entry that resolves. The refusal is enforced in the tool schema and again in `assertFact` (`validateCodeNoteAnchor` in `agent-facts/store.ts`). The anchor's content hash is recorded at assert time.
+* The **ambient fact fold excludes** `code-note:` keys (`liveFactPredicate` with `includeCodeNotes:false`), so notes never ride every brief or orient. `facts:list` is an explicit read and includes them.
+* The **notes push leg** (`notes`, flag `CODE_INTEL_PUSH_NOTES`, default ON) surfaces notes when you TOUCH an anchored file: up to `NOTES_FACTS_PER_PATH` (2) per path, body capped. It is fail-closed: a note is pushed only if EVERY file anchor re-hashes to the recorded hash. Otherwise it is withheld and named (`notes-withheld:<path>:<keys>`), so you learn a stale note exists without reading its stale claim.
+
+Write one like this:
+
+```
+facts:assert { scope:'harness', scopeRef:'papercusp', key:'code-note:push-channel-notes-prefetch',
+  value:'The staleness module is prefetched at module load: its cold import costs ~0.9s, past the 120ms leg budget.',
+  dependsOn:['file:packages/operator-core/lib/code-intelligence/push-channel.ts'], ttlSec: 2592000 }
+```
+
+## Gotchas
+
+* The working set is a list of places to LOOK, not evidence. Re-run the code-intelligence query before acting on anything about those files.
+* A withheld note is not wrong, it is unverified: the file changed since you wrote it. Re-read the code, then re-assert or retract.
+* The staleness path (`markStaleDependencyFacts`) has a measured cold first-import cost of \~908ms against \~4ms for the hash itself. Any mid-turn leg that uses it must prefetch the module rather than import it on first use.
+* Boundary with `plan-item-code-anchors-2026-10-20` (D-004): that plan anchors PLAN ITEMS to code; this one carries an AGENT's working context. They share the file-hash staleness primitive, not storage.

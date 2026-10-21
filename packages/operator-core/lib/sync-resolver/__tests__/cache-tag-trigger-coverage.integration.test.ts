@@ -181,7 +181,8 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
        WHERE n.nspname = 'harness_shared'
          AND pn.nspname = 'harness_shared'
          AND (p.proname = ${NOTIFY_FUNCTION}
-           OR (c.relname = 'work_item_deps' AND p.proname = 'emit_work_item_dep_change_notify'))
+           OR (c.relname = 'work_item_deps' AND p.proname = 'emit_work_item_dep_change_notify')
+           OR (c.relname = 'event_awaits' AND p.proname = 'emit_event_await_change_notify'))
          AND NOT t.tgisinternal
          AND t.tgenabled <> 'D'
     `;
@@ -237,6 +238,7 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
       '1366-mapped-report-occurrence-change-notify',
       '1406-pr-review-reports-change-notify',
       '1549-plan-audits-change-notify',
+      '1551-cache-tag-mapped-table-producers',
     ]) {
       const migration = readFileSync(resolve(SQL_DIR, `${name}.sql`), 'utf8');
       await sql.unsafe(migration);
@@ -248,11 +250,16 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
       JOIN pg_proc p ON p.oid = t.tgfoid
       JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'harness_shared'
-        AND c.relname IN ('work_item_deps', 'report_library', 'work_item_occurrences', 'pr_review_reports', 'plan_audits')
+        AND c.relname IN (
+          'work_item_deps', 'report_library', 'work_item_occurrences', 'pr_review_reports', 'plan_audits',
+          'gym_autoloop_config', 'learning_spend_reservations', 'operator_gym_gates', 'pot_policy')
         AND p.proname IN ('emit_change_notify', 'emit_work_item_dep_change_notify')
         AND NOT t.tgisinternal AND t.tgenabled <> 'D'
       GROUP BY c.relname ORDER BY c.relname`;
-    expect(rows).toEqual(['plan_audits', 'pr_review_reports', 'report_library', 'work_item_deps', 'work_item_occurrences']
+    expect(rows).toEqual([
+      'gym_autoloop_config', 'learning_spend_reservations', 'operator_gym_gates', 'plan_audits',
+      'pot_policy', 'pr_review_reports', 'report_library', 'work_item_deps', 'work_item_occurrences',
+    ]
       .map((table_name) => ({ table_name, producers: 1 })));
   });
 

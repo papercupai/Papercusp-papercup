@@ -195,6 +195,26 @@ describe('installPapercuspFiles', () => {
     expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
   });
 
+  it('publishes the ptool shim atomically so an in-flight launcher keeps the prior complete file', async () => {
+    const binDir = path.join(tmpHome, '.papercusp', 'bin');
+    await fs.mkdir(binDir, { recursive: true });
+    const ptoolPath = path.join(binDir, 'ptool');
+    const inFlightPath = path.join(binDir, 'ptool.in-flight');
+    const prior = '#!/usr/bin/env bash\n# prior complete ptool shim\n';
+    await fs.writeFile(ptoolPath, prior, { mode: 0o755 });
+    await fs.link(ptoolPath, inFlightPath);
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+
+    expect(result.ptoolShimWritten).toBe(true);
+    expect(await fs.readFile(inFlightPath, 'utf8')).toBe(prior);
+    const published = await fs.readFile(result.ptoolPath, 'utf8');
+    expect(published).toContain('resolve_launcher()');
+    expect(published).not.toBe(prior);
+    expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
+    expect((await fs.readdir(binDir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('quotes a packaged sidecar bin path containing spaces on the shim PATH', async () => {
     const sidecarBin = path.join(tmpHome, 'Papercusp Server', 'sidecar', 'bin');
     await fs.mkdir(sidecarBin, { recursive: true });

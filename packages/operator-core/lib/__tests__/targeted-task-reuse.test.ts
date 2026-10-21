@@ -148,21 +148,10 @@ describe('gate reuse on the degradation rail (P-004)', () => {
   });
 
   it('records healthy primary decisions and excludes overlapping diagnostic counters', () => {
-    const decisions = gateReuseObservations(TASK, { summary: { candidates: 25, reused: 25, inertGlobal: 25, expiredClean: 25 } });
+    const decisions = gateReuseObservations(TASK, { summary: { candidates: 25, reused: 25, inertGlobal: 25 } });
     expect(decisions).toEqual([{ eligible: 25, applied: 25, populationKnown: true, reason: 'applied', scope: TASK }]);
     const window = summarizeFallbackWindow('gate-pass-reuse', 60_000, decisions.map((row) => ({ ...row, samples: 1 })));
     expect(judgeDegradation(window, { mechanism: 'gate-pass-reuse', scope: TASK }).kind).toBe('recovered');
-  });
-
-  it('does not turn expired proofs into degraded eligible units', () => {
-    const decisions = gateReuseObservations(TASK, { summary: { candidates: 5, expired: 5 } });
-    expect(decisions).toEqual([{ eligible: 0, applied: 0, populationKnown: true, reason: 'expired', scope: TASK }]);
-
-    const window = summarizeFallbackWindow('gate-pass-reuse', 60_000, decisions.map((row) => ({ ...row, samples: 1 })));
-    expect(window).toMatchObject({ eligible: 0, applied: 0, appliedRate: null });
-    expect(judgeDegradation(window, { mechanism: 'gate-pass-reuse', scope: TASK })).toMatchObject({
-      kind: 'insufficient', eligible: 0,
-    });
   });
 
   it('uses the same primitive for both round types, flushes before exit, and never throws on telemetry failure', async () => {

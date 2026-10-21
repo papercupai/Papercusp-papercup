@@ -250,6 +250,82 @@ export function groupFilesForAttribution(
 }
 
 /**
+ * WI-6554700010019415: merge the commit groups an import edge links. Each group commits
+ * from its own private index, so an importer and its changed provider in two groups each
+ * see the other as excluded and the post-stage guard holds both; only the final catch-all
+ * could commit them, and a drain yield before it skips that. Linked groups of ONE agent
+ * become one group under that agent (the earliest group's subject and provenance, work-items
+ * unioned). A linked set that spans agents or touches the residual moves into the residual,
+ * since no single agent authored it. Unlinked groups keep their order; the residual stays
+ * last. Returns `groups` itself when nothing is linked.
+ */
+export function mergeImportLinkedGroups(
+  groups: AttributedCommitGroup[],
+  edges: ReadonlyArray<{ importer: string; provider: string }>,
+): AttributedCommitGroup[] {
+  const groupOf = new Map<string, number>();
+  groups.forEach((g, i) => {
+    for (const f of g.files) groupOf.set(f, i);
+  });
+  // Union-find over group indexes; the root is the component's earliest group.
+  const parent = groups.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  let linked = false;
+  for (const { importer, provider } of edges) {
+    const a = groupOf.get(importer);
+    const b = groupOf.get(provider);
+    if (a === undefined || b === undefined) continue;
+    const ra = find(a);
+    const rb = find(b);
+    if (ra === rb) continue;
+    parent[Math.max(ra, rb)] = Math.min(ra, rb);
+    linked = true;
+  }
+  if (!linked) return groups;
+  const members = new Map<number, AttributedCommitGroup[]>();
+  groups.forEach((g, i) => {
+    const root = find(i);
+    members.set(root, [...(members.get(root) ?? []), g]);
+  });
+  const merged: AttributedCommitGroup[] = [];
+  const toResidual: string[] = [];
+  groups.forEach((g, i) => {
+    if (g.agent === null) return;
+    const root = find(i);
+    const component = members.get(root) ?? [g];
+    if (component.length === 1) {
+      merged.push(g);
+      return;
+    }
+    if (root !== i) return; // emitted once, at the component's earliest group
+    if (component.some((m) => m.agent === null) || new Set(component.map((m) => m.agent)).size > 1) {
+      for (const m of component) if (m.agent !== null) toResidual.push(...m.files);
+      return;
+    }
+    const workItems = [...new Set(component.flatMap((m) => m.workItems ?? []))];
+    merged.push({
+      ...g,
+      files: [...new Set(component.flatMap((m) => m.files))].sort(),
+      workItems: workItems.length > 0 ? workItems : undefined,
+    });
+  });
+  const residual = groups.find((g) => g.agent === null) ?? {
+    agent: null,
+    files: [],
+    subject: DEFAULT_GIT_SYNC_SUBJECT,
+    coAuthor: null,
+  };
+  merged.push({ ...residual, files: [...new Set([...residual.files, ...toResidual])].sort() });
+  return merged;
+}
+
+/**
  * Derive a per-repo attribution map from the live presence roster + this repo's path.
  *
  * Presence `current_files` are workspace-root-relative (superproject paths). For the

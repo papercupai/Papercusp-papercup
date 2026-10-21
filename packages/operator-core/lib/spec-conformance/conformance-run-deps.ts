@@ -31,6 +31,7 @@ import { evaluateCriterionProbeChecks } from '../rubrics-criterion-checks';
 import { rescoreProbeDispatcher } from '../harness/routines/rubric-rescore-action';
 import { upsertConditionWorkItem } from '../coord/condition-upsert';
 import { emitAwaitedEvent } from '../events/await/engine';
+import type { WorkItemDependencyAdmissionError } from '../dbos/work-item-deps-store';
 import {
   getWorkItem,
   linkWorkItem,
@@ -49,6 +50,29 @@ import {
 } from './conformance-run';
 
 export const SPEC_CONFORMANCE_ACTOR = 'system:spec-conformance';
+
+/**
+ * The dependency store refuses to add an unresolved blocker behind a claimed, active
+ * dependant (`newlyActiveDependantConflicts`). For a drift alarm that is an expected outcome:
+ * the alarm is still recorded and the refused edge is reported. Returns the store's message
+ * when EVERY finding is such a lifecycle conflict; null for anything else (a cycle, an
+ * endpoint defect, a stranded node, or a non-admission error), which the run must not absorb.
+ * Matched by `code`, not `instanceof`, so a duplicated module record cannot hide it.
+ */
+export function lifecycleOnlyAdmissionRefusal(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const candidate = error as Error & Partial<Pick<WorkItemDependencyAdmissionError, 'code' | 'findings'>>;
+  if (candidate.code !== 'WORK_ITEM_DEPENDENCY_ADMISSION_REJECTED' || !Array.isArray(candidate.findings)) return null;
+  if (candidate.findings.length === 0) return null;
+  const lifecycleOnly = candidate.findings.every(
+    (finding) =>
+      (finding.lifecycleConflicts?.length ?? 0) > 0 &&
+      finding.cycles.length === 0 &&
+      finding.endpointDefects.length === 0 &&
+      finding.stranded.length === 0,
+  );
+  return lifecycleOnly ? error.message : null;
+}
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -292,8 +316,16 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
     async linkBlocks(alarmId, workItemId) {
       const target = await getWorkItem(workItemId, input.harnessSlug);
       if (!target) throw new Error(`spec-conformance: mapped work-item '${workItemId}' not found`);
-      const linked = await linkWorkItem(alarmId, workItemObjectRef(target), 'blocks', { harness: input.harnessSlug, by: SPEC_CONFORMANCE_ACTOR });
+      let linked: Awaited<ReturnType<typeof linkWorkItem>>;
+      try {
+        linked = await linkWorkItem(alarmId, workItemObjectRef(target), 'blocks', { harness: input.harnessSlug, by: SPEC_CONFORMANCE_ACTOR });
+      } catch (error) {
+        const refusal = lifecycleOnlyAdmissionRefusal(error);
+        if (refusal !== null) return { linked: false, reason: refusal };
+        throw error;
+      }
       if ('error' in linked) throw new Error(`spec-conformance: blocks link ${alarmId} -> ${workItemId} failed: ${linked.error}`);
+      return { linked: true };
     },
 
     async emitDriftAlarm(payload) {
@@ -301,7 +333,10 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         key: planDriftAlarmKey(payload.planSlug),
         payload,
         summary: `plan ${payload.planSlug}: drift alarm ${payload.alarmId} opened for ${payload.barKey}` +
-          (payload.blocked.length ? `, blocking ${payload.blocked.join(', ')}` : ''),
+          (payload.blocked.length ? `, blocking ${payload.blocked.join(', ')}` : '') +
+          (payload.blockRefused.length
+            ? `; not blocking active ${payload.blockRefused.map((refused) => refused.workItemId).join(', ')}`
+            : ''),
         source: SPEC_CONFORMANCE_ACTOR,
         workspaceId: input.workspaceId,
       });

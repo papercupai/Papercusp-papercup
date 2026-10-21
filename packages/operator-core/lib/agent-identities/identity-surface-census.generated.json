@@ -5,14 +5,14 @@
   "counts": {
     "flat-role-prompt": 109,
     "prompt-constant": 87,
-    "injection-hook": 55,
+    "injection-hook": 57,
     "kernel-splice": 28
   },
   "hookKinds": {
     "identity-dispatch": 5,
     "guard": 18,
     "context": 28,
-    "plumbing": 4
+    "plumbing": 6
   },
   "entries": [
     {
@@ -732,6 +732,12 @@
     },
     {
       "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-failure-record.mjs",
+      "path": "apps/operator/scripts/hooks/cc/posttooluse-failure-record.mjs",
+      "kind": "plumbing"
+    },
+    {
+      "class": "injection-hook",
       "id": "injection-hook:apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs",
       "path": "apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs",
       "kind": "context"
@@ -965,6 +971,12 @@
       "path": "apps/operator/scripts/hooks/cc/sessionstart-identity-context.sh",
       "kind": "identity-dispatch",
       "inside": true
+    },
+    {
+      "class": "injection-hook",
+      "id": "injection-hook:apps/operator/scripts/hooks/cc/stop-failure-record.mjs",
+      "path": "apps/operator/scripts/hooks/cc/stop-failure-record.mjs",
+      "kind": "plumbing"
     },
     {
       "class": "injection-hook",

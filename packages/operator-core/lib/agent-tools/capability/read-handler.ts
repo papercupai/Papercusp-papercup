@@ -164,6 +164,9 @@ export const MIN_PAGE_BYTES = 512;
  * only move the cliff rather than remove it. Clamping is lossless: `byte_length`
  * and `next_cursor` describe the page actually returned, so paging simply takes
  * more steps.
+ * When the path-specific fit reduces a request, `byte_limit_clamped` reports the
+ * requested and applied limits so callers do not infer offsets from the schema
+ * ceiling.
  *
  * May return LESS than MIN_PAGE_BYTES (including 0) for a pathological path. An
  * explicitly small caller request may still use that smaller fitted page; the
@@ -184,6 +187,10 @@ export function doorSafePageBytes(
     byte_offset: Number.MAX_SAFE_INTEGER,
     byte_length: Number.MAX_SAFE_INTEGER,
     total_bytes: Number.MAX_SAFE_INTEGER,
+    byte_limit_clamped: {
+      requested: Number.MAX_SAFE_INTEGER,
+      applied: Number.MAX_SAFE_INTEGER,
+    },
     ...(reference ? { reference } : {}),
     eof: false,
     data: '',
@@ -307,7 +314,8 @@ const byteWindowArgs = z.object({
     .max(MAX_BYTE_PAGE)
     .describe(
       `Bytes to return as base64 (max ${MAX_BYTE_PAGE}), an UPPER BOUND — the page is clamped to ` +
-        `fit the result door, so read byte_length and follow next_cursor. Use with byte_offset. ${BYTE_WINDOW_EXCLUSIVITY}`,
+        `fit the result door. If the response includes byte_limit_clamped, use its applied limit; ` +
+        `always follow next_cursor. Use with byte_offset. ${BYTE_WINDOW_EXCLUSIVITY}`,
     ),
   content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
   evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
@@ -425,6 +433,12 @@ const capabilityReadResultSchema = z
     encoding: z.string().optional(),
     byte_offset: z.number().int().nonnegative().optional(),
     byte_length: z.number().int().nonnegative().optional(),
+    byte_limit_clamped: z
+      .object({
+        requested: z.number().int().positive(),
+        applied: z.number().int().positive(),
+      })
+      .optional(),
     total_bytes: z.number().int().nonnegative().optional(),
     data: z.string().optional(),
     sha256: z.string().optional(),
@@ -619,6 +633,9 @@ async function renderByteWindow(
         encoding: 'base64',
         byte_offset: start,
         byte_length: page.length,
+        ...(effectiveLimit < args.byte_limit!
+          ? { byte_limit_clamped: { requested: args.byte_limit!, applied: effectiveLimit } }
+          : {}),
         total_bytes: totalBytes,
         ...(reference ? { reference } : {}),
         eof: nextOffset >= totalBytes,

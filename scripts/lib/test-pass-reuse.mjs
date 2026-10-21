@@ -6,8 +6,10 @@
 // paths the file read at runtime. This module decides which selected test files may be SKIPPED
 // at a judged sha because such a proof is still valid there (D-004):
 //
-//   1. the proof is from the same run context, the same runner identity, and younger than
-//      maxAgeMs (so every file re-runs at least that often: the P-012 backstop);
+//   1. the proof is from the same run context and the same runner identity. A proof never
+//      expires (owner #2143, 2026-10-21: "there should be NO TIME LIMIT on PASSES"): its age
+//      says nothing about whether its inputs changed, and the P-012 audit sample re-tests
+//      trusted proofs against reality every run;
 //   2. its inputs were captured and it is not opaque;
 //   3. drift(recordedSha, judgedSha) is computable and disjoint from: the file, every executed
 //      module, every runtime read (a trailing '/' = directory prefix), the package.json and
@@ -29,9 +31,6 @@ export const TEST_REUSE_ENV = "AFFECTED_TEST_REUSE";
 export const TEST_REUSE_SKIP_LIST_ENV = "PC_TEST_REUSE_SKIP_LIST";
 /** The explicit partial-integration resume skip-list channel consumed by vitest-config. */
 export const PC_TEST_PARTIAL_SKIP_LIST_ENV = "PC_TEST_PARTIAL_SKIP_LIST";
-/** Maximum proof age; default 24h. */
-export const TEST_REUSE_MAX_AGE_ENV = "AFFECTED_TEST_REUSE_MAX_AGE_HOURS";
-export const TEST_REUSE_MAX_AGE_MS_DEFAULT = 24 * 3600 * 1000;
 
 /**
  * P-012 soundness audit: the fraction (0..1) of REUSABLE files that run anyway, so a proof the
@@ -113,12 +112,6 @@ const OFF = new Set(["0", "false", "off", "no"]);
 export function testReuseEnabled(env = process.env) {
   const raw = env[TEST_REUSE_ENV];
   return raw == null || !OFF.has(String(raw).trim().toLowerCase());
-}
-
-/** @param {Record<string, string | undefined>} [env] */
-export function testReuseMaxAgeMs(env = process.env) {
-  const h = Number(env[TEST_REUSE_MAX_AGE_ENV]);
-  return Number.isFinite(h) && h > 0 ? h * 3600 * 1000 : TEST_REUSE_MAX_AGE_MS_DEFAULT;
 }
 
 /** @param {Record<string, string | undefined>} [env] */
@@ -511,8 +504,6 @@ function invalidates(rel, o) {
  * @param {(a: string, b: string) => Set<string> | null} o.changedBetween  repo-RELATIVE drift, null = unknown
  * @param {string}                        o.runContext
  * @param {string}                        o.runnerIdentity
- * @param {number}                        o.nowMs
- * @param {number}                        o.maxAgeMs
  * @param {number}                        [o.auditRate] P-012: fraction of reusable files that
  *        run anyway (deterministic per file+sha, see auditDraw). Default 0 (pure rule).
  * @param {((rel: string, fromSha: string, toSha: string) => boolean) | null} [o.inertGlobalChange]
@@ -541,10 +532,10 @@ function invalidates(rel, o) {
  * @param {string} [o.proofFormat] WI-6554700010008589: the format the JUDGED tree records
  *        (judgedTreeProofFormat). Older than REUSE_PROOF_FORMAT = legacy: a proof is then reused only
  *        when every drift path is another test file (summary.legacyFormatDrift otherwise).
- * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
- *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
- *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
- *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
+ * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit"> }}
+ *        `watch` = files the rule would have skipped but that RUN this time (the audit sample).
+ *        If one of them fails, reuse could have hidden that red: reuseSoundnessAlarms turns it
+ *        into an alarm.
  */
 export function selectReusablePasses({
   candidates,
@@ -553,8 +544,6 @@ export function selectReusablePasses({
   changedBetween,
   runContext,
   runnerIdentity,
-  nowMs,
-  maxAgeMs,
   auditRate = 0,
   inertGlobalChange = null,
   testConfigMainProcess = null,
@@ -575,14 +564,12 @@ export function selectReusablePasses({
     otherRunner: 0,
     // WI-6554700010008589: legacy-format proofs rejected because a non-test file drifted.
     legacyFormatDrift: 0,
-    expired: 0,
     notCaptured: 0,
     opaque: 0,
     unknownDrift: 0,
     globalInput: 0,
     inputChanged: 0,
     audited: 0,
-    expiredClean: 0,
     // P-002: proofs that got past the global check only because a global drift path was inert.
     // Each would have been counted as globalInput before P-002, whatever its outcome is now.
     inertGlobal: 0,
@@ -600,7 +587,7 @@ export function selectReusablePasses({
     schemaNarrowed: 0,
   };
   const skip = [];
-  /** @type {Map<string, "audit" | "expired-clean">} */
+  /** @type {Map<string, "audit">} */
   const watch = new Map();
   /** @type {Map<string, { drift: Set<string> | null, global: boolean, inert: Set<string>, inertWorkspace: Set<string>, narrowed: boolean, tsconfigNarrowed: boolean }>} */
   const driftCache = new Map();
@@ -675,48 +662,34 @@ export function selectReusablePasses({
       summary.otherRunner += 1;
       continue;
     }
-    // An expired proof is never reused, and it is counted ONLY as expired. A recently-expired one
-    // (within one more maxAgeMs) is still evaluated against the rest of the rule, so a file that
-    // would otherwise have been reused is watched (P-012); older ones stop here, which bounds the
-    // number of distinct recorded shas the drift computation has to diff.
-    const finiteAge = Number.isFinite(p.recordedAtMs) && p.recordedAtMs <= nowMs + 60_000;
-    const expired = !finiteAge || nowMs - p.recordedAtMs > maxAgeMs;
-    if (expired) {
-      summary.expired += 1;
-      if (!finiteAge || nowMs - p.recordedAtMs > 2 * maxAgeMs) continue;
-    }
-    /** @param {keyof typeof summary} bucket */
-    const reject = (bucket) => {
-      if (!expired) summary[bucket] += 1;
-    };
     if (p.inputsCaptured !== true) {
-      reject("notCaptured");
+      summary.notCaptured += 1;
       continue;
     }
     if (Array.isArray(p.opaqueReasons) && p.opaqueReasons.length > 0) {
-      reject("opaque");
+      summary.opaque += 1;
       continue;
     }
     const { drift, global, inert, inertWorkspace, narrowed, tsconfigNarrowed } = driftFor(p.recordedSha);
     if (drift === null) {
-      reject("unknownDrift");
+      summary.unknownDrift += 1;
       continue;
     }
     if (legacyFormat && [...drift].some((rel) => rel === file || !LEGACY_PROOF_SAFE_DRIFT_RE.test(rel))) {
-      reject("legacyFormatDrift");
+      summary.legacyFormatDrift += 1;
       continue;
     }
     if (global) {
-      reject("globalInput");
+      summary.globalInput += 1;
       continue;
     }
     if (narrowed && p.executedModules.length >= EXECUTED_SOURCE_MAP_IMPORT_LIMIT) {
       // D-004 guard: a capped record may be missing the worker-side file that changed.
-      reject("opaque");
+      summary.opaque += 1;
       continue;
     }
-    if (inert.size > inertWorkspace.size && !expired) summary.inertGlobal += 1;
-    if (narrowed && !expired) summary.testConfigNarrowed += 1;
+    if (inert.size > inertWorkspace.size) summary.inertGlobal += 1;
+    if (narrowed) summary.testConfigNarrowed += 1;
     const inputs = new Set([file, ...p.executedModules]);
     const readDirs = [];
     for (const r of p.readPaths ?? []) {
@@ -774,17 +747,12 @@ export function selectReusablePasses({
       }
     }
     if (changed) {
-      reject("inputChanged");
+      summary.inputChanged += 1;
       continue;
     }
-    if ((tsconfigNarrowed || check.unreadTsconfigHit) && !expired) summary.tsconfigNarrowed += 1;
-    if (check.inertWorkspaceHit && !expired) summary.inertWorkspaceConfig += 1;
-    if (schemaHit && !expired) summary.schemaNarrowed += 1;
-    if (expired) {
-      summary.expiredClean += 1;
-      watch.set(file, "expired-clean");
-      continue;
-    }
+    if (tsconfigNarrowed || check.unreadTsconfigHit) summary.tsconfigNarrowed += 1;
+    if (check.inertWorkspaceHit) summary.inertWorkspaceConfig += 1;
+    if (schemaHit) summary.schemaNarrowed += 1;
     if (auditRate > 0 && auditDraw(file, judgedSha) < auditRate) {
       summary.audited += 1;
       watch.set(file, "audit");
@@ -848,7 +816,7 @@ export function formatTestReuseTotalLine({ tasks, summaries, savedMs, unmeasured
   const sum = (k) => summaries.reduce((acc, s) => acc + (Number(s[k]) || 0), 0);
   return (
     `TEST_PASS_REUSE_TOTAL tasks=${tasks} candidates=${sum("candidates")} reused=${sum("reused")} ` +
-    `audited=${sum("audited")} expiredClean=${sum("expiredClean")} ` +
+    `audited=${sum("audited")} ` +
     `minSavedTestMs=${savedMs === null ? "unknown" : savedMs} unmeasured=${unmeasured}`
   );
 }
@@ -909,10 +877,7 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }) {
 
 /**
  * P-004: exclusive decision buckets for the durable gate-pass-reuse observation.
- * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
- * Expired proofs are recorded as a zero-eligible diagnostic row: the max-age safety rule
- * deliberately prevents them from taking the primary reuse path, so they are not reuse
- * opportunities and must not depress its eligible-pass rate.
+ * Counters such as inertGlobal overlap outcomes and are not denominators.
  * @param {string} task
  * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
  * @returns {Array<{ eligible: number, applied: number, populationKnown: boolean, reason: string, scope: string }>}
@@ -937,16 +902,18 @@ export function gateReuseObservations(task, decision) {
   if (!eligible) return [{ eligible: 0, applied: 0, populationKnown: knownCount(summary.candidates), reason: knownCount(summary.candidates) ? 'no-candidates' : 'unavailable', scope: task }];
   const rows = [];
   let remaining = eligible;
-  const expired = Math.min(remaining, positiveCount(summary.expired));
-  if (expired) {
-    rows.push({ eligible: 0, applied: 0, populationKnown: true, reason: 'expired', scope: task });
-    remaining -= expired;
-  }
   const reused = Math.min(remaining, positiveCount(summary.reused));
   if (reused) { rows.push({ eligible: reused, applied: reused, populationKnown: true, reason: 'applied', scope: task }); remaining -= reused; }
   for (const reason of ['noProof', 'otherContext', 'otherRunner', 'legacyFormatDrift', 'notCaptured', 'opaque', 'unknownDrift', 'globalInput', 'inputChanged', 'audited']) {
     const count = Math.min(remaining, positiveCount(summary[reason]));
-    if (count) { rows.push({ eligible: count, applied: 0, populationKnown: true, reason, scope: task }); remaining -= count; }
+    if (count) {
+      // These candidates must rerun: opaque proofs cannot be reused by design,
+      // and global input drift invalidates every proof. Preserve both reason
+      // buckets, but do not count expected reruns as missed reuse opportunities.
+      const eligibleCount = reason === 'opaque' || reason === 'globalInput' ? 0 : count;
+      rows.push({ eligible: eligibleCount, applied: 0, populationKnown: true, reason, scope: task });
+      remaining -= count;
+    }
   }
   if (remaining) rows.push({ eligible: remaining, applied: 0, populationKnown: true, reason: 'unclassified', scope: task });
   return rows;
@@ -1075,10 +1042,10 @@ export function formatTestReuseLine(wsName, summary, extra = "", runtime = undef
   const s = summary;
   return (
     `TEST_PASS_REUSE ws=${wsName} candidates=${s.candidates} reused=${s.reused} noProof=${s.noProof} ` +
-    `otherContext=${s.otherContext} otherRunner=${s.otherRunner} expired=${s.expired} ` +
+    `otherContext=${s.otherContext} otherRunner=${s.otherRunner} ` +
     `notCaptured=${s.notCaptured} opaque=${s.opaque} unknownDrift=${s.unknownDrift} ` +
     `globalInput=${s.globalInput} inputChanged=${s.inputChanged} audited=${s.audited ?? 0} ` +
-    `expiredClean=${s.expiredClean ?? 0} inertGlobal=${s.inertGlobal ?? 0} ` +
+    `inertGlobal=${s.inertGlobal ?? 0} ` +
     `testConfigNarrowed=${s.testConfigNarrowed ?? 0} tsconfigNarrowed=${s.tsconfigNarrowed ?? 0} ` +
     `inertWorkspaceConfig=${s.inertWorkspaceConfig ?? 0} schemaNarrowed=${s.schemaNarrowed ?? 0}` +
     // WI-6554700010008589: only on a legacy-format judged tree, so every other line is unchanged.

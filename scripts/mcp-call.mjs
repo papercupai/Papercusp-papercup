@@ -321,7 +321,7 @@ export function admissionRetryDelayMs(
  * required for cross-workspace tools when the scoped-superuser clamp is ON.
  */
 export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces', 'help', 'allowPartial']);
-export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port', 'idempotencyKey']);
+export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port', 'idempotencyKey', 'transport']);
 
 /** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
 export function toCamelCaseFlag(key) {
@@ -329,7 +329,7 @@ export function toCamelCaseFlag(key) {
 }
 
 /**
- * @typedef {{raw?: boolean, allWorkspaces?: boolean, help?: boolean, allowPartial?: boolean, json?: string, jsonFile?: string, client?: string, workspace?: string, harness?: string, port?: string, idempotencyKey?: string}} McpCallFlags
+ * @typedef {{raw?: boolean, allWorkspaces?: boolean, help?: boolean, allowPartial?: boolean, json?: string, jsonFile?: string, client?: string, workspace?: string, harness?: string, port?: string, idempotencyKey?: string, transport?: string}} McpCallFlags
  * @param {string[]} argv
  * @returns {{tool: string | undefined, jsonArgs: string | undefined, flags: McpCallFlags}}
  */
@@ -783,6 +783,190 @@ export function resolveMcpRole(env = process.env) {
 }
 
 /**
+ * `--transport` values. `auto` (the default) uses the operator's HTTP
+ * endpoints and falls back to its agent-MCP unix socket only when EVERY HTTP
+ * attempt was refused before a request was sent; `http` never falls back;
+ * `uds` goes straight to the socket.
+ */
+export const MCP_CALL_TRANSPORTS = Object.freeze(['auto', 'http', 'uds']);
+
+/**
+ * Exit code when the unix-socket response was lost AFTER tools/call was sent:
+ * the mutation outcome is unknown, so nothing is retried (WI-6554700010019317).
+ */
+export const MCP_CALL_OUTCOME_UNKNOWN_EXIT = 7;
+
+/**
+ * @param {McpCallFlags} [flags]
+ * @returns {'auto' | 'http' | 'uds'}
+ */
+export function resolveMcpTransport(flags = {}) {
+  const value = flags.transport ?? 'auto';
+  if (!MCP_CALL_TRANSPORTS.includes(value)) {
+    throw new Error(`--transport must be one of ${MCP_CALL_TRANSPORTS.join(', ')} (received ${JSON.stringify(value)})`);
+  }
+  return /** @type {'auto' | 'http' | 'uds'} */ (value);
+}
+
+/**
+ * Whether to try the operator's agent-MCP unix socket after the HTTP pass.
+ *
+ * A psu Claude session's native Bash runs in its own network namespace
+ * (bwrap --unshare-net), so every loopback TCP port refuses while the operator
+ * is healthy, and the documented toolless-recovery fallback (this script)
+ * dead-ended (WI-6554700010019317). The :3070 operator's agent socket lives
+ * under /tmp, which that sandbox can still reach. Falling back is safe only
+ * when no HTTP request can have reached a handler, i.e. every attempt failed
+ * with ECONNREFUSED. Any other transport error leaves a mutation outcome
+ * unknown, so the caller must stop rather than send the call a second time.
+ * @param {{transport: 'auto' | 'http' | 'uds', attempts: Array<{port: string, error: unknown}>}} input
+ * @returns {boolean}
+ */
+export function shouldTryUdsFallback({ transport, attempts }) {
+  if (transport === 'uds') return true;
+  if (transport === 'http') return false;
+  return attempts.length > 0 && attempts.every((attempt) => isConnectionRefusedError(attempt.error));
+}
+
+/**
+ * @param {Array<{port: string, error: unknown}>} attempts
+ * @returns {string}
+ */
+export function buildUdsFallbackNotice(attempts) {
+  const ports = attempts.map((attempt) => attempt.port).join(', ');
+  return `mcp-call: every HTTP endpoint refused the connection (port(s) ${ports}), so no request was sent; ` +
+    'trying the operator agent-MCP unix socket instead. A sandboxed shell without loopback TCP ' +
+    '(psu native Bash) reaches the operator this way. Pass --transport http to disable.';
+}
+
+/**
+ * @param {Array<{port: string, reason: string}>} unavailable
+ * @returns {string}
+ */
+export function buildUdsUnavailableDiagnostic(unavailable) {
+  const lines = unavailable.map((entry) => `  port ${entry.port}: ${entry.reason}`);
+  return 'mcp-call: no operator agent-MCP unix socket accepted the connection (nothing was sent):\n' +
+    (lines.length > 0 ? lines.join('\n') : '  (no candidate ports)') + '\n' +
+    '  uds_endpoint_unavailable = no ~/.papercusp/endpoint-ipc.<port>.json advertises a socket for that port.\n' +
+    '  uds_connection_failed = the socket exists but refused or failed the handshake; a sandbox that masks\n' +
+    '  /run/user/<uid> cannot reach the :3170 or :3271 sockets, only the :3070 one under /tmp.';
+}
+
+/**
+ * The directory whose `.papercusp/endpoint-ipc.<port>.json` advertises the
+ * operator's agent socket. Deliberately NOT PAPERCUSP_HOME: a psu session sets
+ * that to its workspace directory, where no operator writes a descriptor
+ * (memory d3c1ce00, 2026-10-20). PAPERCUSP_OPERATOR_HOME is the real operator
+ * home that an owned launcher preserves when it isolates the child HOME.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {() => string} [home]
+ * @returns {string}
+ */
+export function resolveAgentMcpDiscoveryHome(env = process.env, home = homedir) {
+  const operatorHome = typeof env.PAPERCUSP_OPERATOR_HOME === 'string' ? env.PAPERCUSP_OPERATOR_HOME.trim() : '';
+  return operatorHome || home();
+}
+
+/**
+ * Load connectAgentMcp from the omp-plugin native bundle (the client ptool
+ * uses for --transport=uds), so the socket wire format and its
+ * initialize-time credentials have exactly one implementation.
+ * @returns {Promise<Function>}
+ */
+async function loadAgentMcpConnect() {
+  const bundle = new URL('../packages/omp-plugin/dist/native-client.cjs', import.meta.url);
+  try {
+    const mod = await import(bundle.href);
+    const native = mod.default ?? mod;
+    if (typeof native.connectAgentMcp !== 'function') throw new Error('connectAgentMcp is not exported');
+    return native.connectAgentMcp;
+  } catch (error) {
+    throw new Error(
+      `the agent-MCP client bundle ${fileURLToPath(bundle)} is not loadable (${error?.message ?? error}); ` +
+        'build it with `npm --prefix packages/omp-plugin run build:native`.',
+    );
+  }
+}
+
+/**
+ * @typedef {{kind: 'result', port: string, result: unknown}
+ *   | {kind: 'error', port: string, error: {code?: number, message: string, data?: unknown}}
+ *   | {kind: 'outcome-unknown', port: string, message: string}
+ *   | {kind: 'unavailable', unavailable: Array<{port: string, reason: string}>}} UdsCallOutcome
+ */
+
+/**
+ * Call one tool over the operator's agent-MCP unix socket.
+ *
+ * Ports are tried in order. A port with no advertised socket, or whose socket
+ * refuses the connection or the initialize handshake, is skipped: tools/call
+ * has not been sent yet, so trying the next port or bearer cannot run the
+ * call twice. Once tools/call is sent the first answer is final. A JSON-RPC
+ * error (numeric code) is the server's answer; anything else means the
+ * response was lost and the outcome is unknown, which is never retried.
+ * @param {{
+ *   ports: string[],
+ *   tokens: string[],
+ *   query: string,
+ *   params: object,
+ *   connect: (options: {url: string, headers: Record<string, string>, mode: 'uds', name: string, home?: string}) => Promise<{client: {callTool: (params: object) => Promise<unknown>, close: () => Promise<void>}}>,
+ *   home?: string,
+ * }} input
+ * @returns {Promise<UdsCallOutcome>}
+ */
+export async function callToolViaAgentMcpUds({ ports, tokens, query, params, connect, home }) {
+  /** @type {Array<{port: string, reason: string}>} */
+  const unavailable = [];
+  for (const port of ports) {
+    let connected = null;
+    for (const token of tokens) {
+      try {
+        connected = await connect({
+          url: `http://localhost:${port}/api/mcp?${query}`,
+          headers: { Authorization: `Bearer ${token}` },
+          mode: 'uds',
+          name: 'mcp-call',
+          home,
+        });
+        break;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        unavailable.push({ port, reason });
+        // No socket is advertised for this port: another bearer cannot help.
+        if (/^uds_endpoint_unavailable/.test(reason)) break;
+      }
+    }
+    if (!connected) continue;
+    try {
+      return { kind: 'result', port, result: await connected.client.callTool(params) };
+    } catch (error) {
+      const failure = /** @type {{code?: unknown, message?: unknown, data?: unknown}} */ (error ?? {});
+      if (typeof failure.code === 'number') {
+        return {
+          kind: 'error',
+          port,
+          error: {
+            code: failure.code,
+            message: String(failure.message ?? 'MCP error'),
+            ...(failure.data !== undefined ? { data: failure.data } : {}),
+          },
+        };
+      }
+      return {
+        kind: 'outcome-unknown',
+        port,
+        message: String(failure.message ?? error) +
+          ' — the response was lost after tools/call was sent, so the outcome is UNKNOWN. ' +
+          'Read current state before retrying; reuse the same --idempotency-key, never a fresh one.',
+      };
+    } finally {
+      await connected.client.close().catch(() => {});
+    }
+  }
+  return { kind: 'unavailable', unavailable };
+}
+
+/**
  * Decide whether this module is the launched script after resolving filesystem
  * aliases. macOS exposes `/tmp` as a symlink to `/private/tmp`; the VM-rig
  * deploy invokes `/tmp/mcp-call.mjs`, while `import.meta.url` canonicalizes to
@@ -808,7 +992,7 @@ export function isInvokedDirectly(
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (flags.help || !tool) {
-    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw] [--allow-partial]');
+    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--transport auto|http|uds] [--raw] [--allow-partial]');
     process.exit(flags.help ? 0 : 2);
   }
   const tokenPaths = superuserTokenPaths();
@@ -864,6 +1048,15 @@ async function main() {
   const { configuredPort, candidatePorts, pinned } = resolveCandidatePorts(flags);
   const proxyPort = resolveMcpProxyPort();
 
+  const transport = resolveMcpTransport(flags);
+  // Each CLI invocation is a standalone MCP request, even when several
+  // processes share one agent SID and start within the 2s legacy cohort
+  // window. Do not let a previous process consume this request's budget.
+  // The same params serve the HTTP request and the unix-socket fallback.
+  const callParams = buildMcpCallParams(tool, args, {
+    idempotencyKey: flags.idempotencyKey,
+    outputGroupId: randomUUID(),
+  });
   const init = {
     method: 'POST',
     headers: {
@@ -874,13 +1067,7 @@ async function main() {
       jsonrpc: '2.0',
       id: REQUEST_ID,
       method: 'tools/call',
-      // Each CLI invocation is a standalone MCP request, even when several
-      // processes share one agent SID and start within the 2s legacy cohort
-      // window. Do not let a previous process consume this request's budget.
-      params: buildMcpCallParams(tool, args, {
-        idempotencyKey: flags.idempotencyKey,
-        outputGroupId: randomUUID(),
-      }),
+      params: callParams,
     }),
   };
   const initForToken = (token) => ({
@@ -934,7 +1121,7 @@ async function main() {
   const attempts = [];
   let tokenIndex = 0;
   let stopEndpointSearch = false;
-  for (let index = 0; index < candidatePorts.length; index += 1) {
+  for (let index = 0; transport !== 'uds' && index < candidatePorts.length; index += 1) {
     const port = candidatePorts[index];
     const hasEndpointFallback = !pinned && index < candidatePorts.length - 1;
     let tryNextEndpoint = false;
@@ -1006,12 +1193,39 @@ async function main() {
     if (stopEndpointSearch) break;
   }
 
-  if (!res) {
+  let out;
+  if (res) {
+    if (flags.raw) { process.stdout.write(raw); return; }
+    out = parseSse(raw, REQUEST_ID);
+  } else if (shouldTryUdsFallback({ transport, attempts })) {
+    if (transport === 'auto') console.error(buildUdsFallbackNotice(attempts));
+    const uds = await callToolViaAgentMcpUds({
+      ports: candidatePorts,
+      tokens: tokenCandidates.map((candidate) => candidate.token),
+      query: qs,
+      params: callParams,
+      connect: await loadAgentMcpConnect(),
+      home: resolveAgentMcpDiscoveryHome(),
+    });
+    if (uds.kind === 'outcome-unknown') {
+      console.error(`mcp-call: ${uds.message} (unix socket via port ${uds.port})`);
+      process.exit(MCP_CALL_OUTCOME_UNKNOWN_EXIT);
+    }
+    if (uds.kind === 'unavailable') {
+      if (attempts.length > 0) console.error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
+      console.error(buildUdsUnavailableDiagnostic(uds.unavailable));
+      process.exit(4);
+    }
+    responsePort = uds.port;
+    out = uds.kind === 'result' ? { result: uds.result } : { error: uds.error };
+    if (flags.raw) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: REQUEST_ID, ...out }) + '\n');
+      return;
+    }
+  } else {
     console.error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
     process.exit(4);
   }
-  if (flags.raw) { process.stdout.write(raw); return; }
-  const out = parseSse(raw, REQUEST_ID);
   const failedPayload = out.error ?? (
     out.result && typeof out.result === 'object' &&
     (out.result.isError === true || toolResultNotOkReason(out.result) !== null)

@@ -8,7 +8,52 @@
  * failure is skipped (fail open) rather than blocking the commit.
  */
 import { describe, it, expect } from 'vitest';
-import { detectQuarantineImporters, extractSideEffectOnlySpecifiers } from './quarantine-import-guard';
+import {
+  collectDirtyImportEdges,
+  detectQuarantineImporters,
+  extractSideEffectOnlySpecifiers,
+} from './quarantine-import-guard';
+
+describe('collectDirtyImportEdges (WI-6554700010019415)', () => {
+  const files: Record<string, string> = {
+    'scripts/lib/test-pass-reuse.mjs': 'export const reuse = 1;\n',
+    'scripts/affected-tests.mjs': "import { reuse } from './lib/test-pass-reuse.mjs';\n",
+    'packages/core/lib/__tests__/drift.test.ts':
+      "import { reuse } from '../../../../scripts/lib/test-pass-reuse.mjs';\nimport { x } from '@scope/pkg/x';\n",
+    'packages/pkg/package.json': JSON.stringify({ name: '@scope/pkg', exports: { './x': './src/x.ts' } }),
+    'packages/pkg/src/x.ts': 'export const x = 1;\n',
+    'lib/hub.ts': "import './tool';\n",
+    'lib/tool.ts': 'export const tool = 1;\n',
+    'lib/unrelated.ts': "import { y } from './not-dirty';\n",
+  };
+  const readText = async (rel: string) => files[rel] ?? null;
+
+  it('resolves relative and repository-package binding edges among the given files only', async () => {
+    const edges = await collectDirtyImportEdges({ readText, files: Object.keys(files) });
+    const pairs = edges.map((e) => `${e.importer} -> ${e.provider}`).sort();
+    expect(pairs).toEqual([
+      'packages/core/lib/__tests__/drift.test.ts -> packages/pkg/src/x.ts',
+      'packages/core/lib/__tests__/drift.test.ts -> scripts/lib/test-pass-reuse.mjs',
+      'scripts/affected-tests.mjs -> scripts/lib/test-pass-reuse.mjs',
+    ]);
+  });
+
+  it('skips a side-effect-only edge, which never holds its provider', async () => {
+    const edges = await collectDirtyImportEdges({ readText, files: ['lib/hub.ts', 'lib/tool.ts'] });
+    expect(edges).toEqual([]);
+  });
+
+  it('skips an unreadable file instead of failing', async () => {
+    const edges = await collectDirtyImportEdges({
+      readText: async (rel) => {
+        if (rel === 'scripts/affected-tests.mjs') throw new Error('EACCES');
+        return files[rel] ?? null;
+      },
+      files: ['scripts/affected-tests.mjs', 'scripts/lib/test-pass-reuse.mjs'],
+    });
+    expect(edges).toEqual([]);
+  });
+});
 
 describe('detectQuarantineImporters', () => {
   it('EI-25795290390864278: holds a generated declaration with its turn-held .mjs source', async () => {

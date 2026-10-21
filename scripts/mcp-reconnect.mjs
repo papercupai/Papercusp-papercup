@@ -21,6 +21,39 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 export const DEFAULT_SERVER_NAME = 'papercusp-su';
 export const DEFAULT_ACK_TIMEOUT_MS = 5_000;
 
+/**
+ * The host capability that says a `force:true` reconnect is honoured: the /mcp
+ * macro re-dials even when the dialog reads `connected` (EI-26532826938565424,
+ * EI-26562663214659916). A host loaded before those fixes lacks it, and an
+ * interactive host never adopts newer host code while a terminal is attached
+ * (psu-pty-host.mjs shouldAdoptHostCode, plan D-008). On such a host the macro
+ * reads `connected` and does nothing, so a forced reconnect cannot heal a
+ * connected-but-toolless session there (EI-26553022496923180).
+ */
+export const FORCED_RECONNECT_CAP = 'mcp-reconnect-force';
+
+/** Exit code for a host that cannot force a reconnect (distinct from 1 = failed). */
+export const EXIT_HOST_CANNOT_FORCE = 3;
+
+/** True when the discovery record advertises that `force:true` is honoured. */
+export function hostHonoursForcedReconnect(record) {
+  return Array.isArray(record?.caps) && record.caps.includes(FORCED_RECONNECT_CAP);
+}
+
+/**
+ * The next rung for a host that cannot force a reconnect: a carry-respawn
+ * relaunches the CLI child, and a fresh child re-dials MCP. mcp-call.mjs reaches
+ * the operator over HTTP or, from a netns-isolated native Bash, over the
+ * agent-MCP unix socket (WI-6554700010019317), so this works when MCP is dark.
+ */
+export function carryRespawnCommand(ownerId) {
+  const args = JSON.stringify({
+    reason: 'toolless session; this psu host cannot force an /mcp reconnect',
+    autoContinue: true,
+  });
+  return `node scripts/mcp-call.mjs session:request-compaction '${args}' --client ${ownerId}`;
+}
+
 /** Mirror of the host/discovery key contract. */
 export function sanitizeKey(ownerId) {
   return String(ownerId || 'unknown')
@@ -161,6 +194,19 @@ export async function reconnectCurrentSession({
 } = {}) {
   const discovery = resolveOwnDiscovery({ ownerId, dir });
   if (!discovery.ok) return discovery;
+  // Nothing is sent to a host that cannot honour force: its macro would read
+  // `connected` and return, and the caller would end its turn waiting on a heal
+  // that never runs. Hand back the rung that does work instead.
+  if (!hostHonoursForcedReconnect(discovery.record)) {
+    return {
+      ok: false,
+      reason: 'host-cannot-force-reconnect',
+      ownerId: discovery.ownerId,
+      socketPath: discovery.socketPath,
+      hostCodeVersion: discovery.record?.hostCodeVersion ?? null,
+      next: carryRespawnCommand(discovery.ownerId),
+    };
+  }
   const sent = await sendForcedReconnect(discovery.socketPath, {
     ownerId: discovery.ownerId,
     serverName,
@@ -172,7 +218,8 @@ export async function reconnectCurrentSession({
 function printUsage() {
   process.stdout.write(
     'Usage: node scripts/mcp-reconnect.mjs [server-name]\n' +
-      'Uses PAPERCUSP_SID to queue a forced reconnect on this session\'s own psu host.\n',
+      'Uses PAPERCUSP_SID to queue a forced reconnect on this session\'s own psu host.\n' +
+      `Exits ${EXIT_HOST_CANNOT_FORCE} without sending when the host cannot force one; run the printed carry-respawn command then.\n`,
   );
 }
 
@@ -186,6 +233,15 @@ if (isCliEntry(import.meta.url)) {
     const serverName = process.argv.slice(2).find((arg) => !arg.startsWith('-')) || undefined;
     const result = await reconnectCurrentSession({ serverName });
     process.stdout.write(`${JSON.stringify(result)}\n`);
-    process.exitCode = result.ok ? 0 : 1;
+    if (result.reason === 'host-cannot-force-reconnect') {
+      process.stderr.write(
+        'mcp-reconnect: this psu host predates the forced reconnect and does not adopt newer host code while a ' +
+          'terminal is attached, so a reconnect here reads "connected" and changes nothing. Request a ' +
+          `carry-respawn instead (a fresh CLI re-dials MCP):\n  ${result.next}\n`,
+      );
+      process.exitCode = EXIT_HOST_CANNOT_FORCE;
+    } else {
+      process.exitCode = result.ok ? 0 : 1;
+    }
   }
 }

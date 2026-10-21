@@ -24,12 +24,30 @@ function planOf(item: ResumeItem): { slug: string; item: string | null } | null 
     : null;
 }
 
+function admissionActionBlocker(item: ResumeItem): string | null {
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload as Record<string, unknown> : {};
+  const review = payload.admissionReview && typeof payload.admissionReview === 'object' && !Array.isArray(payload.admissionReview)
+    ? payload.admissionReview as Record<string, unknown> : {};
+  const pendingReview = review.state === 'pending';
+  const hold = payload.admissionHold;
+  const activeHold = hold !== null && hold !== undefined && hold !== false;
+  if (!pendingReview && !activeHold) return null;
+  if (pendingReview && activeHold) {
+    return 'A live admission review is pending and an admission hold remains; do not follow the stored checkpoint action.';
+  }
+  return pendingReview
+    ? 'A live admission review is pending; do not follow the stored checkpoint action.'
+    : 'A live admission hold remains; do not follow the stored checkpoint action.';
+}
+
 /** Omit whole records to fit; never turn a partial next action into an instruction. */
 export function buildWorkItemResume(input: {
   item: ResumeItem; checkpoint: Checkpoint; freshness: unknown; evidence: Evidence | null; taskBrief?: TaskBrief;
 }) {
   const { item, checkpoint } = input;
   const plan = planOf(item);
+  const admissionBlocker = admissionActionBlocker(item);
   const fields = checkpoint.readFailed || checkpoint.checkpoint === null ? {} : parseCarryNote(checkpoint.checkpoint);
   const latest = checkpoint.latestUpdate;
   const latestFields = latest?.text ? parseCarryNote(latest.text) : fields;
@@ -46,13 +64,15 @@ export function buildWorkItemResume(input: {
     taskBrief: undefined as TaskBrief | { status: 'omitted'; recover: TaskBrief['recover'] } | undefined,
     claim: { id: item.id, assignee: item.assignee ?? null, state: item.state ?? null },
     plan,
-    nextAction: {
-      status: checkpoint.readFailed || ambiguous ? 'unknown' : next === null ? 'missing' : 'available',
-      text: next,
-      ...(latest?.status === 'available' && next !== null
-        ? { source: 'next-action' }
-        : {}),
-    },
+    nextAction: admissionBlocker
+      ? { status: 'blocked', text: null, reason: admissionBlocker }
+      : {
+        status: checkpoint.readFailed || ambiguous ? 'unknown' : next === null ? 'missing' : 'available',
+        text: next,
+        ...(latest?.status === 'available' && next !== null
+          ? { source: 'next-action' }
+          : {}),
+      },
     checkpoint: {
       status: checkpoint.readFailed ? 'unknown' : checkpoint.checkpoint === null ? 'absent' : 'available',
       updatedAtMs: checkpoint.updatedAtMs,
@@ -80,7 +100,7 @@ export function buildWorkItemResume(input: {
     const freshness = input.freshness as { verdict?: string } | null;
     resume.checkpoint.freshness = { verdict: freshness?.verdict ?? 'unknown', detailsOmitted: true };
   }
-  if (JSON.stringify(resume).length > RESUME_PACKET_BUDGET) {
+  if (!admissionBlocker && JSON.stringify(resume).length > RESUME_PACKET_BUDGET) {
     resume.nextAction.status = 'oversized';
     resume.nextAction.text = null;
   }

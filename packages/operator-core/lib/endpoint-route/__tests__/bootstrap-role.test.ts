@@ -11,6 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import type { RouteContext } from '../define-route';
 import { CODEX_SAFE_DEFAULT_MODEL } from '../../model-context-budget.mjs';
+import { turnProvenanceDir } from '../../turn-provenance/turn-provenance';
 
 const LC_DIR = mkdtempSync(join(tmpdir(), 'bootstrap-role-lc-'));
 process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = LC_DIR;
@@ -324,6 +325,7 @@ describe('bootstrap-role', () => {
     }));
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ coordOwnerId: pinnedOwner, role: 'worker' }));
     expect(result.envelopeEnv.PAPERCUSP_SID).toBe(pinnedOwner);
+    expect(result.envelopeEnv.PAPERCUSP_TURN_PROVENANCE_DIR).toBe(turnProvenanceDir());
     expect(result.envelopeEnv.PAPERCUSP_ROLE).toBe('worker');
     expect(readFileSync(result.mcpJsonPath, 'utf8')).toContain('role=worker');
     expect(repairStaleAdvSessionTerminalMarkersMock).toHaveBeenCalledWith(pinnedOwner);

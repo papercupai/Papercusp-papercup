@@ -101,6 +101,10 @@ beforeAll(() => {
   put(fixture, 'workspace-entry.mjs', "import { v } from 'workspace';\nconsole.log(`WORKSPACE=${v}`);\n");
   put(fixture, 'workspace-new-entry.mjs', "import 'workspace/new';\nconsole.log('WORKSPACE-ENTRY-RAN');\n");
   put(fixture, 'workspace-cjs-entry.mjs', "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('workspace/cjs');\n");
+  put(fixture, 'cjs-config/package.json', '{"private":true}\n');
+  put(fixture, 'cjs-config/vitest.config.ts', 'export default { marker: "HEAD" };\n');
+  put(fixture, 'esm-config/package.json', '{"private":true,"type":"module"}\n');
+  put(fixture, 'esm-config/vitest.config.ts', 'export default { marker: "HEAD" };\n');
   // The census's closure walk forks its worker with execArgv: [] — only NODE_OPTIONS reaches it.
   put(fixture, 'fork-entry.mjs', [
     "import { fork } from 'node:child_process';",
@@ -155,6 +159,20 @@ function run(argv: string[], env: NodeJS.ProcessEnv, auditFile?: string, input?:
     input,
     timeout: 60_000,
   });
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+function runViteConfig(configDirectory: string) {
+  const configFile = join(configDirectory, 'vitest.config.ts');
+  const script = [
+    "import { loadConfigFromFile } from 'vite';",
+    "const loaded = await loadConfigFromFile({ command: 'serve', mode: 'test' }, "
+      + JSON.stringify(configFile) + ', ' + JSON.stringify(configDirectory) + ", 'silent');",
+    "console.log('CONFIG=' + loaded.config.marker);",
+  ].join('\n');
+  const result = spawnSync(process.execPath, [
+    '--import', COMMITTED_SOURCE_LOADER, '--input-type=module', '-e', script,
+  ], { cwd: REPO, env: cleanEnv(), encoding: 'utf8', timeout: 60_000 });
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
@@ -579,6 +597,34 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(loaded.status).not.toBe(0);
     expect(loaded.stderr).toContain('COMMITTED_SOURCE refused new-door.mjs');
     expect(loaded.stdout).not.toContain('NEW-DOOR-RAN');
+  }, 60_000);
+});
+
+describe('committed-source loader — Vite config bundles', () => {
+  it('accepts a clean CommonJS config bundle and refuses one built from dirty source', () => {
+    const configDirectory = join(fixture, 'cjs-config');
+    const clean = runViteConfig(configDirectory);
+    expect(clean.status, clean.stderr).toBe(0);
+    expect(clean.stdout).toContain('CONFIG=HEAD');
+
+    put(fixture, 'cjs-config/vitest.config.ts', 'export default { marker: "DIRTY" };\n');
+    const dirty = runViteConfig(configDirectory);
+    expect(dirty.status).not.toBe(0);
+    expect(dirty.stderr).toContain('COMMITTED_SOURCE refused cjs-config/vitest.config.ts');
+    expect(dirty.stdout).not.toContain('CONFIG=DIRTY');
+  }, 60_000);
+
+  it('checks the original source behind Vite ESM config bundles in .vite-temp', () => {
+    const configDirectory = join(fixture, 'esm-config');
+    const clean = runViteConfig(configDirectory);
+    expect(clean.status, clean.stderr).toBe(0);
+    expect(clean.stdout).toContain('CONFIG=HEAD');
+
+    put(fixture, 'esm-config/vitest.config.ts', 'export default { marker: "DIRTY" };\n');
+    const dirty = runViteConfig(configDirectory);
+    expect(dirty.status).not.toBe(0);
+    expect(dirty.stderr).toContain('COMMITTED_SOURCE refused esm-config/vitest.config.ts');
+    expect(dirty.stdout).not.toContain('CONFIG=DIRTY');
   }, 60_000);
 });
 

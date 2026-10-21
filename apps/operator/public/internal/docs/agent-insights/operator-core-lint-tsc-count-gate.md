@@ -1,7 +1,7 @@
 # operator-core `lint:tsc` is a PER-FILE gate — vitest-green != tsc-clean
 URL: /internal/docs/agent-insights/operator-core-lint-tsc-count-gate
 
-npm run lint:tsc gates packages/operator-core against a PER-FILE tsc-error baseline in .tsc-baseline.json — a file above ITS baseline is a NEW, ATTRIBUTED regression (the gate NAMES it), hard-fails TS1xxx syntax errors, and blocks green-checkpoint when a file rises. vitest (esbuild) does NOT typecheck, so a vitest-green test edit can add tsc errors. Run lint:tsc (or lint:tsc -- --mine) after operator-core edits — not just test:affected.
+npm run lint:tsc gates packages/operator-core against a PER-FILE error baseline. In the shared checkout, use lint:tsc -- --files=<paths> for a self-check; --mine scopes to every dirty path reported by git status, including peers' edits.
 
 ## What
 
@@ -18,11 +18,8 @@ current — run `npm run lint:tsc` for the live picture. The gate:
   blocks the whole fleet's deploy — but now you see exactly which file caused
   it. A file absent from the baseline has an implicit baseline of `0`, so any
   error in a brand-new file is a named regression.
-* **`--mine` scopes the FAILURE to files you changed** (`git status`): a
-  regression in a file you didn't touch is reported as *peer drift* and does
-  NOT fail your run, so you can verify "my change is tsc-clean" even while the
-  shared tree carries unrelated concurrent-edit noise. `--mine` is opt-in and
-  never the CI default (CI runs bare = strict, gating any file's regression).
+* **`--mine` selects every dirty file in the current tree** (`git status --porcelain --untracked-files=all`); it cannot tell which agent changed them. In this shared checkout, that can include peers' staged, unstaged, and untracked edits, so it is not a reliable self-attribution check. Use `--files` to name the paths you edited this turn.
+  `--mine` remains opt-in and is never the CI default (CI runs bare, gating every file).
 * **a file below its baseline ⇒ ratchets down, but ONLY on an explicit
   `npm run lint:tsc -- --update`** (audit P-073 / EI-104). A **bare** run (CI,
   or a peer's plain `npm run lint:tsc`) never rewrites the baseline — it only
@@ -75,7 +72,7 @@ count back to baseline.
 After **any** edit under `packages/operator-core` (source *or* test):
 
 ```bash
-npm run lint:tsc -- --mine   # gate ONLY the files you changed — the fast self-check
+npm run lint:tsc -- --files=path/a.ts,path/b.ts  # replace with the repo-relative paths you edited
 npm run lint:tsc             # the authoritative CI gate — every file vs its baseline
 ```
 
@@ -83,9 +80,7 @@ npm run lint:tsc             # the authoritative CI gate — every file vs its b
   grep needed; the attribution is built in. Fix the named file. **Do not** raise
   its baseline to absorb your own new errors (the script only ratchets *down*;
   raising is a reviewed human act with a justification).
-* `--mine` fails only on regressions in files *you* changed; a regression in a
-  file you didn't touch is reported as peer drift and won't red your run. A bare
-  `npm run lint:tsc` (what CI runs) gates every file.
+* `--files=<comma-separated repo-relative paths>` scopes the self-check to the paths you name. `--mine` uses every dirty path reported by Git in this shared tree, including peers' edits, so do not use it to attribute a failure to your own work. A bare `npm run lint:tsc` (what CI runs) gates every file.
 * If it reports TS1xxx syntax-broken files, fix those first — counts are ignored
   for that verdict.
 * To lock in a genuine improvement (a file you drove below its baseline), run

@@ -583,6 +583,7 @@ const {
   mcpServerRowStatus,
   mcpDialogRowSelected,
   mcpConnectedVerdict,
+  classifyMcpReconnectHostOutcome,
   runMcpReconnectMacro,
   headlessRoleKickoffRequiresMcp,
   verifyHeadlessRoleMcp,
@@ -6296,6 +6297,8 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       let cursor = 0;
       let detailCursor = 0;
       let escapes = 0;
+      let reconnects = 0;
+      const writes: string[] = [];
       const paintList = () => {
         out +=
           '\nManage MCP servers\n' +
@@ -6311,6 +6314,7 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
           '\n';
       };
       const write = (b: string) => {
+        writes.push(b);
         if (b === '\x1b') {
           escapes += 1;
           view = 'idle';
@@ -6337,6 +6341,7 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
             detailCursor = 0;
             paintDetail();
           } else if (view === 'detail' && detailCursor === 1) {
+            reconnects += 1;
             if (opts.reconnectWorks !== false) servers[cursor].status = '✔ connected';
             paintDetail();
           }
@@ -6344,7 +6349,15 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
         }
         pending += b;
       };
-      return { write, read: () => out, reset: () => { out = ''; }, escapes: () => escapes };
+      return {
+        write,
+        read: () => out,
+        reset: () => { out = ''; },
+        escapes: () => escapes,
+        writes: () => writes,
+        reconnects: () => reconnects,
+        selectedServer: () => servers[cursor]?.name,
+      };
     }
 
     const fastSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Math.min(ms, 2)));
@@ -6466,6 +6479,71 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       });
       expect(result).toEqual({ ok: true, step: 'done', detail: 'connected verdict observed' });
       expect(tui.escapes()).toBeGreaterThanOrEqual(2);
+    });
+
+    it('force mode navigates to a connected target that is not initially selected', async () => {
+      const tui = makeFakeTui([
+        { name: 'playwright', status: '✔ connected' },
+        { name: 'papercusp-su', status: '✔ connected' },
+      ]);
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp-su',
+        write: tui.write,
+        readTap: tui.read,
+        resetTap: tui.reset,
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 500,
+        reconnectBudgetMs: 500,
+        force: true,
+      });
+      expect(result).toEqual({ ok: true, step: 'done', detail: 'connected verdict observed' });
+      expect(tui.writes()).toContain('\x1b[B');
+      expect(tui.selectedServer()).toBe('papercusp-su');
+      expect(tui.reconnects()).toBe(1);
+    });
+
+    it('force mode requires a post-Reconnect paint, not the pre-action connected verdict', async () => {
+      const tui = makeFakeTui([{ name: 'papercusp-su', status: '✔ connected' }]);
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp-su',
+        write: tui.write,
+        readTap: tui.read,
+        resetTap: tui.reset,
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 500,
+        reconnectBudgetMs: 20,
+        maxArrows: 0,
+        force: true,
+      });
+      expect(result).toMatchObject({ ok: false, step: 'await-connected' });
+      expect(tui.reconnects()).toBe(0);
+    });
+
+    it('classifies a forced already-connected result as a failed heal', () => {
+      expect(classifyMcpReconnectHostOutcome({
+        ok: true,
+        step: 'already-connected',
+        detail: 'target reads connected — nothing to heal',
+      }, true)).toEqual({
+        ok: false,
+        event: 'mcp-reconnect-failed',
+        step: 'force-short-circuited',
+        detail: 'force requested but reconnect macro returned already-connected',
+      });
+      expect(classifyMcpReconnectHostOutcome({
+        ok: true,
+        step: 'already-connected',
+        detail: 'target reads connected — nothing to heal',
+      }, false)).toEqual({
+        ok: true,
+        event: 'mcp-reconnect-completed',
+        step: 'already-connected',
+        detail: 'target reads connected — nothing to heal',
+      });
     });
 
     it('fail-soft: dialog never paints → Esc out with step open-dialog', async () => {

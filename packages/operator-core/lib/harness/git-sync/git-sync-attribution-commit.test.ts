@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commitAttributedGroups, dirtyFiles, type RunGit } from './run-git-sync';
+import { commitAttributedGroups, dirtyFiles, guardStagedIndexBeforeCommit, type RunGit } from './run-git-sync';
 import type { FileAttribution } from './git-sync-attribution';
 
 type GitResult = { code: number; stdout: string; stderr: string };
@@ -543,6 +543,66 @@ describe('commitAttributedGroups failure isolation (WI-6554700010018197, real gi
     expect({ groups: res.agentGroupCount, commits: res.agentCommitCount }).toEqual({ groups: 3, commits: 2 });
     expect((await agentTrailersSince(repo, base)).filter(Boolean).sort()).toEqual(['ag1', 'ag3']);
     expect(await git(repo, 'status', '--porcelain', '--', 'b.ts')).toBe('?? b.ts');
+  });
+});
+
+describe('commitAttributedGroups import-linked groups (WI-6554700010019415, real git)', () => {
+  /** A provider that drops an export its committed importer consumes, plus that importer's
+   *  edit away from it, attributed to one agent under two intents. */
+  async function splitProviderRepo(prefix: string): Promise<string> {
+    const repo = await seededRepo(prefix);
+    await writeFile(join(repo, 'provider.ts'), 'export const keep = 1;\nexport const MAX_AGE = 2;\n');
+    await writeFile(join(repo, 'importer.ts'), "import { keep, MAX_AGE } from './provider';\nexport const both = keep + MAX_AGE;\n");
+    await git(repo, 'add', 'provider.ts', 'importer.ts');
+    await git(repo, ...ID, 'commit', '-qm', 'provider + importer');
+    await writeFile(join(repo, 'provider.ts'), 'export const keep = 1;\n');
+    await writeFile(join(repo, 'importer.ts'), "import { keep } from './provider';\nexport const both = keep;\n");
+    return repo;
+  }
+  const attribution = new Map<string, FileAttribution>([
+    ['provider.ts', { agent: 'ag1', intent: 'remove the max-age', editedAtMs: 100 }],
+    ['importer.ts', { agent: 'ag1', intent: 'finish removing it', editedAtMs: 200 }],
+  ]);
+  const guardFor = (repo: string, logs: string[]) => (privateRunGit: RunGit) =>
+    guardStagedIndexBeforeCommit({
+      runGit: privateRunGit,
+      repoPath: repo,
+      scope: 'test',
+      readText: (rel) => readFile(join(repo, rel), 'utf8').catch(() => null),
+      log: (m) => logs.push(m),
+    });
+
+  it('control: in two private indexes the post-stage guard holds both halves', async () => {
+    const repo = await splitProviderRepo('gs-attr-linked-control-');
+    const logs: string[] = [];
+
+    const res = await commitAttributedGroups(realRunGit, repo, attribution, [], MSG, {
+      beforeCommit: guardFor(repo, logs),
+      readText: async () => null, // no import edges, so the groups stay split
+    });
+
+    expect(res.agentGroupCount).toBe(2);
+    expect(res.agentCommitCount).toBe(0);
+    expect(await git(repo, 'status', '--porcelain')).toBe('M importer.ts\n M provider.ts');
+    expect(logs.some((m) => m.includes("changed tracked module outside this commit's index"))).toBe(true);
+    expect(logs.some((m) => m.includes('provider.ts') && m.includes('removes those exports'))).toBe(true);
+  });
+
+  it('commits the provider and its importer together in one attributed commit', async () => {
+    const repo = await splitProviderRepo('gs-attr-linked-');
+    const base = await git(repo, 'rev-parse', 'HEAD');
+    const logs: string[] = [];
+
+    const res = await commitAttributedGroups(realRunGit, repo, attribution, [], MSG, {
+      beforeCommit: guardFor(repo, logs),
+      log: (m) => logs.push(m),
+    });
+
+    expect(res).toEqual({ committedAny: true, committedCount: 1, agentGroupCount: 1, agentCommitCount: 1 });
+    expect(await git(repo, 'status', '--porcelain')).toBe('');
+    expect(await git(repo, 'diff', '--name-only', base, 'HEAD')).toBe('importer.ts\nprovider.ts');
+    expect(await git(repo, 'log', '-1', '--format=%(trailers:key=Papercusp-Agent,valueonly)')).toBe('ag1');
+    expect(logs.some((m) => m.includes('merged import-linked attribution groups (2 -> 1)'))).toBe(true);
   });
 });
 

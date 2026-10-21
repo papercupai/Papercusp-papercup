@@ -13,8 +13,9 @@
 // on its own.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { isGateEnrolled } from "../check-vitest-config-enrollment.mjs";
 import {
   packageLockInstallView,
@@ -69,18 +70,22 @@ export function executedMapRecordingEnabled(env = process.env) {
  * its results sets PAPERCUSP_TEST_RUNS_DB_URL to the shared ledger. With the old order
  * every isolated result was written into the throwaway database and destroyed at teardown.
  *
+ * Like the reporter, values are trimmed and the default follows PAPERCUSP_PG_PORT (the
+ * private-cluster signal scripts/with-test-pg.mjs leaves set), so an isolated run reads the
+ * cluster it writes to instead of the host's native :5432.
+ *
  * @param {Record<string, string | undefined>} [env]
  * @returns {{ url: string, source: 'HARNESS_ADMIN_DATABASE_URL' | 'PAPERCUSP_TEST_RUNS_DB_URL' | 'default' }}
  */
 export function resolveExecutedMapPgUrl(env = process.env) {
-  if (env.PAPERCUSP_TEST_RUNS_DB_URL) {
-    return { url: env.PAPERCUSP_TEST_RUNS_DB_URL, source: "PAPERCUSP_TEST_RUNS_DB_URL" };
-  }
-  if (env.HARNESS_ADMIN_DATABASE_URL) {
-    return { url: env.HARNESS_ADMIN_DATABASE_URL, source: "HARNESS_ADMIN_DATABASE_URL" };
-  }
+  const ledger = env.PAPERCUSP_TEST_RUNS_DB_URL?.trim();
+  if (ledger) return { url: ledger, source: "PAPERCUSP_TEST_RUNS_DB_URL" };
+  const admin = env.HARNESS_ADMIN_DATABASE_URL?.trim();
+  if (admin) return { url: admin, source: "HARNESS_ADMIN_DATABASE_URL" };
+  const port = Number(env.PAPERCUSP_PG_PORT);
+  const validPort = Number.isInteger(port) && port > 0 && port <= 65_535 ? port : 5432;
   return {
-    url: "postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp",
+    url: `postgresql://harness_admin:harness_admin_pwd@localhost:${validPort}/papercusp`,
     source: "default",
   };
 }
@@ -135,6 +140,60 @@ export function rowsToExecutedMap(rows, { repoRoot }) {
 }
 
 /**
+ * WI-6554700010019200: select a path array as JSON, keeping its column name. `pg` parses a text[]
+ * column in JavaScript, character by character; the operator-core gate proofs are 343 MB of
+ * array text, and that parse took 19.5s of a 15s read budget (measured 2026-10-21: the server
+ * needed 2s, the same rows as JSON read in 2.2s, identical arrays on all 7,447 rows). `pg`
+ * hands json to the native JSON.parse. A NULL array stays NULL.
+ *
+ * @param {"executed_modules" | "read_paths"} column
+ * @returns {string}
+ */
+const PATH_ARRAY_AS_JSON = (column) => `to_json(${column}) AS ${column}`;
+
+/** The checkout this module was loaded from: the one whose gate or run is reading proofs. */
+const MODULE_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+/** @type {Map<string, string | null>} */
+const recordedGitDirs = new Map();
+
+/**
+ * WI-6554700010019324: the object store a proof's recorded_sha lives in, as the realpath of the
+ * checkout's git common dir. Installs that clone one repository share workspace names and run
+ * contexts, so this is what tells their proofs apart (migration 1552). PINNED equal to
+ * resolveRecordedGitDir in libs/test-config/src/executed-source-map-reporter.ts (the writer).
+ * Null when git cannot answer; memoized per root.
+ *
+ * @param {string} repoRoot
+ * @returns {string | null}
+ */
+export function resolveRecordedGitDir(repoRoot) {
+  if (recordedGitDirs.has(repoRoot)) return recordedGitDirs.get(repoRoot) ?? null;
+  let dir = null;
+  try {
+    const out = execFileSync("git", ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+    }).trim();
+    dir = out ? realpathSync(out) : null;
+  } catch {
+    dir = null;
+  }
+  recordedGitDirs.set(repoRoot, dir);
+  return dir;
+}
+
+/**
+ * Rows this install may read: its own (recorded_git_dir = $n) and pre-1552 rows nobody can
+ * attribute (NULL). Another install's rows sit at shas this repository may not hold.
+ * @param {number} n the bind index of the git dir
+ */
+const OWN_OR_LEGACY_ROWS = (n) => `(recorded_git_dir = $${n} OR recorded_git_dir IS NULL)`;
+/** Newest-first per file, with this install's own rows ahead of every pre-1552 row. */
+const OWN_ROWS_FIRST = "(recorded_git_dir IS NULL), recorded_at DESC";
+
+/**
  * Load the newest executed map per test file for one workspace.
  *
  * @param {object} o
@@ -143,20 +202,22 @@ export function rowsToExecutedMap(rows, { repoRoot }) {
  * @param {string} o.workspaceName npm workspace name
  * @param {string} o.repoRoot
  * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
+ * @param {string | null} [o.gitDir] the reading checkout's object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ map: import('./related-tests.mjs').ExecutedMap, rows: number }>}
  */
-export async function loadExecutedSourceMap({ client, workspaceName, repoRoot, files }) {
+export async function loadExecutedSourceMap({ client, workspaceName, repoRoot, files, gitDir = resolveRecordedGitDir(repoRoot) }) {
   const selectedFiles = Array.isArray(files)
     ? [...new Set(files.filter((file) => typeof file === "string" && file.length > 0))]
     : null;
   if (selectedFiles?.length === 0) return { map: new Map(), rows: 0 };
-  const fileFilter = selectedFiles ? "AND test_file = ANY($2::text[])" : "";
+  if (!gitDir) return { map: new Map(), rows: 0 };
+  const fileFilter = selectedFiles ? "AND test_file = ANY($3::text[])" : "";
   const { rows } = await client.query(
-    `SELECT DISTINCT ON (test_file) test_file, recorded_sha, executed_modules
+    `SELECT DISTINCT ON (test_file) test_file, recorded_sha, ${PATH_ARRAY_AS_JSON("executed_modules")}
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1 ${fileFilter}
-      ORDER BY test_file, recorded_at DESC`,
-    selectedFiles ? [workspaceName, selectedFiles] : [workspaceName],
+      WHERE workspace_name = $1 AND ${OWN_OR_LEGACY_ROWS(2)} ${fileFilter}
+      ORDER BY test_file, ${OWN_ROWS_FIRST}`,
+    selectedFiles ? [workspaceName, gitDir, selectedFiles] : [workspaceName, gitDir],
   );
   return { map: rowsToExecutedMap(rows, { repoRoot }), rows: rows.length };
 }
@@ -205,21 +266,28 @@ export function rowsToReuseProofs(rows) {
  * @param {string} o.workspaceName
  * @param {string} o.runContext
  * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
+ * @param {string} [o.repoRoot] the reading checkout (default: the one this module was loaded from)
+ * @param {string | null} [o.gitDir] its object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
  */
-export async function loadReuseProofs({ client, workspaceName, runContext, files }) {
+export async function loadReuseProofs({
+  client, workspaceName, runContext, files, repoRoot = MODULE_REPO_ROOT, gitDir = resolveRecordedGitDir(repoRoot),
+}) {
   const selectedFiles = Array.isArray(files)
     ? [...new Set(files.filter((file) => typeof file === "string" && file.length > 0))]
     : null;
   if (selectedFiles?.length === 0) return { proofs: new Map(), rows: 0 };
-  const fileFilter = selectedFiles ? "AND test_file = ANY($3::text[])" : "";
+  // No object store means no way to tell this install's proofs from a sibling's: reuse nothing.
+  if (!gitDir) return { proofs: new Map(), rows: 0 };
+  const fileFilter = selectedFiles ? "AND test_file = ANY($4::text[])" : "";
   const { rows } = await client.query(
-    `SELECT DISTINCT ON (test_file) test_file, recorded_sha, recorded_at, executed_modules,
-            read_paths, inputs_captured, opaque_reasons, run_context, runner_identity
+    `SELECT DISTINCT ON (test_file) test_file, recorded_sha, recorded_at,
+            ${PATH_ARRAY_AS_JSON("executed_modules")}, ${PATH_ARRAY_AS_JSON("read_paths")},
+            inputs_captured, opaque_reasons, run_context, runner_identity
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1 AND run_context = $2 ${fileFilter}
-      ORDER BY test_file, recorded_at DESC`,
-    selectedFiles ? [workspaceName, runContext, selectedFiles] : [workspaceName, runContext],
+      WHERE workspace_name = $1 AND run_context = $2 AND ${OWN_OR_LEGACY_ROWS(3)} ${fileFilter}
+      ORDER BY test_file, ${OWN_ROWS_FIRST}`,
+    selectedFiles ? [workspaceName, runContext, gitDir, selectedFiles] : [workspaceName, runContext, gitDir],
   );
   return { proofs: rowsToReuseProofs(rows), rows: rows.length };
 }
@@ -232,15 +300,20 @@ export async function loadReuseProofs({ client, workspaceName, runContext, files
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string} [o.repoRoot] the reading checkout (default: the one this module was loaded from)
+ * @param {string | null} [o.gitDir] its object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ files: string[], rows: number }>}
  */
-export async function loadReuseProofFiles({ client, workspaceName, runContext }) {
+export async function loadReuseProofFiles({
+  client, workspaceName, runContext, repoRoot = MODULE_REPO_ROOT, gitDir = resolveRecordedGitDir(repoRoot),
+}) {
+  if (!gitDir) return { files: [], rows: 0 };
   const { rows } = await client.query(
     `SELECT DISTINCT test_file
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1 AND run_context = $2
+      WHERE workspace_name = $1 AND run_context = $2 AND ${OWN_OR_LEGACY_ROWS(3)}
       ORDER BY test_file`,
-    [workspaceName, runContext],
+    [workspaceName, runContext, gitDir],
   );
   return {
     files: rows.map((row) => row?.test_file).filter((file) => typeof file === "string" && file.length > 0),
@@ -289,31 +362,81 @@ export async function loadPassDurations({ client, files }) {
  * `relative: true` returns repo-root-relative POSIX paths (the per-file pass-reuse rule's
  * input) instead of absolute ones (the pruning selector's input).
  *
- * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string, relative?: boolean }} o
+ * WI-6554700010019181: a pair that cannot be diffed is retried once and never cached, and
+ * `onUnknown` hears the reason (git's own stderr included). A cached null used to turn one
+ * transient git failure into "cannot tell" for every file proven at that sha, for the whole
+ * run, with nothing in the log to say why (866 of 866 web proofs in one gate round).
+ *
+ * @param {{
+ *   repoRoot: string,
+ *   exec?: (file: string, args: string[], opts: object) => string,
+ *   relative?: boolean,
+ *   onUnknown?: ((u: { recordedSha: string, judgedSha: string, reason: string, attempts: number }) => void) | null,
+ * }} o
  * @returns {import('./related-tests.mjs').ChangedBetween}
  */
-export function gitChangedBetween({ repoRoot, exec = defaultExec, relative = false }) {
-  /** @type {Map<string, Set<string> | null>} */
+export function gitChangedBetween({ repoRoot, exec = defaultExec, relative = false, onUnknown = null }) {
+  /** @type {Map<string, Set<string>>} */
   const cache = new Map();
   /** @type {Map<string, string | null>} */
   const emptyTrees = new Map();
+  /** @returns {{ out: Set<string> } | { reason: string }} */
+  const attempt = (recordedSha, judgedSha) => {
+    const out = new Set();
+    let verdict;
+    try {
+      verdict = collectRecursiveDiff({ exec, repoDir: repoRoot, prefix: "", a: recordedSha, b: judgedSha, out, emptyTrees });
+    } catch (err) {
+      verdict = `threw: ${gitErrorText(err)}`;
+    }
+    return verdict === true ? { out } : { reason: verdict };
+  };
   return (recordedSha, judgedSha) => {
     const key = `${recordedSha}..${judgedSha}`;
-    if (cache.has(key)) return cache.get(key);
-    let result = null;
-    try {
-      const out = new Set();
-      result = collectRecursiveDiff({ exec, repoDir: repoRoot, prefix: "", a: recordedSha, b: judgedSha, out, emptyTrees })
-        ? relative
-          ? out
-          : new Set([...out].map((rel) => path.resolve(repoRoot, rel)))
-        : null;
-    } catch {
-      result = null;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    let r = attempt(recordedSha, judgedSha);
+    let attempts = 1;
+    if (!("out" in r)) {
+      // A failed hash-object is remembered as null; the retry must be allowed to ask again.
+      for (const [dir, oid] of emptyTrees) if (oid == null) emptyTrees.delete(dir);
+      r = attempt(recordedSha, judgedSha);
+      attempts = 2;
     }
+    if (!("out" in r)) {
+      try {
+        onUnknown?.({ recordedSha, judgedSha, reason: r.reason, attempts });
+      } catch {
+        // A diagnostic sink must never change the answer.
+      }
+      return null;
+    }
+    const result = relative ? r.out : new Set([...r.out].map((rel) => path.resolve(repoRoot, rel)));
     cache.set(key, result);
     return result;
   };
+}
+
+/**
+ * The log line for one "cannot tell" drift answer (gitChangedBetween's onUnknown). The reason is
+ * last because it is free text; `prefix` lets a targeted round keep its lines apart from the
+ * suite's own TEST_PASS_REUSE health lines.
+ *
+ * @param {{ repoRoot: string, recordedSha: string, judgedSha: string, reason: string, attempts: number, prefix?: string }} o
+ */
+export function formatDriftUnknownLine({ repoRoot, recordedSha, judgedSha, reason, attempts, prefix = "" }) {
+  return (
+    `${prefix}TEST_PASS_REUSE_DRIFT_UNKNOWN repo=${repoRoot} recorded=${String(recordedSha).slice(0, 12)} ` +
+    `judged=${String(judgedSha).slice(0, 12)} attempts=${attempts} reason=${oneLine(reason)}`
+  );
+}
+
+/** git's own explanation of a failed exec: its stderr, else the spawn error (timeout, ENOBUFS, …). */
+function gitErrorText(err) {
+  const e = /** @type {{ stderr?: unknown, message?: unknown, code?: unknown, signal?: unknown }} */ (err ?? {});
+  const stderr = e.stderr == null ? "" : String(e.stderr).trim();
+  const tags = [e.code, e.signal].filter((v) => v != null && v !== "").join(",");
+  return oneLine(`${stderr || e.message || String(err)}${tags ? ` [${tags}]` : ""}`);
 }
 
 /** Every-zero object id: git's marker for "absent on this side" in `--raw` output. */
@@ -325,20 +448,26 @@ const ZERO_OID_RE = /^0+$/;
  * submodule change as the bare gitlink path, which no executed module ever equals, so a change
  * inside any of the ~38 submodules used to read as "no drift". A moved gitlink is diffed INSIDE
  * the submodule between the two pinned commits. Anything that cannot be diffed (a submodule
- * type-changed; a pinned commit missing from the local clone) returns false, and the caller
- * reads that as "cannot tell" (stale), never as "nothing changed". Added and removed gitlinks
- * are diffed against the empty tree so their present-side source paths are known.
+ * type-changed; a pinned commit missing from the local clone) returns the reason as a string,
+ * and the caller reads that as "cannot tell" (stale), never as "nothing changed". Added and
+ * removed gitlinks are diffed against the empty tree so their present-side source paths are known.
  *
- * @returns {boolean} true when the full recursive diff was computed
+ * @returns {true | string} true when the full recursive diff was computed, else why it was not
  */
 export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTrees = new Map() }) {
   const opts = {
     cwd: repoDir,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    // stderr is captured, not discarded: it is the only record of why a diff failed.
+    stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 256 * 1024 * 1024,
   };
-  const raw = String(exec("git", ["diff", "--raw", "--no-renames", "--abbrev=40", "-z", a, b], opts));
+  let raw;
+  try {
+    raw = String(exec("git", ["diff", "--raw", "--no-renames", "--abbrev=40", "-z", a, b], opts));
+  } catch (err) {
+    return `diff-failed(${prefix.replace(/\/$/, "") || "."} ${a.slice(0, 12)}..${b.slice(0, 12)}): ${gitErrorText(err)}`;
+  }
   // -z --raw: ":<m1> <m2> <o1> <o2> <status>\0<path>\0" repeated.
   const parts = raw.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
@@ -346,7 +475,7 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTr
     const rel = parts[i + 1];
     if (!meta || !rel) continue;
     const m = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) /.exec(meta);
-    if (!m) return false;
+    if (!m) return `unparsed-raw-entry(${prefix}${rel})`;
     const [, modeA, modeB, oidA, oidB] = m;
     out.add(prefix + rel);
     if (modeA !== "160000" && modeB !== "160000") continue;
@@ -357,16 +486,15 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTr
     const addedGitlink = !gitlinkA && gitlinkB && absentA;
     const removedGitlink = gitlinkA && !gitlinkB && absentB;
     const movedGitlink = gitlinkA && gitlinkB && !absentA && !absentB;
-    if (!addedGitlink && !removedGitlink && !movedGitlink) return false;
+    if (!addedGitlink && !removedGitlink && !movedGitlink) return `gitlink-type-change(${prefix}${rel})`;
     const subDir = path.join(repoDir, rel);
     const subRepoDir = locateSubmoduleRepository({ exec, repoDir, rel, subDir, opts });
-    if (!subRepoDir) return false;
+    if (!subRepoDir) return `submodule-unresolved(${prefix}${rel})`;
     const subA = absentA ? emptyTreeFor({ exec, repoDir: subRepoDir, opts, emptyTrees }) : oidA;
     const subB = absentB ? emptyTreeFor({ exec, repoDir: subRepoDir, opts, emptyTrees }) : oidB;
-    if (!subA || !subB) return false;
-    if (!collectRecursiveDiff({ exec, repoDir: subRepoDir, prefix: `${prefix}${rel}/`, a: subA, b: subB, out, emptyTrees })) {
-      return false;
-    }
+    if (!subA || !subB) return `empty-tree-unavailable(${prefix}${rel})`;
+    const nested = collectRecursiveDiff({ exec, repoDir: subRepoDir, prefix: `${prefix}${rel}/`, a: subA, b: subB, out, emptyTrees });
+    if (nested !== true) return nested;
   }
   return true;
 }

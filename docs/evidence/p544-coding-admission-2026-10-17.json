@@ -5,14 +5,59 @@
   "workItem": "WI-6554700010016277",
   "recordedAtUtc": "2026-10-17T11:54:45Z",
   "classification": "Conservative programme reservation refresh; not billed spend, verified credit balance, monthly trial qualification or permission to launch a new candidate",
-  "programmeCapUsd": 200,
+  "programmeCapUsd": null,
+  "retiredProgrammeCapUsd": 200,
+  "programmeBudgetAuthority": "D-082: Avi removed the programme spending ceiling on 2026-10-21; strict under-$20/month product acceptance and finite per-run admission remain required.",
+  "completeCorpusAdmission20261021": {
+    "classification": "Pre-launch finite reservation for a new complete 20-task corpus; not an invoice, VM capacity result, monthly cost qualification or shipment proof",
+    "ownerSource": "session_turn:codex:01a15d29-3ba9-7d40-b9b5-934b6151a1e2:20",
+    "decision": "D-082",
+    "accountId": "aviynw5_codex",
+    "model": "gpt-6-luna",
+    "effort": "low",
+    "credentialHeaderSha256": "58baffa3ea0df422f3c2c1c411e8dce8442a0cd618af298ed8919dd516c4ed01",
+    "credentialBinding": "SHA256 of the complete outgoing Authorization header including Bearer prefix, re-read immediately before admission; token and header are never persisted",
+    "providerTarget": "https://chatgpt.com/backend-api/codex/responses",
+    "maximumProviderAttempts": 650,
+    "maximumModelRequests": 650,
+    "reservePerAttemptUsd": 0.7183,
+    "maximumReservationUsd": 466.895,
+    "priorMaximumReservationsRetainedUsd": 180.1196,
+    "programmeMaximumReservedAfterAdmissionUsd": 647.0146,
+    "priceTableVersion": "53a578c68ba664e8",
+    "maximumWallSeconds": 7200,
+    "parallelSessions": 2,
+    "outDir": "/mnt/data/agent-capacity/corpus/p544-complete-20261021T1456",
+    "corpus": "scripts/agent-capacity/corpus/tasks.json: all 20 tasks, 8 light, 8 typical and 4 heavy, ten tasks each in pinned Excalidraw and Mealie repositories",
+    "pinnedRepositories": {
+      "excalidraw": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+      "mealie": "7e03d041d7571e8b2a918140fcf9237f2d7a903d"
+    },
+    "providerPreflight": {
+      "census": "/tmp/p544-corpus-census-20261021.json",
+      "snapshots": "/tmp/p544-corpus-snapshots-20261021.json",
+      "instances": [],
+      "orphanDisks": [],
+      "staticAddresses": [],
+      "snapshotResources": [],
+      "committedWorstCaseCents": 0
+    },
+    "admissionControls": [
+      "Use the maintained pc-heavy host admission and recorder final-send budget gateway; no unadmitted provider route or automatic failover.",
+      "Recheck the complete-header digest before launch; mismatches refuse before provider fetch.",
+      "Keep this full reservation after any response, timeout, failure or partial cost report; no automatic top-up.",
+      "Stop at 650 attempts, the USD bound or the wall deadline; preserve raw exchange, native CLI, diff and fsynced reservation evidence.",
+      "No VM creation is admitted by this recording reservation. Any later cloud run needs its own finite reservation and provider deletion deadline.",
+      "Provider-reported tokens and list-price calculations are supporting evidence only; actual applicable charges and all monthly categories remain unqualified."
+    ]
+  },
   "priorReservedUsd": 168.5,
   "priorEvidence": "docs/evidence/p544-cold-growth-admission-2026-10-17.json",
   "additionalPriorCpuGuestReserveUsd": 3,
   "additionalPriorCpuGuest": "cap-p544-cpu-1017",
   "additionalReserveBasis": "Keep the full previous reservation. Add a separate padded allowance for the later two-hour 4vCPU/8GiB CPU guest, its 32GiB boot disk, IPv4, transfer and uncertainty. No model workload ran on that guest according to the saved P544 checkpoint. This is an allowance, not a measured charge. The previous cold guest starts/resize retain its existing full two-hour larger-shape reserve and fixed original deadline.",
-  "totalReservedUsd": 180.1196,
-  "remainingConservativeHeadroomUsd": 19.8804,
+  "totalReservedUsd": 1114.6279,
+  "remainingConservativeHeadroomUsd": null,
   "reservationWriterSemantics": {
     "source": "scripts/agent-capacity/gcp-rails.ts",
     "worstCaseCents": "Requested compute and provisioned disks/performance over maximum lifetime, rounded up to cents; writer of papercusp-maxcost-cents VM label",
@@ -23,13 +68,23 @@
   "liveProviderEvidence": {
     "project": "pc-agent-capacity-0930",
     "sourceRoot": "/tmp/p544-admission-refresh-20261017-1156",
-    "queryOrder": ["budget", "admin", "instances", "disks", "snapshots", "addresses"],
+    "queryOrder": [
+      "budget",
+      "admin",
+      "instances",
+      "disks",
+      "snapshots",
+      "addresses"
+    ],
     "sequential": true,
     "adminStartUtc": "2026-10-17T09:37:00Z",
     "adminRows": 28,
     "adminQueryLimit": 5000,
     "latestAdminTimestampUtc": "2026-10-17T11:17:37.899414Z",
-    "observedInsertNames": ["cap-p544-cold-1017", "cap-p544-cpu-1017"],
+    "observedInsertNames": [
+      "cap-p544-cold-1017",
+      "cap-p544-cpu-1017"
+    ],
     "instances": [],
     "disks": [],
     "snapshots": [],
@@ -49,7 +104,15 @@
   "refresh20261017T125545Z": {
     "sourceRoot": "/tmp/p544-admission-refresh-20261017-1256",
     "observedAtUtc": "2026-10-17T12:55:45.015253+00:00",
-    "queryOrder": ["budget", "admin", "instances", "disks", "snapshots", "addresses", "buckets"],
+    "queryOrder": [
+      "budget",
+      "admin",
+      "instances",
+      "disks",
+      "snapshots",
+      "addresses",
+      "buckets"
+    ],
     "sequential": true,
     "adminSinceUtc": "2026-10-17T11:54:45Z",
     "adminRows": 0,
@@ -58,7 +121,9 @@
     "disks": [],
     "snapshots": [],
     "staticAddresses": [],
-    "retainedArtifactBuckets": ["pc-agent-capacity-0930-artifacts"],
+    "retainedArtifactBuckets": [
+      "pc-agent-capacity-0930-artifacts"
+    ],
     "programmeReservationUsd": 171.5,
     "remainingConservativeHeadroomUsd": 28.5,
     "reservationChangeUsd": 0,
@@ -70,7 +135,11 @@
       "settlement": "Automatic git-sync settlement pending at close; do not re-close or replay tests merely for commit proof.",
       "perActualProviderSendReserveUsdMicros": 718300,
       "journal": "Exclusive append-only fsynced recording-budget.jsonl; every final provider send reserves before fetch, including retries and outer OAuth recovery.",
-      "savedTests": ["95 passed initial guard", "76 passed journal hardening", "scoped typecheck 0 errors"],
+      "savedTests": [
+        "95 passed initial guard",
+        "76 passed journal hardening",
+        "scoped typecheck 0 errors"
+      ],
       "latestTestLog": "/tmp/p544-record-budget-journal-tests.log",
       "latestTestLogSha256": "0c042229af51f47572d9af3e69907c94d313f763ed65dd7a229d619815614c07"
     },
@@ -224,7 +293,9 @@
       "toolCalls": {},
       "providerSendsAdmitted": 0,
       "attemptsDenied": 4,
-      "refusalReasons": { "clock": 4 },
+      "refusalReasons": {
+        "clock": 4
+      },
       "journalReservedUsdMicros": 0,
       "journalStopped": true,
       "programmeMaximumReservationRetainedUsd": 2.8732,
@@ -248,7 +319,15 @@
     "sourceRoot": "/tmp/p544-admission-refresh-20261017-1403",
     "observedAtUtc": "2026-10-17T14:01:47.642951+00:00",
     "completedAtUtc": "2026-10-17T14:02:11.310472+00:00",
-    "queryOrder": ["budget", "admin", "instances", "disks", "snapshots", "addresses", "buckets"],
+    "queryOrder": [
+      "budget",
+      "admin",
+      "instances",
+      "disks",
+      "snapshots",
+      "addresses",
+      "buckets"
+    ],
     "sequential": true,
     "adminRows": 0,
     "adminLimit": 5000,
@@ -257,7 +336,9 @@
     "disks": [],
     "snapshots": [],
     "staticAddresses": [],
-    "retainedArtifactBuckets": ["pc-agent-capacity-0930-artifacts"],
+    "retainedArtifactBuckets": [
+      "pc-agent-capacity-0930-artifacts"
+    ],
     "budgetAlertConfirmedUsd": 200,
     "budgetMeaning": "Monthly alert configuration only; not a hard cap, measured spend or available balance",
     "programmeReservedUsd": 177.2464,
@@ -305,13 +386,24 @@
       "wallMs": 26336,
       "memPeakBytes": 407207936,
       "cpuUsec": 8979412,
-      "toolCalls": { "command_execution": 4 },
+      "toolCalls": {
+        "command_execution": 4
+      },
       "diffBytes": 0,
       "providerSendsAdmitted": 4,
       "providerResponsesCompleted": 4,
-      "providerResponseStatuses": [200, 200, 200, 200],
-      "providerReportedModels": ["gpt-6-luna"],
-      "providerReportedEfforts": ["low"],
+      "providerResponseStatuses": [
+        200,
+        200,
+        200,
+        200
+      ],
+      "providerReportedModels": [
+        "gpt-6-luna"
+      ],
+      "providerReportedEfforts": [
+        "low"
+      ],
       "finalSendDenials": 0,
       "finalSendRefusalReasons": {},
       "recordingProxyRequestsAdmitted": 4,
@@ -341,7 +433,12 @@
   "completeWorkloadFeasibility20261017": {
     "classification": "Read-only experiment design and budget feasibility; no new provider or VM admission, monthly qualification or shipment",
     "workItem": "WI-6554700010016277",
-    "governingDecisions": ["D-074", "D-075", "D-076", "D-081"],
+    "governingDecisions": [
+      "D-074",
+      "D-075",
+      "D-076",
+      "D-081"
+    ],
     "programmeReservedUsdUnchanged": 180.1196,
     "programmeCapUsdUnchanged": 200,
     "remainingConservativeHeadroomUsd": 19.8804,
@@ -367,7 +464,11 @@
       "writer": "record-session.ts writes meta.exchanges from record-proxy.ts proxy.count(), which counts recorded exchanges, not final provider sends or invoice dollars",
       "selection": "Group the 21 historical Codex meta files by task ID; prefer a non-timeout exit-0 recording, then the latest startedAt. Select one recording for each of the 20 maintained task IDs.",
       "selectedRecordings": 20,
-      "profiles": { "light": 8, "typical": 8, "heavy": 4 },
+      "profiles": {
+        "light": 8,
+        "typical": 8,
+        "heavy": 4
+      },
       "recordedProxyExchanges": 318,
       "sameCountAtCurrentPerSendReserveUsd": 228.4194,
       "programmeTotalWithThatIllustrativeReservationUsd": 408.539,
@@ -376,7 +477,9 @@
     "providerRouteReview": {
       "accountCensus": "/tmp/p544-api-account-route.json",
       "enrolledCodexAccounts": 8,
-      "credentialRefKinds": ["codex-cli"],
+      "credentialRefKinds": [
+        "codex-cli"
+      ],
       "bearerApiAccountFoundInThatCensus": false,
       "shellOpenAiApiKeyPresent": false,
       "shellOpenAiAdminKeyPresent": false,
@@ -398,5 +501,66 @@
     "Cloud audit ingestion can lag. This bounded refresh does not prove account-wide absence of unrelated charges.",
     "No old cold/CPU guest may be resurrected; no settled lifecycle, quota, installer or private-PG proof was replayed.",
     "P544 D075/D076 remain open. P537 pinned private serving-artifact acceptance passed; final deployed parity and qualified shared trial-policy activation remain open."
-  ]
+  ],
+  "alternateAccountAvailability20261021": {
+    "recordedAtUtc": "2026-10-21T15:37:04.356430+00:00",
+    "authority": "D-082 AUTO self-route; remediation of measured model-capacity failure EI-26602891632970280",
+    "classification": "one-provider-attempt diagnostic; not a coding workload or VM qualification run",
+    "accountId": "aviynw3_codex",
+    "model": "gpt-6-luna",
+    "effort": "low",
+    "credentialHeaderSha256": "c13cb5dda9fbea6d3fa960e0cd851e7f8efb3affc93c15ad0f11cab5dda30934",
+    "providerTarget": "https://chatgpt.com/backend-api/codex/responses",
+    "maximumProviderAttempts": 1,
+    "maximumModelRequests": 1,
+    "reservePerAttemptUsd": 0.7183,
+    "maximumReservationUsd": 0.7183,
+    "priorMaximumReservationsRetainedUsd": 647.0146,
+    "programmeMaximumReservedAfterAdmissionUsd": 647.7329,
+    "maximumWallSeconds": 180,
+    "taskId": "exc-light-2",
+    "outDir": "/mnt/data/agent-capacity/corpus/p544-alt-account-20261021T1538",
+    "cleanup": "Recorder private gateway stop and native session cleanup; timeout TERM then20sKILL fallback. No VM admitted. Preserve reservation even for error/timeout/no attempt.",
+    "guard": "Re-resolve complete Bearer header hash immediately before launch; require exact account/credential/target at final send. PC-heavy host admission remains mandatory. Never change the completed batch pin or merge this diagnostic into its task population."
+  },
+  "completeAlternateAccountAdmission20261021": {
+    "classification": "fresh full20-task candidate on a distinct account after one admitted response-completed diagnostic; previous failed sample retained",
+    "ownerSource": "session_turn:codex:01a15d29-3ba9-7d40-b9b5-934b6151a1e2:20",
+    "decision": "D-082",
+    "accountId": "aviynw3_codex",
+    "model": "gpt-6-luna",
+    "effort": "low",
+    "credentialHeaderSha256": "c13cb5dda9fbea6d3fa960e0cd851e7f8efb3affc93c15ad0f11cab5dda30934",
+    "credentialBinding": "SHA256 of the complete outgoing Authorization header including Bearer prefix, re-read immediately before admission; token and header are never persisted",
+    "providerTarget": "https://chatgpt.com/backend-api/codex/responses",
+    "maximumProviderAttempts": 650,
+    "maximumModelRequests": 650,
+    "reservePerAttemptUsd": 0.7183,
+    "maximumReservationUsd": 466.895,
+    "priorMaximumReservationsRetainedUsd": 647.7329,
+    "programmeMaximumReservedAfterAdmissionUsd": 1114.6279,
+    "priceTableVersion": "53a578c68ba664e8",
+    "maximumWallSeconds": 7200,
+    "parallelSessions": 1,
+    "outDir": "/mnt/data/agent-capacity/corpus/p544-alt-complete-20261021T1542",
+    "corpus": "scripts/agent-capacity/corpus/tasks.json: all 20 tasks, 8 light, 8 typical and 4 heavy, ten tasks each in pinned Excalidraw and Mealie repositories",
+    "pinnedRepositories": {
+      "excalidraw": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+      "mealie": "7e03d041d7571e8b2a918140fcf9237f2d7a903d"
+    },
+    "admissionControls": [
+      "Use the maintained pc-heavy host admission and recorder final-send budget gateway; no unadmitted provider route or automatic failover.",
+      "Recheck the complete-header digest before launch; mismatches refuse before provider fetch.",
+      "Keep this full reservation after any response, timeout, failure or partial cost report; no automatic top-up.",
+      "Stop at 650 attempts, the USD bound or the wall deadline; preserve raw exchange, native CLI, diff and fsynced reservation evidence.",
+      "No VM creation is admitted by this recording reservation. Any later cloud run needs its own finite reservation and provider deletion deadline.",
+      "Provider-reported tokens and list-price calculations are supporting evidence only; actual applicable charges and all monthly categories remain unqualified."
+    ],
+    "recordedAtUtc": "2026-10-21T15:41:23.098913+00:00",
+    "blocker": "EI-26602891632970280",
+    "diagnosticRef": "/mnt/data/agent-capacity/corpus/p544-alt-account-20261021T1538/recording-budget.jsonl",
+    "previousCompleteSample": "docs/evidence/p544-complete-corpus-2026-10-21.json",
+    "reason": "Original sample20records has14explicit model-capacity failures on aviynw5_codex. Alternate aviynw3_codex diagnostic admitted1 response-completed with tokenusage, then requestlimit denied the second; it is not a task completion or proof of reliable capacity. Do not merge or discard original failed/censored observations. This candidate uses serial sessions and unchanged workload/model/effort; no VMperformance claim.",
+    "providerScope": "No VM or cloud resource creation admitted by recording; prior census is historical only."
+  }
 }

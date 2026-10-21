@@ -404,6 +404,8 @@ interface RecentCall {
   argsRender?: string;
   /** Distinctive scalar arg values (ids/slugs) — the chained-burst signal (P-002). */
   argValues?: string[];
+  /** Repeated CAS writes to this object must retain their observed order. */
+  revisionTarget?: string;
   /** Measured wall time of this call (EI-21254965187146713). What makes the fold advice CHECKABLE:
    *  without it the hint can only assert that folding is cheaper, and for slow children it is not. */
   durationMs?: number;
@@ -554,6 +556,32 @@ function chainValues(v: unknown, depth = 0, out: string[] = []): string[] {
   return out;
 }
 
+/** A revision precondition on a named object is evidence of a possible write dependency, even
+ * when both calls already have literal arguments. Keep this separate from argsRender: long recipe
+ * scripts are omitted from examples, but must not lose their dependency classification. */
+function revisionTarget(toolName: string, args: unknown): string | undefined {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return undefined;
+  const record = args as Record<string, unknown>;
+  const guarded = Object.entries(record).some(([key, value]) =>
+    /^(?:expected|base)(?:revision|version|hash|contenthash)$/i.test(key.replace(/_/g, '')) &&
+    ((typeof value === 'string' && value.length > 0) ||
+      (typeof value === 'number' && Number.isFinite(value))),
+  );
+  const id = record.id ?? record.slug;
+  if (!guarded || typeof id !== 'string' || id.length === 0 || id.length > 200) return undefined;
+  return `${normalize(toolName)}:${JSON.stringify([record.harness ?? null, id])}`;
+}
+
+function hasRevisionDependency(recent: readonly RecentCall[]): boolean {
+  const targets = new Set<string>();
+  for (const call of recent) {
+    if (!call.revisionTarget) continue;
+    if (targets.has(call.revisionTarget)) return true;
+    targets.add(call.revisionTarget);
+  }
+  return false;
+}
+
 /** True when the same distinctive arg value appears in ≥2 DIFFERENT tools' calls in the window —
  *  one object threaded through several verbs (release → claim → comment) = a chained pipeline. */
 function isChainedBurst(recent: RecentCall[]): boolean {
@@ -595,9 +623,9 @@ function effectiveCall(toolName: string, args: unknown): { tool: string; args: u
  *  authoring.
  *
  *  WI-2142449: this was a sequential `for`-loop until every input here was recognized as
- *  independent BY CONSTRUCTION — each is a call already made with its own already-known literal
- *  args, never one derived from a sibling's result in this burst (a genuinely cursor-chained
- *  sequence could not be expressed as this fixed `inputs` list either way). A serial fold on that
+ *  independent reads — each is a call already made with its own already-known literal args.
+ *  Literal arguments alone do not prove independence for writes: same-object revision guards
+ *  route to pipelineSkeleton before reaching this helper. A serial fold on the read-only
  *  premise only ever cost more: for `dev:pipeline_position` (~3-6s/call) an 8-call burst summed
  *  past the 30s script budget while its max sat comfortably inside it.
  *
@@ -890,6 +918,7 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
     ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
     argsRender: renderArgs(args),
     argValues: argValues.length > 0 ? argValues : undefined,
+    revisionTarget: revisionTarget(toolName, args),
     durationMs,
     ...(forced ? { forced: true } : {}),
   });
@@ -950,6 +979,12 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   else if (seen.size >= FANOUT_DISTINCT_THRESHOLD && distinctTurnsInWindow >= FANOUT_DISTINCT_THRESHOLD)
     kind = isChainedBurst(st.recent) ? 'pipeline' : 'fanout';
   if (!kind) return null;
+  // EI-26608718475648175: successive recipes:revise calls carry different expectedRevision
+  // values for the SAME recipe. Promise.all would race the dependent CAS operations. Classify
+  // before the budget gate so their sequential cost is the sum, not the parallel maximum.
+  if (hasRevisionDependency(kind === 'same-tool' ? st.recent.filter((c) => c.tool === toolName) : st.recent)) {
+    kind = 'pipeline';
+  }
 
   // BUDGET GATE (EI-21254965187146713) — before the backoff, deliberately. A fold we decline to
   // recommend must not consume the cooldown: the caller did nothing wrong, and burning their quota

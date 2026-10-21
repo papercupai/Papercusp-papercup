@@ -48,6 +48,7 @@ import {
   readResourceQueue,
   releaseAllResourcesForOwner,
   tryAcquireResource,
+  tryHeartbeatResource,
   tryReleaseResource,
   type ResourceAcquireResult,
 } from '../../agent-tools/locks/su-lock-store';
@@ -926,6 +927,10 @@ interface GitSyncLockRequest {
   mode: GitSyncLockMode;
 }
 
+interface GitSyncHeldLock extends GitSyncLockRequest {
+  lockId: string;
+}
+
 /** Minimal tagged-template seam over the txn handle (postgres-js `Sql`), so this
  *  module needs no direct `postgres` type dependency. */
 type SqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>;
@@ -1084,16 +1089,17 @@ async function releaseAll(
 /**
  * Refresh every acquired resource lock while the git pipeline is running.
  *
- * `tryAcquireResource` deliberately coalesces a same-owner acquire into a lease
- * refresh, so this uses the exact same store path and resource-domain contract as
- * the initial acquire. Only one refresh pass may be in flight; a slow lock-store
+ * Renew only the live lock IDs acquired by this fire. Re-acquisition takes the
+ * exclusive workspace gate and sweeps expired leases; a heartbeat must neither
+ * serialize unrelated renewals nor resurrect an expired lease. Only one pass
+ * may be in flight; a slow lock-store
  * round trip must not build an unbounded interval backlog. The stop function
  * waits for an already-started pass before the caller releases the locks.
  */
 function startLockHeartbeat(
   cd: string,
   slug: string,
-  resources: GitSyncLockRequest[],
+  resources: GitSyncHeldLock[],
   owner: string,
   /** WI-10006724: told about every confirmed refresh and every refusal; see git-sync-lease-fence.ts. */
   fence?: GitSyncLeaseFence,
@@ -1113,31 +1119,23 @@ function startLockHeartbeat(
       // exclusive restart drain converge under a multi-fire settle burst.
       const results = await acquireWithContentionRetry(() =>
         inWorkspaceTxn(cd, owner, async (tx) => {
-          const refreshed: Array<{ resource: string; result: ResourceAcquireResult }> = [];
-          for (const { resource, mode } of resources) {
-            const result = await tryAcquireResource(tx, {
-              coordinationDomain: cd,
-              resource,
-              mode,
-              owner,
-              ownerLabel: `git-sync:${slug}`,
-              reason: `auto-commit ${slug}`,
-              ttlSec: LOCK_TTL_SEC,
-            });
+          const refreshed: Array<{ resource: string; result: Awaited<ReturnType<typeof tryHeartbeatResource>> }> = [];
+          for (const { resource, lockId } of resources) {
+            const result = await tryHeartbeatResource(tx, cd, owner, lockId, LOCK_TTL_SEC);
             refreshed.push({ resource, result });
           }
           return refreshed;
-        }),
+        }, { leaseRenewal: true }),
       );
       let refused = false;
       for (const { resource, result } of results) {
-        if (!result.ok) {
+        if (!result.extended) {
           refused = true;
           console.error(
-            `[git-sync] ${slug}: LOST exclusive lock ${resource} during lease refresh (${result.reason ?? 'refused'})`,
+            `[git-sync] ${slug}: LOST exclusive lock ${resource} during lease refresh (lease expired or no longer owned)`,
           );
           // Before WI-10006724 this was log-only and the fire kept writing.
-          fence?.markLost('refused', `${resource}: ${result.reason ?? 'refused'}`);
+          fence?.markLost('refused', `${resource}: lease expired or no longer owned`);
         }
       }
       if (!refused) fence?.confirm(sentAt);
@@ -1230,7 +1228,7 @@ async function acquireLocks(
   cd: string,
   slug: string,
   resources: GitSyncLockRequest[],
-  acquired: GitSyncLockRequest[],
+  acquired: GitSyncHeldLock[],
   owner: string,
 ): Promise<AcquireOutcome> {
   const perSlug = gitSyncResourceName(slug);
@@ -1366,7 +1364,7 @@ async function acquireLocks(
     // here on, a row naming it is legitimately held and must never be read as
     // an orphan (by a concurrent fire in this process, or by our own retry).
     gitSyncLockState.inFlight.add(owner);
-    acquired.push({ resource, mode });
+    acquired.push({ resource, mode, lockId: r.lock_id });
   }
   return { state: 'acquired' };
 }
@@ -1437,7 +1435,7 @@ export async function runWithGitSyncPerInstallLease<T>(
 ): Promise<GitSyncPerInstallLeaseResult<T>> {
   const coordinationDomain = workspaceId || '*';
   const resources: GitSyncLockRequest[] = [{ resource: gitSyncResourceName(slug), mode: 'exclusive' }];
-  const acquired: GitSyncLockRequest[] = [];
+  const acquired: GitSyncHeldLock[] = [];
   const owner = newGitSyncLockOwner();
   // Taken BEFORE the request, so the fence's expiry estimate is conservative.
   const leaseRequestedAt = Date.now();
@@ -1456,7 +1454,7 @@ export async function runWithGitSyncPerInstallLease<T>(
     acquiredAt: leaseRequestedAt,
     unconfirmedLimitMs: GIT_SYNC_LEASE_UNCONFIRMED_LIMIT_MS,
   });
-  const stopHeartbeat = startLockHeartbeat(coordinationDomain, slug, resources, owner, fence);
+  const stopHeartbeat = startLockHeartbeat(coordinationDomain, slug, acquired, owner, fence);
   let heartbeatStop: Promise<void> | null = null;
   const stopHeartbeatOnce = (): Promise<void> => {
     if (!heartbeatStop) heartbeatStop = stopHeartbeat();
@@ -3675,7 +3673,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     seenResources.add(resource);
     return true;
   });
-  const acquired: GitSyncLockRequest[] = [];
+  const acquired: GitSyncHeldLock[] = [];
   const lockOwner = newGitSyncLockOwner();
   const withActivityOwner = (activity: GitSyncActivityFields): GitSyncActivityMarker => ({
     ...activity,
@@ -4652,7 +4650,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       const settlementResources: GitSyncLockRequest[] = [
         { resource: GIT_SYNC_RESTART_BARRIER_RESOURCE, mode: 'shared' },
       ];
-      const settlementAcquired: GitSyncLockRequest[] = [];
+      const settlementAcquired: GitSyncHeldLock[] = [];
       const settlementLock = await acquireLocks(cd, slug, settlementResources, settlementAcquired, settlementLockOwner);
       if (settlementLock.state !== 'acquired') {
         const reason =

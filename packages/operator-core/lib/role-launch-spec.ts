@@ -1520,7 +1520,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
         try {
           // Loaded lazily, like the flags above: the blueprint barrel pulls the loader (and its
           // harness-path resolution) which this module otherwise never needs at import time.
-          const { composeSuStackSource, normalizeStackBinding, slotSpec, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
+          const { composeSuStackSource, isSuTilingError, normalizeStackBinding, slotSpec, SU_SOURCE_REL, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
           const { getIdentitySource } = await import('./agent-identities/source');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
           // P-012 / P-021: the launch-time stack binding — the fleet posture the session
@@ -1574,12 +1574,28 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
               });
             }
           }
-          suBaseText = composeSuStackSource({
-            harnessDir,
+          const composeFrom = (dir: string) => composeSuStackSource({
+            harnessDir: dir,
             binding: launchBinding,
             workItemWorkflow: hostManagedWorkflow ? 'host-managed' : undefined,
             resolveLayer: (layer) => selectedLayerDocs.get(`${layer.slot}:${layer.id}`) ?? null,
           }).text;
+          try {
+            suBaseText = composeFrom(harnessDir);
+          } catch (e) {
+            // WI-6554700010019096: su.md resolves through the D-001 prompt root (the
+            // integration/staging tree), but its headings are a contract with the SU_TILES
+            // compiled into THIS build. While main is held behind staging, the staging su.md can
+            // carry headings this build has never seen, and rethrowing here failed every
+            // fleet-member launch (modes selected) with HTTP 400. Compose this build's own su.md
+            // instead, so the text and the tiles come from one build; the new structure goes
+            // live together with the code that knows it.
+            const buildDir = harnessRoot();
+            if (!isSuTilingError(e) || path.resolve(buildDir) === path.resolve(harnessDir)) throw e;
+            console.warn(`[role-launch-spec] su.md at ${suBaseSource} does not tile against this build's SU_TILES — composing the serving build's su.md under ${buildDir} instead: ${e instanceof Error ? e.message : String(e)}`);
+            suBaseText = composeFrom(buildDir);
+            suBaseSource = path.join(buildDir, SU_SOURCE_REL);
+          }
         } catch (e) {
           if (modeCatalog || requestedStack.layers.length > 0 || hostManagedWorkflow) throw e;
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);

@@ -61,6 +61,7 @@
  *
  * Server-or-bundle-safe: pure, no I/O.
  */
+import { CHANGE_KINDS } from '../change-kind-catalog';
 import { matchesAny } from './policy';
 
 /**
@@ -269,13 +270,23 @@ function withinWorkItemBoundary(toolName: string, args: unknown,
   const keys: Record<string, readonly string[]> = {
     'work_items:get': ['id', 'harness', 'detail', 'resume', 'checksOnly', 'operationalBrief', 'threadLimit'],
     'work_items:checkpoint': ['id', 'harness', 'checkpoint', 'append', 'unchanged', 'contentHash'],
-    'work_items:complete': ['id', 'harness', 'state', 'assumptions', 'completion', 'validateOnly'],
+    'work_items:complete': ['id', 'harness', 'state', 'assumptions', 'completion', 'validateOnly',
+      'changeKinds', 'changeKindReason'],
   };
   const permitted = keys[toolName];
   if (!permitted || Object.keys(row).some(key => !permitted.includes(key) && key !== 'projection' && key !== 'payloadTier')) return false;
   if (toolName !== 'work_items:complete') return true;
   if (row.state !== 'done' || row.assumptions !== 'none' || !row.completion ||
       typeof row.completion !== 'object' || Array.isArray(row.completion)) return false;
+  // A successful close is refused without a change-kind declaration, so the
+  // declaration must pass. Both fields are inert labels on this same item. Per-kind
+  // proof stays in the root completion fields: `completion.kindEvidence` is not
+  // admitted below, because its ui-artifact proof is read server-side.
+  if (row.changeKinds !== undefined && (!Array.isArray(row.changeKinds) || row.changeKinds.length === 0 ||
+      row.changeKinds.length > CHANGE_KINDS.length ||
+      !row.changeKinds.every(kind => typeof kind === 'string' && (CHANGE_KINDS as readonly string[]).includes(kind)))) return false;
+  if (row.changeKindReason !== undefined && (typeof row.changeKindReason !== 'string' ||
+      row.changeKindReason.trim().length === 0 || row.changeKindReason.length > 1000)) return false;
   const completion = row.completion as Record<string, unknown>;
   if (Object.keys(completion).some(key => !['summary', 'testsRun', 'testResult', 'verifiedHow', 'filesChanged', 'filesDeleted', 'verification'].includes(key))) return false;
   if (completion.verification !== undefined) {

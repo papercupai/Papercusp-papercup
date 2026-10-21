@@ -1275,17 +1275,22 @@ async function evictWorkspaceQuotaWithLock(
   targetBytes: () => number,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
   now: () => number = Date.now,
+  reconcileReservations = false,
 ): Promise<{ used: number; evictions: number; bytes: number }> {
-  return withScratchWorkspaceDataMutex(workspaceId, 'quota-eviction', () =>
-    withScratchWorkspaceMutex(workspaceId, 'quota-eviction', async () => {
-      const entry = usageEntry(workspaceId);
-      entry.runBytesByPath.clear();
-      entry.runBytesValid = false;
-      entry.refreshDeferred = false;
-      const reclaimed = await evictWorkspaceQuotaLocked(workspaceId, targetBytes, false, diagnostics, now);
-      await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt || Date.now());
-      return reclaimed;
-    }));
+  const reclaimed = await withScratchWorkspaceDataMutex(workspaceId, 'quota-eviction', async () => {
+    const entry = usageEntry(workspaceId);
+    entry.runBytesByPath.clear();
+    entry.runBytesValid = false;
+    entry.refreshDeferred = false;
+    return evictWorkspaceQuotaLocked(workspaceId, targetBytes, reconcileReservations, diagnostics, now);
+  });
+  // Publish only after the long tree walk is complete. The exclusive data lease prevents
+  // payload writers and GC from mutating the tree while the walk is in progress.
+  await withScratchWorkspaceMutex(workspaceId, 'quota-eviction-state', async () => {
+    const entry = usageEntry(workspaceId);
+    await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt || Date.now());
+  });
+  return reclaimed;
 }
 
 const SCRATCH_SIZE_SCAN_MAX_IN_FLIGHT = 2;
@@ -1499,11 +1504,13 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
           entry.refreshDeferred = false;
           entry.runBytesByPath = runBytesByPath;
           entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite);
-          if (measuredBytes > targetBytes) {
-            await evictWorkspaceQuotaLocked(workspaceId, () => targetBytes, true, diagnostics, now);
+          if (measuredBytes <= targetBytes) {
+            await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt);
           }
-          await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt);
         }));
+      if (measuredBytes > targetBytes) {
+        await evictWorkspaceQuotaWithLock(workspaceId, () => targetBytes, diagnostics, now, true);
+      }
     } finally {
       entry.refreshDiagnostics = null;
       entry.refreshing = null;
@@ -2068,26 +2075,30 @@ export async function writeWithScratchQuota(
         const diagnostics = newScratchQuotaRecoveryDiagnostics();
         activeRecoveryDiagnostics = diagnostics;
         try {
-          await withScratchWorkspaceDataMutex(opts.workspaceId, 'quota-recovery', () =>
-            withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery', async () => {
-              const targetBytes = Math.max(
-                0,
-                WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
-                  [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0),
-              );
-              await evictWorkspaceQuotaLocked(
-                opts.workspaceId,
-                () => targetBytes,
-                true,
-                diagnostics,
-              );
-              await writeSharedScratchQuotaState(
-                opts.workspaceId,
-                entry.bytes,
-                entry.measuredAt || Date.now(),
-                observeAwait,
-              );
-            }));
+          // The tree walk/deletion is protected by the exclusive data lease. Keep the quota
+          // ledger mutex out of that long filesystem phase so result-door reservations can
+          // still publish their short metadata updates while recovery is running.
+          await withScratchWorkspaceDataMutex(opts.workspaceId, 'quota-recovery', async () => {
+            const targetBytes = Math.max(
+              0,
+              WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
+                [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0),
+            );
+            await evictWorkspaceQuotaLocked(
+              opts.workspaceId,
+              () => targetBytes,
+              true,
+              diagnostics,
+            );
+          });
+          await withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery-state', async () => {
+            await writeSharedScratchQuotaState(
+              opts.workspaceId,
+              entry.bytes,
+              entry.measuredAt || Date.now(),
+              observeAwait,
+            );
+          });
         } finally {
           timings.quotaRecoveryDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
           activeRecoveryDiagnostics = undefined;

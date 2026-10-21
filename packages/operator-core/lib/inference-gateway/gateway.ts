@@ -25,6 +25,7 @@ import { processMonotonicClock } from '../process-monotonic-clock';
 import { readProcessIdentity } from '../process-identity';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { resolveCodexModel } from '../model-context-budget.mjs';
+import { stripCodexModelMultiAgent } from '@papercusp/orchestrator/codex-gateway-config';
 import { ONE_MILLION_MODEL_ALIASES, resolveGatewayModel, type GatewayModelResolution } from './model-aliases';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -5758,7 +5759,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
         );
       }
     }
-    const models = order.map((slug) => modelsBySlug.get(slug)!).filter(Boolean);
+    // Plan client-native-features-adoption-2026-10-21 D-005 route 1: the account's
+    // native catalog gives models `multi_agent_version` / `multi_agent_reasoning_effort`,
+    // which switch Codex native subagent tools on whatever the session's [features]
+    // say. Every gateway-routed Codex session reads THIS catalog, so strip them here;
+    // the psu `--allow-subagents` opt-in restores v1 subagents per launch.
+    const models = order
+      .map((slug) => modelsBySlug.get(slug)!)
+      .filter(Boolean)
+      .map((row) => stripCodexModelMultiAgent(row));
     return {
       // Mirror of the ChatGPT backend's Codex model catalog so the Codex CLI
       // `/model` picker offers the full current lineup when routed THROUGH the

@@ -100,7 +100,14 @@ interface Alarm { id: string; barKey: string; conditionKey: string; doneWhenRegr
  * store whose condition key enforces one OPEN alarm per requirement (as the unique index
  * behind upsertConditionWorkItem does), blocks links and emitted events.
  */
-function world(opts: { mapped?: Record<string, Array<{ id: string; terminal: boolean }>>; deviations?: string[] } = {}) {
+function world(
+  opts: {
+    mapped?: Record<string, Array<{ id: string; terminal: boolean }>>;
+    deviations?: string[];
+    /** Work-item id -> the dependency store's refusal reason for a `blocks` edge onto it. */
+    refuseBlocks?: Record<string, string>;
+  } = {},
+) {
   const verdicts = new Map<string, ConformanceCheckVerdict | null>();
   const ledger: RubricCheckResult[] = [];
   const alarms: Alarm[] = [];
@@ -156,7 +163,10 @@ function world(opts: { mapped?: Record<string, Array<{ id: string; terminal: boo
       return opts.mapped?.[barKey] ?? [];
     },
     async linkBlocks(alarmId, workItemId) {
+      const refused = opts.refuseBlocks?.[workItemId];
+      if (refused !== undefined) return { linked: false, reason: refused };
       blocks.add(`${alarmId}->${workItemId}`);
+      return { linked: true };
     },
     async emitDriftAlarm(payload) {
       events.push(payload);
@@ -253,6 +263,34 @@ describe('runPlanConformance — a drift alarm blocks dependent work (R-3)', () 
     expect([...w.blocks].sort()).toEqual([`${alarmId}->WI-1`, `${alarmId}->WI-3`]);
     expect(outcome.requirements.find((r) => r.barKey === 'R-1')!.blocked).toEqual(['WI-1', 'WI-3']);
     expect(w.events[0]!.blocked).toEqual(['WI-1', 'WI-3']);
+    expect(w.events[0]!.blockRefused).toEqual([]);
+  });
+
+  it('records the alarm, reports a policy-refused blocks edge, and still emits and reconciles the rest', async () => {
+    const reason = 'work_item_deps candidate rejected: cannot add unresolved blocker behind active dependant WI-1';
+    const w = world({
+      mapped: {
+        'R-1': [
+          { id: 'WI-1', terminal: false },
+          { id: 'WI-3', terminal: false },
+        ],
+      },
+      refuseBlocks: { 'WI-1': reason },
+    });
+    w.verdicts.set(R1_FALSIFIER, 'fail');
+    const outcome = await w.run();
+    const alarmId = outcome.alarmsOpened[0]!;
+    expect(alarmId).toBeDefined();
+    const row = outcome.requirements.find((r) => r.barKey === 'R-1')!;
+    expect(row).toMatchObject({ drifting: true, alarm: { action: 'opened', id: alarmId } });
+    expect(row.blocked).toEqual(['WI-3']);
+    expect(row.blockRefused).toEqual([{ workItemId: 'WI-1', reason }]);
+    expect([...w.blocks]).toEqual([`${alarmId}->WI-3`]);
+    // The event that announces the alarm still fires, and names the refusal.
+    expect(w.events).toHaveLength(1);
+    expect(w.events[0]).toMatchObject({ alarmId, blocked: ['WI-3'], blockRefused: [{ workItemId: 'WI-1', reason }] });
+    // Every requirement after R-1 is still reconciled (the refusal did not abort the run).
+    expect(outcome.requirements.map((r) => r.barKey)).toEqual(expect.arrayContaining(['R-1', 'R-2']));
   });
 
   it('closes the alarm (releasing its blocks) once every check it rests on is measured green', async () => {

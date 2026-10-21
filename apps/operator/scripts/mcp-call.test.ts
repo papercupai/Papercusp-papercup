@@ -40,6 +40,13 @@ import {
   buildUnreachableDiagnostic,
   buildConnectionRetryDiagnostic,
   fetchWithConnectionRecovery,
+  MCP_CALL_TRANSPORTS,
+  resolveMcpTransport,
+  shouldTryUdsFallback,
+  buildUdsFallbackNotice,
+  buildUdsUnavailableDiagnostic,
+  resolveAgentMcpDiscoveryHome,
+  callToolViaAgentMcpUds,
 } from '../../../scripts/mcp-call.mjs';
 
 describe('mcp-call argument parsing', () => {
@@ -1082,5 +1089,147 @@ describe('mcp-call door-projected partial result (EI-24678010189721217)', () => 
     const allowed = await withFakeMcpEndpoint(projected, (port: number, home: string) => runMcpCall(port, home, ['--allow-partial']));
     expect(allowed.code, allowed.stderr).toBe(0);
     expect(allowed.stderr).toContain('--allow-partial given');
+  });
+});
+
+// WI-6554700010019317: a psu native Bash runs with --unshare-net, so every
+// loopback TCP port refuses while the operator is healthy. The toolless
+// recovery ladder's last rung (this script) must then reach the operator's
+// agent-MCP unix socket instead of dead-ending on ECONNREFUSED.
+describe('mcp-call unix-socket fallback (WI-6554700010019317)', () => {
+  const refused = () => Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3070'), { code: 'ECONNREFUSED' });
+  const reset = () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+
+  it('defaults to auto and rejects an unknown transport', () => {
+    expect(MCP_CALL_TRANSPORTS).toEqual(['auto', 'http', 'uds']);
+    expect(resolveMcpTransport({})).toBe('auto');
+    expect(resolveMcpTransport({ transport: 'uds' })).toBe('uds');
+    expect(() => resolveMcpTransport({ transport: 'tcp' })).toThrow(/--transport must be one of auto, http, uds/);
+    expect(parseArgs(['coord:whoami', '{}', '--transport', 'uds']).flags.transport).toBe('uds');
+  });
+
+  it('falls back only when every HTTP attempt was refused before a request was sent', () => {
+    const allRefused = [{ port: '9071', error: refused() }, { port: '3070', error: refused() }];
+    expect(shouldTryUdsFallback({ transport: 'auto', attempts: allRefused })).toBe(true);
+    // A non-refusal can mean the request reached a handler: never send it twice.
+    expect(shouldTryUdsFallback({ transport: 'auto', attempts: [...allRefused, { port: '3170', error: reset() }] })).toBe(false);
+    expect(shouldTryUdsFallback({ transport: 'auto', attempts: [] })).toBe(false);
+    expect(shouldTryUdsFallback({ transport: 'http', attempts: allRefused })).toBe(false);
+    expect(shouldTryUdsFallback({ transport: 'uds', attempts: [] })).toBe(true);
+    expect(buildUdsFallbackNotice(allRefused)).toContain('port(s) 9071, 3070');
+  });
+
+  it('reads the discovery descriptor from the operator home, never the session PAPERCUSP_HOME', () => {
+    expect(resolveAgentMcpDiscoveryHome({ PAPERCUSP_HOME: '/ws/papercusp' }, () => '/home/u')).toBe('/home/u');
+    expect(resolveAgentMcpDiscoveryHome({ PAPERCUSP_OPERATOR_HOME: ' /real/home ' }, () => '/home/u')).toBe('/real/home');
+  });
+
+  type ConnectOptions = { url: string; headers: Record<string, string>; mode: 'uds'; name: string; home?: string };
+
+  function fakeConnect(plan: Record<string, Array<'unavailable' | 'failed' | { callTool: (params: object) => Promise<unknown> }>>) {
+    const connects: ConnectOptions[] = [];
+    const calls: Array<{ port: string; params: object }> = [];
+    let closed = 0;
+    const connect = async (options: ConnectOptions) => {
+      connects.push(options);
+      const port = new URL(options.url).port;
+      const step = plan[port]?.shift();
+      if (step === undefined || step === 'unavailable') throw new Error('uds_endpoint_unavailable');
+      if (step === 'failed') throw new Error('uds_connection_failed');
+      return {
+        client: {
+          callTool: async (params: object) => { calls.push({ port, params }); return step.callTool(params); },
+          close: async () => { closed += 1; },
+        },
+      };
+    };
+    return { connect, connects, calls, closed: () => closed };
+  }
+
+  it('skips a port with no socket, sends the call once on the next, and closes the client', async () => {
+    const fake = fakeConnect({ '9071': ['unavailable'], '3070': [{ callTool: async () => ({ content: [{ type: 'text', text: 'ok' }] }) }] });
+    const params = buildMcpCallParams('coord:whoami', {}, { outputGroupId: 'g1' });
+    const outcome = await callToolViaAgentMcpUds({
+      ports: ['9071', '3070'], tokens: ['tok-a', 'tok-b'], query: 'superuser=1&client=su-x', params, connect: fake.connect, home: '/home/u',
+    });
+    expect(outcome).toEqual({ kind: 'result', port: '3070', result: { content: [{ type: 'text', text: 'ok' }] } });
+    expect(fake.calls).toEqual([{ port: '3070', params }]);
+    // An unadvertised socket is not retried with the second bearer.
+    expect(fake.connects.map((c) => new URL(c.url).port)).toEqual(['9071', '3070']);
+    expect(fake.connects[1]).toMatchObject({
+      url: 'http://localhost:3070/api/mcp?superuser=1&client=su-x',
+      headers: { Authorization: 'Bearer tok-a' },
+      mode: 'uds',
+      home: '/home/u',
+    });
+    expect(fake.closed()).toBe(1);
+  });
+
+  it('retries the handshake with the next bearer, which cannot run the call twice', async () => {
+    const fake = fakeConnect({ '3070': ['failed', { callTool: async () => ({ content: [] }) }] });
+    const outcome = await callToolViaAgentMcpUds({
+      ports: ['3070'], tokens: ['stale', 'fresh'], query: 'q=1', params: {}, connect: fake.connect,
+    });
+    expect(outcome.kind).toBe('result');
+    expect(fake.connects.map((c) => c.headers.Authorization)).toEqual(['Bearer stale', 'Bearer fresh']);
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it('returns a JSON-RPC error as the answer and does not try another port', async () => {
+    const rpcError = Object.assign(new Error('MCP error -32602: bad args'), { code: -32602, data: { field: 'id' } });
+    const fake = fakeConnect({
+      '9071': [{ callTool: async () => { throw rpcError; } }],
+      '3070': [{ callTool: async () => ({ content: [] }) }],
+    });
+    const outcome = await callToolViaAgentMcpUds({ ports: ['9071', '3070'], tokens: ['t'], query: '', params: {}, connect: fake.connect });
+    expect(outcome).toEqual({ kind: 'error', port: '9071', error: { code: -32602, message: 'MCP error -32602: bad args', data: { field: 'id' } } });
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it('reports a lost response as outcome-unknown and never re-sends the call', async () => {
+    const lost = Object.assign(new Error('uds_outcome_unknown: connection lost'), { code: 'uds_outcome_unknown' });
+    const fake = fakeConnect({
+      '9071': [{ callTool: async () => { throw lost; } }],
+      '3070': [{ callTool: async () => ({ content: [] }) }],
+    });
+    const outcome = await callToolViaAgentMcpUds({ ports: ['9071', '3070'], tokens: ['t'], query: '', params: {}, connect: fake.connect });
+    expect(outcome.kind).toBe('outcome-unknown');
+    expect(outcome).toMatchObject({ port: '9071' });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.closed()).toBe(1);
+  });
+
+  it('names every unreachable socket when none accepts the connection', async () => {
+    const fake = fakeConnect({ '9071': ['unavailable'], '3170': ['failed', 'failed'] });
+    const outcome = await callToolViaAgentMcpUds({ ports: ['9071', '3170'], tokens: ['a', 'b'], query: '', params: {}, connect: fake.connect });
+    expect(outcome).toEqual({
+      kind: 'unavailable',
+      unavailable: [
+        { port: '9071', reason: 'uds_endpoint_unavailable' },
+        { port: '3170', reason: 'uds_connection_failed' },
+        { port: '3170', reason: 'uds_connection_failed' },
+      ],
+    });
+    expect(fake.calls).toHaveLength(0);
+    expect(buildUdsUnavailableDiagnostic(outcome.kind === 'unavailable' ? outcome.unavailable : [])).toContain('port 3170: uds_connection_failed');
+  });
+
+  it('--transport uds skips HTTP entirely and reports a missing socket descriptor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mcp-call-uds-'));
+    try {
+      const tokenFile = join(root, 'superuser-token');
+      await writeFile(tokenFile, 'fixture-token\n', { mode: 0o600 });
+      const result = await runMcpCallWithArgs(
+        ['coord:whoami', '{}', '--transport', 'uds', '--port', '1', '--client', 'su-uds-fixture'],
+        { PAPERCUSP_MCP_TOKEN_FILE: tokenFile, PAPERCUSP_OPERATOR_HOME: root, HOME: root },
+      );
+      expect(result.code, result.stderr).toBe(4);
+      expect(result.stderr).toContain('no operator agent-MCP unix socket accepted the connection');
+      expect(result.stderr).toContain('port 1: uds_endpoint_unavailable');
+      // The HTTP pass never ran: no ECONNREFUSED diagnostic for port 1.
+      expect(result.stderr).not.toContain('ECONNREFUSED');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

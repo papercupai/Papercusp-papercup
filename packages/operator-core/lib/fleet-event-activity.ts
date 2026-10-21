@@ -18,6 +18,7 @@ export const FLEET_ACTIVITY_TRANSITIONS = [
   'drained',
   'admission-blocked',
   'member-quota-starved',
+  'launch-failed',
 ] as const;
 
 export type FleetActivityTransition = (typeof FLEET_ACTIVITY_TRANSITIONS)[number];

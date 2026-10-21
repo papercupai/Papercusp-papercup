@@ -15,9 +15,9 @@
  * The fix records the baseline PER FILE (`{ "packages/operator-core/lib/x.ts": 2, … }`) and
  * gates each file against its own count. A regression is therefore ATTRIBUTED to the file that
  * caused it — the gate NAMES it (`lib/x.ts: 2 → 4  (+2)`) — and a concurrent ±1 flap in file A
- * never reds an agent who only edited file B. `--mine` scopes the FAILURE to the files you
- * actually changed (from `git status`), so you can cheaply verify "my change is tsc-clean" even
- * while the shared tree carries unrelated peer drift.
+ * never reds an agent who only edited file B. `--mine` scopes the FAILURE to paths reported
+ * by `git status` for this checkout. On this shared tree those paths include peer edits, so
+ * use `--files` to check only the paths you changed.
  *
  * Two hard rules carry over (audit P-073, EI-104 — a frozen baseline must not neutralize strictness):
  *
@@ -53,7 +53,7 @@
  *                                 # the second full ~150s compile this reporting exists to avoid.
  *
  * Exit codes:
- *   0 — OK (every file at/under its baseline; or --mine and your files are clean; or ratcheted down)
+ *   0 — OK (every file at/under its baseline; or every --mine/--files path is clean; or ratcheted down)
  *   1 — a file regressed above its baseline, a TS1xxx hard-fail diagnostic, or a script/toolchain error
  *
  * ## EI-847 — this is now a THIN per-project CLI over a shared gate

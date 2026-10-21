@@ -14,6 +14,34 @@ import ItemTypeCompletionForm, {
   typeFieldsFrom,
 } from "./ItemTypeCompletionForm";
 
+// Radix Select does not open in jsdom, so the harness Select is stubbed to a native select that
+// keeps the props the form passes (id for the label, ariaLabel, value, onChange). This is the
+// same stub PlanFilters.test.tsx and GovernancePolicyAdmin.test.tsx use.
+vi.mock("@/app/harness/Select", () => ({
+  Select: ({
+    id,
+    value,
+    onChange,
+    options,
+    ariaLabel,
+  }: {
+    id?: string;
+    value: string;
+    onChange: (value: string) => void;
+    options: { value: string; label: unknown }[];
+    ariaLabel?: string;
+  }) => (
+    <select id={id} aria-label={ariaLabel} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">—</option>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.value}
+        </option>
+      ))}
+    </select>
+  ),
+}));
+
 const schema = {
   type: "object",
   required: ["summary", "pages"],

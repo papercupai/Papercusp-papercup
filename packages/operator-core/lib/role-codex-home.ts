@@ -68,10 +68,14 @@ import {
   codexSqliteHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
 import {
+  CODEX_MANAGED_MODEL_CATALOG_FILE,
   codexGatewayConfigToml,
   codexManagedFeaturesToml,
+  codexModelCatalogToml,
+  materializeStrippedCodexModelCatalog,
   publishCodexConfig,
   tomlEscape,
+  type CodexModelCatalogMaterialized,
 } from '@papercusp/orchestrator/codex-gateway-config';
 import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
 import { lintInstructionText, type InstructionLintReport, type InstructionRuntimeContext } from './instruction-lint';
@@ -174,6 +178,22 @@ const CODEX_BASH_GATE_MATCHER = 'Bash|exec_command|local_shell|shell';
  * Must precede any `[table]` (TOML top-level keys before tables); the `[mcp_servers]`
  * table each writer appends comes after.
  */
+/**
+ * Plan client-native-features-adoption-2026-10-21 D-005 route 2. A home that is
+ * NOT routed through the inference gateway lets Codex read its own backend's
+ * model catalog, and that catalog's multi_agent fields switch native subagent
+ * tools on whatever `[features]` says. Such a home runs on a stripped copy
+ * (`model_catalog_json`); a gateway-routed home needs none, because the gateway
+ * strips the catalog it serves. Throws when no catalog source exists rather
+ * than launching with subagent tools.
+ */
+function materializeHomeModelCatalog(
+  codexHome: string,
+  gatewayRouted: boolean,
+): CodexModelCatalogMaterialized | null {
+  return gatewayRouted ? null : materializeStrippedCodexModelCatalog({ codexHome });
+}
+
 function codexIsolationPreamble(headless = false): string {
   return [
     '# psu prompt isolation (P-004 / D-001): no cwd AGENTS.md read; native memory off.',
@@ -1182,9 +1202,22 @@ function writeCodexHomeDiagnostics(
     denyAmbientContext?: boolean;
     lockOwnerSid?: string;
     lockRuntime: CodexLockRuntimeVerdict;
+    /** Provenance of the stripped model catalog (non-gateway homes only; plan D-005). */
+    modelCatalog?: CodexModelCatalogMaterialized | null;
   },
 ): void {
   const body = {
+    ...(opts.modelCatalog
+      ? {
+          modelCatalog: {
+            source: opts.modelCatalog.source,
+            sourcePath: opts.modelCatalog.sourcePath,
+            modelCount: opts.modelCatalog.modelCount,
+            fetchedAt: opts.modelCatalog.fetchedAt,
+            multiAgentFieldsStripped: true,
+          },
+        }
+      : {}),
     // One resolved mode only; coord:orient refreshes the runtime verdict after launch.
     lockEnforcement: opts.hooksInstalled ? 'hooks-configured' : 'hooks-missing',
     codexPreToolUseStatus: opts.lockRuntime.hookHealth,
@@ -1555,9 +1588,11 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
   const resolvedModel = resolveCodexModel(opts.model);
   const modelConfig = codexModelConfigToml(resolvedModel);
   const contextConfig = codexContextConfigToml(resolvedModel, { codexHome }).trimEnd();
+  const modelCatalog = materializeHomeModelCatalog(codexHome, gatewayConfig.root.length > 0);
   const toml = [
     ...(contextConfig ? contextConfig.split('\n') : []),
     ...modelConfig,
+    ...(modelCatalog ? codexModelCatalogToml(modelCatalog.path) : []),
     `sqlite_home = "${tomlEscape(sqliteHome)}"`,
     `log_dir = "${tomlEscape(logDir)}"`,
     ...gatewayConfig.root,
@@ -1604,6 +1639,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     inheritedPromptsCopied,
     lockOwnerSid: opts.sid,
     lockRuntime,
+    modelCatalog,
   });
 
   return { codexHome, sqliteHome, agentsPath, configPath, instructionLint };
@@ -1761,9 +1797,16 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     codexHome: opts.codexHome ?? undefined,
     compactionLimit: opts.compactionLimit,
   }).trimEnd();
+  // D-005 route 2: a non-gateway home points at its stripped catalog. The
+  // writers (writeSuCodexHome / ensureSuCodexHomeConfig) materialize the file
+  // at this deterministic path before publishing the config.
+  const modelCatalogLine = gatewayConfig.root.length === 0 && opts.codexHome
+    ? codexModelCatalogToml(join(opts.codexHome, CODEX_MANAGED_MODEL_CATALOG_FILE))
+    : [];
   return [
     ...(contextConfig ? contextConfig.split('\n') : []),
     ...modelConfig,
+    ...modelCatalogLine,
     ...(opts.sqliteHome ? [`sqlite_home = "${tomlEscape(opts.sqliteHome)}"`] : []),
     ...(opts.logDir ? [`log_dir = "${tomlEscape(opts.logDir)}"`] : []),
     ...gatewayConfig.root,
@@ -1891,9 +1934,18 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
     priority: opts.codexGatewayPriority,
   });
   const expectedProjectMcp = projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir).join('\n');
+  // D-005: a resumed non-gateway home re-strips the freshest catalog on every
+  // repair (a home written before this change has none); a gateway home has none.
+  const modelCatalog = materializeHomeModelCatalog(codexHome, expectedGateway.root.length > 0);
+  const expectedCatalogLine = codexModelCatalogToml(join(codexHome, CODEX_MANAGED_MODEL_CATALOG_FILE)).join('\n');
   let configReady = false;
   try {
     const current = readFileSync(configPath, 'utf8');
+    const parsedCurrent = parseToml(current) as { features?: Record<string, unknown> };
+    const subagentPolicyReady =
+      parsedCurrent.features?.multi_agent === false &&
+      parsedCurrent.features?.goals === false &&
+      (modelCatalog ? current.includes(expectedCatalogLine) : !/^model_catalog_json\s*=/m.test(current));
     const modelMatches = current.includes(expectedModelConfig);
     const contextMatches = modelMatches && (expectedContextConfig
       ? current.includes(expectedContextConfig.trimEnd())
@@ -1918,6 +1970,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
       gatewayReady &&
       headlessPolicyReady &&
+      subagentPolicyReady &&
       (!opts.denyAmbientContext || current === suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }));
   } catch {
     /* absent or unreadable — that is precisely the repair case */
@@ -2076,6 +2129,10 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
   const configPath = join(codexHome, 'config.toml');
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
+  const modelCatalog = materializeHomeModelCatalog(
+    codexHome,
+    codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto }).root.length > 0,
+  );
   publishCodexConfig(configPath, suCodexConfigToml({ ...opts, logDir, codexHome: targetHome, sqliteHome }));
 
   // SU sessions pass coordSid so the merged activity hook's coord fold stays
@@ -2104,6 +2161,7 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
     denyAmbientContext: opts.denyAmbientContext === true,
     lockOwnerSid: opts.sid,
     lockRuntime,
+    modelCatalog,
   });
   // EI-11366: stamp the sentinel the collision guard above reads on the NEXT
   // write to this sessionKey's home. Best-effort — a write failure here must

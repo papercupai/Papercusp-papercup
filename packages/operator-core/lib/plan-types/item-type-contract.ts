@@ -19,6 +19,7 @@ import {
   resolveVerification,
   type ItemTypeContract,
   type ItemTypeCriterion,
+  type ItemTypeCriterionVerification,
 } from '../plan-verification-profile';
 
 export type TypeFieldsRefusalCode =
@@ -144,6 +145,8 @@ export interface ItemTypeBar {
   planItemIds: string[];
   /** Where it came from, for a refusal or the checklist. */
   source: { itemType: string; revision: number; criterionKey: string; rubricRef?: string };
+  /** The METHOD/check the criterion carries (D-011); absent leaves the bar for the author to fill. */
+  verification?: ItemTypeCriterionVerification;
 }
 
 /**
@@ -216,6 +219,7 @@ export function deriveItemTypeBars(
           criterionKey: criterion.key,
           ...(rubricRef ? { rubricRef } : {}),
         },
+        ...(criterion.verification ? { verification: criterion.verification } : {}),
       });
     }
   }
@@ -286,11 +290,31 @@ export async function readItemTypeChecklist(
 type SeedSql = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
 
 /** A rubric criterion as stored in a rubric row's `template_data.criteria`. */
-function rubricCriterion(value: unknown): ItemTypeCriterion | null {
+export function rubricCriterion(value: unknown): ItemTypeCriterion | null {
   if (!value || typeof value !== 'object') return null;
-  const { key, title, model } = value as { key?: unknown; title?: unknown; model?: unknown };
+  const { key, title, model, method, check, replication } = value as {
+    key?: unknown; title?: unknown; model?: unknown; method?: unknown; check?: unknown; replication?: unknown;
+  };
   if (typeof key !== 'string' || key === '' || typeof title !== 'string' || title === '') return null;
-  return { key, title, ...(typeof model === 'string' && model.trim() !== '' ? { description: model } : {}) };
+  // D-011: a rubric criterion that already carries its METHOD (and check) seeds a gradable bar,
+  // like a criteria-template criterion with `verification`. The stored check is in the rubric's
+  // structured form; split it back into the registry's `{ kind, params }`.
+  let verification: ItemTypeCriterionVerification | undefined;
+  if (typeof method === 'string' && method.trim() !== '') {
+    const structured = check && typeof check === 'object' ? (check as Record<string, unknown>) : null;
+    const { kind, ...params } = structured ?? {};
+    verification = {
+      method,
+      ...(typeof kind === 'string' ? { check: { kind, params } } : {}),
+      ...(typeof replication === 'string' && replication.trim() !== '' ? { replication } : {}),
+    };
+  }
+  return {
+    key,
+    title,
+    ...(typeof model === 'string' && model.trim() !== '' ? { description: model } : {}),
+    ...(verification ? { verification } : {}),
+  };
 }
 
 /**

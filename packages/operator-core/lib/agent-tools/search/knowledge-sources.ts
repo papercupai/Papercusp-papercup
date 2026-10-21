@@ -216,6 +216,15 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
       rank: Number(r.rank), section: anchor || null, status: 'maintained', updated_at: r.updated_at as string | Date,
       path: String(r.url) + (anchor ? `#${anchor}` : ''), source_key: key };
   }), 'doc', ranker);
+  /**
+   * Keep enough nearest sections for document de-duplication while preserving
+   * an ANN-compatible ORDER BY. The old query deduped the whole filtered
+   * corpus before ranking, which forced a primary-key scan and sort even
+   * though doc_sections has an HNSW index on embedding. Four times the source
+   * page is the same bounded over-fetch used by the outer search engine; the
+   * final DISTINCT ON still chooses one best section per document.
+   */
+  const embeddingCandidateLimit = (limit: number): number => Math.max(1, Math.ceil(limit * 4));
   return boundedSource({
     name: 'doc',
     async lexical(p) {
@@ -234,14 +243,25 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
     },
     async embedding(p) {
       if (!p.embeddingProfile) return [];
-      const rows = await p.sql`SELECT * FROM (SELECT DISTINCT ON (s.source_key,s.slug) s.*,
-        1 - (s.embedding <=> ${p.qVec}::vector) AS rank,
-        (SELECT right(prev.content,250) FROM harness_shared.doc_sections prev
-          WHERE prev.source_key = s.source_key AND prev.slug = s.slug
-            AND s.section_idx > 0 AND prev.section_idx = s.section_idx - 1 LIMIT 1) AS previous_context
-        FROM harness_shared.doc_sections s WHERE ${filter(p)} AND s.embedding IS NOT NULL
-          AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 's.embedding_profile', 's.embedding_mode')}
-        ORDER BY s.source_key,s.slug,s.embedding <=> ${p.qVec}::vector,s.anchor) best
+      const candidateLimit = embeddingCandidateLimit(p.limit);
+      const rows = await p.sql`WITH candidates AS MATERIALIZED (
+          SELECT s.*, s.embedding <=> ${p.qVec}::vector AS distance
+          FROM harness_shared.doc_sections s
+          WHERE ${filter(p)} AND s.embedding IS NOT NULL
+            AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 's.embedding_profile', 's.embedding_mode')}
+          ORDER BY s.embedding <=> ${p.qVec}::vector
+          LIMIT ${candidateLimit}
+        ), best AS (
+          SELECT DISTINCT ON (source_key,slug) candidates.*,
+            1 - distance AS rank
+          FROM candidates
+          ORDER BY source_key,slug,distance,anchor
+        )
+        SELECT best.*,
+          (SELECT right(prev.content,250) FROM harness_shared.doc_sections prev
+            WHERE prev.source_key = best.source_key AND prev.slug = best.slug
+              AND best.section_idx > 0 AND prev.section_idx = best.section_idx - 1 LIMIT 1) AS previous_context
+        FROM best
         ORDER BY rank DESC,source_key,slug LIMIT ${p.limit}`;
       return map(rows as Array<Record<string, unknown>>, 'embeddings');
     },

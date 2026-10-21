@@ -103,6 +103,79 @@ describe('trigger selection (R-23)', () => {
     expect(selection.deferred).toEqual([{ key: 'h/interval', triggers: ['interval-elapsed'] }]);
     expect(selection.idle).toEqual(['h/quiet']);
   });
+
+  it('retry triggers wait out the retry backoff since the last run (WI-6554700010019378)', () => {
+    const recent = (lastOutcome: SweepWatermark['lastOutcome'], ago: number) => ({
+      key: 'h/p',
+      watermark: wm({ lastRunAt: iso(NOW - ago), lastOutcome }),
+      footprintChanged: false,
+      lastTransitionAt: iso(NOW - 2 * HOUR),
+    });
+    const failed = { error: 'column "slug" does not exist' };
+    const drifting = { drifting: ['R-8'] };
+    // Ran one tick ago: neither retry trigger fires yet.
+    expect(sweepTriggersFor(recent(failed, 15 * 60_000), NOW, interval, 3600)).toEqual([]);
+    expect(sweepTriggersFor(recent(drifting, 15 * 60_000), NOW, interval, 3600)).toEqual([]);
+    // Backoff elapsed: both fire.
+    expect(sweepTriggersFor(recent(failed, HOUR), NOW, interval, 3600)).toEqual(['previous-run-failed']);
+    expect(sweepTriggersFor(recent(drifting, HOUR), NOW, interval, 3600)).toEqual(['previously-drifting']);
+    // A transition still fires immediately, backoff or not.
+    expect(
+      sweepTriggersFor({ ...recent(failed, 15 * 60_000), lastTransitionAt: iso(NOW - 5 * 60_000) }, NOW, interval, 3600),
+    ).toEqual(['work-item-transitioned']);
+  });
+
+  it('persistently failing plans cannot starve the interval tier (measured 2026-10-21 regression)', () => {
+    // 8 plans that fail deterministically, last run one backoff ago, plus ~overdue interval plans.
+    const failing = Array.from({ length: 8 }, (_, i) => ({
+      key: `h/failing-${i}`,
+      watermark: wm({ lastRunAt: iso(NOW - HOUR - i * 60_000), lastOutcome: { error: 'column "slug" does not exist' } }),
+      footprintChanged: false,
+      lastTransitionAt: iso(NOW - 2 * HOUR),
+    }));
+    const starvedOld = { key: 'h/starved-old', watermark: wm({ lastRunAt: iso(NOW - 72 * HOUR) }), footprintChanged: false, lastTransitionAt: null };
+    const starvedNew = { key: 'h/starved-new', watermark: wm({ lastRunAt: iso(NOW - 13 * HOUR) }), footprintChanged: false, lastTransitionAt: null };
+    const dueNotStarved = { key: 'h/due', watermark: wm({ lastRunAt: iso(NOW - 7 * HOUR) }), footprintChanged: false, lastTransitionAt: null };
+    const selection = selectSweepRuns([...failing, starvedNew, dueNotStarved, starvedOld], {
+      nowMs: NOW,
+      planIntervalSec: interval,
+      maxRunsPerTick: 4,
+      retryBackoffSec: 3600,
+    });
+    const keys = selection.selected.map((s) => s.key);
+    expect(keys).toHaveLength(4);
+    // The floor slot goes to the OLDEST starved interval-only plan.
+    expect(keys[3]).toBe('h/starved-old');
+    expect(keys.slice(0, 3).every((k) => k.startsWith('h/failing-'))).toBe(true);
+    // The bumped retry plan leads the deferred queue; nothing is dropped.
+    expect(selection.deferred[0].key.startsWith('h/failing-')).toBe(true);
+    expect(selection.selected.length + selection.deferred.length).toBe(11);
+
+    // One tick later the plans that just ran are inside the backoff and drop out entirely.
+    const ranAt = NOW + 15 * 60_000;
+    const after = [
+      ...failing.map((c) => (keys.includes(c.key) ? { ...c, watermark: wm({ ...c.watermark, lastRunAt: iso(NOW) }) } : c)),
+      { ...starvedOld, watermark: wm({ lastRunAt: iso(NOW) }) },
+      starvedNew,
+      dueNotStarved,
+    ];
+    const next = selectSweepRuns(after, { nowMs: ranAt, planIntervalSec: interval, maxRunsPerTick: 4, retryBackoffSec: 3600 });
+    const nextKeys = next.selected.map((s) => s.key);
+    expect(nextKeys.filter((k) => keys.includes(k))).toEqual([]);
+    expect(nextKeys).toContain('h/starved-new');
+  });
+
+  it('reserves no floor slot when the cap is 1 or no interval-only plan is starved', () => {
+    const event = { key: 'h/event', watermark: wm(), footprintChanged: true, lastTransitionAt: null };
+    const starved = { key: 'h/starved', watermark: wm({ lastRunAt: iso(NOW - 72 * HOUR) }), footprintChanged: false, lastTransitionAt: null };
+    const one = selectSweepRuns([event, starved], { nowMs: NOW, planIntervalSec: interval, maxRunsPerTick: 1 });
+    expect(one.selected.map((s) => s.key)).toEqual(['h/event']);
+    const notStarved = { ...starved, watermark: wm({ lastRunAt: iso(NOW - 7 * HOUR) }) };
+    const events = [event, { ...event, key: 'h/event-2' }];
+    const two = selectSweepRuns([...events, notStarved], { nowMs: NOW, planIntervalSec: interval, maxRunsPerTick: 2 });
+    expect(two.selected.map((s) => s.key)).toEqual(['h/event', 'h/event-2']);
+    expect(two.deferred.map((s) => s.key)).toEqual(['h/starved']);
+  });
 });
 
 const REQ = (key: string) =>

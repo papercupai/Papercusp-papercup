@@ -77,7 +77,7 @@ export function admissionRetryDelayMs(response: any, error: any, { fallbackMs, m
 /** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
 export function toCamelCaseFlag(key: any): any;
 /**
- * @typedef {{raw?: boolean, allWorkspaces?: boolean, help?: boolean, allowPartial?: boolean, json?: string, jsonFile?: string, client?: string, workspace?: string, harness?: string, port?: string, idempotencyKey?: string}} McpCallFlags
+ * @typedef {{raw?: boolean, allWorkspaces?: boolean, help?: boolean, allowPartial?: boolean, json?: string, jsonFile?: string, client?: string, workspace?: string, harness?: string, port?: string, idempotencyKey?: string, transport?: string}} McpCallFlags
  * @param {string[]} argv
  * @returns {{tool: string | undefined, jsonArgs: string | undefined, flags: McpCallFlags}}
  */
@@ -272,6 +272,103 @@ export function resolveMcpCallOrigin(clientId: any, env?: NodeJS.ProcessEnv): "a
 /** Role is an admission routing hint; signed principal checks still run downstream. */
 export function resolveMcpRole(env?: NodeJS.ProcessEnv): string | undefined;
 /**
+ * @param {McpCallFlags} [flags]
+ * @returns {'auto' | 'http' | 'uds'}
+ */
+export function resolveMcpTransport(flags?: McpCallFlags): "auto" | "http" | "uds";
+/**
+ * Whether to try the operator's agent-MCP unix socket after the HTTP pass.
+ *
+ * A psu Claude session's native Bash runs in its own network namespace
+ * (bwrap --unshare-net), so every loopback TCP port refuses while the operator
+ * is healthy, and the documented toolless-recovery fallback (this script)
+ * dead-ended (WI-6554700010019317). The :3070 operator's agent socket lives
+ * under /tmp, which that sandbox can still reach. Falling back is safe only
+ * when no HTTP request can have reached a handler, i.e. every attempt failed
+ * with ECONNREFUSED. Any other transport error leaves a mutation outcome
+ * unknown, so the caller must stop rather than send the call a second time.
+ * @param {{transport: 'auto' | 'http' | 'uds', attempts: Array<{port: string, error: unknown}>}} input
+ * @returns {boolean}
+ */
+export function shouldTryUdsFallback({ transport, attempts }: {
+    transport: "auto" | "http" | "uds";
+    attempts: Array<{
+        port: string;
+        error: unknown;
+    }>;
+}): boolean;
+/**
+ * @param {Array<{port: string, error: unknown}>} attempts
+ * @returns {string}
+ */
+export function buildUdsFallbackNotice(attempts: Array<{
+    port: string;
+    error: unknown;
+}>): string;
+/**
+ * @param {Array<{port: string, reason: string}>} unavailable
+ * @returns {string}
+ */
+export function buildUdsUnavailableDiagnostic(unavailable: Array<{
+    port: string;
+    reason: string;
+}>): string;
+/**
+ * The directory whose `.papercusp/endpoint-ipc.<port>.json` advertises the
+ * operator's agent socket. Deliberately NOT PAPERCUSP_HOME: a psu session sets
+ * that to its workspace directory, where no operator writes a descriptor
+ * (memory d3c1ce00, 2026-10-20). PAPERCUSP_OPERATOR_HOME is the real operator
+ * home that an owned launcher preserves when it isolates the child HOME.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {() => string} [home]
+ * @returns {string}
+ */
+export function resolveAgentMcpDiscoveryHome(env?: NodeJS.ProcessEnv, home?: () => string): string;
+/**
+ * @typedef {{kind: 'result', port: string, result: unknown}
+ *   | {kind: 'error', port: string, error: {code?: number, message: string, data?: unknown}}
+ *   | {kind: 'outcome-unknown', port: string, message: string}
+ *   | {kind: 'unavailable', unavailable: Array<{port: string, reason: string}>}} UdsCallOutcome
+ */
+/**
+ * Call one tool over the operator's agent-MCP unix socket.
+ *
+ * Ports are tried in order. A port with no advertised socket, or whose socket
+ * refuses the connection or the initialize handshake, is skipped: tools/call
+ * has not been sent yet, so trying the next port or bearer cannot run the
+ * call twice. Once tools/call is sent the first answer is final. A JSON-RPC
+ * error (numeric code) is the server's answer; anything else means the
+ * response was lost and the outcome is unknown, which is never retried.
+ * @param {{
+ *   ports: string[],
+ *   tokens: string[],
+ *   query: string,
+ *   params: object,
+ *   connect: (options: {url: string, headers: Record<string, string>, mode: 'uds', name: string, home?: string}) => Promise<{client: {callTool: (params: object) => Promise<unknown>, close: () => Promise<void>}}>,
+ *   home?: string,
+ * }} input
+ * @returns {Promise<UdsCallOutcome>}
+ */
+export function callToolViaAgentMcpUds({ ports, tokens, query, params, connect, home }: {
+    ports: string[];
+    tokens: string[];
+    query: string;
+    params: object;
+    connect: (options: {
+        url: string;
+        headers: Record<string, string>;
+        mode: "uds";
+        name: string;
+        home?: string;
+    }) => Promise<{
+        client: {
+            callTool: (params: object) => Promise<unknown>;
+            close: () => Promise<void>;
+        };
+    }>;
+    home?: string;
+}): Promise<UdsCallOutcome>;
+/**
  * Decide whether this module is the launched script after resolving filesystem
  * aliases. macOS exposes `/tmp` as a symlink to `/private/tmp`; the VM-rig
  * deploy invokes `/tmp/mcp-call.mjs`, while `import.meta.url` canonicalizes to
@@ -333,6 +430,18 @@ export const MCP_CALL_ADMISSION_RETRY_MAX_DELAY_MS: 10000;
  */
 export const BOOLEAN_FLAGS: Set<string>;
 export const VALUE_FLAGS: Set<string>;
+/**
+ * `--transport` values. `auto` (the default) uses the operator's HTTP
+ * endpoints and falls back to its agent-MCP unix socket only when EVERY HTTP
+ * attempt was refused before a request was sent; `http` never falls back;
+ * `uds` goes straight to the socket.
+ */
+export const MCP_CALL_TRANSPORTS: readonly string[];
+/**
+ * Exit code when the unix-socket response was lost AFTER tools/call was sent:
+ * the mutation outcome is unknown, so nothing is retried (WI-6554700010019317).
+ */
+export const MCP_CALL_OUTCOME_UNKNOWN_EXIT: 7;
 export type McpCallFlags = {
     raw?: boolean;
     allWorkspaces?: boolean;
@@ -345,5 +454,29 @@ export type McpCallFlags = {
     harness?: string;
     port?: string;
     idempotencyKey?: string;
+    transport?: string;
+};
+export type UdsCallOutcome = {
+    kind: "result";
+    port: string;
+    result: unknown;
+} | {
+    kind: "error";
+    port: string;
+    error: {
+        code?: number;
+        message: string;
+        data?: unknown;
+    };
+} | {
+    kind: "outcome-unknown";
+    port: string;
+    message: string;
+} | {
+    kind: "unavailable";
+    unavailable: Array<{
+        port: string;
+        reason: string;
+    }>;
 };
 import { writeFileSync } from 'node:fs';

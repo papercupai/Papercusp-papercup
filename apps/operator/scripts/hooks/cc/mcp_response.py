@@ -177,8 +177,13 @@ OPERATION_PROTOCOL_TOOLS = ('locks:acquire', 'locks:release', 'locks:cancel_wait
 OPERATION_PROTOCOL_TTL_SEC = {True: 600, False: 60}
 
 
-def _origin_protocol_cache_path(cache_dir, origin):
-    digest = hashlib.sha256(origin.rstrip('/').encode('utf-8')).hexdigest()[:16]
+def _origin_protocol_cache_path(cache_dir, origin, owner, native_session_id):
+    scope = (
+        origin.rstrip('/'),
+        owner if isinstance(owner, str) else '',
+        native_session_id if isinstance(native_session_id, str) else '',
+    )
+    digest = hashlib.sha256(json.dumps(scope, separators=(',', ':')).encode('utf-8')).hexdigest()[:16]
     return os.path.join(cache_dir, 'operation-protocol-' + digest + '.json')
 
 
@@ -197,26 +202,37 @@ def schema_declares_hook_operation(raw_resp):
     return all(declared.get(name) is True for name in OPERATION_PROTOCOL_TOOLS)
 
 
-def origin_operation_protocol_qualified(cache_dir, origin, token, owner, now=None):
+def origin_operation_protocol_qualified(cache_dir, origin, token, owner, native_session_id, now=None):
     """D-003/D-004(4): may this origin receive the native operation protocol?
 
     Qualification is a read-only tools/list schema read, never an acquire: an
     older, non-strict origin would ignore hook_operation and grant a real legacy
-    lock. The verdict is cached per origin (600s qualified, 60s unqualified); a
-    failed read is unqualified for this call only and is not cached.
+    lock. The verdict is cached per origin, owner and native session (600s
+    qualified, 60s unqualified); a failed read is unqualified for this call
+    only and is not cached. Qualification uses the same authenticated session
+    route as the subsequent locks call.
     """
     now = time.time() if now is None else now
-    path = _origin_protocol_cache_path(cache_dir, origin)
+    normalized_origin = origin.rstrip('/')
+    normalized_owner = owner if isinstance(owner, str) else ''
+    normalized_session = native_session_id if isinstance(native_session_id, str) else ''
+    path = _origin_protocol_cache_path(cache_dir, normalized_origin, normalized_owner, normalized_session)
     try:
         with open(path, encoding='utf-8') as stream:
             cached = json.load(stream)
         qualified = cached.get('qualified')
-        if isinstance(qualified, bool) and 0 <= now - float(cached['checked_at']) < OPERATION_PROTOCOL_TTL_SEC[qualified]:
+        same_scope = (
+            cached.get('origin') == normalized_origin
+            and cached.get('owner') == normalized_owner
+            and cached.get('native_session_id') == normalized_session
+        )
+        if same_scope and isinstance(qualified, bool) and 0 <= now - float(cached['checked_at']) < OPERATION_PROTOCOL_TTL_SEC[qualified]:
             return qualified
     except Exception:
         pass
-    url = (origin.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&tools='
+    base_url = (normalized_origin + '/api/mcp?superuser=1&origin=hook&format=json&tools='
            + ','.join(OPERATION_PROTOCOL_TOOLS) + '&client=' + urllib.parse.quote(owner, safe=''))
+    url = with_native_session(base_url, normalized_session)
     request = urllib.request.Request(url, data=json.dumps({
         'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list', 'params': {},
     }).encode(), headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
@@ -230,16 +246,22 @@ def origin_operation_protocol_qualified(cache_dir, origin, token, owner, now=Non
     try:
         tmp = path + '.tmp-' + str(os.getpid())
         with open(tmp, 'w', encoding='utf-8') as stream:
-            json.dump({'origin': origin.rstrip('/'), 'qualified': qualified, 'checked_at': now}, stream)
+            json.dump({
+                'origin': normalized_origin,
+                'owner': normalized_owner,
+                'native_session_id': normalized_session,
+                'qualified': qualified,
+                'checked_at': now,
+            }, stream)
         os.replace(tmp, path)
     except Exception:
         pass
     return qualified
 
 
-def forget_origin_operation_protocol(cache_dir, origin):
+def forget_origin_operation_protocol(cache_dir, origin, owner, native_session_id):
     try:
-        os.remove(_origin_protocol_cache_path(cache_dir, origin))
+        os.remove(_origin_protocol_cache_path(cache_dir, origin, owner, native_session_id))
     except OSError:
         pass
 

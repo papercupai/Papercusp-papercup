@@ -84,6 +84,34 @@ export function isValidUpstreamBranch(v: unknown): v is string {
   );
 }
 
+/**
+ * Plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 D-065: the federated hive_settings
+ * key naming the UPSTREAM INSTALL (its green-checkpoint install slug, e.g. `papercusp`) whose
+ * gate result a working-copy pot's gate may inherit non-test legs from. Absent ⇒ no
+ * inheritance: the fork's gate holds on every red it measures.
+ */
+export const POT_UPSTREAM_INSTALL_SETTING_KEY = 'hiveGit.upstreamInstall';
+
+/** An install slug: lowercase alphanumerics and `-`, as the routines table keys them. */
+export function isValidUpstreamInstall(v: unknown): v is string {
+  return typeof v === 'string' && /^[a-z0-9][a-z0-9-]{0,119}$/.test(v);
+}
+
+/** D-065: the pot's upstream install, or null when unset, malformed, or unreadable. Never throws:
+ *  every failure means "no inheritance", the fail-closed direction for a gate. */
+export async function readPotUpstreamInstall(
+  workspaceId: string,
+  potHomeSlug: string,
+  sql?: Sql,
+): Promise<string | null> {
+  try {
+    const rec = await getHiveSetting(workspaceId, potHomeSlug, POT_UPSTREAM_INSTALL_SETTING_KEY, sql);
+    return rec && isValidUpstreamInstall(rec.value) ? rec.value : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Junk-safe coercion: exactly `review` is review; anything else reads as `direct`. */
 export function coercePotIntegrationMode(v: unknown): PotIntegrationMode {
   return v === 'review' ? 'review' : 'direct';
@@ -111,6 +139,25 @@ export interface PotIntegrationModeRead {
 /** D-056: the upstream branch a working copy targets — the pot's setting, else `main`. */
 export function potUpstreamBranch(read: Pick<PotIntegrationModeRead, 'upstreamBranch'> | undefined): string {
   return read?.upstreamBranch ?? SYNC_BACK_UPSTREAM_BRANCH;
+}
+
+/**
+ * WI-6554700010019329 / plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 D-064:
+ * the env var hive-release-env.ts sets on a working copy's green-checkpoint run, naming the
+ * upstream's remote-tracking ref. The gate's selection-base then judges only the fork's own
+ * delta. Must equal `GATE_UPSTREAM_REF_ENV` in apps/operator/lib/release/selection-base.ts
+ * (operator-core cannot import apps/operator; selection-base.test.ts compares the pair).
+ */
+export const GATE_UPSTREAM_REF_ENV = 'PAPERCUSP_GATE_UPSTREAM_REF';
+
+/** The remote a working copy's sync-back fetches the upstream from (the clone's `origin`;
+ *  `applyIntegrationPushTarget` sets `syncBack.upstreamRemote` to `cfg.remote ?? 'origin'`). */
+export const POT_UPSTREAM_REMOTE_NAME = 'origin';
+
+/** D-064: the remote-tracking ref of the upstream branch a working copy absorbs, e.g.
+ *  `refs/remotes/origin/staging`. Only meaningful for a `review`-mode pot. */
+export function potUpstreamTrackingRef(read: Pick<PotIntegrationModeRead, 'upstreamBranch'> | undefined): string {
+  return `refs/remotes/${POT_UPSTREAM_REMOTE_NAME}/${potUpstreamBranch(read)}`;
 }
 
 /** Read the pot's integration mode and why it reads that way. Never throws. */

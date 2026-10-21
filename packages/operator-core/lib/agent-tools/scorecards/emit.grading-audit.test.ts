@@ -1005,6 +1005,52 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
+  // EI-26525990062935280: the first auditor's card was persisted but its settlement
+  // failed, and that auditor is gone, so only a fresh dispatched auditor can settle
+  // the stamp. Its audit must not be refused as a redundant independent card.
+  it('lets a freshly dispatched auditor settle a pending stamp that an earlier audit card never settled', async () => {
+    getIssue.mockResolvedValue(gradedCardWithReservation());
+    listScorecards.mockResolvedValue([
+      {
+        issueId: 'EI-STRANDED-AUDIT',
+        createdAt: '2026-09-23T17:00:00.000Z',
+        createdBy: 'su-departed-auditor',
+        rubricRef: 'grading-integrity',
+        rubricRevision: 1,
+        criteriaHash: 'rubric-hash-v1',
+        subject: { kind: 'scorecard', ref: 'EI-CARD' },
+        ratings: RATINGS,
+        nKeys: 1,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      },
+    ]);
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: FAIL_RATINGS, gradingAuditReservation: activeReservation },
+      { createdBy: 'su-fresh-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect((res as { code?: string }).code).not.toBe('existing_independent_scorecards');
+    expect(res.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(recordGradingAudit).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({
+        auditor: 'su-fresh-auditor',
+        verdict: 'failed',
+        dispatchReservation: activeReservation,
+      }),
+    );
+  });
+
+  // The guard still refuses a redundant NON-audit card: see the
+  // existing_independent_scorecards cases in emit-evaluate.test.ts.
+
   it('refuses unknown audit ratings before filing an orphan audit card', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     const res = await emitScorecard(

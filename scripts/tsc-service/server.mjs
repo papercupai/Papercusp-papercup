@@ -21,6 +21,7 @@ import {
   namedSetFor,
   refreshProjectRootFiles,
   renderDiagnostics,
+  tscServiceRequestId,
   tscServiceSocketPath,
 } from '../lib/tsc-service.mjs';
 
@@ -40,7 +41,7 @@ const log = (line) => console.log(`[tsc-service] ${line}`);
 
 /** @type {{ api: any, snapshot: any, snapshotAt: number, open: string[] }} */
 const state = { api: null, snapshot: null, snapshotAt: 0, open: [] };
-/** @type {{ request: any, reply: (response: object) => void, arrivedAt: number, cancelled: boolean }[]} */
+/** @type {{ request: any, reply: (response: object) => void, arrivedAt: number, cancelled: boolean, trace: (phase: string) => void }[]} */
 const queue = [];
 let draining = false;
 
@@ -121,8 +122,9 @@ async function refresh(projects) {
   state.snapshotAt = Date.now();
 }
 
-async function serve({ request, arrivedAt }) {
+async function serve({ request, arrivedAt, trace }) {
   const started = Date.now();
+  trace('program-files');
   const project = state.snapshot.getProject(request.project);
   if (!project) return { ok: false, reason: 'project-not-loaded', detail: request.project };
   const options = project.compilerOptions ?? {};
@@ -133,6 +135,7 @@ async function serve({ request, arrivedAt }) {
   }
   const program = project.program;
   const programFiles = await program.getSourceFileNames();
+  trace('scope');
   const scope = request.scope === 'named'
     ? namedSetFor({ root: ROOT, named: request.files, programFiles })
     : checkedSetFor({
@@ -150,7 +153,9 @@ async function serve({ request, arrivedAt }) {
     };
   }
 
+  trace(`program-diagnostics checked=${scope.files.length}`);
   const diagnostics = [...(await program.getConfigFileParsingDiagnostics()), ...(await program.getProgramDiagnostics())];
+  trace(`file-diagnostics checked=${scope.files.length}`);
   for (const file of scope.files) {
     diagnostics.push(...(await program.getSyntacticDiagnostics(file)), ...(await program.getSemanticDiagnostics(file)));
   }
@@ -172,6 +177,7 @@ async function serve({ request, arrivedAt }) {
   // Line/column come from the snapshot's own text, so a peer's edit since the refresh cannot
   // shift them.
   const texts = new Map();
+  trace(`render-diagnostics errors=${errors.length}`);
   for (const fileName of new Set(errors.map((d) => d.fileName).filter(Boolean))) {
     const sourceFile = await program.getSourceFile(fileName);
     texts.set(fileName, typeof sourceFile?.text === 'string' ? sourceFile.text : cachedText(fileName));
@@ -222,7 +228,9 @@ async function drain() {
       if (batch.length === 0) continue;
       const projects = [...new Set(batch.map((item) => item.request.project))];
       try {
+        for (const item of batch) item.trace('refresh');
         await refresh(projects);
+        for (const item of batch) item.trace('refreshed');
       } catch (error) {
         for (const item of batch) item.reply({ ok: false, reason: 'refresh-failed', detail: String(error?.message ?? error) });
         await resetApi(`refresh failed: ${error?.message ?? error}`);
@@ -234,6 +242,7 @@ async function drain() {
         try {
           const response = await serve(item);
           item.reply(response);
+          item.trace(response.ok ? 'complete' : `declined reason=${response.reason}`);
           log(
             response.ok
               ? `served ${relative(ROOT, item.request.project)} named=${item.request.files.length} checked=${response.checked.length} ` +
@@ -242,6 +251,7 @@ async function drain() {
               : `declined ${relative(ROOT, item.request.project)}: ${response.reason} ${response.detail ?? ''}`,
           );
         } catch (error) {
+          item.trace('check-failed');
           item.reply({ ok: false, reason: 'check-failed', detail: String(error?.message ?? error) });
           await resetApi(`check failed: ${error?.message ?? error}`);
           // The rest of this batch goes back to the front of the queue for a fresh tsgo.
@@ -280,7 +290,10 @@ const server = createServer((socket) => {
   socket.setEncoding('utf8');
   socket.on('error', () => {});
   socket.on('close', () => {
-    if (item) item.cancelled = true;
+    if (item && !socket.writableEnded) {
+      item.cancelled = true;
+      item.trace('client-disconnected');
+    }
   });
   socket.on('data', (chunk) => {
     if (item) return;
@@ -305,8 +318,15 @@ const server = createServer((socket) => {
       reply({ ok: false, reason: 'bad-request', detail: invalid });
       return;
     }
-    item = { request, reply, arrivedAt: Date.now(), cancelled: false };
+    const requestId = tscServiceRequestId(request.requestId);
+    const arrivedAt = Date.now();
+    const trace = (phase) => log(
+      `requestId=${requestId} project=${relative(ROOT, request.project)} named=${request.files.length} ` +
+        `phase=${phase} elapsedMs=${Date.now() - arrivedAt}`,
+    );
+    item = { request, reply, arrivedAt, cancelled: false, trace };
     queue.push(item);
+    trace('queued');
     armIdleExit();
     void drain();
   });

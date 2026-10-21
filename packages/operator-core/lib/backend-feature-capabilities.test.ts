@@ -54,7 +54,6 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
     expect(backendSupportsFeature('codex', 'native-code-review')).toBe(true);
     expect(backendSupportsFeature('codex', 'native-image-input')).toBe(true);
     expect(backendSupportsFeature('codex', 'native-image-generation')).toBe(true);
-    expect(backendSupportsFeature('codex', 'native-subagents')).toBe(true);
     expect(backendSupportsFeature('codex', 'native-app-server')).toBe(true);
 
     expect(backendFeatureCapability('codex', 'file-lock-enforcement').state).toBe('supported');
@@ -78,13 +77,20 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
       state: 'supported',
       mechanism: expect.stringMatching(/image generation|imagegen/i),
     });
-    expect(backendFeatureCapability('codex', 'native-subagents')).toMatchObject({
-      state: 'supported',
-      mechanism: expect.stringMatching(/subagents|multi_agent/i),
-    });
     expect(backendFeatureCapability('codex', 'native-app-server')).toMatchObject({
       state: 'supported',
       mechanism: expect.stringMatching(/app-server|remote/i),
+    });
+  });
+
+  it('codex native subagents are denied by default', () => {
+    // Plan client-native-features-adoption-2026-10-21 R-1: same posture as Claude.
+    expect(backendSupportsFeature('codex', 'native-subagents')).toBe(false);
+    expect(backendSupportsFeature('claude', 'native-subagents')).toBe(false);
+    expect(backendFeatureCapability('codex', 'native-subagents')).toMatchObject({
+      state: 'unsupported',
+      mechanism: expect.stringMatching(/--allow-subagents/),
+      unsupportedReason: expect.stringMatching(/denied by default/i),
     });
   });
 

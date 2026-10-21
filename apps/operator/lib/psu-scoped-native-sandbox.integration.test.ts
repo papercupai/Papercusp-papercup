@@ -204,6 +204,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
           work_items_get: { ...identity, threadLimit: z.number().optional() },
           work_items_checkpoint: { ...identity, checkpoint: z.string() },
           work_items_complete: { ...identity, state: z.literal('done'), assumptions: z.literal('none'),
+            changeKinds: z.array(z.string()), changeKindReason: z.string(),
             completion: z.object({ summary: z.string(), testsRun: z.string(), testResult: z.string(),
               verifiedHow: z.literal('manual'), filesChanged: z.array(z.string()) }) },
         };
@@ -443,6 +444,12 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
     expect(JSON.stringify(afterRead)).toContain(Buffer.from(snapshot).toString('base64'));
     expect(workflowCalls.map(call => call.name)).toEqual(workflow.map(step => step.name));
     expect(workflowCalls.map(call => (call.result as { ok: boolean }).ok), diagnostics).toEqual([true, true, true, false, true]);
+    // The MCP SDK parses each call against the zod inputSchema above, which strips
+    // undeclared keys before the handler runs. A fixture key missing from that
+    // schema therefore never reaches the maintained handler (WI-6554700010018793).
+    expect(workflow.map((step, index) => Object.keys(step.args)
+      .filter(key => !(key in (workflowCalls[index]?.args as Record<string, unknown> ?? {})))), diagnostics)
+      .toEqual(workflow.map(() => []));
     expect(JSON.stringify(workflowCalls[2].result), diagnostics).toContain(checkpointMarker);
     expect(JSON.stringify(providerCalls[workflowRequestIndexes[4]]), diagnostics).toContain(checkpointMarker);
     expect(JSON.stringify(providerCalls[workflowRequestIndexes[5]]), diagnostics).toContain('capability_denied');
@@ -451,6 +458,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       FROM harness_shared.work_items WHERE workspace_id = 'native-frozen-private' ORDER BY feature_id`;
     const terminalDiagnostics = JSON.stringify({ rows, nativeWorkflow: workflowCalls.map(call => ({
       name: call.name, ok: (call.result as { ok: boolean }).ok,
+      ...(call.name === 'work_items_complete' ? { result: call.result } : {}),
     })) });
     expect(rows.find(row => row.feature_id === own.id), terminalDiagnostics).toMatchObject({
       status: 'done', terminal_owner: owner, terminal_completion_ref: null,

@@ -14,6 +14,12 @@ import type { pgResultDiagnosticSnapshot } from '@papercusp/db-org';
 
 type PgDiagnosticRow = ReturnType<typeof pgResultDiagnosticSnapshot>['results'][number];
 const pgDiagnosticRows = vi.hoisted(() => [] as Array<Partial<PgDiagnosticRow>>);
+const acquisitionDiagnosticControl = vi.hoisted(() => ({
+  counters: null as null | ((pool: string) => unknown),
+  tickets: null as null | ((pool: string) => unknown),
+  signalAborted: null as null | (() => boolean),
+  observed: [] as Array<{ kind: 'counters' | 'tickets'; pool: string; signalAborted: boolean | null }>,
+}));
 const runHybridSearch = vi.fn();
 const buildQueryEmbedder = vi.fn(async () => (async () => [0.1, 0.2]) as unknown);
 const getFlag = vi.fn(async () => true);
@@ -34,6 +40,18 @@ vi.mock('@papercusp/db-org', async (orig) => {
     pgResultDiagnosticSnapshot: (pool: string, limit?: number) => {
       const snapshot = actual.pgResultDiagnosticSnapshot(pool, limit);
       return { ...snapshot, results: pgDiagnosticRows.slice(-(limit ?? 32)) as typeof snapshot.results };
+    },
+    acquireSnapshot: (pool: string) => {
+      acquisitionDiagnosticControl.observed.push({ kind: 'counters', pool,
+        signalAborted: acquisitionDiagnosticControl.signalAborted?.() ?? null });
+      return (acquisitionDiagnosticControl.counters?.(pool) as ReturnType<typeof actual.acquireSnapshot> | undefined)
+        ?? actual.acquireSnapshot(pool);
+    },
+    acquireTicketSnapshot: (pool: string) => {
+      acquisitionDiagnosticControl.observed.push({ kind: 'tickets', pool,
+        signalAborted: acquisitionDiagnosticControl.signalAborted?.() ?? null });
+      return (acquisitionDiagnosticControl.tickets?.(pool) as ReturnType<typeof actual.acquireTicketSnapshot> | undefined)
+        ?? actual.acquireTicketSnapshot(pool);
     },
   };
 });
@@ -74,6 +92,7 @@ const {
   CORPUS_RECENCY_HALF_LIFE_MS,
   CORPUS_RECENCY_WEIGHT,
   corpusSearchStageBudgetMs,
+  corpusCanRunSecondSearch,
 } = await import('./corpus-recall-io');
 
 const hit = (over: Record<string, unknown> = {}) => ({
@@ -101,6 +120,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   runHybridSearch.mockReset();
   pgDiagnosticRows.length = 0;
+  acquisitionDiagnosticControl.counters = null;
+  acquisitionDiagnosticControl.tickets = null;
+  acquisitionDiagnosticControl.signalAborted = null;
+  acquisitionDiagnosticControl.observed.length = 0;
   sql.mockResolvedValue([]);
   getFlag.mockResolvedValue(true);
   buildQueryEmbedder.mockResolvedValue((async () => [0.1, 0.2]) as unknown);
@@ -233,10 +256,31 @@ it('uses the owning SQL client cache so a second session_turn call skips only th
 });
 
 describe('recallCorpusContext — the contract handed to the search engine', () => {
-  it('budgets each search stage for the actual cascade shape', () => {
+  it('keeps a useful source window without consuming the later-stage reserve', () => {
+    expect(corpusSearchStageBudgetMs(95, false)).toBe(80);
     expect(corpusSearchStageBudgetMs(1_000, false)).toBe(500);
     expect(corpusSearchStageBudgetMs(1_000, true)).toBe(250);
     expect(corpusSearchStageBudgetMs(0, false)).toBe(1);
+  });
+
+  it('skips the underfill cascade unless two minimum source windows remain', () => {
+    expect(corpusCanRunSecondSearch(159)).toBe(false);
+    expect(corpusCanRunSecondSearch(160)).toBe(true);
+  });
+
+  it('keeps first-stage hits when a caller deadline cannot fund another source search', async () => {
+    const deadline = createMemoryWorkDeadline(120);
+    runHybridSearch
+      .mockResolvedValueOnce(ok([hit()]))
+      .mockResolvedValueOnce(ok([hit({ source_id: 'WI-2' })]));
+    try {
+      const result = await recallCorpusContext({ ...base, signal: deadline.signal, deadline });
+      expect(result.outcome).toBe('ok');
+      expect(result.block).toContain('http2 transport regression');
+      expect(runHybridSearch).toHaveBeenCalledOnce();
+    } finally {
+      deadline.close();
+    }
   });
 
   it('reads the registered session/work-item and complete knowledge sources', async () => {
@@ -410,6 +454,92 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
           expect.objectContaining({ source: 'plan', status: 'timed-out', rows: null }),
         ]));
       }
+      expect(deadline.signal.aborted).toBe(false);
+    } finally {
+      deadline.close();
+      planSource.mockImplementation(() => ({ name: 'plan' }));
+      docSource.mockImplementation(() => ({ name: 'doc' }));
+      reportSource.mockImplementation(() => ({ name: 'report' }));
+    }
+  });
+
+  it('captures acquisition snapshots at the source timeout edge before aborting the source', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    let sourceSignal: AbortSignal | undefined;
+    acquisitionDiagnosticControl.signalAborted = () => sourceSignal?.aborted ?? false;
+    acquisitionDiagnosticControl.counters = pool => ({
+      pool, waiting: 2, oldestWaitMs: 231, held: 6, oldestHeldMs: 804, max: 12,
+      totalAcquired: 48, lastAcquiredAgoMs: 3,
+    });
+    acquisitionDiagnosticControl.tickets = pool => ({
+      pool, capacity: 8, active: 2, omitted: 0,
+      tickets: [
+        { state: 'waiting', ageMs: 231, requestId: null, operation: 'memory-corpus-search' },
+        { state: 'held', ageMs: 804, requestId: null, operation: 'memory-corpus-search' },
+      ],
+    });
+    planSource.mockImplementation(() => ({ name: 'plan', lexical: async (params: { signal?: AbortSignal }) => {
+      sourceSignal = params.signal;
+      return await new Promise<never>(() => {});
+    } }));
+    const deadline = createMemoryWorkDeadline(200);
+    try {
+      const result = await recallCorpusContext({ ...base, harnessSlugs: ['papercusp'],
+        signal: deadline.signal, deadline });
+      const sourceCall = result.stages?.flatMap(stage => stage.lexical.sourceCalls ?? [])
+        .find(call => call.source === 'plan' && call.ranker === 'lexical');
+      expect(sourceCall?.status).toBe('timed-out');
+      expect(sourceCall?.queryDiagnostics).toMatchObject({
+        coverage: 'completed-query-results-only',
+        acquisitionAtTimeout: {
+          timing: 'source-timeout-before-abort',
+          counters: { pool: 'org-admin', waiting: 2, held: 6, max: 12 },
+          tickets: { pool: 'org-admin', active: 2, tickets: [
+            { state: 'waiting', ageMs: 231, requestId: null, operation: 'memory-corpus-search' },
+            { state: 'held', ageMs: 804, requestId: null, operation: 'memory-corpus-search' },
+          ] },
+        },
+      });
+      expect(acquisitionDiagnosticControl.observed).toEqual([
+        { kind: 'counters', pool: 'org-admin', signalAborted: false },
+        { kind: 'tickets', pool: 'org-admin', signalAborted: false },
+      ]);
+      expect(sourceSignal?.aborted).toBe(true);
+    } finally {
+      deadline.close();
+      planSource.mockImplementation(() => ({ name: 'plan' }));
+    }
+  });
+
+  it('keeps a healthy lexical source that completes within a short caller deadline', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    const row = hit({ source: 'doc', source_id: 'harness:papercusp:repair',
+      excerpt: 'http2 transport repair prerequisite: keep snapshot', score: 1,
+      meta: { section: 'Repair' } });
+    planSource.mockImplementation(() => ({ name: 'plan' }));
+    docSource.mockImplementation(() => ({ name: 'doc', lexical: async (params: { signal?: AbortSignal }) => {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 75);
+        params.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new Error('doc source was aborted before its result was ready'));
+        }, { once: true });
+      });
+      return [{ key: 'doc:short-deadline', row, score: 1 }];
+    } }));
+    reportSource.mockImplementation(() => ({ name: 'report' }));
+    const deadline = createMemoryWorkDeadline(150);
+    try {
+      const result = await recallCorpusContext({ ...base, harnessSlugs: ['papercusp'],
+        signal: deadline.signal, deadline });
+      expect(result.outcome).toBe('ok');
+      expect(result.block).toContain('keep snapshot');
+      expect(result.stages?.[0]?.lexical.sourceCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: 'doc', status: 'ran', rows: 1 }),
+      ]));
+      expect(result.stages).toHaveLength(1);
       expect(deadline.signal.aborted).toBe(false);
     } finally {
       deadline.close();

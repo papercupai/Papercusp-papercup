@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   groupFilesForAttribution,
+  mergeImportLinkedGroups,
   attributionMapForRepo,
   agentsForScopedFiles,
   intentToSubject,
@@ -87,6 +88,71 @@ describe('groupFilesForAttribution (P-004)', () => {
     const groups = groupFilesForAttribution(['a.ts'], attr);
     expect(groups.map((g) => g.agent)).toEqual(['ag1', null]);
     expect(groups[1].files).toEqual([]); // empty remainder — caller skips an empty add
+  });
+});
+
+describe('mergeImportLinkedGroups (WI-6554700010019415)', () => {
+  const groupsFor = (attr: Array<[string, FileAttribution]>, dirty: string[]) =>
+    groupFilesForAttribution(dirty, new Map(attr), {
+      workingTreeMtimeMsByFile: new Map(dirty.map((f, i) => [f, i])),
+    });
+
+  it('returns the same array when no edge crosses groups', () => {
+    const groups = groupsFor([['a.ts', { agent: 'ag1', intent: 'one' }], ['b.ts', { agent: 'ag1', intent: 'two' }]], ['a.ts', 'b.ts']);
+    expect(mergeImportLinkedGroups(groups, [])).toBe(groups);
+    expect(mergeImportLinkedGroups(groups, [{ importer: 'a.ts', provider: 'a.ts' }])).toBe(groups);
+  });
+
+  it("merges one agent's import-linked groups under the earliest group, unioning work-items", () => {
+    // 2026-10-21: scripts/lib/test-pass-reuse.mjs and its importers were edited under two intents,
+    // so each private index excluded the other half and both stayed dirty for hours.
+    const groups = groupsFor(
+      [
+        ['provider.mjs', { agent: 'ag1', intent: 'remove the max-age', workItems: ['WI-1'] }],
+        ['importer.ts', { agent: 'ag1', intent: 'finish removing it', workItems: ['WI-2'], planSlug: 'plan-x' }],
+        ['other.ts', { agent: 'ag2', intent: 'unrelated' }],
+      ],
+      ['provider.mjs', 'importer.ts', 'other.ts', 'loose.ts'],
+    );
+    expect(groups.map((g) => g.files)).toEqual([['provider.mjs'], ['importer.ts'], ['other.ts'], ['loose.ts']]);
+
+    const merged = mergeImportLinkedGroups(groups, [{ importer: 'importer.ts', provider: 'provider.mjs' }]);
+
+    expect(merged.map((g) => g.agent)).toEqual(['ag1', 'ag2', null]);
+    expect(merged[0]).toMatchObject({
+      agent: 'ag1',
+      files: ['importer.ts', 'provider.mjs'],
+      subject: groups[0].subject,
+      workItems: ['WI-1', 'WI-2'],
+    });
+    expect(merged[1]).toBe(groups[2]);
+    expect(merged[2]).toEqual(groups[3]);
+  });
+
+  it('moves a linked set that spans agents into the residual, never under one of them', () => {
+    const groups = groupsFor(
+      [['router.ts', { agent: 'ag1', intent: 'router' }], ['router.test.ts', { agent: 'ag2', intent: 'its test' }], ['solo.ts', { agent: 'ag3' }]],
+      ['router.ts', 'router.test.ts', 'solo.ts', 'loose.ts'],
+    );
+
+    const merged = mergeImportLinkedGroups(groups, [{ importer: 'router.test.ts', provider: 'router.ts' }]);
+
+    expect(merged.map((g) => g.agent)).toEqual(['ag3', null]);
+    expect(merged[1]).toEqual({ agent: null, files: ['loose.ts', 'router.test.ts', 'router.ts'], subject: DEFAULT_GIT_SYNC_SUBJECT, coAuthor: null });
+  });
+
+  it('moves an attributed file linked to a residual file into the residual, transitively', () => {
+    const groups = groupsFor(
+      [['a.ts', { agent: 'ag1', intent: 'a' }], ['b.ts', { agent: 'ag1', intent: 'b' }]],
+      ['a.ts', 'b.ts', 'script-written.ts'],
+    );
+
+    const merged = mergeImportLinkedGroups(groups, [
+      { importer: 'a.ts', provider: 'b.ts' },
+      { importer: 'script-written.ts', provider: 'b.ts' },
+    ]);
+
+    expect(merged).toEqual([{ agent: null, files: ['a.ts', 'b.ts', 'script-written.ts'], subject: DEFAULT_GIT_SYNC_SUBJECT, coAuthor: null }]);
   });
 });
 

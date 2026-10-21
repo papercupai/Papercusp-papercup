@@ -16,6 +16,10 @@ export function executedMapRecordingEnabled(env?: Record<string, string | undefi
  * its results sets PAPERCUSP_TEST_RUNS_DB_URL to the shared ledger. With the old order
  * every isolated result was written into the throwaway database and destroyed at teardown.
  *
+ * Like the reporter, values are trimmed and the default follows PAPERCUSP_PG_PORT (the
+ * private-cluster signal scripts/with-test-pg.mjs leaves set), so an isolated run reads the
+ * cluster it writes to instead of the host's native :5432.
+ *
  * @param {Record<string, string | undefined>} [env]
  * @returns {{ url: string, source: 'HARNESS_ADMIN_DATABASE_URL' | 'PAPERCUSP_TEST_RUNS_DB_URL' | 'default' }}
  */
@@ -53,6 +57,17 @@ export function rowsToExecutedMap(rows: Array<{
     repoRoot: string;
 }): import("./related-tests.mjs").ExecutedMap;
 /**
+ * WI-6554700010019324: the object store a proof's recorded_sha lives in, as the realpath of the
+ * checkout's git common dir. Installs that clone one repository share workspace names and run
+ * contexts, so this is what tells their proofs apart (migration 1552). PINNED equal to
+ * resolveRecordedGitDir in libs/test-config/src/executed-source-map-reporter.ts (the writer).
+ * Null when git cannot answer; memoized per root.
+ *
+ * @param {string} repoRoot
+ * @returns {string | null}
+ */
+export function resolveRecordedGitDir(repoRoot: string): string | null;
+/**
  * Load the newest executed map per test file for one workspace.
  *
  * @param {object} o
@@ -61,9 +76,10 @@ export function rowsToExecutedMap(rows: Array<{
  * @param {string} o.workspaceName npm workspace name
  * @param {string} o.repoRoot
  * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
+ * @param {string | null} [o.gitDir] the reading checkout's object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ map: import('./related-tests.mjs').ExecutedMap, rows: number }>}
  */
-export function loadExecutedSourceMap({ client, workspaceName, repoRoot, files }: {
+export function loadExecutedSourceMap({ client, workspaceName, repoRoot, files, gitDir }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -72,6 +88,7 @@ export function loadExecutedSourceMap({ client, workspaceName, repoRoot, files }
     workspaceName: string;
     repoRoot: string;
     files?: string[] | undefined;
+    gitDir?: string | null | undefined;
 }): Promise<{
     map: import("./related-tests.mjs").ExecutedMap;
     rows: number;
@@ -95,9 +112,11 @@ export function rowsToReuseProofs(rows: Array<Record<string, unknown>>): Map<str
  * @param {string} o.workspaceName
  * @param {string} o.runContext
  * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
+ * @param {string} [o.repoRoot] the reading checkout (default: the one this module was loaded from)
+ * @param {string | null} [o.gitDir] its object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
  */
-export function loadReuseProofs({ client, workspaceName, runContext, files }: {
+export function loadReuseProofs({ client, workspaceName, runContext, files, repoRoot, gitDir, }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -106,6 +125,8 @@ export function loadReuseProofs({ client, workspaceName, runContext, files }: {
     workspaceName: string;
     runContext: string;
     files?: string[] | undefined;
+    repoRoot?: string | undefined;
+    gitDir?: string | null | undefined;
 }): Promise<{
     proofs: Map<string, import("./test-pass-reuse.mjs").ReuseProof>;
     rows: number;
@@ -118,9 +139,11 @@ export function loadReuseProofs({ client, workspaceName, runContext, files }: {
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string} [o.repoRoot] the reading checkout (default: the one this module was loaded from)
+ * @param {string | null} [o.gitDir] its object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ files: string[], rows: number }>}
  */
-export function loadReuseProofFiles({ client, workspaceName, runContext }: {
+export function loadReuseProofFiles({ client, workspaceName, runContext, repoRoot, gitDir, }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -128,6 +151,8 @@ export function loadReuseProofFiles({ client, workspaceName, runContext }: {
     };
     workspaceName: string;
     runContext: string;
+    repoRoot?: string | undefined;
+    gitDir?: string | null | undefined;
 }): Promise<{
     files: string[];
     rows: number;
@@ -161,25 +186,56 @@ export function loadPassDurations({ client, files }: {
  * `relative: true` returns repo-root-relative POSIX paths (the per-file pass-reuse rule's
  * input) instead of absolute ones (the pruning selector's input).
  *
- * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string, relative?: boolean }} o
+ * WI-6554700010019181: a pair that cannot be diffed is retried once and never cached, and
+ * `onUnknown` hears the reason (git's own stderr included). A cached null used to turn one
+ * transient git failure into "cannot tell" for every file proven at that sha, for the whole
+ * run, with nothing in the log to say why (866 of 866 web proofs in one gate round).
+ *
+ * @param {{
+ *   repoRoot: string,
+ *   exec?: (file: string, args: string[], opts: object) => string,
+ *   relative?: boolean,
+ *   onUnknown?: ((u: { recordedSha: string, judgedSha: string, reason: string, attempts: number }) => void) | null,
+ * }} o
  * @returns {import('./related-tests.mjs').ChangedBetween}
  */
-export function gitChangedBetween({ repoRoot, exec, relative }: {
+export function gitChangedBetween({ repoRoot, exec, relative, onUnknown }: {
     repoRoot: string;
     exec?: (file: string, args: string[], opts: object) => string;
     relative?: boolean;
+    onUnknown?: ((u: {
+        recordedSha: string;
+        judgedSha: string;
+        reason: string;
+        attempts: number;
+    }) => void) | null;
 }): import("./related-tests.mjs").ChangedBetween;
+/**
+ * The log line for one "cannot tell" drift answer (gitChangedBetween's onUnknown). The reason is
+ * last because it is free text; `prefix` lets a targeted round keep its lines apart from the
+ * suite's own TEST_PASS_REUSE health lines.
+ *
+ * @param {{ repoRoot: string, recordedSha: string, judgedSha: string, reason: string, attempts: number, prefix?: string }} o
+ */
+export function formatDriftUnknownLine({ repoRoot, recordedSha, judgedSha, reason, attempts, prefix }: {
+    repoRoot: string;
+    recordedSha: string;
+    judgedSha: string;
+    reason: string;
+    attempts: number;
+    prefix?: string;
+}): string;
 /**
  * Collect repo-root-relative paths changed between `a` and `b`, RECURSING into submodules
  * (gate-file-level-test-reuse-2026-09-27 D-003). A superproject `git diff --name-only` names a
  * submodule change as the bare gitlink path, which no executed module ever equals, so a change
  * inside any of the ~38 submodules used to read as "no drift". A moved gitlink is diffed INSIDE
  * the submodule between the two pinned commits. Anything that cannot be diffed (a submodule
- * type-changed; a pinned commit missing from the local clone) returns false, and the caller
- * reads that as "cannot tell" (stale), never as "nothing changed". Added and removed gitlinks
- * are diffed against the empty tree so their present-side source paths are known.
+ * type-changed; a pinned commit missing from the local clone) returns the reason as a string,
+ * and the caller reads that as "cannot tell" (stale), never as "nothing changed". Added and
+ * removed gitlinks are diffed against the empty tree so their present-side source paths are known.
  *
- * @returns {boolean} true when the full recursive diff was computed
+ * @returns {true | string} true when the full recursive diff was computed, else why it was not
  */
 export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTrees }: {
     exec: any;
@@ -189,7 +245,7 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTr
     b: any;
     out: any;
     emptyTrees?: Map<any, any> | undefined;
-}): boolean;
+}): true | string;
 /**
  * Every package.json in the tree at `sha` (gate-test-reuse-yield-2026-10-01 D-009), superproject
  * and submodules: gitlinks are followed at the commit the tree pins, recursively, and node_modules

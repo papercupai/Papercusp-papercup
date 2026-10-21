@@ -934,6 +934,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'polling coord:presence / fleet:leader-brief for a member that stopped taking turns',
   },
   {
+    family: 'fleet-launch-failed',
+    keyTemplate: 'fleet:launch-failed:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      "A fleet:launch-on-plan call returned `pending` (its response budget expired), and the launch it left running DETACHED settled with members failed, never opened, or unconfirmed: a spawn refusal, a member whose agent died at boot, later waves never opened because the canary wave failed, or a wave whose start was never observed. The payload carries each failure's ownerId/phase/reason (ANSI-stripped, capped), notOpenedOwnerIds, unconfirmedOwnerIds and the transaction's recovery nextAction. Fires once per detached launch that settles with anything to report; a launch whose response already carried its result does not fire it.",
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts, emitFleetLaunchFailedEvent) — called by fleet:launch-on-plan when its detached launch completion settles',
+    exists: true,
+    replacesPoll: 'polling fleet:status / last_launch_transaction after a launch returned pending',
+  },
+  {
     family: 'goal-drain-dead',
     keyTemplate: 'goal:drain-dead:<goalId>',
     fireProves: 'change',

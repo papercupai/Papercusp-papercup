@@ -3201,10 +3201,10 @@ export async function setCarryNoteWithPrior(
             deps = EXCLUDED.deps, body_ts = EXCLUDED.body_ts, attested_count = 0`;
     return { stored: noteCol, priorLength, priorDeps };
   };
-  // loop:checkpoint is a cold-loop continuity write. It must fail fast under
-  // admin-pool/row-lock contention so the MCP transport does not time out while
-  // the successor loses its only durable carry anchor. Work-item checkpoints
-  // retain their existing transaction policy and use the unbounded branch here.
+  // loop:checkpoint and work-item checkpoints both opt into boundedOrgTxn
+  // (work-item-checkpoint.ts passes `bounded: true`), so they fail fast under
+  // admin-pool/row-lock contention. Generic carry-note callers that omit `bounded`
+  // retain the unbounded sql.begin(write) branch below.
   const result = opts?.bounded
     // `sql` above is getOrgPg().sql, not an injected backend. Let boundedOrgTxn
     // resolve that same pool itself so its acquire ticket is tagged org-admin.

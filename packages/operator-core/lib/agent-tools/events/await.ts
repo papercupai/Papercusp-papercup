@@ -1286,10 +1286,12 @@ export default defineTool({
     // A release await can park this session while unrelated plan work is ready,
     // or while a false A -> B -> C edge hides that work. Check the plan before
     // retiring any existing await or registering a new one.
+    const waitGuardHarness = resolveConcreteHarnessSlug(null, ctx);
     const mainWaitPlanReview = await mainWaitPlanReviewForWait({
       ownerId: identity.ownerId,
       event: eventKey,
       note: args.note,
+      ...(waitGuardHarness ? { harnessSlug: waitGuardHarness } : {}),
     });
     if (mainWaitPlanReview && !mainWaitPlanReview.allowWait) {
       return {
@@ -1583,13 +1585,19 @@ export default defineTool({
     const acceptancePlaneAdvisory = await acceptancePlaneAdvisoryForWait({
       ownerId: identity.ownerId,
       event: eventKey,
+      ...(waitGuardHarness ? { harnessSlug: waitGuardHarness } : {}),
     });
     // WI-6554700010014960: the plan review above reads only the presence plan, so an agent
     // carrying owner-directive work across several plans parked on main with no message at
     // all. When that review had nothing to say, every main wait still gets the reminder.
     const mainWaitAdvisory = mainWaitPlanReview
       ? null
-      : await mainWaitAdvisoryForWait({ ownerId: identity.ownerId, event: eventKey, note: args.note });
+      : await mainWaitAdvisoryForWait({
+          ownerId: identity.ownerId,
+          event: eventKey,
+          note: args.note,
+          ...(waitGuardHarness ? { harnessSlug: waitGuardHarness } : {}),
+        });
 
     // P-010 (OP-BRIEF-P010-WAIT): a pending one-shot wake registration is the await outcome
     // that blocks the caller across turns; every early return above (already_fired,

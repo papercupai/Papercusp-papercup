@@ -47,7 +47,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 // Keep the interactive bootstrap independent of operator packages while using
 // the same dependency-free signature as the governed turn taxonomy.
-import { makeModelCapacityDetector } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
+import { makeModelCapacityDetector, modelCapacityLineMatch, modelCapacityRetryAfterMs } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from '../../../packages/operator-core/lib/psu-launch-log.mjs';
 import { controlPlaneTempCandidates } from '../../../packages/operator-core/lib/control-plane-temp.mjs';
 import {
@@ -1923,18 +1923,62 @@ export function nativeTurnCompletedInTranscript({
   return completed;
 }
 
+/** @typedef {{code: string, retryable: boolean, retryAfterMs: number|null, atMs: number}} NativeExecutionFailure */
+/** @typedef {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null,
+ * pendingTools: number, pendingToolIds?: string[], completedToolIds?: string[],
+ * pendingGateTools?: number, pendingGateToolIds?: string[], completedGateToolIds?: string[],
+ * failure?: NativeExecutionFailure}} NativeExecutionObservation */
+
+/** Native owner-gate tool names whose unresolved calls must survive a later
+ * terminal-input observation floor. The transcript watcher uses the same
+ * correlation rule; keeping the small set here lets the PTY park gate fail
+ * closed without depending on the watcher tick or a database read.
+ * @type {Set<string>}
+ */
+const NATIVE_OWNER_GATE_TOOL_NAMES = new Set(['AskUserQuestion', 'ExitPlanMode', 'request_user_input']);
+
+const normalizedNativeToolName = (name) => String(name ?? '').replace(/^functions(?:\.|__)/, '');
+
 /** Normalized execution evidence, independent of provider error wording.
  * Tool calls remain active until their matching result; PTY repaint is not progress.
  * @param {any[]} rows
  * @param {{agent: string, receivedAtMs?: number, nowMs?: number}} options
+ * @returns {NativeExecutionObservation}
  */
 export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs = Date.now() }) {
   const classify = TURN_ROW_CLASSIFIERS[agent];
   let phase = 'unknown';
   let turnStartedAt = null;
   let lastProgressAt = null;
+  /** @type {NativeExecutionFailure|undefined} */
+  let failure;
   const pendingTools = new Set();
-  if (!classify || !Number.isFinite(receivedAtMs)) return { phase, turnStartedAt, lastProgressAt, pendingTools: 0 };
+  const pendingGateTools = new Set();
+  const gateToolIds = new Set();
+  const completedTools = new Set();
+  const completedGateTools = new Set();
+  if (!classify || !Number.isFinite(receivedAtMs)) {
+    return {
+      phase, turnStartedAt, lastProgressAt, pendingTools: 0,
+      pendingToolIds: [], completedToolIds: [], pendingGateTools: 0,
+      pendingGateToolIds: [], completedGateToolIds: [],
+    };
+  }
+  const rememberCall = (id, name) => {
+    if (typeof id !== 'string' || !id) return;
+    pendingTools.add(id);
+    if (NATIVE_OWNER_GATE_TOOL_NAMES.has(normalizedNativeToolName(name))) {
+      pendingGateTools.add(id);
+      gateToolIds.add(id);
+    }
+  };
+  const rememberResult = (id) => {
+    if (typeof id !== 'string' || !id) return;
+    pendingTools.delete(id);
+    pendingGateTools.delete(id);
+    completedTools.add(id);
+    if (gateToolIds.has(id)) completedGateTools.add(id);
+  };
   for (const row of rows) {
     const at = Date.parse(row?.timestamp);
     if (!Number.isFinite(at) || at < receivedAtMs || at > nowMs) continue;
@@ -1952,6 +1996,15 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
           && ['error', 'aborted'].includes(String(message.stopReason).toLowerCase());
     if (failed || verdict === 'turn-completed') {
       phase = failed ? 'failed' : 'settled';
+      failure = undefined;
+      if (failed) {
+        const error = row.payload?.error;
+        const text = String(typeof error === 'string' ? error : error?.message ?? '').slice(0, 2048);
+        const code = String(error?.codex_error_info ?? error?.code ?? row.payload?.type
+          ?? row.subtype ?? message?.stopReason ?? 'native_error').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120);
+        const retryable = code === 'server_overloaded' || modelCapacityLineMatch(text) != null;
+        failure = { code, retryable, retryAfterMs: retryable ? modelCapacityRetryAfterMs(text) : null, atMs: at };
+      }
       // An aborted model does not prove its external tool effects stopped.
       // Keep unmatched calls visible until their results arrive.
       if (!failed) pendingTools.clear();
@@ -1959,6 +2012,7 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       continue;
     }
     if (verdict === 'turn-started') {
+      failure = undefined;
       // Claude/OMP user rows prove acceptance, not model execution. Their
       // first assistant/tool record supplies positive work evidence; gateway
       // operation leases cover silent reasoning before that record lands.
@@ -1979,19 +2033,29 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
     }
     const payload = row?.payload;
     if (agent === 'codex' && row?.type === 'response_item') {
-      if (['function_call', 'custom_tool_call'].includes(payload?.type) && payload?.call_id) pendingTools.add(payload.call_id);
-      if (['function_call_output', 'custom_tool_call_output'].includes(payload?.type) && payload?.call_id) pendingTools.delete(payload.call_id);
+      if (['function_call', 'custom_tool_call'].includes(payload?.type)) {
+        rememberCall(payload?.call_id, payload?.name);
+      }
+      if (['function_call_output', 'custom_tool_call_output'].includes(payload?.type)) {
+        rememberResult(payload?.call_id);
+      }
       if (phase === 'running') lastProgressAt = at;
     } else if ((agent === 'claude' || agent === 'omp') && Array.isArray(message?.content)) {
       for (const block of message.content) {
-        if (['tool_use', 'toolCall'].includes(block?.type) && block?.id) pendingTools.add(block.id);
-        if (block?.type === 'tool_result' && block?.tool_use_id) pendingTools.delete(block.tool_use_id);
+        if (['tool_use', 'toolCall'].includes(block?.type)) rememberCall(block?.id, block?.name);
+        if (block?.type === 'tool_result') rememberResult(block?.tool_use_id);
       }
-      if (message.role === 'toolResult' && message.toolCallId) pendingTools.delete(message.toolCallId);
+      if (message.role === 'toolResult') rememberResult(message.toolCallId);
       if (phase === 'running') lastProgressAt = at;
     }
   }
-  return { phase, turnStartedAt, lastProgressAt, pendingTools: pendingTools.size };
+  return {
+    phase, turnStartedAt, lastProgressAt, pendingTools: pendingTools.size,
+    pendingToolIds: [...pendingTools], completedToolIds: [...completedTools],
+    pendingGateTools: pendingGateTools.size, pendingGateToolIds: [...pendingGateTools],
+    completedGateToolIds: [...completedGateTools],
+    ...(failure ? { failure } : {}),
+  };
 }
 
 /**
@@ -2001,8 +2065,8 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
  * deliberately one-way: missing or unreadable evidence cannot create a
  * running verdict, but it also cannot erase positive evidence already seen for
  * the current turn.
- * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}|null} previous
- * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}} current
+ * @param {NativeExecutionObservation|null} previous
+ * @param {NativeExecutionObservation} current
  */
 export function retainRunningNativeExecution(previous, current) {
   if (previous?.phase !== 'running' || current.phase !== 'unknown') return current;
@@ -2014,6 +2078,71 @@ export function retainRunningNativeExecution(previous, current) {
   };
 }
 
+/** Preserve an unresolved native owner gate when a real terminal keystroke
+ * advances the observation floor past the original tool_use row. The normal
+ * floor is correct for rejecting predecessor turns, but it can hide the open
+ * AskUserQuestion that is still waiting for its matching tool_result. Only
+ * same-child observations may use this carry; a new child or native writer
+ * must start unknown. A later matching tool_result is an explicit clearing
+ * receipt and wins over the retained state.
+ *
+ * @param {NativeExecutionObservation|null} previous
+ * @param {NativeExecutionObservation} current
+ * @param {{sameChild?: boolean}} [options]
+ * @returns {NativeExecutionObservation}
+ */
+export function retainPendingNativeExecution(previous, current, { sameChild = true } = {}) {
+  if (!sameChild || !previous) return current;
+  const previousIds = Array.isArray(previous.pendingGateToolIds) ? previous.pendingGateToolIds : [];
+  // A result can land after the input floor while its original gate tool_use
+  // is older than that floor, so this observation cannot classify the id as a
+  // gate on its own. Intersect every completed id with the prior gate ids;
+  // tool-use ids are unique within a native transcript.
+  const completedIds = new Set([
+    ...(Array.isArray(current.completedGateToolIds) ? current.completedGateToolIds : []),
+    ...(Array.isArray(current.completedToolIds) ? current.completedToolIds : []),
+  ]);
+  const unresolvedIds = previousIds.filter((id) => !completedIds.has(id));
+  const previousCount = Number(previous.pendingGateTools) || 0;
+  const unresolvedCount = previousIds.length > 0 ? unresolvedIds.length : previousCount;
+  if (unresolvedCount <= 0) return current;
+  const currentIds = Array.isArray(current.pendingGateToolIds) ? current.pendingGateToolIds : [];
+  const mergedIds = [...new Set([...currentIds, ...unresolvedIds])];
+  const pendingGateTools = Math.max(Number(current.pendingGateTools) || 0, unresolvedCount, mergedIds.length);
+  return {
+    ...current,
+    phase: current.phase === 'failed' ? 'failed' : 'running',
+    turnStartedAt: current.turnStartedAt ?? previous.turnStartedAt,
+    lastProgressAt: current.lastProgressAt ?? previous.lastProgressAt,
+    pendingTools: Math.max(Number(current.pendingTools) || 0, Number(previous.pendingTools) || 0, pendingGateTools),
+    pendingToolIds: [...new Set([...(current.pendingToolIds ?? []), ...(previous.pendingToolIds ?? []), ...unresolvedIds])],
+    pendingGateTools,
+    pendingGateToolIds: mergedIds,
+  };
+}
+
+/** Apply the bounded-tail retention rules for one native observation. A same-fence
+ * observation may retain ordinary running evidence, but an explicit result for a
+ * previously retained owner gate must clear that carry first.
+ *
+ * @param {NativeExecutionObservation|null} previous
+ * @param {NativeExecutionObservation} current
+ * @param {{sameChild?: boolean, sameFence?: boolean}} [options]
+ * @returns {NativeExecutionObservation}
+ */
+export function retainNativeExecutionObservation(previous, current,
+  { sameChild = true, sameFence = false } = {}) {
+  const carried = retainPendingNativeExecution(previous, current, { sameChild });
+  if (!sameFence || !previous || previous.phase !== 'running') return carried;
+  const previousGateIds = Array.isArray(previous.pendingGateToolIds) ? previous.pendingGateToolIds : [];
+  const completedIds = new Set([
+    ...(Array.isArray(current.completedGateToolIds) ? current.completedGateToolIds : []),
+    ...(Array.isArray(current.completedToolIds) ? current.completedToolIds : []),
+  ]);
+  if (previousGateIds.some((id) => completedIds.has(id))) return carried;
+  return retainRunningNativeExecution(previous, carried);
+}
+
 /** Read only this child's isolated current transcript. Missing/partial proof is unknown.
  * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number,
  *   nativeSessionId?: string|null}} options
@@ -2023,7 +2152,9 @@ export function nativeLatestExecution({ agent, env = process.env, receivedAtMs =
   const rows = transcriptPath && readIsolatedNativeTranscriptRows({ agent, env, transcriptPath });
   return {
     ...(rows ? nativeExecutionFromRows(rows, { agent, receivedAtMs, nowMs })
-      : { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 }),
+      : { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0,
+          pendingToolIds: [], completedToolIds: [], pendingGateTools: 0,
+          pendingGateToolIds: [], completedGateToolIds: [] }),
     observedAt: nowMs,
   };
 }
@@ -3060,6 +3191,21 @@ const EVENT_LOG_MAX_BYTES = 256 * 1024;
  *  fail-soft. Mirrors IDENTITY_ACTIVATION_REFUSED_REASON in
  *  packages/operator-core/lib/cupboard/identity-activation-restart.ts. */
 export const IDENTITY_ACTIVATION_REFUSED_REASON = 'identity-activation-refused';
+
+/** The env a carry-respawn successor needs so Claude Code's native compactors
+ *  (threshold auto-compact and the /compact command) stay off. It is keyed on the
+ *  child's backend, NOT on whether this cut carries a system-prompt addendum: a
+ *  Claude successor recycled without one (freshChildOnly, or a host whose env
+ *  predates the P-022 cutover) would otherwise inherit an env where both still
+ *  exist (client-native-features-adoption-2026-10-21 P-006, critique 2 R-6a).
+ *  An unset PAPERCUSP_AGENT is Claude, psu's default backend. Mirrors
+ *  nativeCompactionEnv in psu-launcher.mjs; psu-native-compaction-switches.test.ts
+ *  pins the two together. */
+export function successorNativeCompactionEnv(agent) {
+  return ['', 'claude'].includes(String(agent ?? '').trim().toLowerCase())
+    ? { DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' }
+    : {};
+}
 
 /** Append one durable host-event row ({ ts, kind, ...extra }) for `ownerId`.
  *  FAIL-SOFT by contract: an event-log write must never break the session —
@@ -4856,6 +5002,7 @@ export function countProcessDescendants(
  *   childPromptReady: boolean,
  *   parked?: boolean,
  *   busy?: boolean,
+ *   nativeBusy?: boolean,
  *   quotaBlocked?: boolean,
  *   composerPending?: boolean,
  *   resumable?: boolean,
@@ -4871,6 +5018,7 @@ export function parkVerdict({
   childPromptReady,
   parked = false,
   busy = false,
+  nativeBusy = false,
   quotaBlocked = false,
   composerPending = false,
   resumable = true,
@@ -4882,6 +5030,7 @@ export function parkVerdict({
   }
   if (parked) return { park: false, reason: 'already-parked' };
   if (busy) return { park: false, reason: 'busy' };
+  if (nativeBusy) return { park: false, reason: 'native-tool-pending' };
   // D-005: a quota-walled Claude TUI can hold a submission it auto-continues at
   // the reset ("continuing automatically at 1pm"). That pending turn lives only
   // in the CLI's memory, so a SIGKILL would drop it silently. Stay resident
@@ -8919,6 +9068,25 @@ export function mcpConnectedVerdict(visible, name) {
   return false;
 }
 
+/**
+ * Keep a forced no-op from entering the host's recovered event lane.
+ * @param {{ ok: boolean, step: string, detail?: string }} result
+ * @param {boolean} force
+ * @returns {{ ok: boolean, event: 'mcp-reconnect-completed' | 'mcp-reconnect-failed', step: string, detail: string }}
+ */
+export function classifyMcpReconnectHostOutcome(result, force = false) {
+  const forceShortCircuited = force === true && result?.step === 'already-connected';
+  const ok = result?.ok === true && !forceShortCircuited;
+  return {
+    ok,
+    event: ok ? 'mcp-reconnect-completed' : 'mcp-reconnect-failed',
+    step: forceShortCircuited ? 'force-short-circuited' : String(result?.step ?? 'unknown'),
+    detail: forceShortCircuited
+      ? 'force requested but reconnect macro returned already-connected'
+      : String(result?.detail ?? ''),
+  };
+}
+
 /** A scripted, fresh headless role must have its signed MCP server before its
  * first task turn. Claude does not reliably retry a failed startup catalog fetch. */
 export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKickoff, isResume }) {
@@ -9030,9 +9198,8 @@ export function mcpDialogRowSelected(visible, test) {
  * scripted fake TUI. Steps (each bounded, each verified off the screen):
  *   1. type `/mcp`, settle, CR (separate keystroke — paste-detector, WI-2930).
  *   2. wait for the dialog to paint (target server name visible).
- *      Already-connected ⇒ close + ok('already-connected') — the benign-misfire
- *      no-op the watchdog relies on. `force:true` skips that short circuit and
- *      presses the existing Reconnect action for connected-but-toolless sessions.
+ *      Already-connected is a benign no-op only for non-forced requests.
+ *      `force:true` bypasses every connected-state exit and presses Reconnect.
  *   3. arrow-down until the ❯ cursor sits on the target row (re-parse after
  *      every keypress; bounded), then Enter.
  *   4. if a reconnect action row paints, cursor onto it the same way + Enter
@@ -9139,7 +9306,9 @@ export async function runMcpReconnectMacro({
   }
   const alreadyConnected = async () => {
     await closeOut();
-    return { ok: true, step: 'already-connected', detail: 'target reads connected — nothing to heal' };
+    return force
+      ? { ok: false, step: 'force-short-circuited', detail: 'force requested but connected status short-circuited navigation' }
+      : { ok: true, step: 'already-connected', detail: 'target reads connected — nothing to heal' };
   };
   if (!force && (targetRowStatus(frame) === 'connected' || mcpConnectedVerdict(frame, serverName))) {
     return alreadyConnected();
@@ -9148,6 +9317,7 @@ export async function runMcpReconnectMacro({
   // (3) cursor onto the target row — skipped when /mcp opened straight into
   // the server's detail view (WI-10006598): there is no row to select, and
   // the action rows below belong to the target already.
+  let reconnectSubmitted = false;
   let inDetail = mcpDialogShowsServerDetail(frame, serverName);
   if (!inDetail) {
     const onTarget = () => mcpDialogRowSelected(visible(), (l) => l.includes(serverName));
@@ -9158,7 +9328,7 @@ export async function runMcpReconnectMacro({
       await sleep(settleMs);
       const v = visible();
       // The server can finish connecting while we navigate.
-      if (mcpConnectedVerdict(v, serverName)) return alreadyConnected();
+      if (!force && mcpConnectedVerdict(v, serverName)) return alreadyConnected();
       if (mcpDialogShowsServerDetail(v, serverName)) {
         inDetail = true;
         break;
@@ -9173,6 +9343,14 @@ export async function runMcpReconnectMacro({
       resetTap();
       write(CR);
       await sleep(settleMs);
+      const afterTargetEnter = visible();
+      // Some Claude versions reconnect directly from the target row instead
+      // of opening a detail view. Count only a fresh connected target-row
+      // repaint as that action result; a detail status is not proof by itself.
+      if (mcpDialogRowSelected(afterTargetEnter, (line) => line.includes(serverName)) &&
+          targetRowStatus(afterTargetEnter) === 'connected') {
+        reconnectSubmitted = true;
+      }
     }
   }
 
@@ -9189,16 +9367,18 @@ export async function runMcpReconnectMacro({
     if (sel) {
       resetTap();
       write(CR);
+      reconnectSubmitted = true;
     }
     // not found selected ⇒ fall through — the connected-wait below still judges it
   }
 
-  // (5) did it connect? (list-row OR detail-status shape — mcpConnectedVerdict —
-  // OR the dialog closed itself and printed the success line.) mcpConnectedVerdict
-  // alone can never accept that line: `\bconnected\b` has no word boundary inside
-  // "Reconnected", so a real success used to time out here (WI-10003453).
+  // (5) did it connect? For force mode, the connected verdict must be a fresh
+  // repaint after submitting Reconnect; a connected marker from before the
+  // action is not proof the heal happened. The dialog's explicit success line
+  // remains sufficient on every path (WI-10003453).
   const done = await waitFor(
-    (v) => directReconnectSucceeded(v) || mcpConnectedVerdict(v, serverName),
+    (v) => directReconnectSucceeded(v) ||
+      (!force || reconnectSubmitted) && mcpConnectedVerdict(v, serverName),
     reconnectBudgetMs,
   );
   if (done && directReconnectSucceeded(done)) {
@@ -10977,6 +11157,7 @@ export function hostThroughPty(o) {
   // is wired. Initialize its retained state before that synchronous write.
   let nativeExecutionFence = null;
   let lastNativeExecution = null;
+  let surfacedNativeFailure = null;
   // WI-10005178: the child's PTY size, so its cursor-positioned output can be
   // replayed onto the same grid (renderTerminalScreen). onResize keeps the child
   // at these dims too.
@@ -11330,7 +11511,12 @@ export function hostThroughPty(o) {
     // 'auth-recovery' (parked-agent-census P-004): this host publishes
     // authBlocked and resets it on recycle, so the operator may recycle a
     // headless child whose in-memory login is dead.
-    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+    // 'mcp-reconnect-force' (EI-26553022496923180): this host's /mcp macro honours
+    // force:true and re-dials even when the dialog reads connected. An interactive
+    // host never adopts newer host code (shouldAdoptHostCode, D-008), so a host
+    // loaded before that fix lacks the cap and scripts/mcp-reconnect.mjs sends the
+    // agent to the carry-respawn rung instead of queueing a reconnect that no-ops.
+    caps: ['carry-respawn', 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
@@ -11365,13 +11551,36 @@ export function hostThroughPty(o) {
   });
   const writeMeta = () => {
     try {
+      const execution = currentNativeExecution();
+      if (execution.phase === 'failed' && execution.failure) {
+        const nativeSessionId = env.PAPERCUSP_AGENT === 'codex'
+          ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : null;
+        // The submit clock is published after the ordered PTY writes. A fast
+        // terminal error can already be visible on both sides of that update;
+        // its stable identity must not include the mutable observation floor.
+        const key = `${execution.childGeneration}:${nativeSessionId ?? ''}:${execution.failure.atMs}`;
+        if (surfacedNativeFailure !== key) {
+          surfacedNativeFailure = key;
+          appendHostEvent(ownerId, 'native-turn-failed', {
+            agent: env.PAPERCUSP_AGENT, nativeSessionId,
+            ...execution,
+          });
+          if (!bridgeTty) {
+            const diagnostic = `[psu] native-turn-failed agent=${env.PAPERCUSP_AGENT} code=${execution.failure.code}`
+              + ` retryable=${execution.failure.retryable} retryAfterMs=${execution.failure.retryAfterMs ?? 'unknown'}\n`;
+            terminalOutput.write(diagnostic);
+            normalizedLog?.push(diagnostic);
+            normalizedLog?.flush();
+          }
+        }
+      }
       metadataWriter.write(JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
         ...authBlockDetector.snapshot(),
         ...(env.PAPERCUSP_AGENT === 'codex' ? {
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
           childGeneration,
         } : {}),
-        execution: currentNativeExecution(),
+        execution,
       }));
     } catch {
       /* best-effort — discovery degrades to the base contract */
@@ -11647,15 +11856,22 @@ export function hostThroughPty(o) {
       ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : undefined;
     const fence = `${childGeneration}:${receivedAtMs}:${nativeSessionId ?? ''}`;
     const observed = nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs, nativeSessionId });
-    const execution = nativeExecutionFence === fence
-      ? retainRunningNativeExecution(lastNativeExecution, observed)
-      : observed;
+    const sameNativeChild = lastNativeExecution?.childGeneration === childGeneration &&
+      (lastNativeExecution?.nativeSessionId ?? null) === (nativeSessionId ?? null);
+    const execution = retainNativeExecutionObservation(lastNativeExecution, observed, {
+      sameChild: sameNativeChild,
+      sameFence: nativeExecutionFence === fence,
+    });
     nativeExecutionFence = fence;
-    lastNativeExecution = execution;
+    lastNativeExecution = {
+      ...execution,
+      childGeneration,
+      nativeSessionId: nativeSessionId ?? null,
+    };
     return {
       ...execution,
       ownerId, hostPid: process.pid, childPid: child.pid ?? null,
-      childGeneration, receivedAtMs,
+      childGeneration, nativeSessionId: nativeSessionId ?? null, receivedAtMs,
       ownerInputPending: Boolean(ownerComposerGate?.hasPending()),
       // Loop reconciliation must not treat an idle/menu Escape as a standing
       // owner stop. Execution remains explicitly unknown when no native record
@@ -13993,6 +14209,7 @@ export function hostThroughPty(o) {
       childPromptReady,
       parked,
       busy,
+      nativeBusy: nativeExecutionBlocksInjection(currentNativeExecution()),
       quotaBlocked: quotaBlockDetector.isBlocked(),
       authBlocked: authBlockDetector.isBlocked(),
       composerPending: ownerComposerGate.hasPending(),
@@ -15272,10 +15489,12 @@ export function hostThroughPty(o) {
               resetTap: tap.reset,
               crDelayMs: turnSubmitCrDelayForAgent(agent, env),
             });
-            appendHostEvent(ownerId, result.ok ? 'mcp-reconnect-completed' : 'mcp-reconnect-failed', {
+            const outcome = classifyMcpReconnectHostOutcome(result, msg.force === true);
+            appendHostEvent(ownerId, outcome.event, {
               serverName,
-              step: result.step,
-              detail: result.detail,
+              force: msg.force === true,
+              step: outcome.step,
+              detail: outcome.detail,
             });
             // P-006 (completing the class): this is a FOURTH routine host
             // diagnostic that writes straight into the owner's TUI — it fires on
@@ -15285,10 +15504,10 @@ export function hostThroughPty(o) {
             // the next reader. writeHostDiagnostic is itself fail-soft, so the
             // local try/catch it replaces is redundant.
             writeHostDiagnostic(
-              `psu-pty-host: mcp-reconnect ${result.ok ? 'OK' : 'FAILED'} for ${ownerId} ` +
-                `(${serverName}: ${result.step} — ${result.detail})\n`,
+              `psu-pty-host: mcp-reconnect ${outcome.ok ? 'OK' : 'FAILED'} for ${ownerId} ` +
+                `(${serverName}: ${outcome.step} — ${outcome.detail})\n`,
             );
-            return { ok: result.ok, reason: result.ok ? 'delivered' : 'mcp-reconnect-failed', detail: result.detail };
+            return { ok: outcome.ok, reason: outcome.ok ? 'delivered' : 'mcp-reconnect-failed', detail: outcome.detail };
           } finally {
             tap.close();
           }
@@ -16911,9 +17130,7 @@ export function hostThroughPty(o) {
             // Claude's native compactors, which would race the deterministic one.
             childEnv: {
               ...handoffEnv,
-              ...(systemPromptAddendum
-                ? { DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' }
-                : {}),
+              ...successorNativeCompactionEnv(env.PAPERCUSP_AGENT),
             },
             loaded: hostCode.loaded,
             onDisk: hostCode.onDisk,
@@ -17079,11 +17296,10 @@ export function hostThroughPty(o) {
         // child whose deterministic carry consumer is now installed. The old
         // child kept its native safety net right up to this successful cut.
         // P-022 adds DISABLE_COMPACT: a successor of a pre-cutover session
-        // would otherwise inherit an env where /compact still exists.
-        if (systemPromptAddendum) {
-          env.DISABLE_AUTO_COMPACT = '1';
-          env.DISABLE_COMPACT = '1';
-        }
+        // would otherwise inherit an env where /compact still exists. P-006
+        // (client-native-features-adoption-2026-10-21) keys this on the backend,
+        // not on the addendum, so every Claude successor gets it.
+        Object.assign(env, successorNativeCompactionEnv(env.PAPERCUSP_AGENT));
         // WI-41386: the predecessor is dead but the TERMINAL still carries its
         // state — a cursor parked mid-frame, and whatever modes a killed child
         // never reset. Hand the terminal over cleanly BEFORE the successor gets
@@ -17203,12 +17419,12 @@ export function hostThroughPty(o) {
         // this instant, is recognized as superseded the next time it is checked.
         lastRespawnAtMs = Date.now();
       } catch (e) {
-        if (systemPromptAddendum) {
-          if (priorDisableAutoCompact === undefined) delete env.DISABLE_AUTO_COMPACT;
-          else env.DISABLE_AUTO_COMPACT = priorDisableAutoCompact;
-          if (priorDisableCompact === undefined) delete env.DISABLE_COMPACT;
-          else env.DISABLE_COMPACT = priorDisableCompact;
-        }
+        // The failed successor never ran: give the surviving host env back exactly
+        // as it was (a no-op when the successor switches were already set).
+        if (priorDisableAutoCompact === undefined) delete env.DISABLE_AUTO_COMPACT;
+        else env.DISABLE_AUTO_COMPACT = priorDisableAutoCompact;
+        if (priorDisableCompact === undefined) delete env.DISABLE_COMPACT;
+        else env.DISABLE_COMPACT = priorDisableCompact;
         try {
           writeTerminalDiagnostic(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);
         } catch {

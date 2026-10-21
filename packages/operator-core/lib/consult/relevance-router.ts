@@ -73,6 +73,8 @@ import { categoryOf, searchTools } from '../cupboard/tools-search';
 import type { ToolDiscoveryEntry } from '../cupboard/tools-discovery';
 import type { RerankScoreFn } from '@papercusp/rerank';
 import type { NativeConsultConstraints } from './native-consult';
+import { gitGrepSymbolResolver, hasCodeSubjects, resolveQuestionCodeSubjects, type CodeSubjects, type SymbolResolver } from './code-subject-resolution';
+import { codeAuthorshipScore, measureCodeFamiliarity, type CodeFamiliarityMeasurement } from './code-familiarity';
 
 /** Same shape as `@papercusp/search`'s Embedder, declared locally to keep this
  * module's import graph free of the search engine (only the TYPE is shared). */
@@ -212,7 +214,18 @@ export interface RoutingCandidate {
   /** Present only when semantic discovery degraded to session_turns.text_tsv.
    * These candidates can be selected only as labeled minimum-fill reviewers. */
   fallback?: 'lexical';
+  /** Why `signals.authorship` has its value, present when the question named
+   * code (plan code-intel-relevance-routing-2026-10-21 R-3): completed
+   * work-items whose recorded paths match, and all-time edits / code reads of
+   * the resolved files. authorship = max(workItemPaths/2, edits/2 + reads/8). */
+  authorshipEvidence?: { workItemPaths: number; edits: number; reads: number };
 }
+
+/** The code a question was resolved to, persisted on the snapshot (R-3). */
+export type RoutingCodeSubjects = CodeSubjects & {
+  edits: CodeFamiliarityMeasurement['edits'];
+  reads: CodeFamiliarityMeasurement['reads'];
+};
 
 export interface RoutingSnapshot {
   query: string;
@@ -249,6 +262,9 @@ export interface RoutingSnapshot {
   /** Set when the instrument itself was degraded — 'embed-unavailable' means
    * similarity could not be measured at all (≠ measured and found nothing). */
   degraded?: 'embed-unavailable' | 'evidence-unavailable';
+  /** Present only when the question named code (a path or a resolvable
+   * identifier); a non-code question's snapshot is unchanged (R-4). */
+  codeSubjects?: RoutingCodeSubjects;
   subjectValidation?: {
     subject?: string;
     subjects: string[];
@@ -487,6 +503,14 @@ export interface ConsultRouteDeps {
    *  two use sites below, so this widening is type-level only. */
   getLiveness?: (ownerIds: string[]) => Promise<Record<string, ConsultLivenessReading>>;
   now?: () => Date;
+  /** Identifier → defining files (R-1). Omitted = `git grep` over the router
+   * host's checkout (D-002); `null` = resolve explicit paths only. */
+  resolveCodeSymbols?: SymbolResolver | null;
+}
+
+let defaultSymbolResolver: SymbolResolver | null = null;
+function productionSymbolResolver(): SymbolResolver {
+  return (defaultSymbolResolver ??= gitGrepSymbolResolver({ cwd: process.cwd() }));
 }
 
 /** Infer source paths from filename shape or explicit path notation. An
@@ -1297,6 +1321,29 @@ async function routeConsultCore(
     `)) as unknown as Array<{ owner: string; c: number }>;
     for (const r of authRows) authByOwner.set(r.owner, r.c);
   }
+  // 4b) Code familiarity (plan code-intel-relevance-routing-2026-10-21): the
+  //     question's code subjects (explicit paths + identifiers resolved to their
+  //     defining files) and what each candidate actually did with them. All-time
+  //     counts, no time term; a candidate below simFloor still cannot qualify,
+  //     because meetsRoutingFloors checks similarity before relevance. A
+  //     non-code question resolves to nothing and runs no extra query (R-4).
+  const codeSubjects = await resolveQuestionCodeSubjects(params.question, {
+    resolveSymbol: deps.resolveCodeSymbols === undefined ? productionSymbolResolver() : deps.resolveCodeSymbols,
+  });
+  let familiarity: CodeFamiliarityMeasurement | null = null;
+  if (hasCodeSubjects(codeSubjects)) {
+    familiarity = await measure('authorship', () => measureCodeFamiliarity(sql, {
+      workspaceId: params.workspaceId, owners, files: codeSubjects.files,
+    })).catch(() => ({ byOwner: new Map(), edits: 'unmeasured' as const, reads: 'unmeasured' as const }));
+    base.codeSubjects = { ...codeSubjects, edits: familiarity.edits, reads: familiarity.reads };
+  }
+  const authorshipOf = (ownerId: string): number => clamp01(Math.max(
+    (authByOwner.get(ownerId) ?? 0) / 2,
+    codeAuthorshipScore(familiarity?.byOwner.get(ownerId)),
+  ));
+  const authorshipEvidenceOf = (ownerId: string): RoutingCandidate['authorshipEvidence'] => familiarity
+    ? { workItemPaths: authByOwner.get(ownerId) ?? 0, edits: familiarity.byOwner.get(ownerId)?.edits ?? 0, reads: familiarity.byOwner.get(ownerId)?.reads ?? 0 }
+    : undefined;
 
   // Similar words and a general completion history do not establish expertise
   // in a named system. Validate a bounded above-floor pool against its primary
@@ -1307,7 +1354,7 @@ async function routeConsultCore(
       const similarity = clamp01(Math.max(...byOwner.get(ownerId)!.sims));
       const c = verByOwner.get(ownerId) ?? 0;
       return meetsRoutingFloors({ relevance: relevanceOf({ similarity,
-        verification: c / (c + VERIFICATION_SATURATION_K), authorship: clamp01((authByOwner.get(ownerId) ?? 0) / 2) }, weights),
+        verification: c / (c + VERIFICATION_SATURATION_K), authorship: authorshipOf(ownerId) }, weights),
         signals: { similarity } }, floors);
     }).sort((a, b) => Math.max(...byOwner.get(b)!.sims) - Math.max(...byOwner.get(a)!.sims) || a.localeCompare(b));
     const unmeasuredEvidence = subjectRefs.map(subject => ({ subject, status: 'unmeasured' as const, score: null }));
@@ -1379,14 +1426,16 @@ async function routeConsultCore(
     const similarity = clamp01(Math.max(...o.sims));
     const c = verByOwner.get(ownerId) ?? 0;
     const verification = clamp01(c / (c + VERIFICATION_SATURATION_K));
-    const authorship = clamp01((authByOwner.get(ownerId) ?? 0) / 2);
+    const authorship = authorshipOf(ownerId);
     const signals = { similarity, verification, authorship };
+    const authorshipEvidence = authorshipEvidenceOf(ownerId);
     return {
       ownerId,
       signals,
       relevance: relevanceOf(signals, weights),
       newestTs: o.newestTs,
       evidence: o.evidence,
+      ...(authorshipEvidence ? { authorshipEvidence } : {}),
       ...(subjectCoverageByOwner.has(ownerId) ? {
         subjectEvidenceCoverage: subjectCoverageByOwner.get(ownerId)!,
         ...(subjectCoverageByOwner.get(ownerId)!.evidence.length === 1
@@ -1426,6 +1475,7 @@ async function routeConsultCore(
       evidence: s.evidence,
       ...(s.subjectEvidence ? { subjectEvidence: s.subjectEvidence } : {}),
       ...(s.subjectEvidenceCoverage ? { subjectEvidenceCoverage: s.subjectEvidenceCoverage } : {}),
+      ...(s.authorshipEvidence ? { authorshipEvidence: s.authorshipEvidence } : {}),
       ...annotateLiveness(livenessByOwner[s.ownerId]),
     };
   });

@@ -687,7 +687,7 @@ class SuSession implements ChatSession {
   /** Both provider loops consume this exact snapshot before each request.
    * rawSseTape is already persisted losslessly as transcript_raw_zstd.
    */
-  private requestCatalog(result: TurnResult, provider: 'anthropic' | 'codex', responseIndex: number): BuiltCatalog {
+  private requestCatalog(result: TurnResult, provider: 'anthropic' | 'codex', responseIndex: number, system: unknown): BuiltCatalog {
     const full = new Map(this.state.fullCatalog?.tools.map(tool => [tool.name, tool]));
     const catalog: BuiltCatalog = {
       ...this.state.catalog,
@@ -699,6 +699,7 @@ class SuSession implements ChatSession {
     const serialized = JSON.stringify(definitions);
     result.rawSseTape.push(sse('tool_definition_manifest', {
       schemaVersion: 'su-tool-definitions-v1', provider, responseIndex,
+      systemSha256: createHash('sha256').update(JSON.stringify(system)).digest('hex'),
       fullDefinitionsAfterUse: Boolean(this.state.fullCatalog),
       usedCanonicalNames: [...this.usedTools].sort(),
       canonicalBySanitized: [...catalog.canonicalBySanitized.entries()],
@@ -817,7 +818,7 @@ class SuSession implements ChatSession {
       // final answer. Bound the turn by its existing deadline, not by an
       // arbitrary round count that silently returns "done" mid-conversation.
       for (let iter = 0; !ctrl.signal.aborted && performance.now() < deadline; iter++) {
-        const tools = this.requestCatalog(result, 'anthropic', iter).tools;
+        const tools = this.requestCatalog(result, 'anthropic', iter, system).tools;
         let resp: AnthropicResponse;
         try {
           resp = await callWithRetry(makeClient, {
@@ -926,7 +927,7 @@ class SuSession implements ChatSession {
             model,
             instructions,
             input: replay,
-            catalog: this.requestCatalog(result, 'codex', iter),
+            catalog: this.requestCatalog(result, 'codex', iter, instructions),
             maxOutputTokens: 4096,
             signal: ctrl.signal,
             fetchImpl: this.state.codexFetch,

@@ -9,6 +9,8 @@
  * typed values and passes anything it cannot convert through unchanged so the check reports it.
  */
 import { useMemo, useState, type FormEvent } from "react";
+import { Checkbox } from "@/app/harness/Checkbox";
+import { Select } from "@/app/harness/Select";
 
 export type CompletionFieldKind =
   | "string"
@@ -209,26 +211,21 @@ export default function ItemTypeCompletionForm({
               {field.required ? <span aria-hidden="true"> *</span> : null}
             </label>
             {field.kind === "boolean" ? (
-              <input
+              <Checkbox
                 id={id}
-                type="checkbox"
                 checked={draft === true}
-                onChange={(event) => setDraft(field.name, event.target.checked)}
+                ariaLabel={field.title}
+                onChange={(checked) => setDraft(field.name, checked)}
               />
             ) : field.kind === "enum" ? (
-              <select
+              <Select
                 id={id}
+                ariaLabel={field.title}
+                placeholder="—"
                 value={typeof draft === "string" ? draft : ""}
-                required={field.required}
-                onChange={(event) => setDraft(field.name, event.target.value)}
-              >
-                <option value="">—</option>
-                {(field.options ?? []).map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
+                options={(field.options ?? []).map((option) => ({ value: option, label: option }))}
+                onChange={(value) => setDraft(field.name, value)}
+              />
             ) : field.kind === "string-list" || field.kind === "json" ? (
               <textarea
                 id={id}

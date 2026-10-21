@@ -376,6 +376,14 @@
     // Imported by stop-owner-directive-check.test.ts for `evaluateStop`
     // (owner-directive-delivery-redesign-2026-09-22 P-007).
     "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
+    // Imported by stop-failure-record.test.ts for buildStopFailureReport /
+    // postStopFailureReport (client-native-features-adoption-2026-10-21 P-002).
+    "apps/operator/scripts/hooks/cc/stop-failure-record.mjs",
+    // Imported by posttooluse-failure-record.test.ts for buildToolFailureReport /
+    // reduceToolInput, and by it for the shared postActivityReport plumbing
+    // (client-native-features-adoption-2026-10-21 P-003).
+    "apps/operator/scripts/hooks/cc/posttooluse-failure-record.mjs",
+    "apps/operator/scripts/hooks/cc/pc_activity_report.mjs",
     // WI-6554700010015321 — imported directly by
     // pretooluse-unreserved-migration-db-target.test.ts for `reservationDatabaseRoot`.
     // Unregistered it was a fresh TS7016 on the apps/operator gate leg.

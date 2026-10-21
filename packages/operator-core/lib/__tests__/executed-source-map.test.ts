@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   EXECUTED_MAP_ENV,
   EXECUTED_MAP_NO_PERSIST_ENV,
@@ -15,6 +16,7 @@ import {
   formatExecutedMapLine,
   formatExecutedMapResultLines,
   formatTestReuseAuditResultLines,
+  formatDriftUnknownLine,
   formatExecutedMapTotalLine,
   gitChangedBetween,
   loadExecutedSourceMap,
@@ -24,11 +26,16 @@ import {
   resolveExecutedMapPgUrl,
   resolveTaskReportExpectation,
   readExecutedMapResults,
+  resolveRecordedGitDir,
   rowsToExecutedMap,
   rowsToReuseProofs,
   scriptCommandWords,
   summarizeExecutedMapResults,
 } from '../../../../scripts/lib/executed-source-map.mjs';
+
+/** WI-6554700010019324: a fixed object store for the readers' scope, and the real checkout's. */
+const GIT_DIR = '/fake/install/.git';
+const REAL_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 /**
  * Runner side of the executed-source map (gate-latency-selection-and-retry-policy-2026-09-06,
@@ -51,7 +58,7 @@ describe('named first-attempt audit results', () => {
   const read = (value: unknown) => readExecutedMapResults('/unused', { readFile: () => JSON.stringify(value) });
   const emitted = (result: ReturnType<typeof readExecutedMapResults> | undefined) =>
     JSON.parse(formatTestReuseAuditResultLines('core::test', result,
-      { watch: new Map([[file, 'audit'], ['expired.test.ts', 'expired-clean']]) })[0]!
+      { watch: new Map([[file, 'audit']]) })[0]!
       .slice('TEST_PASS_REUSE_AUDIT_RESULT '.length));
 
   it('retains actual named results/runtime and emits only selected audit files', () => {
@@ -162,14 +169,22 @@ describe('loadExecutedSourceMap', () => {
         };
       },
     };
-    const { map, rows } = await loadExecutedSourceMap({ client, workspaceName: '@x/w', repoRoot: ROOT });
+    const { map, rows } = await loadExecutedSourceMap({ client, workspaceName: '@x/w', repoRoot: ROOT, gitDir: GIT_DIR });
     expect(rows).toBe(1);
     expect(map.get('/repo/w/t.test.ts')?.recordedSha).toBe('abc');
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.values).toEqual(['@x/w']);
+    expect(calls[0]!.values).toEqual(['@x/w', GIT_DIR]);
     expect(calls[0]!.text).toMatch(/DISTINCT ON \(test_file\)/);
     expect(calls[0]!.text).toMatch(/harness_shared\.test_executed_sources/);
-    expect(calls[0]!.text).toMatch(/ORDER BY test_file, recorded_at DESC/);
+    expect(calls[0]!.text).toMatch(/\(recorded_git_dir = \$2 OR recorded_git_dir IS NULL\)/);
+    expect(calls[0]!.text).toMatch(/ORDER BY test_file, \(recorded_git_dir IS NULL\), recorded_at DESC/);
+  });
+
+  it('reads nothing when the checkout has no resolvable object store (WI-6554700010019324)', async () => {
+    let calls = 0;
+    const client = { query: async () => { calls += 1; return { rows: [] }; } };
+    expect(await loadExecutedSourceMap({ client, workspaceName: '@x/w', repoRoot: ROOT })).toEqual({ map: new Map(), rows: 0 });
+    expect(calls).toBe(0);
   });
 
   it('scopes the newest-row query to static test candidates', async () => {
@@ -186,13 +201,14 @@ describe('loadExecutedSourceMap', () => {
       workspaceName: '@x/w',
       repoRoot: ROOT,
       files,
+      gitDir: GIT_DIR,
     });
     expect(rows).toBe(1);
     expect(map.has('/repo/w/a.test.ts')).toBe(true);
     expect(map.has('/repo/w/b.test.ts')).toBe(false);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.values).toEqual(['@x/w', files]);
-    expect(calls[0]!.text).toMatch(/test_file = ANY\(\$2::text\[\]\)/);
+    expect(calls[0]!.values).toEqual(['@x/w', GIT_DIR, files]);
+    expect(calls[0]!.text).toMatch(/test_file = ANY\(\$3::text\[\]\)/);
   });
 
   it('skips the executed-source query when static selection has no candidates', async () => {
@@ -330,18 +346,74 @@ describe('gitChangedBetween', () => {
     expect(missingPin('aaa', 'bbb')).toBeNull();
   });
 
-  it('answers null (cannot tell) when git refuses the pair, and caches per pair', () => {
+  // WI-6554700010019181: one cached null turned 866 of 866 web proofs into unknownDrift with no
+  // record of why. A failure is retried once, never cached, and reported with git's stderr.
+  it('answers null (cannot tell) when git refuses the pair, retries once, and reports why', () => {
     let calls = 0;
+    const unknown: Array<{ recordedSha: string; judgedSha: string; reason: string; attempts: number }> = [];
     const seam = gitChangedBetween({
       repoRoot: ROOT,
-      exec: () => {
+      exec: (_file, _args, opts) => {
         calls += 1;
-        throw new Error('fatal: bad object');
+        expect((opts as { stdio: unknown[] }).stdio[2]).toBe('pipe');
+        throw Object.assign(new Error('Command failed: git diff'), { stderr: "fatal: bad object gone\n", status: 128 });
       },
+      onUnknown: (u) => unknown.push(u),
     });
     expect(seam('gone', 'head')).toBeNull();
     expect(seam('gone', 'head')).toBeNull();
-    expect(calls).toBe(1);
+    expect(calls).toBe(4);
+    expect(unknown).toHaveLength(2);
+    expect(unknown[0]).toEqual({
+      recordedSha: 'gone', judgedSha: 'head', attempts: 2, reason: 'diff-failed(. gone..head): fatal: bad object gone',
+    });
+  });
+
+  it('recovers from a transient failure on the retry and caches the answer', () => {
+    let calls = 0;
+    const unknown: unknown[] = [];
+    const seam = gitChangedBetween({
+      repoRoot: ROOT,
+      relative: true,
+      exec: () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' });
+        return rawEntry('100644', '100644', O1, O2, 'M', 'pkg/a.ts');
+      },
+      onUnknown: (u) => unknown.push(u),
+    });
+    expect(seam('aaa', 'bbb')).toEqual(new Set(['pkg/a.ts']));
+    expect(seam('aaa', 'bbb')).toEqual(new Set(['pkg/a.ts']));
+    expect(calls).toBe(2);
+    expect(unknown).toEqual([]);
+  });
+
+  it('names the submodule and the structural reason a recursive diff stopped', () => {
+    const reasons: string[] = [];
+    gitChangedBetween({
+      repoRoot: ROOT,
+      exec: () => rawEntry('160000', '100644', O1, O2, 'T', 'libs/sub'),
+      onUnknown: (u) => reasons.push(u.reason),
+    })('aaa', 'bbb');
+    gitChangedBetween({
+      repoRoot: ROOT,
+      exec: (_file, args, opts) => {
+        const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse') return cwd;
+        if (cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
+        throw Object.assign(new Error('x'), { stderr: `fatal: bad object ${O2}` });
+      },
+      onUnknown: (u) => reasons.push(u.reason),
+    })('aaa', 'bbb');
+    expect(reasons).toEqual([
+      'gitlink-type-change(libs/sub)',
+      `diff-failed(libs/sub ${O1.slice(0, 12)}..${O2.slice(0, 12)}): fatal: bad object ${O2}`,
+    ]);
+    expect(formatDriftUnknownLine({ repoRoot: ROOT, recordedSha: 'a'.repeat(40), judgedSha: 'b'.repeat(40),
+      attempts: 2, reason: 'gitlink-type-change(libs/sub)', prefix: 'TARGETED_' })).toBe(
+      `TARGETED_TEST_PASS_REUSE_DRIFT_UNKNOWN repo=${ROOT} recorded=${'a'.repeat(12)} judged=${'b'.repeat(12)} ` +
+        'attempts=2 reason=gitlink-type-change(libs/sub)',
+    );
   });
 });
 
@@ -367,19 +439,30 @@ describe('env toggles + database precedence', () => {
       url: 'postgresql://a',
       source: 'HARNESS_ADMIN_DATABASE_URL',
     });
-    const dflt = resolveExecutedMapPgUrl({});
-    expect(dflt.source).toBe('default');
-    // Pinned against the reporter's own fallback so the two sides cannot drift apart silently.
-    const reporter = readFileSync(join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts'), 'utf8');
-    expect(reporter).toContain(`'${dflt.url}'`);
+    expect(resolveExecutedMapPgUrl({}).source).toBe('default');
+    // Pinned against the reporter's own resolver so the two sides cannot drift apart silently:
+    // the reporter's default follows PAPERCUSP_PG_PORT, and a reader on :5432 would see none of
+    // an isolated cluster's rows.
+    for (const env of [
+      {},
+      { PAPERCUSP_PG_PORT: '55432' },
+      { PAPERCUSP_PG_PORT: 'not-a-port' },
+      { HARNESS_ADMIN_DATABASE_URL: ' postgresql://a ', PAPERCUSP_PG_PORT: '55432' },
+      { PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://b', HARNESS_ADMIN_DATABASE_URL: 'postgresql://a' },
+      { PAPERCUSP_TEST_RUNS_DB_URL: '  ', HARNESS_ADMIN_DATABASE_URL: 'postgresql://a' },
+    ]) {
+      expect(resolveExecutedMapPgUrl(env).url, JSON.stringify(env)).toBe(resolveTestRunsPgUrl(env));
+    }
   });
 
   it('every live test-ledger writer resolves the dedicated ledger URL before the app admin URL', () => {
     // Pin the ORDER whether a writer uses process.env directly or delegates to a small env
     // resolver. A writer that reverts to HARNESS_ADMIN_DATABASE_URL-first silently sends an
-    // isolated run's rows into the throwaway database (WI-10006736).
+    // isolated run's rows into the throwaway database (WI-10006736). The vitest reporter exports
+    // its resolver, so it is pinned by behaviour rather than by the shape of its source text.
+    expect(resolveTestRunsPgUrl({ PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://b', HARNESS_ADMIN_DATABASE_URL: 'postgresql://a' }))
+      .toBe('postgresql://b');
     const writers = [
-      'libs/test-config/src/admin-test-runs-reporter.ts',
       'packages/operator-core/lib/testing-playwright-reporter.ts',
       'apps/operator/scripts/prune-test-runs.ts',
     ];
@@ -527,10 +610,23 @@ describe('reuse proofs loader', () => {
     const out = await loadReuseProofs({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint' });
     expect(out.rows).toBe(1);
     expect(out.proofs.has('pkg/a.test.ts')).toBe(true);
-    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint']);
+    // The default object store is the one this module was loaded from (WI-6554700010019324).
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', resolveRecordedGitDir(REAL_ROOT)]);
+    expect(calls[0]?.values?.[2]).toMatch(/\/\.git$/);
     expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
     expect(calls[0]?.text).toMatch(/run_context = \$2/);
-    expect(calls[0]?.text).toMatch(/ORDER BY test_file, recorded_at DESC/);
+    expect(calls[0]?.text).toMatch(/\(recorded_git_dir = \$3 OR recorded_git_dir IS NULL\)/);
+    expect(calls[0]?.text).toMatch(/ORDER BY test_file, \(recorded_git_dir IS NULL\), recorded_at DESC/);
+  });
+
+  it('reuses nothing when the object store is unresolvable, so a sibling install\'s proof is never read', async () => {
+    let queried = false;
+    const client = { query: async () => { queried = true; return { rows: [row()] }; } };
+    expect(await loadReuseProofs({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint', gitDir: null }))
+      .toEqual({ proofs: new Map(), rows: 0 });
+    expect(await loadReuseProofFiles({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint', gitDir: null }))
+      .toEqual({ files: [], rows: 0 });
+    expect(queried).toBe(false);
   });
 
   it('loads only the requested proof files when a targeted task supplies a scope', async () => {
@@ -546,11 +642,12 @@ describe('reuse proofs loader', () => {
       workspaceName: '@papercusp/x',
       runContext: 'green-checkpoint',
       files: ['pkg/a.test.ts', 'pkg/a.test.ts', ''],
+      gitDir: GIT_DIR,
     });
     expect(out.rows).toBe(1);
     expect(out.proofs.has('pkg/a.test.ts')).toBe(true);
-    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', ['pkg/a.test.ts']]);
-    expect(calls[0]?.text).toMatch(/test_file = ANY\(\$3::text\[\]\)/);
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', GIT_DIR, ['pkg/a.test.ts']]);
+    expect(calls[0]?.text).toMatch(/test_file = ANY\(\$4::text\[\]\)/);
     expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
   });
 
@@ -580,9 +677,10 @@ describe('reuse proofs loader', () => {
         return { rows: [{ test_file: 'pkg/a.test.ts' }, { test_file: 'pkg/b.test.ts' }] };
       },
     };
-    const out = await loadReuseProofFiles({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint' });
+    const out = await loadReuseProofFiles({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint', gitDir: GIT_DIR });
     expect(out).toEqual({ files: ['pkg/a.test.ts', 'pkg/b.test.ts'], rows: 2 });
-    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint']);
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', GIT_DIR]);
+    expect(calls[0]?.text).toMatch(/\(recorded_git_dir = \$3 OR recorded_git_dir IS NULL\)/);
     expect(calls[0]?.text).toMatch(/SELECT DISTINCT test_file/);
     expect(calls[0]?.text).not.toMatch(/executed_modules|read_paths/);
   });

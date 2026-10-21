@@ -269,6 +269,16 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     ]);
     // Matcher-less: the check is about the turn ending, not about any tool.
     expect(hookMatcherOf(cfg, 'Stop', 'stop-owner-directive-check.mjs')).toBeUndefined();
+    // StopFailure (client-native-features-adoption-2026-10-21 P-002, R-2): a turn that
+    // dies on an API error fires StopFailure INSTEAD of Stop, so it needs its own entry.
+    // Matcher-less: Claude matches StopFailure on the error kind, and every kind counts.
+    expect(commandsFor(cfg, 'StopFailure')).toEqual([`${DEST}/stop-failure-record.mjs`]);
+    expect(hookMatcherOf(cfg, 'StopFailure', 'stop-failure-record.mjs')).toBeUndefined();
+    // PostToolUseFailure (client-native-features-adoption-2026-10-21 P-003, R-3): a failed
+    // native tool call fires PostToolUseFailure INSTEAD of PostToolUse. Matcher-less:
+    // every tool's failure is recorded.
+    expect(commandsFor(cfg, 'PostToolUseFailure')).toEqual([`${DEST}/posttooluse-failure-record.mjs`]);
+    expect(hookMatcherOf(cfg, 'PostToolUseFailure', 'posttooluse-failure-record.mjs')).toBeUndefined();
     expect(hookMatcherOf(cfg, 'Stop', 'stop-identity-context.sh')).toBeUndefined();
     expect(hookMatcherOf(cfg, 'Stop', 'ask-gate-mirror.sh')).toBeUndefined(); // every turn end
     // EI-21844056581395228: MUST be matcher-less. The failure it guards lands in the

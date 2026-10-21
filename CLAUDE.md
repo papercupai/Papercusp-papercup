@@ -790,16 +790,21 @@ a `\du`), the bash form is the right answer — the gate will not fight you on t
   once its `/api/health` answers, retry the original failed Papercup tool call.
   Re-dial is inconsistent (EI-24755204180385597); never ask the owner to run
   `/mcp` (EI-24657708696146012). Omit `--port` unless pinning; defaults try configured,
-  canonical, and proxy ports. Flush checkpoints and request compaction via
-  `mcp-call.mjs`.
+  canonical, and proxy ports. When EVERY port is refused before sending (a psu
+  native Bash has no loopback network), `mcp-call` makes the call once over the
+  operator's agent-MCP unix socket and says so; `--transport http|uds` pins one.
+  Exit 7 = sent but the reply was lost: check the outcome before re-running a write.
+  Flush checkpoints and request compaction via `mcp-call.mjs`.
 - **TOOLLESS but "connected"** (papercusp tools vanished; the `/mcp` dialog
   still reads connected) — **heal it yourself; never ask the owner for
   `/mcp` → Reconnect.** From native Bash run `node scripts/mcp-reconnect.mjs`,
   then END YOUR TURN: your own psu host presses Reconnect once you are idle at
   the prompt, forced even when the dialog reads connected (EI-26532826938565424).
-  If tools are still missing on the next turn, or the script reports no host /
-  a refused ack, request a carry-respawn via
-  `mcp-call.mjs session:request-compaction` (a fresh process re-dials MCP).
+  If tools are still missing on the next turn, the script reports no host /
+  a refused ack, or it exits 3 (`host-cannot-force-reconnect`: your host predates
+  that fix and, being interactive, never adopts newer host code, so nothing was
+  sent), request a carry-respawn via `mcp-call.mjs session:request-compaction`
+  (a fresh process re-dials MCP); exit 3 prints the exact command.
 - **IDENTITY** — tools are listed, but calls refuse `Identity capability (unresolved):
   stale-artifact`. ⛔ **`mcp-call.mjs` CANNOT open this one**: server-side preflight
   rejects every client and port (WI-10002028); even `coord:orient` may be refused.

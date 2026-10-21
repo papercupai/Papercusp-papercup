@@ -8,10 +8,78 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   anotherRoutinesTickInFlight,
+  createInProcessPassRegistry,
+  exitInProcessPass,
+  IN_PROCESS_PASS_STALE_MS,
   ROUTINE_TICK_OVERLAP_QUERY_DEADLINE_MS,
+  ROUTINE_TICK_OVERLAP_STALE_MS,
   shouldShedForOverlap,
+  tryEnterInProcessPass,
   type InFlightRow,
 } from './routine-tick-overlap-guard';
+
+describe('in-process pass guard (WI-6554700010019234)', () => {
+  it('admits the first pass and refuses a second while the first is fresh', () => {
+    const reg = createInProcessPassRegistry();
+    expect(tryEnterInProcessPass(reg, 'a', 1_000)).toBe(true);
+    expect(tryEnterInProcessPass(reg, 'b', 31_000)).toBe(false);
+    // The refused pass registers nothing, so it cannot block anyone itself.
+    expect([...reg.passes.keys()]).toEqual(['a']);
+  });
+
+  it('admits the next pass once the running pass exits', () => {
+    const reg = createInProcessPassRegistry();
+    expect(tryEnterInProcessPass(reg, 'a', 1_000)).toBe(true);
+    exitInProcessPass(reg, 'a');
+    expect(tryEnterInProcessPass(reg, 'b', 2_000)).toBe(true);
+  });
+
+  it('decides without any I/O, so a stalled event loop cannot make it fail open', () => {
+    // Nine queued ticks released together after a stall (the 2026-10-21 14:51Z shape):
+    // exactly one may run.
+    const reg = createInProcessPassRegistry();
+    const admitted = Array.from({ length: 9 }, (_, i) => tryEnterInProcessPass(reg, `t${i}`, 5_000));
+    expect(admitted.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('is stale-safe: a pass in flight for staleMs or longer no longer blocks', () => {
+    const reg = createInProcessPassRegistry();
+    expect(tryEnterInProcessPass(reg, 'wedged', 0, 1_000)).toBe(true);
+    expect(tryEnterInProcessPass(reg, 'next', 999, 1_000)).toBe(false);
+    expect(tryEnterInProcessPass(reg, 'next', 1_000, 1_000)).toBe(true);
+    expect(reg.passes.has('wedged')).toBe(false);
+    // The wedged pass finishing later removes only its own (already pruned) entry.
+    exitInProcessPass(reg, 'wedged');
+    expect(reg.passes.has('next')).toBe(true);
+  });
+
+  it('defaults its stale window to the in-process window, well past the DB guard window', () => {
+    // A slow pass (measured >10 min under load) must not be treated as dead after the DB
+    // guard's 5 minutes: that admitted a second concurrent pass live on 2026-10-21.
+    expect(IN_PROCESS_PASS_STALE_MS).toBeGreaterThanOrEqual(6 * ROUTINE_TICK_OVERLAP_STALE_MS);
+    const reg = createInProcessPassRegistry();
+    expect(tryEnterInProcessPass(reg, 'a', 0)).toBe(true);
+    expect(tryEnterInProcessPass(reg, 'b', ROUTINE_TICK_OVERLAP_STALE_MS)).toBe(false);
+    expect(tryEnterInProcessPass(reg, 'b', IN_PROCESS_PASS_STALE_MS - 1)).toBe(false);
+    expect(tryEnterInProcessPass(reg, 'b', IN_PROCESS_PASS_STALE_MS)).toBe(true);
+  });
+
+  it('reports each evicted pass and its age', () => {
+    const reg = createInProcessPassRegistry();
+    const evicted: Array<[string, number]> = [];
+    expect(tryEnterInProcessPass(reg, 'hung', 0, 1_000)).toBe(true);
+    expect(tryEnterInProcessPass(reg, 'next', 500, 1_000, (id, age) => evicted.push([id, age]))).toBe(false);
+    expect(evicted).toEqual([]);
+    expect(tryEnterInProcessPass(reg, 'next', 1_200, 1_000, (id, age) => evicted.push([id, age]))).toBe(true);
+    expect(evicted).toEqual([['hung', 1_200]]);
+  });
+
+  it('lets the same pass id re-enter (a DBOS replay of the running workflow)', () => {
+    const reg = createInProcessPassRegistry();
+    expect(tryEnterInProcessPass(reg, 'a', 0)).toBe(true);
+    expect(tryEnterInProcessPass(reg, 'a', 10)).toBe(true);
+  });
+});
 
 describe('shouldShedForOverlap (pure)', () => {
   it('no other in-flight rows ⇒ do not shed', () => {

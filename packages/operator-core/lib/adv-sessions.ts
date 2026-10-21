@@ -2735,7 +2735,9 @@ export async function getAdvSessionInWorkspace(id: number, workspaceId: string):
   try {
     const { sql } = getOrgPg();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id,
+             to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
+             plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
              to_jsonb(a)->'launch_argv' AS launch_argv,
              started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,

@@ -45,7 +45,7 @@ import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 import { checkpointProducerCertificate } from "../../events/await/checkpoint-verified-wait";
 import type { TimeoutBehavior } from "../../events/await/types";
-import { harnessArg } from "../_harness-scope";
+import { harnessArg, resolveConcreteHarnessSlug } from "../_harness-scope";
 import {
   gitSyncAwaitScope,
   gitSyncScopeRequiredResult,
@@ -371,10 +371,12 @@ defineTool({
     // Retire this caller's prior pending success/failure pair before arming the
     // replacement; otherwise every idle-loop renewal leaks two registrations
     // and one deploy produces duplicate wakes.
+    const waitGuardHarness = resolveConcreteHarnessSlug(null, ctx);
     const mainWaitPlanReview = await mainWaitPlanReviewForWait({
       ownerId: resolveAgentIdentity(ctx).ownerId,
       event: keys[0],
       note: args.note,
+      ...(waitGuardHarness ? { harnessSlug: waitGuardHarness } : {}),
     });
     if (mainWaitPlanReview && !mainWaitPlanReview.allowWait) {
       return { ...reply({ ok: false, error: mainWaitPlanReview.code, ...mainWaitPlanReview }), isError: true };
@@ -619,10 +621,12 @@ defineTool({
     // producer certificate is intentionally enriched only after registration;
     // otherwise a slow git/DB snapshot can make the caller time out before an
     // await exists at all.
+    const waitGuardHarness = resolveConcreteHarnessSlug(null, ctx);
     const mainWaitPlanReview = await mainWaitPlanReviewForWait({
       ownerId: resolveAgentIdentity(ctx).ownerId,
       event: keys[0],
       note: args.note,
+      ...(waitGuardHarness ? { harnessSlug: waitGuardHarness } : {}),
     });
     if (mainWaitPlanReview && !mainWaitPlanReview.allowWait) {
       return { ...reply({ ok: false, error: mainWaitPlanReview.code, ...mainWaitPlanReview }), isError: true };

@@ -9,6 +9,8 @@
  * @returns {number}
  */
 export function resolveTscServiceTimeoutMs(value?: string | number | undefined): number;
+/** A bounded, single-token correlation key, also safe in the service journal. */
+export function tscServiceRequestId(value: any): string;
 /**
  * The unix socket the service listens on (systemd passes it pre-bound; see
  * apps/operator/scripts/systemd/papercup-tsc-service.socket, which must name the same path).

@@ -11,6 +11,7 @@ import {
 import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
 import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
+import type { ItemTypeBar } from './plan-types/item-type-contract';
 import { specBehaviorNonAtomicReason } from './agent-tools/plans/spec-clause-compiler';
 
 function plan(opts: { requirements?: string; map?: string } = {}): string {
@@ -810,5 +811,51 @@ describe('activation seed contract completeness (requireContractCompleteness)', 
     if (!seeded.ok) throw new Error(seeded.message);
     expect(buildAcceptanceBarSeed({ ...input, planContent: plan(), existingTemplateData: seeded.templateData,
       requireContractCompleteness: true }).ok).toBe(true);
+  });
+});
+
+describe('item-type bars carry their criterion verification (D-011)', () => {
+  const TEST_FILE = 'packages/operator-core/lib/plan-types/item-type-contract.test.ts';
+  const typeBar = (verification?: ItemTypeBar['verification']): ItemTypeBar => ({
+    barKey: 'T-acme--memo-cites-sources',
+    title: 'Cites its sources',
+    model: 'Every claim names its source.',
+    planItemIds: ['P-001'],
+    source: { itemType: 'acme/memo', revision: 2, criterionKey: 'cites-sources' },
+    ...(verification ? { verification } : {}),
+  });
+  const seededTypeBar = (verification?: ItemTypeBar['verification']) => {
+    const result = buildAcceptanceBarSeed({ ...input, planStatus: 'draft', planContent: plan(), itemTypeBars: [typeBar(verification)] });
+    if (!result.ok) throw new Error(result.message);
+    return result.criteria.find((criterion) => criterion.barKey === 'T-acme--memo-cites-sources')!;
+  };
+
+  it('seeds the METHOD, the structured check and the replication the item type declares', () => {
+    const bar = seededTypeBar({
+      method: 'Run the memo source checker over the item.',
+      check: { kind: 'tests', params: { files: [TEST_FILE] } },
+      replication: `npm run test:file -- ${TEST_FILE}`,
+    });
+    expect(bar.method).toBe('Run the memo source checker over the item.');
+    expect(bar.check).toMatchObject({ kind: 'tests', files: [TEST_FILE] });
+    expect(rubricCriterionCheckSchema.safeParse(bar.check).success).toBe(true);
+    expect(bar.replication).toBe(`npm run test:file -- ${TEST_FILE}`);
+    expect(bar.title).toBe('Cites its sources');
+  });
+
+  it('leaves the METHOD for the plan author when the criterion declares no verification', () => {
+    const bar = seededTypeBar();
+    expect(bar.method).toBeUndefined();
+    expect(bar.check).toBeUndefined();
+  });
+
+  it('refuses a criterion check that is not a declarative rubric check, naming the type and criterion', () => {
+    const result = buildAcceptanceBarSeed({ ...input, planStatus: 'draft', planContent: plan(),
+      itemTypeBars: [typeBar({ method: 'Read it.', check: { kind: 'shell', params: { command: 'true' } } })] });
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'bar_contract_check_invalid',
+      problems: [expect.objectContaining({ barKey: 'T-acme--memo-cites-sources', detail: expect.stringMatching(/acme\/memo .*cites-sources.*'shell'/) })],
+    });
   });
 });

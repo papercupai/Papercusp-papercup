@@ -28,6 +28,7 @@ import {
   autoPauseOnFailureStreak,
   reconcileAndGovern,
   PLAN_RUN_PROMOTION_GRACE_MS,
+  awaitingExecutorRunFragment,
 } from './reconcile-plan-runs';
 import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
@@ -669,5 +670,43 @@ describe('reconcileAndGovern — settled-run instance convergence', () => {
 
     expect((await reconcileAndGovern({ sql, harnessSlug: HARNESS })).instancesRetired).toBe(1);
     expect((await reconcileAndGovern({ sql, harnessSlug: HARNESS })).instancesRetired).toBe(0);
+  });
+});
+
+// WI-6554700010019287: the plan-run executor recruiter selects its candidate runs with this
+// fragment. An orphan-failed run is provisional (its items are still real requests), so it
+// must stay recruitable; a run with a real outcome, or a non-scheduled one, must not.
+describe('awaitingExecutorRunFragment', () => {
+  async function selected(): Promise<number[]> {
+    const rows = await sql<{ id: number }[]>`
+      SELECT pr.id FROM harness_shared.plan_runs pr
+       WHERE pr.harness_slug = ${HARNESS} AND ${awaitingExecutorRunFragment(sql, 'pr')}
+       ORDER BY pr.id`;
+    return rows.map((r) => Number(r.id));
+  }
+
+  it('selects running and orphan-signature runs, and nothing else', async () => {
+    const running = await seedRun('p-await-running');
+    const orphan = await seedRun('p-await-orphan');
+    const settledFailed = await seedRun('p-await-settled-failed');
+    const done = await seedRun('p-await-done');
+    const interactiveFailed = await seedRun('p-await-interactive');
+    await sql`UPDATE harness_shared.plan_runs SET status = 'failed', outcome = NULL WHERE id = ${orphan}`;
+    await sql`UPDATE harness_shared.plan_runs SET status = 'failed', outcome = 'failed' WHERE id = ${settledFailed}`;
+    await sql`UPDATE harness_shared.plan_runs SET status = 'done', outcome = 'success' WHERE id = ${done}`;
+    await sql`UPDATE harness_shared.plan_runs SET status = 'failed', outcome = NULL, run_type = 'interactive' WHERE id = ${interactiveFailed}`;
+
+    expect(await selected()).toEqual([running, orphan].sort((a, b) => a - b));
+  });
+
+  it('keeps a run recruitable after the orphan sweep force-fails it', async () => {
+    const id = await seedRun('p-await-swept');
+    await seedWi(id, 'open');
+    await sql`UPDATE harness_shared.plan_runs SET updated_at = ${Date.now() - PLAN_RUN_ORPHAN_FAIL_MS - 60_000} WHERE id = ${id}`;
+
+    await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect((await runRow(id)).status).toBe('failed');
+    expect(await selected()).toEqual([id]);
   });
 });

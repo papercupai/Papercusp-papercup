@@ -100,6 +100,14 @@ export interface MappedWorkItem {
   terminal: boolean;
 }
 
+/** A mapped work-item the alarm could not block, and the dependency store's reason. */
+export interface BlocksLinkRefusal {
+  workItemId: string;
+  reason: string;
+}
+
+export type BlocksLinkResult = { linked: true } | { linked: false; reason: string };
+
 export interface PlanDriftAlarmPayload {
   planSlug: string;
   harnessSlug: string;
@@ -108,6 +116,8 @@ export interface PlanDriftAlarmPayload {
   firedFalsifiers: string[];
   doneWhenRegressed: boolean;
   blocked: string[];
+  /** Mapped work-items the dependency policy refused to block (for example, claimed and in progress). */
+  blockRefused: BlocksLinkRefusal[];
 }
 
 export interface ConformanceRunDeps {
@@ -123,8 +133,13 @@ export interface ConformanceRunDeps {
   closeDriftAlarm(id: string, reason: string): Promise<void>;
   /** Work-items mapped to a requirement through the plan's Bar-to-work map. */
   listMappedWorkItems(barKey: string): Promise<MappedWorkItem[]>;
-  /** Idempotent `blocks` edge from the alarm to the dependent work-item. */
-  linkBlocks(alarmId: string, workItemId: string): Promise<void>;
+  /**
+   * Idempotent `blocks` edge from the alarm to the dependent work-item. A dependency-policy
+   * refusal (an unresolved blocker may not be added behind a claimed, active dependant) is a
+   * reported outcome, not a run failure: return it as `{ linked: false, reason }`. Throw only
+   * for a fault the run cannot account for.
+   */
+  linkBlocks(alarmId: string, workItemId: string): Promise<BlocksLinkResult>;
   emitDriftAlarm(payload: PlanDriftAlarmPayload): Promise<void>;
   /** Requirements carrying an APPROVED deviation (R-7); none when omitted. */
   approvedDeviations?(): Promise<ReadonlySet<string>>;
@@ -143,6 +158,8 @@ export interface RequirementRunOutcome {
   unmeasured: boolean;
   alarm: { action: DriftAlarmAction; id: string | null };
   blocked: string[];
+  /** Mapped work-items whose `blocks` edge the dependency policy refused this run. */
+  blockRefused: BlocksLinkRefusal[];
 }
 
 export interface ConformanceRunOutcome {
@@ -353,6 +370,7 @@ export async function runPlanConformance(
       unmeasured,
       alarm: { action: 'none', id: alarm?.id ?? null },
       blocked: [],
+      blockRefused: [],
     };
 
     if (deviations.has(barKey)) {
@@ -376,8 +394,9 @@ export async function runPlanConformance(
       row.alarm = { action: opened.created ? 'opened' : 'kept', id: opened.id };
       for (const work of await deps.listMappedWorkItems(barKey)) {
         if (work.terminal || work.id === opened.id) continue;
-        await deps.linkBlocks(opened.id, work.id);
-        row.blocked.push(work.id);
+        const link = await deps.linkBlocks(opened.id, work.id);
+        if (link.linked) row.blocked.push(work.id);
+        else row.blockRefused.push({ workItemId: work.id, reason: link.reason });
       }
       if (opened.created) {
         outcome.alarmsOpened.push(opened.id);
@@ -389,6 +408,7 @@ export async function runPlanConformance(
           firedFalsifiers,
           doneWhenRegressed,
           blocked: row.blocked,
+          blockRefused: row.blockRefused,
         });
       }
     } else if (alarm && !unmeasured) {

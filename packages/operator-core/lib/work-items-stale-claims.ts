@@ -380,6 +380,28 @@ export function knownHolderFragment(sql: Db) {
 }
 
 /**
+ * WI-6554700010019271: TRUE when row `alias` is a plan run's assignment to its executor
+ * agent NAME — its `taken_by` equals its own `payload.plan_run.execution.agentName` (for
+ * example the bug-triage pack's 'bug-triage'). That claim is a routing assignment to a
+ * stable name (plan_items:adopt_name, D-006), not a session lease: no presence row carries
+ * the name until a session adopts it, so every holder-liveness rule reads it as a DEAD
+ * holder. Releasing it strands the run, because the adopter finds its items by that name
+ * and the plan-run executor recruiter (harness/routines/plan-run-executor-recruiter.ts)
+ * only recruits for items still assigned to it. Measured 2026-10-21: the orphan sweep
+ * cleared plan run 1356's item 32 minutes after mint, so no executor was ever recruited.
+ *
+ * Every reaper that presumes a holder dead subtracts this predicate; the recruiter owns
+ * the liveness of a name assignment (bounded attempts, then a condition escalation).
+ * Payload-only on purpose: it needs no relation beyond the row being reaped, so the many
+ * hand-rolled reaper fixtures need no new table. Always TRUE or FALSE, never NULL: callers
+ * write `AND NOT <fragment>`, and a NULL there (any row with no plan_run payload) would
+ * silently exclude every ordinary dead claim from the reap.
+ */
+export function planRunNameAssignmentFragment(sql: Db, alias: string) {
+  return sql`COALESCE(${sql(alias)}.taken_by = ${sql(alias)}.payload->'plan_run'->'execution'->>'agentName', false)`;
+}
+
+/**
  * Release every reclaimable work-item claim and requeue the mid-flight ones
  * (bounded by the requeue cap). One atomic statement; returns the released rows
  * (with former/new status, counter, a derived action, and the REASON) for
@@ -468,6 +490,9 @@ export async function reclaimStaleWorkItemClaims(
          -- Authenticated human market claims have no agent heartbeat or spawn
          -- lifecycle. Their release must be explicit, never an agent-death guess.
          AND f.taken_by NOT LIKE 'human:%'
+         -- WI-6554700010019271: a plan run's assignment to its executor NAME is not a
+         -- lease; the plan-run executor recruiter owns its liveness.
+         AND NOT ${planRunNameAssignmentFragment(sql, 'f')}
          AND (
            -- (a) DEAD: holder not alive, past the grace window. A NULL taken_at
            -- (a claim with NO claim-time anchor) is treated as PAST grace: the

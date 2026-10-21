@@ -99,6 +99,7 @@ import {
   executedMapEnabled,
   executedMapRecordingEnabled,
   formatExecutedMapLine,
+  formatDriftUnknownLine,
   gitChangedBetween,
   gitInertGlobalChange,
   loadExecutedSourceMap,
@@ -6185,7 +6186,12 @@ async function armTestPassReuse(taskList) {
   } catch (err) {
     return off(`pg-unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`);
   }
-  const changedBetween = gitChangedBetween({ repoRoot: ROOT, relative: true });
+  // WI-6554700010019181: say WHY a pair could not be diffed; every proof at it becomes unknownDrift.
+  const changedBetween = gitChangedBetween({
+    repoRoot: ROOT,
+    relative: true,
+    onUnknown: (u) => outSync(formatDriftUnknownLine({ repoRoot: ROOT, ...u })),
+  });
   // gate-test-reuse-yield-2026-10-01 P-002: a scripts-only root package.json change is not global.
   const inertGlobalChange = gitInertGlobalChange({ repoRoot: ROOT });
   // P-007 (D-010): a regenerated DB schema reaches only the proofs that name a changed table.

@@ -258,6 +258,26 @@ export function applyGenCheckHeal(
   return markFrozenRepairAdmitted(queue, outcome.entry);
 }
 
+/**
+ * WI-6554700010019277: the fresh-row reducer that persists a `healed` outcome. The healer has
+ * already moved the lineage ref from `fromRepairHead` to `toRepairHead`; this records that
+ * admission on the row as it exists NOW (field-only peer writes such as an admit's pre-check
+ * marker are carried, not overwritten), and only while the row is still the same queue at the
+ * head the heal was built on. A row already at `toRepairHead` is returned as-is (the admission
+ * is recorded — idempotent retry), and a row at any other head or candidate is returned
+ * untouched: the heal is not stamped onto a lineage it was not measured against.
+ */
+export function genCheckHealTransition(
+  fresh: FrozenCandidateRepairQueue,
+  base: FrozenCandidateRepairQueue,
+  outcome: Extract<GenCheckHealOutcome, { kind: "healed" }>,
+): FrozenCandidateRepairQueue {
+  if (fresh.candidate !== base.candidate) return fresh;
+  if (fresh.repairHead === outcome.toRepairHead) return fresh;
+  if (fresh.repairHead !== outcome.fromRepairHead) return fresh;
+  return applyGenCheckHeal(fresh, outcome);
+}
+
 /** The red signature with the healed entries removed — what remains is somebody else's red. */
 export function signatureWithoutHealed<T extends { id: string }>(
   signature: readonly T[],

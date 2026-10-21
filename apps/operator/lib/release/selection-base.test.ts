@@ -22,7 +22,18 @@ import {
   TEST_CERTIFIED_REF as MJS_TEST_CERTIFIED_REF,
 } from "../../../../scripts/lib/test-certified-base.mjs";
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
+  GATE_UPSTREAM_REF_ENV as CORE_GATE_UPSTREAM_REF_ENV,
+  potUpstreamTrackingRef,
+} from "@papercusp/operator-core/lib/harness/git-sync/pot-integration-mode";
+
+import {
+  GATE_UPSTREAM_REF_ENV,
   SELECTION_BASE_DISABLE_ENV,
   TEST_CERTIFIED_REF,
   resolveSelectionBase,
@@ -231,5 +242,177 @@ describe("selectionBaseLine (provenance is never silent)", () => {
     expect(line).toContain("source=last-ready");
     expect(line).toContain("reason=watermark-behind-last-ready");
     expect(line).toContain(`rejected=${shortOf(WATERMARK)}`);
+  });
+
+  it("names the upstream ref and says coverage is delegated on a fork pot's anchor (D-064)", () => {
+    const r: SelectionBaseResult = {
+      base: MERGE_BASE,
+      source: "upstream-integration",
+      reason: "upstream-integration",
+      upstreamRef: UPSTREAM_REF,
+    };
+    const line = selectionBaseLine(r, LAST_READY);
+    expect(line).toContain("SELECTION_BASE source=upstream-integration");
+    expect(line).toContain(`base=${shortOf(MERGE_BASE)}`);
+    expect(line).toContain(`upstreamRef=${UPSTREAM_REF}`);
+    expect(line).toContain("judged by the upstream's own gate");
+  });
+
+  it("says why a configured upstream anchor was not used when the run fell through", () => {
+    const r: SelectionBaseResult = {
+      base: LAST_READY,
+      source: "last-ready",
+      reason: "no-watermark",
+      upstreamRef: UPSTREAM_REF,
+      upstreamReason: "upstream-ref-missing",
+    };
+    const line = selectionBaseLine(r, LAST_READY);
+    expect(line).toContain("upstreamReason=upstream-ref-missing");
+    expect(line).toContain("reason=no-watermark");
+  });
+});
+
+// ── D-064 (WI-6554700010019329): working-copy (fork) pots ──────────────────────────
+
+const UPSTREAM_REF = "refs/remotes/origin/staging";
+const UPSTREAM_TIP = "e".repeat(40);
+const MERGE_BASE = "f".repeat(40);
+const UPSTREAM_REV_PARSE = `rev-parse --verify --quiet ${UPSTREAM_REF}^{commit}`;
+const UPSTREAM_MERGE_BASE = `merge-base ${HEAD} ${UPSTREAM_TIP}`;
+const HEALTHY_UPSTREAM: Record<string, string | null> = {
+  [UPSTREAM_REV_PARSE]: UPSTREAM_TIP,
+  [UPSTREAM_MERGE_BASE]: MERGE_BASE,
+};
+const forkEnv = (ref = UPSTREAM_REF) => ({ [GATE_UPSTREAM_REF_ENV]: ref });
+
+describe("selection base: fork pots anchor at the upstream merge-base (D-064)", () => {
+  it("pins the env var name to operator-core's, which hive-release-env sets", () => {
+    expect(GATE_UPSTREAM_REF_ENV).toBe(CORE_GATE_UPSTREAM_REF_ENV);
+  });
+
+  it("derives the upstream tracking ref from the pot's upstream branch", () => {
+    expect(potUpstreamTrackingRef({ upstreamBranch: "staging" })).toBe("refs/remotes/origin/staging");
+    expect(potUpstreamTrackingRef(undefined)).toBe("refs/remotes/origin/main");
+  });
+
+  it("anchors at merge-base(head, upstream tip) without the lastReady-ancestor check", async () => {
+    const { git, calls } = fakeGit(HEALTHY_UPSTREAM);
+    const r = await resolveSelectionBase(base({ git, env: forkEnv() }));
+    expect(r).toEqual({
+      base: MERGE_BASE,
+      source: "upstream-integration",
+      reason: "upstream-integration",
+      upstreamRef: UPSTREAM_REF,
+    });
+    // A fork's lastReady is a fork-only commit, never an ancestor of upstream history,
+    // so applying the P-047 pair here would refuse every fork run (the measured bug).
+    expect(calls.map((c) => c.join(" "))).not.toContain(lastReadyAncestorOf(MERGE_BASE));
+    // The verdict chain is not consulted once the upstream anchor resolves.
+    expect(calls.map((c) => c.join(" "))).not.toContain(REV_PARSE);
+  });
+
+  it("takes precedence over a frozen candidate on a fork repair run", async () => {
+    const { git } = fakeGit({ ...HEALTHY_UPSTREAM, ...HEALTHY_FROZEN });
+    const r = await resolveSelectionBase(base({ git, env: forkEnv(), frozenCandidate: FROZEN }));
+    expect(r.source).toBe("upstream-integration");
+    expect(r.base).toBe(MERGE_BASE);
+  });
+
+  it("falls through to the watermark when the upstream ref does not resolve", async () => {
+    const { git } = fakeGit(HEALTHY_WATERMARK);
+    const r = await resolveSelectionBase(base({ git, env: forkEnv() }));
+    expect(r.source).toBe("watermark");
+    expect(r.base).toBe(WATERMARK);
+    expect(r.upstreamRef).toBe(UPSTREAM_REF);
+    expect(r.upstreamReason).toBe("upstream-ref-missing");
+  });
+
+  it("refuses a ref that is not remote-tracking without asking git about it", async () => {
+    const { git, calls } = fakeGit({ ...HEALTHY_UPSTREAM, "rev-parse --verify --quiet refs/heads/staging^{commit}": HEAD });
+    const r = await resolveSelectionBase(base({ git, env: forkEnv("refs/heads/staging") }));
+    expect(r.source).toBe("last-ready");
+    expect(r.upstreamReason).toBe("upstream-ref-not-remote-tracking");
+    expect(calls.map((c) => c.join(" "))).not.toContain("rev-parse --verify --quiet refs/heads/staging^{commit}");
+  });
+
+  it("does not narrow to an empty radius when the head IS an upstream commit", async () => {
+    const { git } = fakeGit({ [UPSTREAM_REV_PARSE]: UPSTREAM_TIP, [UPSTREAM_MERGE_BASE]: HEAD });
+    const r = await resolveSelectionBase(base({ git, env: forkEnv() }));
+    expect(r.base).toBe(LAST_READY);
+    expect(r.upstreamReason).toBe("upstream-integration-at-head");
+  });
+
+  it("falls back when the head shares no history with the upstream", async () => {
+    const { git } = fakeGit({ [UPSTREAM_REV_PARSE]: UPSTREAM_TIP });
+    const r = await resolveSelectionBase(base({ git, env: forkEnv() }));
+    expect(r.base).toBe(LAST_READY);
+    expect(r.upstreamReason).toBe("upstream-no-merge-base");
+  });
+
+  it("is disabled by the shared kill-switch like every other anchor", async () => {
+    const { git, calls } = fakeGit(HEALTHY_UPSTREAM);
+    const r = await resolveSelectionBase(
+      base({ git, env: { ...forkEnv(), [SELECTION_BASE_DISABLE_ENV]: "0" } }),
+    );
+    expect(r).toMatchObject({ base: LAST_READY, reason: "disabled" });
+    expect(calls).toEqual([]);
+  });
+
+  it("an ordinary (direct) pot never consults an upstream", async () => {
+    const { git, calls } = fakeGit({ ...HEALTHY_UPSTREAM, ...HEALTHY_WATERMARK });
+    const r = await resolveSelectionBase(base({ git }));
+    expect(r.source).toBe("watermark");
+    expect(r.upstreamRef).toBeUndefined();
+    expect(calls.map((c) => c.join(" "))).not.toContain(UPSTREAM_REV_PARSE);
+  });
+});
+
+describe("selection base: a real fork history selects only the fork's own delta (D-064)", () => {
+  // The measured shape (WI-6554700010019329): the fork's lastReady is a fork-only commit on
+  // an old upstream; staging absorbed newer upstream work by a sync-back merge; then the
+  // fork's own fix landed; meanwhile the upstream tracking ref moved on again.
+  it("diff(base, head) is the fork's files, not the upstream's", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "selection-base-fork-"));
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], {
+        cwd: dir,
+        encoding: "utf8",
+      }).trim();
+    const commit = (file: string, msg: string) => {
+      writeFileSync(join(dir, file), msg);
+      g("add", file);
+      g("commit", "-q", "-m", msg);
+      return g("rev-parse", "HEAD");
+    };
+    try {
+      g("init", "-q", "-b", "upstream");
+      commit("u1.txt", "u1");
+      g("checkout", "-q", "-b", "fork");
+      const forkLastReady = commit("fork0.txt", "fork0");
+      g("checkout", "-q", "upstream");
+      const u2 = commit("u2.txt", "u2");
+      g("checkout", "-q", "fork");
+      g("merge", "-q", "--no-edit", "upstream");
+      const head = commit("fix.ts", "fix");
+      g("checkout", "-q", "upstream");
+      const u3 = commit("u3.txt", "u3");
+      g("update-ref", UPSTREAM_REF, u3);
+      g("checkout", "-q", "fork");
+
+      const r = await resolveSelectionBase({
+        lastReady: forkLastReady,
+        judgedHead: head,
+        env: forkEnv(),
+        git: selectionBaseGitFor(dir),
+      });
+      expect(r.source).toBe("upstream-integration");
+      expect(r.base).toBe(u2);
+      const radius = g("diff", "--name-only", r.base as string, head).split("\n").sort();
+      expect(radius).toEqual(["fix.ts", "fork0.txt"]);
+      // Calibration: the historical last-ready radius also re-judges the upstream's file.
+      expect(g("diff", "--name-only", forkLastReady, head).split("\n").sort()).toEqual(["fix.ts", "u2.txt"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

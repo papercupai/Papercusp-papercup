@@ -312,9 +312,21 @@ describe('native source population before retrieval and subject bounds', () => {
       SELECT 'default', 'codex', ${'sess-' + noise}, n, ${noise}, 'assistant', ${question},
              ${JSON.stringify(vecAt(0))}::vector, 'gemma', ${EMBEDDER_DIM_SPECS.gemma.profileId}
         FROM generate_series(1, 2000) n`;
+    // source() above (and earlier tests) HOT-update session_turns rows. If a dead
+    // HOT-updated tuple is still RECENTLY_DEAD when the index is built, PostgreSQL
+    // sets pg_index.indcheckxmin, and the planner then ignores the new index until
+    // every transaction older than the build has ended. On the busy shared cluster
+    // that made the EXPLAIN below fall back to a disabled Sort over a disabled Seq
+    // Scan on some runs (WI-6554700010019308). VACUUM FULL rewrites the heap without
+    // HOT chains, so the build cannot mark the index.
+    await rootSql.unsafe('VACUUM FULL harness_shared.session_turns');
     await rootSql.unsafe(`CREATE INDEX native_source_hnsw_test
       ON harness_shared.session_turns USING hnsw (text_embedding vector_cosine_ops)
       WITH (m = 4, ef_construction = 8)`);
+    const [indexState] = await rootSql<{ indcheckxmin: boolean }[]>`SELECT indcheckxmin
+      FROM pg_index WHERE indexrelid = 'harness_shared.native_source_hnsw_test'::regclass`;
+    // If this fails, the plan assertion below is timing-dependent again.
+    expect(indexState?.indcheckxmin).toBe(false);
     try {
       await rootSql.begin(async tx => {
         await tx.unsafe('SET LOCAL enable_seqscan = off');

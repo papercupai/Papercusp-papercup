@@ -520,10 +520,13 @@ export async function runPureLaneProofCapture({
         }
         return { notRun: true, judgedSha };
       }
+      // WI-6554700010019200: only lane files' proofs are consulted, so read only those. The
+      // unscoped read fetched both lanes' proofs and hit the 15s statement timeout.
       const { proofs } = await d.loadProofs({
         client,
         workspaceName: PURE_PROOF_CAPTURE_WORKSPACE.name,
         runContext: PURE_PROOF_CAPTURE_RUN_CONTEXT,
+        files: laneFiles,
       });
       passedInSuite = outcomes.passedInSuite;
       return orderCaptureCandidates({

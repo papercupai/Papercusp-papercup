@@ -3055,7 +3055,7 @@ describe('proving-fire settlement (PG) — event-wait-settlement-2026-10-20 P-00
     expect((await rowOf('EI-gate-proving')).status).toBe('open');
   });
 
-  it('AUTO-BAR-R-1-P-004: a change-notification fire naming a concrete item is not proof on the emit-time path, so its blocker stays active', async () => {
+  it('AUTO-BAR-R-1-P-001: a change-notification fire naming a concrete item is not proof on the emit-time path, so its blocker stays active', async () => {
     // A concrete id does not make a change notification proof (D-001 item 3):
     // work-item:status:<id> fires on ANY status change, not on the condition.
     const notification = 'work-item:status:WI-p004-watched';
@@ -3075,7 +3075,7 @@ describe('proving-fire settlement (PG) — event-wait-settlement-2026-10-20 P-00
 
   // D-001 item 3 has no announced carve-out (D-008; amend review conv-mvhydkn6): a
   // producer declaring work-item:status:<id> does not make a status change the condition.
-  it('AUTO-BAR-R-1-P-004: an announced change-notification fire is not proof either, so its blocker stays active', async () => {
+  it('AUTO-BAR-R-1-P-001: an announced change-notification fire is not proof either, so its blocker stays active', async () => {
     const notification = 'work-item:status:WI-p004-announced';
     await registerAnnouncement({ subscriberId: 'status-producer', eventKey: notification, scopeKind: 'global' });
     await seedBlocked('EI-announced-status-wait', [eventBlocker(notification)]);
@@ -3093,7 +3093,7 @@ describe('proving-fire settlement (PG) — event-wait-settlement-2026-10-20 P-00
     expect(followUp.calls.flat()).toEqual([]);
   });
 
-  it('AUTO-BAR-R-1-P-004: retiring an announced change-notification gate clears no blocker on it', async () => {
+  it('AUTO-BAR-R-1-P-001: retiring an announced change-notification gate clears no blocker on it', async () => {
     const notification = 'work-item:status:WI-p004-retired';
     const announcement = await registerAnnouncement({
       subscriberId: 'status-producer', eventKey: notification, scopeKind: 'global',

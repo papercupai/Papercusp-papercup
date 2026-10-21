@@ -309,6 +309,18 @@ describe('gateReuseObservations', () => {
     ]);
   });
 
+  it('does not count opaque proofs or global input drift as missed reuse opportunities', () => {
+    const rows = gateReuseObservations('@ws::test', {
+      summary: { candidates: 21, reused: 0, opaque: 5, globalInput: 16 },
+    });
+
+    expect(rows).toEqual([
+      { eligible: 0, applied: 0, populationKnown: true, reason: 'opaque', scope: '@ws::test' },
+      { eligible: 0, applied: 0, populationKnown: true, reason: 'globalInput', scope: '@ws::test' },
+    ]);
+    expect(rows.reduce((total, row) => total + row.eligible, 0)).toBe(0);
+  });
+
   it('distinguishes measured zero off-path files from missing or invalid cardinality', () => {
     expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout', eligible: 0 })[0])
       .toMatchObject({ eligible: 0, populationKnown: true });
@@ -1158,7 +1170,7 @@ describe('env toggles and the report line', () => {
     const line = formatTestReuseLine('@papercusp/x', r.summary);
     expect(line).toMatch(/^TEST_PASS_REUSE ws=@papercusp\/x candidates=1 reused=1 /);
     expect(line).toMatch(
-      / audited=0 inertGlobal=0testConfigNarrowed=0 tsconfigNarrowed=0 inertWorkspaceConfig=0 schemaNarrowed=0$/,
+      / audited=0 inertGlobal=0 testConfigNarrowed=0 tsconfigNarrowed=0 inertWorkspaceConfig=0 schemaNarrowed=0$/,
     );
     // D-009: the workspace-manifest narrowing is visible in the gate log, not only in the summary object.
     expect(formatTestReuseLine('@papercusp/x', { ...r.summary, inertWorkspaceConfig: 3 })).toMatch(/ inertWorkspaceConfig=3 /);

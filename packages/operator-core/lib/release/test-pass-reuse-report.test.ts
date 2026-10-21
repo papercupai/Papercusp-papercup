@@ -18,6 +18,7 @@ import {
 // @ts-expect-error — pure JS guard script with no .d.mts (not enrolled in tsconfig.declarations.json; same as empty-suite-guard.test.ts)
 import { scriptSupportsPassReuse } from '../../../../scripts/lib/empty-suite-guard.mjs';
 import {
+  formatDriftUnknownLine,
   formatExecutedMapAlarmLines,
   formatExecutedMapResultLines,
   formatTestReuseAuditResultLines,
@@ -47,14 +48,12 @@ const summary = (over: Record<string, number> = {}) => ({
   noProof: 1,
   otherContext: 0,
   otherRunner: 0,
-  expired: 1,
   notCaptured: 0,
   opaque: 0,
-  unknownDrift: 0,
+  unknownDrift: 1,
   globalInput: 0,
   inputChanged: 1,
   audited: 0,
-  expiredClean: 0,
   ...over,
 });
 
@@ -190,14 +189,14 @@ describe('named pure capture result reader (WI-10005218 / R-3)', () => {
 describe('parseTestPassReuse', () => {
   it('reads one applied invocation: per-task lines, the total, and later alarms', () => {
     const a = summary();
-    const b = summary({ candidates: 4, reused: 4, noProof: 0, expired: 0, inputChanged: 0 });
+    const b = summary({ candidates: 4, reused: 4, noProof: 0, unknownDrift: 0, inputChanged: 0 });
     const output = [
       'AFFECTED_DERIVATION source=explicit changedPaths=1',
       formatTestReuseLine('@papercusp/operator-core', a, ' rows=900 narrowed=true minSavedTestMs=61000'),
       formatTestReuseLine('@papercusp/web', b, ' rows=40 narrowed=false minSavedTestMs=5000'),
       formatTestReuseTotalLine({ tasks: 2, summaries: [a, b], savedMs: 66000, unmeasured: 2 }),
       ' RUN  v4.1.8 /repo/packages/operator-core',
-      formatReuseAlarmLine('@papercusp/operator-core', { file: 'lib/x.test.ts', reason: 'expired' }),
+      formatReuseAlarmLine('@papercusp/operator-core', { file: 'lib/x.test.ts', reason: 'audit' }),
     ].join('\n');
 
     const runs = parseTestPassReuse(output);
@@ -205,7 +204,7 @@ describe('parseTestPassReuse', () => {
     const [run] = runs;
     expect(run!.applied).toBe(true);
     expect(run!.workspaces.map((w) => w.ws)).toEqual(['@papercusp/operator-core', '@papercusp/web']);
-    expect(run!.workspaces[0]!.counts).toMatchObject({ candidates: 10, reused: 7, expired: 1, rows: 900 });
+    expect(run!.workspaces[0]!.counts).toMatchObject({ candidates: 10, reused: 7, unknownDrift: 1, rows: 900 });
     expect(run!.workspaces[0]!.narrowed).toBe(true);
     expect(run!.workspaces[1]!.narrowed).toBe(false);
     expect(run!.workspaces[0]!.minSavedTestMs).toBe(61000);
@@ -214,12 +213,11 @@ describe('parseTestPassReuse', () => {
       candidates: 14,
       reused: 11,
       audited: 0,
-      expiredClean: 0,
       minSavedTestMs: 66000,
       unmeasured: 2,
     });
     expect(run!.alarms).toEqual([
-      { ws: '@papercusp/operator-core', file: 'lib/x.test.ts', proof: 'expired' },
+      { ws: '@papercusp/operator-core', file: 'lib/x.test.ts', proof: 'audit' },
     ]);
   });
 
@@ -310,7 +308,7 @@ describe('parseTestPassReuseHealth', () => {
         [
           formatTestReuseLine('@papercusp/operator-core', summary(), ' minSavedTestMs=30000'),
           formatTestReuseTotalLine({ tasks: 1, summaries: [summary()], savedMs: 30000, unmeasured: 0 }),
-          formatReuseAlarmLine('@papercusp/operator-core', { file: 'lib/y.test.ts', reason: 'expired' }),
+          formatReuseAlarmLine('@papercusp/operator-core', { file: 'lib/y.test.ts', reason: 'audit' }),
         ].join('\n'),
       ),
     ),
@@ -346,7 +344,7 @@ describe('buildTestPassReuseHealth (P-013 runner half)', () => {
       formatTestReuseLine('@papercusp/operator-core', summary(), ' minSavedTestMs=30000'),
       formatTestReuseTotalLine({ tasks: 1, summaries: [summary()], savedMs: 30000, unmeasured: 0 }),
       ...Array.from({ length: alarmCount }, (_, i) =>
-        formatReuseAlarmLine('@papercusp/operator-core', { file: `lib/a${i}.test.ts`, reason: 'expired' }),
+        formatReuseAlarmLine('@papercusp/operator-core', { file: `lib/a${i}.test.ts`, reason: 'audit' }),
       ),
     ].join('\n');
 
@@ -471,11 +469,11 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
       connectExecutedMapPg: async () => ({ end: async () => undefined }),
       gitChangedBetween: () => () => [], gitInertGlobalChange: () => () => false,
       gitSchemaDriftJudge: () => null, testConfigMainProcessFiles: () => new Set(),
-      testReuseMaxAgeMs: () => 1000, testReuseAuditRate: () => 0.05,
+      testReuseAuditRate: () => 0.05,
       loadReuseProofs: async () => ({ proofs: new Map(), rows: 0 }),
       setTimeout: () => ({ unref: () => undefined }),
       reuseCandidates: () => ['lib/uncaptured.test.ts'], laneOfTaskScript: () => null,
-      selectReusablePasses, formatTestReuseLine, formatTestReuseTotalLine,
+      selectReusablePasses, formatTestReuseLine, formatTestReuseTotalLine, formatDriftUnknownLine,
       estimateReuseSavings, laneOfFromSplit, laneScopedCandidates,
       // Checkout, PG and filesystem seams: the judged-tree read, the destructive checkpoint
       // restore, proof/duration queries and the skip-list write.

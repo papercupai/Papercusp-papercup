@@ -7,8 +7,8 @@ import { runHookProcess } from './spawn-hook';
 
 const hooks = join(__dirname, '..');
 const owner = 'operation-hook-owner';
-const session = 'native-operation-session';
 const authority = 'prepared-test-authority';
+let session: string;
 let root: string, home: string, cache: string, ws: string, repo: string, origin: string;
 let server: Server;
 let requests: Array<{ name: string; args: any; url: string }>;
@@ -18,8 +18,10 @@ let loseAcquire: boolean, unknownFinish: boolean, legacy: boolean;
 let lateAcquire: (() => void) | undefined;
 let persistedBeforeHttp: boolean;
 let schemaQualified: boolean, rejectOperation: boolean, listRequests: string[];
+let schemaBySession: Map<string, boolean>;
 
 beforeEach(async () => {
+  session = 'native-operation-session';
   root = fs.mkdtempSync(join(os.tmpdir(), 'operation-hook-'));
   home = join(root, 'home'); cache = join(root, 'cache'); ws = join(root, 'workspace');
   repo = join(ws, 'papercusp');
@@ -31,7 +33,7 @@ beforeEach(async () => {
   requests = []; mutations = new Map(); grants = new Set(); explicit = new Set(); proofs = new Map();
   loseAcquire = false; unknownFinish = false; legacy = false; lateAcquire = undefined;
   persistedBeforeHttp = true;
-  schemaQualified = true; rejectOperation = false; listRequests = [];
+  schemaQualified = true; rejectOperation = false; listRequests = []; schemaBySession = new Map();
   server = createServer((req, res) => {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -39,9 +41,13 @@ beforeEach(async () => {
       const message = JSON.parse(body);
       if (message.method === 'tools/list') {
         listRequests.push(req.url ?? '');
+        const requestedSession = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('native_session');
+        const qualified = requestedSession && schemaBySession.has(requestedSession)
+          ? schemaBySession.get(requestedSession)!
+          : schemaQualified;
         const tools = ['locks:acquire', 'locks:release', 'locks:cancel_wait'].map(tool => ({ name: tool,
           inputSchema: { type: 'object', additionalProperties: false,
-            properties: schemaQualified ? { paths: {}, hook_operation: {} } : { paths: {} } } }));
+            properties: qualified ? { paths: {}, hook_operation: {} } : { paths: {} } } }));
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools } }));
         return;
@@ -194,6 +200,35 @@ function batchResults(failed = false) {
 describe('native hook operation fence', () => {
   const protocolCache = () => fs.readdirSync(cache).filter(p => p.startsWith('operation-protocol-'));
   const acquires = () => requests.filter(r => r.name === 'locks:acquire');
+
+  it('qualifies the native operation protocol through the authenticated session route', async () => {
+    schemaQualified = false;
+    schemaBySession.set(session, true);
+    await hook('pretooluse-locks-acquire.sh', payload('edit-session-qualified'));
+
+    expect(listRequests).toHaveLength(1);
+    expect(new URL(listRequests[0], origin).searchParams.get('native_session')).toBe(session);
+    expect(acquires().some(r => r.args.hook_operation)).toBe(true);
+    expect(fs.existsSync(join(cache, 'edit-session-qualified.operation.json'))).toBe(true);
+  });
+
+  it('does not reuse a protocol verdict across authenticated native sessions', async () => {
+    schemaBySession.set(session, true);
+    await hook('pretooluse-locks-acquire.sh', payload('edit-first-session'));
+
+    session = 'native-operation-session-second';
+    schemaBySession.set(session, false);
+    rejectOperation = true;
+    const result = await hook('pretooluse-locks-acquire.sh', payload('edit-second-session'), false);
+
+    expect(result.stdout.trim()).toBe('');
+    expect(listRequests).toHaveLength(2);
+    expect(new URL(listRequests[0], origin).searchParams.get('native_session')).toBe('native-operation-session');
+    expect(new URL(listRequests[1], origin).searchParams.get('native_session')).toBe(session);
+    expect(acquires().at(-1)!.args.hook_operation).toBeUndefined();
+    expect(fs.existsSync(join(cache, 'edit-second-session.operation.json'))).toBe(false);
+    expect(fs.existsSync(join(cache, 'edit-second-session.lock'))).toBe(true);
+  });
 
   it('an unqualified origin gets the legacy acquire, no operation record, and a cached verdict', async () => {
     schemaQualified = false;

@@ -29,6 +29,7 @@
 import type { Sql } from 'postgres';
 import { observeFallback } from '../degradation/fallback-observations';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { ROUTINE_TICK_OVERLAP_STALE_MS } from './routine-tick-overlap-guard';
 
 /**
  * Release a green-checkpoint routineFire as soon as its own checkpoint marker is proven
@@ -79,6 +80,20 @@ const DEFAULT_LIVENESS_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
  *  it is wedging the scheduler itself. Keep this below bghost-watchdog's 100s
  *  freeze threshold so the reaper can fix the row before the host restart loop. */
 const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
+/** WI-6554700010019234: the SWEEP tick (routinesSweepTick) gets its own silence window,
+ *  equal BY CONSTRUCTION to the overlap guard's stale window. The 90s scheduler window
+ *  above is right for the dispatch tick (short steps, watched by bghost-watchdog), but
+ *  the sweep tick's first step (loop-rebase-sweep, one DBOS step with no intermediate
+ *  checkpoint) legitimately runs past 90s (measured 2026-10-21: max >90s in 14 of 15
+ *  hours, up to 292s). Reaping it at 90s did not stop the step (DBOS cancel is
+ *  cooperative), it only removed the PENDING row the overlap guard keys on, so the next
+ *  tick started a SECOND concurrent pass. Concurrent passes then ran 122-269s each, all
+ *  were reaped, and the sweep's later steps (plan-run reconcile, plan-run executor
+ *  recruit, app-data producer reconcile) stopped running from 14:08Z. A sweep tick the
+ *  overlap guard still counts as in flight is never reaped; one past that window is
+ *  already ignored by the guard, so reaping it costs nothing. bghost-watchdog reads
+ *  routinesTick only, so this window does not interact with its freeze threshold. */
+const DEFAULT_STALE_SWEEP_TICK_MS = ROUTINE_TICK_OVERLAP_STALE_MS;
 /** A routineFire may be inside its first DBOS step; operation_outputs is written
  *  when that step checkpoints, not when it starts. The longest legit no-output
  *  first step is the GREEN-CHECKPOINT suite: its action (release-actions.ts) does a
@@ -235,6 +250,8 @@ export async function reapDeadExecutorWorkflows(
    * (or next 2-min reap tick) reap pass.
    */
   processStartedAtMs?: number,
+  /** WI-6554700010019234: silence window for routinesSweepTick (see DEFAULT_STALE_SWEEP_TICK_MS). */
+  staleSweepTickMs: number = DEFAULT_STALE_SWEEP_TICK_MS,
 ): Promise<ExecutorReaperResult> {
   const empty: ExecutorReaperResult = {
     cancelled: 0,
@@ -247,6 +264,7 @@ export async function reapDeadExecutorWorkflows(
     const now = Date.now();
     const deadAt = now - livenessThresholdMs;
     const staleSchedulerAt = now - staleSchedulerMs;
+    const staleSweepTickAt = now - staleSweepTickMs;
     const staleRoutineFireNoOutputAt = now - staleRoutineFireNoOutputMs;
     const staleRoutineFireOrphanAt = now - staleRoutineFireOrphanMs;
     let cancelled = 0;
@@ -393,6 +411,10 @@ export async function reapDeadExecutorWorkflows(
                -- liveness reader saw 6-9 min gaps and paged a false
                -- health-tick-stale. A genuinely wedged step still checkpoints
                -- nothing for the whole window and is reaped exactly as before.
+               -- WI-6554700010019234: per-tick silence window. The sweep tick waits
+               -- out the overlap guard's stale window (DEFAULT_STALE_SWEEP_TICK_MS);
+               -- reaping it sooner only lets a second pass start concurrently. The
+               -- explicit casts keep the CASE numeric (untyped params resolve to text).
                GREATEST(
                  updated_at,
                  COALESCE(
@@ -401,9 +423,9 @@ export async function reapDeadExecutorWorkflows(
                      WHERE op.workflow_uuid = dbos.workflow_status.workflow_uuid),
                    0
                  )
-               ) < ${staleSchedulerAt}
+               ) < CASE WHEN name = 'routinesSweepTick' THEN ${staleSweepTickAt}::bigint ELSE ${staleSchedulerAt}::bigint END
                OR (
-                 created_at < ${staleSchedulerAt}
+                 created_at < CASE WHEN name = 'routinesSweepTick' THEN ${staleSweepTickAt}::bigint ELSE ${staleSchedulerAt}::bigint END
                  AND NOT EXISTS (
                    SELECT 1
                      FROM dbos.operation_outputs op
@@ -599,6 +621,8 @@ export function startExecutorReaper(
     staleSchedulerMs?: number;
     staleRoutineFireNoOutputMs?: number;
     staleRoutineFireOrphanMs?: number;
+    /** WI-6554700010019234: routinesSweepTick silence window (defaults to the overlap guard's). */
+    staleSweepTickMs?: number;
     /** EI-18752434722211671: this process's own start time (epoch ms). Defaults to
      *  `Date.now() - Math.floor(process.uptime() * 1000)` (the same "derive true
      *  process start from Node's own uptime counter" idiom already used by
@@ -645,6 +669,7 @@ export function startExecutorReaper(
       opts.staleRoutineFireNoOutputMs,
       opts.staleRoutineFireOrphanMs,
       processStartedAtMs,
+      opts.staleSweepTickMs,
     ).then((r) => {
       if (r.cancelled > 0) {
         console.warn(

@@ -105,6 +105,15 @@ const probeWakeReachability = vi.fn(async (_ownerId: string) => reachableVerdict
 const resolveWakeMode = vi.fn(async (_ownerId: string) => 'auto' as 'auto' | 'manual');
 const stagePendingWake = vi.fn(async () => ({ id: 1 }));
 
+// WI-6554700010018245: coord:send to `human` fires a detached owner push
+// (messages.ts lazily imports ../../session-push). Unmocked, the real push
+// fails in a unit run and its catch logs console.warn, which
+// vitest-fail-on-console turns into a failure of whichever case sent to `human`.
+const notifySessionOwnerMessage = vi.fn(async () => undefined);
+vi.mock('../../../session-push', () => ({
+  notifySessionOwnerMessage: (...args: unknown[]) => notifySessionOwnerMessage(...(args as [])),
+}));
+
 vi.mock('../../../events/await/engine', () => ({
   emitAwaitedEvent: (args: { key: string }) => emitAwaitedEvent(args),
   startAwaitSweeper: () => startAwaitSweeper(),
@@ -631,7 +640,7 @@ describe('coord:await-inbox (D-005 idle annotation and live reachability evidenc
       before: { reachable: false, channel: 'none', awaitRepairable: true },
       after: { reachable: true, channel: 'psu-socket' },
     });
-    expect(body.advice).toContain('You were unarmed for inbox-wake before this call');
+    expect(body.advice).toContain('You were unarmed before this call');
     expect(body.advice).toContain('now wake-reachable via psu-socket');
   });
 

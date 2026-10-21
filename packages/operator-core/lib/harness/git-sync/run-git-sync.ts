@@ -61,12 +61,17 @@ import {
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
 import { checkIgnoreVerbatimBatches } from './check-ignore-argv';
 import { runSyncBack, type SyncBackConfig, type SyncBackResult } from './sync-back';
-import { detectQuarantineImporters, detectStagedProvidersOfHeldImporters } from './quarantine-import-guard';
+import {
+  collectDirtyImportEdges,
+  detectQuarantineImporters,
+  detectStagedProvidersOfHeldImporters,
+} from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import { armedMigrationFilename } from '../../migration-reservation';
 import { acquireInstallBoundaryLease, type InstallBoundaryLease } from '../../install-boundary-lease';
 import {
   groupFilesForAttribution,
+  mergeImportLinkedGroups,
   attributionMapForRepo,
   diffDerivedSubject,
   parseNumstat,
@@ -5392,6 +5397,9 @@ async function commitAttributedGroupsPass(
      *  group's PRIVATE index and must guard through it. A failure skips that group only
      *  (WI-6554700010018197). */
     beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>;
+    /** WI-6554700010019415: working-tree text for the import edges that merge linked groups.
+     *  Defaults to reading `repoPath`. */
+    readText?: (relPath: string) => Promise<string | null>;
     /** WI-10006519: receives the stale-lock recovery diagnostics. */
     log?: (m: string) => void;
   } = {},
@@ -5465,7 +5473,26 @@ async function commitAttributedGroupsPass(
         }
       }),
   );
-  const grouped = groupFilesForAttribution(dirty, groupAttribution, { workingTreeMtimeMsByFile });
+  let grouped = groupFilesForAttribution(dirty, groupAttribution, { workingTreeMtimeMsByFile });
+  // WI-6554700010019415: an importer and its changed provider must share one private index.
+  // Apart, each group's post-stage guard holds the other's file, and only the final catch-all
+  // (which a drain yield skips) could commit them.
+  if (grouped.filter((g) => g.files.length > 0).length > 1) {
+    const edges = await collectDirtyImportEdges({
+      readText: opts.readText ?? ((rel) => defaultReadText(repoPath, rel)),
+      files: dirty,
+      log: opts.log,
+    });
+    const linked = mergeImportLinkedGroups(grouped, edges);
+    if (linked !== grouped) {
+      opts.log?.(
+        `[git-sync] ${repoPath}: merged import-linked attribution groups ` +
+          `(${grouped.filter((g) => g.files.length > 0).length} -> ${linked.filter((g) => g.files.length > 0).length}) ` +
+          'so each importer commits with its changed provider',
+      );
+      grouped = linked;
+    }
+  }
   const residual = grouped.find((g) => g.agent === null && g.files.length > 0);
   const groups = [
     ...(residual ? [residual] : []),
@@ -6624,6 +6651,7 @@ async function commitOneRepoWithScratch(
             );
           },
           beforeCommit: (privateRunGit) => postStageGuard(privateRunGit),
+          readText: (rel) => o.readText(repoPath, rel),
           log: o.log,
         },
       );

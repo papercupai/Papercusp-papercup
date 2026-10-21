@@ -2219,10 +2219,39 @@ export function defaultClaudeAuthSettings(routeEnv?: {}): {
         [k: string]: string;
     };
 };
-/** Add the default-account settings override at the central wrapper seam
- * shared by fresh, resume, and fork launches. Pure; exported for regression
+/** The per-launch `--settings` overlay for a psu Claude launch: the session
+ * settings above on every route, plus the default-account auth override
+ * (defaultClaudeAuthSettings) on an explicit default/auto/pin route. Pure;
+ * exported for regression coverage. */
+export function psuClaudeLaunchSettings(routeEnv?: {}): {
+    idleCompaction: false;
+    apiKeyHelper?: string | undefined;
+    env?: {
+        [k: string]: string;
+    } | undefined;
+};
+/** Prepend the per-launch settings overlay at the central wrapper seam shared
+ * by fresh, resume, and fork launches (runWrapper) and by the background SDK
+ * engine (su-session-claude-engine). Every Claude launch gets it; other
+ * backends' argv is returned unchanged. Pure; exported for regression
  * coverage. */
-export function applyDefaultClaudeAuthSettingsArgs(wrapperBin: any, args: any, env: any): any[];
+export function applyPsuClaudeSettingsArgs(wrapperBin: any, args: any, env: any): any[];
+/**
+ * Re-exec-durable half of applyPsuClaudeSettingsArgs for the session settings:
+ * a Claude self-relaunch drops argv but re-reads the isolated per-session
+ * settings.json, so merge PSU_CLAUDE_SESSION_SETTINGS into it. Writes only when
+ * this launch has an isolated CLAUDE_CONFIG_DIR that is not the owner's own
+ * user-level Claude dir (`userClaudeDir`, default ~/.claude). Read-modify-write
+ * preserving every other key; atomic (tmp + rename). Fail-open: a write failure
+ * warns and the launch continues on the argv overlay and env switches.
+ * Returns true when it wrote. Exported for tests.
+ */
+export function persistPsuClaudeSessionSettings({ wrapperBin, env, userClaudeDir, log, }: {
+    wrapperBin: any;
+    env: any;
+    userClaudeDir?: string | undefined;
+    log?: ((m: any) => boolean) | undefined;
+}): boolean;
 /**
  * Make an EXPLICIT `default` Claude launch mean exactly what the picker says:
  * use the system / CLI login, regardless of the parent shell's prior account.
@@ -2837,8 +2866,8 @@ export function persistReExecSafePermissions({ env, args, log, }: {
 }): boolean;
 /**
  * Remove copied user-level auth routing from an isolated default-account
- * session's settings.json. This is the re-exec-durable half of
- * applyDefaultClaudeAuthSettingsArgs: Claude self-relaunches can drop argv, but
+ * session's settings.json. This is the re-exec-durable half of the auth part of
+ * applyPsuClaudeSettingsArgs: Claude self-relaunches can drop argv, but
  * they re-read this file. We DELETE credential env keys instead of persisting
  * empty values because an empty CLAUDE_CODE_OAUTH_TOKEN suppresses the normal
  * file/Keychain login fallback.
@@ -4652,6 +4681,18 @@ export const SU_SCHEDULER_TOOLS_DENY_FLAG: "--disallowedTools=CronCreate,CronDel
  */
 export const NO_SUBAGENTS_DENY_FLAG: "--disallowedTools=Task,Agent,Workflow";
 /**
+ * Codex half of the same opt-in (plan client-native-features-adoption-2026-10-21
+ * D-003/D-005). Every managed CODEX_HOME says `[features] multi_agent = false`
+ * and `goals = false` and runs on a model catalog stripped of the multi_agent
+ * fields, so Codex native subagents are off by default. `--allow-subagents`
+ * re-enables them for THIS launch only with a top-level `-c` override (v1
+ * subagent tools on the stripped catalog); the home stays deny-by-default for
+ * every later resume, exactly like the Claude deny flag. Mirrors
+ * CODEX_SUBAGENT_OPT_IN_CONFIG in orchestrator codex-gateway-config.ts; a
+ * lockstep test pins the two copies together.
+ */
+export const CODEX_SUBAGENT_OPT_IN_ARGS: readonly string[];
+/**
  * Native client tool-search lockout (owner directive 2026-09-11): every psu
  * launch loses claude's built-in `ToolSearch`, forcing discovery through
  * papercusp's `tools:find` (result-door-capped) and `tools:invoke` (zero schema
@@ -4914,6 +4955,23 @@ export const WALLED_POOL_REFUSAL_EXIT: 78;
  * value is still deleted by enforceDefaultClaudeAccount; copied user settings
  * are removed by persistDefaultClaudeAuthSettings. */
 export const CLAUDE_DEFAULT_AUTH_ENV_KEYS: readonly string[];
+/**
+ * Settings every psu Claude launch carries in its per-session layer, on every
+ * account route (client-native-features-adoption-2026-10-21 D-004, P-006).
+ *
+ * Papercusp owns compaction (P-022 carry-respawn). nativeCompactionEnv already
+ * sets DISABLE_AUTO_COMPACT and DISABLE_COMPACT; on CLI 2.1.293 and 2.1.306 the
+ * idle-compaction decision also returns "compaction_off" under either variable.
+ * `idleCompaction: false` keeps idle compaction off if a later CLI separates it
+ * from that gate. It is written only to the per-launch `--settings` overlay and
+ * the isolated per-session settings.json, never to ~/.claude/settings.json,
+ * which would change the owner's own non-psu Claude sessions.
+ */
+export const PSU_CLAUDE_SESSION_SETTINGS: Readonly<{
+    idleCompaction: false;
+}>;
+/** Account routes that carry the default-account auth override. */
+export const EXPLICIT_CLAUDE_ACCOUNT_ROUTES: readonly string[];
 export namespace SU_CONTEXT_TOKEN_ESTIMATES {
     let trimmed: string;
 }

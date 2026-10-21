@@ -56,7 +56,14 @@ trap 'exit 143' TERM INT
 echo "CREATE_START $(ts)"
 npx tsx scripts/agent-capacity/gcp-rails.ts create --run="$RUN" --name="$VM" --machine-type="$MACHINE" --max-hours="$MAX_HOURS" \
   || { echo "CREATE_FAILED"; exit 3; }
-for try in $(seq 1 30); do ssh_vm true 60 >/dev/null 2>&1 && { echo "SSH_READY try=$try $(ts)"; break; }; sleep "${SSH_RETRY_SLEEP:-10}"; done
+ssh_ready=0
+ssh_tries=0
+for try in $(seq 1 30); do
+  ssh_tries=$try
+  if ssh_vm true 60 >/dev/null 2>&1; then echo "SSH_READY try=$try $(ts)"; ssh_ready=1; break; fi
+  sleep "${SSH_RETRY_SLEEP:-10}"
+done
+[ "$ssh_ready" -eq 1 ] || { echo "SSH_NOT_READY tries=$ssh_tries $(ts)"; exit 4; }
 gcloud compute scp "$VMDIR/install-server.sh" "$VMDIR/sample-footprint.py" "$VMDIR/host-sampler.sh" \
   "$VMDIR/embed-trace-fetch.cjs" "$VMDIR/sidecar-idle-probe.sh" "$SEED_TGZ" "$VM:/tmp/" --zone="$Z" --project="$P" \
   || { echo "SCP_FAILED"; exit 4; }

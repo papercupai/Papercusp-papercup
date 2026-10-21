@@ -323,9 +323,10 @@ beforeEach(async () => {
     VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 'P-003', 1),
            (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 'P-004', 2)`;
   await db.sql`
-    INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, source_plan_slug)
-    VALUES (${WORKSPACE}, ${HARNESS}, 'WI-101', 'reconnect-plan'),
-           (${WORKSPACE}, ${HARNESS}, 'WI-102', 'reconnect-plan')`;
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, source_plan_slug, source_plan_item_ids)
+    VALUES (${WORKSPACE}, ${HARNESS}, 'WI-101', 'reconnect-plan', ARRAY['P-003', 'P-004']::text[]),
+           (${WORKSPACE}, ${HARNESS}, 'WI-102', 'reconnect-plan', ARRAY['P-003', 'P-004']::text[])`;
 });
 
 describe('test execution carries mappings into the real evidence ledger', () => {

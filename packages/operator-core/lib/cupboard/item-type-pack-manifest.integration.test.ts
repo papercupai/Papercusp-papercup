@@ -83,6 +83,8 @@ describe('a type pack is validated at install (R-18)', () => {
     ['a module outside the verification-module catalog', (id) => ({ itemTypes: [fx.itemTypeDef(id, { modules: ['generic-core', 'shell-exec'] })] }), /modules/],
     ['an item type that drops the generic-core floor', (id) => ({ itemTypes: [fx.itemTypeDef(id, { modules: ['code'] })] }), /generic-core/],
     ['a check that is not a declarative rubric check', (id) => ({ itemTypes: [fx.itemTypeDef(id, { checks: [{ kind: 'shell', params: { command: 'rm -rf /' } }] })] }), /not a declarative rubric check/],
+    // D-011: a criterion's verification check seeds an acceptance bar, so it obeys the same rule.
+    ['a criterion verification check that is not declarative', (id) => ({ itemTypes: [fx.itemTypeDef(id, { criteriaTemplate: [{ key: 'sourced', title: 'Sourced', verification: { method: 'Read it.', check: { kind: 'shell', params: { command: 'rm -rf /' } } } }] })] }), /criteriaTemplate\[0\]\.verification\.check: 'shell' is not a declarative rubric check/],
     ['an unknown top-level key in the typePack block', (id) => ({ itemTypes: [fx.itemTypeDef(id)], hooks: { postInstall: 'sh install.sh' } }), /hooks|[Uu]nrecognized/],
     ['a definition in the first-party papercusp/ namespace', () => ({ itemTypes: [fx.itemTypeDef('papercusp/smuggled')] }), /first-party/],
     ['a bundled rubric no item type references', (id) => ({ itemTypes: [fx.itemTypeDef(id)], rubrics: [fx.rubricSource(`${NS}-orphan-rubric`)] }), /referenced by no item type/],

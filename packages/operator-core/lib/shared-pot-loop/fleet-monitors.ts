@@ -45,6 +45,7 @@ import type postgres from 'postgres';
 import {
   liveHolderFragment,
   parkedHolderFragment,
+  planRunNameAssignmentFragment,
   STALE_CLAIM_GRACE_MS,
   STALE_CLAIM_PARKED_GRACE_MS,
 } from '../work-items-stale-claims';
@@ -171,6 +172,9 @@ export async function sweepOrphanedTakenBy(
        WHERE f.workspace_id = ${opts.workspaceId} AND f.harness_slug = ${opts.harness}
          AND f.taken_by IS NOT NULL AND f.taken_by <> ''
          AND NOT (f.status = ANY(${terminal}::text[]))
+         -- WI-6554700010019271: a plan run's assignment to its executor NAME has no
+         -- presence row by design; the plan-run executor recruiter owns its liveness.
+         AND NOT ${planRunNameAssignmentFragment(sql, 'f')}
          AND f.updated_ts < ${cutoff}
          -- EI-20723522274831539: the holder must actually be DEAD. Identical rule to
          -- work-items-stale-claims.ts's DEAD leg, via the same imported fragments.

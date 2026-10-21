@@ -19,7 +19,7 @@ case "$1 $2" in
 esac
 echo "ssh $(printf '%s' "$cmd" | tr '\n' ' ')" >> "$FAKE/calls.log"
 case "$cmd" in
-  true) exit 0 ;;
+  true) [ "$((FAKE_SSH_FAIL + 0))" -eq 0 ] && exit 0 || exit 1 ;;
   *install-server.sh*)
     printf 'SERVER_HEALTH=ok\nSERVER_PORT=4321\nSERVER_CGROUP=/sys/fs/cgroup/fake\nT_BOOT_TO_HEALTH=40\n'
     exit "$((FAKE_INSTALL_RC + 0))" ;;
@@ -123,6 +123,16 @@ describe('vm/sidecar-idle-soak.sh (faked gcloud + gcp-rails)', () => {
     expect(r.out).toContain('CREATE_FAILED');
     expect(calls()).toContain('teardown --run=soaktest');
     expect(ssh()).toHaveLength(0);
+  });
+
+  it('fails closed after SSH readiness never succeeds, before SCP or tenant install', () => {
+    const r = run({ FAKE_SSH_FAIL: '1' });
+    expect(r.code, r.out).toBe(4);
+    expect(r.out).toContain('SSH_NOT_READY tries=30');
+    expect(ssh().filter((l) => l === 'ssh true')).toHaveLength(30);
+    expect(calls().split('\n').some((l) => l.startsWith('scp '))).toBe(false);
+    expect(ssh().filter((l) => l.includes('install-server.sh'))).toHaveLength(0);
+    expect(r.out).toContain('SOAK_DONE rc=0');
   });
 
   it('a failed tenant install exits 5 after tearing down', () => {

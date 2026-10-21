@@ -75,7 +75,10 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
 import {
   anotherRoutinesTickInFlight,
+  createInProcessPassRegistry,
+  exitInProcessPass,
   ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS,
+  tryEnterInProcessPass,
   type OverlapCheckDeps,
 } from './routine-tick-overlap-guard';
 import { CaplessAdaptiveController } from '../resource-governor/controller';
@@ -1329,8 +1332,39 @@ async function routinesTickImpl(): Promise<void> {
  * This tick keeps the semantics the tail had: the EI-11171 critical-pool floor (loop-rebase
  * only, then return), loop-rebase first, then the sweeps in their original order. Its overlap
  * guard is keyed on its OWN workflow name, so a slow sweep pass sheds only the next sweep pass.
+ *
+ * WI-6554700010019234: the DB overlap guard fails open when the event loop stalls past its
+ * probe deadline, so this tick ALSO holds an in-process registry (see tryEnterInProcessPass).
+ * A pass that finds another fresh pass running in this process returns before any step, even
+ * under the EI-11171 critical-pool floor: the running pass already started with loop-rebase.
  */
+const sweepPassRegistry = pinModuleState(
+  '@papercusp/operator-core.routines-sweep-pass-registry',
+  createInProcessPassRegistry,
+);
+
 async function routinesSweepTickImpl(): Promise<void> {
+  const now = Date.now();
+  const passId = DBOS.workflowID ?? `routinesSweepTick-${now}`;
+  const admitted = tryEnterInProcessPass(sweepPassRegistry, passId, now, undefined, (evictedId, ageMs) => {
+    console.warn(
+      `[routines-sweep-tick] EVICTED in-process pass ${evictedId} after ${Math.round(ageMs / 1000)}s without settling — admitting ${passId} (WI-6554700010019234)`,
+    );
+  });
+  if (!admitted) {
+    console.warn(
+      `[routines-sweep-tick] SKIPPED — another routinesSweepTick pass is running in this process (WI-6554700010019234 in-process guard)`,
+    );
+    return;
+  }
+  try {
+    await routinesSweepPassImpl();
+  } finally {
+    exitInProcessPass(sweepPassRegistry, passId);
+  }
+}
+
+async function routinesSweepPassImpl(): Promise<void> {
   if (shouldShedSchedulerTickUnderLoopPressure()) {
     console.warn(`[routines-sweep-tick] SKIPPED — event loop pressure, shedding sweep tick`);
     return;

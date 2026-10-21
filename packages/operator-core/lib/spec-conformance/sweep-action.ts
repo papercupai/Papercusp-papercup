@@ -14,8 +14,12 @@
  *  - `previously-drifting`  the prior conformance result still reported a drifting
  *                             requirement, so it gets another bounded verification pass;
  *  - `previous-run-failed`  the prior sweep could not record a conformance result, so a
- *                             transient write or dependency failure is retried promptly;
+ *                             transient write or dependency failure is retried;
  *  - `interval-elapsed`       the per-plan interval passed since the last run.
+ *
+ * The two retry triggers wait out `retryBackoffSec` since the last run, and one slot per tick
+ * is reserved for a STARVED interval-only plan, so a few plans that fail or drift on every
+ * run cannot monopolise the per-tick cap (WI-6554700010019378).
  *
  * A run is the existing {@link runPlanConformance} (checks + drift alarms) with the existing
  * production deps, plus {@link reconcilePlanFootprint} when the plan declares a footprint.
@@ -40,6 +44,20 @@ export const SPEC_CONFORMANCE_SWEEP_INTERVAL_SEC = 900;
 /** Per-plan floor: a plan with no other trigger still runs this often. */
 export const SPEC_CONFORMANCE_PLAN_INTERVAL_SEC = 6 * 60 * 60;
 export const SPEC_CONFORMANCE_MAX_RUNS_PER_TICK = 4;
+/**
+ * Retry backoff for the RETRY triggers (`previous-run-failed`, `previously-drifting`): they
+ * re-fire only once this long has passed since the plan's last run. Without it a plan whose
+ * conformance fails deterministically re-runs on EVERY tick, and a handful of such plans
+ * fill every per-tick slot so the interval tier never runs (WI-6554700010019378: ~100 plans
+ * unrun for 3 days behind 8 perpetually-retrying ones).
+ */
+export const SPEC_CONFORMANCE_RETRY_BACKOFF_SEC = 60 * 60;
+/**
+ * Starvation floor: an interval-only plan whose last run is at least this many plan
+ * intervals old is STARVED, and one slot per tick is reserved for the oldest such plan
+ * whenever the cap is at least 2 and no interval-only plan was otherwise selected.
+ */
+export const SPEC_CONFORMANCE_STARVATION_INTERVALS = 2;
 /** Plan statuses the sweep covers — the same live population the census reports on. */
 export const SPEC_CONFORMANCE_SWEEP_STATUSES: readonly string[] = ['active', 'ready'];
 
@@ -89,7 +107,12 @@ const ms = (iso: string | null | undefined): number | null => {
 };
 
 /** Why `candidate` should run now (empty = it should not). Pure. */
-export function sweepTriggersFor(candidate: SweepCandidate, nowMs: number, planIntervalSec: number): SweepTrigger[] {
+export function sweepTriggersFor(
+  candidate: SweepCandidate,
+  nowMs: number,
+  planIntervalSec: number,
+  retryBackoffSec: number = SPEC_CONFORMANCE_RETRY_BACKOFF_SEC,
+): SweepTrigger[] {
   const wm = candidate.watermark;
   if (!wm) return ['never-run'];
   const triggers: SweepTrigger[] = [];
@@ -97,9 +120,12 @@ export function sweepTriggersFor(candidate: SweepCandidate, nowMs: number, planI
   const current = ms(candidate.lastTransitionAt);
   const seen = ms(wm.lastTransitionAt);
   if (current !== null && (seen === null || current > seen)) triggers.push('work-item-transitioned');
-  if ((wm.lastOutcome?.drifting?.length ?? 0) > 0) triggers.push('previously-drifting');
-  if (typeof wm.lastOutcome?.error === 'string' && wm.lastOutcome.error.length > 0) triggers.push('previous-run-failed');
   const last = ms(wm.lastRunAt);
+  // Retry triggers wait out a backoff since the last run, so a deterministic failure or a
+  // persistent drift cannot re-run every tick and starve everything else.
+  const retryDue = last === null || nowMs - last >= retryBackoffSec * 1000;
+  if (retryDue && (wm.lastOutcome?.drifting?.length ?? 0) > 0) triggers.push('previously-drifting');
+  if (retryDue && typeof wm.lastOutcome?.error === 'string' && wm.lastOutcome.error.length > 0) triggers.push('previous-run-failed');
   if (last === null || nowMs - last >= planIntervalSec * 1000) triggers.push('interval-elapsed');
   return triggers;
 }
@@ -109,23 +135,45 @@ const priority = (triggers: SweepTrigger[]) =>
 
 /**
  * Pick at most `maxRunsPerTick` triggered plans: never-run first, then commit/transition
- * triggers, then interval-only — oldest run first within a tier. Pure.
+ * triggers, then interval-only — oldest run first within a tier. When the cap is at least 2
+ * and no interval-only plan made the cut, the last slot goes to the oldest STARVED
+ * interval-only plan (last run >= `starvationIntervals` plan intervals ago), so the
+ * interval tier always makes progress however many event/retry triggers are pending. Pure.
  */
 export function selectSweepRuns(
   candidates: ReadonlyArray<SweepCandidate>,
-  opts: { nowMs: number; planIntervalSec: number; maxRunsPerTick: number },
+  opts: {
+    nowMs: number;
+    planIntervalSec: number;
+    maxRunsPerTick: number;
+    retryBackoffSec?: number;
+    starvationIntervals?: number;
+  },
 ): SweepSelection {
   const triggered: Array<{ key: string; triggers: SweepTrigger[]; lastRun: number }> = [];
   const idle: string[] = [];
   for (const candidate of candidates) {
-    const triggers = sweepTriggersFor(candidate, opts.nowMs, opts.planIntervalSec);
+    const triggers = sweepTriggersFor(candidate, opts.nowMs, opts.planIntervalSec, opts.retryBackoffSec);
     if (triggers.length === 0) idle.push(candidate.key);
     else triggered.push({ key: candidate.key, triggers, lastRun: ms(candidate.watermark?.lastRunAt) ?? -1 });
   }
   triggered.sort((a, b) => priority(a.triggers) - priority(b.triggers) || a.lastRun - b.lastRun || a.key.localeCompare(b.key));
   const cap = Math.max(0, Math.floor(opts.maxRunsPerTick));
+  const selected = triggered.slice(0, cap);
+  const deferred = triggered.slice(cap);
+  const starvedBeforeMs =
+    opts.nowMs - (opts.starvationIntervals ?? SPEC_CONFORMANCE_STARVATION_INTERVALS) * opts.planIntervalSec * 1000;
+  if (cap >= 2 && !selected.some((t) => priority(t.triggers) === 2)) {
+    // `deferred` is sorted, so the first interval-only entry is the oldest one.
+    const starved = deferred.findIndex((t) => priority(t.triggers) === 2 && t.lastRun <= starvedBeforeMs);
+    if (starved >= 0) {
+      const [floor] = deferred.splice(starved, 1);
+      deferred.unshift(selected.pop()!);
+      selected.push(floor);
+    }
+  }
   const strip = ({ key, triggers }: { key: string; triggers: SweepTrigger[] }) => ({ key, triggers });
-  return { selected: triggered.slice(0, cap).map(strip), deferred: triggered.slice(cap).map(strip), idle };
+  return { selected: selected.map(strip), deferred: deferred.map(strip), idle };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -160,6 +208,8 @@ export interface SpecConformanceSweepDeps {
 export interface SpecConformanceSweepOptions {
   planIntervalSec?: number;
   maxRunsPerTick?: number;
+  retryBackoffSec?: number;
+  starvationIntervals?: number;
 }
 
 export interface SweepPlanResult {
@@ -259,7 +309,13 @@ export async function runSpecConformanceSweep(
     candidates.push({ key: entry.key, watermark, footprintChanged, lastTransitionAt: transitions.get(entry.key) ?? null });
   }
 
-  const selection = selectSweepRuns(candidates, { nowMs: now(), planIntervalSec, maxRunsPerTick });
+  const selection = selectSweepRuns(candidates, {
+    nowMs: now(),
+    planIntervalSec,
+    maxRunsPerTick,
+    retryBackoffSec: opts.retryBackoffSec,
+    starvationIntervals: opts.starvationIntervals,
+  });
   outcome.deferred = selection.deferred;
   outcome.idle = selection.idle.length;
   const byKey = new Map(live.map((entry) => [entry.key, entry]));
@@ -410,6 +466,8 @@ export async function runSpecConformanceSweepAction(
     {
       planIntervalSec: positiveInt(payload.planIntervalSec, SPEC_CONFORMANCE_PLAN_INTERVAL_SEC),
       maxRunsPerTick: positiveInt(payload.maxRunsPerTick, SPEC_CONFORMANCE_MAX_RUNS_PER_TICK),
+      retryBackoffSec: positiveInt(payload.retryBackoffSec, SPEC_CONFORMANCE_RETRY_BACKOFF_SEC),
+      starvationIntervals: positiveInt(payload.starvationIntervals, SPEC_CONFORMANCE_STARVATION_INTERVALS),
     },
     deps ?? productionSweepDeps({ workspaceId: ctx.workspaceId }),
   );

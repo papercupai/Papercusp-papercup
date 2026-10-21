@@ -20,7 +20,7 @@ case "$1 $2" in
 esac
 echo "ssh $(printf '%s' "$cmd" | tr '\n' ' ')" >> "$FAKE/calls.log"
 case "$cmd" in
-  true) exit 0 ;;
+  true) [ "$((FAKE_SSH_FAIL + 0))" -eq 0 ] && exit 0 || exit 1 ;;
   *install-server.sh*)
     u=$(printf '%s' "$cmd" | sed -n 's/^SVC_USER=\([a-z0-9]*\) .*/\1/p')
     [ "$u" = "$FAKE_FAIL_TENANT" ] && { echo "E: install failed for $u"; exit 1; }
@@ -131,6 +131,16 @@ describe('vm/tenant-density.sh (faked gcloud, gcp-rails)', () => {
     expect(r.out).toMatch(/CREATE_FAILED/);
     expect(r.out).toMatch(/TEARDOWN_START /);
     expect(installs()).toHaveLength(0);
+  });
+
+  it('fails closed after SSH readiness never succeeds, before staging files with SCP', () => {
+    const r = run({ FAKE_SSH_FAIL: '1' });
+    expect(r.code).toBe(4);
+    expect(r.out).toMatch(/SSH_NOT_READY tries=30 /);
+    expect(lines().filter((l) => l === 'ssh true')).toHaveLength(30);
+    expect(lines().some((l) => l.startsWith('scp '))).toBe(false);
+    expect(installs()).toHaveLength(0);
+    expect(r.out).toMatch(/DENSITY_DONE rc=0 /);
   });
 
   it('refuses STEPS that are not increasing tenant counts before touching GCP', () => {

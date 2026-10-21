@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
 import { buildTaskBrief, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
-import { nativeChangeReport } from './packer-facade';
+import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
 
@@ -50,6 +50,35 @@ describe('P039 completion pre-review briefs', () => {
       writeFileSync(join(root, 'target.ts'), 'export function target() { return 2; }'); return [];
     } });
     expect(result).toMatchObject({ status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null });
+  });
+  it('gives the default compiler report the remaining brief deadline, not a fixed 2000 ms sub-budget', async () => {
+    const { rootResolver } = setup();
+    // Honour the budget the way the off-thread worker does: a fresh worker under host load
+    // measured 1048-2598 ms, so a 2000 ms budget expires before the answer arrives.
+    const graph = vi.fn(async (request: ChangeReportRequest, graphRoot: string, budgetMs: number) => budgetMs < 2_100
+      ? { ...firstPartyCallers({ ts, root: graphRoot, name: request.symbol, filePath: request.file, op: 'impact',
+        direction: 'downstream', paths: ['.'], includeInterfaces: true }),
+        error: `the callers worker exceeded its ${budgetMs} ms deadline and was killed`, evidence: undefined }
+      : firstPartyCallers({ ts, root: graphRoot, name: request.symbol, filePath: request.file, op: 'impact',
+        direction: 'downstream', paths: ['.'], includeInterfaces: true }));
+    const brief = await getCompletionTimeBrief(ref(), { root: rootResolver, graph, runs: async () => [],
+      effects: { exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact' } });
+    expect(graph.mock.calls[0]![2]).toBeGreaterThan(2_000);
+    expect(graph.mock.calls[0]![2]).toBeLessThan(TASK_BRIEF_BUDGET_MS);
+    expect(brief).toMatchObject({ status: 'measured', changes: [expect.objectContaining({ file: 'target.ts', symbol: 'target' })] });
+  });
+  it('names why compiler evidence was unmeasured instead of returning a causeless unknown', async () => {
+    const { root, rootResolver } = setup();
+    const expired = 'the callers worker exceeded its 2000 ms deadline and was killed';
+    const report: typeof nativeChangeReport = (args, subject) => nativeChangeReport(args, subject, {
+      exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact',
+      graph: async () => ({ ...firstPartyCallers({ ts, root, name: subject.symbol, filePath: subject.file,
+        op: 'impact', direction: 'downstream', paths: ['.'], includeInterfaces: true }), error: expired, evidence: undefined }),
+    });
+    const brief = await getCompletionTimeBrief(ref(), { root: rootResolver, report, runs: async () => [] });
+    expect(brief).toMatchObject({ status: 'unknown', changes: [] });
+    expect(brief.scope.processed).toEqual(['target.ts']);
+    expect(brief.limitations).toContainEqual(expect.stringContaining(`Compiler evidence was unmeasured for target.ts#target: ${expired}`));
   });
   it('never analyzes an escaping source or an unbounded path population', async () => {
     const { root, report, rootResolver } = setup(); const outside = fixture();

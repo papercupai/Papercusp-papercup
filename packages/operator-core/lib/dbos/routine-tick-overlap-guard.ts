@@ -117,3 +117,75 @@ export async function anotherRoutinesTickInFlight(
     return false;
   }
 }
+
+/**
+ * WI-6554700010019234: IN-PROCESS overlap guard for a scheduled tick whose passes all run in
+ * one executor process (routinesSweepTick on bg-host).
+ *
+ * WHY. anotherRoutinesTickInFlight is fail-soft by design: a probe that does not settle within
+ * ROUTINE_TICK_OVERLAP_QUERY_DEADLINE_MS resolves to "nothing in flight". When the host event
+ * loop stalls for longer than that deadline, every queued tick fails open at once. Measured
+ * 2026-10-21 14:51-14:54Z on bg-host (main thread at 122% CPU, scheduled-registry ticks
+ * stalling 9.6s and 78s): 9 of 10 routinesSweepTick passes started while an earlier pass was
+ * still PENDING, and none of the 9 finished its first step within 3.5 minutes. Concurrent
+ * passes deepen the stall that defeated the guard, and the sweep's later steps (plan-run
+ * executor recruit among them) never run.
+ *
+ * This registry needs no database round-trip, so a stalled loop or a starved pool cannot make
+ * it fail open. It is stale-safe the same way the DB guard is: a pass that has been in flight
+ * for staleMs or longer is pruned and no longer blocks, so a wedged step cannot stop the tick
+ * forever. The DB guard stays in place for passes running in another process (DBOS recovery
+ * after a restart re-runs a pass from its first step on the new executor, which registers here).
+ */
+export interface InProcessPassRegistry {
+  /** pass id (the DBOS workflow id) -> pass start, epoch ms. */
+  readonly passes: Map<string, number>;
+}
+
+export function createInProcessPassRegistry(): InProcessPassRegistry {
+  return { passes: new Map() };
+}
+
+/**
+ * How long an in-process entry may stand before a new pass is admitted anyway. Deliberately
+ * NOT the DB guard's 5-minute window: an in-process entry exists only while its pass's promise
+ * is outstanding (exitInProcessPass runs in a finally), so it cannot describe a crashed
+ * executor, only a slow or hung pass. Measured 2026-10-21 15:08-15:20Z under load: a full
+ * pass took over 10 minutes (wall-fact-lapse-sweep alone 141s), so a 5-minute window admitted
+ * a second concurrent pass at 15:13:45Z, which is the overlap this guard exists to prevent.
+ * The window is only a backstop against a promise that never settles; evictions are logged.
+ */
+export const IN_PROCESS_PASS_STALE_MS = Math.max(
+  1,
+  Number(process.env.PAPERCUSP_ROUTINES_SWEEP_IN_PROCESS_STALE_MS) || 30 * 60_000,
+);
+
+/**
+ * Register `passId` as in flight and return true, unless another pass younger than `staleMs`
+ * is already in flight in this process (then return false and register nothing). Stale entries
+ * are pruned on every call. Re-entering with the same id is allowed.
+ */
+export function tryEnterInProcessPass(
+  registry: InProcessPassRegistry,
+  passId: string,
+  now: number,
+  staleMs: number = IN_PROCESS_PASS_STALE_MS,
+  onEvict?: (evictedPassId: string, ageMs: number) => void,
+): boolean {
+  for (const [id, startedAt] of registry.passes) {
+    if (now - startedAt >= staleMs) {
+      registry.passes.delete(id);
+      onEvict?.(id, now - startedAt);
+    }
+  }
+  for (const id of registry.passes.keys()) {
+    if (id !== passId) return false;
+  }
+  registry.passes.set(passId, now);
+  return true;
+}
+
+/** Remove `passId`. Always called in a finally, so a throwing pass cannot leak its entry. */
+export function exitInProcessPass(registry: InProcessPassRegistry, passId: string): void {
+  registry.passes.delete(passId);
+}

@@ -272,6 +272,15 @@ export function inspectTypePack(raw: unknown): { ok: true; pack: InspectedTypePa
         issues.push(`${at}.checks[${checkIndex}]: '${check.kind}' is not a declarative rubric check (${declarative.error.issues[0]?.message ?? 'invalid'})`);
       }
     });
+    // D-011: a criterion's verification check seeds an acceptance bar, so it obeys the same rule.
+    (def.criteriaTemplate ?? []).forEach((criterion, criterionIndex) => {
+      const check = criterion.verification?.check;
+      if (!check) return;
+      const declarative = rubricCriterionCheckSchema.safeParse({ ...(check.params ?? {}), kind: check.kind });
+      if (!declarative.success) {
+        issues.push(`${at}.criteriaTemplate[${criterionIndex}].verification.check: '${check.kind}' is not a declarative rubric check (${declarative.error.issues[0]?.message ?? 'invalid'})`);
+      }
+    });
     itemTypes.push(def);
     rawItemTypes.push(candidate);
   });

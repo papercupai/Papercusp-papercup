@@ -81,7 +81,8 @@ export type FleetTransitionKind =
   | 'admission-blocked'
   | 'claim-released'
   | 'item-completed'
-  | 'member-quota-starved';
+  | 'member-quota-starved'
+  | 'launch-failed';
 
 /** Build the awaitable key for one fleet transition. Single-sourced so the
  *  emitters, the catalog entries and the tests can never drift on the shape.
@@ -1051,6 +1052,145 @@ export async function emitFleetMemberQuotaStarvedEvent(
     failSoft(`member-quota-starved for ${fleetSlug}/${agentId}`, e);
     return false;
   }
+}
+
+/**
+ * WI-6554700010019256: what a DETACHED fleet launch left unfinished.
+ *
+ * `fleet:launch-on-plan` races its launch against a response budget. When the budget
+ * expires it returns `pending` and the launch finishes detached. Whatever that
+ * completion then records (a spawn refusal, a member whose agent died at boot,
+ * members never opened because the canary wave failed, a wave left unverified) used
+ * to sit in `last_launch_transaction` until someone polled `fleet:status`; the
+ * leader got no report. Measured 2026-10-21 10:52Z, fleet main-green-sol61-1016:
+ * member 1 of 4 died at boot, members 2-4 were never opened, and the leader only
+ * learned of it by hand-reading the transaction hours later.
+ */
+export interface FleetLaunchFailedSignal {
+  transactionId: string | null;
+  state: string | null;
+  requested: number;
+  opened: number;
+  verified: number;
+  failed: Array<{ ownerId: string; phase: string; reason: string }>;
+  /** Requested members that were never opened (a failed earlier wave stops new waves). */
+  notOpenedOwnerIds: string[];
+  /** Opened members whose start was never observed either way. */
+  unconfirmedOwnerIds: string[];
+  nextAction: string | null;
+}
+
+/** Per-failure reason cap: a boot failure carries a whole terminal log tail. */
+export const LAUNCH_FAILED_REASON_MAX_CHARS = 600;
+
+// eslint-disable-next-line no-control-regex
+const ANSI_SEQUENCE = /\u001b(?:\][^\u0007]*\u0007|\[[0-9;?]*[A-Za-z])/g;
+
+function compactLaunchFailureReason(reason: string): string {
+  const clean = reason.replace(ANSI_SEQUENCE, '').trim();
+  return clean.length > LAUNCH_FAILED_REASON_MAX_CHARS
+    ? `${clean.slice(0, LAUNCH_FAILED_REASON_MAX_CHARS)}…`
+    : clean;
+}
+
+/**
+ * PURE: derive the launch-failed signal from a settled launch transaction, or null
+ * when every requested member was opened and verified (nothing to report).
+ */
+export function deriveFleetLaunchFailedSignal(txn: {
+  transactionId?: string | null;
+  state?: string | null;
+  requestedMemberIds?: readonly string[] | null;
+  openedMemberIds?: readonly string[] | null;
+  verifiedMemberIds?: readonly string[] | null;
+  unconfirmedMemberIds?: readonly string[] | null;
+  failed?: ReadonlyArray<{ ownerId: string; phase: string; reason: string }> | null;
+  recovery?: { nextAction?: string | null } | null;
+}): FleetLaunchFailedSignal | null {
+  const requested = [...(txn.requestedMemberIds ?? [])];
+  const opened = new Set(txn.openedMemberIds ?? []);
+  const verified = new Set(txn.verifiedMemberIds ?? []);
+  const failed = (txn.failed ?? []).map((f) => ({
+    ownerId: f.ownerId,
+    phase: f.phase,
+    reason: compactLaunchFailureReason(f.reason ?? ''),
+  }));
+  const failedIds = new Set(failed.map((f) => f.ownerId));
+  const notOpenedOwnerIds = requested.filter((id) => !opened.has(id) && !failedIds.has(id));
+  const unconfirmedOwnerIds = [...new Set(txn.unconfirmedMemberIds ?? [])].filter((id) => !verified.has(id));
+  if (failed.length === 0 && notOpenedOwnerIds.length === 0 && unconfirmedOwnerIds.length === 0) return null;
+  return {
+    transactionId: txn.transactionId ?? null,
+    state: txn.state ?? null,
+    requested: requested.length,
+    opened: opened.size,
+    verified: verified.size,
+    failed,
+    notOpenedOwnerIds,
+    unconfirmedOwnerIds,
+    nextAction: txn.recovery?.nextAction ?? null,
+  };
+}
+
+export function launchFailedSummary(fleetSlug: string, signal: FleetLaunchFailedSignal): string {
+  const parts = [
+    `${signal.failed.length} failed`,
+    `${signal.notOpenedOwnerIds.length} never opened`,
+    `${signal.unconfirmedOwnerIds.length} unconfirmed`,
+  ];
+  const first = signal.failed[0];
+  const firstLine = first ? first.reason.split('\n').find((line) => line.trim().length > 0) ?? '' : '';
+  return (
+    `fleet ${fleetSlug}: detached launch${signal.transactionId ? ` ${signal.transactionId}` : ''} settled with ` +
+    `${parts.join(', ')} of ${signal.requested} requested (${signal.verified} verified)` +
+    (first ? ` — first failure ${first.ownerId} (${first.phase}): ${firstLine.slice(0, 200)}` : '') +
+    (signal.nextAction ? ` — next: ${signal.nextAction}` : '')
+  );
+}
+
+/**
+ * Publish `fleet:launch-failed:<slug>` for a detached launch completion that left
+ * members failed, unopened or unconfirmed. Key built through the catalog so the two
+ * cannot drift. Resolves true when emitted; never rejects.
+ */
+export async function emitFleetLaunchFailedEvent(
+  fleetSlug: string | null | undefined,
+  signal: FleetLaunchFailedSignal,
+  deps: FleetTransitionEventsDeps = {},
+): Promise<boolean> {
+  if (!fleetSlug) return false;
+  const emit = deps.emit ?? emitAwaitedEvent;
+  try {
+    await emit({
+      key: buildKey('fleet-launch-failed', { slug: fleetSlug }),
+      summary: launchFailedSummary(fleetSlug, signal),
+      payload: { fleetSlug, transition: 'launch-failed', ...signal },
+      source: 'fleet',
+    });
+    return true;
+  } catch (e: unknown) {
+    failSoft(`launch-failed for ${fleetSlug}`, e);
+    return false;
+  }
+}
+
+/**
+ * Wire a DETACHED launch completion to the launch-failed edge. The transaction is
+ * mutated in place by the completion, so it is read only AFTER the completion
+ * settles (fulfilled or rejected), never at call time. Resolves true when an event
+ * was emitted; never rejects.
+ */
+export function publishDetachedLaunchOutcome(
+  completion: Promise<unknown>,
+  fleetSlug: string,
+  transaction: Parameters<typeof deriveFleetLaunchFailedSignal>[0],
+  deps: FleetTransitionEventsDeps = {},
+): Promise<boolean> {
+  const publish = (): Promise<boolean> | false => {
+    const signal = deriveFleetLaunchFailedSignal(transaction);
+    return signal ? emitFleetLaunchFailedEvent(fleetSlug, signal, deps) : false;
+  };
+  return completion.then(publish, publish).catch(() => false);
 }
 
 /** Resolve the workspace for a fleet lookup. Injectable so the announce helpers

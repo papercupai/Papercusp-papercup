@@ -373,7 +373,7 @@ export async function resolvePlanImplementerIdentities(
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
-  const [workItems, audits] = await Promise.all([
+  const [workItems, audits, editors] = await Promise.all([
     sql<
       Array<{
         terminal_owner: string | null;
@@ -396,6 +396,24 @@ export async function resolvePlanImplementerIdentities(
          AND audit_kind IN ('activation', 'completion')
        ORDER BY audit_seq
     `,
+    // Plan code-intel-relevance-routing-2026-10-21 R-5/R-10: an agent that
+    // EDITED code for this plan is an implementer even when it never claimed a
+    // work-item. Only edits attributed to THIS plan (or one of its work-items)
+    // count; editing a cited file for another plan does not exclude a grader.
+    sql<Array<{ agent_id: string | null }>>`
+      SELECT DISTINCT e.agent_id
+        FROM harness_shared.edit_attribution_ledger e
+       WHERE e.workspace_id = ${workspaceId}
+         AND (e.plan_slug = ${planSlug}
+              OR e.work_item_id IN (
+                SELECT w.feature_id FROM harness_shared.work_items w
+                 WHERE w.workspace_id = ${workspaceId} AND w.source_plan_slug = ${planSlug}))
+       ORDER BY e.agent_id
+    `.catch((err: unknown) => {
+      throw new Error(
+        `acceptance_lineage_unreadable: edit attribution for plan '${planSlug}' could not be read (${(err as Error)?.message ?? err})`,
+      );
+    }),
   ]);
 
   const identities = new Set<string>();
@@ -416,6 +434,7 @@ export async function resolvePlanImplementerIdentities(
     for (const owner of parseWorkedByHistory(row.worked_by_history)) add(owner);
   }
   for (const row of audits) add(row.created_by);
+  for (const row of editors ?? []) add(row.agent_id);
 
   return [...identities].sort();
 }

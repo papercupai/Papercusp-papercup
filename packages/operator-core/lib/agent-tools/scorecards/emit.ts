@@ -3393,7 +3393,15 @@ export async function emitScorecard(
     }
     // EI-22001573837456548: scorecard history is append-only and independent
     // graders cannot retract a redundant card. Read a bounded, complete-enough
-    if (!args.acceptance && !args.acknowledgeExisting) {
+    //
+    // EI-26525990062935280: a grading-integrity audit (auditContext) is only built
+    // for a subject whose stamp is still 'pending' (refused above otherwise). So any
+    // existing audit card on that subject did NOT settle it: its settlement failed
+    // after the card was persisted, and only that auditor's exact retry can finish it
+    // (the unchanged-evidence recovery below). When that auditor is gone, refusing
+    // the freshly dispatched auditor here strands the stamp pending forever, so a
+    // reserved audit of a pending stamp is never a redundant card.
+    if (!args.acceptance && !args.acknowledgeExisting && !auditContext) {
       // Unscoped scorecards use (rubricRef, rubricRevision); a structured
       // subject adds (subject.kind, subject.ref). Narrow the read by ref when
       // possible, then keep kind in the in-memory tuple because scorecards:list

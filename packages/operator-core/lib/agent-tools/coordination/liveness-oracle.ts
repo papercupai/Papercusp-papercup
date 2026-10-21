@@ -428,6 +428,12 @@ export function deriveVerdict(
     (subject.source === RECORDED_SESSION_SOURCE ||
       recordedLive.has(subject.ownerId) ||
       (psuHostLive && psuHost?.positive === true));
+  // EI-21356812816484561: heartbeat fresh but no turn for WARM_IDLE_ACTIVITY_MS.
+  const warmIdle =
+    w.lastActivityMs != null && Number.isFinite(w.lastActivityMs)
+      ? nowMs - w.lastActivityMs >= WARM_IDLE_ACTIVITY_MS
+      : false;
+  let wedged: PickupRecoverable | undefined;
   let sessionState: SessionState;
   if (
     recordedEnded.has(subject.ownerId) ||
@@ -487,7 +493,23 @@ export function deriveVerdict(
       !pidConfirmedDead &&
       (sessionState === 'ended' || sessionState === 'suspect')
     ) {
-      sessionState = w.wakeable ? (stale ? 'draining' : 'parked') : 'recorded';
+      if (w.wakeAttemptMiss === true && warmIdle) {
+        // EI-26597499932248750 (D-011: a live host is not proof the session can
+        // think). A confirmed wake MISS on a warm-idle owner is not the ambiguity
+        // this rescue exists for. We already sent a turn-burning wake, it outlived
+        // WAKE_PICKUP_GRACE_MS with no activity after it, and the owner has taken
+        // no turn for WARM_IDLE_ACTIVITY_MS. A live host process proves only that
+        // the process exists. Measured: a Codex host up 5.7 days, whose child had
+        // sat at 0% CPU for 4.96 days, read `parked` (wakeable) here. coord:send
+        // reported woken:1 and coord:presence offered it for dispatch, while every
+        // consumer without positive host authority read `ended`. Report it the way
+        // the host-condition leg reports a host whose deliveries are stuck
+        // pending: `suspect` + `wedged`, never a dispatch target.
+        sessionState = 'suspect';
+        wedged = 'pending-turn-stuck';
+      } else {
+        sessionState = w.wakeable ? (stale ? 'draining' : 'parked') : 'recorded';
+      }
     }
   }
   return {
@@ -497,15 +519,17 @@ export function deriveVerdict(
     liveTurn: w.liveTurn,
     wakeAttemptMiss: w.wakeAttemptMiss === true,
     // EI-21356812816484561: heartbeat fresh but no turn for WARM_IDLE_ACTIVITY_MS.
-    // REPORTED, never fatal — it does not move `sessionState`, because a
-    // legitimately parked owner can sit here for hours and still wake fine. It
-    // exists so a router can de-prioritise instead of treating every `parked`
-    // row as an equal-footing candidate (measured: 107 of 180 heartbeat-fresh
-    // rows were in this band, all offered to dispatch identically).
-    warmIdle:
-      w.lastActivityMs != null && Number.isFinite(w.lastActivityMs)
-        ? nowMs - w.lastActivityMs >= WARM_IDLE_ACTIVITY_MS
-        : false,
+    // REPORTED, and on its own never fatal — it does not move `sessionState`,
+    // because a legitimately parked owner can sit here for hours and still wake
+    // fine. It exists so a router can de-prioritise instead of treating every
+    // `parked` row as an equal-footing candidate (measured: 107 of 180
+    // heartbeat-fresh rows were in this band, all offered to dispatch
+    // identically). The one place it moves the verdict is the positive host
+    // rescue above, and only as corroboration of a confirmed wake miss
+    // (EI-26597499932248750).
+    warmIdle,
+    // Spread-when-present: absent means "not wedged OR not checked".
+    ...(wedged ? { wedged } : {}),
     confirmLiveness: needsLivenessConfirmation(sessionState),
     heartbeatFresh: heartbeatSignalPresent ? !stale : false,
     // Spread-when-present, never a `?? false` default: an absent self-wake leg

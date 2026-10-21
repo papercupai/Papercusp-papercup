@@ -15,6 +15,7 @@ vi.mock('./harness-registry', () => ({
 }));
 
 import { resolveProjectDir, resolveStateDir, resolveSpawnCwd, resolveContextEnv } from './spawn-config';
+import { turnProvenanceDir } from './turn-provenance/turn-provenance';
 
 beforeAll(() => {
   loadHarnessRegistry.mockResolvedValue({ projects: [{ slug: 'p', path: '/proj' }] });
@@ -74,6 +75,7 @@ describe('resolveContextEnv', () => {
       requestUrl: 'http://127.0.0.1:3170/api/x?y=1',
     });
     expect(env.PAPERCUSP_HARNESS_SLUG).toBe('p');
+    expect(env.PAPERCUSP_TURN_PROVENANCE_DIR).toBe(turnProvenanceDir());
     expect(env.PI_CODING_AGENT_DIR).toBe('/proj/.papercusp/pi-sessions');
     expect(env.PAPERCUSP_API_BASE).toBe('http://127.0.0.1:3170');
     expect(env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9171');
@@ -86,5 +88,17 @@ describe('resolveContextEnv', () => {
     expect(env.PAPERCUSP_API_BASE).toBeUndefined();
     expect(env.PAPERCUSP_HARNESS_SLUG).toBe('p');
     expect(env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
+  });
+
+  it('propagates an explicit provenance-directory override to the child hook', () => {
+    const previous = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    process.env.PAPERCUSP_TURN_PROVENANCE_DIR = '/shared/turn-provenance';
+    try {
+      const env = resolveContextEnv({ slug: 'p', stateDir: null });
+      expect(env.PAPERCUSP_TURN_PROVENANCE_DIR).toBe('/shared/turn-provenance');
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+      else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = previous;
+    }
   });
 });

@@ -83,6 +83,8 @@ From `ActivationGateRefusalCode` (`packages/operator-core/lib/agent-tools/plans/
 | --- | --- |
 | `conversation_audit_required` | Activation needs an audit of the complete source conversation (`plans:audit { phase:'activation' }`). |
 | `item_provenance_unresolved` | A plan item maps to no owner-typed turn and has no `itemProvenance` entry declaring it `derived` or `agent-added`. |
+| `plan_declarations_invalid` | One or more required plan declaration sections are missing or invalid at activation. |
+| `unregistered_type` | The plan references a plan-item type that is not registered in the workspace. |
 
 From `PlanSpecQualityGateCode` (`packages/operator-core/lib/agent-tools/plans/plan-spec-quality-gate.ts`):
 
@@ -132,6 +134,12 @@ From `BindSpecEvidenceRefusalCode` (`packages/operator-core/lib/agent-tools/plan
 | `mutation_target_rejected` | The mutation target named for the binding was rejected. |
 | `declared_configuration_fingerprint_missing` | The clause's source bar declares a `productionConfiguration`, but the bound test run has no valid configuration snapshot (no run, a NULL `test_runs.configuration_snapshot`, or a snapshot whose fingerprint does not recompute) (P-011). |
 | `declared_configuration_fingerprint_mismatch` | The bound test run's configuration snapshot resolves a declared flag or env key differently from the bar's `productionConfiguration`; the refusal names the differing keys (P-011). |
+
+From `WorkItemPlanItemRefusalStatus` (`packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts`):
+
+| code | meaning |
+| --- | --- |
+| `work_item_plan_item_mismatch` | The work-item was not promoted from the plan item that owns the clause revision, so the evidence is refused before any binding row is written. |
 
 From `IndependentVerificationRefusalStatus` (`packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts`), returned as the result `status` (P-008, D-005):
 

@@ -20,17 +20,21 @@
  * The read handler reports the match as a cursor; it does not read the other
  * file on the caller's behalf.
  */
-import { readdir, stat } from 'node:fs/promises';
+import { opendir, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SCRATCH_SCHEME, scratchRoot } from './scratch-uri';
 
 /** A result-door spill basename carries a millisecond timestamp, so it is near-unique. */
 const SPILL_BASENAME = /^result-door-\d{10,}[A-Za-z0-9._-]*$/;
+const RECOVERABLE_RESULT_DOOR_BASENAME =
+  /^result-door-(\d{10,})(?:-([a-f\d]{8}))?(?:\.(spill|md))?$/i;
 const SEGMENT = /^[A-Za-z0-9._:-]+$/;
 /** Roots a caller may have written: the current one and the retired `.papercup` one. */
 const SCRATCH_ROOT_MARKERS = ['/.papercusp/scratch/', '/.papercup/scratch/'] as const;
 /** Upper bound on run directories stat-ed per workspace (the scan is on an error path). */
 export const MAX_CANDIDATE_RUN_DIRS = 64;
+/** Bound directory entries inspected per candidate run on this error path. */
+const MAX_CANDIDATE_DIRECTORY_ENTRIES = 256;
 /** A near-copy UUID keeps at least this many of its 36 characters in place. */
 export const MIN_MATCHING_RUN_ID_CHARS = 24;
 
@@ -99,6 +103,31 @@ export function runIdLooksLike(requested: string, candidate: string): boolean {
   return positionalMatches(requested, candidate) >= MIN_MATCHING_RUN_ID_CHARS;
 }
 
+/**
+ * Result-door timestamps are exact; only recover a missing .spill/.md suffix
+ * or one mistyped character in the eight-hex random suffix. Callers still
+ * refuse when more than one existing file satisfies this narrow match.
+ */
+function resultDoorBasenameLooksLike(requested: string, candidate: string): boolean {
+  if (requested === candidate) return true;
+  const wanted = RECOVERABLE_RESULT_DOOR_BASENAME.exec(requested);
+  const found = RECOVERABLE_RESULT_DOOR_BASENAME.exec(candidate);
+  if (!wanted || !found || wanted[1] !== found[1]) return false;
+  if (wanted[3] && found[3] && wanted[3].toLowerCase() !== found[3].toLowerCase()) return false;
+
+  const wantedId = wanted[2]?.toLowerCase() ?? '';
+  const foundId = found[2]?.toLowerCase() ?? '';
+  if (wantedId === foundId) return true;
+  if (!wantedId || !foundId) return false;
+
+  let differences = 0;
+  for (let i = 0; i < wantedId.length; i++) {
+    if (wantedId[i] !== foundId[i]) differences++;
+    if (differences > 1) return false;
+  }
+  return differences === 1;
+}
+
 async function listDirectories(path: string): Promise<string[]> {
   try {
     const entries = await readdir(path, { withFileTypes: true });
@@ -114,6 +143,25 @@ async function isFile(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function listMatchingEntryNames(path: string, requested: string): Promise<string[] | null> {
+  const directory = await opendir(path).catch(() => null);
+  if (!directory) return [];
+  const matches: string[] = [];
+  let inspected = 0;
+  try {
+    for await (const entry of directory) {
+      inspected++;
+      if (inspected > MAX_CANDIDATE_DIRECTORY_ENTRIES) return null;
+      if (!entry.isFile() || !resultDoorBasenameLooksLike(requested, entry.name)) continue;
+      matches.push(entry.name);
+      if (matches.length > 1) return null;
+    }
+  } catch {
+    return [];
+  }
+  return matches;
 }
 
 /**
@@ -137,17 +185,25 @@ export async function findMistypedScratchSpill(requested: string): Promise<Recov
       .sort((a, b) => positionalMatches(address.runId, b) - positionalMatches(address.runId, a))
       .slice(0, MAX_CANDIDATE_RUN_DIRS);
     for (const runId of runs) {
-      const path = join(toolDir, runId, address.basename);
-      if (!(await isFile(path))) continue;
-      matches.set(path, {
-        workspaceId,
-        toolName: address.toolName,
-        runId,
-        basename: address.basename,
-        path,
-        uri: `${SCRATCH_SCHEME}/${workspaceId}/${address.toolName}/${runId}/${address.basename}`,
-      });
-      if (matches.size > 1) return null;
+      const runDir = join(toolDir, runId);
+      const exactPath = join(runDir, address.basename);
+      const basenames = (await isFile(exactPath))
+        ? [address.basename]
+        : await listMatchingEntryNames(runDir, address.basename);
+      if (basenames === null) return null;
+      for (const basename of basenames) {
+        const path = join(runDir, basename);
+        if (!(await isFile(path))) continue;
+        matches.set(path, {
+          workspaceId,
+          toolName: address.toolName,
+          runId,
+          basename,
+          path,
+          uri: `${SCRATCH_SCHEME}/${workspaceId}/${address.toolName}/${runId}/${basename}`,
+        });
+        if (matches.size > 1) return null;
+      }
     }
   }
   const [only] = matches.values();

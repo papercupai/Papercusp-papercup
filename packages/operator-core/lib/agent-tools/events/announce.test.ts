@@ -53,6 +53,16 @@ vi.mock('../../events/await/handle', () => ({
 vi.mock('../../events/await/installed-events', () => ({
   readInstalledUnitEvents: vi.fn(async () => []),
 }));
+// WI-6554700010018245: events:emit validates the payload against saved event
+// types (validateSavedEventPayload) before firing, and that reads
+// harness_shared.event_key_registry through the real org-admin pool by
+// default. Without this mock every emit case that reaches it opens a live
+// Postgres connection, which the unit-test DB guard (EI-19311807188719573)
+// refuses. Same hermetic double as emit.test.ts.
+vi.mock('../../events/saved-event-type', () => ({
+  saveEventType: vi.fn(async () => ({ eventKey: 'saved' })),
+  validateSavedEventPayload: vi.fn(async () => undefined),
+}));
 vi.mock('../../events/await/store', () => ({
   FLEET_BENCH_NOTE_PREFIX: '[fleet:bench] ',
   registerAnnouncement: vi.fn(async (input: { eventKey: string; expectedCondition?: unknown; logicalGateKey?: string | null }) => ({

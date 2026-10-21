@@ -2032,6 +2032,35 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     }
   });
 
+  it('WI-6554700010019096: a redirected su.md this build cannot tile renders the serving build su.md instead of refusing a fleet-member AUTO launch', async () => {
+    const { builtinBlueprintPath, SU_PREAMBLE_REL, SU_SOURCE_REL } = await import('@papercusp/orchestrator/blueprint');
+    const { harnessRoot } = await import('@papercusp/harness/paths');
+    const buildSu = join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md');
+    const buildHarness = join(dirname(buildSu), '..', '..', '..');
+    const staging = mkdtempSync(join(tmpdir(), 'su-tiling-skew-'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The staging tree that D-001 redirects prompt resolution to: its su.md gained a heading
+      // this build's SU_TILES do not classify (the 2026-10-21 fleet-launch 400 had three).
+      mkdirSync(join(staging, dirname(SU_SOURCE_REL)), { recursive: true });
+      writeFileSync(join(staging, SU_SOURCE_REL),
+        `${readFileSync(buildSu, 'utf8')}\n## A heading this build has never seen\n\nSTAGING-ONLY TEXT\n`);
+      cpSync(join(buildHarness, SU_PREAMBLE_REL), join(staging, SU_PREAMBLE_REL));
+      vi.mocked(harnessRoot).mockImplementation(() => buildHarness);
+      resolvePromptFilesMock.mockReturnValueOnce([join(staging, SU_SOURCE_REL)]);
+      await buildLaunchSpec({ ...su, fleetRole: 'member', modes: ['auto'] });
+      const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string; baseSource?: string };
+      expect(rendered.baseText).toContain("AUTO mode — the owner's switch");
+      expect(rendered.baseText).not.toContain('STAGING-ONLY TEXT');
+      expect(rendered.baseSource).toBe(join(buildHarness, SU_SOURCE_REL));
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('does not tile against this build'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+      vi.mocked(harnessRoot).mockImplementation(() => '/h');
+      rmSync(staging, { recursive: true, force: true });
+    }
+  });
+
   it('two launches in the same pot with different stacks are read with DIFFERENT tokens', async () => {
     await buildLaunchSpec({ ...su, fleetRole: 'leader' });
     await composerFromLastRender()({ text: 'G', source: '/g' });

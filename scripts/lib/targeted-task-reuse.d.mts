@@ -60,7 +60,7 @@ export function restoreDisposableCheckpoint({ root, expectedSha, checkpointRoot,
         proofFormat: (root: any) => string | null;
         connect: (env: any) => Promise<import("pg").Client>;
         loadProofs: typeof loadReuseProofs;
-        changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
+        changedBetween: (root: any, onUnknown: any) => import("./related-tests.mjs").ChangedBetween;
         inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
         testConfigMainProcess: (root: any) => Promise<any>;
         toolchainTsconfigs: (root: any) => Promise<any>;
@@ -95,7 +95,7 @@ export function restoreCandidateCheckpointForReuse({ root, judgedSha, env, deps 
         proofFormat: (root: any) => string | null;
         connect: (env: any) => Promise<import("pg").Client>;
         loadProofs: typeof loadReuseProofs;
-        changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
+        changedBetween: (root: any, onUnknown: any) => import("./related-tests.mjs").ChangedBetween;
         inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
         testConfigMainProcess: (root: any) => Promise<any>;
         toolchainTsconfigs: (root: any) => Promise<any>;
@@ -157,7 +157,7 @@ export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env
         proofFormat: (root: any) => string | null;
         connect: (env: any) => Promise<import("pg").Client>;
         loadProofs: typeof loadReuseProofs;
-        changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
+        changedBetween: (root: any, onUnknown: any) => import("./related-tests.mjs").ChangedBetween;
         inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
         testConfigMainProcess: (root: any) => Promise<any>;
         toolchainTsconfigs: (root: any) => Promise<any>;

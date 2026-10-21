@@ -6,7 +6,8 @@ import * as ts from 'typescript';
 import { loadHarnessRegistry } from '../harness-registry';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { ClaimTimeEnrichmentSubject } from '../claim-time-enrichment';
-import { DEFAULT_PACKER_EFFECTS, nativeChangeReport, packerFacade, type PackerEffects, type PackerResult } from './packer-facade';
+import { DEFAULT_PACKER_EFFECTS, nativeChangeReport, packerFacade, type ChangeReportEffects, type ChangeReportRequest,
+  type PackerEffects, type PackerResult } from './packer-facade';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import type { CodeIntelAnswer } from './contracts';
@@ -410,6 +411,10 @@ export interface CompletionBriefDeps {
   report: typeof nativeChangeReport;
   /** Only server-bound run evidence, never paths parsed from completion prose. */
   runs?: (paths: string[]) => Promise<{ path: string; status: string; runGroupId: string }[] | null>;
+  /** The default report's graph leg; `budgetMs` is what remains of the brief deadline. */
+  graph?: (request: ChangeReportRequest, root: string, budgetMs: number) => Promise<CodeIntelAnswer>;
+  /** The default report's non-graph effects (git, artifact writes). */
+  effects?: Omit<ChangeReportEffects, 'graph'>;
 }
 
 /** P-039: reuse the pre-review report at the completion receipt, without
@@ -417,12 +422,17 @@ export interface CompletionBriefDeps {
 export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[] },
   deps: Partial<CompletionBriefDeps> = {}) {
   const rootResolver = deps.root ?? defaults.root;
-  const reportSource: typeof nativeChangeReport = deps.report ?? ((args, subject) => nativeChangeReport(args, subject, {
-      graph: (request, root) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
-        op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
-        direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs: 2_000 }),
-    }));
   const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
+  const graphSource = deps.graph ?? ((request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
+    op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
+    direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs }));
+  // The graph leg gets what remains of the brief deadline. A fixed 2000 ms sub-budget expired
+  // under host load (a fresh worker measured 1048-2598 ms), so the brief read `unknown` with
+  // most of its own deadline unused (WI-6554700010019386).
+  const reportSource: typeof nativeChangeReport = deps.report ?? ((args, subject) => nativeChangeReport(args, subject, {
+    ...deps.effects,
+    graph: (request, root) => graphSource(request, root, Math.max(1, deadline - Date.now() - 250)),
+  }));
   const brief = { phase: 'pre-review' as const, status: 'unknown' as 'measured' | 'unknown',
     scope: { paths: [...new Set(ref.paths)].filter(path => safePath(path) && path.length <= 240).slice(0, 8), processed: [] as string[] },
     changes: [] as { file: string; symbol: string; sourceFingerprint: string; consumers: string[] }[],
@@ -460,6 +470,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     brief.recover.args.rootPath = root; brief.recover.args.include = brief.scope.paths;
     const captured = new Map<string, string>();
     const tests = new Set<string>();
+    const unmeasured: string[] = [];
     for (const file of brief.scope.paths) {
       if (Date.now() >= deadline || brief.changes.length >= 2) break;
       if (kindOf(file) !== 'implementation' || !/\.[cm]?[jt]sx?$/.test(file)) continue;
@@ -479,7 +490,13 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
         const { answer, report } = await reportSource({ rootPath: root, include: brief.scope.paths },
           { file, symbol, phase: 'pre-review', paths: ['.'], limit: 20 });
         if (Date.now() >= deadline) return brief;
-        if (report.freshness === 'unmeasured') continue;
+        if (report.freshness === 'unmeasured') {
+          // Keep the reason: an unmeasured report is otherwise indistinguishable from a file
+          // with nothing to report, and the brief's `unknown` status would carry no cause.
+          const why = answer.error ?? report.limitations[report.limitations.length - 1] ?? 'no compiler input identity';
+          if (unmeasured.length < 2) unmeasured.push(`${file}#${symbol}: ${why}`.slice(0, 240));
+          continue;
+        }
         for (const input of answer.evidence?.sourceScope.supportingFiles ?? []) {
           if (input.representation !== 'full-source' || !safePath(input.path)) continue;
           if (captured.has(input.path) && captured.get(input.path) !== input.contentHash)
@@ -508,6 +525,8 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     });
     brief.testsWithoutRunEvidence = runs ? brief.tests.filter(test => test.execution !== 'recorded').map(test => test.path) : null;
     brief.status = brief.changes.length ? 'measured' : 'unknown';
+    if (!brief.changes.length && unmeasured.length)
+      brief.limitations.push(`Compiler evidence was unmeasured for ${unmeasured.join('; ')}.`);
     return brief;
   };
   try {

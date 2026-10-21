@@ -38,8 +38,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, appendFileSync, constants as fsConstants, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import Module, { register } from 'node:module';
-import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
 
 /** When set to a file path, one JSON line per judged module is appended there (tests, debugging). */
@@ -200,6 +200,179 @@ export function judgeModuleBytes(file, bytes) {
   return { kind: 'substituted', rel, top, head: git(top, ['cat-file', 'blob', id]) };
 }
 
+/** Vite writes bundled ESM configs to node_modules/.vite-temp/<config>.timestamp-*.mjs. */
+function viteTempConfigName(file) {
+  if (basename(dirname(file)) !== '.vite-temp' || basename(dirname(dirname(file))) !== 'node_modules') return null;
+  const match = /^(.+)\.timestamp-\d+-[0-9a-f]*\.mjs$/i.exec(basename(file));
+  return match?.[1] ?? null;
+}
+
+/** Vite's config bundler embeds its esbuild input source map in both CJS and ESM output. */
+function viteInlineSourceMap(bytes) {
+  const source = bytes.toString('utf8');
+  const match = /(?:^|\n)\/\/[#@]\s*sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)\s*$/.exec(source);
+  if (!match) return null;
+  try {
+    const map = JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));
+    if (!map || typeof map.sourceRoot !== 'string' || !map.sourceRoot.startsWith('file:')
+      || !Array.isArray(map.sources) || !Array.isArray(map.sourcesContent)
+      || map.sources.length !== map.sourcesContent.length) return null;
+    return map;
+  } catch {
+    return null;
+  }
+}
+
+function viteSourceMapPath(map, source) {
+  if (typeof source !== 'string' || !source) return null;
+  try {
+    const url = new URL(source, map.sourceRoot);
+    return url.protocol === 'file:' ? fileURLToPath(url) : null;
+  } catch {
+    return null;
+  }
+}
+
+function viteFileScopePrefix(file) {
+  return 'const __vite_injected_original_dirname = ' + JSON.stringify(dirname(file)) + ';'
+    + 'const __vite_injected_original_filename = ' + JSON.stringify(file) + ';'
+    + 'const __vite_injected_original_import_meta_url = ' + JSON.stringify(pathToFileURL(file).href) + ';';
+}
+
+function hasViteFileScopePrefix(file, source) {
+  const prefix = viteFileScopePrefix(file);
+  if (source.startsWith(prefix)) return true;
+  if (!source.startsWith('#!')) return false;
+  const newline = source.indexOf('\n');
+  return newline < 0
+    ? source.endsWith(prefix)
+    : source.startsWith(prefix, newline + 1);
+}
+
+/** Vite prefixes each JS/TS source with these scope constants before esbuild maps it. */
+function viteSourceMatchesHead(file, source, head) {
+  const headSource = head.toString('utf8');
+  if (source === headSource) return true;
+
+  let shebang = '';
+  if (headSource.startsWith('#!')) {
+    const newline = headSource.indexOf('\n');
+    shebang = headSource.slice(0, newline < 0 ? headSource.length : newline + 1);
+  }
+  if (!source.startsWith(shebang)) return false;
+
+  const headBody = headSource.slice(shebang.length).trimEnd();
+  const mappedBody = source.slice(shebang.length).trimEnd();
+  const prefix = viteFileScopePrefix(file);
+  if (!mappedBody.startsWith(prefix)) return false;
+  const remainder = mappedBody.slice(prefix.length);
+  return remainder === headBody
+    || (remainder.startsWith('const __vite_injected_original_import_meta_resolve = ')
+      && remainder.endsWith(';' + headBody));
+}
+
+function unverifiableViteConfigBundle(file, reason) {
+  let where;
+  try {
+    where = locate(file);
+  } catch {
+    where = { place: 'outside' };
+  }
+  return {
+    recognized: true,
+    refused: true,
+    reason,
+    verdict: { kind: 'unverifiable', rel: where.rel ?? basename(file), top: where.top },
+  };
+}
+
+/**
+ * Judge Vite's compiled config by the exact source bytes embedded in its inline map. A Vite
+ * transform is safe only when every checkout source maps to HEAD (after Vite's known scope prefix);
+ * dirty or new source cannot be substituted into an already compiled bundle.
+ */
+function judgeViteConfigBundle(file, bytes) {
+  const tempConfigName = viteTempConfigName(file);
+  const map = viteInlineSourceMap(bytes);
+  if (!map) {
+    return tempConfigName
+      ? unverifiableViteConfigBundle(file, 'inline-source-map-missing-or-invalid')
+      : null;
+  }
+
+  const rows = map.sources.map((source, index) => ({
+    file: viteSourceMapPath(map, source),
+    source: map.sourcesContent[index],
+  }));
+  if (rows.some((row) => !row.file)) {
+    return tempConfigName
+      ? unverifiableViteConfigBundle(file, 'source-map-path-unresolvable')
+      : null;
+  }
+
+  const mainRows = rows.filter((row) => {
+    if (typeof row.source !== 'string' || !hasViteFileScopePrefix(row.file, row.source)) return false;
+    if (tempConfigName) return basename(row.file) === tempConfigName;
+    try {
+      return realpathSync(row.file) === realpathSync(file);
+    } catch {
+      return basename(row.file) === basename(file);
+    }
+  });
+  if (mainRows.length !== 1) {
+    if (tempConfigName) return unverifiableViteConfigBundle(file, 'main-source-not-found-or-ambiguous');
+    const hasViteSources = rows.some((row) => typeof row.source === 'string'
+      && row.file && hasViteFileScopePrefix(row.file, row.source));
+    return hasViteSources
+      ? unverifiableViteConfigBundle(file, 'main-source-not-found-or-ambiguous')
+      : null;
+  }
+  const main = mainRows[0];
+  let mainVerdict = null;
+
+  for (const row of rows) {
+    let where;
+    try {
+      where = locate(row.file);
+    } catch {
+      return tempConfigName
+        ? unverifiableViteConfigBundle(file, 'source-path-unavailable')
+        : null;
+    }
+    if (where.place !== 'checkout') {
+      if (row === main) mainVerdict = { kind: where.place, rel: where.rel, top: where.top };
+      continue;
+    }
+    if (typeof row.source !== 'string') {
+      return tempConfigName
+        ? unverifiableViteConfigBundle(file, 'source-content-missing')
+        : null;
+    }
+
+    const verdict = judgeModuleBytes(row.file, Buffer.from(row.source, 'utf8'));
+    if (verdict.kind === 'committed' || verdict.kind === 'ignored') {
+      if (row === main) mainVerdict = verdict;
+      continue;
+    }
+    if (verdict.kind === 'substituted' && viteSourceMatchesHead(row.file, row.source, verdict.head)) {
+      if (row === main) mainVerdict = { kind: 'committed', rel: verdict.rel, top: verdict.top };
+      continue;
+    }
+    return {
+      recognized: true,
+      refused: true,
+      reason: verdict.kind === 'uncommitted' ? 'uncommitted-source' : 'source-differs-from-head',
+      verdict,
+    };
+  }
+
+  return {
+    recognized: true,
+    refused: false,
+    verdict: mainVerdict ?? { kind: 'committed', rel: main.file, top: locate(main.file).top },
+  };
+}
+
 function audit(record) {
   const target = process.env[COMMITTED_SOURCE_AUDIT_ENV];
   if (target) appendFileSync(target, `${JSON.stringify(record)}\n`);
@@ -255,7 +428,22 @@ export async function load(url, context, nextLoad) {
   if (!url.startsWith('file:') || result.source == null) return result;
   const file = fileURLToPath(url);
   const input = toBuffer(result.source);
-  const verdict = judgeModuleBytes(file, input);
+  const viteVerdict = judgeViteConfigBundle(file, input);
+  const verdict = viteVerdict?.verdict ?? judgeModuleBytes(file, input);
+  if (viteVerdict?.refused) {
+    audit({
+      via: 'esm', kind: 'vite-refused', file, rel: verdict.rel ?? null,
+      refused: true, reason: viteVerdict.reason,
+    });
+    notice({
+      kind: 'refused', via: 'esm', rel: verdict.rel ?? file, top: verdict.top,
+      reason: viteVerdict.reason,
+    });
+    throw new Error(
+      `${COMMITTED_SOURCE_MARKER} refused ${verdict.rel ?? file}: Vite compiled a config from `
+        + `source that is ${viteVerdict.reason === 'uncommitted-source' ? 'uncommitted' : 'different from HEAD'}`,
+    );
+  }
   const returned = verdict.kind === 'uncommitted' ? null :
     verdict.kind === 'substituted' ? verdict.head : input;
   auditLoad(file, result, verdict, input, returned);
@@ -332,7 +520,23 @@ function guardCommonJs() {
     if ((this.id === '[eval]' || this.id === '[stdin]') && filename === `${this.id}-wrapper`) {
       return compile.call(this, content, filename, ...rest);
     }
-    const verdict = judgeModuleBytes(filename, toBuffer(content));
+    const input = toBuffer(content);
+    const viteVerdict = judgeViteConfigBundle(filename, input);
+    const verdict = viteVerdict?.verdict ?? judgeModuleBytes(filename, input);
+    if (viteVerdict?.refused) {
+      audit({
+        via: 'cjs', kind: 'vite-refused', file: filename, rel: verdict.rel ?? null,
+        refused: true, reason: viteVerdict.reason,
+      });
+      notice({
+        kind: 'refused', via: 'cjs', rel: verdict.rel ?? filename, top: verdict.top,
+        reason: viteVerdict.reason,
+      });
+      throw new Error(
+        `${COMMITTED_SOURCE_MARKER} refused ${verdict.rel ?? filename}: Vite compiled a config from `
+          + `source that is ${viteVerdict.reason === 'uncommitted-source' ? 'uncommitted' : 'different from HEAD'}`,
+      );
+    }
     if (verdict.kind === 'outside' || verdict.kind === 'dependency') {
       return compile.call(this, content, filename, ...rest);
     }

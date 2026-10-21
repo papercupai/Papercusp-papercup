@@ -55,6 +55,18 @@ export interface ReconcileResult {
 const ORPHAN_SIGNATURE_STATUS = 'failed';
 
 /**
+ * A run whose open items may still be waiting for their executor: RUNNING, or carrying the
+ * orphan signature above (a provisional failure whose work-items are still real requests).
+ * WI-6554700010019287: the plan-run executor recruiter used `status = 'running'` alone, so
+ * once the orphan sweep force-failed a run nobody had adopted, its item stayed assigned to
+ * the executor NAME and was never recruited for — the run could only stay orphaned.
+ */
+export function awaitingExecutorRunFragment(sql: Sql, alias: string) {
+  const a = sql(alias);
+  return sql`(${a}.status = 'running' OR (${a}.run_type = 'scheduled' AND ${a}.status = ${ORPHAN_SIGNATURE_STATUS} AND ${a}.outcome IS NULL))`;
+}
+
+/**
  * Settle every running scheduled run whose work_items have all terminated, and re-settle an
  * orphan-failed run (see ORPHAN_SIGNATURE_STATUS) once its work_items have all terminated.
  * `harnessSlug` optionally scopes the pass to one harness.

@@ -44,6 +44,7 @@ import {
   connectExecutedMapPg,
   executedMapRecordingEnabled,
   formatExecutedMapResultLines,
+  formatDriftUnknownLine,
   gitChangedBetween,
   gitInertGlobalChange,
   loadReuseProofs,
@@ -175,7 +176,7 @@ const defaultDeps = {
   proofFormat: (root) => judgedTreeProofFormat(root),
   connect: (env) => connectExecutedMapPg({ env }),
   loadProofs: loadReuseProofs,
-  changedBetween: (root) => gitChangedBetween({ repoRoot: root, relative: true }),
+  changedBetween: (root, onUnknown) => gitChangedBetween({ repoRoot: root, relative: true, onUnknown }),
   // gate-test-reuse-yield-2026-10-01 P-002: the same inert-global seam affected-tests passes.
   inertGlobalChange: (root) => gitInertGlobalChange({ repoRoot: root }),
   // P-003: the same main-process closure affected-tests passes, derived at the judged tree. Loaded
@@ -514,7 +515,9 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
     candidates,
     proofs: loaded.proofs,
     judgedSha: head,
-    changedBetween: d.changedBetween(root),
+    // WI-6554700010019181: a pair git could not diff says why, instead of a bare unknownDrift.
+    changedBetween: d.changedBetween(root, (u) =>
+      lines.push(formatDriftUnknownLine({ repoRoot: root, ...u, prefix: TARGETED_REUSE_LINE_PREFIX }))),
     runContext,
     runnerIdentity,
     proofFormat,

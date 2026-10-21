@@ -4,12 +4,13 @@
  * needs checked, and rendering API diagnostics in the CLI's own `--pretty false` text so the gate's
  * existing parser reads service output unchanged.
  */
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/native/package.json'));
 const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
@@ -28,9 +29,11 @@ import {
   resolveTscServiceTimeoutMs,
   readTextOrNull,
   renderDiagnostics,
+  requestTscService,
   serviceProjectFromTscCommand,
   systemdEscapePath,
   tscServiceEligibility,
+  tscServiceRequestId,
   tscServiceSocketPath,
   tscServiceTemplateSocket,
   tscServiceTemplateSocketUnit,
@@ -184,6 +187,13 @@ describe('typecheckViaService under a unit template', () => {
 });
 
 describe('bounded shared-service timeout', () => {
+  it('keeps request IDs bounded and rejects log delimiters', () => {
+    expect(tscServiceRequestId('caller-123')).toBe('caller-123');
+    for (const value of [undefined, '', 'x'.repeat(81), 'fake\nphase=complete']) {
+      expect(tscServiceRequestId(value)).toMatch(/^[0-9a-f-]{36}$/);
+    }
+  });
+
   it('caps configured waits at 30 seconds while allowing shorter budgets', () => {
     expect(TSC_SERVICE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
     expect(resolveTscServiceTimeoutMs(undefined)).toBe(30_000);
@@ -196,8 +206,10 @@ describe('bounded shared-service timeout', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tsc-service-unresponsive-'));
     const socketPath = join(dir, 'service.sock');
     const sockets = new Set<import('node:net').Socket>();
+    const receivedIds: string[] = [];
     const server = createServer((socket) => {
       sockets.add(socket);
+      socket.on('data', (data) => receivedIds.push(JSON.parse(String(data)).requestId));
       socket.on('error', () => {});
       socket.on('close', () => sockets.delete(socket));
     });
@@ -220,6 +232,9 @@ describe('bounded shared-service timeout', () => {
 
       expect(result).toBeNull();
       expect(lines.join('\n')).toContain('no answer within 50 ms');
+      expect(receivedIds).toHaveLength(1);
+      expect(receivedIds[0]).toMatch(/^[0-9a-f-]{36}$/);
+      expect(lines.join('\n')).toContain(`requestId=${receivedIds[0]}`);
       expect(Date.now() - startedAt).toBeLessThan(2_000);
     } finally {
       for (const socket of sockets) socket.destroy();
@@ -227,6 +242,56 @@ describe('bounded shared-service timeout', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe('service request phase correlation', () => {
+  it('traces a real isolated compiler request with the caller ID and preserves diagnostics', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tsc-service-trace-'));
+    const socketPath = join(dir, 'service.sock');
+    const project = join(dir, 'tsconfig.json');
+    writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, strict: true, types: [] }, files: ['a.ts'] }));
+    writeFileSync(join(dir, 'a.ts'), 'export const a: number = "wrong";\n');
+    const serverPath = fileURLToPath(new URL('../../../scripts/tsc-service/server.mjs', import.meta.url));
+    const child = spawn(process.execPath, [serverPath], {
+      env: { ...process.env, PAPERCUSP_TSC_SERVICE_ROOT: dir, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', (data) => { output += data; });
+    child.stderr.on('data', (data) => { output += data; });
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`service did not listen: ${output}`)), 10_000);
+        const ready = (data: Buffer) => {
+          if (String(data).includes('listening on')) { clearTimeout(timer); resolve(); }
+        };
+        child.stdout.on('data', ready);
+        child.once('error', (error) => { clearTimeout(timer); reject(error); });
+        child.once('exit', () => { clearTimeout(timer); reject(new Error(`service exited: ${output}`)); });
+      });
+      const response = await requestTscService({
+        socketPath,
+        request: { v: 1, requestId: 'trace-test-123', root: dir, project, files: ['a.ts'] },
+        timeoutMs: 10_000,
+      });
+      expect(response.ok).toBe(true);
+      if (response.ok) {
+        expect(response.errorCount).toBe(1);
+        expect(response.output).toContain('TS2322');
+      }
+      // Drain stdout before inspecting the trace and assert that the compiler child also exits.
+      child.kill('SIGTERM');
+      await closed;
+      for (const phase of ['queued', 'refresh', 'refreshed', 'program-files', 'scope', 'program-diagnostics', 'file-diagnostics', 'render-diagnostics', 'complete']) {
+        expect(output).toContain(`requestId=trace-test-123 project=tsconfig.json named=1 phase=${phase}`);
+      }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      await closed;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 25_000);
 });
 
 describe('line/column from UTF-16 offsets', () => {

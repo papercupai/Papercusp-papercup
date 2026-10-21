@@ -14,6 +14,10 @@ import {
   onDemandMonthUsd,
   recordedInferenceCost,
   trialTaskMonth,
+  trialMonthlyCostCoverage,
+  TRIAL_MONTH_PROFILES,
+  TRIAL_COST_CATEGORIES,
+  type TrialMonthlyCostInput,
   pricingComparison,
   renderMarkdown,
   SCENARIOS,
@@ -460,6 +464,88 @@ describe('on-demand workspace month', () => {
   it('rejects finite inputs whose computed monthly charge overflows', () => {
     expect(() => onDemandMonthUsd({ ...profile, activeHours: 730,
       computeHourlyUsd: Number.MAX_VALUE })).toThrow(/finite/);
+  });
+});
+
+describe('closed trial monthly cost coverage (synthetic fixtures, not qualified VM evidence)', () => {
+  const census = (): TrialMonthlyCostInput[] => TRIAL_MONTH_PROFILES.map((profile) => ({
+    profileId: profile.id,
+    workload: { assignedAgents: 50, activeVmHours: profile.activeVmHours,
+      strata: (['light', 'typical', 'heavy'] as const).map((kind) => ({ id: kind, profile: kind,
+        cli: 'codex', model: 'gpt-6-luna', effort: 'low', monthlyTasks: profile.monthlyTasks * (kind === 'heavy' ? 0.2 : 0.4),
+        observedTasks: 2, completedTasks: 2, taskWallSeconds: 20,
+        estimatedInferenceUsd: null, billedInferenceUsd: null, sourceRef: `fixture:${kind}` })) },
+    costs: Object.fromEntries(TRIAL_COST_CATEGORIES.map((category) => [category, {
+      amountMicros: 1_000_000, currency: 'USD', basis: 'measured-usage',
+      usageRef: `fixture:usage:${category}`, rateRef: `fixture:rate:${category}`, allocationRef: `fixture:allocation:${category}`,
+    }])),
+  }));
+
+  it('checks exactly the four workspace profiles without claiming VM qualification', () => {
+    const result = trialMonthlyCostCoverage(census());
+    expect(result).toMatchObject({ status: 'under-limit', costOnly: true, qualification: 'not-evaluated' });
+    expect(result.profiles.map((p) => [p.id, p.monthlyTasks, p.activeVmHours, p.totalMicros])).toEqual([
+      ['near-idle', 10, 5, 6_000_000], ['60h', 120, 60, 6_000_000],
+      ['120h', 240, 120, 6_000_000], ['240h', 480, 240, 6_000_000],
+    ]);
+    expect(trialMonthlyCostCoverage([]).status).toBe('unknown');
+    expect(trialMonthlyCostCoverage(census().slice(1)).profiles[0]!.gaps).toEqual(['missing-profile']);
+  });
+
+  it.each(TRIAL_COST_CATEGORIES)('retains missing or unmeasured %s, including explicit zero, as unknown', (category) => {
+    const inputs = census();
+    delete inputs[0]!.costs[category];
+    expect(trialMonthlyCostCoverage(inputs).status).toBe('unknown');
+    for (const patch of [{ amountMicros: null }, { basis: 'catalog-only' as const }, { basis: 'unknown' as const },
+      { amountMicros: 0, usageRef: null }, { rateRef: null }, { allocationRef: null }]) {
+      const rows = census(); Object.assign(rows[0]!.costs[category]!, patch);
+      expect(trialMonthlyCostCoverage(rows).profiles[0]!.gaps).toContain(`${category}:unmeasured`);
+    }
+  });
+
+  it('enforces strict integer-micro limits and retains a disqualifying known subtotal with gaps', () => {
+    const rows = census();
+    rows[0]!.costs.inference!.amountMicros = 14_999_999;
+    expect(trialMonthlyCostCoverage(rows).status).toBe('under-limit');
+    rows[0]!.costs.inference!.amountMicros++;
+    expect(trialMonthlyCostCoverage(rows).profiles[0]).toMatchObject({ status: 'over-limit', totalMicros: 20_000_000 });
+    rows[0]!.costs.inference!.amountMicros = 20_000_000;
+    delete rows[0]!.costs.compute;
+    expect(trialMonthlyCostCoverage(rows).profiles[0]).toMatchObject({ status: 'over-limit', totalMicros: null });
+    rows[0]!.workload.assignedAgents = 1;
+    expect(trialMonthlyCostCoverage(rows).profiles[0]).toMatchObject({ status: 'unknown', totalMicros: null });
+  });
+
+  it('rejects cheap-looking workload substitutions and censored or unidentified samples', () => {
+    const mutations: Array<(row: TrialMonthlyCostInput) => void> = [
+      (r) => { r.workload.assignedAgents = 1; }, (r) => { r.workload.activeVmHours = 6; },
+      (r) => { r.workload.strata[0]!.monthlyTasks--; },
+      (r) => { r.workload.strata[0]!.monthlyTasks--; r.workload.strata[2]!.monthlyTasks++; },
+      (r) => { r.workload.strata[0]!.completedTasks = 1; }, (r) => { r.workload.strata[0]!.model = null; },
+    ];
+    for (const mutate of mutations) { const rows = census(); mutate(rows[0]!); expect(trialMonthlyCostCoverage(rows).status).toBe('unknown'); }
+  });
+
+  it('refuses duplicate/unknown profiles, wrong currency, invalid amounts, categories and aggregate overflow', () => {
+    const rows = census();
+    expect(() => trialMonthlyCostCoverage([...rows, rows[0]!])).toThrow('duplicate');
+    expect(() => trialMonthlyCostCoverage([{ ...rows[0]!, profileId: 'unfrozen' }])).toThrow('unknown');
+    for (const patch of [{ currency: 'EUR' }, { amountMicros: -1 }, { amountMicros: 0.5 },
+      { amountMicros: Infinity }, { usageRef: '' }, { amountMicros: undefined }]) {
+      const inputs = census(); Object.assign(inputs[0]!.costs.compute!, patch);
+      expect(() => trialMonthlyCostCoverage(inputs)).toThrow();
+    }
+    Object.assign(rows[0]!.costs, { omittedCategory: rows[0]!.costs.compute });
+    expect(() => trialMonthlyCostCoverage(rows)).toThrow('unknown trial cost category');
+    const large = census(); large[0]!.costs.compute!.amountMicros = Number.MAX_SAFE_INTEGER;
+    expect(() => trialMonthlyCostCoverage(large)).toThrow('overflow');
+  });
+
+  it('renders the entire population and its gaps through the existing monthly report', () => {
+    const md = renderMarkdown(buildRows(50, null), { trialCostProfiles: [] });
+    expect(md).toContain('Cost coverage: unknown');
+    for (const p of TRIAL_MONTH_PROFILES) expect(md).toContain(`| ${p.id} | ${p.monthlyTasks} | ${p.activeVmHours} | unknown | UNKNOWN | missing-profile |`);
+    expect(md).toContain('VM qualification and evidence authenticity require separate verification');
   });
 });
 

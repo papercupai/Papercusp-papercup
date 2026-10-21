@@ -162,6 +162,44 @@ function resolvePackageSpecifier(pkg: RepositoryPackage, spec: string): string[]
 }
 
 /**
+ * Repository packages keyed by root, registered from the nearest enclosing manifest of each
+ * path passed to `registerPackage`. Resolve package aliases from the provider's own
+ * manifest. Do not infer a package directory from its name or substitute an installed
+ * dependency.
+ */
+function createPackageRegistry(readText: (relPath: string) => Promise<string | null>): {
+  packages: Map<string, RepositoryPackage>;
+  registerPackage: (path: string) => Promise<void>;
+} {
+  const packages = new Map<string, RepositoryPackage>();
+  const manifests = new Map<string, Promise<RepositoryPackage | null>>();
+  const registerPackage = async (path: string) => {
+    for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
+      let pending = manifests.get(dir);
+      if (!pending) {
+        pending = (async () => {
+          try {
+            const text = await readText(posix.join(dir, 'package.json'));
+            if (text === null) return null;
+            const manifest = JSON.parse(text);
+            if (typeof manifest.name !== 'string' || !manifest.exports) return null;
+            const declared = manifest.exports;
+            const exports = typeof declared === 'object' && !Array.isArray(declared)
+              && Object.keys(declared).some(key => key.startsWith('.')) ? declared : { '.': declared };
+            return { root: dir, name: manifest.name, exports };
+          } catch { return null; }
+        })();
+        manifests.set(dir, pending);
+      }
+      const pkg = await pending;
+      if (pkg) { packages.set(pkg.root, pkg); return; }
+      if (dir === '.') return;
+    }
+  };
+  return { packages, registerPackage };
+}
+
+/**
  * Specifiers that a file reaches ONLY through bare side-effect imports
  * (`import './x';`). A specifier that also appears in any binding form (`from`,
  * `export … from`, dynamic `import()`, `require`) is excluded — the conservative
@@ -215,33 +253,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
   });
   for (const pair of pairedDeclarations) infectiousPaths.push(pair.path);
   const headTarget = sideEffectTargetAtHead ?? isResolvableAtHead;
-  // Resolve package aliases from the provider's own manifest. Do not infer a
-  // package directory from its name or substitute an installed dependency.
-  const packages = new Map<string, RepositoryPackage>();
-  const manifests = new Map<string, Promise<RepositoryPackage | null>>();
-  const registerPackage = async (path: string) => {
-    for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
-      let pending = manifests.get(dir);
-      if (!pending) {
-        pending = (async () => {
-          try {
-            const text = await readText(posix.join(dir, 'package.json'));
-            if (text === null) return null;
-            const manifest = JSON.parse(text);
-            if (typeof manifest.name !== 'string' || !manifest.exports) return null;
-            const declared = manifest.exports;
-            const exports = typeof declared === 'object' && !Array.isArray(declared)
-              && Object.keys(declared).some(key => key.startsWith('.')) ? declared : { '.': declared };
-            return { root: dir, name: manifest.name, exports };
-          } catch { return null; }
-        })();
-        manifests.set(dir, pending);
-      }
-      const pkg = await pending;
-      if (pkg) { packages.set(pkg.root, pkg); return; }
-      if (dir === '.') return;
-    }
-  };
+  const { packages, registerPackage } = createPackageRegistry(readText);
   await mapPool(infectiousPaths, MAX_READ_CONCURRENCY, registerPackage);
 
   const quarantined = new Set(infectiousPaths);
@@ -577,6 +589,60 @@ export async function detectStagedProvidersOfHeldImporters(
     }
   }
   return [...offenders.values()];
+}
+
+/** `importer` binds a module that resolves to `provider`; both are paths of one file set. */
+export interface DirtyImportEdge {
+  importer: string;
+  provider: string;
+}
+
+/**
+ * WI-6554700010019415: binding import edges among `files`, resolved like
+ * detectQuarantineImporters (relative specifiers and repository package exports).
+ * git-sync's attributed pass uses them to keep an importer and its changed provider in
+ * one private index: apart, each index excludes the other and the post-stage guard holds
+ * both. A side-effect-only edge is skipped — it consumes no export, so its provider is
+ * never held for it and the pair converges over two ticks without sharing an index.
+ */
+export async function collectDirtyImportEdges(deps: {
+  readText: (relPath: string) => Promise<string | null>;
+  files: string[];
+  log?: (m: string) => void;
+}): Promise<DirtyImportEdge[]> {
+  const files = [...new Set(deps.files)].filter(isScannableCandidate);
+  if (files.length < 2) return [];
+  const fileByNormalized = new Map<string, string>();
+  for (const file of files) {
+    const normalized = normalizeModulePath(file);
+    if (!fileByNormalized.has(normalized)) fileByNormalized.set(normalized, file);
+  }
+  const { packages, registerPackage } = createPackageRegistry(deps.readText);
+  await mapPool(files, MAX_READ_CONCURRENCY, registerPackage);
+  const edges: DirtyImportEdge[] = [];
+  await mapPool(files, MAX_READ_CONCURRENCY, async (file) => {
+    let text: string | null;
+    try {
+      text = await deps.readText(file);
+    } catch (e) {
+      deps.log?.(`[quarantine-import-guard] could not read ${file} for import edges — skipping: ${errMsg(e)}`);
+      return;
+    }
+    if (text == null) return;
+    const sideEffectOnly = extractSideEffectOnlySpecifiers(text);
+    const providers = new Set<string>();
+    for (const spec of extractImportSpecifiers(text)) {
+      if (sideEffectOnly.has(spec)) continue;
+      const targets = spec.startsWith('.') ? [resolveRelativeSpecifier(file, spec)]
+        : [...packages.values()].flatMap(pkg => resolvePackageSpecifier(pkg, spec));
+      for (const target of targets) {
+        const provider = fileByNormalized.get(target);
+        if (provider && provider !== file) providers.add(provider);
+      }
+    }
+    for (const provider of providers) edges.push({ importer: file, provider });
+  });
+  return edges;
 }
 
 function errMsg(e: unknown): string {

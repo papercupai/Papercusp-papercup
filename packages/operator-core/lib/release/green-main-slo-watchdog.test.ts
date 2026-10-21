@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AttentionNotifyResult, ReplaySafeAttentionNotifyInput } from '../attention-notify';
 import type { SevereEventBroadcast } from '../severe-event-broadcast';
+import { ADMISSION_GIT_DATE_MS } from './admission-commit-date';
 import type { GreenMainSloQueue } from './green-main-slo';
 import { checkGreenMainSlo, fileRecurringNonVerdictReason, parseLastGreenAtMs, runGreenMainSloPass, type GreenMainSloPassDeps } from './green-main-slo-watchdog';
 
@@ -254,6 +255,67 @@ describe('checkGreenMainSlo (production wiring)', () => {
     const passError = mocks.recordWatchdogPassOutcome.mock.calls[0][3];
     expect(passError).toBeInstanceOf(Error);
     expect(String(passError)).toMatch(/read queue: frozen repair queue unreadable/);
+  });
+
+  it('keeps a provenance-marked synthetic admission date as unknown, without failing or attributing it', async () => {
+    const queue: GreenMainSloQueue = {
+      candidate: 'candidate-a',
+      phase: 'ready-to-verify',
+      openedAtMs: NOW - 10 * HOUR,
+      lastAdmittedAtMs: ADMISSION_GIT_DATE_MS,
+      convergenceRounds: [
+        { round: 1, head: 'h1', failingCount: 3, atMs: NOW - 90 * 60_000 },
+        { round: 2, head: 'h2', failingCount: 4, atMs: NOW - 45 * 60_000 },
+      ],
+      admissions: [{
+        atMs: ADMISSION_GIT_DATE_MS,
+        actor: 'a',
+        source: { ref: 'staging', sha: 's' },
+        fromRepairHead: 'h1',
+        toRepairHead: 'h2',
+        paths: ['x.ts'],
+        unchanged: [],
+        blobs: {},
+        provenance: 'reconciled-from-ref',
+      }],
+    };
+    mocks.readFrozenCandidateRepairQueueState.mockResolvedValue({ status: 'value', queue });
+
+    const res = await checkGreenMainSlo(
+      fakeSql([{ workspace_id: 'ws-1', last_green_at: String(NOW - HOUR) }]),
+      { installSlug: 'papercusp', nowMs: () => NOW },
+    );
+
+    expect(res?.readErrors).toEqual([]);
+    expect(res?.slo.metrics.redAddingAdmissions).toEqual({ count: 0, judged: 0, heads: [], attribution: 'window' });
+    expect(mocks.recordWatchdogPassOutcome.mock.calls[0][3]).toBeUndefined();
+  });
+
+  it('still rejects a synthetic admission date without reconciliation provenance', async () => {
+    const queue: GreenMainSloQueue = {
+      candidate: 'candidate-a',
+      phase: 'ready-to-verify',
+      openedAtMs: NOW - 10 * HOUR,
+      admissions: [{
+        atMs: ADMISSION_GIT_DATE_MS,
+        actor: 'a',
+        source: { ref: 'staging', sha: 's' },
+        fromRepairHead: 'h1',
+        toRepairHead: 'h2',
+        paths: ['x.ts'],
+        unchanged: [],
+        blobs: {},
+      }],
+    };
+    mocks.readFrozenCandidateRepairQueueState.mockResolvedValue({ status: 'value', queue });
+
+    const res = await checkGreenMainSlo(
+      fakeSql([{ workspace_id: 'ws-1', last_green_at: String(NOW - HOUR) }]),
+      { installSlug: 'papercusp', nowMs: () => NOW },
+    );
+
+    expect(res?.readErrors).toEqual([{ input: 'queue', message: 'invalid queue measurement' }]);
+    expect(String(mocks.recordWatchdogPassOutcome.mock.calls[0][3])).toContain('read queue: invalid queue measurement');
   });
 
   it('reports a failed reason read through watchdog health instead of a measured zero', async () => {

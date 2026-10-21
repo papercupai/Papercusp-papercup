@@ -90,11 +90,27 @@ const declarativeCheckSchema = z
   })
   .strict();
 
+/**
+ * How the bar a criterion seeds is verified (D-011): the METHOD, an optional declarative check
+ * and an optional replication note. A distributed type carries it so the bars it seeds arrive
+ * gradable instead of each installing pot amending every bar by hand. The check keeps this
+ * module's own `{ kind, params }` shape; the pack installer and the seed validate it as a
+ * declarative rubric check.
+ */
+const criterionVerificationSchema = z
+  .object({
+    method: z.string().trim().min(1).max(4000),
+    check: declarativeCheckSchema.optional(),
+    replication: z.string().trim().min(1).max(4000).optional(),
+  })
+  .strict();
+
 const criterionTemplateSchema = z
   .object({
     key: z.string().min(1),
     title: z.string().min(1),
     description: z.string().optional(),
+    verification: criterionVerificationSchema.optional(),
   })
   .strict();
 

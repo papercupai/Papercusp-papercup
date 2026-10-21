@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../../define-route';
+import { turnProvenanceDir } from '../../../turn-provenance/turn-provenance';
 
 const startPiSessionMock = vi.fn(async (o: { sessionId: string; allowedTools: string[] }) => ({
   sessionId: o.sessionId,
@@ -23,13 +24,16 @@ const startPiSessionMock = vi.fn(async (o: { sessionId: string; allowedTools: st
 vi.mock('@papercusp/agent-mcp/provisioning', () => ({
   startPiSession: (o: { sessionId: string; allowedTools: string[] }) => startPiSessionMock(o),
 }));
-vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
+vi.mock('@papercusp/agent-mcp', () => ({
+  defineTool: (definition: unknown) => definition,
   getCatalog: () => [
     { name: 'tasks:list', capability: 'tasks:read' },
     { name: 'coord:send', capability: 'coord:write' },
   ],
 }));
+// This handler-only test does not need the production tool registry. Loading it
+// imports the entire operator catalog and can start unrelated database-backed work.
+vi.mock('../../../agent-tools/index', () => ({}));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../papercusp-root', () => ({ papercuspRoot: () => '/srv/papercusp-home' }));
 vi.mock('../../../operator-api-base', () => ({ operatorApiBase: () => 'http://127.0.0.1:3070' }));
@@ -87,6 +91,7 @@ describe('POST /api/agent-mcp/spawn-pi (WI-10003619)', () => {
     expect(json.bearer).toBe('pi-scoped-bearer-0123456789abcdef');
     expect(json.mcpServer.env.AGENT_MCP_BEARER).toBe(json.bearer);
     expect(json.mcpServer.env.OPERATOR_BASE_URL).toBe('http://127.0.0.1:3070');
+    expect(json.mcpServer.env.PAPERCUSP_TURN_PROVENANCE_DIR).toBe(turnProvenanceDir());
     expect(startPiSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: 'ws-test',

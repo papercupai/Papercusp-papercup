@@ -13,7 +13,7 @@ describe('longest-green-prefix salvage budget claim', () => {
   it('uses measured candidate-suite time for a normal first-confirm estimate', () => {
     expect(GREEN_CHECKPOINT).toMatch(/const candidateSuiteStartedAtMs = Date\.now\(\);/);
     expect(GREEN_CHECKPOINT).toMatch(
-      /const candidateSuiteDurationMs = earlyPreflightFailure\s*\?\s*Math\.max\(1,\s*Date\.now\(\)\s*-\s*runStartedAtMs\)\s*:\s*Math\.max\(1,\s*Date\.now\(\)\s*-\s*candidateSuiteStartedAtMs\);/,
+      /const candidateSuiteDurationMs = confirmSuiteEstimateSeedMs\(\s*\{\s*suiteSkipped,\s*nowMs: Date\.now\(\),\s*runStartedAtMs,\s*candidateSuiteStartedAtMs,\s*\}\s*\);/,
     );
     expect(GREEN_CHECKPOINT).toMatch(
       /const salvageCostEstimateMs = candidateSuiteDurationMs;/,
