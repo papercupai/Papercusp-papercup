@@ -1754,13 +1754,15 @@ export default defineTool({
       // WI-8351: a gitlink directory is not a test filename. Resolve its own and paired test
       // population from the unpublished built commit BEFORE deciding whether R6 applies.
       // The serializable job runs all tree/blob reads on the existing admission worker.
-      if (outcome.ok && !dryRun && !skipPrecheck) {
+      // Dry previews need the same immutable inventory as confirmation: a gitlink can
+      // expand from zero plain-path tests to a population the pre-check cannot run.
+      if (outcome.ok && !skipPrecheck) {
         const inventory = await runJob('precheck-population', {
           kind: 'precheck-population',
           input: { root, commit: outcome.commit, signature: queue.signature ?? [], admittedPaths: paths },
         });
         if (!inventory.ok) {
-          return json({ ...base, ok: false, admitted: false, refused: true, dryRun: false,
+          return json({ ...base, ok: false, admitted: false, refused: true, dryRun,
             verdict: 'refused', reason: 'admission-precheck-unavailable', detail: inventory.detail,
             builtCommit: outcome.commit, judgedSha: queue.repairHead, containment: await containmentAt(queue.repairHead), mode });
         }
@@ -2235,12 +2237,22 @@ export default defineTool({
           lineageRef: outcome.lineageRef,
           proof,
           precheck: precheckEntry,
+          ...(!skipPrecheck ? {
+            populationSize: population.files.length,
+            populationBound: ADMISSION_PRECHECK_MAX_FILES,
+            populationOverBound: population.files.length > ADMISSION_PRECHECK_MAX_FILES,
+          } : {}),
           ...(dependencyGeneration ? { dependencyGeneration } : {}),
           containment: await containmentAt(queue.repairHead),
           note:
             `Pass confirm:true to publish admission ${outcome.commit.slice(0, 12)} onto ${outcome.lineageRef} ` +
             'and advance repairHead to it (phase ready-to-verify). The immutable candidate is never touched; ' +
             'the commit carries exactly proof.diff and nothing else from the tip.' +
+            (!skipPrecheck && population.files.length > ADMISSION_PRECHECK_MAX_FILES
+              ? ` A confirmed admit will be REFUSED (population-over-bound): the R6 pre-check population is ` +
+                `${population.files.length} test file(s), above the ${ADMISSION_PRECHECK_MAX_FILES}-file bound. ` +
+                'Split the admission, or opt out deliberately with skipPrecheck:true + precheckReason.'
+              : '') +
             (dependencyGeneration?.verdict === 'refused'
               ? ` ⚠ A confirmed admit will be REFUSED (dependency-generation-unbuildable):${dependencyNote ?? ''}`
               : (dependencyNote ?? '')),

@@ -3560,6 +3560,20 @@ async function identityAdmittedListings(
     });
     const sessionKey = mcpSessionKey(extra);
     if (sessionKey) surfaceModule.rememberListedIdentitySurface(sessionKey, { ctx, candidates: surfaceCandidates, surface });
+    if (surface.kind === 'unresolved' && acceptedOperationListings.size > 0) {
+      // Native clients can snapshot tools/list before their first turn applies
+      // the identity. Keep the host-owned receipt's candidates discoverable
+      // through that transition; dispatch still requires the applied identity.
+      // Preserve the principal/app filters above, its capability ceiling here,
+      // and the launch confinement applied after this listing is assembled.
+      const caps = ctx.principal?.capabilities;
+      const pending = [...acceptedOperationListings.values()].filter((listing) => {
+        const projected = lookupByMcpName(listing.name);
+        return projected !== undefined && caps !== undefined &&
+          (caps.has('*') || projected.capabilities.every(capability => caps.has(capability)));
+      });
+      if (pending.length > 0) return pending;
+    }
     if (surface.kind !== 'governed') return null;
     const allListings = [...listings];
     const existingNames = new Set(allListings.map((listing) => nameOf(listing)).filter((name): name is string => typeof name === 'string'));

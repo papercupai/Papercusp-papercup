@@ -54,6 +54,7 @@ import hashlib
 import http.client
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -253,6 +254,7 @@ def host_stats():
     vm = read_kv("/proc/vmstat")
     mi = read_kv("/proc/meminfo")
     out = {"pswpin": vm.get("pswpin"), "pswpout": vm.get("pswpout"), "pgmajfault": vm.get("pgmajfault"),
+           "oom_kill": vm.get("oom_kill"),
            "memAvailableKb": mi.get("MemAvailable"), "swapUsedKb": (mi.get("SwapTotal", 0) - mi.get("SwapFree", 0))}
     try:
         with open("/sys/block/zram0/mm_stat") as f:
@@ -1219,8 +1221,139 @@ def summarize(rows, probe):
     return out
 
 
+def evaluate_native_workload(rows, probe):
+    """D-075 native-workload detector over RAW observations, not rounded reports.
+
+    This deliberately does not qualify a VM: cold readiness, retained SQL/files,
+    archive custody, exact candidate, provider cleanup and billed costs are separate
+    observations. Missing counters/windows stay unknown; failed tasks stay counted.
+    """
+    gaps, failures, metrics = [], [], {}
+
+    def number(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+
+    starts = [r for r in rows if r.get("kind") == "run-start"]
+    ends = [r for r in rows if r.get("kind") == "run-end"]
+    if len(starts) != 1 or len(ends) != 1:
+        gaps.append("one-complete-run-required")
+    config = starts[0] if len(starts) == 1 else {}
+    if config and (config.get("agents") != 50 or config.get("cli") != "codex" or
+                   config.get("inference") != "real" or config.get("single") != 0 or
+                   config.get("active") != [1, 5, 10] or config.get("activeRounds") != 3 or
+                   not config.get("model") or not config.get("effort") or
+                   len(config.get("arms", [])) != 1 or config["arms"][0].get("batch")):
+        failures.append("frozen-run-population-or-model-binding")
+    arms = [r for r in rows if r.get("kind") == "arm-start"]
+    terminal = [r for r in rows if r.get("kind") == "arm-end"]
+    if len(arms) != 1 or len(terminal) != 1:
+        gaps.append("one-complete-arm-required")
+    arm = arms[0].get("arm") if len(arms) == 1 else None
+    if arm is None or (config and config.get("arms", [{}])[0].get("name") != arm):
+        gaps.append("arm-identity")
+    if any(r.get("arm") != arm for r in rows if r.get("kind") in ("wake", "phase", "arm-end")):
+        gaps.append("mixed-arm-evidence")
+    assigned = arms[0].get("agents", {}) if len(arms) == 1 else {}
+    if len(assigned) != 50 or (arms and arms[0].get("assignedAgents") != 50):
+        gaps.append("assigned-agent-census")
+    if len(terminal) == 1 and (terminal[0].get("arm") != arm or set(terminal[0].get("agents", {})) != set(assigned)):
+        gaps.append("terminal-agent-census")
+    if any(r.get("error") or r.get("kind") in ("startup-failed", "startup-inspection-failed") for r in rows):
+        failures.append("native-failure")
+    if starts and ends and number(starts[0].get("t")) and number(ends[0].get("t")):
+        if ends[0]["t"] <= starts[0]["t"] or any(
+                not number(r.get("t")) or not starts[0]["t"] <= r["t"] <= ends[0]["t"] for r in rows):
+            gaps.append("run-clock-or-appended-evidence")
+    else:
+        gaps.append("run-clock")
+    # Host-wide counters cover agent/server OOMs too. Older records lack this
+    # detector and cannot be retroactively certified by treating absence as zero.
+    hosts = [r.get("host", {}) for r in [config, *terminal]]
+    for counter in ("oom_kill", "pgmajfault", "pswpin", "pswpout"):
+        values = [h.get(counter) for h in hosts]
+        if len(values) != 2 or not all(number(v) and int(v) == v for v in values) or values[1] < values[0]:
+            gaps.append("host-counter:" + counter)
+        else:
+            metrics[counter] = values[1] - values[0]
+    if metrics.get("oom_kill", 0) > 0:
+        failures.append("oom")
+    for phase, width, rounds in [("active-1", 1, 3), ("active-5", 5, 3), ("active-10", 10, 3), ("storm", 50, 1)]:
+        ws = [r for r in rows if r.get("kind") == "wake" and r.get("arm") == arm and r.get("phase") == phase]
+        windows, pending = [], None
+        for r in rows:
+            if r.get("kind") != "phase" or r.get("arm") != arm or r.get("phase") != phase:
+                continue
+            if r.get("edge") == "start" and pending is None and number(r.get("t")):
+                pending = r["t"]
+            elif r.get("edge") == "end" and pending is not None and number(r.get("t")) and r["t"] > pending:
+                windows.append((pending, r["t"]))
+                pending = None
+            else:
+                gaps.append(phase + ":phase-window")
+        if pending is not None or len(windows) != rounds or any(a[1] >= b[0] for a, b in zip(windows, windows[1:])):
+            gaps.append(phase + ":phase-window")
+        if (len(ws) != width * rounds or len({w.get("agent") for w in ws}) != width or
+                any(w.get("agent") not in assigned or w.get("assignedAgents") != 50 or
+                    w.get("concurrentAgents") != width for w in ws)):
+            gaps.append(phase + ":population")
+        echo, total = [], []
+        for w in ws:
+            if w.get("nativeToolVerified") is not True or w.get("error") or w.get("tDone") is None:
+                failures.append(phase + ":native-task")
+            times = [w.get(k) for k in ("t0", "tEcho", "tEnter", "tDone")]
+            if not all(number(t) for t in times) or times != sorted(times):
+                gaps.append(phase + ":task-clock")
+                continue
+            if sum(start <= times[0] <= times[-1] <= end for start, end in windows) != 1:
+                gaps.append(phase + ":task-outside-window")
+            echo.append(times[1] - times[0])
+            total.append(times[3] - times[0])
+        # Each round needs exactly the declared unique cohort, not the same
+        # agent's completion duplicated to pad the aggregate task count.
+        samples = []
+        for start, end in windows:
+            cohort = [w.get("agent") for w in ws if number(w.get("t0")) and start <= w["t0"] <= end]
+            if len(cohort) != width or len(set(cohort)) != width:
+                gaps.append(phase + ":round-population")
+            observed = [p for p in probe if len(p) == 3 and all(number(v) for v in p) and start <= p[0] <= end]
+            if not observed:
+                gaps.append(phase + ":probe-window")
+            samples.extend(p[1] for p in observed)
+        block = {"agents": len({w.get("agent") for w in ws}), "tasks": len(ws),
+                 "echoSec": pctl(echo, 95), "taskWallSec": pctl(total, 95), "probeExecMs": pctl(samples, 95)}
+        if block["echoSec"] is not None and block["echoSec"] > (3 if phase == "storm" else 1):
+            failures.append(phase + ":echo")
+        if phase != "storm":
+            if block["taskWallSec"] is not None and block["taskWallSec"] > 30:
+                failures.append(phase + ":task-wall")
+            if block["probeExecMs"] is not None and block["probeExecMs"] > 100:
+                failures.append(phase + ":host-exec")
+        elif ws and len(total) == len(ws):
+            block["allDoneSec"] = max(w["tDone"] for w in ws) - min(w["t0"] for w in ws)
+            if block["allDoneSec"] > 120:
+                failures.append("storm:all-settled")
+        metrics[phase] = block
+    return {"scope": "D075-native-workload-only", "qualification": "not-evaluated",
+            "status": "fail" if failures else "unknown" if gaps else "pass",
+            "gaps": sorted(set(gaps)), "failures": sorted(set(failures)), "metrics": metrics}
+
+
 def _r(x):
     return None if x is None else round(x, 3)
+
+
+def read_workload_acceptance(out_dir):
+    """Do not silently discard malformed/truncated raw rows as a report may do."""
+    try:
+        with open(os.path.join(out_dir, "results.jsonl")) as source:
+            rows = [json.loads(line) for line in source if line.strip()]
+        if any(not isinstance(row, dict) for row in rows):
+            raise ValueError("raw rows must be objects")
+        return evaluate_native_workload(rows, load_probe(os.path.join(out_dir, "probe.csv")))
+    except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
+        return {"scope": "D075-native-workload-only", "qualification": "not-evaluated",
+                "status": "unknown", "gaps": ["unreadable-raw-evidence:" + type(error).__name__],
+                "failures": [], "metrics": {}}
 
 
 def load_probe(path):
@@ -1366,6 +1499,8 @@ def main(argv=None):
     b.add_argument("--runtime", type=int, default=20)
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
+    p = sub.add_parser("evaluate-workload", help="check raw D075 workload; does not qualify the VM")
+    p.add_argument("--out", required=True)
     q = sub.add_parser("probe")
     q.add_argument("--out", required=True)
     v = sub.add_parser("verify-archive")
@@ -1405,6 +1540,10 @@ def main(argv=None):
         bench_disk(a.device, a.label, a.out, a.runtime)
     elif a.cmd == "report":
         report(a.out)
+    elif a.cmd == "evaluate-workload":
+        receipt = read_workload_acceptance(a.out)
+        print(json.dumps(receipt))
+        return {"pass": 0, "fail": 1, "unknown": 2}[receipt["status"]]
     elif a.cmd == "probe":
         probe(a.out)
     elif a.cmd == "verify-archive":

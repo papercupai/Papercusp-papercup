@@ -3,13 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   spawn: vi.fn(),
   buildCommand: vi.fn(),
+  buildEnvelope: vi.fn(),
+  operatorBaseUrl: 'http://127.0.0.1:3170',
 }));
 
 vi.mock('../console-launcher', () => ({
-  buildConsoleEnvelope: async () => ({ env: {}, cwd: '/fixture', greetingCmd: '' }),
+  buildConsoleEnvelope: h.buildEnvelope,
 }));
 vi.mock('../console-spawn', () => ({ spawnHeadless: h.spawn }));
-vi.mock('../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3170' }));
+vi.mock('../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => h.operatorBaseUrl }));
 vi.mock('../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/fixture' }));
 vi.mock('../agent-launch-core', () => ({
   buildAgentLaunchCommand: h.buildCommand,
@@ -26,11 +28,25 @@ const placement = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.operatorBaseUrl = 'http://127.0.0.1:3170';
+  h.buildEnvelope.mockResolvedValue({ env: {}, cwd: '/fixture', greetingCmd: '' });
   h.buildCommand.mockReturnValue('psu fixture');
   h.spawn.mockResolvedValue({ status: 'ok' });
 });
 
 describe('accepted operation placement uses its pinned model policy (WI-10007071)', () => {
+  it.each(['http://127.0.0.1:3170', 'http://localhost:3271'])(
+    'pins bootstrap and MCP to the admitting runtime %s (WI-6554700010019568)',
+    async (operatorBaseUrl) => {
+      h.operatorBaseUrl = operatorBaseUrl;
+      await launchAgentOperationWorker(placement);
+      expect(h.buildEnvelope).toHaveBeenCalledWith(expect.objectContaining({
+        operatorBaseUrl,
+        agentMcpBaseUrl: operatorBaseUrl,
+      }));
+    },
+  );
+
   it('launches a pinned Codex model on Codex, not the historical Claude default', async () => {
     const candidate = { ...placement, modelPolicy: {
       mode: 'exact' as const, models: ['gpt-6.1'], effort: 'high', onUnavailable: 'fail' as const,

@@ -842,6 +842,7 @@ describe('release:repair-queue', () => {
       'ledger-read',
       'hunk-exact',
       'build-proof',
+      'precheck-population',
       'containment',
     ]);
     expect(result.timings.steps.every((s: { ms: number; ok: boolean }) => s.ok && s.ms >= 0)).toBe(true);
@@ -1353,17 +1354,51 @@ describe('release:repair-queue', () => {
       expect(dryRuns().every((dry) => dry === true)).toBe(true);
     });
 
-    it('WI-8351 refuses unknown immutable inventory before launching or publishing', async () => {
+    it.each([false, true])('WI-8351 refuses unknown immutable inventory before launching or publishing (confirm=%s)', async (confirm) => {
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
       mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
       mocks.admit.mockReturnValue(admissionOf(false, ['component']));
       mocks.population.mockReturnValue({ ok: false, detail: 'pinned component object unavailable' });
-      const result = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
-      expect(result).toMatchObject({ refused: true, reason: 'admission-precheck-unavailable', builtCommit: NEW_HEAD });
+      const result = body(await tool.handler({ op: 'admit', paths: ['component'], confirm } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ refused: true, dryRun: !confirm, reason: 'admission-precheck-unavailable', builtCommit: NEW_HEAD });
       expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
       expect(mocks.write).not.toHaveBeenCalled();
       expect(dryRuns()).toEqual([true]);
     });
+
+    it.each([ADMISSION_PRECHECK_MAX_FILES, ADMISSION_PRECHECK_MAX_FILES + 1])(
+      'WI-6554700010019467 previews the immutable gitlink population and its bound (%i files)',
+      async (size) => {
+        mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+        mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
+        mocks.admit.mockReturnValue(admissionOf(false, ['component']));
+        const files = Array.from({ length: size }, (_, i) => `component/t${i}.test.ts`);
+        mocks.population.mockImplementation((input) => ({ ok: true,
+          population: precheckPopulation({ ...input, affectedTestFiles: files }) }));
+
+        const result = body(await tool.handler({ op: 'admit', paths: ['component'] } as never, { role: 'su' } as never));
+
+        expect(result).toMatchObject({
+          ok: true, dryRun: true, admitted: false, verdict: 'would-admit',
+          populationSize: size, populationBound: ADMISSION_PRECHECK_MAX_FILES,
+          populationOverBound: size > ADMISSION_PRECHECK_MAX_FILES,
+          precheck: { ran: false, reason: 'dry-run', wouldRun: files },
+        });
+        expect(mocks.population).toHaveBeenCalledWith({
+          root: '/repo', commit: NEW_HEAD, signature: queue.signature, admittedPaths: ['component'],
+        });
+        if (size > ADMISSION_PRECHECK_MAX_FILES) {
+          expect((result as { note: string }).note).toContain('REFUSED (population-over-bound)');
+          expect((result as { note: string }).note).toContain('skipPrecheck:true + precheckReason');
+        } else {
+          expect((result as { note: string }).note).not.toContain('population-over-bound');
+        }
+        expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+        expect(mocks.transition).not.toHaveBeenCalled();
+        expect(mocks.write).not.toHaveBeenCalled();
+        expect(dryRuns()).toEqual([true]);
+      },
+    );
 
     it('WI-6554700010019443 refuses a population above the bound before launching any pre-check', async () => {
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });

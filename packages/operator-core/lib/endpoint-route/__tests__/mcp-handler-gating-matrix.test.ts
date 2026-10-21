@@ -88,6 +88,7 @@ const h = vi.hoisted(() => {
   }, {
     unsafe: async (..._a: unknown[]) => [] as unknown[],
     begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
+    reserve: async (): Promise<unknown> => Object.assign(fakeSql, { release: () => undefined }),
   });
   return {
     realSpawnSigning: null as null | typeof import('../../spawn-signing'),
@@ -226,6 +227,7 @@ const h = vi.hoisted(() => {
     },
     /** WI-10007010: isolate the accepted-operation tools/list candidate path. */
     identityListingTest: false,
+    identityListingUnresolved: false,
     identityOperationRecord: null as unknown,
     identityAdmittedToolNames: new Set<string>(),
     identityListingRoleCaps: [] as readonly string[],
@@ -374,6 +376,7 @@ vi.mock('../../capability-envelope/identity-tool-surface', async (importOriginal
       const [ctx, candidates, , expandCandidates] = args;
       const receiptCandidates = expandCandidates?.(h.identityOperationRecord) ?? [];
       h.identityObservedRoleCaps = [...(ctx.principal?.capabilities ?? [])];
+      if (h.identityListingUnresolved) return { kind: 'unresolved', key: 'gating-matrix-operation' };
       const admitted = new Set(
         [...candidates, ...receiptCandidates]
           .filter((candidate) => h.identityAdmittedToolNames.has(candidate.name))
@@ -2257,6 +2260,7 @@ beforeEach(() => {
   setEntityEnum('pot', async () => []);
   setEntityEnum('harness', async () => []);
   h.identityListingTest = false;
+  h.identityListingUnresolved = false;
   h.identityOperationRecord = null;
   h.identityAdmittedToolNames = new Set();
   h.identityListingRoleCaps = [];
@@ -4575,6 +4579,30 @@ describe('tools/list — strict-mode listing matrix', () => {
     expect(names).not.toContain('plans:set-status'); // receipt-required, but not admitted by the identity surface
     expect(names).not.toContain('gatingtest:engineer'); // absent from the receipt
     expect(h.identityObservedRoleCaps).toContain('work_items:write');
+    expect(h.identityObservedRoleCaps).not.toContain('plans:write');
+  });
+
+  it('keeps receipt-required tools discoverable during initial identity activation', async () => {
+    h.identityListingTest = true;
+    h.identityListingUnresolved = true;
+    h.identityOperationRecord = {
+      acceptedOperation: {
+        kind: 'blueprint-operation-worker',
+        requiredTools: ['work_items:claim', 'work_items:checkpoint', 'plans:set-status'],
+      },
+    };
+    h.identityListingRoleCaps = ['work_items:read', 'work_items:write'];
+    h.potHomeSlugForHarness.mockResolvedValueOnce('calendar');
+    const u = new URL(signedUrl({ harness: 'calendar', role: 'calendar-prep-worker' }));
+    u.searchParams.set('tools', 'coord:send');
+
+    const res = await listTools({
+      ...extraFor(u.toString()) as object,
+      sessionId: 'mcp-pending-operation-listing',
+    });
+
+    expect(res.tools.map(tool => tool.name).sort())
+      .toEqual(['work_items:checkpoint', 'work_items:claim']);
     expect(h.identityObservedRoleCaps).not.toContain('plans:write');
   });
 

@@ -998,6 +998,69 @@ describe('report reduction', () => {
   });
 });
 
+describe('frozen D075 native workload detector', () => {
+  function fixture() {
+    const names = Array.from({ length: 50 }, (_, i) => `a${i}`);
+    const host = { oom_kill: 0, pgmajfault: 10, pswpin: 20, pswpout: 30 };
+    const agents = Object.fromEntries(names.map(n => [n, {}]));
+    const rows: any[] = [
+      { t: 1, kind: 'run-start', agents: 50, cli: 'codex', inference: 'real', model: 'gpt-6-luna', effort: 'low', single: 0, active: [1, 5, 10], activeRounds: 3, arms: [{ name: 'zram' }], host },
+      { t: 2, kind: 'arm-start', arm: 'zram', assignedAgents: 50, agents },
+    ];
+    const probe: number[][] = [];
+    let time = 10;
+    for (const [phase, width, rounds] of [['active-1', 1, 3], ['active-5', 5, 3], ['active-10', 10, 3], ['storm', 50, 1]] as const) {
+      for (let round = 0; round < rounds; round++) {
+        rows.push({ t: time, kind: 'phase', arm: 'zram', phase, edge: 'start' });
+        probe.push([time + 2, 100, 0]);
+        rows.push(...names.slice(0, width).map(agent => ({ t: time + 31, kind: 'wake', arm: 'zram', phase,
+          agent, assignedAgents: 50, concurrentAgents: width, nativeToolVerified: true,
+          t0: time, tEcho: time + 1, tEnter: time + 1, tDone: time + 30 })));
+        rows.push({ t: time + 30, kind: 'phase', arm: 'zram', phase, edge: 'end' });
+        time += 40;
+      }
+    }
+    rows.push({ t: time, kind: 'arm-end', arm: 'zram', agents, host: { ...host } }, { t: time + 1, kind: 'run-end' });
+    return { rows, probe };
+  }
+  const detect = (input: ReturnType<typeof fixture>) => py(DRIVER, 'm.evaluate_native_workload(inp["rows"], inp["probe"])', input);
+
+  it('accepts exact populations and boundary thresholds without qualifying a VM', () => {
+    expect(detect(fixture())).toMatchObject({ status: 'pass', scope: 'D075-native-workload-only', qualification: 'not-evaluated', gaps: [], failures: [] });
+  });
+  it.each([
+    ['rounded echo', (x: any) => { for (const r of x.rows.filter((r: any) => r.kind === 'wake' && r.phase === 'active-1')) { r.tEcho = r.t0 + 1.0004; r.tEnter = r.tEcho; } }, 'fail'],
+    ['shell time substituted', (x: any) => { for (const r of x.rows.filter((r: any) => r.kind === 'wake' && r.phase === 'active-1')) r.tDone = r.t0 + 31; }, 'fail'],
+    ['native task failure', (x: any) => { x.rows.find((r: any) => r.kind === 'wake').nativeToolVerified = false; }, 'fail'],
+    ['slow host exec', (x: any) => { x.probe[0][1] = 100.0001; }, 'fail'],
+    ['slow burst echo', (x: any) => { x.rows.filter((r: any) => r.kind === 'wake' && r.phase === 'storm').forEach((r: any) => { r.tEcho = r.t0 + 3.0001; r.tEnter = r.tEcho; }); }, 'fail'],
+    ['burst settling deadline', (x: any) => { x.rows.filter((r: any) => r.kind === 'wake' && r.phase === 'storm').forEach((r: any) => { r.tDone = r.t0 + 120.0001; }); }, 'fail'],
+    ['OOM', (x: any) => { x.rows.find((r: any) => r.kind === 'arm-end').host.oom_kill = 1; }, 'fail'],
+    ['unknown OOM counter', (x: any) => { delete x.rows.find((r: any) => r.kind === 'arm-end').host.oom_kill; }, 'unknown'],
+    ['batched burst', (x: any) => { x.rows.filter((r: any) => r.phase === 'storm' && r.kind === 'wake').forEach((r: any) => r.concurrentAgents = 10); }, 'unknown'],
+    ['padded repeated agent', (x: any) => { x.rows.filter((r: any) => r.phase === 'active-5' && r.kind === 'wake')[1].agent = 'a0'; }, 'unknown'],
+    ['missing round probe', (x: any) => { x.probe.shift(); }, 'unknown'],
+    ['sparse task population', (x: any) => { x.rows.splice(x.rows.findIndex((r: any) => r.kind === 'wake'), 1); }, 'unknown'],
+    ['counter reset', (x: any) => { x.rows.find((r: any) => r.kind === 'arm-end').host.pswpin = 0; }, 'unknown'],
+  ])('rejects %s', (_name, mutate, status) => {
+    const input = fixture(); mutate(input);
+    expect(detect(input).status).toBe(status);
+  });
+  it('CLI refuses absent and truncated raw evidence without a passing receipt', () => {
+    const code = [
+      'import tempfile,pathlib,subprocess,sys,json',
+      'with tempfile.TemporaryDirectory() as root:',
+      ` first=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"evaluate-workload","--out",root],capture_output=True,text=True)`,
+      ' pathlib.Path(root,"results.jsonl").write_text("{truncated")',
+      ` second=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"evaluate-workload","--out",root],capture_output=True,text=True)`,
+      ' print(json.dumps([{"exit":r.returncode,"receipt":json.loads(r.stdout)} for r in [first,second]]))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    for (const row of JSON.parse(result.stdout)) expect(row).toMatchObject({ exit: 2, receipt: { status: 'unknown', qualification: 'not-evaluated' } });
+  });
+});
+
 describe('arm specs', () => {
   it('accepts none, zram and <label>=<device>, and refuses anything else', () => {
     expect(py(DRIVER, '[m.parse_arm(s) for s in inp]', ['none', 'zram', 'pd-ssd=/dev/disk/by-id/google-swapssd'])).toEqual([

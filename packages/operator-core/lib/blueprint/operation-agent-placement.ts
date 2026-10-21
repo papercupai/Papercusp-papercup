@@ -320,10 +320,15 @@ export const launchAgentOperationWorker: AgentPlacementLauncher = async (p) => {
       import('../papercusp-root'),
       import('node:path'),
     ]);
+  const operatorBaseUrl = resolveSpawnHostOperatorBaseUrl();
   const base = await buildConsoleEnvelope({
     workspaceId: p.workspaceId,
     slug: p.harnessSlug,
-    operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
+    operatorBaseUrl,
+    // The accepted snapshot must be replayed by the admitting runtime. The
+    // background host's ordinary long-lived agent endpoint can serve an older
+    // schema that cannot replay that snapshot.
+    agentMcpBaseUrl: operatorBaseUrl,
     skipMcpJson: false,
   });
   let command = buildAgentLaunchCommand({

@@ -2209,51 +2209,16 @@ Cost was one step there, because the next probe contradicted it. The expensive v
 Sibling false-absence traps in this same family, each with a different instrument and all reading as a clean negative: a full-tree `grep -r` that TIMES OUT prints nothing and exits nonzero, visually identical to "no matches found" (measured twice inside ten minutes, 2026-08-13); `pgrep -q`, which does not exist on this box and reports `gone` for a live process; a vitest `-t` pattern matching zero tests, which used to report `status=passed`; and a zero-row lookup against an issue-family view that structurally cannot hold feature-family rows.
 
 
-The tool call is also cheaper: a structured result, no subprocess, nothing to
-re-parse. When a row's caveat applies (a `tail -f` follow, a non-operator database,
-a `\du`), the bash form is the right answer — the gate will not fight you on those.
+The tool call is also cheaper: a structured result, no subprocess, nothing to re-parse. When a row caveat applies (a `tail -f` follow, a non-operator database, a `\du`), the bash form is the right answer — the gate will not fight you on those.
 
-⚠ **No papercusp tools AT ALL? READ THE REFUSAL — three classes, three different doors.**
+⚠ **No Papercusp tools at all? Read the refusal: four classes, four different doors.**
 
-- **TRANSPORT** — no tools listed; the handshake never completed (`:9071` starves
-  new handshakes under load). Pass your OWN `--client`, or writes land under an
-  anonymous `mcp-call-*` (EI-8509):
-  `node scripts/mcp-call.mjs <server:verb> --json-file <args.json> --client <your-su-id> --port 3170`
-- **DISCONNECTED** — tools worked, then calls return `ECONNREFUSED` or `MCP server
-  papercusp-su is not connected`. Neither proves a restart.
-  `mcp-call`'s refusal means its process could not connect before sending the
-  request; another runtime may reach the endpoint. Probe in the same environment;
-  once its `/api/health` answers, retry the original failed Papercup tool call.
-  Re-dial is inconsistent (EI-24755204180385597); never ask the owner to run
-  `/mcp` (EI-24657708696146012). Omit `--port` unless pinning; defaults try configured,
-  canonical, and proxy ports. When EVERY port is refused before sending (a psu
-  native Bash has no loopback network), `mcp-call` makes the call once over the
-  operator's agent-MCP unix socket and says so; `--transport http|uds` pins one.
-  Exit 7 = sent but the reply was lost: check the outcome before re-running a write.
-  Flush checkpoints and request compaction via `mcp-call.mjs`.
-- **TOOLLESS but "connected"** (papercusp tools vanished; the `/mcp` dialog
-  still reads connected) — **heal it yourself; never ask the owner for
-  `/mcp` → Reconnect.** From native Bash run `node scripts/mcp-reconnect.mjs`,
-  then END YOUR TURN: your own psu host presses Reconnect once you are idle at
-  the prompt, forced even when the dialog reads connected (EI-26532826938565424).
-  If tools are still missing on the next turn, the script reports no host /
-  a refused ack, or it exits 3 (`host-cannot-force-reconnect`: your host predates
-  that fix and, being interactive, never adopts newer host code, so nothing was
-  sent), request a carry-respawn via `mcp-call.mjs session:request-compaction`
-  (a fresh process re-dials MCP); exit 3 prints the exact command.
-- **IDENTITY** — tools are listed, but calls refuse `Identity capability (unresolved):
-  stale-artifact`. ⛔ **`mcp-call.mjs` CANNOT open this one**: server-side preflight
-  rejects every client and port (WI-10002028); even `coord:orient` may be refused.
-  Read `activation.status` first:
-  `sudo -n -u postgres psql -d papercusp -At -c "SELECT jsonb_pretty(control_state->'activation') FROM harness_shared.session_briefs WHERE owner_id = '<your-su-id>';"`
-  - `desired`/`prepared` with lagging `applied` → `coord:orient { afterCompaction: true }`
-    only acknowledges (WI-10002717); send another prompt, then converge if it remains `desired`.
-  - `'failed'` → converge directly; there is nothing for orient to acknowledge.
-  - **Converge** only if `adv_sessions.launch_spec->>'specificationRevision'` equals
-    `desired`: set `applied` and `prepared` to `desired` and
-    `status` to `'applied'`, with `WHERE` on that revision. This mitigates; add the
-    occurrence to EI-23703586803892464.
+- **TRANSPORT** — no tools listed. Use `mcp-call` with your own `--client`; never let a write land under an anonymous identity.
+- **DISCONNECTED** — tools worked, then calls refuse. Probe the same environment. Retry the original call only after a before-send refusal; if a write may have been sent, verify its outcome first.
+- **TOOLLESS but connected** — run `node scripts/mcp-reconnect.mjs` from native Bash, then end the turn for host reconnect. Do not ask the owner to reconnect. If it remains broken or reports no host/refused ack/exit 3, request a carry-respawn; details are in the `#evidence` sibling.
+- **IDENTITY `stale-artifact`** — transport changes cannot bypass server preflight. Read activation state; reconcile only when the process already runs the desired revision.
 
+Exact error meanings, commands, and branch evidence are in this part's `#evidence` sibling.
 Evidence behind the IDENTITY-refusal rule in "Reaching for bash? These reads already have a tool".
 
 **Why `mcp-call.mjs` cannot open the identity class (WI-10002028).** The `stale-artifact`
@@ -2293,6 +2258,14 @@ activation `failed` is still armed. Occurrences accumulate on EI-237035868038924
 Relocated from the invariant part `reaching-for-bash-these-read-the-tool-call-is-al` on
 2026-09-28 under EI-24511252962859723 (launch prose budget), to keep the rule in every
 launch and the case history in the searchable corpus.
+## Transport and reconnect detail moved out of the always-loaded rule (2026-10-21)
+
+**TRANSPORT.** No tools listed means the handshake never completed; `:9071` can starve new handshakes under load. Use `node scripts/mcp-call.mjs <server:verb> --json-file <args.json> --client <your-su-id> --port 3170`; without your own client, a write may be attributed to an anonymous `mcp-call-*`. Omit `--port` unless pinning; defaults try configured, canonical, and proxy ports. If every port refuses before send, native psu Bash cannot reach loopback, so `mcp-call` uses the operator agent-MCP unix socket. `--transport http|uds` pins one. Exit 7 means sent but reply lost; inspect the outcome before repeating a write.
+
+**DISCONNECTED.** `ECONNREFUSED` or not-connected after prior success does not prove a restart. `mcp-call` refusal means its process failed to connect before sending; another runtime may reach. Probe in the same environment; when `/api/health` answers, retry the original failed tool. Re-dial is inconsistent; never ask the owner to run `/mcp`.
+
+**TOOLLESS but connected.** Run `node scripts/mcp-reconnect.mjs` from native Bash. The host presses Reconnect after this turn settles, even when the dialog says connected. If tools remain missing, the script reports no host/refused ack, or exits 3 `host-cannot-force-reconnect`, that interactive host is older than the fix and sent nothing; request `mcp-call.mjs session:request-compaction`. Exit 3 prints the exact command.
+
 
 ## `cd` outside the repo tree does NOT persist across Bash calls — a failed one silently falls back to the repo ROOT
 
