@@ -791,13 +791,13 @@ Full runbook:
 > need a clean tree, you don't: just stop editing and let git-sync commit. A Bash
 > guard rejects these commands on the shared checkout — do not route around it.
 
-**Never sit in a wait/poll loop for git-sync to "push your change" or the deploy to
-land — force it instead.** Keep working and locate your edit with `dev:pipeline_position`.
-When your *next step genuinely requires* the change **live on `:3070`**, force the deploy:
-`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`.
-⚠ The env var is **required** on the dev box — without it the restart is withheld and the
-rollback crash-loops `:3070` on `MODULE_NOT_FOUND` (recover: `systemctl --user stop
-papercup-dev-api.service`, then re-run with `--no-drain`).Pre-compression text of `commit-discipline-git-sync-o-never-sit-in-a-wait`, moved out of the projected CLAUDE.md/AGENTS.md by token-efficiency-prompts-cache-and-behavior-2026-10-11#P-004 (2026-10-12) to cut the always-loaded guide. The projected part keeps the rule and a pointer here.
+**Never sit in a wait/poll loop for git-sync or the deploy — force it instead.** Staging
+first: once `:3170` has your commit, `tools:invoke { name, args, build: 'staging' }` runs it
+there, enough for a non-final item. Only a step needing **live `:3070`** forces it:
+`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`
+(env var **required**, else the rollback crash-loops `:3070` on `MODULE_NOT_FOUND`;
+recover: `systemctl --user stop papercup-dev-api.service`, re-run with `--no-drain`).
+Pre-compression text of `commit-discipline-git-sync-o-never-sit-in-a-wait`, moved out of the projected CLAUDE.md/AGENTS.md by token-efficiency-prompts-cache-and-behavior-2026-10-11#P-004 (2026-10-12) to cut the always-loaded guide. The projected part keeps the rule and a pointer here.
 
 ## Full pre-compression rule text (preserved)
 

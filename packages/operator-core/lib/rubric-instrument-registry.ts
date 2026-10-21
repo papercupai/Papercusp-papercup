@@ -1,4 +1,5 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
+import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 /**
  * Rubric instrument registry (test-rubric-unification-2026-10-12 P-005 / R-5, plan D-006).
  *
@@ -176,6 +177,12 @@ export interface PlatformInstrument {
     resolve(window: { workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string }): Promise<{
       verdict: 'pass' | 'fail' | 'unknown';
       detail: string;
+      /**
+       * The quantity the resolver measured, in `unit`. Omit it when the resolver only reaches a
+       * verdict: the ledger then records a boolean verdict with no unit, so a pass bit is never
+       * stored as if it were a measured `unit` (WI-6554700010018719).
+       */
+      value?: number;
     }>;
   };
 }
@@ -675,6 +682,7 @@ const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
  */
 export function platformComputedInstrumentKeys(): string[] {
   return [
+    ...TOOL_DELIVERY_INSTRUMENTS,
     'woe.goal-mode-base-scorecard',
     ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),
     GATE_REUSE_AUDIT_INSTRUMENT_KEY,

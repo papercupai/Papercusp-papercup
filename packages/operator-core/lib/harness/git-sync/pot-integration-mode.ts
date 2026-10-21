@@ -59,6 +59,31 @@ export const POT_INTEGRATION_MODES: readonly PotIntegrationMode[] = ['direct', '
 /** The git remote NAME git-sync uses for a working-copy pot's fork. */
 export const POT_FORK_REMOTE_NAME = 'pot-fork';
 
+/**
+ * Plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 D-056: the federated
+ * hive_settings key naming the UPSTREAM branch a working-copy pot's standing PR targets
+ * and its sync-back absorbs. Absent ⇒ {@link SYNC_BACK_UPSTREAM_BRANCH} (`main`).
+ *
+ * Set it to the upstream's integration branch (e.g. `staging`) when the upstream advances
+ * its own `main` by direct promotion — Papercusp itself does, with a NON-force push of its
+ * gate's candidate. A standing-PR merge commit on that `main` is in none of the upstream's
+ * later candidates, so its next promotion push would be rejected non-fast-forward.
+ */
+export const POT_UPSTREAM_BRANCH_SETTING_KEY = 'hiveGit.upstreamBranch';
+
+/** A plain branch name: no refs/ prefix, no `..`, no leading `-` or `/`, no trailing `/`. */
+export function isValidUpstreamBranch(v: unknown): v is string {
+  return (
+    typeof v === 'string' &&
+    /^[A-Za-z0-9._/-]+$/.test(v) &&
+    !v.startsWith('-') &&
+    !v.startsWith('/') &&
+    !v.endsWith('/') &&
+    !v.startsWith('refs/') &&
+    !v.includes('..')
+  );
+}
+
 /** Junk-safe coercion: exactly `review` is review; anything else reads as `direct`. */
 export function coercePotIntegrationMode(v: unknown): PotIntegrationMode {
   return v === 'review' ? 'review' : 'direct';
@@ -75,6 +100,17 @@ export interface PotIntegrationModeRead {
   /** Always a usable mode — `direct` whenever the source is not `set`. */
   mode: PotIntegrationMode;
   source: PotIntegrationModeSource;
+  /**
+   * D-056: the upstream branch the standing PR targets and sync-back absorbs
+   * ({@link POT_UPSTREAM_BRANCH_SETTING_KEY}). Present only in `review` mode when the
+   * pot set it; consumers default through {@link potUpstreamBranch}.
+   */
+  upstreamBranch?: string;
+}
+
+/** D-056: the upstream branch a working copy targets — the pot's setting, else `main`. */
+export function potUpstreamBranch(read: Pick<PotIntegrationModeRead, 'upstreamBranch'> | undefined): string {
+  return read?.upstreamBranch ?? SYNC_BACK_UPSTREAM_BRANCH;
 }
 
 /** Read the pot's integration mode and why it reads that way. Never throws. */
@@ -90,8 +126,20 @@ export async function readPotIntegrationMode(
     return { mode: 'direct', source: 'error' };
   }
   if (!rec || rec.value == null) return { mode: 'direct', source: 'absent' };
-  if (rec.value === 'direct' || rec.value === 'review') return { mode: rec.value, source: 'set' };
-  return { mode: 'direct', source: 'malformed' };
+  if (rec.value === 'direct') return { mode: 'direct', source: 'set' };
+  if (rec.value !== 'review') return { mode: 'direct', source: 'malformed' };
+  // D-056: a working copy also needs to know WHICH upstream branch it targets. Fail closed
+  // like the mode itself: a store error or a junk value makes the tick commit-only rather
+  // than silently defaulting to `main`, which is the target this setting exists to avoid.
+  let up: Awaited<ReturnType<typeof getHiveSetting>>;
+  try {
+    up = await getHiveSetting(workspaceId, potHomeSlug, POT_UPSTREAM_BRANCH_SETTING_KEY, sql);
+  } catch {
+    return { mode: 'direct', source: 'error' };
+  }
+  if (!up || up.value == null) return { mode: 'review', source: 'set' };
+  if (!isValidUpstreamBranch(up.value)) return { mode: 'direct', source: 'malformed' };
+  return { mode: 'review', source: 'set', upstreamBranch: up.value };
 }
 
 /** What git-sync should do with this tick's push, given the pot's integration mode. */
@@ -109,6 +157,8 @@ export type IntegrationPushDecision =
       url: string;
       reason: string;
       submoduleForks?: SubmoduleForksRead;
+      /** D-056: the upstream branch sync-back absorbs (absent ⇒ `main`). */
+      upstreamBranch?: string;
     }
   /** Commit locally, push nowhere. Never falls back to the main repository. */
   | {
@@ -171,6 +221,7 @@ export function resolveIntegrationPushRemote(input: ResolveIntegrationPushInput)
     url: target.remote,
     reason: 'working-copy mode — git-sync pushes the pot’s own fork, never the main repository (D-006)',
     ...(input.submoduleForks ? { submoduleForks: input.submoduleForks } : {}),
+    ...(read.upstreamBranch ? { upstreamBranch: read.upstreamBranch } : {}),
   };
 }
 
@@ -552,7 +603,8 @@ export async function applyIntegrationPushTarget(
   cfg.branch = WORKING_COPY_INTEGRATION_BRANCH;
   // P-016: capture the main repository's remote BEFORE repointing the push at the
   // fork — sync-back fetches upstream from it and merges into the copy's staging.
-  cfg.syncBack = { upstreamRemote: cfg.remote ?? 'origin', upstreamBranch: SYNC_BACK_UPSTREAM_BRANCH };
+  // D-056: the pot's upstream branch (e.g. `staging` for a fork of Papercusp), else `main`.
+  cfg.syncBack = { upstreamRemote: cfg.remote ?? 'origin', upstreamBranch: potUpstreamBranch(decision) };
   cfg.remote = decision.remoteName;
   // True only after every submodule's `pot-fork` remote was pointed at ITS fork above:
   // git-sync then pushes each submodule through `pot-fork`, never through its origin.

@@ -99,6 +99,14 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('./store', () => h.store);
+// event-wait-settlement-2026-10-20 P-007: the completion-fire clear the emit loads lazily.
+const autoClear = vi.hoisted(() => ({
+  settleWorkItemDoneFire: vi.fn(async (_key: string, _workspaces: readonly string[] | undefined): Promise<unknown[]> => []),
+}));
+vi.mock('../../work-item-ref-blocker-auto-clear', async (orig) => ({
+  ...(await orig<typeof import('../../work-item-ref-blocker-auto-clear')>()),
+  settleWorkItemDoneFire: autoClear.settleWorkItemDoneFire,
+}));
 vi.mock('../../agent-tools/coordination/wake-fanout-pacing', async (orig) => ({
   ...(await orig<typeof import('../../agent-tools/coordination/wake-fanout-pacing')>()),
   admitWakeFanout: h.admitWakeFanout,
@@ -770,6 +778,64 @@ describe('emitAwaitedEvent — event-wait-settlement-2026-10-20 P-004: settle on
     expect(h.store.insertDeliveries).toHaveBeenCalledWith(expect.objectContaining({
       awaits: [expect.objectContaining({ id: 9 })],
     }));
+  });
+});
+
+describe('emitAwaitedEvent — event-wait-settlement-2026-10-20 P-007: the completion fire clears work-item-ref blockers', () => {
+  beforeEach(() => {
+    autoClear.settleWorkItemDoneFire.mockReset().mockResolvedValue([]);
+  });
+
+  it('AUTO-BAR-R-6-P-007: a work-item:done fire the latch found a dependency waiter for runs the clear in the probed workspaces', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({
+      announcementPending: false, provingWaiterPending: false, workItemRefWaiterWorkspaces: ['ws-a'],
+    });
+    await emitAwaitedEvent({ key: 'work-item:done:WI-9007001', source: 'work-items' });
+    expect(autoClear.settleWorkItemDoneFire).toHaveBeenCalledTimes(1);
+    expect(autoClear.settleWorkItemDoneFire).toHaveBeenCalledWith('work-item:done:WI-9007001', ['ws-a']);
+  });
+
+  it('a completion nobody waits on makes no clear call and no database call beyond the fire latch and the await claim', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({
+      announcementPending: false, provingWaiterPending: false, workItemRefWaiterWorkspaces: [],
+    });
+    await emitAwaitedEvent({ key: 'work-item:done:WI-9007002' });
+    expect(autoClear.settleWorkItemDoneFire).not.toHaveBeenCalled();
+    const storeCalls = Object.entries(h.store)
+      .filter(([, fn]) => ((fn as { mock?: { calls: unknown[] } }).mock?.calls.length ?? 0) > 0)
+      .map(([name]) => name)
+      .sort();
+    expect(storeCalls).toEqual(['fireAwaitsForKey', 'recordKeyFire']);
+  });
+
+  it('an unknown latch result still runs the clear, leaving the waiter read to it', async () => {
+    h.store.recordKeyFire.mockRejectedValueOnce(new Error('db down'));
+    await emitAwaitedEvent({ key: 'work-item:done:WI-9007003' });
+    expect(autoClear.settleWorkItemDoneFire).toHaveBeenCalledWith('work-item:done:WI-9007003', undefined);
+  });
+
+  it('a clear that throws never fails the emit', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({
+      announcementPending: false, provingWaiterPending: false, workItemRefWaiterWorkspaces: ['ws-a'],
+    });
+    autoClear.settleWorkItemDoneFire.mockRejectedValueOnce(new Error('lock timeout'));
+    const r = await emitAwaitedEvent({ key: 'work-item:done:WI-9007004' });
+    expect(r.ok).toBe(true);
+    expect(autoClear.settleWorkItemDoneFire).toHaveBeenCalledTimes(1);
+  });
+
+  it('never runs the clear for a key that is not a completion fire', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({ announcementPending: false, provingWaiterPending: true });
+    await emitAwaitedEvent({ key: 'release:deployed:abc123' });
+    h.store.recordKeyFire.mockRejectedValueOnce(new Error('db down'));
+    await emitAwaitedEvent({ key: 'work-item:claimable' });
+    expect(autoClear.settleWorkItemDoneFire).not.toHaveBeenCalled();
+  });
+
+  it('never runs the clear when the latch answered without a probe (the key names no single work-item id)', async () => {
+    h.store.recordKeyFire.mockResolvedValueOnce({ announcementPending: false, provingWaiterPending: false });
+    await emitAwaitedEvent({ key: 'work-item:done:WI-nobody-waits' });
+    expect(autoClear.settleWorkItemDoneFire).not.toHaveBeenCalled();
   });
 });
 

@@ -22,6 +22,7 @@ import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names'
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import { decodeToolsInvokeArgs } from './invoke-args';
 import { readServingGeneration } from '../../serving-generation';
+import { assertServingBuild, MCP_SERVING_BUILD_META_KEY } from '../../serving-build';
 
 type NestedOutcome = {
   effectiveStatus: 'ok' | 'partial' | 'error' | 'vacuous';
@@ -345,6 +346,11 @@ export default defineTool({
     name: z.string().min(1).max(120),
     /** Exact generation returned by tools:find; binds the schema to this dispatcher. */
     servingGeneration: z.string().trim().min(1).max(160).optional(),
+    /** staging-build-tool-routing-2026-10-21 P-002: the build that must serve this call. */
+    build: z
+      .enum(['main', 'staging'])
+      .optional()
+      .describe("'staging' runs the call on the staging operator (:3170), for a tool main does not have yet. Default main."),
     // EI-6681 / EI-15360: some MCP clients intermittently stringify a
     // moderately-long/complex nested `args` object before it reaches this schema
     // (root cause client-side — this server's own dispatch path never stringifies
@@ -376,6 +382,10 @@ export default defineTool({
         content: [{ type: 'text' as const, text: 'invalid_target: tools:invoke cannot invoke itself' }],
       };
     }
+    // P-002: refuse `build_mismatch` before the target runs. Through the :9071 proxy a
+    // build:'staging' call already reached the staging operator; a caller that bypassed
+    // the proxy is refused here instead of running a staging-intended call on main.
+    const requestedBuild = assertServingBuild(args.build);
     if (args.servingGeneration) {
       const current = await readServingGeneration();
       if (current.state !== 'known') {
@@ -429,6 +439,10 @@ export default defineTool({
       );
     }
     // dispatchTool returns an MCP-shaped result already ({ content, isError?, _meta?, structuredContent? }).
+    if (requestedBuild) {
+      const withBuild = result as unknown as { _meta?: Record<string, unknown> };
+      withBuild._meta = { ...(withBuild._meta ?? {}), [MCP_SERVING_BUILD_META_KEY]: requestedBuild };
+    }
     return result as unknown as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
   },
 });

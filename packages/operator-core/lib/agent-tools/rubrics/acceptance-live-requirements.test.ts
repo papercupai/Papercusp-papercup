@@ -158,6 +158,31 @@ describe('overlayLiveRequirementVerification', () => {
     expect(overlay.changed).toEqual([]);
     expect(overlay.kept).toEqual([{ barKey: 'R-2', reason: 'meaning-changed' }]);
   });
+
+  it('overlays a same-kind instrument rebind when the promise is unchanged (WI-6554700010018740)', () => {
+    const promise = {
+      key: 'r-15',
+      barKey: 'R-15',
+      title: 'Outcome',
+      model: 'The outcome meets its bar.',
+      driftMarkers: 'The outcome misses its bar.',
+      evidencePlane: 'live',
+      method: 'Run the registered measurement.',
+    };
+    const storedCriterion = { ...promise, check: { kind: 'instrument', instrumentKey: 'none' } };
+    const live = { ...promise, check: { kind: 'instrument', instrumentKey: 'agents:native-session-minutes' } };
+    const overlay = overlayLiveRequirementVerification([storedCriterion], [{ barKey: 'R-15', criterion: live }]);
+    expect(overlay.criteria[0]!.check).toEqual({ kind: 'instrument', instrumentKey: 'agents:native-session-minutes' });
+    expect(overlay.live).toEqual(['R-15']);
+    expect(overlay.changed).toEqual(['R-15']);
+    expect(overlay.kept).toEqual([]);
+    // The same rebind paired with a rewritten promise is still kept for the amendment.
+    const rewritten = overlayLiveRequirementVerification([storedCriterion], [{
+      barKey: 'R-15', criterion: { ...live, model: 'A different promise.' },
+    }]);
+    expect(rewritten.criteria[0]).toBe(storedCriterion);
+    expect(rewritten.kept).toEqual([{ barKey: 'R-15', reason: 'meaning-changed' }]);
+  });
 });
 
 describe('readLiveAcceptanceCriteria (the acceptance read)', () => {

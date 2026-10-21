@@ -16,6 +16,7 @@ import { formatConnectorPushLog, reconcileConnectorPush, type ConnectorPushResul
 import { runPendingParticipantBackfills } from '../../relationship-graph/participant-backfill';
 import { runChatRollupPass, type ChatRollupFailure } from '../../data-sources/chat-retrieval-units';
 import { adoptLegacyProviderCredentials } from '../../integrations/connection-lifecycle';
+import { runConnectorSourceHealthCheck, type ConnectorSourceHealthResult } from '../../providers/connector-source-health';
 import type { Sql } from 'postgres';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
@@ -29,6 +30,7 @@ export interface ConnectorSyncActionDeps {
   reconcilePush?: typeof reconcileConnectorPush;
   runConnectorWakes?: typeof runConnectorWakes;
   runConnectorSync?: typeof runConnectorSync;
+  checkSourceHealth?: (sql: Sql, opts: { workspaceId: string; recovered: readonly string[] }) => Promise<ConnectorSourceHealthResult>;
   runParticipantBackfills?: typeof runPendingParticipantBackfills;
   runChatRollup?: (sql: Sql, opts: { workspaceId: string }) => Promise<{
     buckets: number; unitsWritten: number; unitsRemoved: number; expired: number; documentsExpired: number;
@@ -64,6 +66,16 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
   const result = await (provided.runConnectorSync ?? runConnectorSync)(sql, options);
   if (result.sources.length > 0) console.log(formatConnectorSyncLog(result));
   const failed = result.sources.filter((source) => source.outcome === 'failed' || source.outcome === 'reconnect-required');
+  // WI-6554700010018612: a source the driver gave up on (degraded / error / reconnect_required) raises
+  // a condition, and one this pass brought back resolves it. A check failure is reported, never a
+  // failed pass.
+  const recovered = result.sources.filter((source) => source.recoveredFrom).map((source) => source.sourceId);
+  let healthError: string | null = null;
+  const health = await (provided.checkSourceHealth ?? runConnectorSourceHealthCheck)(sql, { workspaceId: ctx.workspaceId, recovered })
+    .catch((cause: unknown): ConnectorSourceHealthResult => {
+      healthError = errorText(cause);
+      return { unhealthy: 0, signalled: 0, resolved: 0, errors: [] };
+    });
   // Contacts syncs through the driver above like every other provider (the google-contacts
   // package, provider-adapters-to-packages-2026-10-11 D-036); there is no side poll.
   // D-018: project participants of interactions stored before a source's person -> record grant.
@@ -107,6 +119,8 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       : []),
     ...(chatRollupError ? [`chat rollup failed: ${chatRollupError}`] : []),
     ...(adoptionError ? [`legacy credential adoption failed: ${adoptionError}`] : []),
+    ...(healthError ? [`source health check failed: ${healthError}`] : []),
+    ...(health.errors.length > 0 ? [`source health: ${health.errors.join('; ')}`] : []),
     // WI-6554700010012111: a re-queued bucket backs off; a dead-lettered one is not retried again until
     // a new message or a routing change revives it, so this is its last report.
     ...(chat.failed > 0
@@ -138,6 +152,9 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       chatBucketsFailed: chat.failed,
       chatBucketsDeadLettered: chat.deadLettered,
       legacySourcesRewritten: adopted.reduce((n, entry) => n + entry.sourcesRewritten, 0),
+      unhealthySources: health.unhealthy,
+      sourceHealthSignalled: health.signalled,
+      sourceHealthResolved: health.resolved,
     },
     ...(softErrors.length > 0 ? { softError: softErrors.join(' | ').slice(0, 1000) } : {}),
   };

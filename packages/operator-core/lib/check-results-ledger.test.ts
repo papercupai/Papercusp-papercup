@@ -26,7 +26,7 @@ describe('scheduled platform instrument results', () => {
       workspaceId: 'ws', harnessSlug: 'papercusp', now: () => Date.parse(AT), resolvePlatform });
     expect(windows).toEqual([{ workspaceId: 'ws', harnessSlug: 'papercusp',
       windowStart: '2026-10-12T04:00:00.000Z', windowEnd: AT }]);
-    expect(result).toMatchObject({ verdict: 'fail', measuredAt: AT, check: { id: 'R-15:instrument', value: 0 } });
+    expect(result).toMatchObject({ verdict: 'fail', measuredAt: AT, check: { id: 'R-15:instrument', value: false, unit: null } });
   });
 
   it('measures the exact completed trailing window in the rubric workspace and records failure', async () => {
@@ -37,7 +37,35 @@ describe('scheduled platform instrument results', () => {
     });
     expect(windows).toEqual([{ workspaceId: 'ws-native', windowStart: '2026-10-10T04:00:00.000Z', windowEnd: AT }]);
     expect(result).toMatchObject({ verdict: 'fail', measuredAt: AT, detail: 'below frozen target',
-      check: { id: 'r-31:instrument', value: 0, unit: 'count' } });
+      check: { id: 'r-31:instrument', value: false, unit: null } });
+  });
+
+  // WI-6554700010018719: a verdict-only platform row used to store its pass bit as 0/1 under the
+  // instrument's quantity unit, so a fail for 224 stranded agents read back as "0 count".
+  it('never records a verdict-only result as a quantity in the instrument unit', async () => {
+    for (const verdict of ['pass', 'fail'] as const) {
+      const [result] = await runInstrumentChecks({ rubricRef: 'native', criteria: [adoption],
+        workspaceId: 'ws-native', now: () => Date.parse(AT),
+        resolvePlatform: async () => ({ verdict, detail: `${verdict} detail` }) });
+      expect(result!.verdict).toBe(verdict);
+      expect(result!.check.value).toBe(verdict === 'pass');
+      expect(typeof result!.check.value).not.toBe('number');
+      expect(result!.check.unit).toBeNull();
+    }
+  });
+
+  it('records the quantity a platform resolver measured, in the instrument unit', async () => {
+    const stranded = { key: 'silent-halts-below-threshold', check: { kind: 'instrument', instrumentKey: 'agents:silent-halt-stranded' } };
+    const [result] = await runInstrumentChecks({ rubricRef: 'auto-silent-halt-stranded', criteria: [stranded],
+      workspaceId: 'ws', now: () => Date.parse(AT),
+      resolvePlatform: async () => ({ verdict: 'fail', detail: '{"stranded":224}', value: 224 }) });
+    expect(result).toMatchObject({ verdict: 'fail', detail: '{"stranded":224}',
+      check: { id: 'silent-halts-below-threshold:instrument', value: 224, unit: 'count' } });
+    // A measured value on an unmeasured (unknown) verdict is still recorded as nothing.
+    const [unknown] = await runInstrumentChecks({ rubricRef: 'auto-silent-halt-stranded', criteria: [stranded],
+      workspaceId: 'ws', now: () => Date.parse(AT),
+      resolvePlatform: async () => ({ verdict: 'unknown', detail: 'sweep failed', value: 3 }) });
+    expect(unknown).toMatchObject({ verdict: 'error', check: { value: null, unit: 'count' } });
   });
 
   it('records no population and resolver errors as unmeasured, and never queries without workspace scope', async () => {

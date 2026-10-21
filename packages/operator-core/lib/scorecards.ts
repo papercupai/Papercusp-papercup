@@ -35,6 +35,7 @@ import {
   parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
+import { measureToolDeliveryAcceptance, TOOL_DELIVERY_INSTRUMENTS, TOOL_DELIVERY_PLAN } from './tool-delivery-acceptance';
 import { measureProviderPackageAcceptance, PROVIDER_PACKAGE_INSTRUMENT_KEYS, PROVIDER_PACKAGE_PLAN } from './integrations/provider-package-acceptance';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
@@ -421,6 +422,7 @@ export async function resolveScorecardInstrumentSnapshots(
     /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
     readArtifact?: (path: string) => Promise<string>;
     providerPackages?: typeof measureProviderPackageAcceptance;
+    toolDelivery?: typeof measureToolDeliveryAcceptance;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
     diskHeadroomSoak?: (input: Parameters<typeof measureDiskHeadroomSoakWindow>[1]) => ReturnType<typeof measureDiskHeadroomSoakWindow>;
     coldEvidence?: (key: string, window: { workspaceId: string; harnessSlug: string; windowStart: string; windowEnd: string }) => Promise<{ verdict: 'pass' | 'fail' | 'unknown'; detail: string }>;
@@ -519,6 +521,7 @@ export async function resolveScorecardInstrumentSnapshots(
   ));
   let workOverheadMeasured: Promise<WorkOverheadMetrics> | null = null;
   let providerPackagesMeasured: ReturnType<typeof measureProviderPackageAcceptance> | null = null;
+  let toolDeliveryMeasured: ReturnType<typeof measureToolDeliveryAcceptance> | null = null;
   for (const key of keys) {
     if (key === BM25_LATENCY_INSTRUMENT_KEY) {
       const base = { measuredAt: BM25_LATENCY_ARTIFACT_IDENTITY.generatedAt,
@@ -591,6 +594,25 @@ export async function resolveScorecardInstrumentSnapshots(
       continue;
     }
     const overheadCriterion = workOverheadCriterionForInstrument(key);
+    if (TOOL_DELIVERY_INSTRUMENTS.some(instrumentKey => instrumentKey === key)) {
+      const evidenceRef = 'harness_shared.llm_test_runs:session-tool-delivery-ab-20261021';
+      if (subject.kind !== 'plan' || subject.ref !== TOOL_DELIVERY_PLAN || input.rubric.subjectPlan !== subject.ref ||
+          !input.rubric.workspaceId || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('The exact tool-delivery plan and a completed observation window are required.'), evidenceRef };
+        continue;
+      }
+      try {
+        toolDeliveryMeasured ??= (deps.toolDelivery ?? measureToolDeliveryAcceptance)({ workspaceId: input.rubric.workspaceId,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+        const measurement = await toolDeliveryMeasured;
+        const outcome = key === TOOL_DELIVERY_INSTRUMENTS[0] ? measurement.comprehension : measurement.invalidArguments;
+        snapshots[key] = { verdict: outcome.verdict, measuredAt, provenance: 'platform-computed', evidenceRef, window,
+          value: { resolver: key, resolverVersion: 1, ...outcome, measurement } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Tool-delivery evidence unavailable: ${String(error)}`), evidenceRef };
+      }
+      continue;
+    }
     if ([COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY].includes(key)) {
       const evidenceRef = 'native:cold-mounts+move-logs+kopia+disk-census+reclaim-audit';
       const workspaceId = input.rubric.workspaceId, harnessSlug = input.rubric.subjectHarnessSlug;

@@ -61,6 +61,7 @@ import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { withInlinedSchemaRefs } from '../schema-ref-inline';
 import { readServingGeneration } from '../../serving-generation';
+import { assertServingBuild, getServingBuild } from '../../serving-build';
 
 /**
  * The result-door is a per-tool-result budget, not a per-field budget. A
@@ -1529,6 +1530,10 @@ export default defineTool({
         .describe(
           'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
         ),
+      build: z
+        .enum(['main', 'staging'])
+        .optional()
+        .describe("Which build's catalog to search: 'staging' finds tools that exist only on staging (:3170). Default main."),
     }).superRefine((args, ctx) => {
       // normalizeToolsFindArgs has already mapped a q-only call to query here.
       // Keep query optional in the published structural schema so the q alias
@@ -1551,6 +1556,7 @@ export default defineTool({
       registry: z.unknown().optional(),
       activated: z.unknown().optional(),
       servingGeneration: z.string().nullable().optional(),
+      servingBuild: z.enum(['main', 'staging']).optional(),
       hits: z.unknown().optional(),
       omittedTools: z.unknown().optional(),
       howToCall: z.unknown().optional(),
@@ -1561,6 +1567,9 @@ export default defineTool({
     // Keep the guard because focused tests may invoke the handler directly and
     // because it narrows the inferred optional schema field for this function.
     if (!args.query) throw new Error('tools:find query is required after argument normalization');
+    // staging-build-tool-routing-2026-10-21 P-002: a search for another build's catalog
+    // is refused here (the :9071 proxy routes build:'staging' to the staging operator).
+    const servingBuild = assertServingBuild(args.build) ?? getServingBuild();
     // host-bootstrap starts plugin discovery fire-and-forget. Join the same
     // single-flight readiness promise before snapshotting the projected
     // registry, otherwise a first post-restart request can build a corpus
@@ -1717,6 +1726,9 @@ export default defineTool({
             semantic,
             registry,
             servingGeneration,
+            // P-002: which build's catalog these schemas came from ('staging' after
+            // a build:'staging' search routed to :3170).
+            servingBuild,
             // true ⇒ the server-side session allowlist grew and emitted the
             // standard list_changed request. It cannot prove the client has
             // consumed that notification and materialized wrappers yet.

@@ -29,6 +29,7 @@ import type { ProjectEntry } from '../../harness-registry';
 import { STANDING_PR_BRANCH } from './decide-standing-pr';
 import {
   POT_FORK_REMOTE_NAME,
+  potUpstreamBranch,
   repoHasSubmodules,
   resolveIntegrationPushRemote,
   type PotIntegrationModeRead,
@@ -241,7 +242,7 @@ export async function publishPromotion(
   const remoteRef = input.ref.startsWith('refs/') ? input.ref : `refs/heads/${input.ref}`;
   // D-017 §5: every pin the main repositories lack goes to its submodule fork FIRST. A
   // failure throws (promotion held): the superproject must never publish an unreachable gitlink.
-  const pins = await publishSubmodulePins(input, target, remoteRef, deps);
+  const pins = await publishSubmodulePins(input, target, deps);
   await deps.ensureRemote(input.repoPath, target.url);
   await deps.pushToFork(input.repoPath, input.sha, remoteRef);
   deps.log(
@@ -265,7 +266,7 @@ export async function publishPromotion(
     ...(s.standingPr.ok && 'prUrl' in s.standingPr && s.standingPr.prUrl ? { url: s.standingPr.prUrl } : {}),
   }));
 
-  const standingPr = await refreshStandingPr(input, target, remoteRef, deps, 'promotion', relatedPrs);
+  const standingPr = await refreshStandingPr(input, target, deps, 'promotion', relatedPrs);
   if (standingPr.ok) {
     const pr = 'prUrl' in standingPr && standingPr.prUrl ? ` ${standingPr.prUrl}` : '';
     deps.log(`standing-pr: ${standingPr.decision.action}${pr}`);
@@ -294,7 +295,6 @@ interface PublishedPin {
 async function publishSubmodulePins(
   input: PublishPromotionInput,
   target: Extract<PromotionPushTarget, { kind: 'fork' }>,
-  remoteRef: string,
   deps: PublishPromotionDeps,
 ): Promise<PublishedPin[]> {
   if ((deps.hasSubmodules ?? repoHasSubmodules)(input.repoPath) !== true) return [];
@@ -302,7 +302,9 @@ async function publishSubmodulePins(
   if (!deps.findUnpublishedGitlinks || !deps.readSubmoduleForks || !deps.pushSubmoduleHead) {
     throw held('submodule_publish_unavailable', 'this checkout uses submodules but no submodule publisher is wired');
   }
-  const found = await deps.findUnpublishedGitlinks(input.repoPath, input.sha, remoteRef.replace(/^refs\/heads\//, ''));
+  // D-056: "unpublished" is relative to the upstream branch the standing PR targets,
+  // not the fork ref the promotion pushes (they differ when the pot targets `staging`).
+  const found = await deps.findUnpublishedGitlinks(input.repoPath, input.sha, potUpstreamBranch(target.integration));
   if (!found.ok) throw held('submodule_pins_unverifiable', found.error);
   if (found.unpublished.length === 0) return [];
   if (!input.workspaceId) throw held('submodule_forks_unreadable', `no workspace id for pot ${target.potHomeSlug}`);
@@ -370,7 +372,6 @@ async function refreshSubmoduleStandingPr(
 async function refreshStandingPr(
   input: PublishPromotionInput,
   target: Extract<PromotionPushTarget, { kind: 'fork' }>,
-  remoteRef: string,
   deps: PublishPromotionDeps,
   trigger: 'promotion' | 'on-demand',
   relatedPrs: readonly SubmodulePrLink[] = [],
@@ -399,7 +400,9 @@ async function refreshStandingPr(
         forkOwner,
         upstreamRemote: upstream,
         upstreamOwner,
-        baseBranch: remoteRef.replace(/^refs\/heads\//, ''),
+        // D-056: the PR targets the pot's upstream branch (e.g. `staging` for a fork of
+        // Papercusp, whose `main` only its own gate advances), not the fork ref pushed.
+        baseBranch: potUpstreamBranch(target.integration),
         promotedSha: input.sha,
         trigger,
         potName: target.potHomeSlug,
@@ -460,7 +463,7 @@ export async function sendStandingPrNow(
   if (!sha) {
     return { kind: 'nothing-green', message: `the working copy has no ${remoteRef} yet: nothing has passed the gate` };
   }
-  const standingPr = await refreshStandingPr({ ...input, sha }, target, remoteRef, deps, 'on-demand');
+  const standingPr = await refreshStandingPr({ ...input, sha }, target, deps, 'on-demand');
   return { kind: 'sent', potHomeSlug: target.potHomeSlug, sha, standingPr };
 }
 

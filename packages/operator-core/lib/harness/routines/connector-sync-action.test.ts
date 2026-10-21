@@ -29,10 +29,49 @@ function quietDeps(sql: Sql) {
     reconcilePush: vi.fn(async () => ({ sources: [] }) as never),
     runConnectorWakes: vi.fn(async () => ({ sources: [] }) as never),
     runConnectorSync: vi.fn(async () => ({ providers: 0, sources: [] }) as never),
+    checkSourceHealth: vi.fn(async () => ({ unhealthy: 0, signalled: 0, resolved: 0, errors: [] as string[] })),
     runParticipantBackfills: vi.fn(async () => []),
     runChatRollup: vi.fn(async () => NO_CHAT),
   };
 }
+
+// WI-6554700010018612: a source the driver gave up on raises a condition every tick it stays
+// unhealthy, and the tick's own recoveries resolve theirs.
+describe('connector-sync source health alarm', () => {
+  const synced = (sourceId: string, recoveredFrom?: string) => ({
+    sourceId, providerId: 'gmail', outcome: 'synced' as const, mode: 'incremental' as const, pages: 1, admitted: 0,
+    deduped: 0, rejected: 0, cursorReset: false, hasMore: false, ...(recoveredFrom ? { recoveredFrom } : {}),
+  });
+
+  it('runs the health check after the sync with the sources this pass recovered', async () => {
+    const sql = {} as Sql;
+    const deps = quietDeps(sql);
+    const runConnectorSync = vi.fn(async (): Promise<ConnectorSyncResult> => ({
+      providers: 1, sources: [synced('src-recovered', 'degraded'), synced('src-fine')],
+    }));
+    deps.checkSourceHealth.mockResolvedValueOnce({ unhealthy: 2, signalled: 1, resolved: 1, errors: [] });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await runConnectorSyncAction(ctx, { ...deps, runConnectorSync });
+
+    expect(deps.checkSourceHealth).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId, recovered: ['src-recovered'] });
+    expect(result.diagnostics).toMatchObject({ unhealthySources: 2, sourceHealthSignalled: 1, sourceHealthResolved: 1 });
+    expect(result).not.toHaveProperty('softError');
+  });
+
+  it('reports a failed or partial health check as a soft error and still finishes the tick', async () => {
+    const sql = {} as Sql;
+    const failing = quietDeps(sql);
+    failing.checkSourceHealth.mockRejectedValueOnce(new Error('data_sources unreadable'));
+    const failed = await runConnectorSyncAction(ctx, failing);
+    expect(failed.softError).toContain('source health check failed: data_sources unreadable');
+    expect(failing.runChatRollup).toHaveBeenCalled();
+
+    const partial = quietDeps(sql);
+    partial.checkSourceHealth.mockResolvedValueOnce({ unhealthy: 1, signalled: 0, resolved: 0, errors: ['s1: alarm broadcast failed'] });
+    expect((await runConnectorSyncAction(ctx, partial)).softError).toContain('source health: s1: alarm broadcast failed');
+  });
+});
 
 const PLUGINS_DIR = fileURLToPath(new URL('../../../../../libs/papercusp/plugins/', import.meta.url));
 

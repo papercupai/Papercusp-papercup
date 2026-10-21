@@ -1489,6 +1489,8 @@ export interface CheckpointDeps {
   routeFrozenRepairLegsToAgents?(input: {
     pipeline: string;
     queue: { candidate: string; repairHead: string; failingTests: readonly string[] } | null;
+    /** WI-6554700010018714: per-leg failure output this tick measured at repairHead. */
+    failureTails?: ReadonlyMap<string, string>;
   }): Promise<void>;
   /** D-001 / WI-39944: the one serialized frozen-candidate repair queue. These hooks
    * live on the existing gate dependency seam so test stubs and non-recording CLI runs
@@ -15418,7 +15420,28 @@ async function runGreenCheckpointInner(
       // `repairQueue` is null here only when the P-013 off switch suppressed the cycle —
       // there is then no queue to dispatch a fixer for. The explicit guard is what keeps
       // that branch type-safe rather than dereferencing a null queue below.
-      if (!deferNewRepairDispatch && repairQueue) {
+      //
+      // WI-6554700010018762: only an `awaiting-fixer` queue gets a fixer. Since
+      // WI-6554700010018209 the candidate-red transition parks the queue in `ready-to-verify`
+      // when an admission landed during the suite: that admitted head is owed verification,
+      // and the next run verifies it. Dispatching here launched a fixer for a queue that did
+      // not need one and then threw on the `awaiting-fixer` precondition of the mark.
+      if (
+        !deferNewRepairDispatch &&
+        repairQueue &&
+        repairQueue.phase !== "awaiting-fixer"
+      ) {
+        deps.log(
+          `frozen candidate ${repairQueue.candidate.slice(0, 8)} red recorded; queue is ` +
+            `${repairQueue.phase} at repairHead ${repairQueue.repairHead.slice(0, 8)}, so no fixer ` +
+            `is dispatched (the admitted head is verified by the next run)`,
+        );
+      }
+      if (
+        !deferNewRepairDispatch &&
+        repairQueue &&
+        repairQueue.phase === "awaiting-fixer"
+      ) {
         let fired: FrozenRepairDispatchResult | null = null;
         if (hasFrozenRepairDispatchReservation) {
           // Reserve the durable candidate row before the external fixer launch. The candidate
@@ -17407,6 +17430,33 @@ export function failingRepairLegsForRouting(
 }
 
 /**
+ * WI-6554700010018714: the failure output this tick measured for each non-passing leg, keyed
+ * by leg id, so a routed leg item carries the tail the verdict line already shows instead of
+ * "none recorded for this leg". test_runs cannot hold a lint leg's output, so this is the only
+ * source for one. Only a measurement taken AT the queue's repairHead counts: a tail from an
+ * older head describes code the queue has since moved past.
+ */
+export function repairTickLegFailureTails(
+  repairTickLegs: RepairTickLegs | undefined,
+  repairHead: string | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!repairTickLegs || !repairHead) return out;
+  const head = repairTickLegs.head ?? "";
+  const sameHead =
+    head.length >= 7 &&
+    repairHead.length >= 7 &&
+    (head.startsWith(repairHead) || repairHead.startsWith(head));
+  if (!sameHead) return out;
+  for (const leg of repairTickLegs.legs) {
+    if (leg.status !== "fail" && leg.status !== "errored") continue;
+    const tail = leg.outputTail?.trim();
+    if (tail) out.set(leg.id, tail);
+  }
+  return out;
+}
+
+/**
  * WI-10005728: fold one hold tick's leg measurement into the queue's per-leg lifecycle
  * (`queue.legs`) and persist it, so a leg measured red is admitted as `failing` and a later
  * pass at a newer head marks it `fixed`. Before this, `recordFrozenRepairLegMeasurement` had
@@ -17918,6 +17968,10 @@ export async function runGreenCheckpoint(
         routeLegs({
           pipeline: pipelineName(cfg.integrationRoot),
           queue: queueForRouting,
+          failureTails: repairTickLegFailureTails(
+            finalResult.repairTickLegs,
+            queueForRouting?.repairHead,
+          ),
         }),
       deps.log,
       FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS,

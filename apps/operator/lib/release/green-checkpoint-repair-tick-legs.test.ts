@@ -36,6 +36,7 @@ import {
   REPAIR_TICK_LEGS_ABORT_GRACE_MS,
   REPAIR_TICK_LEGS_DEADLINE_MS,
   REPAIR_TICK_SETUP_LOCK_MAX_RETRIES,
+  repairTickLegFailureTails,
   type CheckpointDeps,
   type CheckpointResult,
   type RepairTickLegs,
@@ -415,6 +416,56 @@ describe("measureRepairTickLegs", () => {
         ),
       ).toBe(false);
     });
+  });
+});
+
+// WI-6554700010018714: a routed lint-leg item said "none recorded for this leg" while the
+// verdict line carried its tail, because the routing read tails only from test_runs.
+describe("repairTickLegFailureTails", () => {
+  const measuredAtHead: RepairTickLegs = {
+    head: HEAD,
+    atMs: 1_000,
+    ok: false,
+    failingSignatures: ["lint:condition-rail", "lint:tsc", "lint:design-primitives"],
+    legs: [
+      { id: "lint:condition-rail", status: "fail", durationMs: 5, outputTail: "  sqlstate=28P01  " },
+      { id: "lint:tsc", status: "errored", durationMs: 5, outputTail: "spawn failed" },
+      { id: "lint:no-raw-setinterval", status: "pass", durationMs: 5 },
+      { id: "lint:design-primitives", status: "fail", durationMs: 5 },
+      { id: "lint:timer-classification", status: "skipped", durationMs: 0, outputTail: "not declared" },
+    ],
+  };
+
+  it("keys each non-passing leg's trimmed tail by leg id when measured at repairHead", () => {
+    expect(repairTickLegFailureTails(measuredAtHead, HEAD)).toEqual(
+      new Map([
+        ["lint:condition-rail", "sqlstate=28P01"],
+        ["lint:tsc", "spawn failed"],
+      ]),
+    );
+  });
+
+  it("accepts an abbreviated repairHead for the same commit", () => {
+    expect(repairTickLegFailureTails(measuredAtHead, HEAD.slice(0, 12)).size).toBe(2);
+  });
+
+  it("carries nothing from a measurement taken at a different head", () => {
+    const other = HEAD === "f".repeat(40) ? "e".repeat(40) : "f".repeat(40);
+    expect(repairTickLegFailureTails(measuredAtHead, other).size).toBe(0);
+  });
+
+  it("carries nothing without a measurement or a repairHead", () => {
+    expect(repairTickLegFailureTails(undefined, HEAD).size).toBe(0);
+    expect(repairTickLegFailureTails(measuredAtHead, undefined).size).toBe(0);
+  });
+
+  it("runGreenCheckpoint hands those tails to the per-leg routing", () => {
+    const source = readFileSync(new URL("./green-checkpoint.ts", import.meta.url), "utf8");
+    const run = source.slice(source.indexOf("export async function runGreenCheckpoint"));
+    const route = run.slice(run.indexOf("routeLegs({"));
+    expect(route.slice(0, 400)).toMatch(
+      /failureTails: repairTickLegFailureTails\(\s*finalResult\.repairTickLegs,\s*queueForRouting\?\.repairHead,?\s*\)/,
+    );
   });
 });
 

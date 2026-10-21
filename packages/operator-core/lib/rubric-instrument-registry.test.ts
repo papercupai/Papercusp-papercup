@@ -16,6 +16,7 @@ import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
+import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import {
@@ -194,6 +195,7 @@ describe('the registry seed set', () => {
   it('registers exactly the keys scorecards resolves as platform-computed', () => {
     const expected = [
       'woe.goal-mode-base-scorecard',
+      ...TOOL_DELIVERY_INSTRUMENTS,
       ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),
       GATE_REUSE_AUDIT_INSTRUMENT_KEY,
       'storage:disk-headroom-post-shipment-72h',

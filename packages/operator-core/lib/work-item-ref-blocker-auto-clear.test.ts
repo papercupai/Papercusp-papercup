@@ -11,6 +11,9 @@
  *   AUTO-BAR-R-5-P-003 — the holder of an item receives a waking coord message when the
  *     system clears the item's last blocker, on every settlement path.
  */
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionSql } from 'postgres';
 
@@ -24,6 +27,7 @@ import {
   BLOCKER_AUTO_CLEAR_ACTOR,
   CLAIMABLE_WORK_QUERY_NAMES,
   clearBlockersNamingFinishedWorkItems,
+  finishedWorkItemIdOfDoneKey,
   followUpAutoClearedBlockers,
   followUpSystemClears,
   planWorkItemRefBlockerClears,
@@ -110,6 +114,36 @@ describe('workItemIdsNamedByBlockerRef', () => {
   it('matches whole tokens only', () => {
     expect(workItemIdsNamedByBlockerRef('waiting on WI-10')).toEqual(['WI-10']);
     expect(workItemIdsNamedByBlockerRef('SPEC-F-1 PWI-3 P-011 gate:green-checkpoint WI-7x')).toEqual([]);
+  });
+});
+
+describe('the completion fire key (event-wait-settlement-2026-10-20 P-007)', () => {
+  it('names the one work-item id a work-item:done key carries', () => {
+    expect(finishedWorkItemIdOfDoneKey('work-item:done:WI-6554700010018159')).toBe('WI-6554700010018159');
+    expect(finishedWorkItemIdOfDoneKey('  work-item:done:EI-12 ')).toBe('EI-12');
+    expect(finishedWorkItemIdOfDoneKey('work-item:done:F-7')).toBe('F-7');
+  });
+
+  it('names nothing for another key, a non-id subject, or a subject that is more than one id', () => {
+    for (const key of [
+      'work-item:claimable', 'work-item:done:', 'work-item:done:WI-nobody-waits', 'work-item:done:WI-12x',
+      'work-item:done:WI-1,WI-2', 'work-item:unblocked:WI-12', 'release:deployed:abc123', 'xwork-item:done:WI-1',
+    ]) {
+      expect(finishedWorkItemIdOfDoneKey(key), key).toBeNull();
+    }
+  });
+
+  it('the fixture copy of migration 1543\'s function is the migration\'s own body', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const armed = path.resolve(here, '../../../libs/papercusp/libs/db/sql/1543-work-items-dependency-ref-ids-idx.sql');
+    const migration = readFileSync(existsSync(armed) ? armed : `${armed}.DRAFT`, 'utf8');
+    const fixture = readFileSync(path.resolve(here, '../test/_work-items-schema.ts'), 'utf8');
+    const fnBody = (text: string) => {
+      const m = /CREATE OR REPLACE FUNCTION harness_shared\.active_dependency_blocker_item_ids[\s\S]*?\$\$([\s\S]*?)\$\$;/.exec(text);
+      expect(m, 'function definition present').not.toBeNull();
+      return m![0].replace(/\s+/g, ' ').trim();
+    };
+    expect(fnBody(fixture)).toBe(fnBody(migration));
   });
 });
 

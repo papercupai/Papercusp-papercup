@@ -4,7 +4,14 @@
  * agent-tools/scorecards/emit-from-ledger.integration.test.ts; this file pins the pure rules.
  */
 import { describe, expect, it } from 'vitest';
-import { fillRatingsFromLedger, judgeLedgerRow, ledgerCheckBindings, ledgerRatingLevel } from './scorecard-ledger-fill';
+import {
+  LEDGER_EVIDENCE_DETAIL_CHARS,
+  fillRatingsFromLedger,
+  judgeLedgerRow,
+  ledgerCheckBindings,
+  ledgerRatingLevel,
+  ledgerRowMatchesBinding,
+} from './scorecard-ledger-fill';
 import type { LatestRubricCheckResult } from './check-results-ledger';
 import type { RecordedRubricCheck } from '@papercusp/test-config/execution-details';
 
@@ -36,7 +43,7 @@ describe('ledgerCheckBindings — which criteria the ledger owns', () => {
   it('owns opt-in scheduled native adoption checks and fills their actual ledger verdicts', () => {
     const native = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
     const binding = ledgerCheckBindings(native)![0]!;
-    expect(binding).toEqual({ id: 'r-31:instrument', kind: 'instrument', unit: 'count' });
+    expect(binding).toEqual({ id: 'r-31:instrument', kind: 'instrument', unit: 'count', verdictRows: true });
     expect(judgeLedgerRow(binding, row('r-31:instrument', 0, 'fail', { unit: 'count' }))).toBe('fail');
     expect(judgeLedgerRow(binding, row('r-31:instrument', null, 'error', { unit: 'count' }))).toBe('error');
   });
@@ -45,6 +52,57 @@ describe('ledgerCheckBindings — which criteria the ledger owns', () => {
     expect(ledgerCheckBindings(criteria[1]!)?.map((b) => b.id)).toEqual(['rows:0', 'rows:1']);
     for (const c of criteria.slice(3)) expect(ledgerCheckBindings(c)).toBeNull();
     expect(ledgerCheckBindings({ key: 'none' })).toBeNull();
+  });
+});
+
+// WI-6554700010018719: platform rows used to carry a 0/1 pass bit under a quantity unit, and the
+// fromLedger evidence quoted it, so a fail for 224 stranded agents read "instrument=0 count -> fail".
+describe('platform verdict rows — a verdict is never shown as a measured quantity', () => {
+  const stranded = { key: 'silent', check: { kind: 'instrument', instrumentKey: 'agents:silent-halt-stranded' } };
+  const native = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use', expect: { op: 'eq', value: 1 } } };
+
+  it('matches a verdict row only to a platform binding, and judges it by its recorded verdict', () => {
+    const [platform] = ledgerCheckBindings(native)!;
+    const verdictRow = row('r-31:instrument', false, 'fail', { unit: null });
+    expect(ledgerRowMatchesBinding(platform!, verdictRow)).toBe(true);
+    // The criterion's numeric expect is never applied to a verdict (false would not "eq 1" either way).
+    expect(judgeLedgerRow(platform!, verdictRow)).toBe('fail');
+    expect(judgeLedgerRow(platform!, row('r-31:instrument', true, 'pass', { unit: null }))).toBe('pass');
+    // A command instrument has no verdict rows: a unit-less row is a different binding.
+    const [command] = ledgerCheckBindings(criteria[0]!)!;
+    expect(ledgerRowMatchesBinding(command!, row('disk:instrument', true, 'pass', { unit: null }))).toBe(false);
+    expect(ledgerRowMatchesBinding(platform!, row('r-31:instrument', 3, 'pass', { unit: null }))).toBe(false);
+  });
+
+  it('quotes the measured quantity and detail as evidence, never a pass bit as a count', () => {
+    const detail = '{"stranded":224,"wakeOnly":40,"checked":440,"threshold":5,"bar":"stranded < 5"}';
+    const out = fillRatingsFromLedger({
+      criteria: [stranded, native], rubricRatingScale: SCALE, callerRatings: {},
+      latest: new Map([
+        ['silent:instrument', { ...row('silent:instrument', 224, 'fail', { unit: 'count' }, 31), detail }],
+        ['r-31:instrument', { ...row('r-31:instrument', false, 'fail', { unit: null }, 32), detail: 'below frozen target' }],
+      ]),
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.ratings.silent).toMatchObject({ rating: 'misses', ledgerResult: { testRunId: 31, value: 224, unit: 'count' } });
+    expect(out.ratings.silent!.evidence).toContain('silent:instrument=224 count → fail');
+    expect(out.ratings.silent!.evidence).toContain(`measured: ${detail}`);
+    expect(out.ratings['r-31']).toMatchObject({ rating: 'misses', ledgerResult: { testRunId: 32, value: false, unit: null } });
+    expect(out.ratings['r-31']!.evidence).toContain('r-31:instrument=verdict fail → fail');
+    expect(out.ratings['r-31']!.evidence).toContain('measured: below frozen target');
+    for (const key of ['silent', 'r-31']) expect(out.ratings[key]!.evidence).not.toMatch(/=0 count/);
+  });
+
+  it('bounds the quoted detail and omits it on a passing row', () => {
+    const long = 'x'.repeat(LEDGER_EVIDENCE_DETAIL_CHARS + 50);
+    const failing = fillRatingsFromLedger({ criteria: [native], rubricRatingScale: SCALE, callerRatings: {},
+      latest: new Map([['r-31:instrument', { ...row('r-31:instrument', false, 'fail', { unit: null }), detail: long }]]) });
+    expect(failing.ok && failing.ratings['r-31']!.evidence).toContain(`measured: ${'x'.repeat(LEDGER_EVIDENCE_DETAIL_CHARS)}…`);
+    expect(failing.ok && failing.ratings['r-31']!.evidence).not.toContain('x'.repeat(LEDGER_EVIDENCE_DETAIL_CHARS + 1));
+    const passing = fillRatingsFromLedger({ criteria: [native], rubricRatingScale: SCALE, callerRatings: {},
+      latest: new Map([['r-31:instrument', { ...row('r-31:instrument', true, 'pass', { unit: null }), detail: 'stale' }]]) });
+    expect(passing.ok && passing.ratings['r-31']!.evidence).not.toContain('measured:');
   });
 });
 

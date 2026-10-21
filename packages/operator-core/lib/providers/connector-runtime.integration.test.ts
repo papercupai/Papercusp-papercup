@@ -40,6 +40,7 @@ import {
   type ConnectorSyncDeps,
   type ConnectorSyncResult,
 } from './connector-runtime';
+import { listUnhealthyConnectorSources } from './connector-source-health';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 
 // A sync pass records fallback observations; their timer flush opens the live org-admin pool,
@@ -493,7 +494,10 @@ describe('connector sync driver over registered providers (R-3)', () => {
 
     await makeDue(src);
     handler = scripted({ start: page([mail('m1')], 'c1', false) });
-    expect((await syncOne(src)).outcome).toBe('synced');
+    const recovery = await syncOne(src);
+    expect(recovery.outcome).toBe('synced');
+    // WI-6554700010018612: connector-sync resolves the source's health alarm on this field.
+    expect(recovery.recoveredFrom).toBe('degraded');
     expect(await state(src)).toMatchObject({ status: 'connected', failure_count: 0, last_error: null });
   });
 
@@ -662,6 +666,31 @@ describe('connector sync driver over registered providers (R-3)', () => {
     expect(s.last_error).toMatch(/^reconnect_required: invalid_grant/);
     await makeDue(src);
     expect((await sync(src)).sources).toEqual([]);
+  });
+
+  // WI-6554700010018612: the health alarm reads unhealthy sources straight from data_sources, because
+  // an `error` source is never synced again and so never appears in a pass result.
+  it('lists an unhealthy source for the health alarm, and a clean first pass is not a recovery', async () => {
+    const healthy = await createSource();
+    const first = await syncOne(healthy);
+    expect(first.outcome).toBe('synced');
+    expect(first).not.toHaveProperty('recoveredFrom');
+
+    const broken = await createSource();
+    handler = fail(new ProviderSyncFailure({ kind: 'auth', message: 'invalid_grant' }));
+    await syncOne(broken);
+
+    const listed = await listUnhealthyConnectorSources(org.adminSql, WS);
+    const ids = listed.map((source) => source.id);
+    expect(ids).toContain(broken);
+    expect(ids).not.toContain(healthy);
+    expect(listed.find((source) => source.id === broken)).toMatchObject({
+      kind: KIND,
+      status: 'error',
+      failureCount: 1,
+      lastError: expect.stringMatching(/^reconnect_required: invalid_grant/),
+      lastSuccessAt: null,
+    });
   });
 });
 

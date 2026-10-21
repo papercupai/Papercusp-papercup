@@ -64,6 +64,17 @@ export interface LedgerCheckBinding {
    * unit a probe check declares (absent when it declares none).
    */
   unit?: string;
+  /**
+   * A scheduled platform instrument whose resolver reaches only a verdict records value
+   * true/false with unit null instead of a quantity in `unit`; such a row still describes this check.
+   */
+  verdictRows?: boolean;
+}
+
+/** Whether a stored row describes this binding (its unit, or a platform verdict row). */
+export function ledgerRowMatchesBinding(binding: LedgerCheckBinding, row: LatestRubricCheckResult): boolean {
+  if (binding.unit === undefined || row.check.unit === binding.unit) return true;
+  return binding.verdictRows === true && row.check.unit === null && typeof row.check.value === 'boolean';
 }
 
 type Verdict = 'pass' | 'fail' | 'error';
@@ -125,6 +136,7 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
       id: instrumentCheckId(criterion.key),
       kind: 'instrument',
       unit: instrument.evaluator === 'command' ? instrument.unit : instrument.rescore!.unit,
+      ...(instrument.evaluator === 'platform' ? { verdictRows: true } : {}),
       ...(ratingBands ? { ratingBands } : {}),
       ...(expect && typeof expect.op === 'string' && typeof expect.value === 'number'
         ? { expect: { op: expect.op as NonNullable<LedgerCheckBinding['expect']>['op'], value: expect.value } }
@@ -139,6 +151,8 @@ export function judgeLedgerRow(binding: LedgerCheckBinding, row: LatestRubricChe
   if (row.status === 'error') return 'error';
   const value = row.check.value;
   if (binding.kind === 'instrument') {
+    // A platform verdict row carries no quantity to re-apply a threshold to: its verdict stands.
+    if (typeof value === 'boolean') return row.status;
     if (typeof value !== 'number') return 'error';
     return binding.expect ? (meetsExpect(value, binding.expect) ? 'pass' : 'fail') : row.status;
   }
@@ -201,10 +215,20 @@ function rateLedgerRow(
   return { verdict, rating: ledgerRatingLevel('fail', scale) };
 }
 
+/** How much of a row's measured detail ledger-filled evidence quotes. */
+export const LEDGER_EVIDENCE_DETAIL_CHARS = 600;
+
 function describeRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, verdict: Verdict, rating?: string): string {
   const unit = row.check.unit ? ` ${row.check.unit}` : '';
+  const shown = typeof row.check.value === 'boolean'
+    ? `verdict ${row.check.value ? 'pass' : 'fail'}`
+    : `${JSON.stringify(row.check.value)}${unit}`;
   const rated = rating && rating !== verdict ? `; scorecard rating ${rating}` : '';
-  return `${binding.id}=${JSON.stringify(row.check.value)}${unit} → ${verdict}${rated} (test_runs #${row.testRunId}, ${row.finishedAt})`;
+  // A non-passing row's measured detail is the evidence a reader checks the verdict against.
+  const detail = verdict !== 'pass' && row.detail
+    ? `; measured: ${row.detail.length > LEDGER_EVIDENCE_DETAIL_CHARS ? `${row.detail.slice(0, LEDGER_EVIDENCE_DETAIL_CHARS)}…` : row.detail}`
+    : '';
+  return `${binding.id}=${shown} → ${verdict}${rated} (test_runs #${row.testRunId}, ${row.finishedAt})${detail}`;
 }
 
 function ledgerResultOf(row: LatestRubricCheckResult): ObservationLedgerResult {
@@ -298,7 +322,7 @@ export function fillRatingsFromLedger(input: {
     const rows = bindings.map((binding) => {
       const row = input.latest.get(binding.id);
       // A row recorded under a different unit describes a different instrument binding.
-      const usable = row && (binding.unit === undefined || row.check.unit === binding.unit) ? row : undefined;
+      const usable = row && ledgerRowMatchesBinding(binding, row) ? row : undefined;
       return { binding, row: usable };
     });
     let entry: ObservationRatingEntry;

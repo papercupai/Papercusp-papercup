@@ -26,11 +26,15 @@ describe('silentHaltStrandedVerdict', () => {
     const detail = JSON.parse(r.detail);
     expect(detail).toMatchObject({ stranded: 2, wakeOnly: 1, checked: 40, threshold: AGENT_STRANDED_ALARM_THRESHOLD });
     expect(detail.sample).toEqual(['su-a', 'su-b']);
+    // The ledger records this as the row's value in 'count' (WI-6554700010018719).
+    expect(r.value).toBe(2);
+    expect(silentHaltStrandedVerdict(reading(owners(224))).value).toBe(224);
   });
 
   it('reports unknown, never a zero pass, when the sweep gave no reading', () => {
     const r = silentHaltStrandedVerdict(null, 'boom');
     expect(r.verdict).toBe('unknown');
+    expect(r.value).toBeUndefined();
     expect(JSON.parse(r.detail)).toEqual({ unknown: 'boom' });
     expect(r.detail).not.toMatch(/stranded/);
   });

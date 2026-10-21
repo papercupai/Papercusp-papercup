@@ -1046,21 +1046,25 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
     };
-    deps.dispatchFrozenRepairFixer = async () => ({
-      spawnId: "fixer",
-      runId: "run",
-    });
+    let fixerDispatches = 0;
+    deps.dispatchFrozenRepairFixer = async () => {
+      fixerDispatches += 1;
+      return { spawnId: "fixer", runId: "run" };
+    };
 
     await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     expect(reads).toBeGreaterThanOrEqual(2);
     expect(queue).toMatchObject({
-      phase: "awaiting-fixer",
+      // WI-6554700010018209: the admitted head is owed verification, not a fixer.
+      phase: "ready-to-verify",
       candidate: frozen,
       // The whole point: the converged repairHead survives the red transition instead of
       // being reset back to the stale pre-suite candidate.
       repairHead: convergedHead,
     });
+    // WI-6554700010018762: a ready-to-verify queue must not get a fixer launched for it.
+    expect(fixerDispatches).toBe(0);
   });
 
   it("WI-2141375: falls back to the pre-suite snapshot when the re-read can't be trusted", async () => {

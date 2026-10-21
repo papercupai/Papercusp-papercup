@@ -50,6 +50,7 @@ import { getSystemActionEntry } from './harness/routines/system-actions';
 import { planScheduleRoutineName } from './harness/routines/materialize-plan-schedule';
 import { checkPlanStartable } from './agent-tools/plans/plan-start-gate';
 import { probeCheckId } from './check-results-ledger';
+import { parseRequirementBars } from './acceptance-bar-seed';
 import type { CheckedCriterion } from './rubrics-criterion-checks';
 import type { LatestRubricCheckResult, RubricCheckResult } from './check-results-ledger';
 import {
@@ -135,8 +136,6 @@ beforeEach(() => {
 describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
   it('executes the live plan instruments when the stored acceptance seed still says none', async () => {
     const checks = ['agents:acceptance-machinery-share', 'agents:native-session-minutes'];
-    const stored = checks.map((_, i) => ({ key: `r-${15 + i}`, barKey: `R-${15 + i}`,
-      check: { kind: 'instrument' as const, instrumentKey: 'none' } }));
     const content = '## Requirements\n\n' + checks.map((instrumentKey, i) =>
       `**R-${15 + i} — Outcome.**\n\n\`\`\`requirement\n` + JSON.stringify({
         intent: { request: 'Measure real plan outcomes.', sourceRefs: ['owner-directive:1909'] },
@@ -144,6 +143,12 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
           evidencePlane: 'live', requiredScope: ['P-015'] },
         verification: { method: 'Run the registered measurement.', check: { kind: 'instrument', instrumentKey } },
       }) + '\n```\n').join('\n');
+    // The stored seed carries the same promise a real seed of this Requirements section does;
+    // only its check is still the unbound instrument:none (WI-6554700010018740).
+    const parsed = parseRequirementBars(content);
+    if (!parsed.ok) throw new Error('fixture Requirements must parse');
+    const stored = parsed.bars.map((bar) => ({ ...bar.criterion!,
+      check: { kind: 'instrument' as const, instrumentKey: 'none' } }));
     // This read seam consumes only the plan content and revision.
     mockResolvedTyped(vi.mocked(getPlanRow), { content, version: 35 } as PlanRow);
     const { deps, record } = depsFor([], [], []);

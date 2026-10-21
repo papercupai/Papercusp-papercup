@@ -352,6 +352,13 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // item waits on this proving key. Unknown ⇒ settle; settleProvingFire re-checks that
   // the key is proving before it touches the database.
   let provingWaiterPending = true;
+  // event-wait-settlement-2026-10-20 P-007: for a work-item:done:<id> key, the workspaces
+  // where a live-dependency blocker names <id>. The latch statement is the authority on which
+  // keys it probes: an answer without the field means the key names no single work-item id
+  // (skip). undefined here = no answer at all (latch threw / returned nothing) ⇒ unknown ⇒
+  // the settle reads it itself.
+  let workItemRefWaiterWorkspaces: string[] | undefined;
+  let latchAnswered = false;
   // WI-10003631: the latch statement also returns the standing event-key
   // subscribers; undefined (latch failed / stub) ⇒ the separate read below.
   let latchedSubscribers: LatchedEventSubscriber[] | undefined;
@@ -363,6 +370,10 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     });
     if (latch && latch.announcementPending === false) announcementPending = false;
     if (latch && latch.provingWaiterPending === false) provingWaiterPending = false;
+    if (latch) {
+      latchAnswered = true;
+      workItemRefWaiterWorkspaces = Array.isArray(latch.workItemRefWaiterWorkspaces) ? latch.workItemRefWaiterWorkspaces : [];
+    }
     latchedSubscribers = latch?.eventSubscribers;
     // P-018 (D-029 §2): worn async identity rules subscribe as muted rows. Each one
     // this fire reached becomes a durable reaction keyed by the latch's fire
@@ -444,6 +455,21 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       await settleProvingFire(opts.key, { firedBy: opts.source ?? null });
     } catch (e) {
       log(`proving-fire settlement failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  // event-wait-settlement-2026-10-20 P-007 (Design 7): a completion fire releases the
+  // live-dependency blockers naming the finished item. work-item:done:<id> fires on EVERY
+  // terminal transition — a plans:set-status cascade and a drop included — so this covers
+  // what the work_items:complete / set_state tool reactions never see. Skipped when the
+  // latch proved nobody waits (no extra round trip). The clear is idempotent, so the tool
+  // reactions running too is harmless. Loaded lazily: it pulls in the work-item write and
+  // messaging stacks. Fail-soft: logged, never fails the emit; the sweep is the backstop.
+  if (opts.key.startsWith('work-item:done:') && (!latchAnswered || (workItemRefWaiterWorkspaces?.length ?? 0) > 0)) {
+    try {
+      const { settleWorkItemDoneFire } = await import('../../work-item-ref-blocker-auto-clear');
+      await settleWorkItemDoneFire(opts.key, latchAnswered ? workItemRefWaiterWorkspaces : undefined);
+    } catch (e) {
+      log(`work-item-ref blocker clear failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
     }
   }
 

@@ -262,6 +262,26 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     ) STORED,
     PRIMARY KEY (harness_slug, feature_id)
   );
+  -- migration 1543 (event-wait-settlement-2026-10-20 P-007): the fire latch calls this for
+  -- every work-item:done:<id> emit. Without it the latch statement throws, the engine logs,
+  -- and vitest-fail-on-console fails an unrelated case. The body must equal the migration's;
+  -- work-item-ref-blocker-auto-clear.test.ts asserts that.
+  CREATE OR REPLACE FUNCTION harness_shared.active_dependency_blocker_item_ids(p jsonb)
+  RETURNS text[]
+  LANGUAGE sql
+  IMMUTABLE
+  PARALLEL SAFE
+  AS $$
+    SELECT COALESCE(array_agg(DISTINCT m[1] ORDER BY m[1]), '{}'::text[])
+      FROM jsonb_array_elements(
+             CASE WHEN jsonb_typeof(p -> 'externalBlockers') = 'array'
+                  THEN p -> 'externalBlockers'
+                  ELSE '[]'::jsonb END
+           ) AS b,
+           regexp_matches(COALESCE(b ->> 'ref', ''), '((?:WI|EI|F)-[0-9]+)', 'g') AS m
+     WHERE lower(COALESCE(b ->> 'status', '')) = 'active'
+       AND b ->> 'capability' = 'live-dependency'
+  $$;
   DROP VIEW IF EXISTS harness_shared.harness_features_consolidated;
   CREATE VIEW harness_shared.harness_features_consolidated AS
     SELECT * FROM harness_shared.work_items WHERE item_kind NOT IN ('bug', 'change', 'task');

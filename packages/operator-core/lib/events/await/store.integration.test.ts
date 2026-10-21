@@ -17,6 +17,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
 
@@ -195,6 +198,11 @@ beforeAll(async () => {
       taken_by text, last_progress_at timestamptz,
       admission text, admitted_at timestamptz, admitted_by text
     )`);
+  // event-wait-settlement-2026-10-20 P-007: the fire latch probes a work-item:done:<id> key
+  // through migration 1543's function; apply the real migration (function + index).
+  const sql1543 = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+    '../../../../../libs/papercusp/libs/db/sql/1543-work-items-dependency-ref-ids-idx.sql');
+  await rootSql.unsafe(readFileSync(existsSync(sql1543) ? sql1543 : `${sql1543}.DRAFT`, 'utf8'));
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.routines (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',
@@ -2928,6 +2936,44 @@ describe('proving-fire settlement (PG) — event-wait-settlement-2026-10-20 P-00
     const latch = await recordKeyFire({ eventKey: SHA_KEY, firedBy: 'release-gate' });
     expect(latch.provingWaiterPending).toBe(expected);
     expect(latch.fire?.count).toBe(1); // the latch itself still recorded the fire
+  });
+
+  // event-wait-settlement-2026-10-20 P-007 (Design 7): the same statement probes a completion
+  // fire for non-terminal items whose live-dependency blockers name the finished id.
+  const DONE_KEY = 'work-item:done:WI-9007201';
+  const dependencyBlocker = (ref: string, over: Record<string, unknown> = {}) => ({ ...eventBlocker(ref), kind: 'runtime', ...over });
+
+  it.each([
+    ['an active live-dependency blocker names it', () => seedBlocked('EI-p007', [dependencyBlocker('work-item:WI-9007201')]), ['default']],
+    ['a qualified two-id ref names it', () => seedBlocked('EI-p007', [dependencyBlocker('shared host / WI-9007201 + EI-9007299')]), ['default']],
+    ['nothing', async () => {}, []],
+    ['only a CLEARED blocker names it', () => seedBlocked('EI-p007', [dependencyBlocker('work-item:WI-9007201', { status: 'cleared' })]), []],
+    ['only an owner ask mentions it', () => seedBlocked('EI-p007', [dependencyBlocker('sign off WI-9007201', { kind: 'human', capability: 'product-decision' })]), []],
+    ['a blocker names a longer id', () => seedBlocked('EI-p007', [dependencyBlocker('work-item:WI-90072010')]), []],
+    ['the waiting item is itself terminal', async () => {
+      await rootSql`
+        INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+        VALUES ('EI-p007', 'done', 'bug', ${JSON.stringify({ externalBlockers: [dependencyBlocker('work-item:WI-9007201')] })}::text::jsonb)`;
+    }, []],
+  ])('AUTO-BAR-R-6-P-007: the fire latch reports the dependency waiters of a completion fire when %s', async (_label, arrange, expected) => {
+    await arrange();
+    const latch = await recordKeyFire({ eventKey: DONE_KEY, firedBy: 'work-items' });
+    expect(latch.workItemRefWaiterWorkspaces).toEqual(expected);
+    expect(latch.fire?.count).toBe(1); // the latch itself still recorded the fire
+  });
+
+  it('the completion-fire probe is absent for any other key, and served by migration 1543\'s index', async () => {
+    await seedBlocked('EI-p007-other', [dependencyBlocker('work-item:WI-9007201')]);
+    expect(await recordKeyFire({ eventKey: SHA_KEY })).not.toHaveProperty('workItemRefWaiterWorkspaces');
+    expect(await recordKeyFire({ eventKey: 'work-item:done:WI-p007-not-an-id' })).not.toHaveProperty('workItemRefWaiterWorkspaces');
+    const plan = await rootSql.begin(async (tx) => {
+      await tx.unsafe('SET LOCAL enable_seqscan = off');
+      return tx.unsafe(`EXPLAIN SELECT 1 FROM harness_shared.work_items
+        WHERE payload ? 'externalBlockers'
+          AND harness_shared.active_dependency_blocker_item_ids(payload) @> ARRAY['WI-9007201'::text]`);
+    });
+    expect(plan.map((row) => String((row as Record<string, unknown>)['QUERY PLAN'])).join('\n'))
+      .toContain('work_items_active_dependency_item_ids_idx');
   });
 
   it('a key no fire can prove is not probed, even when an item waits on it', async () => {

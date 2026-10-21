@@ -45,7 +45,7 @@ export interface SilentHaltStrandedDeps {
 export function silentHaltStrandedVerdict(
   reading: SilentHaltStrandedReading | null,
   failure?: string,
-): { verdict: 'pass' | 'fail' | 'unknown'; detail: string } {
+): { verdict: 'pass' | 'fail' | 'unknown'; detail: string; value?: number } {
   if (!reading) {
     return {
       verdict: 'unknown',
@@ -57,6 +57,8 @@ export function silentHaltStrandedVerdict(
   const stranded = halted.length;
   return {
     verdict: stranded < AGENT_STRANDED_ALARM_THRESHOLD ? 'pass' : 'fail',
+    // The measured count, recorded as the ledger row's value in the instrument's 'count' unit.
+    value: stranded,
     detail: JSON.stringify({
       stranded,
       wakeOnly: wakeOnly.length,
@@ -78,7 +80,7 @@ async function defaultReadSweep(workspaceId: string): Promise<SilentHaltStranded
 export async function measureSilentHaltStranded(
   window: { workspaceId: string },
   deps: SilentHaltStrandedDeps = {},
-): Promise<{ verdict: 'pass' | 'fail' | 'unknown'; detail: string }> {
+): Promise<{ verdict: 'pass' | 'fail' | 'unknown'; detail: string; value?: number }> {
   const readSweep = deps.readSweep ?? defaultReadSweep;
   try {
     return silentHaltStrandedVerdict(await readSweep(window.workspaceId));

@@ -87,6 +87,17 @@ export const DEFAULT_CONNECTOR_POLL_INTERVAL_SECONDS = 300;
 export const DEFAULT_CONNECTOR_MAX_PAGES = 20;
 /** Consecutive transient failures before a source reports `degraded`. */
 export const CONNECTOR_DEGRADED_AFTER_FAILURES = 3;
+
+/**
+ * Source statuses that need attention: `degraded` (repeated failures or a loss risk), `error`
+ * (an auth failure; this driver never retries it) and `reconnect_required` (a refused token
+ * refresh). connector-source-health.ts raises one condition per source in these states.
+ */
+export const CONNECTOR_UNHEALTHY_STATUSES = ['degraded', 'error', 'reconnect_required'] as const;
+
+export function isUnhealthyConnectorStatus(status: string): boolean {
+  return (CONNECTOR_UNHEALTHY_STATUSES as readonly string[]).includes(status);
+}
 const BACKOFF_BASE_SECONDS = 30;
 const BACKOFF_MAX_SECONDS = 3_600;
 
@@ -155,6 +166,11 @@ export interface ConnectorSourceOutcome {
   error?: string;
   /** The afterSourceSynced hook failed (the pass itself succeeded). */
   afterSyncError?: string;
+  /**
+   * The unhealthy status this clean pass moved the source out of (it is now `connected`).
+   * connector-sync resolves the source's health alarm on it (WI-6554700010018612).
+   */
+  recoveredFrom?: string;
 }
 
 export interface ConnectorSyncResult {
@@ -921,6 +937,7 @@ async function syncSource(
       success: true,
       passStartedAt,
     });
+    if (!outcome.lossRisk && isUnhealthyConnectorStatus(source.status)) outcome.recoveredFrom = source.status;
     return outcome;
   } catch (cause) {
     const failure = classifyProviderSyncError(cause);

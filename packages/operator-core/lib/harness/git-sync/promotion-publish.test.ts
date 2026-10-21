@@ -93,6 +93,14 @@ describe('publishPromotion', () => {
     expect(out).toMatchObject({ kind: 'fork', remoteRef: 'refs/heads/main', standingPr: { ok: true } });
   });
 
+  it('D-056: a pot whose upstream branch is `staging` still pushes the fork main but opens the standing PR against upstream staging', async () => {
+    const { d, pushToFork, publishStandingPr } = deps({ mode: { mode: 'review', source: 'set', upstreamBranch: 'staging' } });
+    const out = await publishPromotion(INPUT, d);
+    expect(pushToFork).toHaveBeenCalledWith(REPO, SHA, 'refs/heads/main');
+    expect(publishStandingPr.mock.calls[0]?.[0]).toMatchObject({ baseBranch: 'staging', promotedSha: SHA });
+    expect(out).toMatchObject({ kind: 'fork', remoteRef: 'refs/heads/main' });
+  });
+
   it('review mode never falls back to origin when the fork push fails — it throws', async () => {
     const { d, publishStandingPr } = deps({ pushError: new Error('rejected') });
     await expect(publishPromotion(INPUT, d)).rejects.toThrow('rejected');
@@ -200,6 +208,16 @@ describe('publishPromotion with submodules (P-014 / D-017 §5)', () => {
       relatedPrs: [{ path: 'libs/lib', sha: SUB_SHA, url: 'https://github.com/acme/widgets/pull/7' }],
     });
     expect(out).toMatchObject({ kind: 'fork', submodulePrs: [{ path: 'libs/lib', sha: SUB_SHA, standingPr: { ok: true } }] });
+  });
+
+  it('D-056: judges submodule pins against the pot’s upstream branch, not the fork ref pushed', async () => {
+    const { d, findUnpublishedGitlinks, publishStandingPr } = subDeps();
+    d.readMode = async () => ({ mode: 'review', source: 'set', upstreamBranch: 'staging' });
+    await publishPromotion(INPUT, d);
+    expect(findUnpublishedGitlinks).toHaveBeenCalledWith(REPO, SHA, 'staging');
+    // The submodule PR still targets the submodule's own branch; only the superproject PR moves.
+    expect(publishStandingPr.mock.calls[0]?.[0]).toMatchObject({ baseBranch: 'main', promotedSha: SUB_SHA });
+    expect(publishStandingPr.mock.calls[1]?.[0]).toMatchObject({ baseBranch: 'staging', promotedSha: SHA });
   });
 
   it('publishes no submodule PR when every pin is already on its main repository', async () => {

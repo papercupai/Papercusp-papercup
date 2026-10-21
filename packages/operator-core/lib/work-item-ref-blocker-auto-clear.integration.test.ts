@@ -36,6 +36,7 @@ import {
   applyClaimPathReadDeps,
 } from '../test/_work-items-schema';
 import { BLOCKER_AUTO_CLEAR_ACTOR, clearBlockersNamingFinishedWorkItems } from './work-item-ref-blocker-auto-clear';
+import type { WorkItem } from './work-items';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
@@ -422,6 +423,62 @@ describe('announced settlement runs the shared follow-up (event-wait-settlement-
     expect(opts.to).toEqual(['su-p004-holder']);
     expect(opts.body).toContain('No active blocker remains on WI-p004-feature.');
     expect(h.wakeRecipients).toHaveBeenCalledWith(['su-p004-holder'], expect.objectContaining({ workspaceId: WS_DEFAULT }));
+  });
+
+  // event-wait-settlement-2026-10-20 P-007 (Design 7): the completion fire itself clears the
+  // live-dependency blockers naming the finished item. Each case finishes the upstream with a
+  // bare SQL write, so no work_items:complete / set_state tool reaction can run, which is what a
+  // plans:set-status cascade or a drop looks like to this module. It then publishes
+  // work-item:done through the real producer every terminal transition goes through
+  // (emitWorkItemDoneEvent), into the real emit.
+  const dependencyBlocker = (ref: string) => ({
+    kind: 'runtime', capability: 'live-dependency', capabilitySource: 'explicit', ref, summary: `waits on ${ref}`,
+    status: 'active', createdAt: T0, createdBy: 'su-p007-holder', updatedAt: T0,
+  });
+
+  async function finishUpstreamAndFire(id: string, status: 'done' | 'dropped') {
+    await db.sql`UPDATE harness_shared.work_items SET status = ${status} WHERE workspace_id = ${WS_DEFAULT} AND feature_id = ${id}`;
+    const { emitWorkItemDoneEvent } = await import('./work-items-events');
+    await emitWorkItemDoneEvent({ id, state: status, kind: 'feature', harness: H, title: `title ${id}` } as unknown as WorkItem);
+  }
+
+  it.each([
+    ['AUTO-BAR-R-13-P-007: a blocker naming a work item clears when that item is closed through a plan-status cascade, and its holder is woken', 'done', '9007301'],
+    ['AUTO-BAR-R-14-P-007: a blocker naming a work item clears when that item is dropped, and its holder is woken', 'dropped', '9007401'],
+  ] as const)('%s', async (_title, status, n) => {
+    const upstream = `WI-${n}`;
+    const blocked = `WI-${Number(n) + 1}`;
+    await seed({ id: upstream, kind: 'feature', status: 'wip', takenBy: 'su-p007-upstream', payload: {} });
+    await seed({ id: blocked, kind: 'feature', status: 'blocked', takenBy: 'su-p007-holder',
+      payload: { externalBlockers: [dependencyBlocker(`work-item:${upstream}`)] } });
+
+    await finishUpstreamAndFire(upstream, status);
+
+    const after = await rowOf(blocked);
+    expect(after.status).toBe('open');
+    expect(after.blockers).toEqual([expect.objectContaining({
+      ref: `work-item:${upstream}`, status: 'cleared', clearedBy: BLOCKER_AUTO_CLEAR_ACTOR,
+    })]);
+    const [identity, opts] = sentMessage();
+    expect(identity).toMatchObject({ ownerId: BLOCKER_AUTO_CLEAR_ACTOR, workspaceId: WS_DEFAULT });
+    expect(opts.to).toEqual(['su-p007-holder']);
+    expect(opts.body).toContain(`No active blocker remains on ${blocked}.`);
+    expect(h.wakeRecipients).toHaveBeenCalledWith(['su-p007-holder'], expect.objectContaining({ workspaceId: WS_DEFAULT }));
+  });
+
+  it('a completion fire for an item that is not terminal (a late fire after a reopen) leaves the blocker and sends nothing', async () => {
+    await seed({ id: 'WI-9007501', kind: 'feature', status: 'wip', takenBy: 'su-p007-upstream', payload: {} });
+    await seed({ id: 'WI-9007502', kind: 'feature', status: 'blocked', takenBy: 'su-p007-holder',
+      payload: { externalBlockers: [dependencyBlocker('work-item:WI-9007501')] } });
+    const { emitWorkItemDoneEvent } = await import('./work-items-events');
+
+    await emitWorkItemDoneEvent({ id: 'WI-9007501', state: 'done', kind: 'feature', harness: H, title: 'reopened' } as unknown as WorkItem);
+
+    const after = await rowOf('WI-9007502');
+    expect(after.status).toBe('blocked');
+    expect(after.blockers.map((b) => b.status)).toEqual(['active']);
+    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(h.wakeRecipients).not.toHaveBeenCalled();
   });
 
   it('a fire that waits on nothing sends nothing', async () => {

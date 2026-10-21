@@ -36,7 +36,7 @@ import {
   type LatestRubricCheckResult,
   type RubricCheckResult,
 } from '../../check-results-ledger';
-import { judgeLedgerRow, ledgerCheckBindings, type LedgerFillCriterion } from '../../scorecard-ledger-fill';
+import { judgeLedgerRow, ledgerCheckBindings, ledgerRowMatchesBinding, type LedgerFillCriterion } from '../../scorecard-ledger-fill';
 import { evaluateCriterionProbeChecks, type CheckedCriterion } from '../../rubrics-criterion-checks';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { dispatchPaletteTarget } from '../../capabilities/invoke';
@@ -75,7 +75,7 @@ export function criterionLedgerVerdict(
   const judged: Array<{ verdict: CriterionLedgerVerdict; testRunId: number }> = [];
   for (const binding of bindings) {
     const row = latest.get(binding.id);
-    if (!row || (binding.unit !== undefined && row.check.unit !== binding.unit)) return null;
+    if (!row || !ledgerRowMatchesBinding(binding, row)) return null;
     judged.push({ verdict: judgeLedgerRow(binding, row), testRunId: row.testRunId });
   }
   return judged.find((j) => j.verdict === 'error') ?? judged.find((j) => j.verdict === 'fail') ?? judged[0] ?? null;

@@ -71,6 +71,7 @@ import {
   type DeltaResponse,
 } from '@papercusp/agent-mcp';
 import { readServingGeneration, type ServingGeneration } from '../../../serving-generation';
+import { withMcpBuildFence } from '../../../serving-build';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { applyScopedSuperuserTransportBoundary } from './scoped-superuser-transport-boundary';
@@ -4024,7 +4025,9 @@ export function registerMcpHost(server: McpServer): void {
 
   server.server.setRequestHandler(
     sdk.CallToolRequestSchema,
-    withMcpRequestDeadline(withMcpSessionSurfaceRecheck(withFuzzyToolName(
+    // staging-build-tool-routing-2026-10-21 P-002: refuse a call naming another build
+    // (`build_mismatch`) before the generation read or dispatch.
+    withMcpRequestDeadline(withMcpBuildFence(withMcpSessionSurfaceRecheck(withFuzzyToolName(
     async (
       req: {
         params: {
@@ -5950,7 +5953,7 @@ export function registerMcpHost(server: McpServer): void {
       };
     },
     MCP_FUZZY_DEPS,
-    ))),
+    )))),
   );
 
   // ── Resources ────────────────────────────────────────────────────

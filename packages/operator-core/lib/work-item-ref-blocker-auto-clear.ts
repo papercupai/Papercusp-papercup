@@ -29,6 +29,13 @@
  *      every system clear: announced-event settlement, durable-park settlement
  *      and the blocker re-check sweep call it too (event-wait-settlement-2026-10-20 P-003).
  *
+ * The completion fire drives the same clear (event-wait-settlement-2026-10-20 P-007):
+ * `emitAwaitedEvent` on `work-item:done:<id>` calls {@link settleWorkItemDoneFire}. That
+ * key fires on EVERY terminal transition, including a plans:set-status cascade and a
+ * drop, which no tool reaction sees. Its fire latch probes for waiters first
+ * ({@link workItemRefWaiterWorkspacesSql}, served by migration 1543's index), so a
+ * completion nobody waits on costs no extra round trip.
+ *
  * Only `live-dependency` blockers are eligible. An owner-capability ask
  * (credential, device, external action, product decision) or an approval that
  * merely MENTIONS a work item is not answered by that item closing.
@@ -413,6 +420,68 @@ export async function followUpSystemClears(
     );
     return [];
   }
+}
+
+/**
+ * The work-item id a completion fire key names — `work-item:done:<id>` where `<id>` is
+ * exactly one work-item id token — or null. Pure.
+ */
+export function finishedWorkItemIdOfDoneKey(eventKey: string): string | null {
+  const match = /^work-item:done:(\S+)$/.exec(eventKey.trim());
+  if (!match) return null;
+  const ids = workItemIdsNamedByBlockerRef(match[1]!);
+  return ids.length === 1 && ids[0] === match[1] ? ids[0]! : null;
+}
+
+/**
+ * SQL scalar: the sorted workspaces holding a NON-TERMINAL item with an active
+ * live-dependency blocker whose ref names `id` (`text[]`, empty when none). Matches
+ * migration 1543's partial GIN expression index exactly. The index's token pattern is a
+ * superset of WORK_ITEM_ID_TOKEN, so this can only over-report; the clear re-checks every
+ * blocker in TS. Lock-free: a blocker committed concurrently with the fire is left to the
+ * tool reactions and the blocker re-check sweep.
+ */
+export function workItemRefWaiterWorkspacesSql(sql: OrgSql | TransactionSql, id: string) {
+  return sql`(
+    SELECT COALESCE(array_agg(DISTINCT wi.workspace_id ORDER BY wi.workspace_id), '{}'::text[])
+      FROM harness_shared.work_items wi
+     WHERE wi.payload ? 'externalBlockers'
+       AND harness_shared.active_dependency_blocker_item_ids(wi.payload) @> ARRAY[${id}::text]
+       AND NOT (lower(COALESCE(wi.status, '')) = ANY(${[...TERMINAL_STATES]}::text[]))
+  )`;
+}
+
+/**
+ * event-wait-settlement-2026-10-20 P-007 (Design 7): settle a `work-item:done:<id>` fire.
+ * Clears, in each workspace that holds a waiter, every live-dependency blocker the finished
+ * item satisfies (one transaction per workspace), then runs the shared follow-up, which
+ * never throws. `waiterWorkspaces` is the fire latch's probe; `undefined` means the probe's
+ * answer is unknown, so this reads it. A key that names no single work-item id is a no-op
+ * with no database call.
+ */
+export async function settleWorkItemDoneFire(
+  eventKey: string,
+  waiterWorkspaces: readonly string[] | undefined,
+  deps?: BlockerAutoClearFollowUpDeps,
+): Promise<AutoClearedBlockerItem[]> {
+  const id = finishedWorkItemIdOfDoneKey(eventKey);
+  if (!id || (waiterWorkspaces !== undefined && waiterWorkspaces.length === 0)) return [];
+  const { sql } = getOrgPg();
+  let workspaces = waiterWorkspaces;
+  if (workspaces === undefined) {
+    const rows = await sql<{ workspaces: string[] | null }[]>`
+      SELECT ${workItemRefWaiterWorkspacesSql(sql, id)} AS workspaces
+    `;
+    workspaces = rows[0]?.workspaces ?? [];
+  }
+  const cleared: AutoClearedBlockerItem[] = [];
+  for (const workspaceId of workspaces) {
+    cleared.push(...await sql.begin(
+      async (tx): Promise<AutoClearedBlockerItem[]> => clearBlockersNamingFinishedWorkItems(tx, { workspaceId, ids: [id] }),
+    ));
+  }
+  await followUpSystemClears(cleared, deps);
+  return cleared;
 }
 
 /** Clear and follow up, for the `work-item.clearBlockersNamingFinished` built-in action. */

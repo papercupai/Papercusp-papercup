@@ -135,13 +135,22 @@ export interface LiveRequirementOverlay<C> {
 
 const VERIFICATION_FIELDS = ['method', 'check', 'replication'] as const;
 
+/** A criterion's promise: its meaning projection with the whole check removed. */
+function promiseProjection(criterion: LiveVerificationFields): Record<string, unknown> {
+  const { check: _check, ...promise } = verificationNeutralCriterion(criterion);
+  return promise;
+}
+
 /**
  * Overlay each stored acceptance criterion's verification fields with the live plan block's.
  *
  * A BAR keeps its stored verification when the plan has no explicit block for it (legacy prose)
  * or when the block's check KIND differs — a kind change alters what the proof measures, so it is
- * a meaning change that still needs an amendment. A live field the block omits keeps its stored
- * value rather than being blanked.
+ * a meaning change that still needs an amendment. It also keeps it when the live block's PROMISE
+ * (every meaning field except the check) differs from the stored one: the same R-N key then names
+ * a new promise that only an amendment may adopt. A same-kind check rebind under an unchanged
+ * promise (for example `instrument:none` → a registered instrument) is overlaid. A live field the
+ * block omits keeps its stored value rather than being blanked.
  */
 export function overlayLiveRequirementVerification<C extends LiveVerificationFields & { barKey?: string | null }>(
   stored: readonly C[],
@@ -174,7 +183,13 @@ export function overlayLiveRequirementVerification<C extends LiveVerificationFie
     // verification-only projection (for example, a test path/method patch). Merge
     // the live block over the stored criterion before comparing meaning so omitted
     // meaning fields remain inherited instead of looking like a BAR rewrite.
-    if (classifyRequirementBarEdit(criterion, { ...criterion, ...block }) === 'meaning') {
+    // The comparison is over the PROMISE only (the meaning projection without
+    // `check`): the check KIND is guarded just above, and the check's own details
+    // are exactly what this overlay exists to carry. Binding a stored
+    // `instrument:none` seed to the plan's registered instrument under an
+    // unchanged promise is therefore overlaid, which the scheduled rescore depends
+    // on (EI-26127406089578547, WI-6554700010018740).
+    if (stableJson(promiseProjection(criterion)) !== stableJson(promiseProjection({ ...criterion, ...block }))) {
       kept.push({ barKey, reason: 'meaning-changed' });
       return criterion;
     }

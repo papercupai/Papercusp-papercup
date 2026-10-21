@@ -22,7 +22,10 @@ vi.mock('../../hive-settings-store', () => store);
 import {
   POT_INTEGRATION_SETTING_KEY,
   POT_FORK_REMOTE_NAME,
+  POT_UPSTREAM_BRANCH_SETTING_KEY,
   SYNC_BACK_UPSTREAM_BRANCH,
+  isValidUpstreamBranch,
+  potUpstreamBranch,
   coercePotIntegrationMode,
   readPotIntegrationMode,
   resolveIntegrationPushRemote,
@@ -59,6 +62,39 @@ describe('hiveGit.integration key', () => {
     expect(coercePotIntegrationMode('direct')).toBe('direct');
     expect(coercePotIntegrationMode('REVIEW')).toBe('direct');
     expect(coercePotIntegrationMode(undefined)).toBe('direct');
+  });
+});
+
+describe('readPotIntegrationMode — D-056 upstream branch', () => {
+  it('review mode reads hiveGit.upstreamBranch and carries a valid value', async () => {
+    store.getHiveSetting.mockResolvedValueOnce({ value: 'review' }).mockResolvedValueOnce({ value: 'staging' });
+    expect(await readPotIntegrationMode('ws', 'pot')).toEqual({ mode: 'review', source: 'set', upstreamBranch: 'staging' });
+    expect(store.getHiveSetting).toHaveBeenLastCalledWith('ws', 'pot', POT_UPSTREAM_BRANCH_SETTING_KEY, undefined);
+    expect(POT_UPSTREAM_BRANCH_SETTING_KEY).toBe('hiveGit.upstreamBranch');
+  });
+  it('fails CLOSED on a junk branch or a store error instead of defaulting to main', async () => {
+    for (const junk of ['../main', 'refs/heads/staging', '-x', 'a b', 42]) {
+      store.getHiveSetting.mockResolvedValueOnce({ value: 'review' }).mockResolvedValueOnce({ value: junk });
+      expect(await readPotIntegrationMode('ws', 'pot')).toEqual({ mode: 'direct', source: 'malformed' });
+    }
+    store.getHiveSetting.mockResolvedValueOnce({ value: 'review' }).mockRejectedValueOnce(new Error('pg down'));
+    expect(await readPotIntegrationMode('ws', 'pot')).toEqual({ mode: 'direct', source: 'error' });
+    // Both fail-closed reads make the tick commit-only, never a push to the fork or main.
+    expect(resolveIntegrationPushRemote({ read: { mode: 'direct', source: 'malformed' }, forkRemote: FORK }).kind).toBe(
+      'commit-only',
+    );
+  });
+  it('absent setting ⇒ no upstreamBranch; direct mode never reads it', async () => {
+    store.getHiveSetting.mockResolvedValueOnce({ value: 'review' }).mockResolvedValueOnce(null);
+    expect(await readPotIntegrationMode('ws', 'pot')).toEqual({ mode: 'review', source: 'set' });
+    store.getHiveSetting.mockReset();
+    store.getHiveSetting.mockResolvedValueOnce({ value: 'direct' });
+    expect(await readPotIntegrationMode('ws', 'pot')).toEqual({ mode: 'direct', source: 'set' });
+    expect(store.getHiveSetting).toHaveBeenCalledTimes(1);
+  });
+  it('isValidUpstreamBranch accepts plain branch names only', () => {
+    expect(['staging', 'main', 'release/1.x', 'feat_a.b'].every(isValidUpstreamBranch)).toBe(true);
+    expect(['', 'a..b', '/x', 'x/', 'refs/heads/x', '-f', 'a~1', null].some(isValidUpstreamBranch)).toBe(false);
   });
 });
 
@@ -164,6 +200,25 @@ describe('applyIntegrationPushTarget (the git-sync tick rewrite)', () => {
     }
     expect(ensure).not.toHaveBeenCalled();
     expect(ensureBranch).not.toHaveBeenCalled();
+  });
+
+  it('D-056: a pot that sets hiveGit.upstreamBranch arms sync-back on THAT upstream branch, not main', async () => {
+    const cfg = baseCfg();
+    const decision = resolveIntegrationPushRemote({
+      read: { mode: 'review', source: 'set', upstreamBranch: 'staging' },
+      forkRemote: FORK,
+    });
+    expect(decision).toMatchObject({ kind: 'fork', upstreamBranch: 'staging' });
+    expect(
+      await applyIntegrationPushTarget('p', cfg, decision, '/repo', {
+        ensureRemote: vi.fn().mockResolvedValue('added'),
+        ensureBranch: onBranch(),
+        ensureForkBranch: forkHasBranch(),
+      }),
+    ).toBeNull();
+    expect(cfg.syncBack).toEqual({ upstreamRemote: 'origin', upstreamBranch: 'staging' });
+    // Unset ⇒ the long-standing default, main.
+    expect(potUpstreamBranch({ upstreamBranch: undefined })).toBe(SYNC_BACK_UPSTREAM_BRANCH);
   });
 
   it('a fork decision pushes the pot-fork remote on the staging branch and stops pushing submodule origins', async () => {

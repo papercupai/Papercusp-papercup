@@ -44,7 +44,12 @@ import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import { activeEventWaitBlockerSql, EVENT_WAIT_BLOCKER_KINDS, reconcileEventExternalBlockers } from '../../work-items';
 import { durableParkOnTriggerSql, reconcileEventDurableParks } from '../../work-items-durable-park-audit';
-import { followUpSystemClears, type SystemClearedBlockerItem } from '../../work-item-ref-blocker-auto-clear';
+import {
+  finishedWorkItemIdOfDoneKey,
+  followUpSystemClears,
+  workItemRefWaiterWorkspacesSql,
+  type SystemClearedBlockerItem,
+} from '../../work-item-ref-blocker-auto-clear';
 import { fireCertifiesCondition } from '../../external-condition-reachability';
 import { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 export { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
@@ -4056,6 +4061,11 @@ export async function recordKeyFire(input: {
    *  condition — so the emit must run {@link settleProvingFire}. Always false for a
    *  key no fire can prove, which is not probed at all. */
   provingWaiterPending: boolean;
+  /** event-wait-settlement-2026-10-20 P-007: for a `work-item:done:<id>` key naming one
+   *  work-item id, the workspaces holding a non-terminal item with an active
+   *  live-dependency blocker naming that id (empty when none). Absent for any other key,
+   *  and when the statement returned no readable answer. */
+  workItemRefWaiterWorkspaces?: string[];
   fire?: KeyFireIdentity;
   eventSubscribers?: LatchedEventSubscriber[];
 }> {
@@ -4081,6 +4091,14 @@ export async function recordKeyFire(input: {
         (SELECT count(*) FROM harness_shared.work_items WHERE ${activeEventWaitBlockerSql(sql, settleRef)}) > 0
         OR EXISTS (SELECT 1 FROM harness_shared.work_items WHERE ${durableParkOnTriggerSql(sql, settleRef)})
       ) AS proving_waiter_pending`
+    : sql``;
+  // P-007 (Design 7): a completion fire also releases live-dependency blockers that name the
+  // finished item. Probed here so a completion nobody waits on costs no extra round trip;
+  // migration 1543's GIN expression index serves it (0.09 ms against 101 ms for the LIKE
+  // scan the clear itself uses, measured 2026-10-21).
+  const doneId = finishedWorkItemIdOfDoneKey(input.eventKey);
+  const refWaiterSql = doneId
+    ? sql`, ${workItemRefWaiterWorkspacesSql(sql, doneId)} AS work_item_ref_waiter_workspaces`
     : sql``;
   const subscribersSql = subs
     ? sql`, (
@@ -4115,7 +4133,7 @@ export async function recordKeyFire(input: {
       SELECT 1 FROM harness_shared.event_awaits
        WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
          AND fired_at IS NULL AND cancelled_at IS NULL AND superseded_at IS NULL
-    ) AS announcement_pending${waiterSql}${subscribersSql}
+    ) AS announcement_pending${waiterSql}${refWaiterSql}${subscribersSql}
   `;
   const raw = subs ? rows[0]?.event_subscribers : undefined;
   const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -4125,6 +4143,9 @@ export async function recordKeyFire(input: {
     announcementPending: rows[0]?.announcement_pending !== false,
     // Conservative like announcementPending: a probed key with no readable answer settles.
     provingWaiterPending: probeWaiters && rows[0]?.proving_waiter_pending !== false,
+    ...(doneId && Array.isArray(rows[0]?.work_item_ref_waiter_workspaces)
+      ? { workItemRefWaiterWorkspaces: (rows[0]!.work_item_ref_waiter_workspaces as unknown[]).map(String) }
+      : {}),
     ...(Number.isInteger(count) && count > 0 && typeof firstFiredAtUs === 'string'
       ? { fire: { count, firstFiredAtUs } }
       : {}),

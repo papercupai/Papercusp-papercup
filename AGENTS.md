@@ -405,13 +405,13 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not
 > `git clean -fd`, not `git stash`. 
 
-**Never sit in a wait/poll loop for git-sync to "push your change" or the deploy to
-land — force it instead.** Keep working and locate your edit with `dev:pipeline_position`.
-When your *next step genuinely requires* the change **live on `:3070`**, force the deploy:
-`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`.
-⚠ The env var is **required** on the dev box — without it the restart is withheld and the
-rollback crash-loops `:3070` on `MODULE_NOT_FOUND` (recover: `systemctl --user stop
-papercup-dev-api.service`, then re-run with `--no-drain`).
+**Never sit in a wait/poll loop for git-sync or the deploy — force it instead.** Staging
+first: once `:3170` has your commit, `tools:invoke { name, args, build: 'staging' }` runs it
+there, enough for a non-final item. Only a step needing **live `:3070`** forces it:
+`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`
+(env var **required**, else the rollback crash-loops `:3070` on `MODULE_NOT_FOUND`;
+recover: `systemctl --user stop papercup-dev-api.service`, re-run with `--no-drain`).
+
 
 **"Is my change live, and if not what is the ONE thing blocking it" is ONE call — `dev:pipeline_position { path }` — never a hand-diff.** It answers three *different* questions that agents routinely conflate:
 

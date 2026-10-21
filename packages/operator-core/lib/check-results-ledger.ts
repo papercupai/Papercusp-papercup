@@ -16,6 +16,12 @@
  * threshold records its reading as 'pass' with no `expect`: executed, nothing asserted. The
  * ledger-filled scorecard path (P-007) treats that row as measured-but-unjudged.
  *
+ * A scheduled platform instrument records the quantity its resolver measured, in the
+ * instrument's declared unit. A resolver that only reaches a verdict records value true/false
+ * with unit null. A pass bit stored as 0/1 under a quantity unit read as the opposite of the
+ * measurement (224 stranded read as "0 count"), so it is never written that way
+ * (WI-6554700010018719).
+ *
  * Reuse: the probe results come from evaluateCriterionProbeChecks' existing check runs, and the
  * instrument readings from rubric-instrument-registry's runInstrument (P-005). This module adds
  * only the mapping, the insert, and the latest-result read.
@@ -233,20 +239,29 @@ export async function runInstrumentChecks(input: {
       };
       let verdict: RubricCheckVerdict = 'error';
       let detail = 'A canonical workspace and any required rubric harness are required for a scheduled platform instrument.';
-      let value: number | null = null;
+      let value: number | boolean | null = null;
+      let unit: string | null = instrument.rescore.unit;
       if (window.workspaceId.trim() && (instrument.rescore.scope !== 'harness' || window.harnessSlug)) {
         try {
           const result = await (input.resolvePlatform ?? instrument.rescore.resolve)(window);
           verdict = result.verdict === 'unknown' ? 'error' : result.verdict;
-          value = verdict === 'error' ? null : verdict === 'pass' ? 1 : 0;
           detail = result.detail;
+          if (verdict !== 'error') {
+            if (typeof result.value === 'number' && Number.isFinite(result.value)) {
+              value = result.value;
+            } else {
+              // Verdict only: record the verdict itself, never a 0/1 under a quantity unit.
+              value = verdict === 'pass';
+              unit = null;
+            }
+          }
         } catch (error) {
           detail = `Scheduled instrument unavailable: ${error instanceof Error ? error.message : String(error)}`;
         }
       }
       out.push({
         check: { id: instrumentCheckId(criterion.key), rubricRef: input.rubricRef,
-          criterionKey: criterion.key, kind: 'instrument', value, unit: instrument.rescore.unit,
+          criterionKey: criterion.key, kind: 'instrument', value, unit,
           ...(check.expect ? { expect: check.expect } : {}) },
         verdict, measuredAt, durationMs: Math.max(0, now() - started), detail,
       });
@@ -388,6 +403,12 @@ export interface LatestRubricCheckResult {
   check: RecordedRubricCheck;
   status: RubricCheckVerdict;
   finishedAt: string;
+  /**
+   * The row's output_tail: what a non-passing check measured (a platform resolver's detail, an
+   * instrument's out-of-threshold reading). readLatestRubricCheckResults always sets it; null on
+   * a passing row. Ledger-filled evidence quotes it so a verdict row still shows the measurement.
+   */
+  detail?: string | null;
 }
 
 /**
@@ -400,14 +421,17 @@ export async function readLatestRubricCheckResults(
 ): Promise<Map<string, LatestRubricCheckResult>> {
   const prefix = `rubric-check/${input.rubricRef}/`;
   const rows = (await sql`
-    SELECT DISTINCT ON (file_path) id, file_path, status, finished_at, execution_details
+    SELECT DISTINCT ON (file_path) id, file_path, status, finished_at, output_tail, execution_details
       FROM harness_shared.test_runs
      WHERE framework = ${RUBRIC_CHECK_FRAMEWORK}
        AND workspace_id IS NOT DISTINCT FROM ${input.workspaceId}
        AND left(file_path, ${prefix.length}) = ${prefix}
        AND status IN ('pass', 'fail', 'error')
      ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
-  `) as Array<{ id: number | string; file_path: string; status: string; finished_at: Date | string | null; execution_details: unknown }>;
+  `) as Array<{
+    id: number | string; file_path: string; status: string; finished_at: Date | string | null;
+    output_tail: string | null; execution_details: unknown;
+  }>;
   const out = new Map<string, LatestRubricCheckResult>();
   for (const row of rows) {
     const check = parseTestRunExecutionDetails(row.execution_details)?.check;
@@ -417,6 +441,7 @@ export async function readLatestRubricCheckResults(
       check,
       status: row.status as RubricCheckVerdict,
       finishedAt: row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at),
+      detail: typeof row.output_tail === 'string' && row.output_tail.length > 0 ? row.output_tail : null,
     });
   }
   return out;

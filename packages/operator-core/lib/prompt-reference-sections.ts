@@ -44,7 +44,7 @@ export function deferSuPromptReferences(text: string, sources: {
       // never remove the single-live-gate-owner boundary while deferring its recipes.
       const bullets = section.split(/\n(?=- \*\*)/);
       const core = bullets.filter((bullet, index) => index === 0 ||
-        /^- \*\*(?:Plan before|Shape, then|Audit the complete|A red release\/CI gate)/.test(bullet));
+        /^- \*\*(?:Plan before|Shape, then|Audit the complete|Declare `changeKinds`|A red release\/CI gate)/.test(bullet));
       summary = core.join('\n').trimEnd() + '\n\nFetch engineering reference procedures before test selection, app scaffolding or release work. Tests and real verification ship with every behavioral change; reuse existing surfaces.';
     } else if (heading.startsWith('The deploy pipeline is ASYNC')) {
       source = policy;

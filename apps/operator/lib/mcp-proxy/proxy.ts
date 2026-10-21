@@ -82,6 +82,14 @@ export {
 // the route it probes cannot drift apart (WI-6743).
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from "./budgets.mjs";
 import {
+  applyMcpBuildSelector,
+  buildConflictBody,
+  buildUnavailableBody,
+  buildUnavailableError,
+  selectTargetsForBuild,
+  type McpBuild,
+} from "./build-routing";
+import {
   appendFileSync,
   mkdirSync,
   readFileSync,
@@ -3127,6 +3135,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const log = opts.log ?? ((s: string) => console.log(`[mcp-proxy] ${s}`));
   let lastDataPlaneInstabilityAtMs = 0;
   const backoff = opts.retryBackoffMs ?? 500;
+  // P-001 (staging-build-tool-routing-2026-10-21): the port that identifies the staging
+  // operator for a `build:'staging'` call (alongside the `static-fallback` candidate).
+  const stagingPortEnv = Number(
+    process.env.PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT ??
+      DEFAULT_MCP_PROXY_DEV_FALLBACK_PORT,
+  );
+  const stagingPort =
+    Number.isFinite(stagingPortEnv) && stagingPortEnv > 0
+      ? stagingPortEnv
+      : DEFAULT_MCP_PROXY_DEV_FALLBACK_PORT;
   // P-006 (mcp-reliability-hardening-2026-07-11): instance-tag every failure record with
   // pid + listenPort + the resolved target, so a forensic read of the shared ledger can
   // attribute a failure to a SPECIFIC proxy instance (multiple instances / a restart across
@@ -5670,14 +5688,43 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== "0";
           const absorbBoot =
             process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== "0";
+          // staging-build-tool-routing-2026-10-21 P-001: a tools/call may name the build
+          // that serves it (`arguments.build` or `_meta["papercusp/build"]`). Strip the
+          // argument, stamp `_meta`, and route ONLY to that build's targets below — a
+          // build-routed call never falls back to the other build.
+          const buildRouting =
+            req.method === "POST"
+              ? applyMcpBuildSelector(rawBody)
+              : ({ kind: "none" } as const);
+          if (buildRouting.kind === "conflict") {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify(buildConflictBody(requestTraceId, buildRouting.builds)));
+            record({
+              kind: "build_selector_conflict",
+              method: req.method,
+              path: req.url,
+              builds: buildRouting.builds,
+              traceId: requestTraceId,
+            });
+            return;
+          }
+          const requestedBuild: McpBuild | null =
+            buildRouting.kind === "routed" ? buildRouting.build : null;
+          const routedBody =
+            buildRouting.kind === "routed" ? buildRouting.body : rawBody;
+          const routedHeaders: http.IncomingHttpHeaders =
+            routedBody === rawBody
+              ? req.headers
+              : { ...req.headers, "content-length": String(routedBody.length) };
+          if (routedBody !== rawBody) delete routedHeaders["transfer-encoding"];
           const fwd = prepareForward(
             req.method ?? "GET",
-            req.headers,
-            rawBody,
+            routedHeaders,
+            routedBody,
             { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID, requestPath: req.url },
           );
           const generationAffinityKey = isGenerationBoundMcpRequest(
-            rawBody,
+            routedBody,
             req.url ?? "/",
             req.headers,
           )
@@ -5698,6 +5745,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const rpcTrace = {
             traceId,
             ...(fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {}),
+            ...(requestedBuild ? { build: requestedBuild } : {}),
           };
           const isInitialize = fwd.rpcMethods.includes("initialize");
           const isToolsList = fwd.rpcMethods.includes("tools/list");
@@ -5746,6 +5794,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           let handshakeTimeoutRetries = 0;
           let candidateIndex = 0;
           let candidateCount = 0;
+          let noBuildTarget = false;
           let last: ForwardOutcome | undefined;
           // Retry loop: refused → walk ordered candidates, then replay the last candidate
           // across the window (shouldRetry); post-connect →
@@ -5785,8 +5834,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               : null;
             let outcome: ForwardOutcome;
             candidateCount = 0;
+            // P-001: a build-routed call sees only its build's targets. None ⇒ this proxy
+            // cannot serve that build; answer `<build>_unavailable` rather than use the other.
+            const buildCandidates = selectTargetsForBuild(
+              resolveTargetCandidates(opts),
+              requestedBuild,
+              stagingPort,
+            );
+            if (buildCandidates.length === 0) {
+              abortAttempt = null;
+              noBuildTarget = true;
+              break;
+            }
             try {
-              const candidates = resolveTargetCandidates(opts);
+              const candidates = buildCandidates;
               candidateCount = candidates.length;
               candidateIndex = Math.min(candidateIndex, candidates.length - 1);
               outcome = await forwardOnce(
@@ -6259,6 +6320,58 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           if (clientGone) return;
           // Exhausted the window (or a post-connect error we must not / no longer replay).
           const refused = last && !last.connected;
+          // P-001: a build-routed call that never reached its build is answered
+          // `<build>_unavailable` (e.g. `staging_unavailable`). It was never sent to the
+          // other build, so nothing ran. A post-connect error keeps the generic shape below.
+          if (requestedBuild && (noBuildTarget || refused)) {
+            const reason = noBuildTarget ? "no-target" : "refused";
+            if (fwd.rpcMethods.includes("tools/call")) {
+              res.once("finish", () => {
+                logMcpRequestTrace({
+                  traceId,
+                  toolName: "tools/call",
+                  stage: "proxy_response_finished",
+                  elapsedMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+                  outcome: "rejected",
+                  httpStatus: 503,
+                });
+              });
+            }
+            res.writeHead(503, {
+              "content-type": "application/json",
+              "retry-after": "5",
+            });
+            res.end(
+              JSON.stringify(
+                buildUnavailableBody({
+                  build: requestedBuild,
+                  traceId,
+                  reason,
+                  attempts,
+                  windowMs: retryWindowMs,
+                  detail: last?.err
+                    ? String(last.err.message ?? last.err)
+                    : undefined,
+                }),
+              ),
+            );
+            log(
+              `${buildUnavailableError(requestedBuild)} (${reason}) after ${attempts} attempt(s) (trace ${traceId})`,
+            );
+            record({
+              kind: "build_unavailable",
+              method: req.method,
+              path: req.url,
+              status: 503,
+              reason,
+              attempts,
+              klass: fwd.klass,
+              elapsedMs: Date.now() - started,
+              forwardingResult: "not_applied",
+              ...rpcTrace,
+            });
+            return;
+          }
           const failureStatus = refused ? 503 : 502;
           const idempotencyRecovery =
             !refused && fwd.klass === "keyed"
@@ -6295,6 +6408,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               detail: String(last?.err?.message ?? last?.err ?? "unknown"),
               attempts,
               windowMs: retryWindowMs,
+              ...(requestedBuild ? { build: requestedBuild } : {}),
               ...(idempotencyRecovery
                 ? {
                     recovery: {

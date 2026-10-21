@@ -2279,19 +2279,28 @@ describe('template_data persistence boundary — the set-template-data door', ()
   // exact revision numbers or history counts want the bare seed.
   async function seedBarContract(
     subject: string,
-    opts: { authorMethods?: boolean; evidencePlane?: 'tree' | 'live'; planStatus?: 'active' | 'draft' } = {},
+    opts: {
+      authorMethods?: boolean;
+      evidencePlane?: 'tree' | 'live';
+      planStatus?: 'active' | 'draft';
+      /** Replace the default two-BAR plan body (Requirements, map, Work) — frontmatter is kept. */
+      body?: string;
+      /** Plan items to insert for `body`; defaults to the two-BAR fixture's P-001/P-002. */
+      itemIds?: string[];
+    } = {},
   ) {
     const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
     const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
     const workspaceId = activeWorkspaceId();
     const planStatus = opts.planStatus ?? 'active';
-    const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: ${planStatus}\n---\n\n## Requirements\n\n**R-1 — First outcome.** The first outcome holds.\n\n**R-2 — Second outcome.** The second outcome holds.\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |\n\n## Work\n\n- **P-001** \`done\` first outcome\n- **P-002** \`done\` second outcome\n`;
+    const body = opts.body ?? `## Requirements\n\n**R-1 — First outcome.** The first outcome holds.\n\n**R-2 — Second outcome.** The second outcome holds.\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |\n\n## Work\n\n- **P-001** \`done\` first outcome\n- **P-002** \`done\` second outcome\n`;
+    const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: ${planStatus}\n---\n\n${body}`;
     const seededContent = opts.evidencePlane === 'live' ? content.replaceAll('| tree |', '| live |') : content;
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner,acceptance_bar_epoch,acceptance_bar_cohort)
       VALUES (${workspaceId},'papercusp',${subject},${seededContent},${hashPlanContent(seededContent)},1,'METHOD pins',${planStatus},'su-test',1,'post-epoch')`;
-    for (const [index, item] of ['P-001', 'P-002'].entries()) {
+    for (const [index, item] of (opts.itemIds ?? ['P-001', 'P-002']).entries()) {
       await db.adminSql`INSERT INTO harness_shared.plan_items
         (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
         VALUES (${workspaceId},'papercusp',${subject},${item},${index},'done',${item})`;
@@ -5040,6 +5049,244 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await rubrics.getRubric(rubricSlug))!.criteria.map((criterion) => criterion.barKey)).toEqual(['R-1', 'R-2']);
     expect(await subjectSource(subject)).toBe(sourceBefore);
     expect(await subjectClauses(subject)).toEqual(clausesBefore);
+  });
+
+  // acceptance-bar-atomic-retirement-2026-10-15 R-15..R-23 (the D-006-shaped fixture). The
+  // two-BAR cases above prove the mechanism; this one proves the PARTITION at the size of the
+  // real carrier (thread-post:1183897): retiring R-3/R-4/R-5/R-6, whose mapped work was all
+  // dropped, removes exactly five generated projections while twenty survivor projections and
+  // twenty-four authored clauses keep their obligations, and a simultaneous R-1 falsifier change
+  // is identified as changed meaning. Evidence is seeded so the carry is observable: unchanged
+  // R-2/R-7 proof must survive as observed, changed R-1 proof must not follow the new revision.
+  const D006_MAP: Record<string, string[]> = {
+    'R-1': ['P-001', 'P-008', 'P-009', 'P-010', 'P-011', 'P-012', 'P-013'],
+    'R-2': ['P-002', 'P-014', 'P-015', 'P-016', 'P-017', 'P-018', 'P-019'],
+    'R-3': ['P-003'],
+    'R-4': ['P-004'],
+    'R-5': ['P-005', 'P-006'],
+    'R-6': ['P-007'],
+    'R-7': ['P-020', 'P-021', 'P-022', 'P-023', 'P-024', 'P-025'],
+  };
+  const D006_RETIRED = ['R-3', 'R-4', 'R-5', 'R-6'];
+  const D006_ITEMS = Array.from({ length: 25 }, (_, index) => `P-${String(index + 1).padStart(3, '0')}`);
+  const D006_DROPPED = D006_RETIRED.flatMap((barKey) => D006_MAP[barKey]!);
+
+  function d006Body(): string {
+    const bars = Object.keys(D006_MAP);
+    const requirements = bars.map((barKey) => `**${barKey} — Outcome ${barKey}.** Outcome ${barKey} holds.`).join('\n\n');
+    const rows = bars.map((barKey) => `| ${barKey} | ${D006_MAP[barKey]!.join(', ')} | tree |`).join('\n');
+    const work = D006_ITEMS.map((item) => `- **${item}** \`done\` work ${item}`).join('\n');
+    return `## Requirements\n\n${requirements}\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n${rows}\n\n## Work\n\n${work}\n`;
+  }
+
+  it('D-006 partition: an approved retirement supersedes exactly its five generated projections and keeps 20 survivors, 24 authored clauses and unchanged-BAR proof', async () => {
+    const subject = 'd006-shaped-retirement-subject';
+    const seeded = await seedBarContract(subject, { authorMethods: true, body: d006Body(), itemIds: D006_ITEMS });
+    const { workspaceId, rubricSlug } = seeded;
+    const { setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+    const { acceptanceBarSourceFingerprint } = await import('./acceptance-bar-amendment-requirements-drift');
+    const { specEvidenceBindingFingerprint } = await import('./agent-tools/plans/spec-evidence-store');
+
+    // Twenty-four authored clauses, spread across every item INCLUDING the dropped ones, so an
+    // automatic exemption keyed on the retiring work would be visible. AUTHORED-P-002-security
+    // is the independent P-002 security obligation the repair must not discharge (R-19).
+    const authoredIds: string[] = [];
+    for (let index = 0; index < 24; index++) {
+      const planItemId = index === 0 ? 'P-002' : D006_ITEMS[index % D006_ITEMS.length]!;
+      const specId = index === 0 ? 'AUTHORED-P-002-security' : `AUTHORED-${String(index).padStart(2, '0')}-${planItemId}`;
+      const written = await setSpecClause({
+        harnessSlug: 'papercusp',
+        planSlug: subject,
+        specId,
+        expectedRevision: 0,
+        planItemId,
+        behavior: index === 0 ? 'Only the authorized principal can read the P-002 secret.' : `Authored obligation ${index} holds for ${planItemId}.`,
+        behaviorClass: index === 0 ? 'authorization' : 'failure',
+        requiredEvidence: ['integration trace'],
+        requiredTestLayers: ['integration'],
+        lifecycleStatus: 'active',
+        falsifier: { observation: `Authored obligation ${index} is observably violated.` },
+        actorId: 'authored-fixture',
+      });
+      expect(written).toMatchObject({ status: 'created' });
+      authoredIds.push(specId);
+    }
+
+    // The D-006 shape: every item mapped by a retiring BAR was dropped.
+    const original = await subjectSource(subject);
+    let dropped = original;
+    for (const item of D006_DROPPED) {
+      dropped = dropped.replace(`- **${item}** \`done\``, `- **${item}** \`dropped\``);
+    }
+    expect(dropped).not.toBe(original);
+    await db.adminSql`UPDATE harness_shared.harness_plans
+       SET content = ${dropped}, content_hash = ${hashPlanContent(dropped)}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${subject}`;
+    await db.adminSql`UPDATE harness_shared.plan_items SET status = 'dropped'
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp'
+       AND plan_slug = ${subject} AND item_id = ANY(${D006_DROPPED}::text[])`;
+
+    const before = (await rubrics.getRubric(rubricSlug))!;
+    expect(before.criteria.map((criterion) => criterion.barKey)).toEqual(Object.keys(D006_MAP));
+    const clausesBefore = await subjectClauses(subject);
+    const byId = (clauses: Awaited<ReturnType<typeof subjectClauses>>) => new Map(clauses.map((clause) => [clause.specId, clause]));
+    const beforeById = byId(clausesBefore);
+    const generatedIds = (barKeys: string[]) => barKeys.flatMap((barKey) => D006_MAP[barKey]!.map((item) => `AUTO-BAR-${barKey}-${item}`));
+    const retiredIds = generatedIds(D006_RETIRED);
+    const survivorIds = generatedIds(['R-1', 'R-2', 'R-7']);
+    const unchangedSurvivorIds = generatedIds(['R-2', 'R-7']);
+    expect(retiredIds).toHaveLength(5);
+    expect(survivorIds).toHaveLength(20);
+    expect(clausesBefore).toHaveLength(49);
+    for (const specId of [...retiredIds, ...survivorIds, ...authoredIds]) expect(beforeById.has(specId)).toBe(true);
+
+    // Existing proof: one changed-BAR clause (R-1), two unchanged-BAR clauses (R-2, R-7).
+    const observedAt = new Date('2026-09-10T00:00:00Z');
+    const prover = 'd006-fixture-prover';
+    const provenIds = ['AUTO-BAR-R-1-P-001', 'AUTO-BAR-R-2-P-002', 'AUTO-BAR-R-7-P-020'];
+    for (const specId of provenIds) {
+      const clause = beforeById.get(specId)!;
+      const workItemId = `WI-d006-${specId}`;
+      await db.adminSql`INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, title, status, source_plan_slug, source_plan_item_ids, payload)
+        VALUES (${workspaceId}, 'papercusp', ${workItemId}, 'feature', ${`Proof for ${specId}`}, 'done',
+                ${subject}, ARRAY[${clause.planItemId}], ${JSON.stringify({ plan_item: { slug: subject, item: clause.planItemId } })}::jsonb)
+        ON CONFLICT DO NOTHING`;
+      await db.adminSql`INSERT INTO harness_shared.work_item_spec_revision_edges
+          (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,created_by)
+        VALUES (${workspaceId},'papercusp',${workItemId},${subject},${specId},${clause.revision},${clause.contentHash},'d006-fixture')
+        ON CONFLICT DO NOTHING`;
+      const canonical = {
+        workspaceId, harnessSlug: 'papercusp', workItemId, planSlug: subject, specId,
+        specRevision: clause.revision, specFingerprint: clause.contentHash,
+        evidenceKind: 'test', evidenceRef: `vitest:${specId}`,
+        sourceFingerprint: 'source-fingerprint-fixture', testFingerprint: 'test-fingerprint-fixture',
+        fixtureFingerprint: null, rubricFingerprint: null, environmentFingerprint: null,
+        coverageEvidenceRef: null, testRunId: null, details: {},
+      };
+      await db.adminSql`INSERT INTO harness_shared.spec_evidence_bindings
+          (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,
+           evidence_kind,evidence_ref,source_fingerprint,test_fingerprint,details,observed_at,binding_fingerprint,created_by)
+        VALUES (${workspaceId},'papercusp',${workItemId},${subject},${specId},${clause.revision},${clause.contentHash},
+                'test',${`vitest:${specId}`},${canonical.sourceFingerprint},${canonical.testFingerprint},'{}'::jsonb,
+                ${observedAt},${specEvidenceBindingFingerprint(canonical as never)},${prover})`;
+    }
+    const readBindings = () => db.adminSql<{ spec_id: string; spec_revision: number; binding_fingerprint: string; created_by: string; observed_at: Date }[]>`
+      SELECT spec_id, spec_revision, binding_fingerprint, created_by, observed_at
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}
+       ORDER BY spec_id, spec_revision`;
+    const bindingsBefore = await readBindings();
+    expect(bindingsBefore).toHaveLength(3);
+
+    // One amendment retires R-3..R-6 AND changes R-1's falsifier (driftMarkers).
+    const criteria = before.criteria
+      .filter((criterion) => !D006_RETIRED.includes(criterion.barKey!))
+      .map((criterion) => {
+        if (criterion.barKey !== 'R-1') return criterion;
+        const { bar: _bar, barHash: _barHash, ...canonical } = criterion;
+        return { ...canonical, driftMarkers: 'R-1 is observably violated by a NEW counterexample.' };
+      });
+    const amendment = {
+      rubricId: rubricSlug,
+      actorId: 'd006-amendment-actor',
+      reason: 'Retire R-3..R-6 (their only mapped work was dropped) and sharpen the R-1 falsifier.',
+      criteria,
+    };
+    const sourceBefore = await subjectSource(subject);
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect([...preview!.changedBars].sort()).toEqual(['R-1', ...D006_RETIRED]);
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+    expect(await subjectClauses(subject)).toEqual(clausesBefore);
+    const proposedSourceHash = (preview!.approval as { proposedSourceHash?: string }).proposedSourceHash;
+    expect(proposedSourceHash).toEqual(expect.any(String));
+
+    const after = await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
+    expect(after!.criteria.map((criterion) => criterion.barKey)).toEqual(['R-1', 'R-2', 'R-7']);
+    expect(after!.revision).toBe(before.revision! + 1);
+
+    // The source carries no Requirements record or map row for any retired BAR, survivors and
+    // the dropped items' history remain, and it is exactly the source the reviewer approved.
+    const sourceAfter = await subjectSource(subject);
+    for (const barKey of D006_RETIRED) {
+      expect(sourceAfter).not.toMatch(new RegExp(`\\*\\*${barKey}\\b`));
+      expect(sourceAfter).not.toMatch(new RegExp(`^\\| ${barKey} \\|`, 'm'));
+    }
+    for (const barKey of ['R-1', 'R-2', 'R-7']) {
+      expect(sourceAfter).toContain(`| ${barKey} | ${D006_MAP[barKey]!.join(', ')} | tree |`);
+    }
+    for (const item of D006_DROPPED) expect(sourceAfter).toContain(`- **${item}** \`dropped\``);
+    expect(acceptanceBarSourceFingerprint(sourceAfter)).toBe(proposedSourceHash);
+
+    const clausesAfter = await subjectClauses(subject);
+    const afterById = byId(clausesAfter);
+    expect(clausesAfter).toHaveLength(49);
+
+    // R-15: exactly the five retiring projections changed lifecycle, and they are superseded.
+    const lifecycleChanged = clausesAfter.filter((clause) => clause.lifecycleStatus !== beforeById.get(clause.specId)!.lifecycleStatus);
+    expect(lifecycleChanged.map((clause) => clause.specId).sort()).toEqual([...retiredIds].sort());
+    for (const specId of retiredIds) {
+      const retired = afterById.get(specId)!;
+      const prior = beforeById.get(specId)!;
+      expect(retired.lifecycleStatus).toBe('superseded');
+      // R-16: no current linkage, falsifier or acceptanceRef survives on a retired projection.
+      expect(retired).toMatchObject({ sourceBar: null, falsifier: null, acceptanceRef: null });
+      expect(retired.revision).toBeGreaterThan(prior.revision);
+      // R-17: the original generated revision is immutable history, byte-for-byte.
+      const [history] = await db.adminSql<{ content_hash: string; source_bar_key: string | null }[]>`
+        SELECT content_hash, source_bar_key FROM harness_shared.plan_spec_clause_revisions
+         WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}
+           AND spec_id=${specId} AND revision=${prior.revision}`;
+      expect(history).toEqual({ content_hash: prior.contentHash, source_bar_key: prior.sourceBar!.barKey });
+    }
+
+    // R-18: all twenty survivors keep their lifecycle, BAR pin and falsifier; R-2/R-7 survivors are
+    // not even revised. R-20: R-7's projections are untouched, so nothing discharged them.
+    for (const specId of survivorIds) {
+      const survivor = afterById.get(specId)!;
+      const prior = beforeById.get(specId)!;
+      expect(survivor.lifecycleStatus).toBe(prior.lifecycleStatus);
+      expect(survivor.exemption).toBeNull();
+      expect(survivor.sourceBar?.barKey).toBe(prior.sourceBar!.barKey);
+      expect(survivor.falsifier).not.toBeNull();
+    }
+    for (const specId of unchangedSurvivorIds) {
+      const survivor = afterById.get(specId)!;
+      const prior = beforeById.get(specId)!;
+      expect({ revision: survivor.revision, contentHash: survivor.contentHash, acceptedBy: survivor.acceptedBy })
+        .toEqual({ revision: prior.revision, contentHash: prior.contentHash, acceptedBy: prior.acceptedBy });
+    }
+
+    // R-19 + R-21: every authored clause, including the independent P-002 security clause and the
+    // ones on dropped items, is byte-identical: still active, not exempted, and still accepted only
+    // by its author (the writer stamps the author on an active create), never by the amendment.
+    for (const specId of authoredIds) {
+      const authored = afterById.get(specId)!;
+      const prior = beforeById.get(specId)!;
+      expect({
+        revision: authored.revision, contentHash: authored.contentHash, lifecycleStatus: authored.lifecycleStatus,
+        exemption: authored.exemption, acceptedBy: authored.acceptedBy, acceptedAt: authored.acceptedAt,
+      }).toEqual({
+        revision: prior.revision, contentHash: prior.contentHash, lifecycleStatus: 'active', exemption: null,
+        acceptedBy: 'authored-fixture', acceptedAt: prior.acceptedAt,
+      });
+    }
+
+    // R-22 + R-23: no observation is fabricated (same rows, same prover, same timestamp). Unchanged
+    // R-2/R-7 proof is still on the current revision; changed R-1 proof is NOT on its new revision.
+    const bindingsAfter = await readBindings();
+    expect(bindingsAfter).toEqual(bindingsBefore);
+    const onCurrent = (specId: string) =>
+      bindingsAfter.filter((row) => row.spec_id === specId && Number(row.spec_revision) === afterById.get(specId)!.revision);
+    expect(onCurrent('AUTO-BAR-R-2-P-002')).toHaveLength(1);
+    expect(onCurrent('AUTO-BAR-R-7-P-020')).toHaveLength(1);
+    expect(afterById.get('AUTO-BAR-R-1-P-001')!.revision).toBeGreaterThan(beforeById.get('AUTO-BAR-R-1-P-001')!.revision);
+    expect(onCurrent('AUTO-BAR-R-1-P-001')).toHaveLength(0);
+    for (const row of bindingsAfter) {
+      expect(row.created_by).toBe(prover);
+      expect(new Date(row.observed_at).toISOString()).toBe(observedAt.toISOString());
+    }
   });
 
   // EI-24358433996857425 Part B (acceptance-bar-atomic-retirement-2026-10-15 R-6/R-8/R-28): the

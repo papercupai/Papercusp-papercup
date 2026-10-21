@@ -104,7 +104,8 @@ const DEFAULT_INTERVAL_MS = 5 * 60_000;
 // per outage window far more often than this. 2h gives every real watchdog
 // several missed sweeps of margin before we treat its signal as gone quiet, while
 // still being tiny next to the DAYS of staleness this bug actually produces.
-const DEFAULT_SIGNAL_ABSENCE_MS = 2 * 60 * 60_000;
+/** Exported so level-triggered emitters can pin their refresh interval under it (connector-source-health). */
+export const DEFAULT_SIGNAL_ABSENCE_MS = 2 * 60 * 60_000;
 
 const GIT_SYNC_STALL_PREFIX = 'git-sync-stall:';
 const INFRA_GIT_SYNC_MISSED_INTERVALS_KEY =
