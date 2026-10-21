@@ -401,23 +401,35 @@ export async function findPendingReleaseRequestConsequences(
      LIMIT ${opts.limit ?? 200}`;
   return rows.map((row) => {
     const job = row.job as Partial<ReleaseRequestConsequenceJob> | null;
-    if (
-      !job ||
-      job.id !== row.job_id ||
-      (job.resolution !== 'consequence-reclaim' &&
+    const invalid: string[] = [];
+    if (!job) invalid.push('job');
+    else {
+      if (job.id !== row.job_id) invalid.push('id');
+      if (
+        job.resolution !== 'consequence-reclaim' &&
         job.resolution !== 'consequence-escalate' &&
-        job.resolution !== 'consequence-nothing') ||
-      typeof job.by !== 'string' ||
-      typeof job.holder !== 'string' ||
-      typeof job.reason !== 'string' ||
-      (job.onSilence !== 'reclaim' && job.onSilence !== 'escalate' && job.onSilence !== 'nothing') ||
-      !Number.isFinite(job.deadlineAt) ||
-      !Number.isFinite(job.requestedAt) ||
-      typeof job.reclaimHolder !== 'string' ||
-      !Array.isArray(job.paths) ||
-      job.paths.some((path) => typeof path !== 'string')
-    ) {
-      throw new Error('Invalid pending release-request consequence for ' + row.feature_id);
+        job.resolution !== 'consequence-nothing'
+      ) invalid.push('resolution');
+      if (typeof job.by !== 'string') invalid.push('by');
+      if (typeof job.holder !== 'string') invalid.push('holder');
+      if (typeof job.reason !== 'string') invalid.push('reason');
+      if (job.onSilence !== 'reclaim' && job.onSilence !== 'escalate' && job.onSilence !== 'nothing') {
+        invalid.push('onSilence');
+      }
+      if (!Number.isFinite(job.deadlineAt)) invalid.push('deadlineAt');
+      if (!Number.isFinite(job.requestedAt)) invalid.push('requestedAt');
+      if (typeof job.reclaimHolder !== 'string') invalid.push('reclaimHolder');
+      if (!Array.isArray(job.paths)) invalid.push('paths');
+      else if (job.paths.some((path) => typeof path !== 'string')) invalid.push('paths[]');
+    }
+    if (invalid.length > 0) {
+      const shape = row.job && typeof row.job === 'object'
+        ? Object.keys(row.job as Record<string, unknown>).join('|')
+        : typeof row.job;
+      throw new Error(
+        'Invalid pending release-request consequence for ' + row.feature_id + ': ' +
+          invalid.join(', ') + ' (job shape: ' + shape + ')',
+      );
     }
     return {
       id: row.feature_id,

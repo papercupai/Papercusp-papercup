@@ -1005,16 +1005,49 @@ export function compactSchemaForResult(
   const completionControlDescriptions = new Set([
     'changeKinds', 'changeKindReason', 'recordOnly', 'validateOnly', 'assumptions', 'specAdequacy',
   ]);
-  const parts = projection.entries.map(([name, raw], index) => {
+  const compactCompletionShape = (shape: string): string => {
+    if (!hasCompletionRecord || !shape.startsWith('object{')) return shape;
+    // schemaShape may have already degraded the wide verification child to a
+    // shallow object. Re-state its canonical coverage path here because that
+    // nested path is the validator's actual universal-claim input.
+    return 'object{rootCauseVerification?:object,verification?:object{coverage?:object{population:array(≥1)<string>,checked?:array<string>,notChecked?:array<string>,notApplicable?:array<string>,residue?:array<string>}}}';
+  };
+  const completionOrder = new Map([
+    ['id', 0], ['workItem', 1], ['harness', 2], ['state', 3],
+    ['changeKinds', 4], ['changeKindReason', 5], ['recordOnly', 6],
+    ['validateOnly', 7], ['assumptions', 8], ['specAdequacy', 9], ['completion', 10],
+  ]);
+  const entries = hasCompletionRecord
+    ? [...projection.entries].sort(([a], [b]) =>
+      (completionOrder.get(a) ?? 100) - (completionOrder.get(b) ?? 100),
+    )
+    : projection.entries;
+  const parts = entries.map(([name, raw], index) => {
     const node = raw && typeof raw === 'object' ? (raw as JsonSchemaNode) : {};
     // Root unions commonly carry verbose branch descriptions (the completion
     // contract is one such schema). Keep their projection structural so a
     // late top-level contract field such as `assumptions` cannot be clipped
     // behind a nested prose description before the result budget is reached.
-    const shape = schemaShape(node, 0, includeNestedDescriptions && !projection.unionHint);
+    const rawShape = schemaShape(node, 0, includeNestedDescriptions && !projection.unionHint);
+    const shape = name === 'completion'
+      ? compactCompletionShape(rawShape)
+      : hasCompletionRecord && name === 'specAdequacy'
+        ? 'object{current?:array(≤500){planSlug?:string,specId?:string,specRevision?:integer,specFingerprint?:string,evidenceKind:enum(test|fixture|coverage-census|mutation|counterexample|check|manual|operational|independent-verification),evidenceRef:string,sourceFingerprint:string,testFingerprint?:string|null(1-256),…+3},…+5}'
+        : rawShape;
+    const compactBase = hasCompletionRecord
+      ? ({
+          id: 'id?:string',
+          workItem: 'workItem?:string',
+          harness: 'harness?:string',
+          state: 'state?:string',
+          changeKinds: 'changeKinds?:array',
+          changeKindReason: 'changeKindReason?:string',
+          assumptions: 'assumptions?',
+        } as Record<string, string>)[name]
+      : undefined;
     return {
       index,
-      base: `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
+      base: compactBase ?? `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
       // Completion controls are structurally small but carry long prose. Keep
       // their names and types ahead of nested verification evidence; the prose
       // duplicates their call-site constraints without adding callable shape.
@@ -1057,16 +1090,39 @@ export function compactSchemaForResult(
  * shape from work_items:complete.
  */
 function compactCallConstraintAnnotationForResult(inputSchema: unknown): string {
-  return schemaCallConstraintAnnotation(inputSchema, { compact: true }).replaceAll(
+  const annotation = schemaCallConstraintAnnotation(inputSchema, { compact: true }).replaceAll(
     'contractVersion=2; required fields: hypothesis, alternativeHypothesis, distinguishingTest, testResult, ' +
       'testProcedure, predictedObservations.hypothesis, predictedObservations.alternativeHypothesis, ' +
       'actualObservation, evidenceRefs; hypothesis!=alternativeHypothesis; ' +
       'predictedObservations arms must be meaningfully different; ' +
       'distinguishingTest: non-empty procedure; no prose template required',
-    'contract v2; required: hypothesis, alternativeHypothesis, distinguishingTest, testResult, testProcedure, ' +
-      'predictedObservations.{hypothesis,alternativeHypothesis}, actualObservation, evidenceRefs; ' +
+    'contract v2; required:hypothesis,alternativeHypothesis,distinguishingTest,testResult,testProcedure,' +
+      'predictedObservations,actualObservation,evidenceRefs; ' +
       'hypotheses differ; predictions differ meaningfully; distinguishingTest: non-empty procedure',
   );
+  // work_items:complete has several aliases for the same close-time rule. The
+  // full corpus keeps every validator sentence, but the bounded response must
+  // leave room for the callable object shape as well as the proof contract.
+  // Keep each path and the actionable discriminator while shortening only the
+  // verbose per-kind prose and the low-value verificationVerdict duplicate.
+  if (!annotation.includes('constraint:completion.kindEvidence')) return annotation;
+  return annotation
+    .split(/; (?=constraint:)/)
+    .filter((part) => !part.startsWith('constraint:completion.verificationVerdict '))
+    .filter((part) => !part.startsWith('constraint:items[].completion.verificationVerdict '))
+    .map((part) => {
+      if (part.startsWith('constraint:completion.kindEvidence ')) {
+        return 'constraint:completion.kindEvidence (Multi-kind close needs one `completion.kindEvidence` entry per declared kind.)';
+      }
+      if (part.startsWith('constraint:changeKinds ')) {
+        return 'constraint:changeKinds (A successful close uses stored `changeKinds` or this declaration.)';
+      }
+      if (part.startsWith('constraint:changeKindReason ')) {
+        return 'constraint:changeKindReason (First close-time declaration needs this reason.)';
+      }
+      return part;
+    })
+    .join('; ');
 }
 
 /** Project a registered RESULT schema, including array/scalar-rooted shapes. */

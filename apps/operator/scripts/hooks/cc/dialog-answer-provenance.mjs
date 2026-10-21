@@ -4,6 +4,7 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { papercuspHome } from '@papercusp/host-platform/home';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const ORIGINAL_WRITE = Symbol.for('papercusp.claudeDialogOriginalWrite');
@@ -11,7 +12,9 @@ export const DIALOG_PROVENANCE_MARKER = '⟦dialog-answer-provenance⟧';
 
 function ticketPath(ownerId, env) {
   if (!/^[A-Za-z0-9._-]{1,160}$/.test(ownerId ?? '')) return null;
-  return join(env.PAPERCUSP_TURN_PROVENANCE_DIR || join(env.HOME || homedir(), '.papercusp', 'turn-provenance'), `${ownerId}.dialog.json`);
+  const provenanceDir = env.PAPERCUSP_TURN_PROVENANCE_DIR
+    || join(papercuspHome(env, env.HOME || homedir()), 'turn-provenance');
+  return join(provenanceDir, `${ownerId}.dialog.json`);
 }
 
 function readTicket(path) {
