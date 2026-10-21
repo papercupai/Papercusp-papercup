@@ -90,8 +90,14 @@ export function judgeFocusedTestAdmissionPath(args: {
   //     (`[join(cwd,'scripts','pc-heavy.sh'), '--', 'test-files.mjs']`) — precisely the
   //     regression this judge exists to catch. Anchoring inside one `join(` call is what
   //     makes the leg independently load-bearing rather than leaning on check (2).
+  //
+  //     Two adjacent spellings are the same direct launch: the positional call
+  //     `runTestProcess(process.execPath, [join(...)])` and the launch-spec object
+  //     `{ command: process.execPath, args: [join(...)] }` that run.ts now builds.
+  //     The `args:` key is the only token allowed between them, so the pairing stays
+  //     as strict as before.
   const directLaunch = new RegExp(
-    `process\\.execPath\\s*,\\s*\\[\\s*join\\([^)]*${TEST_ROUTER.replace('.', '\\.')}`,
+    `process\\.execPath\\s*,\\s*(?:args\\s*:\\s*)?\\[\\s*join\\([^)]*${TEST_ROUTER.replace('.', '\\.')}`,
   );
   const routerLaunchedWithNodeBinary = directLaunch.test(code);
   if (!routerLaunchedWithNodeBinary) {

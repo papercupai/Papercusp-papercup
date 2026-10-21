@@ -196,6 +196,13 @@ export const PRODUCT_TUTORIAL_TARGETS: readonly ProductTutorialTarget[] = [
     "policy": "workspace"
   },
   {
+    "id": "enterprise",
+    "module": "planning",
+    "route": "/?app=enterprise",
+    "teaches": "Find the runnable enterprise operations in the shared workflow inventory before explicitly running one.",
+    "policy": "workspace"
+  },
+  {
     "id": "brainstorm",
     "module": "planning",
     "route": "/?app=brainstorm",

@@ -51,7 +51,35 @@ const RULES: Rule[] = [
     id: 'secret-assignment',
     re: /\b(?:secret|password|passwd|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)\b\s*[:=]\s*['"]?([A-Za-z0-9+/_\-]{20,})['"]?/gi,
   },
+  // An HTTP Authorization header carrying a literal bearer/token credential:
+  // `"Authorization": "Bearer <token>"` (JSON, e.g. a launcher-written .mcp.json),
+  // `Authorization: Bearer <token>` (a header line, a curl -H). WI-6554700010019088:
+  // a pot's generated .mcp.json with a superuser MCP bearer was committed and pushed
+  // to GitHub three times; `secret-assignment` cannot see it because the key is
+  // `Authorization` and the value starts with the scheme word and a space. The value
+  // must follow the scheme directly, so a template (`Bearer ${token}`), a
+  // concatenation (`'Bearer ' + token`) or a doc placeholder (`Bearer <token>`)
+  // never matches. Gated on entropy and PLACEHOLDER_RE like `secret-assignment`.
+  {
+    id: 'authorization-header',
+    re: /\bauthorization\b['"]?\s*[:=]\s*['"]?(?:bearer|token)\s+([A-Za-z0-9._~+/\-]{20,}={0,2})/gi,
+  },
 ];
+
+/** Rules whose credential VALUE is capture group 1 and is gated on entropy and
+ *  PLACEHOLDER_RE (they match by key name, not by a vendor-specific shape). */
+const VALUE_GATED_RULES: ReadonlySet<string> = new Set(['secret-assignment', 'authorization-header']);
+
+/** Source files where `authorization-header` does not apply. Measured 2026-10-21 over
+ *  every tracked file in the superproject, its 39 submodules and the drill pot: 32 hits,
+ *  of which every one in a source file (27) was a test stand-in (`'Bearer eyJh…sig'`),
+ *  while every real leaked bearer (5) sat in a data/config file (.mcp.json.*, a .txt.md
+ *  state artifact). Real credentials reach a commit through generated config, not code. */
+const AUTHORIZATION_HEADER_SOURCE_FILE_RE = /\.(?:[cm]?[jt]sx?|rs|py|go|rb|java|kt|swift)$/i;
+
+/** A SCREAMING_SNAKE value (`Bearer PRIVATE_PROVIDER_KEY`) names a constant; an issued
+ *  token mixes case and digits and never looks like one. */
+const CONSTANT_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 
 /** Shannon entropy (bits/char) of a string — used to keep the generic
  *  secret-assignment rule from firing on obvious non-secrets (e.g. a value like
@@ -156,24 +184,27 @@ export async function scanTextForSecretsSliced(
 /** The per-line rule pass shared by both scanners; appends to `findings`. */
 function scanLineForSecrets(path: string, line: string, lineNo: number, findings: SecretFinding[]): void {
   for (const rule of RULES) {
+    if (rule.id === 'authorization-header' && AUTHORIZATION_HEADER_SOURCE_FILE_RE.test(path)) continue;
     rule.re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = rule.re.exec(line)) !== null) {
       // The generic assignment rule captures the value in group 1 — gate it on
       // entropy so a placeholder ("your-secret-here") doesn't trip the build.
-      if (rule.id === 'secret-assignment') {
+      if (VALUE_GATED_RULES.has(rule.id)) {
         const value = m[1] ?? '';
         const valueIndex = m.index + m[0].lastIndexOf(value);
         const precedingCharacter = line[valueIndex - 1] ?? '';
         const followingCharacter = line[valueIndex + value.length] ?? '';
         const isQuotedValue = precedingCharacter === "'" || precedingCharacter === '"';
         if (
+          rule.id === 'secret-assignment' &&
           CODE_FILE_EXTENSION_RE.test(path) &&
           !isQuotedValue &&
           IDENTIFIER_RE.test(value) &&
           !IDENTIFIER_PART_RE.test(precedingCharacter) &&
           !IDENTIFIER_PART_RE.test(followingCharacter)
         ) continue;
+        if (rule.id === 'authorization-header' && CONSTANT_NAME_RE.test(value)) continue;
         if (shannonEntropy(value) < SECRET_ASSIGNMENT_MIN_ENTROPY) continue;
         if (PLACEHOLDER_RE.test(value)) continue; // an obvious example/placeholder, not a secret
         findings.push({ path, line: lineNo, rule: rule.id, excerpt: mask(value) });

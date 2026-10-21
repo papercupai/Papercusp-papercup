@@ -141,7 +141,10 @@ const DECLARATIONS =
 /** Content hash plan-types:define returned for each stored `${id}@${revision}`. */
 const definedHash = new Map<string, string>();
 
-async function define(kind: 'item-type' | 'plan-type', definition: { id: string; revision: number }): Promise<void> {
+async function define(
+  kind: 'item-type' | 'plan-type',
+  definition: { id: string; revision: number } & Record<string, unknown>,
+): Promise<void> {
   const defined = expectOk(await call('plan-types:define', { kind, definition }));
   expect(defined.revision).toBe(definition.revision);
   expect(defined.contentHash).toBe(definitionContentHash(definition));

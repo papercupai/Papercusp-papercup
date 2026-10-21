@@ -67,6 +67,7 @@
     {"id":"work","operatorKind":"work","module":"work","route":"/?app=work","teaches":"Find pots and work items, assignments and blocked work.","policy":"workspace"},
     {"id":"learning","operatorKind":"learning","module":"knowledge","route":"/?app=learning","teaches":"Review retained lessons for the selected pot.","policy":"workspace"},
     {"id":"workflows","operatorKind":"workflows","module":"planning","route":"/?app=workflows","teaches":"Inspect workflow structure before explicitly running it.","policy":"workspace"},
+    {"id":"enterprise","operatorKind":"enterprise","module":"planning","route":"/?app=enterprise","teaches":"Find the runnable enterprise operations in the shared workflow inventory before explicitly running one.","policy":"workspace"},
     {"id":"brainstorm","operatorKind":"brainstorm","module":"planning","route":"/?app=brainstorm","teaches":"Explore proposals without mistaking suggestions for approved work.","policy":"workspace"},
     {"id":"health","operatorKind":"health","module":"operations","route":"/?app=health","teaches":"Read health evidence and distinguish unknown from healthy.","policy":"workspace"},
     {"id":"prs","operatorKind":"prs","module":"operations","route":"/?app=prs","teaches":"Review pull requests; merging or publishing remains an explicit product action.","policy":"workspace"},

@@ -75,6 +75,66 @@ describe('secrets-guard rules', () => {
     expect(placeholder.some((x) => x.rule === 'secret-assignment')).toBe(false);
   });
 
+  it('authorization-header rule flags a literal bearer in a launcher-written .mcp.json (WI-6554700010019088)', () => {
+    // Assembled from <20-char fragments so this file's bytes cannot match the {20,} capture.
+    const token = ['Q7wZk2PmX9vRb4Ts', 'N8yHc3Lf6Dg1Jq5A'].join('');
+    // The exact shape console-spawn.ts writes into a pot checkout, which the generic
+    // secret-assignment rule cannot see (key `Authorization`, value `Bearer <token>`).
+    const mcpJson = JSON.stringify(
+      {
+        mcpServers: {
+          papercusp: {
+            url: 'http://127.0.0.1:9071/api/mcp?superuser=1&workspace=papercusp-workspace',
+            headers: { Authorization: `Bearer ${token}` },
+          },
+        },
+      },
+      null,
+      2,
+    );
+    const found = scanTextForSecrets('.mcp.json', mcpJson);
+    expect(found.map((x) => x.rule)).toEqual(['authorization-header']);
+    expect(found[0].line).toBe(6);
+    expect(found[0].excerpt).not.toContain(token);
+    // A header line and a curl -H argument carry the same credential.
+    expect(scanTextForSecrets('notes.md', `Authorization: Bearer ${token}`).map((x) => x.rule)).toEqual([
+      'authorization-header',
+    ]);
+    expect(
+      scanTextForSecrets('probe.sh', `curl -H 'Authorization: token ${token}' https://api.github.com/user`).map(
+        (x) => x.rule,
+      ),
+    ).toEqual(['authorization-header']);
+  });
+
+  it('authorization-header rule ignores templates, concatenation, placeholders and low-entropy stand-ins', () => {
+    const negatives: Array<[string, string]> = [
+      ['client.ts', 'headers: { Authorization: `Bearer ${token}` },'],
+      ['client.ts', "headers['Authorization'] = 'Bearer ' + session.accessToken;"],
+      ['README.md', 'Authorization: Bearer <your-token>'],
+      ['README.md', 'Authorization: Bearer $PAPERCUSP_TOKEN'],
+      ['fixture.test.ts', `"Authorization": "Bearer ${'a'.repeat(40)}"`],
+      ['fixture.test.ts', `"Authorization": "Bearer ${['example-bearer-', 'token-value-xyz'].join('')}"`],
+      ['client.ts', 'const scheme = "Bearer"; // Authorization scheme'],
+      // A constant name stands in for a key in docs and diffs; it is not an issued token.
+      ['audit.jsonl.md', "headers: { authorization: 'Bearer PRIVATE_PROVIDER_KEY' }"],
+    ];
+    for (const [path, line] of negatives) {
+      expect(scanTextForSecrets(path, line), `${path}: ${line}`).toEqual([]);
+    }
+  });
+
+  it('authorization-header rule is scoped to data/config files: a realistic stand-in in a source file is not flagged', () => {
+    const token = ['Q7wZk2PmX9vRb4Ts', 'N8yHc3Lf6Dg1Jq5A'].join('');
+    const line = `"Authorization": "Bearer ${token}"`;
+    for (const sourceFile of ['route.test.ts', 'client.tsx', 'hook.mjs', 'chat_copy.rs', 'probe.py']) {
+      expect(scanTextForSecrets(sourceFile, line), sourceFile).toEqual([]);
+    }
+    for (const dataFile of ['.mcp.json', '.mcp.json.su-parked', 'original-config.txt.md', 'values.yaml', '.env']) {
+      expect(scanTextForSecrets(dataFile, line).map((x) => x.rule), dataFile).toEqual(['authorization-header']);
+    }
+  });
+
   it('clean source has no findings', () => {
     const clean = `export function add(a: number, b: number) { return a + b; }\nconst url = "https://example.com/api";`;
     expect(scanTextForSecrets('math.ts', clean)).toEqual([]);

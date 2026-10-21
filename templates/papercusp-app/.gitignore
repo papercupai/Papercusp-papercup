@@ -14,3 +14,9 @@ logs/
 # The desktop sidecar build copies a ~124MB node runtime here; never commit it.
 # Left untracked it also marks every test run in this repo worktreeDirty.
 /dist-sidecar/bin/
+# Machine-local files agent launchers write into the app checkout. `.mcp.json` and its
+# siblings (.su-parked, .papercusp.bak, .tmp-*) carry a live MCP bearer; a pot's
+# git-sync committed and pushed them to GitHub (WI-6554700010019088).
+.mcp.json
+.mcp.json.*
+.papercup-console-active.*

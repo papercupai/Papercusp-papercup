@@ -29,6 +29,15 @@ const hiveMocks = vi.hoisted(() => ({
   potHomeSlugForHarness: vi.fn(),
 }));
 const parkReachability = vi.hoisted(() => ({ read: vi.fn() }));
+const contentIdentityPreview = vi.hoisted(() => ({ stamp: vi.fn() }));
+vi.mock('./completion-freshness', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./completion-freshness')>();
+  return {
+    ...actual,
+    completionTreeStampForEvidence: (...args: Parameters<typeof actual.completionTreeStampForEvidence>) =>
+      contentIdentityPreview.stamp(...args) ?? actual.completionTreeStampForEvidence(...args),
+  };
+});
 const conformanceClosure = vi.hoisted(() => ({
   read: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({
     applicable: true,
@@ -394,6 +403,7 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  contentIdentityPreview.stamp.mockReset();
   completionBriefPort.read.mockReset();
   completionBriefPort.read.mockResolvedValue(null);
   conformanceClosure.read.mockReset();
@@ -977,6 +987,58 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     );
     expect(r).not.toHaveProperty('completion');
     expect(r).not.toHaveProperty('workItem');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['content-mismatch', { workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'c'.repeat(40) }],
+    ['missing-from-commit', { workingTreeBlobSha: 'b'.repeat(40), headBlobSha: null, gitIgnoreStatus: 'not-ignored' }],
+    ['object unavailable', { workingTreeBlobSha: 'b'.repeat(40), headBlobSha: null, headBlobUnresolvable: 'object unavailable' }],
+  ])('EI-26592766858681844: preview explains %s without recording a close', async (reason, identity) => {
+    const path = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
+    const closeItem = { ...item, id: 'WI-content-preview', kind: 'change', family: 'issue', state: 'open' };
+    getWorkItem.mockResolvedValue(closeItem);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...closeItem, state: 'resolved' }));
+    contentIdentityPreview.stamp.mockResolvedValue({
+      headSha: 'a'.repeat(40),
+      contentIdentity: [{ path, ...identity }],
+    });
+    const args = {
+      id: closeItem.id,
+      state: 'resolved',
+      assumptions: 'none',
+      completion: { summary: 'Verified focused behavior', verifiedHow: 'unit', testResult: 'passed', filesChanged: [path] },
+    };
+    const preview = await oneRaw({ ...args, validateOnly: true });
+    expect(preview).toMatchObject({ ok: true, validationOnly: true, completionAuthority: 'proposed', countsTowardBurnDown: false });
+    expect(preview.authorityWarning).toContain(path);
+    expect(preview.authorityWarning).toContain(reason);
+    expect(preview.authorityWarning).toContain("would land authority:'proposed'");
+    expect(preview.authorityWarning).toContain('has not recorded a close or a settlement manifest');
+    expect(preview.authorityWarning).not.toMatch(/is CLOSED|WAITING SETTLES|evidence was accepted/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+
+    const closed = await oneRaw(args);
+    expect(closed.completionAuthority).toBe(preview.completionAuthority);
+    expect(closed.authorityWarning).toContain(path);
+    expect(closed.authorityWarning).toContain(reason);
+  });
+
+  it('EI-26592766858681844: matching content has no preview authority warning', async () => {
+    const path = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
+    getWorkItem.mockResolvedValue({ ...item, id: 'WI-content-preview', kind: 'change', family: 'issue', state: 'open' });
+    contentIdentityPreview.stamp.mockResolvedValue({
+      headSha: 'a'.repeat(40),
+      contentIdentity: [{ path, workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'b'.repeat(40) }],
+    });
+    const preview = await oneRaw({
+      id: 'WI-content-preview', state: 'resolved', assumptions: 'none', validateOnly: true,
+      completion: { summary: 'Verified focused behavior', verifiedHow: 'unit', testResult: 'passed', filesChanged: [path] },
+    });
+    expect(preview.completionAuthority).toBe('committed');
+    expect(preview.authorityWarning).toBeUndefined();
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
   });

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-004 / R-31 independently assigned acceptance verdict distinguishing the positive control from each negative control (acceptance-bar-atomic-retirement-2026-10-15), re-read after a3c70e7517",
+  "framework": "operational",
+  "command": [
+    "work_items:get { id: 'WI-6554700010018644', harness: 'papercusp' } (state read only; thread posts carried from the 08:31Z read, see postsReadAt)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T13:02:09.000Z",
+  "finishedAt": "2026-10-21T13:02:10.897Z",
+  "plan": "acceptance-bar-atomic-retirement-2026-10-15",
+  "planItem": "P-004",
+  "workItemId": "WI-6554700010018644",
+  "specIds": ["AUTO-BAR-R-31-P-004@3"],
+  "evidencePlane": "live",
+  "instrument": {
+    "none": true,
+    "reason": "Manual BAR (check.instrumentKey none): it records a person's judgment, not a test result. The record is read from the work-item thread."
+  },
+  "supersedes": "docs/evidence/abar-p004-r31-live-independent-verdict-2026-10-21.json (read 08:31Z, pinned to rubrics.ts blob 67d9657ed3)",
+  "sourceChange": {
+    "commit": "a3c70e7517",
+    "path": "packages/operator-core/lib/rubrics.ts",
+    "blobs": "67d9657ed3 -> 093a80d95c",
+    "what": "Adds ACCEPTANCE_BAR_AMENDMENT_REFUSAL_BUDGET and amendmentSourceRefusal; the three malformed-source refusals (acceptance_bar_amendment_requirements_invalid, acceptance_bar_amendment_mapping_invalid twice) now emit bounded per-problem text instead of a bare code list or an unbounded join. No other line in rubrics.ts changed.",
+    "disclosure": "The two reviewer verdicts below were given BEFORE this change, on the evidence package in post 1192731 (the retirement path's positive control, negative controls and CAS/rollback evidence). They are not a review of a3c70e7517. The implementer's reading is that the diff changes only refusal message wording for malformed amendment sources and does not touch the retirement, CAS or rollback paths those controls exercise. That reading is the implementer's, not an independent one. The independent verifier and grader should judge it, and should ask for a fresh review if they disagree."
+  },
+  "verdictRecord": {
+    "workItem": "WI-6554700010018644",
+    "state": "done",
+    "stateReadAt": "2026-10-21T13:02:10Z (re-read for this file: state=done, assignee null, updatedAt 07:42:10Z)",
+    "evidencePackagePost": "thread-post:1192731 (implementer su-1622829b; lists the POSITIVE control and the negative controls for an independent reviewer; the implementer explicitly declines to accept)",
+    "independentReviewers": [
+      { "agent": "su-9213b07f", "verdict": "ACCEPT", "post": "thread-post:1192751" },
+      { "agent": "su-f65dd3bd", "verdict": "ACCEPT", "post": "thread-post:1192763" }
+    ],
+    "postsReadAt": "2026-10-21T08:31Z (carried from the superseded file; thread posts are append-only and were not re-read for this file)",
+    "routing": "consult conv-mvhn5c3f (reviewers outside the implementer lineage)",
+    "caveatOwnership": "non-blocking caveats b/c -> WI-6554700010018824, d -> WI-6554700010018783, e -> WI-6554700010018754"
+  },
+  "assertions": [
+    { "id": "verdict:item-closed", "passed": true, "evidence": "WI-6554700010018644 state=done (re-read 13:02:10Z)" },
+    { "id": "verdict:independent", "passed": true, "evidence": "ACCEPT verdicts by su-9213b07f and su-f65dd3bd; the implementer su-1622829b did not accept (post 1192731 states it cannot)" },
+    { "id": "verdict:controls-named", "passed": true, "evidence": "post 1192731 lists a POSITIVE control (authorized change applies) and negative controls; grader confirms each reviewer distinguishes them" },
+    { "id": "source:change-disclosed", "passed": true, "evidence": "sourceChange above names the a3c70e7517 diff and states that the verdicts predate it" }
+  ],
+  "summary": "WI-6554700010018644 (P-004) is closed done. Its thread carries the implementer's evidence package (post 1192731) naming the positive control and the negative controls, and two reviewers outside the implementer lineage (su-9213b07f, su-f65dd3bd) returned ACCEPT. Those verdicts predate a3c70e7517, which changed only malformed-source refusal wording in rubrics.ts (see sourceChange). The grader should read posts 1192731, 1192751 and 1192763, judge whether each verdict names the authorized positive control and each negative control and distinguishes them, and judge whether the a3c70e7517 diff leaves those verdicts applicable."
+}

@@ -1386,6 +1386,7 @@ export type UnprovenContentIdentityRow = {
 export function describeUnprovenContentIdentity(
   rows: readonly UnprovenContentIdentityRow[],
   declaredPathCount: number,
+  phase: 'closed' | 'preview' = 'closed',
 ): string | undefined {
   if (rows.length === 0) return undefined;
   const render = (subset: readonly UnprovenContentIdentityRow[]) =>
@@ -1395,6 +1396,8 @@ export function describeUnprovenContentIdentity(
   const unknown = rows.filter((row) => row.settles === 'unknown');
   const total = declaredPathCount > 0 ? declaredPathCount : rows.length;
   const head = `Content identity was not proven for ${rows.length} of ${total} declared \`filesChanged\` path(s): ${render(rows)}. `;
+  // A preview shares the measured facts, but has no persisted close for git-sync to settle.
+  if (phase === 'preview') return head;
   const neverRemedy = neverSettles
     .map((row) => {
       if (row.reason === 'gitignored-path') {

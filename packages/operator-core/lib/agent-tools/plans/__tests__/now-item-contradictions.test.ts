@@ -518,6 +518,34 @@ describe('detectNowItemContradictions', () => {
     ]);
   });
 
+  it('exempts the canonical `<other-slug>#P-NNN` scoped form', () => {
+    // EI-26592784219574522: the identifier-scope invariant REQUIRES this form
+    // for a cross-plan citation, so writing it correctly must not trip the guard.
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**Next:** Continue with P-002.',
+        '**Next:** Gym items wait on identity-definitions-own-policy-2026-10-17#P-001.',
+      ),
+      { filePath: `${SLUG}.md` },
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([]);
+  });
+
+  it('still flags `<this-slug>#P-NNN` — the scoped form of THIS plan\'s own item', () => {
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**Next:** Continue with P-002.',
+        `**Next:** Revisit ${SLUG}#P-001 before continuing.`,
+      ),
+      { filePath: `${SLUG}.md` },
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+  });
+
   it('does not exempt a bare terminal-status word merely resembling a slug segment', () => {
     // Guard against a regression that treats any hyphenated word before the
     // id as a foreign-plan citation: without a trailing -YYYY-MM-DD date the

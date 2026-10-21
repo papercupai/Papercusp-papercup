@@ -34,6 +34,12 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
       'The landing dashboard — what is running right now, plans that need attention, and the pulse of the whole workspace at a glance.',
   },
   {
+    id: 'enterprise',
+    label: 'Enterprise',
+    blurb:
+      'The enterprise operations view — the same inventory as Workflows, narrowed to the operations you can run. Nothing runs until you start it explicitly.',
+  },
+  {
     id: 'hud',
     label: 'HUD',
     blurb:

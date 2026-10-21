@@ -36,7 +36,10 @@ const PLAN_ITEM_RANGE_RE =
 // low-false-positive signal — ordinary prose essentially never produces a
 // multi-segment kebab-case token ending in a full date immediately before
 // a plan-item id.
-const PLAN_SLUG_PREFIX_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2})\s+$/i;
+// EI-26592784219574522: the separator is whitespace OR `#` — `<slug>#P-NNN`
+// is the canonical scoped form the identifier-scope invariant requires, so
+// writing it correctly must not trip the guard.
+const PLAN_SLUG_PREFIX_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2})(?:\s+|#)$/i;
 // A short plan-name reference can scope an item without repeating its full
 // dated slug, e.g. "behind modernization P-008". Limit this to the explicit
 // dependency construction and do not exempt a name that is already part of

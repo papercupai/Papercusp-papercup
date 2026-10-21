@@ -39,6 +39,22 @@ describe('focused-test admission path doc claim', () => {
       expect(v.freeOfPcHeavyWrapper).toBe(true);
     });
 
+    it('accepts the launch-spec object shape, and still refuses a wrapper as its first argv', () => {
+      const spec = [
+        'return {',
+        '  command: process.execPath,',
+        `  args: [join(opts.root, 'scripts', '${TEST_ROUTER}'), ...opts.files],`,
+        '};',
+      ].join('\n');
+      expect(judgeFocusedTestAdmissionPath({ runSource: spec }).routerLaunchedWithNodeBinary).toBe(true);
+      const wrapped = spec.replace(
+        `[join(opts.root, 'scripts', '${TEST_ROUTER}')`,
+        `[join(opts.root, 'scripts', 'run-wrapper.sh'), '${TEST_ROUTER}'`,
+      );
+      expect(wrapped).not.toBe(spec);
+      expect(judgeFocusedTestAdmissionPath({ runSource: wrapped }).routerLaunchedWithNodeBinary).toBe(false);
+    });
+
     it('catches the router being wrapped back into pc-heavy', () => {
       const v = judgeFocusedTestAdmissionPath({
         runSource: SAFE.replace(

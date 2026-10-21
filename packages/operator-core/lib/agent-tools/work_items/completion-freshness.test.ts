@@ -649,6 +649,16 @@ describe('describeUnprovenContentIdentity (EI-21970667079827352)', () => {
     expect(out).toContain('`a.ts` (missing-from-commit)');
   });
 
+  it('preview shares the exact path facts without claiming a close was recorded or will settle', () => {
+    const preview = describeUnprovenContentIdentity([pending, typo], 6, 'preview')!;
+    expect(preview).toContain('2 of 6 declared');
+    expect(preview).toContain('`a.ts` (missing-from-commit)');
+    expect(preview).toContain('`typo.ts` (absent-from-both)');
+    expect(describeUnprovenContentIdentity([pending, typo], 6)).toContain(preview);
+    expect(preview).not.toMatch(/accepted|recorded|reconciler|re-call|WAITING/);
+    expect(describeUnprovenContentIdentity([], 6, 'preview')).toBeUndefined();
+  });
+
   it('an all-sweep set tells the caller settlement is automatic after git-sync', () => {
     const out = describeUnprovenContentIdentity([pending], 6)!;
     expect(out).toContain('WAITING SETTLES THIS');

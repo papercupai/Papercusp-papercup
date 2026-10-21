@@ -2,6 +2,7 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { areAcceptanceLineageRelated } from '../../acceptance-author-identity';
 import { parseWorkedByHistory } from '../../work-item-prior-work';
@@ -162,7 +163,7 @@ export async function registerFrozenTests(input: { item: WorkItem; actorId: stri
       UPDATE harness_shared.work_items SET payload=jsonb_set(COALESCE(payload,'{}'::jsonb),'{_frozenTests}',${JSON.stringify(manifest)}::text::jsonb)
       WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND feature_id=${item.id}
         AND COALESCE((payload #>> '{_frozenTests,revision}')::int,0)=${registration.expectedRevision}
-        AND status NOT IN ('done','dropped','passed','resolved','closed','deprecated') RETURNING feature_id`);
+        AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[])) RETURNING feature_id`);
     if (!rows.length) throw new Error('frozen_tests_revision_conflict_or_terminal_item');
     return { ok: true as const, id: item.id, frozenTests: { ...manifest, files: frozen.files, author: actorId } };
   } catch (error) { return failed('frozen_tests_registration_refused', errorText(error)); }

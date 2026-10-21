@@ -24,6 +24,7 @@ import type { ConditionState } from '../agent-tools/coordination/tools/condition
 import { frozenRepairLatency } from './frozen-candidate-repair-queue';
 import { readGateNonVerdictReasons, type GateNonVerdictReasons } from './gate-fire-ledger';
 import type { GreenMainSloBreach } from './green-main-slo';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import {
   computeGreenMainSlo,
   syncTalliesFromDeltaCoverage,
@@ -318,7 +319,7 @@ export async function readLastClosedNonVerdictReasonItemMs(
       FROM harness_shared.work_items
      WHERE workspace_id = ${target.workspaceId} AND harness_slug = ${target.installSlug}
        AND payload->>'source' = 'green-main-slo' AND payload->>'reason' = ${reason}
-       AND status IN ('done', 'dropped', 'resolved', 'closed') AND closed_ts IS NOT NULL`;
+       AND status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]) AND closed_ts IS NOT NULL`;
   const raw = rows[0]?.closed_ms;
   if (raw == null) return null;
   const ms = Number(raw);

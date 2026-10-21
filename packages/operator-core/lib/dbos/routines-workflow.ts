@@ -2285,6 +2285,31 @@ async function routinesSweepTickImpl(): Promise<void> {
     { name: 'plan-run-reconcile-sweep' },
   );
 
+  // WI-6554700010019116: a running plan run whose items are assigned to its declared executor
+  // NAME waits forever when no live session has adopted that name (run 1355 needed a hand-launched
+  // bug-triage executor). Recruit one past the SLO, bounded and idempotent like the admission
+  // recruiter (D-058). Best-effort: a recruit failure must never fail the tick.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { runPlanRunExecutorRecruiter, defaultPlanRunRecruiterDeps } = await import(
+          '../harness/routines/plan-run-executor-recruiter'
+        );
+        const r = await runPlanRunExecutorRecruiter({}, defaultPlanRunRecruiterDeps);
+        if (r.launched.length > 0 || r.escalated.length > 0 || r.failed.length > 0) {
+          console.warn(
+            `[plan-run-recruit] ${r.candidates} candidate(s): launched ${r.launched.map((l) => l.key).join(', ') || 'none'}` +
+              (r.escalated.length ? `; escalated ${r.escalated.map((e) => e.key).join(', ')}` : '') +
+              (r.failed.length ? `; failed ${r.failed.map((f) => `${f.runId}/${f.stage}: ${f.error}`).join('; ')}` : ''),
+          );
+        }
+      } catch (e) {
+        console.warn(`[plan-run-recruit] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'plan-run-executor-recruit-sweep' },
+  );
+
   // queen-autonomous-execution B-11 / P-050: hive THROUGHPUT instrumentation —
   // one snapshot tick per started hive, riding the same 30s sweep. Records the
   // six metrics (frontier depth, placements/wake, busy-vs-cap, stuck, MTTC,

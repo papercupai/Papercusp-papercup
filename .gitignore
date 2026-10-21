@@ -171,8 +171,11 @@ packages/agent-mcp/dist/
 # must never be committed (paperclip's `git add -A` would otherwise leak the
 # credential). Was historically tracked then deleted; this closes the re-leak
 # hole. `.papercusp.bak` is the backup console-launch makes of a pre-existing one.
+# `.mcp.json.*` covers every sibling a launcher writes beside it: psu-launcher's
+# `.mcp.json.su-parked` (committed with a live MCP bearer, WI-6554700010019088),
+# console-spawn's `.mcp.json.papercusp.bak` and its atomic-write `.mcp.json.tmp-*`.
 .mcp.json
-.mcp.json.papercusp.bak
+.mcp.json.*
 
 # Rendered plan markdown — plans are PG-canonical; these .md are a DERIVED,
 # read-only projection (rendered by `plans:export` for human reading), never the

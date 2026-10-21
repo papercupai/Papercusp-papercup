@@ -22,6 +22,17 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { upsertConditionWorkItem } from '../../coord/condition-upsert';
 import { isSpecTriadCompanion } from './spec-triad-policy';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+
+/**
+ * Terminal states that are a reasoned drop rather than a completion. Derived
+ * from the canonical terminal set (deprecated, dropped, closed today), so a new
+ * terminal state cannot silently fall out of the suppression sweep.
+ */
+const SPEC_TRIAD_COMPLETION_STATES = new Set(['done', 'resolved', 'passed']);
+const SPEC_TRIAD_REASONED_DROP_STATUSES: readonly string[] = ANY_FAMILY_TERMINAL_STATES.filter(
+  (s) => !SPEC_TRIAD_COMPLETION_STATES.has(s),
+);
 
 /** Work-item statuses that mean an existing filing is still outstanding. */
 export const SPEC_TRIAD_NON_TERMINAL_STATUSES = [
@@ -75,7 +86,7 @@ export async function listSpecTriadFilingSuppressions(ref?: string): Promise<Arr
      WHERE payload->>'specTriadPlan' IS NOT NULL
        AND (${ref ?? null}::text IS NULL OR payload->>'specTriadPlan' = ${ref ?? null})
        AND (status = ANY(${SPEC_TRIAD_NON_TERMINAL_STATUSES})
-         OR (status IN ('dropped', 'deprecated', 'closed')
+         OR (status = ANY(${[...SPEC_TRIAD_REASONED_DROP_STATUSES]}::text[])
            AND (NULLIF(BTRIM(terminal_completion_ref), '') IS NOT NULL
              OR NULLIF(BTRIM(payload #>> '{_completionEvidence,summary}'), '') IS NOT NULL)))
   ` as unknown as Array<{ feature_id: string; ref: string; status: string }>;

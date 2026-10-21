@@ -5280,12 +5280,32 @@ async function completeOne(
   // boundary before every persistence/finish leg, and expose the finding that explains any
   // downgrade so callers can repair the exact input before submitting the real close.
   if (it.validateOnly) {
+    // EI-26592766858681844: the content floor already lowered the authority above. Surface
+    // its measured paths here too, without borrowing the real close's settlement promises.
+    const unresolvedContent = unresolvableContentIdentityPaths(treeStamp);
+    const contentIdentityPreviewWarning = committedContentIdentityMissing
+      ? `${it.id} would land authority:'proposed' and would NOT count toward burn-down. ` +
+        (describeUnprovenContentIdentity(
+          unprovenContentIdentityPaths(treeStamp),
+          (completionEvidenceForGate?.filesChanged?.length ?? 0) +
+            (completionEvidenceForGate?.filesDeleted?.length ?? 0),
+          'preview',
+        ) ??
+          (unresolvedContent.length > 0
+            ? `The server could NOT RESOLVE the committed content for ${unresolvedContent
+                .map((entry) => `\`${entry.path}\` (${entry.headBlobUnresolvable})`)
+                .join('; ')}. `
+            : 'The server could not prove committed content identity for the declared paths. ')) +
+        'This preview has not recorded a close or a settlement manifest. ' +
+        'Resolve the reported content identity before submitting, or submit the close with proposed authority.'
+      : undefined;
     return {
       ok: true,
       id: it.id,
       validationOnly: true,
       completionAuthority,
       countsTowardBurnDown: countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
+      ...(contentIdentityPreviewWarning ? { authorityWarning: contentIdentityPreviewWarning } : {}),
       ...(completionEvidenceFindings ? { completionEvidenceFindings } : {}),
       ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
       ...(terminalCriteriaWarning ? { terminalCriteriaWarning } : {}),
