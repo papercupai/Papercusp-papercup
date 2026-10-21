@@ -31,6 +31,16 @@ const entry = (over: Partial<ProjectEntry> = {}): ProjectEntry => ({
 const allExist = { pathExists: () => true };
 
 describe('gitSyncEligibility — the verdict matrix (P-001)', () => {
+  it('registration-only checkouts are ineligible without filesystem access', () => {
+    expect(gitSyncEligibility(entry({
+      registrationOnly: { commitSha: 'a'.repeat(40) },
+      hive_slug: 'home',
+      self_repo: true,
+    }), { pathExists: () => { throw new Error('passive entry must not touch disk'); } })).toEqual({
+      eligible: false, reason: 'registration_only',
+    });
+  });
+
   it('a plain member checkout with a .git is eligible', () => {
     expect(gitSyncEligibility(entry(), allExist)).toEqual({ eligible: true });
   });

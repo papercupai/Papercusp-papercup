@@ -63,11 +63,14 @@ function unsatisfiedBlockerSource(): string {
 /** The feature-family inline readiness floor, sliced at its stable following declaration. */
 function claimFloorsSource(): string {
   const src = readFileSync(WORK_ITEMS_SRC, 'utf8');
-  const start = src.indexOf('export function claimFloorsWhereSql');
+  // claimFloorsWhereSql ANDs the named predicates of featureClaimFloorPredicatesSql, which
+  // precedes it; slice from the registry so the blocker predicate is in scope.
+  const start = src.indexOf('export function featureClaimFloorPredicatesSql');
   expect(
     start,
-    'claimFloorsWhereSql not found in work-items.ts — it was renamed or moved; re-point this guard rather than deleting it',
+    'featureClaimFloorPredicatesSql not found in work-items.ts — it was renamed or moved; re-point this guard rather than deleting it',
   ).toBeGreaterThan(-1);
+  expect(src.indexOf('export function claimFloorsWhereSql', start)).toBeGreaterThan(start);
   const after = src.indexOf('\n/**\n * The tuple-space associative', start);
   return src.slice(start, after === -1 ? start + 30_000 : after);
 }

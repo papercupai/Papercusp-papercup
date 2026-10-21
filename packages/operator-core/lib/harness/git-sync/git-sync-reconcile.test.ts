@@ -85,6 +85,21 @@ beforeEach(() => {
 });
 
 describe('reconcileGitSyncRoutines — scope + walk', () => {
+  it('registration-only members never seed through the real spine after reconciliation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'passive-reconcile-'));
+    mkdirSync(join(dir, '.git'));
+    try {
+      const out = await reconcileGitSyncRoutines({
+        workspaceId: 'ws-1', sql: sqlFake,
+        loadRegistry: regOf(creatorHome, member('passive', 'shop-hive', {
+          path: dir, registrationOnly: { commitSha: 'a'.repeat(40) },
+        })),
+      });
+      expect(out).toEqual({ seeded: [], skipped: [{ slug: 'passive', reason: 'ineligible:registration_only' }], unseeded: [] });
+      expect(upsertRoutineMock).not.toHaveBeenCalled();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('seeds every missing hive member and reports the slugs', async () => {
     const { seed, calls } = fakeSeed();
     const out = await reconcileGitSyncRoutines({

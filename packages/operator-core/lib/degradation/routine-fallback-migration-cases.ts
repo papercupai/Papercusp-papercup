@@ -483,6 +483,7 @@ ROUTINE_FALLBACK_MIGRATION_CASES.push({
       pickIndexFreshness: () => ({ lastCommit: 'fixture' }), readRegistryEntry: () => ({}), registryPath: () => 'fixture',
       readIndexMetaFreshness: () => ({}), dependencySnapshotBackend: () => 'fixture', logDependencySnapshotCheck() {},
       dependencySnapshotUsable: producer.dependencySnapshotUsable, canaryBin: () => 'fixture',
+      DEPENDENCY_SNAPSHOT_MAX_AGE_MS: producer.DEPENDENCY_SNAPSHOT_MAX_AGE_MS,
       refreshDependencySnapshot: async () => {
         if (producerFails) throw new Error('refresh unreadable');
         ticks++; return { next: { status, path: 'fixture' }, shouldAlert: ticks === 1, shouldResolve: status === 'fresh' };
@@ -535,7 +536,7 @@ ROUTINE_FALLBACK_MIGRATION_CASES.push({
   }),
 }, {
   id: 'history-refresh-original-streak-alarm-unreadable-persistence-and-measured-recovery', item: 'P-009', route: 'condition',
-  rowIds: [`owner-only-alarm|${prefix}harness/routines/project-history-refresh-action.ts|<module>|1`],
+  rowIds: [`owner-only-alarm|${prefix}harness/routines/project-history-refresh-action.ts|persistProjectHistoryHealth|1`],
   run: () => conditionMeasured(async (rail) => {
     const { expect } = await import('vitest');
     const producer = await import('../harness/routines/project-history-refresh-action');
@@ -550,8 +551,8 @@ ROUTINE_FALLBACK_MIGRATION_CASES.push({
     const text = original(prefix + 'harness/routines/project-history-refresh-action.ts', 'health bookkeeping skipped', 'try');
     const tick = () => execute(text, {
       ...rail, resolveAlarm: async (key: string) => { resolutions++; return rail.resolveAlarm(key); },
-      ctx: { installSlug: 'fixture', workspaceId: 'fixture' }, config: { output: '/fixture/history' }, success,
-      r: { timedOut: false, code: success ? 0 : 1, stdout: '', stderr: '' }, timeoutMs: 1000,
+      ctx: { installSlug: 'fixture', workspaceId: 'fixture' },
+      outcome: { success, timedOut: false, code: success ? 0 : 1, stdout: '', stderr: '', timeoutMs: 1000, output: '/fixture/history' },
       PROJECT_HISTORY_HEALTH_DEFAULT: producer.PROJECT_HISTORY_HEALTH_DEFAULT,
       PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD: producer.PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD,
       decideProjectHistoryHealthUpdate: producer.decideProjectHistoryHealthUpdate,

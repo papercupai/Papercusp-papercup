@@ -59,22 +59,25 @@
  * Retention of `harness_shared.tool_invocations`, in days.
  *
  * MIRRORS `DEFAULT_RETENTION_TARGETS` (`{ category: 'tool-invocations',
- * retention_days: 14 }`) in harness/routines/telemetry-retention-action.ts —
- * mirrored rather than imported to keep this module free of the routines layer.
- * `cell-tenure.test.ts` asserts the two agree, so a retention change cannot
- * silently widen the observable window here.
+ * retention_days: 30 }`, sourced from storage/table-retention.ts and re-exported
+ * by harness/routines/telemetry-retention-action.ts) — mirrored rather than
+ * imported to keep this module free of the routines layer. `cell-tenure.test.ts`
+ * asserts the two agree, so a retention change cannot silently move the
+ * observable window here.
  */
-export const TOOL_INVOCATIONS_RETENTION_DAYS = 14;
+export const TOOL_INVOCATIONS_RETENTION_DAYS = 30;
 
 /**
  * The trailing window a tenure verdict is computed over.
  *
- * Equal to retention, not the admission rule's nominal 30: a window longer than
- * retention cannot be observed, and an unobservable window is exactly what reason 2
- * above says must never be read as evidence. Widening this REQUIRES widening
- * retention first, or every cell silently becomes `unobservable`.
+ * Never longer than retention: a window longer than retention cannot be observed,
+ * and an unobservable window is exactly what reason 2 above says must never be read
+ * as evidence. Held at 14 days although retention is now 30. Ad-hoc
+ * `storage:prune tool-invocations` trims shorter than the routine's retention have
+ * been run on this table, so widening the window to the admission rule's nominal
+ * 30 is a separate, measured decision, not a side effect of a retention retune.
  */
-export const CELL_TENURE_WINDOW_DAYS = TOOL_INVOCATIONS_RETENTION_DAYS;
+export const CELL_TENURE_WINDOW_DAYS = 14;
 
 const MS_PER_DAY = 86_400_000;
 

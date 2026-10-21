@@ -202,7 +202,19 @@ export async function withPinnedPlanTypes<T>(
   scope: { workspaceId?: string; harnessSlug?: string; planSlug: string },
   fn: () => Promise<T>,
 ): Promise<T> {
-  if (activeVerificationResolver()) return fn();
+  const resolver = await pinnedPlanTypeResolver(scope);
+  return resolver ? withVerificationResolver(resolver, fn) : fn();
+}
+
+/**
+ * The resolver `withPinnedPlanTypes` installs for this plan, or null when a resolver is already
+ * in force (that one wins, as there). For a caller whose `resolveVerification` calls sit inside a
+ * long synchronous stretch it cannot wrap whole, such as plans:audit's per-item loop.
+ */
+export async function pinnedPlanTypeResolver(
+  scope: { workspaceId?: string; harnessSlug?: string; planSlug: string },
+): Promise<PlanTypeResolution['resolver'] | null> {
+  if (activeVerificationResolver()) return null;
   const { resolvePlanScope } = await import('../agent-tools/plans/source');
   const { withWorkspace } = await import('@papercusp/db-org');
   const resolvedScope = await resolvePlanScope({
@@ -211,7 +223,7 @@ export async function withPinnedPlanTypes<T>(
   });
   const planScope: PlanPinScope = { ...resolvedScope, planSlug: scope.planSlug };
   const resolution = await withWorkspace(planScope.workspaceId, (tx) => loadPlanTypes(tx as Sql, planScope));
-  return withVerificationResolver(resolution.resolver, fn);
+  return resolution.resolver;
 }
 
 /**

@@ -100,7 +100,9 @@ describe('acceptance BAR repair order: vet before proof (P-004)', () => {
     const repair = nextRepair(['bar_snapshot_proof_missing', 'bar_snapshot_vetting_missing'], []);
     expect(repair?.code).toBe('bar_snapshot_vetting_missing');
     // The action itself carries the order, so the reason to vet first travels with it.
-    expect(repair?.action).toMatch(/amend → vet → attest → bind → cards → grade/);
+    // The vetting step is spelled `critique` since the attestation card was dropped from
+    // the order (critique is read directly); the invariant is that it precedes `bind`.
+    expect(repair?.action).toMatch(/amend → (?:vet|critique)\b[^.]*?→ bind → cards → grade/);
     expect(repair?.action).toMatch(/BEFORE binding proof/i);
   });
 

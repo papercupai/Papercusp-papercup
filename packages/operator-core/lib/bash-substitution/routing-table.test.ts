@@ -751,20 +751,28 @@ describe('the hand-written storage-policy table is not contradicted by an audite
   });
 
   /**
-   * The LIVE gitnexus row, addressed by a STABLE identity — the `use` cell names
-   * `gitnexus.context` — rather than by prose in the `want` cell, which is what
-   * broke before. D-042 routes topology questions to `gitnexus.context`/`.impact`
-   * and warns OFF the raw `gitnexus.query` backend. Because those are dot-form,
-   * the cell yields no colon-form verb at all, so the row routes nothing and
-   * cannot contradict a pair. Asserting `verbs` is empty is what would notice if
-   * the imprecision ever came BACK into this row.
+   * The LIVE topology row (call chains / impact radius), addressed by a STABLE
+   * identity — the `use` cell names `graph:query` with `op:'context'` — rather
+   * than by prose in the `want` cell, which is what broke before. The row used to
+   * route to the dot-form `gitnexus.context`, which yielded no colon-form verb at
+   * all. CLAUDE.md now routes topology to the native colon-form `graph:query` and
+   * names `gitnexus.query` only in the `not` cell (it fails closed before
+   * dispatch), so the row DOES yield a verb. It names no pair-covered relation, so
+   * it still cannot contradict a pair; asserting `relations` is empty is what
+   * would notice if a relation name ever leaked into this row.
    */
-  it('the live gitnexus row routes nothing extractable and contradicts nothing', () => {
-    const gitnexus = rows().find((r) => r.use.includes('gitnexus.context'));
-    expect(gitnexus, 'CLAUDE.md no longer has a storage-policy row naming gitnexus.context').toBeDefined();
-    expect(gitnexus!.verbs, 'dot-form tool names must not parse as colon-form verbs').toEqual([]);
-    expect(gitnexus!.relations).toEqual([]);
-    expect(contradiction(gitnexus!)).toBeNull();
+  it('the live topology row routes graph:query and contradicts nothing', () => {
+    const topology = rows().find((r) => r.use.includes('graph:query') && r.use.includes("op:'context'"));
+    expect(
+      topology,
+      "CLAUDE.md no longer has a storage-policy row routing topology to graph:query op:'context'",
+    ).toBeDefined();
+    expect(topology!.verbs).toContain('graph:query');
+    expect(topology!.verbs, 'the dot-form gitnexus names must not parse as colon-form verbs').not.toContain(
+      'gitnexus.context',
+    );
+    expect(topology!.relations).toEqual([]);
+    expect(contradiction(topology!)).toBeNull();
   });
 
   // The view `work_items_claimable` is NOT the relation `work_items`. A substring

@@ -62,6 +62,7 @@ import { lookupRemoteAuthorEndedAt } from '../../work-items-orphan-author';
 import { decideTerminalOwnerOriginHeal } from '../../work-items-terminal-owner-origin-heal';
 import { activeExternalBlockers, externalBlockerCapabilityPolicy } from '../../external-blockers';
 import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
+import { lookupWorkItem } from './_lookup';
 import {
   getWorkItem,
   getWorkItemsByIds,
@@ -3089,8 +3090,12 @@ async function retryClearedDependentWorkItems(
     for (const dependentItemId of new Set(dependentPlanItems)) {
       const linked = await lane.findAllLinkedWorkItems(stamp.plan_slug, dependentItemId);
       for (const candidate of linked) {
-        const current = await getWorkItem(candidate.id, candidate.harness ?? undefined).catch(() => null);
-        if (!current || current.state !== 'blocked') continue;
+        // A failed read is NOT "item absent": skip this candidate explicitly and leave
+        // it to the periodic dependency-clear reconciler (the documented backstop).
+        const lookup = await lookupWorkItem(candidate.id, candidate.harness ?? undefined);
+        if (lookup.status !== 'found') continue;
+        const current = lookup.item;
+        if (current.state !== 'blocked') continue;
         const outcome = await blocking.reconcileClearedDependencyBlockedState(current, clearedById, {
           actor: 'work-items:finish:dependent-retry',
         });

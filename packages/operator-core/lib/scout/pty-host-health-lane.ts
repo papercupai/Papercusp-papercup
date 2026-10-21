@@ -124,7 +124,12 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'codex-starting-stuck-snapshot' ||
     // An explicitly Starting Codex footer extends the early frame wait only
     // within the kickoff deadline; the terminal timeout is recorded separately.
-    kind === 'launch-kickoff-backend-frame-wait-extended'
+    kind === 'launch-kickoff-backend-frame-wait-extended' ||
+    // Host-control bookkeeping and owner/child lifecycle facts. A child exit is
+    // neutral evidence: failures are recorded by their own failure kinds.
+    kind === 'control-carry-origin-stamped' ||
+    kind === 'owner-stop-requested' ||
+    kind === 'pty-child-exited'
   ) return 'routine';
 
   if (
@@ -133,6 +138,8 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'control-payload-unaddressed' ||
     kind === 'control-payload-rejected' ||
     kind === 'wake-provenance-rejected' ||
+    // The continuation-identity check refused the launch kickoff; it was never delivered.
+    kind === 'launch-kickoff-rejected' ||
     // Resume was abandoned after repeated exits; no live child was restored.
     kind === 'child-unpark-abandoned' ||
     // The predecessor did not exit within the graceful stop deadline.

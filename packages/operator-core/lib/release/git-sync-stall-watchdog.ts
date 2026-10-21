@@ -94,9 +94,10 @@ const ELIGIBILITY_WATCHDOG_KIND = 'git-sync-eligibility-watchdog';
  * `metadata.last_skip_reason` is a SHARED field: a lock-contention skip ('locked-path') and an I/O
  * fail-closed skip ('live-lock-read-failed') write into it too, and neither is an eligibility
  * regression — both are already covered by the existing errorStall/commit-staleness signals. Only
- * these six literal reasons mean "the P-008 gate itself skipped this tick".
+ * these literal reasons mean "the P-008 gate itself skipped this tick".
  */
 const ELIGIBILITY_SKIP_REASON_MAP: Record<IneligibleReason, true> = {
+  registration_only: true,
   ephemeral_debris: true,
   hive_home: true,
   remote_hive_view: true,

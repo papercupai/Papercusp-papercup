@@ -457,12 +457,18 @@ describe('canary claim floor is asymmetric (agents NO, cups YES)', () => {
   it('claimFloorsWhereSql excludes canary rows from agent self-select', async () => {
     const { readFile } = await import('node:fs/promises');
     const src = await readFile(new URL('../../work-items.ts', import.meta.url), 'utf8');
-    const start = src.indexOf('export function claimFloorsWhereSql');
-    expect(start, 'claimFloorsWhereSql not found — did it move or get renamed?').toBeGreaterThan(-1);
-    // Scope to the function body so a canary mention elsewhere in this very large
-    // file cannot satisfy the assertion by accident.
-    const nextExport = src.indexOf('\nexport ', start + 1);
-    const body = src.slice(start, nextExport === -1 ? undefined : nextExport);
+    const fnBody = (name: string): string => {
+      const start = src.indexOf(`export function ${name}`);
+      expect(start, `${name} not found — did it move or get renamed?`).toBeGreaterThan(-1);
+      // Scope to the function body so a canary mention elsewhere in this very large
+      // file cannot satisfy the assertion by accident.
+      const nextExport = src.indexOf('\nexport ', start + 1);
+      return src.slice(start, nextExport === -1 ? undefined : nextExport);
+    };
+    // claimFloorsWhereSql ANDs every named predicate of the shared floor registry;
+    // the canary floor lives in that registry (so diagnostics see it too).
+    expect(fnBody('claimFloorsWhereSql')).toMatch(/featureClaimFloorPredicatesSql\(sql, opts\)/);
+    const body = fnBody('featureClaimFloorPredicatesSql');
     expect(
       /->>\s*'canary'\s+IS DISTINCT FROM\s+'true'/.test(body),
       'claimFloorsWhereSql must exclude payload.canary=true so scheduler:get_next / claim_next ' +

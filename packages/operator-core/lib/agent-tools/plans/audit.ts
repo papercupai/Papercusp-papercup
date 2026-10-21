@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { isNonCodeAuditVerdict, resolveVerification } from '../../plan-verification-profile';
+import { isNonCodeAuditVerdict, resolveVerification, withVerificationResolver } from '../../plan-verification-profile';
 import { isGenericCitationKind, resolveGenericCitation } from '../../plan-audits-generic-citations';
 import { execFileSync } from 'node:child_process';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
@@ -1403,6 +1403,14 @@ export default defineTool({
     const planRow = await getPlanRow(args.slug, { harnessSlug });
     const verificationProfile = planRow?.verificationProfile ?? null;
     const declaredDeliverable = new Map(planItems.map((item) => [item.itemId, item.deliverable ?? null]));
+    // plan-item-types-registry-cupboard P-005 residue (WI-6554700010018900, R-14): judge each
+    // item under the type revisions this plan pinned at activation, as the ship and start doors
+    // do, so a newer item-type revision cannot change what an audit accepts for an active plan.
+    const { pinnedPlanTypeResolver } = await import('../../plan-types/pins');
+    const pinnedResolver = await pinnedPlanTypeResolver({ harnessSlug, planSlug: args.slug });
+    const resolveItemVerification: typeof resolveVerification = (plan, item) => (pinnedResolver
+      ? withVerificationResolver(pinnedResolver, () => resolveVerification(plan, item))
+      : resolveVerification(plan, item));
     const auditedSha = args.auditedSha ?? resolveHeadSha(citationContext.repoRoot);
     const problems: Problem[] = [];
     const entries: AuditItemEntry[] = [];
@@ -1432,7 +1440,7 @@ export default defineTool({
 
       const citations = (it.citations ?? []) as AuditCitation[];
       const itemDeliverable = declaredDeliverable.get(it.itemId) ?? null;
-      const verification = resolveVerification(
+      const verification = resolveItemVerification(
         { verificationProfile },
         { deliverable: itemDeliverable, auditVerdict: it.verdict },
       );
@@ -1471,7 +1479,7 @@ export default defineTool({
       // resolver decides (no kind literal here), so a namespaced type requiring code counts too.
       const declaredResolution = itemDeliverable === null
         ? null
-        : resolveVerification({ verificationProfile }, { deliverable: itemDeliverable });
+        : resolveItemVerification({ verificationProfile }, { deliverable: itemDeliverable });
       if (
         isNonCodeAuditVerdict(it.verdict) &&
         declaredResolution?.deliverableSource === 'declared' &&

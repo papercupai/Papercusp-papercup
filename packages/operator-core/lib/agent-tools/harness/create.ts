@@ -13,8 +13,10 @@
  * harness-blueprint-orchestration-2026-06-03 P-007 + P-008 / B1+B2.
  */
 import { z } from 'zod';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
+import { mkdirSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
+import { join, isAbsolute, resolve as resolvePath } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { stringify as stringifyYaml } from 'yaml';
 import { defineTool } from '@papercusp/agent-mcp';
 import { validateBlueprintDependencies } from '@papercusp/blueprint-distribution';
@@ -26,7 +28,7 @@ import { DeploymentConfigSchema, parseDeploymentConfig } from '../../deployment/
 import { resolveCreatePotMembership } from './create-pot-membership';
 import { applyGenomeConfig, writeGenomePrompts } from '../../instance-spec/genome-storage';
 import type { InstanceConfigFields } from '../../deployment/instance-config';
-import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { concreteWorkspaceIdOrNull, resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 const fail = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...payload }) }],
@@ -79,6 +81,8 @@ export default defineTool({
         .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase alphanumeric + dashes')
         .describe('Unique harness slug'),
       path: z.string().min(1).optional().describe('Absolute path to an existing repo/dir'),
+      registrationOnly: z.boolean().optional().describe('Register a clean existing checkout as a passive evidence root; requires expectedCommit. No provisioning or checkout writes.'),
+      expectedCommit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/).optional().describe('Exact full HEAD required for registrationOnly.'),
       parentDir: z.string().min(1).optional().describe('Parent dir to create a new harness folder in'),
       folderName: z.string().min(1).optional().describe('New folder name (with parentDir)'),
       blueprintId: z.string().min(1).optional().describe('A blueprint to extend — resolved local → installed → built-in (e.g. coding/base/research or a Cupboard-installed id)'),
@@ -124,11 +128,76 @@ export default defineTool({
     .refine((a) => a.path != null || (a.parentDir != null && a.folderName != null), {
       message: 'pass `path`, or both `parentDir` and `folderName`',
     })
-    .refine((a) => a.blueprintId != null || a.blueprint != null, {
+    .refine((a) => a.registrationOnly === true || a.blueprintId != null || a.blueprint != null, {
       message: 'pass `blueprintId` or `blueprint`',
+    })
+    .refine((a) => a.registrationOnly === true
+      ? a.path != null && isAbsolute(a.path) && a.expectedCommit != null
+        && [a.parentDir, a.folderName, a.blueprintId, a.blueprint, a.autoInstallDeps, a.deployment, a.instance].every((v) => v === undefined)
+      : a.expectedCommit === undefined, {
+      message: 'registrationOnly requires an absolute path and expectedCommit, and cannot include scaffolding options',
     }),
   async handler(args, ctx) {
     const { loadHarnessRegistry, mutateHarnessRegistry } = await import('../../harness-registry');
+
+    if (args.registrationOnly === true) {
+      // Defer promisification until use: unrelated transitive importers may mock child_process.
+      const execFileAsync = promisify(execFile);
+      // No ambient-workspace fallback: a proof root must belong to the actual caller.
+      const workspaceId = concreteWorkspaceIdOrNull(ctx?.workspaceId, ctx?.principal?.workspaceId);
+      const principalWorkspace = concreteWorkspaceIdOrNull(ctx?.principal?.workspaceId);
+      if (!workspaceId || (principalWorkspace && workspaceId !== principalWorkspace)) {
+        return fail({ error: 'registration_requires_caller_workspace' });
+      }
+      if (!args.path || !isAbsolute(args.path) || !args.expectedCommit
+        || [args.parentDir, args.folderName, args.blueprintId, args.blueprint, args.autoInstallDeps, args.deployment, args.instance].some((v) => v !== undefined)) {
+        return fail({ error: 'invalid_registration_only_request' });
+      }
+      try {
+        const path = realpathSync(args.path);
+        const git = async (...argv: string[]) => (await execFileAsync('git', ['--no-optional-locks', '-C', path, ...argv], {
+          env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, timeout: 10_000, maxBuffer: 1024 * 1024,
+        })).stdout.trim();
+        const root = realpathSync(await git('rev-parse', '--show-toplevel'));
+        if (root !== path) return fail({ error: 'registration_requires_checkout_root' });
+        const commitSha = await git('rev-parse', '--verify', 'HEAD');
+        if (commitSha !== args.expectedCommit) return fail({ error: 'registration_commit_mismatch' });
+        if (await git('-c', 'core.fsmonitor=false', 'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none')) {
+          return fail({ error: 'registration_requires_clean_checkout' });
+        }
+        let existing = false;
+        // The existing row lock serializes retries and same-slug/path collisions.
+        // Throw on conflict so even the registry transaction is rolled back.
+        await mutateHarnessRegistry((cur) => {
+          let hive_slug: string | undefined;
+          if (args.pot != null) {
+            const membership = resolveCreatePotMembership(cur, args.pot);
+            if (!membership.ok) throw new Error(membership.error);
+            hive_slug = membership.hive_slug;
+          }
+          const collision = cur.projects.find((p) => {
+            if (p.slug === args.slug) return true;
+            try { return realpathSync(p.path) === path; } catch { return resolvePath(p.path) === path; }
+          });
+          if (collision) {
+            if (collision.slug !== args.slug || collision.path !== path
+              || collision.registrationOnly?.commitSha !== commitSha || collision.hive_slug !== hive_slug) {
+              throw new Error('registration_identity_conflict');
+            }
+            existing = true;
+            return cur;
+          }
+          return { ...cur, projects: [...cur.projects, {
+            slug: args.slug, path, registrationOnly: { commitSha }, ...(hive_slug ? { hive_slug } : {}),
+          }] };
+        }, workspaceId);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: true, slug: args.slug, path, registrationOnly: true, commitSha, workspaceId, existing,
+        }) }] };
+      } catch (error) {
+        return fail({ error: error instanceof Error ? error.message.slice(0, 300) : String(error) });
+      }
+    }
 
     const workspaceId = resolveConcreteWorkspaceId(
       undefined,

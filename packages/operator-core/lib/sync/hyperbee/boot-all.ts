@@ -621,6 +621,8 @@ async function harnessSlugsFromPgRegistry(workspaceId: string): Promise<string[]
   const live: string[] = [];
   const dead: string[] = [];
   for (const p of reg.projects) {
+    // Passive evidence roots are addressable without becoming running harnesses.
+    if (p.registrationOnly) continue;
     if (isBootableHarnessEntry(p)) live.push(p.slug);
     else dead.push(p.slug);
   }

@@ -51,9 +51,9 @@ export const WAIT_REF_OPTIONS =
   'Name instead: (1) a key whose fire proves this exact condition — a catalogued completion family with ' +
   'its subject id, e.g. work-item:done:<id> or release:deployed:<sha> (events:catalog lists them); ' +
   "(2) an announced gate — the condition's owner declares it with events:emit { event, announce:true } " +
-  'and you use the key it returns; (3) a predicate watch — watch:create / state:subscribe mints a ' +
+  'and the waiter names the key it returns; (3) a predicate watch — watch:create / state:subscribe mints a ' +
   'predicate:<id> key that fires when the measured value crosses; or (4) when no event can prove it, a ' +
-  'runtime or human blocker with recheckAt, so the re-check sweep escalates it to you on that date.';
+  'runtime or human blocker with recheckAt, so the re-check sweep escalates it to the waiter on that date.';
 
 const UNPROVABLE_REASON: Record<UncertifiedConditionReason, string> = {
   uncatalogued: 'is not a catalogued event key and no producer has announced it, so nothing will ever fire it',

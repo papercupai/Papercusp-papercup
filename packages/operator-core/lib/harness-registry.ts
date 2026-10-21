@@ -26,6 +26,8 @@ import { activeWorkspaceId } from './workspace-registry';
 export interface ProjectEntry {
   slug: string;
   path: string;
+  /** Passive evidence-root registration. Never provision or seed management for it. */
+  registrationOnly?: { commitSha: string };
   harness_kind?: string;
   /**
    * A `harness_kind:'hive'` entry that IS its OWN repo checkout, not a repo-less state dir

@@ -782,6 +782,59 @@ describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-202
   });
 });
 
+// plan-item-types-registry-cupboard-2026-10-20 SPEC-P-007: the open type panel (and its completion
+// form) lives in the URL as ?pdtype=<item id>, so an agent reading the URL sees which item is open.
+describe('PlanDashboard item-type panel URL state (SPEC-P-007)', () => {
+  function seedTypes() {
+    seed();
+    planData.value = plan({
+      slug: 'p1',
+      startStatus: 'started',
+      items: [
+        { id: 'P-001', storedStatus: 'todo', effectiveStatus: 'todo', text: 'first bit' },
+        { id: 'P-002', storedStatus: 'todo', effectiveStatus: 'todo', text: 'second bit' },
+      ],
+    });
+    const typed = (itemId: string) => ({
+      itemId,
+      itemType: 'acme/legal-review',
+      revision: 2,
+      builtIn: false,
+      modules: ['generic-core', 'acme/legal-review'],
+      completion: { kind: 'schema' as const },
+      completionSchema: { type: 'object', properties: { reviewer: { type: 'string' } }, required: ['reviewer'] },
+      completionUnresolved: false,
+      criteria: [],
+      rubricRef: null,
+    });
+    syncData.value['plans.itemTypeView'] = {
+      data: [{ planSlug: 'p1', planType: null, profile: 'code', items: [typed('P-001'), typed('P-002')] }],
+    };
+  }
+
+  it('opening an item type records the open item id in ?pdtype, and opening it again clears it', () => {
+    seedTypes();
+    renderDash();
+    expect(screen.queryByTestId('plan-dash-type-panel-P-002')).toBeNull();
+    fireEvent.click(screen.getByTestId('plan-dash-item-type-P-002'));
+    expect(setters['pdtype']).toHaveBeenCalledWith('P-002');
+
+    cleanup();
+    renderDash();
+    fireEvent.click(screen.getByTestId('plan-dash-item-type-P-002'));
+    expect(setters['pdtype']).toHaveBeenLastCalledWith(null);
+  });
+
+  it('?pdtype alone reopens that item\'s panel and its completion form', () => {
+    seedTypes();
+    nuqs['pdtype'] = 'P-002';
+    renderDash();
+    expect(screen.getByTestId('plan-dash-type-panel-P-002')).toBeTruthy();
+    expect(screen.getByTestId('plan-dash-type-form-P-002')).toBeTruthy();
+    expect(screen.queryByTestId('plan-dash-type-panel-P-001')).toBeNull();
+  });
+});
+
 describe('PlanDashboard helpers', () => {
   it('shortOwnerId trims to the roster convention', () => {
     expect(shortOwnerId(OWNER_A)).toBe('su-76a83');

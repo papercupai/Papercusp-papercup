@@ -55,6 +55,7 @@ const loadHarnessRegistryMock = vi.fn(async (_ws?: string) => ({
     harness_kind?: string;
     remote_hive?: boolean;
     hive_slug?: string;
+    registrationOnly?: { commitSha: string };
   }>,
 }));
 // The ephemeral-foreign surface is mocked alongside loadHarnessRegistry because
@@ -615,7 +616,7 @@ describe('boot-all — substrate orchestrator', () => {
     // budget only has to cover module loading, which overran 10s under gate load.
   }, 60_000);
 
-  it('P-078: the DEFAULT discovery reads the PG registry and boots only entries with a LIVE project path', async () => {
+  it('P-078: default discovery boots live managed entries and excludes registration-only roots', async () => {
     const liveDir = mkdtempSync(join(tmpdir(), 'boot-all-live-'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // NOT mockResolvedValueOnce: boot-all now loads the registry TWICE per
@@ -630,6 +631,7 @@ describe('boot-all — substrate orchestrator', () => {
       loadHarnessRegistryMock.mockImplementation(async () => ({
         projects: [
           { slug: 'live-h', path: liveDir },
+          { slug: 'passive-h', path: liveDir, registrationOnly: { commitSha: 'a'.repeat(40) } },
           { slug: 'dead-h', path: '/nonexistent/papercusp-boot-all-test' },
         ],
       }));
@@ -641,7 +643,7 @@ describe('boot-all — substrate orchestrator', () => {
         },
       });
       expect(loadHarnessRegistryMock).toHaveBeenCalledWith('ws-pg-default-discovery');
-      expect(result.attempted).toBe(1); // dead-h filtered out
+      expect(result.attempted).toBe(1); // stale and passive entries are excluded
       expect(result.results[0]).toMatchObject({ harnessSlug: 'live-h' });
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('dead-h'));
     } finally {

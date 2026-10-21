@@ -413,6 +413,60 @@ export async function runAdmissionRecruiter(
   return result;
 }
 
+/**
+ * Launch one headless, independent agent on behalf of a system recruiter. Shared by the
+ * admission recruiter and the plan-run executor recruiter (WI-6554700010019116). `key` is both
+ * the task_ledger label and the launch idempotency key, so a replayed pass dedupes instead of
+ * spawning twice. Lazily imported so callers and their tests never load the launch door.
+ */
+export async function launchRecruitedAgent(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  key: string;
+  brief: string;
+  actor: string;
+  actorLabel: string;
+}): Promise<{ ok: boolean; deduped?: boolean; error?: string }> {
+  const [{ default: launchAgentTool }, { readScoutPoolSnapshot, scoutRoutableProviders, scoutPoolAffirmativelyExhausted }] =
+    await Promise.all([import('../agent-tools/capability/launch-agent'), import('../scout/capacity-probe')]);
+  // A scheduled launch cannot answer a usage-limit dialog: reuse Scout's provider probe and the
+  // launcher's gateway routing, exactly as the su-ideate scheduler does.
+  const pool = await readScoutPoolSnapshot();
+  if (pool && scoutPoolAffirmativelyExhausted(pool)) {
+    return { ok: false, error: `${input.actorLabel}: no routable provider in the current gateway pool` };
+  }
+  const routes = pool ? scoutRoutableProviders(pool) : undefined;
+  const agent = routes && !routes.claudeAvailable && routes.codexAvailable ? 'codex' : 'claude';
+  const ctx = {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    uiClientId: null,
+    isSuperuser: false,
+    isPowerUser: false,
+    principal: { kind: 'system', slug: input.actor, workspaceId: input.workspaceId },
+    ownerId: input.actor,
+    ownerLabel: input.actorLabel,
+    userId: null,
+  };
+  const result = (await launchAgentTool.handler(
+    {
+      brief: input.brief,
+      harness: input.harnessSlug,
+      agent,
+      account: 'auto',
+      headless: true,
+      independent: true,
+      count: 1,
+      label: input.key,
+      idempotencyKey: input.key,
+    } as never,
+    ctx as never,
+  )) as { isError?: boolean; content?: Array<{ text?: string }>; structuredContent?: { deduped?: boolean } };
+  const text = result.content?.map((c) => c.text ?? '').join('\n') ?? '';
+  if (result.isError) return { ok: false, error: text.slice(0, 500) || 'launch refused' };
+  return { ok: true, deduped: result.structuredContent?.deduped === true || /deduped/i.test(text) };
+}
+
 /** Production deps — lazily imported so this module and its tests never load PG or the launch door. */
 export const defaultAdmissionRecruiterDeps: AdmissionRecruiterDeps = {
   async listCandidates({ workspaceId, dataSourceId }) {
@@ -483,45 +537,8 @@ export const defaultAdmissionRecruiterDeps: AdmissionRecruiterDeps = {
     }
     return out;
   },
-  async launch(input) {
-    const [{ default: launchAgentTool }, { readScoutPoolSnapshot, scoutRoutableProviders, scoutPoolAffirmativelyExhausted }] =
-      await Promise.all([import('../agent-tools/capability/launch-agent'), import('../scout/capacity-probe')]);
-    // A scheduled launch cannot answer a usage-limit dialog: reuse Scout's provider probe and the
-    // launcher's gateway routing, exactly as the su-ideate scheduler does.
-    const pool = await readScoutPoolSnapshot();
-    if (pool && scoutPoolAffirmativelyExhausted(pool)) {
-      return { ok: false, error: 'admission-recruiter: no routable provider in the current gateway pool' };
-    }
-    const routes = pool ? scoutRoutableProviders(pool) : undefined;
-    const agent = routes && !routes.claudeAvailable && routes.codexAvailable ? 'codex' : 'claude';
-    const ctx = {
-      workspaceId: input.workspaceId,
-      harnessSlug: input.harnessSlug,
-      uiClientId: null,
-      isSuperuser: false,
-      isPowerUser: false,
-      principal: { kind: 'system', slug: ADMISSION_RECRUIT_ACTOR, workspaceId: input.workspaceId },
-      ownerId: ADMISSION_RECRUIT_ACTOR,
-      ownerLabel: 'admission recruiter',
-      userId: null,
-    };
-    const result = (await launchAgentTool.handler(
-      {
-        brief: input.brief,
-        harness: input.harnessSlug,
-        agent,
-        account: 'auto',
-        headless: true,
-        independent: true,
-        count: 1,
-        label: input.key,
-        idempotencyKey: input.key,
-      } as never,
-      ctx as never,
-    )) as { isError?: boolean; content?: Array<{ text?: string }>; structuredContent?: { deduped?: boolean } };
-    const text = result.content?.map((c) => c.text ?? '').join('\n') ?? '';
-    if (result.isError) return { ok: false, error: text.slice(0, 500) || 'launch refused' };
-    return { ok: true, deduped: result.structuredContent?.deduped === true || /deduped/i.test(text) };
+  launch(input) {
+    return launchRecruitedAgent({ ...input, actor: ADMISSION_RECRUIT_ACTOR, actorLabel: 'admission recruiter' });
   },
   async escalate(input) {
     const { upsertConditionWorkItem } = await import('../coord/condition-upsert');

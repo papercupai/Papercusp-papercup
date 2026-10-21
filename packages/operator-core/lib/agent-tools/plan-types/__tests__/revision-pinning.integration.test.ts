@@ -20,6 +20,20 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
+
+// The fixture harness has no registered source root, so plans:audit would refuse with
+// harness_repo_unresolved before judging any item. Root SELECTION is configuration, not the
+// subject: point it at the canonical repo root through the function's own no-harness branch, as
+// general-plan-ship.integration.test.ts does. Item judgement against the pins stays real.
+vi.mock('../../../plan-audits', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../plan-audits')>();
+  return {
+    ...actual,
+    repoCitationContextForHarness: (_harnessSlug: unknown, citations?: Parameters<typeof actual.repoCitationContextForHarness>[1]) =>
+      actual.repoCitationContextForHarness(null, citations),
+  };
+});
 
 type Resolved = { code: boolean; modules: string[] };
 const probe = vi.hoisted(() => ({
@@ -58,6 +72,7 @@ import '../../plans/set-content';
 import '../../plans/set-status';
 import '../../plans/set-plan-status';
 import '../../plans/get';
+import '../../plans/audit';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { runWithWorkspace } from '../../../workspace-als';
 import { definitionContentHash } from '../../../plan-types/content-hash';
@@ -77,6 +92,8 @@ const NS = `zzz-ptpin-${Math.random().toString(36).slice(2, 8)}`;
 const ITEM = `${NS}/clause`; // P-001's declared item type
 const STEP = `${NS}/build-step`; // the plan type's revision-1 default item type (P-002)
 const PLAN_TYPE = `${NS}/build`;
+const PARENT = `${NS}/parent-clause`; // reached only through CHILD's `extends`
+const CHILD = `${NS}/child-clause`;
 const RUBRIC_GATE_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_ACCEPTANCE_RUBRIC_COMPLETION_GATE';
 
 const MIGRATION_1545 = fileURLToPath(
@@ -175,7 +192,7 @@ async function recordAudit(slug: string, kind: 'activation' | 'completion', seq:
  * A plan of type PLAN_TYPE whose P-001 declares ITEM and whose P-002 takes the plan type's
  * default, activated (draft -> ready) through the real plan write, which pins what it resolves.
  */
-async function activatedPlan(name: string, opts: { typed?: boolean } = { typed: true }): Promise<string> {
+async function activatedPlan(name: string, opts: { typed?: boolean; deliverable?: string } = { typed: true }): Promise<string> {
   const slug = `r14-${name}-${RUN}-2026-01-01`;
   expectOk(await call('plans:new', {
     slug,
@@ -194,7 +211,7 @@ async function activatedPlan(name: string, opts: { typed?: boolean } = { typed: 
     importance: 'normal',
     items: opts.typed !== false
       ? [{ text: 'Draft the clause', deliverable: ITEM }, { text: 'Build the step' }]
-      : [{ text: 'Write the summary' }],
+      : [{ text: 'Write the summary', ...(opts.deliverable ? { deliverable: opts.deliverable } : {}) }],
   }));
   await recordAudit(slug, 'activation', 1);
   const flipped = await runWithWorkspace(WS, () => withPlanLock<{ ok: true }>(
@@ -287,6 +304,52 @@ async function checklistFor(slug: string): Promise<Record<string, unknown> | und
   return verification!.itemTypes!.find((entry) => entry.itemId === 'P-001');
 }
 
+/**
+ * A plans:audit completion pass marking both items implemented on generic evidence only. It is
+ * dispatched with an agent principal, because plans:audit attributes its write.
+ */
+async function auditCompletion(slug: string): Promise<Record<string, unknown>> {
+  const projected = lookupByMcpName('plans:audit');
+  expect(projected, 'plans:audit must be registered in the projection registry').toBeTruthy();
+  const ctx = {
+    workspaceId: WS,
+    harnessSlug: HARNESS,
+    runId: 'plan-types-revision-pinning',
+    role: 'su',
+    principal: { kind: 'agent', slug: 'su-ptpin-auditor', workspaceId: WS },
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+  } as never;
+  const d = await runWithWorkspace(WS, () => dispatchProjectedTool(projected!, 'plans:audit', {
+    harness: HARNESS,
+    slug,
+    phase: 'completion',
+    items: ['P-001', 'P-002'].map((itemId) => ({
+      itemId,
+      verdict: 'implemented',
+      citations: [{ kind: 'external', url: 'https://example.com/r14-runbook', snapshotHash: 'a'.repeat(64) }],
+    })),
+  }, ctx, {}));
+  const result = d.result as { structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined;
+  if (result?.structuredContent && typeof result.structuredContent === 'object') {
+    return first(result.structuredContent as Record<string, unknown>);
+  }
+  const text = result?.content?.[0]?.text ?? '';
+  try {
+    return first(JSON.parse(text) as Record<string, unknown>);
+  } catch {
+    return { text };
+  }
+}
+
+/** The items a plans:audit result refused as `implemented_without_code`. */
+function withoutCode(audit: Record<string, unknown>): string[] {
+  const problems = (findKey(audit, 'problems') as Array<{ itemId?: string; code?: string }> | undefined) ?? [];
+  return problems.filter((p) => p.code === 'implemented_without_code').map((p) => p.itemId ?? '').sort();
+}
+
 beforeAll(async () => {
   fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
@@ -352,6 +415,10 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
     expect(await closeFieldsRefusal(planA, { clauseRef: 'clause-1' })).toBeNull();
     expect(await closeFieldsRefusal(planA, { memoRef: 'memo-1' })).toEqual(fieldsBefore);
     expect(await checklistFor(planA)).toEqual(checklistBefore);
+    // WI-6554700010018900: plans:audit judges planA on revision 1 too. Revision 1 requires code for P-001 and for the
+    // plan type's default item type, so generic evidence alone cannot mark either implemented.
+    const auditA = await auditCompletion(planA);
+    expect(withoutCode(auditA), brief(auditA)).toEqual(['P-001', 'P-002']);
 
     // Counterfactual: the same plan activated after revision 2 resolves revision 2, so the
     // revisions differ in what every one of those checks sees.
@@ -370,6 +437,9 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
       code: 'item_type_fields_invalid', itemId: 'P-001', itemType: ITEM, revision: 2,
     });
     expect(await checklistFor(planB)).toMatchObject({ itemId: 'P-001', itemType: ITEM, revision: 2, completion: { kind: 'schema' } });
+    const auditB = await auditCompletion(planB);
+    expect(auditB.ok, brief(auditB)).toBe(true);
+    expect(withoutCode(auditB)).toEqual([]);
   }, 300_000);
 
   it('a plan activated before the registry backfills to the first-party revision, and no held pin moves', async () => {
@@ -403,5 +473,30 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
 
     // Insert-if-absent: the backfill never moves a pin an activated plan already holds.
     expect((await pins(planA)).get(`item-type:${ITEM}`)).toEqual({ revision: 1, hash: definedHash.get(`${ITEM}@1`) });
+  }, 180_000);
+
+  // WI-6554700010018967 (D-006): pins.ts pins each parent reached through `extends`.
+  it('activation pins each parent an item type reaches through extends, and the plan keeps that revision', async () => {
+    const parentV1 = { schemaVersion: 1, id: PARENT, revision: 1, title: 'Parent clause', modules: ['code', 'generic-core'] };
+    await define('item-type', parentV1);
+    await define('item-type', {
+      schemaVersion: 1, id: CHILD, revision: 1, title: 'Child clause', modules: ['generic-core'], extends: { id: PARENT },
+    });
+    const slug = await activatedPlan('extends', { typed: false, deliverable: CHILD });
+    const pinned = await pins(slug);
+    expect(pinned.get(`item-type:${CHILD}`), brief([...pinned])).toEqual({ revision: 1, hash: definedHash.get(`${CHILD}@1`) });
+    expect(pinned.get(`item-type:${PARENT}`), brief([...pinned])).toEqual({ revision: 1, hash: definedHash.get(`${PARENT}@1`) });
+
+    const nonCode = () => runWithWorkspace(WS, () => readCloseDeliverablesAreNonCode({
+      workspaceId: WS, harnessSlug: HARNESS, planSlug: slug, planItemIds: ['P-001'],
+    }));
+    // The child inherits its parent's code module.
+    expect(await nonCode()).toBe(false);
+
+    // Parent revision 2 drops code. The child's own definition is unchanged, so only the parent's
+    // pin keeps the plan on what it activated with.
+    await define('item-type', { ...parentV1, revision: 2, modules: ['generic-core'] });
+    expect((await pins(slug)).get(`item-type:${PARENT}`)).toEqual({ revision: 1, hash: definedHash.get(`${PARENT}@1`) });
+    expect(await nonCode()).toBe(false);
   }, 180_000);
 });

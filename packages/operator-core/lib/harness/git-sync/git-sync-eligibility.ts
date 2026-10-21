@@ -27,6 +27,7 @@ import type { ProjectEntry } from '../../harness-registry';
 import { isRepoLessHiveHome } from '../hive-groups';
 
 export type IneligibleReason =
+  | 'registration_only'
   | 'ephemeral_debris'
   | 'hive_home'
   | 'remote_hive_view'
@@ -91,6 +92,8 @@ export function gitSyncEligibility(
   deps: GitSyncEligibilityDeps = {},
 ): GitSyncEligibility {
   const pathExists = deps.pathExists ?? existsSync;
+  // Persisted intent wins over membership and disk shape at both seed and run time.
+  if (p.registrationOnly) return { eligible: false, reason: 'registration_only' };
   if (EPHEMERAL_INSTANCE_SLUG_RE.test(p.slug)) return { eligible: false, reason: 'ephemeral_debris' };
   if (p.remote_hive && !p.self_repo) return { eligible: false, reason: 'remote_hive_view' };
   // A kind:'hive' entry is normally a repo-LESS state dir → skip. EXCEPT a hive that IS its

@@ -84,6 +84,12 @@ const BLOCKING_PREDICATE_ALLOWLIST: ReadonlyMap<string, string> = new Map([
       'needs timestamped edge rows rather than a claim-query predicate.',
   ],
   [
+    'agent-tools/plans/with-plan-lock.ts',
+    'The plan-dependency edge RECONCILER — reads the existing blocks edges whose blocked endpoint ' +
+      'is one of the plan\'s items, to diff them against the plan-declared blockedBy and emit edge ' +
+      'mutations inside the plan lock. An edge enumeration keyed by endpoint, never a claim floor.',
+  ],
+  [
     'issue-blocks-merge.ts',
     'The plan/feature issue-block overlay read — reports open issue blocks to plan readers and ' +
       'never decides work-item claimability. Its join is intentionally an edge enumeration, ' +

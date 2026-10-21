@@ -42,5 +42,10 @@ export function isBuiltin(_id: string): never {
   throw new Error('[node:module shim] isBuiltin() is unavailable in the browser bundle');
 }
 
+// plan-library-ship-check.ts reads this at MODULE SCOPE (`new Set(builtinModules)`), so it
+// must be an iterable rather than a throwing stub. The browser has no node builtins, so the
+// list is empty; the ship check that consults it only runs on the server.
+export const builtinModules: readonly string[] = Object.freeze([]);
+
 // Some consumers `import module from 'node:module'` and reach `.createRequire`.
-export default { createRequire, isBuiltin };
+export default { createRequire, isBuiltin, builtinModules };

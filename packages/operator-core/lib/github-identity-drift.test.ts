@@ -92,6 +92,10 @@ function findIdentityDrift(root: string, files = (listFilesIncludingUntracked(ro
     // deliberately quoted bad-link examples. They are generated evidence, not
     // authored product links. Keep ordinary docs/evidence JSON in the scan.
     if (relPath.startsWith('.papercusp/reports/')) continue;
+    // Managed text-artifact projections (front-matter rel_path/updated_at/_body)
+    // are the same class: verbatim archived audit evidence projected from the
+    // text-artifact store, which quotes fork URLs and remotes as observed data.
+    if (relPath.startsWith('.papercusp/state/text-artifacts/')) continue;
 
     let content: string;
     try {
