@@ -8592,7 +8592,6 @@ if (retryPoolTasks.length > 0) {
           context.__retry.scriptOverride,
           "retry",
         );
-        persistPartialResumeCheckpoint(context, value);
         // WI-38300: sampled IMMEDIATELY after the re-run, deliberately. loadavg()[0] is a
         // TRAILING 1-minute average, so a post-sample describes the load the RE-RUN itself
         // experienced — the thing in question. A pre-sample describes the first pass, which is
@@ -8601,6 +8600,8 @@ if (retryPoolTasks.length > 0) {
         // affected-tests-load-suspect.test.ts pins the adjacency — and never hoist it to the
         // reporting loop, which runs only after EVERY retry has settled.
         const load1AtRerun = loadavg()[0];
+        // Persisted AFTER the sample so nothing sits between the re-run and its load reading.
+        persistPartialResumeCheckpoint(context, value);
         recordLeg(context.t, value.__elapsedMs);
         return { ...value, __retryStartTree: retryStartTree, __load1AtRerun: load1AtRerun };
       },

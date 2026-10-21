@@ -509,7 +509,11 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
       // `nativeConsult` runs one attributed consult through the consult lifecycle.
       // run.ts refuses it beside every Vitest/evidence selector, so it runs no test
       // file, derives no selection and fixes no reporter/config: neither verdict moves.
-      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'nativeConsult', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'work_item_id'],
+      // `taskDeadlineAtMs` / `cleanupReserveMs` only BOUND the run: an absolute cutoff for
+      // the caller's task budget and the slice of it held back for owned-resource cleanup
+      // (run.ts turns them into the child cutoff env). They select no file, derive no list
+      // and fix no reporter/config, so neither verdict moves (EI-26491186938728719).
+      ['changedPaths', 'cleanupReserveMs', 'evidence', 'files', 'harness', 'maxFailures', 'nativeConsult', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'taskDeadlineAtMs', 'testNamePattern', 'timeoutMs', 'work_item_id'],
       'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` because no arg makes ' +
         'the tool RUN a list it derived — `changedPaths` returns the plan and executes nothing. An arg that ' +
         'EXECUTED a derived selection would make 206 corpus atoms across 48 sessions suddenly expressible, and ' +

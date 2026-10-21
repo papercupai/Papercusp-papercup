@@ -30,7 +30,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bash ../../scripts/pc-heavy.sh tsc --noEmit"
   },
   "devDependencies": {
     "@papercusp/test-config": "*",

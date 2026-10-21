@@ -465,12 +465,14 @@ describe('gate wiring safety contract', () => {
     expect(callback, 'the task settlement callback must be wired').not.toBeNull();
     const persisted: unknown[] = [];
     const coverage: unknown[] = [];
+    const partialResume: unknown[] = [];
     const initialExecutedMapReads = new Map<string, unknown>();
     const executedMapSnapshot = { status: 'unknown', reason: 'report-not-written' };
     const onTaskSettled = runInNewContext(`(${callback![1]})`, {
       observedCompletedTasks: 0,
       foldSettledTaskCoverage: (task: unknown) => coverage.push(task),
       persistCleanFirstPassTaskVerdict: (task: unknown) => persisted.push(task),
+      persistPartialResumeCheckpoint: (task: unknown, value: unknown) => partialResume.push([task, value]),
       taskKey: (task: { key: string }) => task.key,
       executedMapResultFiles: new Map([['test-task', '/results/test-task.json']]),
       initialExecutedMapReads,
@@ -484,6 +486,9 @@ describe('gate wiring safety contract', () => {
     onTaskSettled(settledTask);
     expect(persisted).toEqual([settledTask]);
     expect(coverage).toEqual([settledTask]);
+    // The partial-resume checkpoint is persisted from the same settlement, with the task and
+    // its settled value (EI-25175929888724957: the VM context must supply every callee).
+    expect(partialResume).toEqual([[settledTask.task, settledTask.value]]);
     expect(initialExecutedMapReads.get('test-task')).toEqual({
       ...executedMapSnapshot, expectsReport: null,
     });

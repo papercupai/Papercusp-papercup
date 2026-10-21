@@ -65,10 +65,16 @@ import {
 } from './dep-graph-model';
 
 /** Edge classes, each with its own arrowhead marker (see the ARROWHEADS note in the canvas). */
-const EDGE_VARIANTS = ['default', 'satisfied', 'dangling', 'wait', 'wait-stale'] as const;
+const EDGE_VARIANTS = ['default', 'satisfied', 'dangling', 'wait', 'await', 'wait-stale'] as const;
 type EdgeVariant = (typeof EDGE_VARIANTS)[number];
+/**
+ * P-009 (D-003): the two wait kinds draw DIFFERENTLY. `wait` is the item's own event/gate
+ * blocker; `await` is an agent's session awaiting the event for an item it holds. Drawn
+ * alike, a reader cannot tell "this item is blocked on K" from "its holder is waiting on K".
+ * Staleness wins over kind: a stale wait is nobody's live wait, whichever kind it was.
+ */
 function edgeVariant(e: DepGraphEdge): EdgeVariant {
-  if (e.wait) return e.wait.stale ? 'wait-stale' : 'wait';
+  if (e.wait) return e.wait.stale ? 'wait-stale' : e.wait.kind === 'session-awaits-event' ? 'await' : 'wait';
   return e.dangling ? 'dangling' : e.satisfied ? 'satisfied' : 'default';
 }
 
@@ -221,7 +227,9 @@ function DepGraphLegend() {
       </li>
       <li>
         {edge('wait')}
-        <span>waits on an event (an agent&rsquo;s await, or the item&rsquo;s own event blocker)</span>
+        <span>item blocked on an event (its own event or gate blocker)</span>
+        {edge('await')}
+        <span>holder waits on an event (an agent&rsquo;s await for an item it holds)</span>
       </li>
       <li>
         {edge('wait-stale')}
@@ -1233,6 +1241,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                     key={e.id}
                     d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
                     markerEnd={`url(#pc-dg-arrow-${variant}-${uid})`}
+                    data-wait-kind={e.wait?.kind}
                     className={
                       (variant === 'default'
                         ? 'pc-depgraph__edge'

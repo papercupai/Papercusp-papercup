@@ -12,7 +12,7 @@
   },
   "scripts": {
     "test": "vitest",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "bash ../../scripts/pc-heavy.sh tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "js-yaml": "*",

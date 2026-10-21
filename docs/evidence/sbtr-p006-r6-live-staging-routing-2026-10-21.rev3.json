@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 / R-6 (rubric rev 3, dev:pg_query tool probe) live non-implementer build:'staging' calls served by the staging operator (staging-build-tool-routing-2026-10-21)",
+  "framework": "operational",
+  "command": [
+    "node",
+    "scripts/mcp-call.mjs",
+    "dev:pg_query",
+    "--json-file",
+    "docs/evidence/sbtr-p006-r6-live-staging-routing-2026-10-21.rev3.probe-args.json",
+    "--port",
+    "3070"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T09:42:08.811Z",
+  "finishedAt": "2026-10-21T09:42:09.690Z",
+  "plan": "staging-build-tool-routing-2026-10-21",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010018748",
+  "specIds": [
+    "AUTO-BAR-R-6-P-006@3"
+  ],
+  "evidencePlane": "live",
+  "implementer": "su-0f855fe4-d7e1-4198-be13-e8facd1ecaa2",
+  "callers": [
+    "su-0b02e81a-7c35-443a-a87c-259e758a1103",
+    "su-95cffeac-6a0d-480c-9a5d-21383fd356b4",
+    "su-a6ed3d12-0a3c-4415-b4ec-bb382a8e4cd4"
+  ],
+  "summary": "Re-measurement of R-6 after rubric amendment rev 2 -> 3 (plan Decisions D-003, D-004). The rev 3 check is { kind:'tool', tool:'dev:pg_query', args: <the probe-args file above> }; its SQL and expect are byte-identical to rev 2's kind:'sql' probe (docs/evidence/sbtr-p006-r6-live-staging-routing-2026-10-21.probe-args.json). Run through mcp-call on :3070 (build d740fc3802, the build the grader emits on) it returned one row: verdict='pass', matching=6, hits=6. The six hits come from three sessions other than the implementer, on three successive :3170 builds; each hit's serving_build_sha equals the build another owner was served on port-3170 within 10 minutes. The earlier rev 2 run (docs/evidence/sbtr-p006-r6-live-staging-routing-2026-10-21.json) recorded the first three su-0b02e81a hits in detail. Limit unchanged: tool_invocations records neither the inner call's requested build nor whether a call traversed :9071 (EI-26570456579800590); proxy traversal is inferred from each caller also reaching port-3070 within 10 minutes.",
+  "assertions": [
+    {
+      "id": "rev3-tool-probe-verdict-pass",
+      "passed": true,
+      "evidence": "node scripts/mcp-call.mjs dev:pg_query --json-file docs/evidence/sbtr-p006-r6-live-staging-routing-2026-10-21.rev3.probe-args.json --port 3070 at 2026-10-21T09:42:08.811Z returned rows [{verdict:'pass', matching:6, hits:6}], exit 0. The args file is jq -S identical to rubric rev 3 r-6 check.probe.args. An earlier run at 09:41:13Z returned the same row; the outside-lineage amendment reviewer (consult conv-mvhwslwn-0000-430f2352dedc4d5faa96ef81e640a13d, post 1192882) got the same row on both :3070 and :3170."
+    },
+    {
+      "id": "hits-are-non-implementer-and-sha-matched",
+      "passed": true,
+      "evidence": "Hit rows (tool_invocations, coord:whoami, port-3170, status ok, each paired with a tools:invoke row within 5 s): 42364101, 42364111, 42364680, 42367749 by su-0b02e81a at 08:21-08:27Z on f219b26fa6; 42382476 by su-95cffeac at 09:10:54Z on 95a1299390; 42385963 by su-a6ed3d12 at 09:23:46Z on 1c407cf5ae. For every hit the nearest port-3170 row from a different owner within 10 minutes carries the same sha. None is the implementer su-0f855fe4."
+    },
+    {
+      "id": "per-call-routing-not-a-client-bound-to-3170",
+      "passed": true,
+      "evidence": "The probe's hits CTE only admits a coord:whoami whose owner also has a port-3070 row within 10 minutes, so all three callers were routed per call rather than bound to :3170. Health at 2026-10-21T09:42:09.754Z: :3070 d740fc3802, :3170 09a0629af0 (staging advanced after the last hit; the probe compares against contemporaneous rows, not current health)."
+    }
+  ]
+}

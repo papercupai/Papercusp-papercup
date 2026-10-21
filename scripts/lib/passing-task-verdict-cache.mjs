@@ -92,6 +92,11 @@ export const AFFECTED_TESTS_TRANSPORT_IDENTITY_ENV = Object.freeze([
   "PC_EXECUTED_SOURCE_MAP_RESULT",
   // Completed-module diagnostic output, isolated by runner/task/attempt.
   "PAPERCUSP_TEST_FAILURE_DETAILS_PATH",
+  // WI-6554700010018666: where the governed-admission client persists its ticket (the operator
+  // DSN, copied from the launch env by buildGreenCheckpointEnv). Only the admission client reads
+  // it, never a test, and it differs between an initial gate launch and a frozen-repair verifier
+  // launch — hashing it made every reusable passing task miss on 'environment-changed'.
+  "PAPERCUSP_GOVERNED_ADMISSION_DATABASE_URL",
 ]);
 
 export function passingTaskVerdictIdentityEnvironment(environment) {

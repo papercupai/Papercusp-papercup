@@ -31,6 +31,7 @@ interface SyncState {
 let itemsState: SyncState;
 let edgesState: SyncState;
 let summaryState: SyncState;
+let waitsState: SyncState;
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) =>
@@ -38,7 +39,9 @@ vi.mock('@papercusp/sync', () => ({
       ? { ...edgesState, invalidate: vi.fn() }
       : queryName === 'workItems.summary'
         ? { ...summaryState, invalidate: vi.fn() }
-        : { ...itemsState, invalidate: vi.fn() },
+        : queryName === 'workItems.depWaits'
+          ? { ...waitsState, invalidate: vi.fn() }
+          : { ...itemsState, invalidate: vi.fn() },
 }));
 
 let filtersActive = false;
@@ -150,6 +153,7 @@ beforeEach(() => {
     error: null,
   };
   edgesState = { loading: false, data: EDGES, error: null };
+  waitsState = { loading: false, data: [], error: null };
   filtersActive = false;
   setTitle.mockClear();
 });
@@ -297,6 +301,61 @@ describe('P-004 — edges read as a directed graph', () => {
     // carry a per-instance suffix, and must stay a legal url(#…) fragment.
     expect(marker?.id).toMatch(/^pc-dg-arrow-default-.+$/);
     expect(marker?.id).not.toMatch(/[^a-zA-Z0-9_-]/);
+  });
+});
+
+describe('event-wait-settlement P-009 — a holder await and an item blocker draw as different edges', () => {
+  it('P-009: draws the holder\'s session await as `await` and the item\'s own event blocker as `wait`', async () => {
+    waitsState = {
+      loading: false,
+      error: null,
+      data: [
+        {
+          itemId: 'WI-2', waitKind: 'session-await', eventKey: 'work-item:done:WI-9',
+          subscriberId: 'su-holder', subscriberIsHolder: true, certification: 'proving',
+          subscriberState: 'live', stale: false,
+        },
+        {
+          itemId: 'WI-2', waitKind: 'item-blocker', eventKey: 'release:deployed', blockerKind: 'event',
+          certification: 'broad', stale: false,
+        },
+      ],
+    };
+    renderPanel();
+    const svg = await waitForCanvas();
+    await waitFor(() => expect(svg.querySelectorAll('path[data-wait-kind]').length).toBe(2));
+    const holder = svg.querySelector('path[data-wait-kind="session-awaits-event"]');
+    const blocker = svg.querySelector('path[data-wait-kind="item-waits-on-event"]');
+    expect(holder?.getAttribute('class')).toContain('pc-depgraph__edge--await');
+    expect(holder?.getAttribute('marker-end')).toMatch(/^url\(#pc-dg-arrow-await-/);
+    expect(blocker?.getAttribute('class')).toContain('pc-depgraph__edge--wait');
+    expect(blocker?.getAttribute('class')).not.toContain('pc-depgraph__edge--await');
+    // The KEY names both, so the two dash patterns are readable without hovering.
+    expect(screen.getByText(/holder waits on an event/)).toBeTruthy();
+    expect(screen.getByText(/item blocked on an event/)).toBeTruthy();
+  });
+
+  it('P-009: a stale holder await draws as `wait-stale`, not `await`', async () => {
+    waitsState = {
+      loading: false,
+      error: null,
+      data: [
+        {
+          itemId: 'WI-2', waitKind: 'session-await', eventKey: 'work-item:done:WI-9',
+          subscriberId: 'su-gone', subscriberIsHolder: true, certification: 'proving',
+          subscriberState: 'ended', stale: true, staleReason: 'subscriber-ended',
+        },
+      ],
+    };
+    renderPanel();
+    const svg = await waitForCanvas();
+    const holder = await waitFor(() => {
+      const p = svg.querySelector('path[data-wait-kind="session-awaits-event"]');
+      if (!p) throw new Error('wait edge not drawn yet');
+      return p;
+    });
+    expect(holder.getAttribute('class')).toContain('pc-depgraph__edge--wait-stale');
+    expect(holder.getAttribute('class')).not.toContain('pc-depgraph__edge--await');
   });
 });
 
