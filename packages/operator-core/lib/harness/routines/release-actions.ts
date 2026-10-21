@@ -6547,9 +6547,11 @@ export class FrozenRepairQueueWriteConflictError extends Error {
   constructor(
     readonly expectedUpdatedAtMs: number | null,
     readonly fresh: FrozenCandidateRepairQueueRead,
+    /** WI-6554700010019177: set when the row version MATCHED and an extra statement guard did not. */
+    readonly unmatchedGuard?: string,
   ) {
     super(
-      `frozen repair queue write conflict: expected row version ${
+      `frozen repair queue write conflict: ${unmatchedGuard ? `the row version matched but the ${unmatchedGuard} did not; ` : ''}expected row version ${
         expectedUpdatedAtMs === null ? 'ABSENT' : `updatedAtMs=${expectedUpdatedAtMs}`
       }, found ${
         fresh.status === 'value'
@@ -6653,14 +6655,17 @@ export async function writeFrozenCandidateRepairQueue(
       ? `\n          AND metadata->'repair_queue' IS NULL`
       : `\n          AND metadata->'repair_queue'->>'updatedAtMs' = $${nextParam}::text`;
   const casParams: string[] = typeof expected === 'number' ? [String(expected)] : [];
-  const assertWritten = async (rows: unknown): Promise<void> => {
+  const assertWritten = async (rows: unknown, guard?: string): Promise<void> => {
     const written = Array.isArray(rows)
       ? rows.length
       : typeof (rows as { count?: unknown } | null)?.count === 'number'
         ? ((rows as { count: number }).count)
         : 0;
     if (written > 0) return;
-    throw new FrozenRepairQueueWriteConflictError(expected, await readFrozenCandidateRepairQueueState(target));
+    const fresh = await readFrozenCandidateRepairQueueState(target);
+    // A matching version means the CAS was not the predicate that missed: name the guard that did.
+    const versionMatched = fresh.status === 'value' && fresh.queue.updatedAtMs === expected;
+    throw new FrozenRepairQueueWriteConflictError(expected, fresh, guard && versionMatched ? guard : undefined);
   };
   // P-021 (D-007 #1): the repair manifest is DERIVED HERE, in the one production write path, so
   // it cannot describe a different row than the one persisted beside it. `withRepairManifest`
@@ -6741,7 +6746,12 @@ export async function writeFrozenCandidateRepairQueue(
         ...casParams,
       ],
     );
-    await assertWritten(written);
+    await assertWritten(
+      written,
+      handoff
+        ? `qualification handoff guard (qualificationTransaction.attemptId must equal the queue's origin ${handoff.attemptId.slice(0, 8)})`
+        : undefined,
+    );
   } else {
     // Retiring the cycle CLEARS the projection (`#- '{gate_health,convergence}'`, a no-op when
     // absent). Leaving it behind would strand shrink figures for a candidate that no longer

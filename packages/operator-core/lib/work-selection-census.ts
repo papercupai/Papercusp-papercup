@@ -92,7 +92,9 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     role: 'selection',
     surface: 'scheduler:get_next (feature path) and work_items:claim_next feature tier, via claimFloorsWhereSql',
     file: 'packages/operator-core/lib/work-items.ts',
-    anchor: 'AND ${frontierPlacementKindClause(sql, opts.workspaceId)}',
+    // The claim floor is composed from featureClaimFloorPredicatesSql's named
+    // predicate registry; the kind floor is its `frontierKind` entry.
+    anchor: 'frontierKind: frontierPlacementKindClause(sql, opts.workspaceId)',
     admits: 'feature-family rows that satisfy work_item_is_agent_work, via frontierPlacementKindClause (P-009, D-022)',
     reachesNonWork: 'no',
     discriminators: ['work predicate (nature/audience)', 'claim floors', 'admission', 'rig floor'],
@@ -546,6 +548,14 @@ export const WORK_SELECTION_SCAN_EXCLUSIONS: readonly WorkSelectionScanExclusion
   ex('plans/plan-admission-preflight.ts', 'plan-provenance', "reads a plan's own items before admitting it"),
   ex('plans/plan-scope-cascade-deps.ts', 'plan-provenance', "reads a plan's items to cascade scope"),
   ex('scorecards/emit.ts', 'plan-provenance', "reads a subject plan's items while emitting a scorecard"),
+  // Classified 2026-10-21 (WI-6554700010019084) by reading each site's WHERE clause.
+  ex('plans/audit-derived-citations.ts', 'plan-provenance', "reads a plan's linked items to derive audit citations"),
+  ex('plans/clause-amendment-propagation.ts', 'plan-provenance', "reads the items owning an amended plan clause"),
+  ex('plans/plan-declaration-resolvers.ts', 'plan-provenance', "reads a plan's items' recorded filesChanged"),
+  ex('plans/with-plan-lock.ts', 'plan-provenance', "reads a plan's own items under the plan lock"),
+  ex('coordination/tools/roster-audit-store.ts', 'holder', "reads the audited agents' held items (taken_by)"),
+  ex('rubrics/amend-receipts.ts', 'holder', "reads one owner's held items on the subject plan"),
+  ex('work_items/frozen-tests-gate.ts', 'by-id', 'reads or updates the frozen-tests manifest of the id it is given'),
   {
     leg: 'sql-view',
     target: 'fleet_assignment',

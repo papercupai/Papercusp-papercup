@@ -2545,6 +2545,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         _meta: { ...(input.result._meta ?? {}), resultDoor: {
           truncated: true, structural: true, reason: input.reason,
           spillPath, spillUri, originalBytes: input.sourceBytes, innerTruncationMarkers,
+          ...(volatileFallback
+            ? { volatileFallbackUri: volatileFallback.uri, volatileFallbackExpiresAt: volatileFallback.manifest.expiresAt }
+            : {}),
           ...(input.aggregate ? { aggregate: input.aggregate } : {}),
         } },
       } as T;

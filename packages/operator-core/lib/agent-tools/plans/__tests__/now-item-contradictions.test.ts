@@ -615,6 +615,32 @@ describe('detectNowItemOmissions', () => {
     ]);
   });
 
+  it('does not count `<other-slug>#P-NNN` refs as a listing of this plan\'s items', () => {
+    // EI-26592784219574522: the exact shape :3170 refused — a "remaining item"
+    // sentence naming ANOTHER plan's items is not an exhaustive list of this one's.
+    const parsed = parsePlan(
+      EXHAUSTIVE_OMISSION.replace(
+        '**Next:** P-002 only, and it is not actionable yet.',
+        '**Next:** Every remaining item is gated on identity-definitions-own-policy-2026-10-17#P-002.',
+      ),
+      { filePath: `${SLUG}.md` },
+    );
+    expect(detectNowItemOmissions(parsed)).toEqual([]);
+  });
+
+  it('still counts `<this-slug>#P-NNN` as a listing of this plan\'s item', () => {
+    const parsed = parsePlan(
+      EXHAUSTIVE_OMISSION.replace(
+        '**Next:** P-002 only, and it is not actionable yet.',
+        `**Next:** Remaining items: ${SLUG}#P-002.`,
+      ),
+      { filePath: `${SLUG}.md` },
+    );
+    expect(detectNowItemOmissions(parsed)).toEqual([
+      expect.objectContaining({ listed: ['P-002'], omitted: ['P-003'] }),
+    ]);
+  });
+
   it('accepts a complete exhaustive list', () => {
     const parsed = parsePlan(
       EXHAUSTIVE_OMISSION.replace(

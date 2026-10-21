@@ -150,7 +150,12 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
 
     /** R7 — the ONE definition of stuck-ness. Never re-derived from scorecard rows. */
     evaluateGate: async (planSlug) => {
-      const verdict = await evaluatePlanAcceptanceGate(planSlug, { gradingRecruitment: true });
+      // WI-6554700010018901 (D-006): judge "stuck" at the plan's pinned type revisions, the
+      // revisions the ship door judges, so a newer registry revision cannot change the answer.
+      const { withPinnedPlanTypes } = await import('../../plan-types/pins');
+      const verdict = await withPinnedPlanTypes({ planSlug }, () =>
+        evaluatePlanAcceptanceGate(planSlug, { gradingRecruitment: true }),
+      );
       return { satisfied: verdict.satisfied, code: verdict.code ?? null };
     },
 

@@ -36,6 +36,21 @@ vi.mock('../plan-acceptance-gate', () => ({
 vi.mock('../acceptance-bar-contract-snapshot', () => ({
   readAcceptanceBarContractSnapshot: (...a: unknown[]) => snapshotSpy(...a),
 }));
+// WI-6554700010018901: the resolver runs the gate and the snapshot inside the plan's pin scope.
+// The mock records the scope, and `inPinScope` reports whether a call ran inside it.
+const pinScopes: unknown[] = [];
+let inPinScope = false;
+vi.mock('../plan-types/pins', () => ({
+  withPinnedPlanTypes: async (scope: unknown, fn: () => Promise<unknown>) => {
+    pinScopes.push(scope);
+    inPinScope = true;
+    try {
+      return await fn();
+    } finally {
+      inPinScope = false;
+    }
+  },
+}));
 
 import { resolvePlanAcceptanceGateVerdict } from './plan-acceptance-gate-verdict';
 import { getBuildInfo } from '../build-info';
@@ -101,6 +116,21 @@ describe('P-011 acceptance-gate read — never flatten a non-check into a pass',
     });
   });
 
+  it('judges the plan at its pinned type revisions: the gate and the snapshot run inside its pin scope (WI-6554700010018901)', async () => {
+    pinScopes.length = 0;
+    const seen: Record<string, boolean> = {};
+    gateSpy.mockImplementation(async () => {
+      seen.gate = inPinScope;
+      return { satisfied: true };
+    });
+    snapshotSpy.mockImplementation(async () => {
+      seen.snapshot = inPinScope;
+      return { codes: [] };
+    });
+    await run({ ...ARGS, harnessSlug: 'other-home' });
+    expect(pinScopes).toEqual([{ harnessSlug: 'other-home', planSlug: 'p-1' }]);
+    expect(seen).toEqual({ gate: true, snapshot: true });
+  });
   it('asks the gate about the plan it was given', async () => {
     gateSpy.mockResolvedValue({ satisfied: true });
     await run();

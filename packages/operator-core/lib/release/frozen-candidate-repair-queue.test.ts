@@ -37,6 +37,7 @@ import {
   parseFrozenRepairConvergence,
   projectFrozenRepairConvergenceCell,
   projectFrozenRepairConvergenceScope,
+  frozenRepairAdmissionHandoffBlock,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
@@ -2566,5 +2567,46 @@ describe('WI-6554700010018209: a candidate red after a mid-suite admission belon
     expect(red.repairHead).toBe(C);
     expect(red.convergenceRounds?.map((r) => r.head)).toEqual([C]);
     expect(red.fixerStateChangedAtMs).toBe(T0 + 2_000);
+  });
+});
+
+describe('WI-6554700010019177 — frozenRepairAdmissionHandoffBlock mirrors the admission handoff guard', () => {
+  const head = 'c'.repeat(40);
+  const queueWith = (qualificationAttemptId: string | null) => ({ qualificationAttemptId, repairHead: head });
+  const present = (attemptId: string, phase: string) =>
+    ({ status: 'present', transaction: { attemptId, phase, repairHead: head } }) as const;
+
+  it('does not block a queue with no origin attempt: no handoff is written', () => {
+    expect(frozenRepairAdmissionHandoffBlock(queueWith(null), present('live-1', 'running'))).toBeNull();
+  });
+
+  it('does not block when the stored transaction IS the origin, whatever its phase', () => {
+    expect(frozenRepairAdmissionHandoffBlock(queueWith('origin-1'), present('origin-1', 'terminal'))).toBeNull();
+    expect(frozenRepairAdmissionHandoffBlock(queueWith('origin-1'), present('origin-1', 'running'))).toBeNull();
+  });
+
+  it('does not block on an unreadable transaction: the write guard stays the authority', () => {
+    expect(frozenRepairAdmissionHandoffBlock(queueWith('origin-1'), { status: 'unreadable', error: 'x' })).toBeNull();
+  });
+
+  it('blocks a live successor and tells the caller to wait for its verdict', () => {
+    const block = frozenRepairAdmissionHandoffBlock(queueWith('origin-1-aaaa'), present('live-2-bbbb', 'running'));
+    expect(block).toMatchObject({
+      reason: 'qualification-attempt-mismatch',
+      originAttemptId: 'origin-1-aaaa',
+      transactionAttemptId: 'live-2-bbbb',
+      transactionPhase: 'running',
+      transactionRepairHead: head,
+    });
+    expect(block!.detail).toContain('records its verdict');
+  });
+
+  it('blocks a terminal non-origin attempt and a missing transaction, each with its own retry point', () => {
+    expect(frozenRepairAdmissionHandoffBlock(queueWith('origin-1'), present('other-2', 'terminal'))!.detail)
+      .toContain('re-stamps the origin');
+    expect(frozenRepairAdmissionHandoffBlock(queueWith('origin-1'), { status: 'none' })).toMatchObject({
+      transactionAttemptId: null,
+      detail: expect.stringContaining('no qualification transaction is stored'),
+    });
   });
 });

@@ -410,7 +410,12 @@ describe('result-door deferred spill (WI-10004533)', () => {
         recoveryCursor: { kind: 'durable-scratch-page', uri: durableUri },
         pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
       });
-      expect(body._projection?.cursor).toMatchObject({ kind: 'durable-scratch-page', uri: durableUri });
+      expect(body._projection?.cursor).toMatchObject({
+        kind: 'durable-scratch-page',
+        tool: 'capability:read',
+        uri: durableUri,
+        args: { uri: durableUri, byte_offset: 0, byte_limit: 3_072 },
+      });
       expect(text).toContain('exact workspace-scoped durable copy');
       expect(text).not.toContain('papercusp://scratch-memory/');
       expect(persistedFallbackText).toContain(original.content[0].text);
@@ -642,7 +647,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
-  it('keeps a durable fallback on an under-budget partial conversations:get envelope after spill timeout', async () => {
+  it('keeps a durable capability:read cursor on an under-budget partial conversations:get result after spill timeout', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     let rejectWrite!: (error: Error) => void;
@@ -681,10 +686,12 @@ describe('result-door deferred spill (WI-10004533)', () => {
       await writeStarted;
       await vi.advanceTimersByTimeAsync(30_000);
       const result = await resultPromise;
-      const envelope = JSON.parse((result.content.find((item) => item.type === 'text') as { text: string }).text) as {
-        state: string;
-        content: Array<{ uri?: string }>;
-        incomplete: { reason: string; recoverable: boolean; note: string };
+      const body = JSON.parse((result.content.find((item) => item.type === 'text') as { text: string }).text) as {
+        _partial: boolean;
+        _projection: {
+          cursor: { kind: string; tool: string; args: Record<string, unknown>; bodyComplete: boolean };
+          next: string;
+        };
       };
       const meta = result._meta?.resultDoor as {
         spillUri?: string;
@@ -692,22 +699,25 @@ describe('result-door deferred spill (WI-10004533)', () => {
         recoveryCursor?: Record<string, unknown>;
         pendingSpill?: { uri?: string; cursor?: Record<string, unknown> };
       };
-      const referenceUris = envelope.content.map((item) => item.uri).filter((uri): uri is string => Boolean(uri));
-
-      expect(envelope).toMatchObject({
-        state: 'incomplete',
-        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      expect(body).toMatchObject({
+        _partial: true,
+        _projection: {
+          cursor: {
+            kind: 'scratch-page',
+            tool: 'capability:read',
+            args: { file_path: durableUri, byte_offset: 0, byte_limit: 3_072 },
+            bodyComplete: false,
+          },
+        },
       });
-      expect(envelope.incomplete.note).toContain('exact workspace-scoped durable copy');
       expect(durablePersist).toHaveBeenCalledTimes(1);
       expect(meta).toMatchObject({
         durableFallbackUri: durableUri,
         recoveryCursor: { kind: 'durable-scratch-page', uri: durableUri },
         pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
       });
-      expect(referenceUris).toContain(durableUri);
-      expect(referenceUris).not.toContain(meta.spillUri);
       expect(meta.pendingSpill?.uri).toBe(meta.spillUri);
+      expect(body._projection.cursor.args.file_path).toBe(durableUri);
       expect(persistedFallbackText).toContain(sourceText);
     } finally {
       rejectWrite(new Error('test cleanup'));

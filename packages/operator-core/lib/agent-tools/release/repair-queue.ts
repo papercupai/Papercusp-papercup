@@ -27,11 +27,12 @@ import {
 } from '../../harness/routines/release-actions';
 import { integrationRoot } from '../../release-deploy-launch';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
-import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
+import { checkpointPidIdentity, readStoredQualification } from '../../release/checkpoint-qualification-transaction';
 import { isPidAlive } from '../../release/in-flight-candidate';
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
+  frozenRepairAdmissionHandoffBlock,
   frozenRepairHeadAwaitsVerification,
   markFrozenRepairAdmitted,
   normalizeRepoPath,
@@ -2018,6 +2019,36 @@ export default defineTool({
               'P-006 admission ratchet: nothing was published — the pre-check could not measure this admission ' +
               '(the checkpoint tree is busy with a gate run), and an unmeasured admission never advances the repair head. ' +
               'Repeat this confirmed admit after the active run ends; it re-measures automatically.',
+          });
+        }
+      }
+      // WI-6554700010019177: the queue write after publication carries a qualification handoff,
+      // and that guard lands only while the stored transaction IS the queue's origin attempt.
+      // Refuse here, before the lineage ref moves, and name the attempt. The old path published,
+      // failed the row write, retracted and reported an undiagnosed persist_failed. A dry run
+      // predicts the same refusal. Without an origin no handoff is written, so nothing is read.
+      if (outcome.ok && queue.qualificationAttemptId) {
+        const handoffBlock = frozenRepairAdmissionHandoffBlock(queue, await readStoredQualification(inspected.target));
+        if (handoffBlock) {
+          return json({
+            ok: false,
+            admitted: false,
+            refused: true,
+            ...(dryRun ? { dryRun: true } : {}),
+            verdict: 'refused',
+            reason: handoffBlock.reason,
+            detail: handoffBlock.detail,
+            qualification: {
+              originAttemptId: handoffBlock.originAttemptId,
+              transactionAttemptId: handoffBlock.transactionAttemptId,
+              transactionPhase: handoffBlock.transactionPhase,
+              transactionRepairHead: handoffBlock.transactionRepairHead,
+            },
+            builtCommit: outcome.commit,
+            judgedSha: queue.repairHead,
+            containment: await containmentAt(queue.repairHead),
+            mode,
+            ...base,
           });
         }
       }

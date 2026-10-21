@@ -4204,3 +4204,74 @@ export function isJudgingPinnedActiveRepair(input: {
   if (repairQueue.phase === 'blocked') return false;
   return repairQueue.blockedReason == null;
 }
+
+/**
+ * The stored qualification transaction as an admission sees it. Structural on purpose: this
+ * module stays free of the transaction module, and `readStoredQualification`'s result already
+ * has this shape.
+ */
+export type FrozenRepairAdmissionQualificationRead =
+  | { status: 'present'; transaction: { attemptId: string; phase?: string | null; repairHead?: string | null } }
+  | { status: 'none' | 'unreadable'; error?: string };
+
+export interface FrozenRepairAdmissionHandoffBlock {
+  reason: 'qualification-attempt-mismatch';
+  /** The attempt the queue row names (`repair_queue.qualificationAttemptId`). */
+  originAttemptId: string;
+  /** The attempt the stored transaction names, or null when there is none. */
+  transactionAttemptId: string | null;
+  transactionPhase: string | null;
+  /** The head the stored transaction's run judges. */
+  transactionRepairHead: string | null;
+  detail: string;
+}
+
+/**
+ * WI-6554700010019177: will an admission's queue write be able to land its qualification handoff?
+ *
+ * `writeFrozenCandidateRepairQueue` adds a handoff guard whenever the queue names an origin
+ * attempt. The guard matches only while `qualificationTransaction.attemptId` IS that origin. A
+ * successor attempt that began on the current head leaves the origin at its predecessor (only a
+ * `preserved` reconciliation re-stamps it), so for the whole of that run the guard matches zero rows.
+ * The admit door then published the lineage ref, failed the row write, retracted the ref and
+ * reported an undiagnosed `persist_failed` that said "Re-run" (measured 2026-10-21: 3 refusals in a row
+ * against live attempt 93dd510c, origin 15ed2dd3).
+ *
+ * This mirrors that guard so the door can refuse BEFORE anything moves, and name the attempt.
+ * It blocks only on a definite mismatch. An unreadable transaction returns null, and the write's
+ * own guard stays the authority.
+ */
+export function frozenRepairAdmissionHandoffBlock(
+  queue: Pick<FrozenCandidateRepairQueue, 'qualificationAttemptId' | 'repairHead'>,
+  qualification: FrozenRepairAdmissionQualificationRead,
+): FrozenRepairAdmissionHandoffBlock | null {
+  const origin = queue.qualificationAttemptId ?? null;
+  if (origin === null) return null;
+  if (qualification.status === 'unreadable') return null;
+  const transaction = qualification.status === 'present' ? qualification.transaction : null;
+  if (transaction && transaction.attemptId === origin) return null;
+  const transactionAttemptId = transaction?.attemptId ?? null;
+  const transactionPhase = transaction?.phase ?? null;
+  const transactionRepairHead = transaction?.repairHead ?? null;
+  const short = (s: string | null): string => (s ? s.slice(0, 8) : 'none');
+  const detail = transaction === null
+    ? `The queue names qualification attempt ${short(origin)}, but no qualification transaction is stored, so the ` +
+      'admission handoff guard cannot match. Nothing was published. The next scheduled qualification begin ' +
+      'writes a transaction; admit after it.'
+    : transactionPhase === 'terminal'
+      ? `Terminal qualification attempt ${short(transactionAttemptId)} does not own this queue (origin ` +
+        `${short(origin)}), so the admission handoff guard cannot match. Nothing was published. The next ` +
+        'qualification begin re-stamps the origin; admit after it. Do not retry-loop.'
+      : `Qualification attempt ${short(transactionAttemptId)} (phase ${transactionPhase ?? 'unknown'}) is judging ` +
+        `repairHead ${short(transactionRepairHead ?? queue.repairHead)}. This queue's origin is attempt ` +
+        `${short(origin)}, so the admission handoff guard cannot match until that attempt records its verdict. ` +
+        'Nothing was published. Admit again after the run ends. Do not retry-loop.';
+  return {
+    reason: 'qualification-attempt-mismatch',
+    originAttemptId: origin,
+    transactionAttemptId,
+    transactionPhase,
+    transactionRepairHead,
+    detail,
+  };
+}

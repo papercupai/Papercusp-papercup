@@ -198,8 +198,29 @@ const NOW_REMAINING_CLAUSE_RE = new RegExp(
   'gi',
 );
 
-function idsFromList(text: string): string[] {
-  return [...text.matchAll(/\bP-\d{3,}\b/g)].map((match) => match[0]);
+// An explicit "<other-plan-slug> P-NNN" / "<other-plan-slug>#P-NNN" citation
+// (or "behind <other-plan> P-NNN") scopes the id to that OTHER plan, never
+// this one — see PLAN_SLUG_PREFIX_RE above. `before` is the text immediately
+// preceding the id.
+function isExplicitForeignPlanReference(before: string, currentSlug: string): boolean {
+  const precedingSlugMatch = PLAN_SLUG_PREFIX_RE.exec(before);
+  if (precedingSlugMatch !== null && precedingSlugMatch[1].toLowerCase() !== currentSlug.toLowerCase()) {
+    return true;
+  }
+  const namedForeignPlanMatch = NAMED_FOREIGN_PLAN_PREFIX_RE.exec(before);
+  const currentPlanSlugTerms = currentSlug.toLowerCase().split(/[-\s]+/);
+  return (
+    namedForeignPlanMatch !== null &&
+    !currentPlanSlugTerms.includes(namedForeignPlanMatch[1].toLowerCase())
+  );
+}
+
+// EI-26592784219574522: an id scoped to another plan is not a listing of
+// THIS plan's item, so it must not count toward an exhaustive-list claim.
+function idsFromList(text: string, currentSlug: string): string[] {
+  return [...text.matchAll(/\bP-\d{3,}\b/g)]
+    .filter((match) => !isExplicitForeignPlanReference(text.slice(0, match.index), currentSlug))
+    .map((match) => match[0]);
 }
 
 function hasAffirmativeResolution(text: string): boolean {
@@ -471,18 +492,10 @@ export function detectNowItemContradictions(
       !NOW_ACTIVE_RE.test(before) &&
       !NOW_ACTIVE_RE.test(after);
     const negativeReopenGuard = hasNegativeReopenGuard(before, after);
-    // An explicit "<other-plan-slug> P-NNN" citation scopes the id to that
-    // OTHER plan, never this one — see PLAN_SLUG_PREFIX_RE above. Tense/action
-    // wording after the id is irrelevant here: the id itself does not name an
-    // item of THIS plan, so there is nothing for this plan's terminal-status
-    // map to contradict.
-    const precedingSlugMatch = PLAN_SLUG_PREFIX_RE.exec(before);
-    const namedForeignPlanMatch = NAMED_FOREIGN_PLAN_PREFIX_RE.exec(before);
-    const currentPlanSlugTerms = parsed.slug.toLowerCase().split(/[-\s]+/);
-    const explicitForeignPlanReference =
-      (precedingSlugMatch !== null && precedingSlugMatch[1].toLowerCase() !== parsed.slug.toLowerCase()) ||
-      (namedForeignPlanMatch !== null &&
-        !currentPlanSlugTerms.includes(namedForeignPlanMatch[1].toLowerCase()));
+    // A citation scoped to another plan: tense/action wording after the id is
+    // irrelevant here, since the id does not name an item of THIS plan, so
+    // there is nothing for this plan's terminal-status map to contradict.
+    const explicitForeignPlanReference = isExplicitForeignPlanReference(before, parsed.slug);
     if (
       closeAfter ||
       explicitTerminalStatus ||
@@ -520,7 +533,7 @@ export function detectNowItemContradictions(
  * incomplete about the plan as a whole.
  */
 export function detectNowItemOmissions(
-  parsed: Pick<ParsedPlan, 'now' | 'items'>,
+  parsed: Pick<ParsedPlan, 'now' | 'items' | 'slug'>,
 ): NowItemOmission[] {
   if (!parsed.now) return [];
 
@@ -547,7 +560,7 @@ export function detectNowItemOmissions(
       ...sentence.matchAll(NOW_REMAINING_CLAUSE_RE),
     ];
     for (const match of matches) {
-      const listed = idsFromList(match[1] ?? '');
+      const listed = idsFromList(match[1] ?? '', parsed.slug);
       if (listed.length === 0) continue;
       const omitted = [...nonTerminal].filter((id) => !listed.includes(id));
       if (omitted.length === 0) continue;

@@ -104,6 +104,8 @@ const mocks = vi.hoisted(() => ({
   predict: vi.fn(),
   // P-004: the sole-editor fallback's tagged-template read of edit_attribution_ledger.
   attributionSql: vi.fn(),
+  // WI-6554700010019177: the admit door's read of the stored qualification transaction.
+  readQualification: vi.fn(),
 }));
 vi.mock('../../release/dependency-admission-prediction', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/dependency-admission-prediction')>()),
@@ -270,6 +272,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   }),
 }));
 
+vi.mock('../../release/checkpoint-qualification-transaction', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/checkpoint-qualification-transaction')>()),
+  readStoredQualification: (...a: unknown[]) => mocks.readQualification(...a),
+}));
+
 const repairQueueModule = await import('./repair-queue');
 const tool = repairQueueModule.default;
 const { assessFrozenRepairFixerAuthorization, repairQueueAbortCompletionReceipt } = repairQueueModule;
@@ -403,6 +410,7 @@ beforeEach(() => {
   mocks.admissionGit.mockReturnValue({ status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' });
   mocks.ledger.mockResolvedValue([]);
   mocks.attributionSql.mockResolvedValue([]);
+  mocks.readQualification.mockResolvedValue({ status: 'none' });
   mocks.foreign.mockReturnValue({ count: 0, agents: [], byPath: {} });
   mocks.importPreflight.mockReturnValue(() => null);
   mocks.hunkExact.mockReturnValue(hunkExactOf());
@@ -3084,6 +3092,73 @@ describe('release:repair-queue', () => {
       expect(mocks.predict).not.toHaveBeenCalled();
       expect(plain).not.toHaveProperty('dependencyGeneration');
     });
+  });
+});
+
+describe('WI-6554700010019177 — admit refuses, before publishing, when the handoff guard cannot match', () => {
+  const ORIGIN = '15ed2dd3-1e2d-4419-b56c-fc6b7589a1d3';
+  const LIVE = '93dd510c-4a88-4031-9598-7fd793184148';
+  const originQueue = { ...queue, phase: 'ready-to-verify' as const, qualificationAttemptId: ORIGIN };
+  const admit = (extra: Record<string, unknown> = {}) =>
+    tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], ...extra } as never, { role: 'su' } as never);
+  beforeEach(() => {
+    mocks.read.mockResolvedValue(originQueue);
+    mocks.readState.mockResolvedValue({ status: 'value', queue: originQueue });
+    mocks.hunkExact.mockReturnValue(hunkExactOf());
+  });
+
+  it('a confirmed admit while a successor attempt runs is refused naming it, and nothing is published or written', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    mocks.readQualification.mockResolvedValue({
+      status: 'present',
+      transaction: { attemptId: LIVE, phase: 'running', repairHead: queue.repairHead },
+    });
+    const result = body(await admit({ confirm: true, skipPrecheck: true, precheckReason: 'guard test' }));
+    expect(result).toMatchObject({
+      ok: false,
+      admitted: false,
+      refused: true,
+      verdict: 'refused',
+      reason: 'qualification-attempt-mismatch',
+      qualification: { originAttemptId: ORIGIN, transactionAttemptId: LIVE, transactionPhase: 'running' },
+    });
+    expect(result.reason).not.toBe('persist_failed');
+    expect(result.detail).toContain('93dd510c');
+    expect(result.detail).toContain('15ed2dd3');
+    expect(result.detail).toContain('Do not retry-loop');
+    // Only the dry proof build ran: the publishing build, the row write and the retraction never did.
+    expect(mocks.admit).toHaveBeenCalledTimes(1);
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.retract).not.toHaveBeenCalled();
+  });
+
+  it('a dry run predicts the same refusal instead of would-admit', async () => {
+    mocks.admit.mockReturnValue(admissionOf(false));
+    mocks.readQualification.mockResolvedValue({
+      status: 'present',
+      transaction: { attemptId: LIVE, phase: 'running', repairHead: queue.repairHead },
+    });
+    const result = body(await admit());
+    expect(result).toMatchObject({ dryRun: true, verdict: 'refused', reason: 'qualification-attempt-mismatch' });
+  });
+
+  it('still says would-admit when the stored transaction IS the queue origin', async () => {
+    mocks.admit.mockReturnValue(admissionOf(false));
+    mocks.readQualification.mockResolvedValue({
+      status: 'present',
+      transaction: { attemptId: ORIGIN, phase: 'terminal', repairHead: queue.repairHead },
+    });
+    const result = body(await admit());
+    expect(result.verdict).toBe('would-admit');
+  });
+
+  it('never reads the transaction for a queue with no origin attempt', async () => {
+    mocks.read.mockResolvedValue(queue);
+    mocks.readState.mockResolvedValue({ status: 'value', queue });
+    mocks.admit.mockReturnValue(admissionOf(false));
+    const result = body(await admit());
+    expect(result.verdict).toBe('would-admit');
+    expect(mocks.readQualification).not.toHaveBeenCalled();
   });
 });
 

@@ -112,33 +112,43 @@ export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateA
   const { planSlug } = args;
 
   try {
-    const [mod, snapshotMod] = await Promise.all([
+    const [mod, snapshotMod, pinsMod] = await Promise.all([
       import('../plan-acceptance-gate'),
       import('../acceptance-bar-contract-snapshot'),
+      import('../plan-types/pins'),
     ]);
     const scope = {
       ...(args.harnessSlug ? { harnessSlug: args.harnessSlug } : {}),
       ...(args.current ? { current: args.current } : {}),
     };
     const scoped = Object.keys(scope).length > 0;
-    // Share one in-flight BAR snapshot with the gate. The gate evaluates the same
-    // immutable snapshot for ship and (when grading is missing/stale) pre-grading;
-    // keeping this promise shared avoids a second and third bounded source join.
-    const snapshotPromise = scoped
-      ? snapshotMod.readAcceptanceBarContractSnapshot(planSlug, {}, scope)
-      : snapshotMod.readAcceptanceBarContractSnapshot(planSlug);
-    const snapshotResultPromise = snapshotPromise
-      .then((snapshot) => ({ snapshot, error: null as string | null }))
-      .catch((error) => ({
-        snapshot: null,
-        error: error instanceof Error ? error.message : String(error),
-      }));
-    const [v, snapshotResult] = await Promise.all([
-      scoped
-        ? mod.evaluatePlanAcceptanceGate(planSlug, { ...scope, acceptanceBarContractSnapshot: snapshotPromise })
-        : mod.evaluatePlanAcceptanceGate(planSlug, { acceptanceBarContractSnapshot: snapshotPromise }),
-      snapshotResultPromise,
-    ]);
+    // WI-6554700010018901 (D-006): this verdict is what plans:get shipReadiness, derivedStatus and
+    // the UI show, so it resolves item verification at the type revisions the plan pinned, as the
+    // ship door does. Otherwise a newer registry revision could show a code-ness or module set the
+    // ship door does not judge.
+    const [v, snapshotResult] = await pinsMod.withPinnedPlanTypes(
+      { ...(args.harnessSlug ? { harnessSlug: args.harnessSlug } : {}), planSlug },
+      () => {
+        // Share one in-flight BAR snapshot with the gate. The gate evaluates the same
+        // immutable snapshot for ship and (when grading is missing/stale) pre-grading;
+        // keeping this promise shared avoids a second and third bounded source join.
+        const snapshotPromise = scoped
+          ? snapshotMod.readAcceptanceBarContractSnapshot(planSlug, {}, scope)
+          : snapshotMod.readAcceptanceBarContractSnapshot(planSlug);
+        const snapshotResultPromise = snapshotPromise
+          .then((snapshot) => ({ snapshot, error: null as string | null }))
+          .catch((error) => ({
+            snapshot: null,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+        return Promise.all([
+          scoped
+            ? mod.evaluatePlanAcceptanceGate(planSlug, { ...scope, acceptanceBarContractSnapshot: snapshotPromise })
+            : mod.evaluatePlanAcceptanceGate(planSlug, { acceptanceBarContractSnapshot: snapshotPromise }),
+          snapshotResultPromise,
+        ]);
+      },
+    );
 
     return [
       {

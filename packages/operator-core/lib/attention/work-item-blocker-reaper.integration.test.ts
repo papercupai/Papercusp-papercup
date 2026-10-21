@@ -50,6 +50,16 @@ vi.mock('../agent-tools/coordination/inbox-wake', async (importOriginal) => ({
   wakeRecipients: h.wakeRecipients,
 }));
 
+// IMPORT ORDER IS LOAD-BEARING (WI-6554700010019178). The system-clear follow-up module
+// reaches `messages` / `inbox-wake` through a LAZY `await import()`. If anything loads
+// `messages` before that module, the mock factory's importOriginal() evaluates it for the
+// first time through the static cycle messages -> … -> inbox-wake -> … -> auto-clear, and
+// Vitest 4 then resolves its lazy imports to the REAL modules (a mocked id already on the
+// module's callstack falls through to the original). The holder message is then refused by
+// the real disclosure seal and h.sendMessage is never called. `../work-items` reaches
+// `messages` first since it imported agent-tools/search/knowledge-sources, so the follow-up
+// module is loaded BEFORE it. The guard test below fails loudly if the binding regresses.
+const autoClear = await import('../work-item-ref-blocker-auto-clear');
 const wi = await import('../work-items');
 const {
   sweepWorkItemBlockerDefaults, BLOCKER_DEFAULT_REAPER_ACTOR, defaultBlockerReapDeps,
@@ -132,6 +142,16 @@ beforeEach(async () => {
 afterEach(() => setFlagOverridesForTest({}));
 
 describe('sweepWorkItemBlockerDefaults against the real work-items store', () => {
+  it('import-order guard: the system-clear follow-up sends and wakes through the MOCKED coordination modules', async () => {
+    h.sendMessage.mockClear();
+    h.wakeRecipients.mockClear();
+    const deps = autoClear.productionBlockerAutoClearFollowUpDeps();
+    await deps.send({ workspaceId: WS, to: 'su-import-order-guard', summary: 'guard', body: 'guard', harnessSlug: H });
+    await deps.wake({ workspaceId: WS, to: 'su-import-order-guard', summary: 'guard' });
+    expect(h.sendMessage, 'the follow-up bound the REAL messages module: see the import-order note at the top').toHaveBeenCalledTimes(1);
+    expect(h.wakeRecipients, 'the follow-up bound the REAL inbox-wake module: see the import-order note at the top').toHaveBeenCalledTimes(1);
+  });
+
   it('atomically refuses stale blocker history without losing unrelated payload fields', async () => {
     const original = ask({ defaultAction: undefined, decideBy: undefined, recheckAt: PAST });
     await seedParkedIssue('EI-recheck-cas', [original]);
