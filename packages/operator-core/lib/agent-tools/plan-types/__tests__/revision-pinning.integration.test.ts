@@ -272,6 +272,38 @@ async function shipDoor(slug: string): Promise<string> {
   }
 }
 
+/**
+ * The ship verdict a display shows OUTSIDE the ship door: the sync resolver behind plans:get
+ * shipReadiness, derivedStatus and the UI (WI-6554700010018901). Same rubric switch as shipDoor.
+ */
+async function displayGate(slug: string): Promise<{ verdict: string; resolved: { item: Resolved; planDefault: Resolved } }> {
+  const { resolvePlanAcceptanceGateVerdict } = await import('../../../sync-resolver/plan-acceptance-gate-verdict');
+  const prev = process.env[RUBRIC_GATE_ENV];
+  process.env[RUBRIC_GATE_ENV] = '0';
+  probe.itemType = ITEM;
+  probe.seen.length = 0;
+  try {
+    const rows = await runWithWorkspace(WS, () =>
+      resolvePlanAcceptanceGateVerdict({ workspaceId: WS, harnessSlug: HARNESS, planSlug: slug }),
+    );
+    const row = rows[0] as { code: string | null; message: string | null; unavailableReason?: string | null };
+    expect(row.unavailableReason ?? null, brief(row)).toBeNull();
+    // The row carries only the FIRST refusal, and on these fixtures that is audit coverage, which
+    // does not depend on code-ness. So the display's pinned resolution is observed directly, the
+    // same way startDoor observes the start door's.
+    const seen = probe.seen.filter((s) => s.planSlug === slug);
+    expect(seen.length, 'the display verdict must judge the plan under withPinnedPlanTypes').toBeGreaterThan(0);
+    return {
+      // The first refusal plus its message, with the slug normalised so two plans compare.
+      verdict: JSON.stringify({ code: row.code, message: (row.message ?? '').split(slug).join('<plan>') }),
+      resolved: { item: seen[0]!.item, planDefault: seen[0]!.planDefault },
+    };
+  } finally {
+    if (prev === undefined) delete process.env[RUBRIC_GATE_ENV];
+    else process.env[RUBRIC_GATE_ENV] = prev;
+  }
+}
+
 /** Whether work_items:complete would judge each item's close as non-code. */
 async function completionNonCode(slug: string): Promise<{ p001: boolean; p002: boolean }> {
   const read = (itemId: string) => runWithWorkspace(WS, () => readCloseDeliverablesAreNonCode({
@@ -393,6 +425,9 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
     expect(startBefore.planDefault.code, brief(startBefore)).toBe(true);
     const shipBefore = await shipDoor(planA);
     expect(shipBefore).toContain('code_deliverable_unverified');
+    const displayBefore = await displayGate(planA);
+    // WI-6554700010018901: the display resolves what the start and ship doors resolve.
+    expect(displayBefore.resolved, brief(displayBefore)).toEqual(startBefore);
     const closeBefore = await completionNonCode(planA);
     expect(closeBefore).toEqual({ p001: false, p002: false });
     // D-007: revision 1's completion schema asks a close of P-001 for clauseRef (revision 2 asks
@@ -414,6 +449,9 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
 
     expect(await startDoor(planA)).toEqual(startBefore);
     expect(await shipDoor(planA)).toContain('code_deliverable_unverified');
+    // WI-6554700010018901: the display verdict (plans:get shipReadiness) stays on revision 1, as the
+    // ship door does: the same refusal, and the same pinned code-ness and module set.
+    expect(await displayGate(planA)).toEqual(displayBefore);
     expect(await completionNonCode(planA)).toEqual(closeBefore);
     expect(await closeFieldsRefusal(planA, { clauseRef: 'clause-1' })).toBeNull();
     expect(await closeFieldsRefusal(planA, { memoRef: 'memo-1' })).toEqual(fieldsBefore);
@@ -434,6 +472,11 @@ describe('R-14: a plan keeps the type revisions it activated with', () => {
     expect(startB.item.code, brief(startB)).toBe(false);
     expect(startB.planDefault.code, brief(startB)).toBe(false);
     expect(await shipDoor(planB)).not.toContain('code_deliverable_unverified');
+    // The counterfactual: on revision 2 the display resolves differently, so the equality above is a
+    // real check. (The first refusal itself is audit coverage for both plans, so it cannot differ.)
+    const displayB = await displayGate(planB);
+    expect(displayB.resolved, brief(displayB)).toEqual(startB);
+    expect(displayB.resolved).not.toEqual(displayBefore.resolved);
     expect(await completionNonCode(planB)).toEqual({ p001: true, p002: true });
     expect(await closeFieldsRefusal(planB, { memoRef: 'memo-1' })).toBeNull();
     expect(await closeFieldsRefusal(planB, { clauseRef: 'clause-1' })).toMatchObject({

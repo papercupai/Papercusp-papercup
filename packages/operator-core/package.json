@@ -30,7 +30,7 @@
     "test:pty-host-event-classification": "vitest run lib/scout/pty-host-health-lane.test.ts",
     "test:identity-surfaces": "vitest run lib/agent-identities/identity-surface-lint.test.ts lib/agent-identities/identity-surface-census.test.ts",
     "test:github-workflows": "vitest run lib/github-workflows.test.ts",
-    "test:coverage-attribution-venue": "PAPERCUSP_TEST_ATTRIBUTION=1 PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_HARNESS=papercusp vitest run --config vitest.integration.config.ts lib/coverage-census/attribution/persistence-venue.integration.test.ts",
+    "test:coverage-attribution-venue": "PAPERCUSP_LIVE_PG_VENUE=coverage-attribution PAPERCUSP_TEST_ATTRIBUTION=1 PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_HARNESS=papercusp vitest run --config vitest.integration.config.ts lib/coverage-census/attribution/persistence-venue.integration.test.ts",
     "test:integration:federated-column-completeness": "vitest run --config vitest.integration.config.ts lib/sync/hyperbee/__tests__/federated-column-completeness.integration.test.ts",
     "test:integration:prose-vector-dims": "vitest run --config vitest.integration.config.ts lib/search/prose-vector-dims.integration.test.ts",
     "test:integration:resource-governor-queue": "vitest run --config vitest.integration.config.ts lib/resource-governor/queue.integration.test.ts",

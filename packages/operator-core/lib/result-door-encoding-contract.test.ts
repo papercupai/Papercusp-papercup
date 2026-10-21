@@ -596,6 +596,86 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(decoded.toString('utf8').startsWith('# result-door spill')).toBe(true);
   });
 
+  it('follows the volatile fallback cursor after primary scratch persistence times out', async () => {
+    const source = {
+      ok: true,
+      rows: Array.from({ length: 200 }, (_, i) => ({
+        id: `WI-${i}`,
+        state: 'open',
+        detail: `detail ${i} — `.repeat(18),
+      })),
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const failure = Object.assign(
+      new Error('Timed out after 5000ms waiting for fs-mutex "papercusp-scratch-quota".'),
+      { code: 'ETIMEDOUT' },
+    );
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: TOOL,
+        workspaceId: WS,
+        runId: RUN_ID,
+        scratchWriteFailure: { error: failure },
+      },
+    ) as DoorableResult;
+    const body = JSON.parse(
+      (doored.content.find((c) => (c as { type?: string }).type === 'text') as { text: string }).text,
+    ) as {
+      _projection: {
+        cursor: {
+          kind: string;
+          tool: string;
+          reason: string;
+          errorCode?: string;
+          uri: string;
+          args: { uri: string; byte_offset: number; byte_limit: number };
+          bodyOffsetInPayload: number;
+        };
+        next: string;
+      };
+    };
+    const { cursor } = body._projection;
+
+    expect(cursor).toMatchObject({
+      kind: 'volatile-scratch-page',
+      tool: 'capability:read',
+      reason: 'spill-write-failed',
+      errorCode: 'ETIMEDOUT',
+      args: { uri: cursor.uri, byte_offset: 0, byte_limit: 3_072 },
+    });
+    expect(cursor.args).not.toHaveProperty('file_path');
+    expect(body._projection.next).toContain('Read cursor.args with capability:read');
+
+    const chunks: Buffer[] = [];
+    let args: Record<string, unknown> = { ...cursor.args };
+    let terminal: BytePage | undefined;
+    for (let hop = 0; hop < 100; hop++) {
+      const res = (await readTool.handler(args as never, {
+        projectDir: sandbox,
+        workspaceId: WS,
+      } as never)) as { content: Array<{ text: string }> };
+      const page = JSON.parse(res.content[0].text) as BytePage;
+      chunks.push(decodeValidatedPage(page));
+      if (page.eof) {
+        terminal = page;
+        break;
+      }
+      expect(page.next_cursor).not.toBeNull();
+      expect(page.next_cursor!.tool).toBe('capability:read');
+      args = page.next_cursor!.args;
+    }
+
+    expect(terminal?.eof).toBe(true);
+    expect(terminal?.next_cursor).toBeNull();
+    const recovered = Buffer.concat(chunks)
+      .subarray(cursor.bodyOffsetInPayload)
+      .toString('utf8');
+    expect(JSON.parse(recovered)).toEqual(source);
+  });
+
   it('rejects incomplete pages and inconsistent EOF metadata before JSON.parse', () => {
     const data = Buffer.from('page bytes', 'utf8').toString('base64');
     const valid: BytePage = {

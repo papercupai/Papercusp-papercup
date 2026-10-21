@@ -22,6 +22,27 @@ describe('native execution observations', () => {
       { agent: 'codex', ...ctx }).phase).toBe('failed');
   });
 
+  it.each(['task_complete', 'turn_completed'])('recognizes Codex %s errors and preserves unresolved tool effects', type => {
+    const rows = [
+      { type: 'event_msg', timestamp, payload: { type: 'task_started', turn_id: 'failed-turn' } },
+      { type: 'response_item', timestamp, payload: { type: 'function_call', call_id: 'effect' } },
+      { type: 'event_msg', timestamp, payload: { type, turn_id: 'failed-turn',
+        error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } },
+    ];
+    const failed = nativeExecutionFromRows(rows, { agent: 'codex', ...ctx });
+    expect(failed).toMatchObject({ phase: 'failed', pendingTools: 1 });
+    expect(nativeExecutionBlocksInjection(failed)).toBe(true);
+    rows.push({ type: 'response_item', timestamp, payload: { type: 'function_call_output', call_id: 'effect' } });
+    expect(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx })).toMatchObject({ phase: 'failed', pendingTools: 0 });
+
+    for (const error of [null, undefined]) {
+      expect(nativeExecutionFromRows([
+        { type: 'event_msg', timestamp, payload: { type: 'task_started', turn_id: 'successful-turn' } },
+        { type: 'event_msg', timestamp, payload: { type, turn_id: 'successful-turn', error } },
+      ], { agent: 'codex', ...ctx })).toMatchObject({ phase: 'settled', pendingTools: 0 });
+    }
+  });
+
   it('keeps a silent Codex tool active until its matching result', () => {
     const rows = [
       { type: 'event_msg', timestamp, payload: { type: 'task_started' } },

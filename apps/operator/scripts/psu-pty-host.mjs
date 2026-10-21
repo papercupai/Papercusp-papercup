@@ -1941,7 +1941,11 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
     const verdict = classify(row, { receivedAtMs, nowMs });
     const message = row?.message;
     const failed = agent === 'codex'
-      ? row?.type === 'event_msg' && ['turn_aborted', 'turn_failed', 'task_failed'].includes(row.payload?.type)
+      ? row?.type === 'event_msg' && (
+        ['turn_aborted', 'turn_failed', 'task_failed'].includes(row.payload?.type) ||
+        // Provider rejection also ends a turn with task_complete.error. It
+        // must retain unresolved tool effects just like an aborted turn.
+        ['task_complete', 'turn_completed'].includes(row.payload?.type) && row.payload?.error != null)
       : agent === 'claude'
         ? row?.isApiErrorMessage === true || row?.type === 'system' && row?.subtype === 'api_error'
         : row?.type === 'message' && message?.role === 'assistant'
