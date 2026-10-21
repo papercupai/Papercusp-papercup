@@ -2902,7 +2902,18 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // would be refused by the child's own lock (`skipped-locked`), so record that directly.
     // Do NOT arm the capacity requeue: the holder's own exit frees the slot, and a 10-minute
     // requeue loop is what turned one long run into 7 non-verdict outcomes.
-    const ownRunLock = isCheckpointRunLockHeldCheap(root);
+    // WI-6554700010019013: probe the lock the CHILD takes. green-checkpoint.ts keys it on
+    // checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot); for a hive install that
+    // is the hive clone under checkpoint-logs/<slug> (routing.extraEnv). `root` is the TOOLING
+    // root (the canonical tree for every hive), so probing it read the CANONICAL gate's lock
+    // and skipped every hive fire while the canonical suite ran (measured 2026-10-21 08:38Z).
+    const ownRunLock = isCheckpointRunLockHeldCheap(
+      routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? root,
+      undefined,
+      undefined,
+      undefined,
+      routing.extraEnv.PAPERCUSP_CHECKPOINT_LOG_DIR ?? scheduledCheckpointLogDir(),
+    );
     if (ownRunLock.held) {
       console.log(
         `${orchestratorStdoutTag()} skip ${ctx.installSlug}: run lock for ${root} held by live pid ${ownRunLock.pid}` +

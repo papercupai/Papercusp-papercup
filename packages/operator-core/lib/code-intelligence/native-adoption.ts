@@ -121,21 +121,33 @@ function searchPatternTexts(segment: string): string[] {
 }
 
 /**
+ * The pattern-bearing texts of every search segment in one shell command, in order. A search
+ * may sit in any segment (`cd <dir> || exit 1; grep …`, `f=…; grep … $f`, `git show … | rg …`).
+ * Shared by classifyShellLookup (the P-033 instrument) and the grep push leg, so the leg's
+ * trigger cannot drift narrower than what the instrument counts (WI-6554700010019006).
+ */
+export function shellSearchPatterns(command: string | null | undefined): string[] {
+  if (!command) return [];
+  const text = command.length > SHELL_COMMAND_MAX_CHARS ? command.slice(0, SHELL_COMMAND_MAX_CHARS) : command;
+  const patterns: string[] = [];
+  for (const raw of text.split(/\n|;|&&|\|\||\|/)) {
+    const segment = raw.trim().replace(/^\(+/, '').replace(/^(?:cd\s+\S+\s*)+/, '').trim();
+    if (!SEARCH_COMMAND.test(segment)) continue;
+    patterns.push(...searchPatternTexts(segment));
+  }
+  return patterns;
+}
+
+/**
  * Classify one shell command as a raw-text definition / call-site lookup — a question the
  * native plane answers (lsp:query workspace_symbols / graph:query callers). Definition wins
  * over call-site when one command holds both. Returns null for every other command.
  */
 export function classifyShellLookup(command: string | null | undefined): ShellLookupKind | null {
-  if (!command) return null;
-  const text = command.length > SHELL_COMMAND_MAX_CHARS ? command.slice(0, SHELL_COMMAND_MAX_CHARS) : command;
   let callSite = false;
-  for (const raw of text.split(/\n|;|&&|\|\||\|/)) {
-    const segment = raw.trim().replace(/^\(+/, '').replace(/^(?:cd\s+\S+\s*)+/, '').trim();
-    if (!SEARCH_COMMAND.test(segment)) continue;
-    for (const pattern of searchPatternTexts(segment)) {
-      if (DECLARATION.test(pattern)) return 'definition';
-      if (CALL_SITE.test(pattern)) callSite = true;
-    }
+  for (const pattern of shellSearchPatterns(command)) {
+    if (DECLARATION.test(pattern)) return 'definition';
+    if (CALL_SITE.test(pattern)) callSite = true;
   }
   return callSite ? 'call-site' : null;
 }

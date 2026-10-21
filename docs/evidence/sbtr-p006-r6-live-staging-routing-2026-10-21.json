@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 / R-6 live non-implementer build:'staging' call served by the staging operator (staging-build-tool-routing-2026-10-21)",
+  "framework": "operational",
+  "command": [
+    "node",
+    "scripts/mcp-call.mjs",
+    "dev:pg_query",
+    "--json-file",
+    "docs/evidence/sbtr-p006-r6-live-staging-routing-2026-10-21.probe-args.json",
+    "--port",
+    "3170"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T08:21:04.898Z",
+  "finishedAt": "2026-10-21T08:25:51.203Z",
+  "plan": "staging-build-tool-routing-2026-10-21",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010018748",
+  "specIds": [
+    "AUTO-BAR-R-6-P-006@2"
+  ],
+  "evidencePlane": "live",
+  "implementer": "su-0f855fe4-d7e1-4198-be13-e8facd1ecaa2",
+  "caller": "su-0b02e81a-7c35-443a-a87c-259e758a1103",
+  "summary": "A session other than the implementer (su-0b02e81a, the blind gap reviewer minted by plans:blind-review at 08:20Z; it implemented no plan item) sent tools:invoke { name:'coord:whoami', args:{}, build:'staging' } at 2026-10-21T08:21:05.514Z. harness_shared.tool_invocations row 42364112 (tools:invoke, args_json.build='staging') and its inner row 42364111 (coord:whoami, status ok) were both served on port-3170 at build f219b26fa6, the sha :3170 /api/health reported at 08:25:51.203Z. The same caller's calls without a build selector in the same minute (rows 42364679 and 42364681 at 08:21:42.091Z) were served on port-3070 at d740fc3802, the green main build the :9071 proxy forwards to by default, so the client was routed per call rather than bound to :3170. The committed R-6 SQL probe (probe-args file above, the check.probe of AUTO-BAR-R-6-P-006@2) returned verdict=pass, matching=3, hits=3. Limit: tool_invocations records neither the requested build of the inner call nor whether a call traversed :9071 (EI-26570456579800590); proxy traversal is inferred from the same client's unselected calls landing on port-3070 while its selected calls landed on port-3170. Two tools:invoke rows from this caller with no build in args_json (42364102, 42364682) were also served on port-3170; R-1 also accepts the selector in _meta, which args_json does not record.",
+  "assertions": [
+    {
+      "id": "non-implementer-staging-call-served-on-3170",
+      "passed": true,
+      "evidence": "tool_invocations 42364112: coord_owner_id su-0b02e81a-7c35-443a-a87c-259e758a1103 (not the implementer su-0f855fe4), tool_name tools:invoke, args_json {args:{}, name:'coord:whoami', build:'staging'}, invoked_at 2026-10-21 08:21:05.514+00, serving_host port-3170, serving_build_sha f219b26fa6, status ok. Inner dispatch row 42364111: coord:whoami, port-3170, f219b26fa6, status ok."
+    },
+    {
+      "id": "serving-sha-matches-3170-health",
+      "passed": true,
+      "evidence": "curl -s 127.0.0.1:3170/api/health at 2026-10-21T08:25:51.203Z returned sha f219b26fa6, equal to row 42364112's serving_build_sha. Another owner's concurrent port-3170 call (row 42365810, su-respawn-28286e84e246e0cf99616738140028ad, coord:whoami at 08:22:54.905Z) was also served at f219b26fa6. The :9071 proxy's own /api/health reported d740fc3802 (the main build it forwards to by default)."
+    },
+    {
+      "id": "per-call-routing-not-a-client-bound-to-3170",
+      "passed": true,
+      "evidence": "Same caller, no build selector in args: rows 42364679 (coord:whoami) and 42364681 (tools:invoke {name:'coord:whoami'}) at 2026-10-21 08:21:42.091+00 were served on port-3070 at d740fc3802; rows 42364683/42364684 at 08:21:42.141Z and 42367061 (tools:invoke) at 08:25:36.96Z also on port-3070. The caller had 7 port-3070 rows between 08:21:42Z and 08:25:37Z, inside the 10-minute window the falsifier names."
+    },
+    {
+      "id": "committed-sql-probe-verdict-pass",
+      "passed": true,
+      "evidence": "The AUTO-BAR-R-6-P-006@2 check.probe SQL (byte-identical in docs/evidence/sbtr-p006-r6-live-staging-routing-2026-10-21.probe-args.json), run through node scripts/mcp-call.mjs dev:pg_query --port 3170 on 2026-10-21 at about 08:24Z, returned one row: verdict='pass', matching=3, hits=3. All three hits are su-0b02e81a coord:whoami rows on port-3170 at f219b26fa6 (42364101, 42364111, 42364680). Before the reviewer ran (08:19Z) the same probe returned verdict 'unknown-or-failed', hits=0."
+    }
+  ]
+}

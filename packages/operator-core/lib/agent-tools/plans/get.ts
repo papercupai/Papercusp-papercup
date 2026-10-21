@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { readPlanBySlug, resolvePlanScope } from './source';
-import { summarizePlanVerification } from '../../plan-verification-profile';
+import { summarizePlanVerification, type PlanVerificationSummary } from '../../plan-verification-profile';
 import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
 import { harnessMismatchForMiss, recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
@@ -1223,6 +1223,24 @@ export default defineTool({
                   }
                 : null,
             });
+            // plan-item-types-registry-cupboard P-004 (R-11, D-007): what each item's registry
+            // type asks of it, at the plan's pinned revisions. Advisory like the overlay above:
+            // a failed read shows null ("not read"), never fails the plan read.
+            const verificationItems = resolved.items.map((it) => ({
+              id: it.id,
+              deliverable: (it as { deliverable?: string | null }).deliverable,
+            }));
+            let itemTypes: PlanVerificationSummary['itemTypes'] = null;
+            try {
+              const { readItemTypeChecklist } = await import('../../plan-types/item-type-contract');
+              itemTypes = await readItemTypeChecklist(
+                { workspaceId: row.workspaceId ?? DEFAULT_WORKSPACE_ID, harnessSlug: row.harnessSlug, planSlug: row.planSlug },
+                { verificationProfile: row.verificationProfile, content: parsed.raw },
+                verificationItems,
+              );
+            } catch {
+              itemTypes = null;
+            }
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
               // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
@@ -1289,10 +1307,7 @@ export default defineTool({
               // ever been shipped through an explicit code-truth waiver.
               forcedPast: row.forcedPast,
               // plan-verification-profiles P-002 (R-4): the checklist this plan is held to.
-              verification: summarizePlanVerification(
-                row,
-                resolved.items.map((it) => ({ id: it.id, deliverable: (it as { deliverable?: string | null }).deliverable })),
-              ),
+              verification: { ...summarizePlanVerification(row, verificationItems), itemTypes },
               sectionIndex: sections.map((s) => ({
                 heading: s.heading,
                 level: s.level,

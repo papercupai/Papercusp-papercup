@@ -13,6 +13,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import type { TaskBrief } from './task-brief';
+import { shellSearchPatterns } from './native-adoption';
 import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
 import { FACT_FILE_ANCHOR_PREFIX, foldCodeNotesForPaths, isCodeNoteKey, isFactFileAnchor, type AgentFact } from '../agent-facts/store';
 import type { FactDependencyStaleness } from '../agent-tools/facts/dependency-staleness';
@@ -763,17 +764,20 @@ export function grepLookupSubject(rawCall: PushCall): string | null {
   const call = normalizePushCall(rawCall);
   const args = pushCallInput(call.toolInput);
   const tool = call.tool ?? '';
-  let pattern: string | null = null;
-  if (/(?:^|_|:)(?:Grep|grep)$/.test(tool) && typeof args?.pattern === 'string') pattern = args.pattern;
-  else {
-    const command = args?.command ?? args?.cmd;
-    if (typeof command !== 'string' || command.length > 4000) return null;
-    const head = command.split(/\n|;|&&|\|/)[0]?.trim() ?? '';
-    if (!/^(?:rg|grep|git\s+grep)\s/.test(head)) return null;
-    const quoted = /(['"])(.*?)\1/.exec(head);
-    pattern = quoted?.[2] ?? head.replace(/^(?:rg|grep|git\s+grep)\s+/, '').split(/\s+/).find(token => !token.startsWith('-')) ?? null;
+  if (/(?:^|_|:)(?:Grep|grep)$/.test(tool) && typeof args?.pattern === 'string') return grepPatternSubject(args.pattern);
+  const command = args?.command ?? args?.cmd;
+  if (typeof command !== 'string' || command.length > 4000) return null;
+  // Same segment parser as the P-033 instrument: the search may follow `cd <dir> || exit 1;`,
+  // a variable assignment or a pipe. The first single-symbol pattern wins.
+  for (const pattern of shellSearchPatterns(command)) {
+    const subject = grepPatternSubject(pattern);
+    if (subject) return subject;
   }
-  if (!pattern) return null;
+  return null;
+}
+
+/** One search pattern → the single symbol it looks up, or null (alternations stay ambiguous). */
+function grepPatternSubject(pattern: string): string | null {
   const simple = pattern.replace(/\\b/g, '').replace(/\\?\($/, '').replace(/^\^/, '').replace(/\$$/, '').trim();
   const declaration = /^(?:export\s+)?(?:async\s+)?(?:function|class|interface|type|const|let|enum)\s+([A-Za-z_$][\w$]*)$/.exec(simple);
   const name = declaration?.[1] ?? simple;

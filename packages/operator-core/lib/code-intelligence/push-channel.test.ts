@@ -9,6 +9,7 @@ import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, ty
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { readPushIncidentAttribution, type PushInput } from './push-channel';
+import { classifyShellLookup } from './native-adoption';
 
 const now = Date.now();
 const raw = () => ({ schema: 'graph-dependency-snapshot-v1', index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
@@ -450,6 +451,45 @@ describe('shared snapshot-backed push channel', () => {
     expect(snapshotGrepLeg({ ...input, calls: [{ tool: 'Grep', toolInput: { pattern: 'missing' } }] }, snap)).toEqual([]);
     snap.symbols.get('target')![0]!.sources = undefined;
     expect(snapshotGrepLeg({ ...input, calls: [call] }, snap)).toEqual([]);
+  });
+
+  describe('WI-6554700010019006: the grep trigger sees every search segment the P-033 instrument counts', () => {
+    // Shapes measured from 837 live raw-text lookups (2026-10-21): 461 began with `cd <dir> || exit 1;`
+    // and 121 had the search after an assignment or pipe; the first-segment trigger refused all of them.
+    const bash = (command: string) => ({ tool: 'Bash', toolInput: { command } });
+    it.each([
+      ["cd /repo || exit 1; grep -rn 'export function summarizePlanVerification' --include=*.ts packages", 'summarizePlanVerification'],
+      ["cd /repo && rg -n 'applyResultDoorAsync\\(' packages/operator-core/lib", 'applyResultDoorAsync'],
+      ['f=packages/a.ts; grep -n "routeFreshKickoff(" $f', 'routeFreshKickoff'],
+      ["git show HEAD:apps/x.mjs | rg -n -C 8 \"function routeFreshKickoff\"", 'routeFreshKickoff'],
+      ["git -C /repo grep -n 'export const PUSH_LEG_FLAGS'", 'PUSH_LEG_FLAGS'],
+      ["grep -rn --include='*.ts' 'canonicalJson' libs packages", 'canonicalJson'],
+    ])('accepts %s', (command, subject) => {
+      expect(grepLookupSubject(bash(command))).toBe(subject);
+      expect(grepLookupSubject({ tool: 'mcp__papercusp-su__capability_bash', toolInput: { cmd: command } })).toBe(subject);
+    });
+
+    it.each([
+      "cd /repo || exit 1; rg 'target|another' packages",
+      "grep -rn -E 'evaluateGate\\(|readSnapshot\\(' packages",
+      'cd /repo && sed -n 1,40p a.ts',
+      "echo 'grep -rn fooBar' > note.txt",
+    ])('still refuses %s', command => {
+      expect(grepLookupSubject(bash(command))).toBeNull();
+    });
+
+    it('accepts every single-symbol lookup the instrument classifies (parity)', () => {
+      const commands = [
+        "cd /repo || exit 1; grep -rn 'export async function measure' packages",
+        'S=x.ts; grep -n "fooBar(" $S | head -5',
+        "( cd /repo && grep -rn 'class Widget' apps )",
+        "sudo grep -rn 'interface PlanIndexItem' packages",
+      ];
+      for (const command of commands) {
+        expect(classifyShellLookup(command), command).not.toBeNull();
+        expect(grepLookupSubject(bash(command)), command).not.toBeNull();
+      }
+    });
   });
 
   it('suppresses drifted definitions, forwarding modules and callers before delivery', async () => {

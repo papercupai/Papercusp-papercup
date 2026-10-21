@@ -337,6 +337,7 @@ import {
   readNonCodeDeliverableCloseEvidence,
   readCloseDeliverablesAreNonCode,
 } from '../../plan-verification-escape';
+import { describeTypeFieldsRefusal, readCloseItemTypeFieldsRefusal } from '../../plan-types/item-type-contract';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 import { COMPLETE_RECEIPT, toWorkItemReceipt } from './receipt';
 import {
@@ -4568,6 +4569,28 @@ async function completeOne(
         });
       } catch {
         nonCodeDeliverableClose = false;
+      }
+      // plan-item-types-registry-cupboard P-004 (R-10): the linked item type's completion
+      // fields, at the plan's pinned revision. Fails closed: a close we cannot check is refused.
+      try {
+        const refusal = await readCloseItemTypeFieldsRefusal({
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+          harnessSlug: link.harnessSlug,
+          planSlug: link.planSlug,
+          planItemIds: link.planItemIds,
+          typeFields: it.completion.typeFields,
+        });
+        if (refusal) {
+          refuseGate(
+            `REJECTED — ${describeTypeFieldsRefusal(it.id, link.planSlug, refusal)} No completion write was made.`,
+            { itemTypeFieldsRefusal: { ...refusal, planSlug: link.planSlug } },
+          );
+        }
+      } catch (error) {
+        refuseGate(
+          `Cannot check the linked item type's completion fields at close: ${error instanceof Error ? error.message : String(error)}. No completion write was made.`,
+          { itemTypeFieldsRefusal: { code: 'item_type_fields_check_unavailable', retryable: true } },
+        );
       }
     }
   }

@@ -365,7 +365,7 @@ interface LinkedDeliverableRow {
 }
 
 /** The declared deliverable of each linked plan item, with its plan's stamped profile. */
-async function readLinkedDeliverableRows(input: {
+export async function readLinkedDeliverableRows(input: {
   workspaceId: string;
   harnessSlug: string;
   planSlug: string;

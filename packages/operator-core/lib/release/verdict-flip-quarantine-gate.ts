@@ -152,6 +152,11 @@ export async function verdictFlipGateDepsFor(target: GateVerdictTarget): Promise
           topics: ['release-gate', FLAKY_QUARANTINE_KIND],
           sourcePlanSlug: 'green-main-ratchet-convergence-2026-10-17',
           sourcePlanItemIds: ['P-008'],
+          // WI-6554700010018833: born admitted, never pending. The item is assigned to its
+          // named owner at filing, and the quarantine row written next cites it as the
+          // accountable de-quarantine bug, so a promoter must not be able to hold it back.
+          admission: 'auto',
+          admittedBy: 'bypass:explicit-assignment',
         }),
       );
       return issue.id;

@@ -42,6 +42,7 @@ import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-
 import { synchronizeAcceptanceBarRevision } from './acceptance-bar-amendment';
 import { requirementSections } from './requirement-contract';
 import { acceptanceBarProjectedBehavior } from './acceptance-bar-projection';
+import type { ItemTypeBar } from './plan-types/item-type-contract';
 
 export { acceptanceBarProjectedBehavior } from './acceptance-bar-projection';
 import {
@@ -161,6 +162,13 @@ export interface AcceptanceBarSeedBuildInput {
    * (they are the start door's and the amendment's business, not a re-audit's).
    */
   requireContractCompleteness?: boolean;
+  /**
+   * plan-item-types-registry-cupboard P-004 (R-11): bars the plan's item types seed from their
+   * criteria templates and named rubrics (`deriveItemTypeBars`). They sit beside the
+   * Requirements bars, are judged by the grader rather than the contract-completeness sweep,
+   * and are added only while the plan is a draft: a later re-audit keeps the ones it has.
+   */
+  itemTypeBars?: readonly ItemTypeBar[];
 }
 
 export type AcceptanceBarSeedBuildResult =
@@ -652,6 +660,19 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     }]);
   }
   const existing = existingParsed?.success ? existingParsed.data : null;
+  // P-004 (R-11): item-type bars. Once the plan has left draft with a seeded contract, only
+  // the type bars it already carries survive, so re-auditing an active or shipped plan can
+  // never add one (the meaning-change guard would otherwise refuse the audit).
+  const contractBound = input.planStatus != null && input.planStatus !== 'draft' && existing?.barContract != null;
+  const typeBars = (input.itemTypeBars ?? []).filter((bar) =>
+    !contractBound || (existing?.criteria ?? []).some((criterion) => criterion.barKey === bar.barKey));
+  for (const bar of typeBars) {
+    if (mappingByKey.has(bar.barKey)) {
+      return refusal([{ code: 'bar_key_duplicate', barKey: bar.barKey,
+        detail: `${bar.barKey} is both a Requirements BAR and an item-type BAR` }]);
+    }
+    mappingByKey.set(bar.barKey, { barKey: bar.barKey, planItemIds: [...bar.planItemIds], evidencePlane: 'tree' });
+  }
   // The contract can already be binding while its subject is still draft:
   // activation seeds it before the plan advances, and a reviewed amendment can
   // pin that draft's next revision. Match the contract pin, not the plan status,
@@ -772,6 +793,19 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       barProvenance: prior.barProvenance ?? seeded.barProvenance,
     } as ProposeRubricCriterion;
   });
+  for (const bar of typeBars) {
+    const seeded = seededCriterion(
+      { barKey: bar.barKey, title: bar.title, model: bar.model },
+      mappingByKey.get(bar.barKey)!,
+      input,
+      existing?.ratingScale,
+    );
+    const prior = existingByBar.get(bar.barKey);
+    if (preserveCanonicalBars && prior) criteria.push({ ...prior } as ProposeRubricCriterion);
+    else if (!prior || prior.barHash !== seeded.barHash) criteria.push(seeded);
+    else criteria.push({ ...seeded, ...methodProjection(prior as unknown as Record<string, unknown>),
+      barProvenance: prior.barProvenance ?? seeded.barProvenance } as ProposeRubricCriterion);
+  }
   // The parser admits historical absence so an existing reviewed BAR can be
   // materialized honestly. A newly authored structured BAR still owes Intent,
   // independently of the optional METHOD/check/layer completeness sweep.
@@ -1086,10 +1120,27 @@ export async function seedAcceptanceBarsInTransaction(
     existingTemplate.data.barContract.cohort === input.cohort
       ? existingTemplate.data.barContract.seededAt
       : input.now.toISOString();
+  // plan-item-types-registry-cupboard P-004 (R-11): an item whose type carries a criteria
+  // template, or names a rubric, gets one bar per criterion. A named rubric that is not
+  // installed refuses the seed, so the plan never activates without the bars its types require.
+  const { deriveSeedItemTypeBars } = await import('./plan-types/item-type-contract');
+  const typeBars = await deriveSeedItemTypeBars(
+    sql,
+    { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug },
+    input.planContent,
+  );
+  if (!typeBars.ok) {
+    return refusal(typeBars.problems.map((problem) => ({
+      code: 'bar_requirement_parse_failed' as const,
+      detail: problem.detail,
+    }))) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;
+  }
+  const itemTypeBars = typeBars.bars;
   let built = buildAcceptanceBarSeed({
     planSlug: input.planSlug,
     subjectHarnessSlug: input.harnessSlug,
     planContent: input.planContent,
+    itemTypeBars,
     actorId: input.actorId,
     declaredAt: seedInstant,
     cohort: input.cohort,
@@ -1179,6 +1230,7 @@ export async function seedAcceptanceBarsInTransaction(
       planSlug: input.planSlug,
       subjectHarnessSlug: input.harnessSlug,
       planContent: input.planContent,
+      itemTypeBars,
       actorId: input.actorId,
       declaredAt:
         existingTemplate?.success && existingTemplate.data.barContract

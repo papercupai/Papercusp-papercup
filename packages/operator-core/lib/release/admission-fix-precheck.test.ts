@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ADMISSION_PRECHECK_SETUP_BUDGET_MS,
   ADMISSION_PRECHECK_SETUP_IDLE_MS,
@@ -288,6 +288,22 @@ describe('classifyTestFileRun', () => {
 });
 
 describe('createCheckpointTreeFixPrecheckRunner', () => {
+  // WI-6554700010018823: a runner built without `logDir` defaults to
+  // papercuspPath('checkpoint-logs'), i.e. the REAL gate log directory. Without
+  // this pin every run of this file dropped admission-precheck-eeeeeeeeeeee-*.log
+  // fixtures beside the gate's own run logs (84 found there on 2026-10-21).
+  // Pinning PAPERCUSP_HOME per test covers every runner in this block,
+  // including ones added later without a logDir.
+  let fixtureHome = '';
+  beforeEach(() => {
+    fixtureHome = mkdtempSync(join(tmpdir(), 'precheck-papercusp-home-'));
+    vi.stubEnv('PAPERCUSP_HOME', fixtureHome);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(fixtureHome, { recursive: true, force: true });
+  });
+
   it('advances the heartbeat on setup output before setup finishes or any file is measured', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'precheck-setup-progress-'));
     const releaseFile = join(dir, 'release');
@@ -414,6 +430,17 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
   // resolveGenerationRoot: () => null pins the default-path tests to the
   // beside-checkpoint placement whatever PAPERCUSP_DEPENDENCY_GENERATION_ROOT says.
   const base = { integrationRoot: '/repo', checkpointRoot: '/ckpt', resolveGenerationRoot: () => null };
+
+  it('WI-6554700010018823: without logDir the precheck log lands under PAPERCUSP_HOME, not a fixed operator home', async () => {
+    const exec = vi.fn(async (_argv: readonly string[], _opts: ExecOptions) => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult));
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    await runner({ commit: C, files: ['lib/a.test.ts'] });
+    const logFiles = exec.mock.calls.map(([, opts]) => opts.logFile);
+    expect(logFiles.length).toBeGreaterThan(0);
+    for (const logFile of logFiles) {
+      expect(logFile?.startsWith(`${join(fixtureHome, 'checkpoint-logs')}/admission-precheck-${C.slice(0, 12)}-`)).toBe(true);
+    }
+  });
 
   it('a registered npm pretest failure remains unavailable and never becomes an assertion red', async () => {
     const root = mkdtempSync(join(tmpdir(), 'precheck-pretest-error-'));

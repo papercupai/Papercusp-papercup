@@ -210,10 +210,15 @@ vi.mock('../../release/checkpoint-memory-admission', async (orig) => ({
 // not-held; a test that needs a held lock sets runLockOverride.value.
 const runLockOverride = vi.hoisted(() => ({
   value: null as null | { held: boolean; pid?: number; elapsedSec: number | null },
+  // WI-6554700010019013: which (root, logDir) the pre-admission probe asked about.
+  calls: [] as Array<{ root: string; logDir: unknown }>,
 }));
 vi.mock('../../release-checkpoint-lock', async (orig) => ({
   ...(await orig<typeof import('../../release-checkpoint-lock')>()),
-  isCheckpointRunLockHeldCheap: () => runLockOverride.value ?? { held: false, elapsedSec: null },
+  isCheckpointRunLockHeldCheap: (root: string, ...rest: unknown[]) => {
+    runLockOverride.calls.push({ root, logDir: rest[3] });
+    return runLockOverride.value ?? { held: false, elapsedSec: null };
+  },
 }));
 
 // per-hive-git-and-release-gate P-010: the handlers now resolve the operator-home slug to
@@ -2941,6 +2946,37 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       expect(beginStoredQualification).not.toHaveBeenCalled();
       expect(requeueCalls()).toHaveLength(0);
       expect(spawnMock).not.toHaveBeenCalled();
+    });
+
+    it('WI-6554700010019013: a hive install probes ITS OWN lock (integration root + hive log dir), not the tooling root', async () => {
+      // Measured 2026-10-21 08:38Z: papercusp-pr-drill-20261014's fire probed the canonical tree's
+      // lock (routing.root = the tooling root) and skipped while the CANONICAL gate's suite ran.
+      runLockOverride.calls.length = 0;
+      // Held, so the action stops at the probe (skipped-locked) instead of launching a child.
+      runLockOverride.value = { held: true, pid: 4242, elapsedSec: 60 };
+      routingPatch = {
+        extraEnv: {
+          PAPERCUSP_INTEGRATION_ROOT: '/clones/hive-under-test',
+          PAPERCUSP_CHECKPOINT_LOG_DIR: '/logs/checkpoint-logs/hive-under-test',
+        },
+      };
+      try {
+        readStoredQualification.mockResolvedValueOnce({
+          status: 'present',
+          transaction: { ...liveTransaction, phase: 'terminal', outcome: { kind: 'verdict', verdict: 'not-green' } },
+        });
+
+        await getSystemAction('green-checkpoint')!(ctx);
+
+        expect(runLockOverride.calls[0]).toEqual({
+          root: '/clones/hive-under-test',
+          logDir: '/logs/checkpoint-logs/hive-under-test',
+        });
+        expect(statuses()).toEqual(['skipped-locked']);
+      } finally {
+        routingPatch = null;
+        runLockOverride.value = null;
+      }
     });
 
     it('still owes the admission when the expected join becomes a launch at the locked classification', async () => {

@@ -244,6 +244,35 @@ export interface VerificationResolution {
   deliverableSource: DeliverableSource;
   /** Always starts with 'generic-core'; never empty. */
   modules: readonly VerificationModule[];
+  /**
+   * What the resolved item type asks of an item beyond its modules: completion fields and
+   * criteria. Present only when a registry resolver found the type; inside
+   * `withPinnedPlanTypes` it is the plan's pinned revision. plan-item-types-registry-cupboard P-004.
+   */
+  itemTypeContract?: ItemTypeContract;
+}
+
+/** The completion fields an item type declares: an inline JSON Schema, or a datatype reference. */
+export type ItemTypeCompletion = { schema: Record<string, unknown> } | { datatypeRef: string };
+
+/** One criterion an item type seeds into its plan's acceptance bars. */
+export interface ItemTypeCriterion {
+  key: string;
+  title: string;
+  description?: string;
+}
+
+/**
+ * An item type's effective contract at one revision. A field the type leaves out comes from
+ * the nearest parent reached through `extends` that declares it.
+ */
+export interface ItemTypeContract {
+  id: string;
+  revision: number;
+  contentHash: string;
+  completion?: ItemTypeCompletion;
+  criteriaTemplate?: readonly ItemTypeCriterion[];
+  rubricRef?: string;
 }
 
 /** The modules that apply to a deliverable: the generic core, plus code for code, plus opt-ins. */
@@ -267,6 +296,19 @@ export interface PlanVerificationSummary {
   defaultModules: readonly VerificationModule[];
   /** Items that declare their own deliverable kind. */
   overrides: Array<{ id: string; deliverable: DeliverableKind; modules: readonly VerificationModule[] }>;
+  /**
+   * Items whose registry item type asks for completion fields, criteria or a rubric, at the
+   * plan's pinned revisions (plan-item-types-registry-cupboard P-004). Null when it could not be
+   * read; absent from callers that do not read the registry.
+   */
+  itemTypes?: Array<{
+    itemId: string;
+    itemType: string;
+    revision: number;
+    completion: { kind: 'schema' } | { kind: 'datatype'; datatypeRef: string } | null;
+    criteria: Array<{ key: string; title: string }>;
+    rubricRef: string | null;
+  }> | null;
 }
 
 const PROFILE_SOURCES = ['declared', 'harness-default', 'backfill'] as const;

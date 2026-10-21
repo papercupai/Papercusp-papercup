@@ -31,6 +31,7 @@ import {
   isNonCodeWorkItemKind,
   type DeliverableKind,
   type DeliverableSource,
+  type ItemTypeContract,
   type VerificationItemInput,
   type VerificationPlanInput,
   type VerificationResolution,
@@ -49,6 +50,34 @@ import { VERIFICATION_MODULES, type VerificationModule } from './verification-mo
 
 /** The strictest module set: what an unresolvable type is held to. */
 export const STRICTEST_MODULES: readonly VerificationModule[] = Object.freeze([...VERIFICATION_MODULES]);
+
+/** The contract one item-type revision declares itself (P-004). */
+function ownContract(found: RegisteredDefinition<ItemTypeDefinition>): ItemTypeContract {
+  const { definition } = found;
+  return {
+    id: definition.id,
+    revision: definition.revision,
+    contentHash: found.contentHash,
+    ...(definition.completion ? { completion: definition.completion } : {}),
+    ...(definition.criteriaTemplate ? { criteriaTemplate: definition.criteriaTemplate } : {}),
+    ...(definition.rubricRef ? { rubricRef: definition.rubricRef } : {}),
+  };
+}
+
+/** A child's contract with every field it leaves out taken from its parent's effective contract. */
+function inheritContract(child: ItemTypeContract, parent: ItemTypeContract): ItemTypeContract {
+  const completion = child.completion ?? parent.completion;
+  const criteriaTemplate = child.criteriaTemplate ?? parent.criteriaTemplate;
+  const rubricRef = child.rubricRef ?? parent.rubricRef;
+  return {
+    id: child.id,
+    revision: child.revision,
+    contentHash: child.contentHash,
+    ...(completion ? { completion } : {}),
+    ...(criteriaTemplate ? { criteriaTemplate } : {}),
+    ...(rubricRef ? { rubricRef } : {}),
+  };
+}
 
 /**
  * The resolution-time half of the generic-core floor (R-9). While the parse floor and
@@ -169,7 +198,7 @@ export function createRegistryVerificationResolver(
   const itemTypeModules = (
     ref: TypeReference,
     seen: ReadonlySet<string> = new Set(),
-  ): { found: RegisteredDefinition<ItemTypeDefinition>; modules: VerificationModule[] } | null => {
+  ): { found: RegisteredDefinition<ItemTypeDefinition>; modules: VerificationModule[]; contract: ItemTypeContract } | null => {
     if (seen.has(ref.id) || seen.size >= MAX_EXTENDS_DEPTH) return null;
     const found = lookupPinned(
       ref.id,
@@ -180,14 +209,16 @@ export function createRegistryVerificationResolver(
     );
     if (!found) return null;
     let modules = [...found.definition.modules];
+    let contract = ownContract(found);
     const parentRef = found.definition.extends;
     if (parentRef) {
       const parent = itemTypeModules(parentRef, new Set([...seen, ref.id]));
       if (!parent) return null;
       modules = normalizeModules([...modules, ...parent.modules]);
+      contract = inheritContract(contract, parent.contract);
     }
     record('item-type', found);
-    return { found, modules };
+    return { found, modules, contract };
   };
 
   return (plan, item): VerificationResolution => {
@@ -229,6 +260,7 @@ export function createRegistryVerificationResolver(
     let deliverable: DeliverableKind | null;
     let itemType: string | null;
     let modules: VerificationModule[];
+    let itemTypeContract: ItemTypeContract | undefined;
     if (reference === null) {
       deliverable = null;
       itemType = null;
@@ -240,6 +272,7 @@ export function createRegistryVerificationResolver(
       modules = resolved
         ? normalizeModules([...resolved.modules, ...domainModules])
         : [...STRICTEST_MODULES];
+      itemTypeContract = resolved?.contract;
     }
     modules = holdToFloor(modules);
     return {
@@ -250,6 +283,7 @@ export function createRegistryVerificationResolver(
       codeDeliverable: modules.includes('code'),
       deliverableSource,
       modules,
+      ...(itemTypeContract ? { itemTypeContract } : {}),
     };
   };
 }

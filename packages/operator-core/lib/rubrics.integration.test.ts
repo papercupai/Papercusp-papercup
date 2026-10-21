@@ -4973,6 +4973,97 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return listSpecClauses({ harnessSlug: 'papercusp', planSlug: subject });
   }
 
+  /** Every durable member an amendment can touch: both plan rows (source, hash, version,
+   *  template data, adoption pin), clause pointers, immutable clause history, proof bindings,
+   *  work-binding edges and plan revision history. A refusal must leave all of it equal. */
+  async function amendmentStateVector(seeded: { workspaceId: string; subject: string; rubricSlug: string }) {
+    const scope = { ws: seeded.workspaceId, subject: seeded.subject };
+    const plans = await db.adminSql`
+      SELECT plan_slug, content, content_hash, version, template_data, acceptance_bar_rubric_slug,
+             acceptance_bar_rubric_revision, acceptance_bar_set_hash, acceptance_bar_verified_revision
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${scope.ws} AND harness_slug = 'papercusp'
+         AND plan_slug IN (${seeded.subject}, ${seeded.rubricSlug})
+       ORDER BY plan_slug`;
+    const pointers = await db.adminSql`
+      SELECT spec_id, current_revision FROM harness_shared.plan_spec_clauses
+       WHERE workspace_id = ${scope.ws} AND harness_slug = 'papercusp' AND plan_slug = ${scope.subject}
+       ORDER BY spec_id`;
+    const history = await db.adminSql`
+      SELECT spec_id, revision, content_hash, lifecycle_status, source_bar_key, accepted_by
+        FROM harness_shared.plan_spec_clause_revisions
+       WHERE workspace_id = ${scope.ws} AND harness_slug = 'papercusp' AND plan_slug = ${scope.subject}
+       ORDER BY spec_id, revision`;
+    const bindings = await db.adminSql`
+      SELECT spec_id, spec_revision, binding_fingerprint FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${scope.ws} AND harness_slug = 'papercusp' AND plan_slug = ${scope.subject}
+       ORDER BY spec_id, spec_revision, binding_fingerprint`;
+    const edges = await db.adminSql`
+      SELECT work_item_id, spec_id, spec_revision FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id = ${scope.ws} AND harness_slug = 'papercusp' AND plan_slug = ${scope.subject}
+       ORDER BY work_item_id, spec_id, spec_revision`;
+    const revisions = await db.adminSql`
+      SELECT plan_slug, count(*)::int AS n FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${scope.ws} AND harness_slug = 'papercusp'
+         AND plan_slug IN (${seeded.subject}, ${seeded.rubricSlug})
+       GROUP BY plan_slug ORDER BY plan_slug`;
+    return { plans, pointers, history, bindings, edges, revisions };
+  }
+
+  // acceptance-bar-atomic-retirement-2026-10-15 R-11: the SUBJECT-plan CAS, pinned
+  // deterministically. The stale-CAS cases above pass only expectedRubricRevision, so a
+  // regression that dropped the subject comparison survived every case in this file.
+  it('R-11: a stale expectedSubjectPlanRevision is refused with the revision-conflict code and writes nothing', async () => {
+    const seeded = await seedBarContract('sequential-stale-subject-cas-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const live = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Require live evidence.',
+      criterionEvidencePlane: { key: before.criteria[0]!.key, evidencePlane: 'live' as const },
+    };
+    // The approval reviews the change itself; the CAS is the caller's freshness claim.
+    const approvalRef = await postApproval(live);
+    const stateBefore = await amendmentStateVector(seeded);
+    const subjectRevision = Number(stateBefore.plans.find((row) => row.plan_slug === seeded.subject)!.version);
+    await expect(rubrics.amendRubric({ ...live, approvalRef, expectedSubjectPlanRevision: subjectRevision - 1 }))
+      .rejects.toThrow(/acceptance_bar_amendment_revision_conflict: subject plan/);
+    expect(await amendmentStateVector(seeded)).toEqual(stateBefore);
+    // Calibration: the same approved input at the live subject revision applies.
+    await rubrics.amendRubric({ ...live, approvalRef, expectedSubjectPlanRevision: subjectRevision });
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision! + 1);
+  });
+
+  // acceptance-bar-atomic-retirement-2026-10-15 R-33: a malformed-source refusal leaves the
+  // complete durable state vector unchanged, on preview (which runs on the pool with no
+  // wrapping transaction) AND on apply. The R-27 population here is a Bar-to-work map row
+  // for a BAR with no Requirements record.
+  it('R-33: a malformed-source refusal on preview and on apply leaves the complete durable state unchanged', async () => {
+    const seeded = await seedBarContract('malformed-source-no-write-subject');
+    const original = await subjectSource(seeded.subject);
+    const malformed = original.replace('| R-2 | P-002 | tree |', '| R-2 | P-002 | tree |\n| R-8 | P-001 | tree |');
+    expect(malformed).not.toBe(original);
+    await db.adminSql`UPDATE harness_shared.harness_plans
+       SET content = ${malformed}, content_hash = ${hashPlanContent(malformed)}
+     WHERE workspace_id = ${seeded.workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${seeded.subject}`;
+    // An explicit unchanged full-set resubmission: a real apply input (not "nothing to amend")
+    // that needs no approval, so both calls reach the proposed-source validation.
+    const input = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'malformed-source-actor',
+      reason: 'Resubmit the unchanged criteria over a malformed map.',
+      criteria: (await rubrics.getRubric(seeded.rubricSlug))!.criteria,
+    };
+    const refusal = /acceptance_bar_amendment_mapping_invalid:bar_mapping_requirement_missing.*R-8/;
+    const stateBefore = await amendmentStateVector(seeded);
+    expect(stateBefore.pointers.length).toBeGreaterThan(0);
+
+    await expect(rubrics.previewAcceptanceBarAmendment(input)).rejects.toThrow(refusal);
+    expect(await amendmentStateVector(seeded)).toEqual(stateBefore);
+    await expect(rubrics.amendRubric(input)).rejects.toThrow(refusal);
+    expect(await amendmentStateVector(seeded)).toEqual(stateBefore);
+  });
+
   it('retires a started BAR whose only mapped work was dropped, reconciling its Requirements record and map row in the same amendment (EI-24358433996857425)', async () => {
     const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('dropped-only-retire-subject');
     const clausesBefore = await subjectClauses(subject);

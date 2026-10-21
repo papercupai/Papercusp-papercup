@@ -57,6 +57,16 @@ vi.mock('../../plan-verification-escape', async (importOriginal) => ({
   // complete-deliverable-fields.integration.test.ts.
   readCloseDeliverablesAreNonCode: (...args: unknown[]) => nonCodeClose.nonCode(...args),
 }));
+// plan-item-types-registry-cupboard P-004 (R-10): the item-type completion-fields read goes
+// through withPinnedPlanTypes and real PG, so it is stubbed too (default: nothing to refuse).
+// Real PG coverage lives in complete-item-type-fields.integration.test.ts.
+const typeFieldsClose = vi.hoisted(() => ({
+  read: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+}));
+vi.mock('../../plan-types/item-type-contract', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../plan-types/item-type-contract')>(),
+  readCloseItemTypeFieldsRefusal: (...args: unknown[]) => typeFieldsClose.read(...args),
+}));
 vi.mock('../../external-condition-reachability', () => ({
   readEventConditionReachability: (...args: unknown[]) => parkReachability.read(...args),
 }));
@@ -1540,6 +1550,43 @@ describe('work_items:complete (keyed-array)', () => {
     nonCodeClose.read.mockRejectedValueOnce(new Error('plan_items unreadable'));
     const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'runbook written', discharges: ['R-1'] } });
     expect(r).toMatchObject({ ok: false, nonCodeDeliverableRefusal: { code: 'deliverable_check_unavailable', retryable: true } });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  // plan-item-types-registry-cupboard P-004 (R-10): the item type's completion fields are
+  // checked on the real completion path, passed completion.typeFields, and refuse before any write.
+  it('refuses a close whose typeFields violate the linked item type before writing (R-10)', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-002'] });
+    typeFieldsClose.read.mockResolvedValueOnce({
+      code: 'item_type_fields_invalid',
+      itemId: 'P-002',
+      itemType: 'acme/clause',
+      revision: 1,
+      errors: ["must have required property 'clauseRef'"],
+    });
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: { summary: 'clause drafted', discharges: ['R-1'], typeFields: { memoRef: 'm-1' } },
+    });
+    expect(typeFieldsClose.read).toHaveBeenCalledWith(expect.objectContaining({
+      planSlug: 'requirement-plan',
+      planItemIds: ['P-002'],
+      typeFields: { memoRef: 'm-1' },
+    }));
+    expect(r).toMatchObject({
+      ok: false,
+      itemTypeFieldsRefusal: { code: 'item_type_fields_invalid', planSlug: 'requirement-plan', itemId: 'P-002', itemType: 'acme/clause' },
+    });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(fireReactionInProcess).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unreadable item-type check without writing a completion (R-10 fails closed)', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-002'] });
+    typeFieldsClose.read.mockRejectedValueOnce(new Error('type registry unreadable'));
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'clause drafted', discharges: ['R-1'] } });
+    expect(r).toMatchObject({ ok: false, itemTypeFieldsRefusal: { code: 'item_type_fields_check_unavailable', retryable: true } });
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
