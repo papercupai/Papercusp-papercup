@@ -311,6 +311,61 @@ describe('WI-10007606 runGitSync cooperative yield', () => {
       expect(head).not.toBe(baseline);
       expect(yielded.localCommitSha).toBe(head);
       expect(yielded.localCommitAtMs).toBeTypeOf('number');
+      // WI-6554700010019053: the commits published before the yield are listed too.
+      expect(yielded.localCommitShas).toEqual(git('rev-list', '--reverse', `${baseline}..HEAD`).split('\n'));
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-6554700010019053: a pass that publishes several group commits reports every one, oldest first', async () => {
+    // Each attributed agent's group is its own root commit, so only the last is HEAD.
+    // A waiter holding an earlier group commit's sha needs that sha in the outcome,
+    // or the action never emits git-sync:committed:<that sha>.
+    const repo = mkdtempSync(join(tmpdir(), 'git-sync-group-shas-'));
+    const git = (...args: string[]): string => {
+      const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 30_000 });
+      if (result.status !== 0) throw new Error(String(result.stderr || result.stdout));
+      return String(result.stdout).trim();
+    };
+    try {
+      git('init', '-b', 'main');
+      git('config', 'user.email', 'test@papercusp.local');
+      git('config', 'user.name', 'group shas test');
+      git('config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'a.txt'), 'a original\n');
+      writeFileSync(join(repo, 'b.txt'), 'b original\n');
+      git('add', '-A');
+      git('commit', '-m', 'baseline');
+      const baseline = git('rev-parse', 'HEAD');
+      writeFileSync(join(repo, 'a.txt'), 'a edited by su-a\n');
+      writeFileSync(join(repo, 'b.txt'), 'b edited by su-b\n');
+      let published = 0;
+      const runGit: RunGit = async (args, cwd, options) => {
+        const result = spawnSync('git', args, {
+          cwd, encoding: 'utf8', timeout: 30_000,
+          env: { ...process.env, ...options?.env },
+        });
+        if (result.status === 0 && args[0] === 'update-ref' && args.includes('HEAD')) published++;
+        return { code: result.status ?? -1, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+      };
+      const out = await runGitSync('test', {
+        repoPath: repo, runGit, submodulePaths: [],
+        config: { push: false, pushSubmoduleOrigins: false },
+        contentDetectors: [], deletionGuard: false, diffSubjects: false, log: () => {},
+        loadRoster: async () => [
+          { agent: 'su-a', intent: 'edit a', files: ['a.txt'] },
+          { agent: 'su-b', intent: 'edit b', files: ['b.txt'] },
+        ],
+        shouldYield: async () => null,
+      });
+
+      const landed = git('rev-list', '--reverse', `${baseline}..HEAD`).split('\n');
+      expect(published).toBeGreaterThanOrEqual(2);
+      expect(landed).toHaveLength(published);
+      expect(out.localCommitSha).toBe(git('rev-parse', 'HEAD'));
+      expect(out.localCommitShas).toEqual(landed);
+      expect(out.localCommitShas?.at(-1)).toBe(out.localCommitSha);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

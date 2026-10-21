@@ -331,11 +331,34 @@ export function classifyWorkRoot({ inUse, dependentArtifactPresent = false, mark
   if (ageMs > maxAgeMs) return { remove: true, reason: 'max-age' };
   if (!marker) return ageMs > keepTtlMs ? { remove: true, reason: 'unmarked-expired' } : { remove: false, reason: 'unmarked-young' };
   if (marker.keep) return ageMs > keepTtlMs ? { remove: true, reason: 'keep-expired' } : { remove: false, reason: 'keep-young' };
+  if (ownerAlive === null) return { remove: false, reason: 'owner-liveness-unknown' };
   return ownerAlive ? { remove: false, reason: 'owner-alive' } : { remove: true, reason: 'owner-dead' };
 }
 
-function pidAlive(pid) {
+/** PROC_PID_INIT_INO (include/linux/proc_ns.h): the initial PID namespace's fixed inode. */
+export const INITIAL_PID_NAMESPACE = 'pid:[4026531836]';
+
+/**
+ * How this process sees host pids: 'initial' (the host PID namespace — /proc and kill(2)
+ * see every process), 'private' (a child PID namespace such as a bwrap sandbox: host pids
+ * are invisible or alias other processes), or 'none' (no /proc, so no PID namespaces).
+ */
+export function pidNamespaceView(readLink = readlinkSync) {
+  try {
+    return readLink('/proc/self/ns/pid') === INITIAL_PID_NAMESPACE ? 'initial' : 'private';
+  } catch (e) {
+    return e?.code === 'ENOENT' && !existsSync('/proc/self') ? 'none' : 'private';
+  }
+}
+
+/**
+ * Whether a marker's owner pid (a HOST pid) is alive; null when this process cannot tell.
+ * WI-6554700010019046: from a private PID namespace kill(2) answers about that namespace,
+ * so a live host owner read as dead and its tree was removed under a running job.
+ */
+export function pidAlive(pid, view = pidNamespaceView()) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (view === 'private') return null;
   try {
     process.kill(pid, 0);
     return true;
@@ -344,18 +367,25 @@ function pidAlive(pid) {
   }
 }
 
-/** Absolute cwds of every visible process, or null where /proc is unavailable. */
-function liveProcessCwds() {
+/**
+ * Absolute cwds of every process, or null when the census cannot be complete.
+ * WI-6554700010019046: inside a private PID namespace (a bwrap sandbox, some capability:bash
+ * shells) /proc lists only that namespace's handful of processes. Reading that partial list
+ * as complete judged an in-use kept tree idle and removed it under a live run, so outside
+ * the initial PID namespace the census is unprovable (null), never an empty list.
+ */
+export function liveProcessCwds({ readDir = readdirSync, readLink = readlinkSync } = {}) {
   let pids;
   try {
-    pids = readdirSync('/proc').filter((n) => /^\d+$/.test(n));
+    if (pidNamespaceView(readLink) !== 'initial') return null;
+    pids = readDir('/proc').filter((n) => /^\d+$/.test(n));
   } catch {
     return null;
   }
   const cwds = [];
   for (const pid of pids) {
     try {
-      cwds.push(readlinkSync(`/proc/${pid}/cwd`));
+      cwds.push(readLink(`/proc/${pid}/cwd`));
     } catch {
       /* exited, or not ours to read */
     }
@@ -365,8 +395,9 @@ function liveProcessCwds() {
 
 /**
  * Remove stale extracted trees under `root`. Returns what it did, for the caller to print.
- * Without /proc it cannot prove a tree is idle, so it only removes trees whose marker
- * names a dead non-keep owner — the one verdict that needs no cwd scan.
+ * Without a complete /proc census (`cwds === null`: no /proc, or a private PID namespace)
+ * it cannot prove a tree is idle, so it only removes trees whose marker names a dead
+ * non-keep owner — the one verdict that needs no cwd scan.
  */
 export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), beforeRemove = () => null, maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
   const removed = [];
@@ -415,7 +446,7 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     const verdict = classifyWorkRoot({ inUse: inUse === true, dependentArtifactPresent, marker, ownerAlive, ageMs: nowMs - createdAtMs });
     // A dead non-keep owner is proof the tree is abandoned whatever its age; anything else
     // needs the cwd scan to rule out a process still working inside it.
-    const ownerDead = marker !== null && !marker.keep && !ownerAlive;
+    const ownerDead = marker !== null && !marker.keep && ownerAlive === false;
     const provable = inUse !== null || ownerDead;
     if (verdict.remove && provable) {
       tryRemove(name, path, verdict.reason);

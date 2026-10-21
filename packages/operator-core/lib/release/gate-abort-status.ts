@@ -90,6 +90,9 @@ export const RECORDED_INCONCLUSIVE_STATUSES = [
   // own status it arrived as 'error' and inherited the TRANSIENT lever, which told every reader
   // that "nothing is blocking a re-fire" about a refusal that blocks every re-fire permanently.
   'promotion-unauthorized',
+  // WI-6554700010019060: origin/<releaseRef> is not in the candidate's history (measured before the
+  // suite), so no green could be published. Re-firing cannot clear it; moving the remote ref can.
+  'promotion-target-diverged',
 ] as const;
 
 export type RecordedInconclusiveStatus = (typeof RECORDED_INCONCLUSIVE_STATUSES)[number];
@@ -192,6 +195,7 @@ const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 
    * transient; here, transient advice was inherited by a permanent blocker.
    */
   'promotion-unauthorized': 'standing-condition',
+  'promotion-target-diverged': 'standing-condition',
 };
 
 export function classifyGateAbort(status: string): GateAbortKind {

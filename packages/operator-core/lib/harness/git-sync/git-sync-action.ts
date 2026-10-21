@@ -4393,6 +4393,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           error.localCommitSha,
           { scope: { installSlug: slug, workspaceId } },
           error.localCommitAtMs,
+          { includedShas: error.localCommitShas },
         );
       }
       console.log(`[git-sync] ${slug}: ${error.message} — barrier released; the next tick redoes the pass`);
@@ -4630,6 +4631,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         outcome.localCommitSha,
         { scope: { installSlug: slug, workspaceId } },
         outcome.localCommitAtMs,
+        // WI-6554700010019053: one precise key per root group commit, not just HEAD.
+        { includedShas: outcome.localCommitShas },
       );
     }
 

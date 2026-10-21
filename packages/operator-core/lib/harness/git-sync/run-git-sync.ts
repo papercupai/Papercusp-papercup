@@ -1997,6 +1997,13 @@ export type GitSyncOutcome = {
   /** Original producer observation time, persisted with the root commit phase. */
   localCommitAtMs?: number;
   /**
+   * Every root commit this pass created, oldest first, ending at localCommitSha.
+   * The commit phase publishes one commit per attributed group, so a waiter can
+   * hold an earlier group commit's sha (WI-6554700010019053). Absent on a legacy
+   * phase checkpoint or when only one commit is known.
+   */
+  localCommitShas?: string[];
+  /**
    * Measured superproject HEAD after the local stage, including a partial
    * error/conflict pass. Absence means that stage did not supply a readable
    * HEAD; it does not mean the checkout has no committed work. Synced outcomes
@@ -2107,12 +2114,14 @@ export class GitSyncYieldError extends Error {
    */
   readonly localCommitSha?: string;
   readonly localCommitAtMs?: number;
+  /** Every root commit published before the yield, oldest first (WI-6554700010019053). */
+  readonly localCommitShas?: readonly string[];
   constructor(
     reason: string,
     boundary: GitSyncYieldBoundary,
     submodulesSynced: number,
     submodulesTotal: number,
-    landed?: { localCommitSha: string; localCommitAtMs: number },
+    landed?: { localCommitSha: string; localCommitAtMs: number; localCommitShas?: readonly string[] },
   ) {
     super(`git-sync yielded at ${boundary} (${submodulesSynced}/${submodulesTotal} submodules synced): ${reason}`);
     this.name = 'GitSyncYieldError';
@@ -2123,6 +2132,7 @@ export class GitSyncYieldError extends Error {
     if (landed) {
       this.localCommitSha = landed.localCommitSha;
       this.localCommitAtMs = landed.localCommitAtMs;
+      if (landed.localCommitShas && landed.localCommitShas.length > 0) this.localCommitShas = landed.localCommitShas;
     }
   }
 }
@@ -2501,6 +2511,25 @@ const ensureBranchAttachedForCommit = async (
 const headSha = async (runGit: RunGit, repo: string): Promise<string> => {
   const r = await runGit(['rev-parse', 'HEAD'], repo);
   return r.code === 0 ? r.stdout.trim() : '';
+};
+
+/** Newest commits kept per pass; more than this many group commits in one phase is not expected. */
+const MAX_LANDED_COMMIT_SHAS = 100;
+
+/**
+ * Commits in `before..head`, oldest first (WI-6554700010019053). The commit phase
+ * publishes one commit per attributed group, so several root commits can land in
+ * one pass and each needs its own `git-sync:committed:<sha>` key. Empty when either
+ * end is unknown or git fails: the head key still fires, so this only adds keys.
+ */
+const commitsSince = async (runGit: RunGit, repo: string, before: string, head: string): Promise<string[]> => {
+  if (!before || !head || before === head) return [];
+  const r = await runGit(['rev-list', '--reverse', `--max-count=${MAX_LANDED_COMMIT_SHAS}`, `${before}..${head}`], repo);
+  if (r.code !== 0) return [];
+  return r.stdout
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => /^[0-9a-f]{40}$/.test(s));
 };
 
 const conflictedFiles = async (runGit: RunGit, repo: string): Promise<string[]> => {
@@ -8075,7 +8104,13 @@ async function runGitSyncPass(
     if (!reason) return;
     const headNow = superprojectHeadBefore ? await headSha(runGit, repo) : '';
     const landed =
-      headNow && headNow !== superprojectHeadBefore ? { localCommitSha: headNow, localCommitAtMs: Date.now() } : undefined;
+      headNow && headNow !== superprojectHeadBefore
+        ? {
+            localCommitSha: headNow,
+            localCommitAtMs: Date.now(),
+            localCommitShas: await commitsSince(runGit, repo, superprojectHeadBefore, headNow),
+          }
+        : undefined;
     throw new GitSyncYieldError(reason, boundary, submodulePaths.length, submodulePaths.length, landed);
   };
 
@@ -8166,16 +8201,20 @@ async function runGitSyncPass(
     // Persist the proof with the commit phase itself. On a durable replay the
     // current HEAD and wall clock may already belong to a different tick.
     const localCommitAtMs = committed.committedLocal ? Date.now() : undefined;
+    const landedHead = committed.committedLocal ? await headSha(runGit, repo) : undefined;
     return {
       ...committed,
-      localCommitSha: committed.committedLocal ? await headSha(runGit, repo) : undefined,
+      localCommitSha: landedHead,
       localCommitAtMs,
+      // Every root commit this phase created (one per attributed group), oldest first.
+      localCommitShas: landedHead ? await commitsSince(runGit, repo, superprojectHeadBefore, landedHead) : undefined,
     };
   });
   // Old phase checkpoints carry only committedLocal; never manufacture their
   // missing proof from a newer checkout HEAD.
   const localCommitSha = 'localCommitSha' in commitRes ? commitRes.localCommitSha : undefined;
   const localCommitAtMs = 'localCommitAtMs' in commitRes ? commitRes.localCommitAtMs : undefined;
+  const localCommitShas = 'localCommitShas' in commitRes ? commitRes.localCommitShas : undefined;
   const commitMetrics = {
     dirtyPathCount: commitRes.dirtyPathCount,
     committedCount: commitRes.committedCount,
@@ -8346,6 +8385,7 @@ async function runGitSyncPass(
     ...(superHeadSha ? { headSha: superHeadSha } : {}),
     ...(localCommitSha ? { localCommitSha } : {}),
     ...(localCommitSha && localCommitAtMs != null ? { localCommitAtMs } : {}),
+    ...(localCommitSha && localCommitShas && localCommitShas.length > 0 ? { localCommitShas } : {}),
   };
 
   if (conflicts.length > 0)

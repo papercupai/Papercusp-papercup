@@ -59,6 +59,9 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     provides_events: null,   // migration 012 (event dependency axis — provider half)
     requires_events: null,   // migration 013 (event dependency axis — consumer half)
     requires_rubrics: null,  // migration 015 (rubric dependency axis — consumer half)
+    provides_item_types: null,  // migration 049 (type packs)
+    provides_plan_types: null,  // migration 049 (type packs)
+    requires_plan_type: null,   // migration 049 (type packs)
     hive_pubkey: null,
     hive_title: null,
     blueprint_kind: null,

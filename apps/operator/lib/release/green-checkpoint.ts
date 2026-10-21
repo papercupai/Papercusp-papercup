@@ -287,6 +287,10 @@ import {
   preflightGovernedAdmissionTarget,
   type GovernedAdmissionPreflightResult,
 } from "./governed-admission-preflight";
+import {
+  checkPromotionTargetAncestry,
+  type PromotionTargetAncestryResult,
+} from "./promotion-target-ancestry";
 import { runPerfGate, perfGatePolicyFromFlags } from "./perf-gate";
 import {
   runDesktopPerfGate,
@@ -1393,6 +1397,18 @@ export interface CheckpointDeps {
    *  never wedge the gate. Optional so existing test stubs need not provide it;
    *  realCheckpointDeps probes the exact `buildGreenCheckpointEnv` admission key. */
   preflightGovernedAdmission?(): Promise<GovernedAdmissionPreflightResult>;
+  /** WI-6554700010019060: could a green verdict on `candidate` be PUBLISHED? The promotion push
+   *  is a plain fast-forward of `ref` on origin, so origin/<ref> must already be in the
+   *  candidate's history. Run before setupTree; a measured `diverged` ends the run in seconds as
+   *  the no-verdict `promotion-target-diverged` instead of burning a 1-3h suite whose green the
+   *  push would then refuse (WI-6554700010018725). Return null when the promotion does not push
+   *  to origin (a review pot publishes to its fork; a local-only hive has no origin). A THROW or
+   *  an `unknown` status keeps judging: the push stays the final check. Optional so existing
+   *  test stubs need not provide it. */
+  checkPromotionTargetAncestry?(input: {
+    ref: string;
+    candidate: string;
+  }): Promise<PromotionTargetAncestryResult | null>;
   /** P-022: free dependency-generation space before the one bounded precondition retry.
    *  Production runs the existing retention prune ({@link runDependencyGenerationRetention})
    *  and returns a one-line receipt. Only called for a `disk-headroom` refusal. */
@@ -1719,6 +1735,13 @@ export interface CheckpointResult {
      *  the trailing `return 'red'` and fabricates a contentless red naming no failing test — the
      *  drift that froze `main` for 6 days as 'candidate-fossil'. */
     | "promotion-unauthorized"
+    /** WI-6554700010019060: the pre-suite preflight MEASURED that origin/<releaseRef> is not in
+     *  the candidate's history, so a green verdict could never be published (the promotion push
+     *  is a plain fast-forward). No suite ran; `green: null`. Like `promotion-unauthorized` it is
+     *  a standing condition that does not clear by re-firing: something outside the gate moved
+     *  the remote release ref (WI-6554700010018725). Must stay listed in
+     *  `classifyGateStallStatus` and gate-abort-status. */
+    | "promotion-target-diverged"
     /** An external managed signal stopped the run before it could render a suite verdict. */
     | "cancelled"
     /** EI-20767792192323374: the run's own module cache vanished mid-suite, so its failures
@@ -14158,6 +14181,41 @@ async function runGreenCheckpointInner(
     }
   }
 
+  // WI-6554700010019060: a candidate whose green could never be pushed must not cost a suite.
+  // On 2026-10-21 origin `main` held a commit staging lacked (WI-6554700010018725), and the gate
+  // would only have learned it at the promotion push, after 1-3h. Skipped when nothing will be
+  // pushed (no-push, a pinned diagnostic run). A throw or `unknown` keeps judging.
+  if (deps.checkPromotionTargetAncestry && !opts.noPush && !diagnosticOnly) {
+    let ancestry: PromotionTargetAncestryResult | null = null;
+    try {
+      ancestry = await deps.checkPromotionTargetAncestry({ ref: cfg.releaseRef, candidate });
+    } catch (e) {
+      deps.log(
+        `promotion-target preflight failed to run (${e instanceof Error ? e.message : e}) — ` +
+          "judging anyway; the promotion push stays the final check",
+      );
+    }
+    if (ancestry) {
+      deps.log(ancestry.summary);
+      if (!ancestry.ok) {
+        await deps
+          .escalate?.(
+            `green-checkpoint held: origin/${cfg.releaseRef} diverged from ${candidate.slice(0, 8)}`,
+            ancestry.summary,
+          )
+          .catch(() => {});
+        return {
+          advanced: false,
+          candidate,
+          from: lastReady,
+          green: null,
+          reason: "promotion-target-diverged",
+          summary: ancestry.summary,
+        };
+      }
+    }
+  }
+
   // Persist C after every candidate-selection preflight, but before setup or suite work. A crash,
   // red verdict, or newer staging tip therefore resumes this exact candidate. The production
   // writer supplies the queue writer; older/direct callers keep their historical path.
@@ -21375,6 +21433,32 @@ export function realCheckpointDeps(
         } finally {
           await sql.end({ timeout: 2 }).catch(() => {});
         }
+      });
+    },
+    async checkPromotionTargetAncestry({ ref, candidate }) {
+      // WI-6554700010019060: mirror `push` above. Only a promotion that pushes to origin is a
+      // fast-forward of origin/<ref>; a review pot publishes to its fork (and refreshes the
+      // standing PR), and a local-only hive has no origin, so neither is checked here.
+      const { resolvePromotionPushTarget, createDefaultPublishPromotionDeps } =
+        await import("@papercusp/operator-core/lib/harness/git-sync/promotion-push-target");
+      const target = await resolvePromotionPushTarget(
+        {
+          repoPath: cfg.integrationRoot,
+          workspaceId:
+            gateVerdictTargetFromEnv()?.workspaceId ?? resolveHomeGateVerdictTarget()?.workspaceId,
+        },
+        await createDefaultPublishPromotionDeps(log),
+      );
+      if (target.kind !== "origin") return null;
+      const { gitOriginUrl } =
+        await import("@papercusp/operator-core/lib/cupboard/resolve-repo-coords");
+      if (!(await gitOriginUrl(cfg.integrationRoot))) return null;
+      return checkPromotionTargetAncestry({ ref, candidate }, async (argv) => {
+        const r = await exec("git", ["-C", cfg.integrationRoot, ...argv], {
+          allowNonZero: true,
+          timeoutMs: 120_000,
+        });
+        return { code: r.code, stdout: r.stdout, stderr: r.stderr };
       });
     },
     async checkDiskHeadroom() {

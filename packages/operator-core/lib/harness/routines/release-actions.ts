@@ -4027,6 +4027,11 @@ export function classifyGateStallStatus(
   // the contentless red that drives the held-gate alarm and dispatches a release-fixer at a
   // phantom file list. Removing it does not make the gate quieter; it makes it LIE.
   if (status === 'promotion-unauthorized') return 'no-verdict';
+  // WI-6554700010019060: 'promotion-target-diverged' — the pre-suite preflight measured that
+  // origin/<releaseRef> is not in the candidate's history, so no green could be published. Same
+  // reasoning as 'promotion-unauthorized': a standing condition that keeps COUNTING toward the
+  // consecutiveNoVerdict escalation, and never a contentless red.
+  if (status === 'promotion-target-diverged') return 'no-verdict';
   /**
    * EI-21462211894072863 — 'error' is a NON-VERDICT that must still be COUNTED, which is why it
    * gets its own class instead of joining either neighbour.

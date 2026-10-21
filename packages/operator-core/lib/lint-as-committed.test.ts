@@ -1798,6 +1798,65 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     }
   });
 
+  it('WI-6554700010019046: a /proc census from outside the initial PID namespace is unprovable, never empty', () => {
+    const { liveProcessCwds, INITIAL_PID_NAMESPACE } = mod as {
+      liveProcessCwds: (io?: { readDir?: (p: string) => string[]; readLink?: (p: string) => string }) => string[] | null;
+      INITIAL_PID_NAMESPACE: string;
+    };
+    expect(INITIAL_PID_NAMESPACE).toBe('pid:[4026531836]');
+    const links: Record<string, string> = { '/proc/7/cwd': '/tmp/x/busy-tree', '/proc/9/cwd': '/home' };
+    const io = (ns: string | Error) => ({
+      readDir: () => ['7', '9', 'self', 'sys'],
+      readLink: (p: string) => {
+        if (p === '/proc/self/ns/pid') {
+          if (ns instanceof Error) throw ns;
+          return ns;
+        }
+        const target = links[p];
+        if (!target) throw new Error(`ENOENT ${p}`);
+        return target;
+      },
+    });
+    expect(liveProcessCwds(io(INITIAL_PID_NAMESPACE))).toEqual(['/tmp/x/busy-tree', '/home']);
+    // A private PID namespace (bwrap --unshare-pid, unshare -p) lists only its own processes.
+    expect(liveProcessCwds(io('pid:[4026532999]'))).toBeNull();
+    expect(liveProcessCwds(io(new Error('EACCES')))).toBeNull();
+  });
+
+  it('WI-6554700010019046: a host owner pid seen from a private PID namespace is unknown, and its tree is kept', () => {
+    const { pidAlive, pidNamespaceView, INITIAL_PID_NAMESPACE } = mod as {
+      pidAlive: (pid: number, view?: string) => boolean | null;
+      pidNamespaceView: (readLink?: (p: string) => string) => string;
+      INITIAL_PID_NAMESPACE: string;
+    };
+    expect(pidNamespaceView(() => INITIAL_PID_NAMESPACE)).toBe('initial');
+    expect(pidNamespaceView(() => 'pid:[4026532999]')).toBe('private');
+    expect(pidAlive(process.pid, 'initial')).toBe(true);
+    expect(pidAlive(process.pid, 'private')).toBeNull();
+    expect(pidAlive(0, 'private')).toBe(false);
+
+    const root = mkdtempSync(join(tmpdir(), 'lac-pidns-'));
+    try {
+      const now = Date.now();
+      const tree = join(root, `${WORK_ROOT_PREFIX}running-elsewhere`);
+      mkdirSync(join(tree, '.git'), { recursive: true });
+      writeFileSync(join(tree, OWNER_MARKER), JSON.stringify({ pid: 4242, keep: false, createdAtMs: now - 60_000 }));
+      // What the sweep sees from a private PID namespace: no cwd census, owner liveness unknown.
+      const sweep = sweepStaleWorkRoots as unknown as (o: {
+        root: string; nowMs: number; cwds: string[] | null; isAlive: (pid: number) => boolean | null;
+      }) => { removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] };
+      const blind = sweep({ root, nowMs: now, cwds: null, isAlive: () => null });
+      expect(blind.removed).toEqual([]);
+      expect(blind.kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}running-elsewhere`, reason: 'owner-liveness-unknown' });
+      expect(existsSync(tree)).toBe(true);
+      // The same tree with a provably dead owner still goes.
+      expect(sweep({ root, nowMs: now, cwds: null, isAlive: () => false }).removed)
+        .toEqual([{ name: `${WORK_ROOT_PREFIX}running-elsewhere`, reason: 'owner-dead' }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('WI-10005934: keeps only the newest MAX_IDLE_KEPT_TREES idle kept trees, never counting a busy one', () => {
     const { MAX_IDLE_KEPT_TREES } = mod as { MAX_IDLE_KEPT_TREES: number };
     expect(MAX_IDLE_KEPT_TREES).toBe(4);

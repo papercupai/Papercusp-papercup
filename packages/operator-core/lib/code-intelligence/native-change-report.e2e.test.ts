@@ -25,9 +25,13 @@ function call(name: string, args: Record<string, unknown>) {
 
 describe.runIf(Boolean(baseUrl))('native P010 registered current-operator change report', () => {
   it('delivers the reference consumer and refreshes the pre-review brief after source edits', async () => {
+    // sourceRuntimeOnly: the full pipeline read carries unrelated gate detail that the result
+    // door can truncate, which intermittently hid currentBuildTestRoute (EI-26299755199884239,
+    // 2026-10-21 09:59Z). The narrow form returns only the route and runtime containment.
     const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/agent-tools/lsp/pack.ts',
-      testClass: 'operator-api', marker: 'previousFingerprint', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
-    expect(route.currentBuildTestRoute.id).toBe('operator-api');
+      testClass: 'operator-api', marker: 'previousFingerprint', sourceRuntimeOnly: true,
+      projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
+    expect(route.currentBuildTestRoute?.id, JSON.stringify(route).slice(0, 2000)).toBe('operator-api');
     expect(route.servingRuntimes.some((runtime: { runtime: string; containsChange: boolean | null }) =>
       runtime.runtime === 'staging-operator' && runtime.containsChange === true)).toBe(true);
     const health = await fetch(new URL('/api/health', baseUrl), { signal: AbortSignal.timeout(10_000) });

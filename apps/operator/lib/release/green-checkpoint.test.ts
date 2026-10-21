@@ -614,6 +614,92 @@ describe("WI-6554700010018689: governed-admission preflight", () => {
   });
 });
 
+// WI-6554700010019060: a candidate whose green could never be pushed (origin/<releaseRef> is not
+// in its history) ends as a no-verdict in seconds instead of after a full suite.
+describe("WI-6554700010019060: promotion-target ancestry preflight", () => {
+  const seed = async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    return { ready, candidate };
+  };
+
+  it("refuses as promotion-target-diverged before setupTree, runGreen, push or advance", async () => {
+    const { ready, candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    const asked: Array<{ ref: string; candidate: string }> = [];
+    deps.checkPromotionTargetAncestry = async (input) => {
+      asked.push(input);
+      return {
+        ok: false,
+        status: "diverged",
+        remoteSha: "b1f1d0cd2ba4".padEnd(40, "0"),
+        summary: "promotion-target preflight REFUSED: origin/main is at b1f1d0cd2ba4",
+      };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate });
+
+    expect(asked).toEqual([{ ref: cfg().releaseRef, candidate }]);
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      from: ready,
+      green: null,
+      reason: "promotion-target-diverged",
+    });
+    expect(result.summary).toContain("b1f1d0cd2ba4");
+    expect(calls).not.toContain("runGreen");
+    expect(calls.some((call) => call.startsWith("setup:"))).toBe(false);
+    expect(calls.some((call) => call.startsWith("push"))).toBe(false);
+    expect(calls).not.toContain("advance");
+  });
+
+  it("continues to judge when origin/main is an ancestor of the candidate", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    deps.checkPromotionTargetAncestry = async () => ({
+      ok: true,
+      status: "ancestor",
+      remoteSha: null,
+      summary: "promotion-target preflight: origin/main is an ancestor",
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(calls).toContain("runGreen");
+  });
+
+  it("is not consulted for a no-push run, which publishes nothing", async () => {
+    const { candidate } = await seed();
+    const { deps } = stubDeps(true);
+    let consulted = false;
+    deps.checkPromotionTargetAncestry = async () => {
+      consulted = true;
+      return { ok: false, status: "diverged", remoteSha: null, summary: "would refuse" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(consulted).toBe(false);
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+  });
+
+  it("keeps judging when the preflight itself throws, so a broken probe cannot wedge the gate", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    deps.checkPromotionTargetAncestry = async () => {
+      throw new Error("ls-remote hung");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(calls).toContain("runGreen");
+  });
+});
+
 // green-main-cycle-time-2026-10-08 P-022: a typed setup-precondition refusal (no verdict) is
 // retried ONCE in-process after a short delay instead of idling until the next hourly tick.
 // Measured 2026-10-12: four consecutive fires refused on headroom, each mid-setup (exit 77

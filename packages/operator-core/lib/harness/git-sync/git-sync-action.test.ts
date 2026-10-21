@@ -1236,11 +1236,14 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     async (partialOutcome) => {
       const localCommitSha = 'e'.repeat(40);
       const localCommitAtMs = 1_000;
+      // WI-6554700010019053: an earlier group commit of the same pass rides along.
+      const localCommitShas = ['d'.repeat(40), localCommitSha];
       runGitSyncMock.mockResolvedValue({
         ...partialOutcome,
         committedCount: 2,
         localCommitSha,
         localCommitAtMs,
+        localCommitShas,
         headSha: 'f'.repeat(40),
       } as GitSyncOutcome);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -1250,6 +1253,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
           localCommitSha,
           { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
           localCommitAtMs,
+          { includedShas: localCommitShas },
         );
       } finally {
         warn.mockRestore();
@@ -1272,6 +1276,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
         syncedOutcome.localCommitSha,
         { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
         localCommitAtMs,
+        { includedShas: undefined },
       );
     } finally {
       now.mockRestore();
@@ -1575,6 +1580,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
         syncedOutcome.headSha,
         expect.objectContaining({ scope: expect.any(Object) }),
         syncedOutcome.localCommitAtMs,
+        { includedShas: undefined },
       );
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('remaining candidates will be retried on a later fire'));
     } finally {
@@ -6450,10 +6456,13 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
     // exclusive drain. No git-sync:committed fired; a waiter slept to its timeout.
     const localCommitSha = '0c68f95949'.padEnd(40, '0');
     const localCommitAtMs = 1_792_570_861_000;
+    // WI-6554700010019053: every group commit published before the yield.
+    const localCommitShas = ['6753022c3c'.padEnd(40, '0'), localCommitSha];
     runGitSyncMock.mockRejectedValueOnce(
       Object.assign(yieldError('exclusive git-sync drain requested by su-test', 'before-superproject-publish', 38, 38), {
         localCommitSha,
         localCommitAtMs,
+        localCommitShas,
       }),
     );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -6465,6 +6474,7 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
       localCommitSha,
       { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
       localCommitAtMs,
+      { includedShas: localCommitShas },
     );
     expect(routinePatches()).toEqual([
       {

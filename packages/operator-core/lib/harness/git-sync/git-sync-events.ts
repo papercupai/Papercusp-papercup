@@ -205,16 +205,38 @@ function emitGitSyncEventPair(
   summary: string,
   deps: GitSyncEventsDeps,
   payloadExtra?: Record<string, unknown>,
+  includedShas?: readonly string[],
 ): void {
   const emit = deps.emit ?? emitAwaitedEvent;
   const shortSha = sha.slice(0, 12);
+  const ancestorShas = [...new Set(includedShas ?? [])].filter((s) => s.length > 0 && s !== sha);
   void Promise.resolve()
     .then(async () => {
       const payload = { sha, ...deps.scope, ...payloadExtra };
       await emit({ key: `git-sync:${kind}`, summary, payload, source: 'git-sync' });
       await emit({ key: `git-sync:${kind}:${sha}`, summary, payload, source: 'git-sync' });
+      // Exact keys for the other commits the same pass created. Each payload names
+      // its own sha (so a payload_filter on it matches) plus the head it landed under.
+      for (const ancestor of ancestorShas) {
+        await emit({
+          key: `git-sync:${kind}:${ancestor}`,
+          summary: `${summary} (includes ${ancestor.slice(0, 12)})`,
+          payload: { ...payload, sha: ancestor, headSha: sha },
+          source: 'git-sync',
+        });
+      }
     })
     .catch((e: unknown) => failSoft(`${kind}-event for ${shortSha}`, e));
+}
+
+/**
+ * Root commits the same git-sync pass created BEFORE the head it emits for. A pass
+ * publishes one commit per attributed group, so only the last is HEAD; a waiter can
+ * hold the sha of an earlier group commit that carries its file
+ * (WI-6554700010019053). Each gets its own precise key; the global key fires once.
+ */
+export interface GitSyncCommittedEventOptions {
+  includedShas?: readonly string[];
 }
 
 /**
@@ -222,9 +244,15 @@ function emitGitSyncEventPair(
  * `git-sync:committed` (payload-filtered) and the precise `git-sync:committed:<sha>`.
  * Pass the original commit phase's producer time, including on replay. A legacy
  * phase without that proof omits freshness metadata; per-SHA signaling survives.
- * Fire-and-forget; never throws.
+ * `options.includedShas` adds a precise key for every other root commit the pass
+ * created (see GitSyncCommittedEventOptions). Fire-and-forget; never throws.
  */
-export function emitGitSyncCommittedEvent(sha: string, deps: GitSyncEventsDeps, committedAtMs?: number): void {
+export function emitGitSyncCommittedEvent(
+  sha: string,
+  deps: GitSyncEventsDeps,
+  committedAtMs?: number,
+  options?: GitSyncCommittedEventOptions,
+): void {
   const shortSha = sha.slice(0, 12);
   // Never synthesize producer time at emission: a durable replay can occur after
   // another waiter registered. Missing/invalid legacy proof must fail closed.
@@ -237,6 +265,7 @@ export function emitGitSyncCommittedEvent(sha: string, deps: GitSyncEventsDeps, 
     `git-sync committed ${shortSha} in the local harness checkout`,
     deps,
     producerTime,
+    options?.includedShas,
   );
 }
 

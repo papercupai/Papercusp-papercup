@@ -81,6 +81,24 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     }
   });
 
+  it('WI-6554700010019053: includedShas add one precise key per other group commit; the global key fires once', async () => {
+    const emit = typedEmit();
+    const first = '1'.repeat(40);
+    const second = '2'.repeat(40);
+    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A }, 1_000, { includedShas: [first, second, SHA, '', first] });
+    await new Promise((r) => setTimeout(r, 0));
+    const keys = emit.mock.calls.map((c) => c[0].key);
+    expect(keys.filter((k) => k === 'git-sync:committed')).toHaveLength(1);
+    expect(keys.filter((k) => k === `git-sync:committed:${SHA}`)).toHaveLength(1);
+    expect(keys).toContain(`git-sync:committed:${first}`);
+    expect(keys).toContain(`git-sync:committed:${second}`);
+    expect(keys).toHaveLength(4);
+    const ancestorCall = emit.mock.calls.find((c) => c[0].key === `git-sync:committed:${first}`)![0];
+    // The ancestor's own sha is payload.sha (a payload_filter on it matches); headSha names the tip.
+    expect(ancestorCall.payload).toMatchObject({ sha: first, headSha: SHA, committedAtMs: 1_000, ...SCOPE_A });
+    expect(ancestorCall.summary).toContain(first.slice(0, 12));
+  });
+
   it('retains producer time when a delayed prior emit reaches a later no-SHA boundary', async () => {
     let releaseEmit!: () => void;
     const emitGate = new Promise<void>((resolve) => {
