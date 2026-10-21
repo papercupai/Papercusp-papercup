@@ -16,6 +16,9 @@ let decideHandshakeAction: Watchdog['decideHandshakeAction'];
 let LIVENESS_PROBE_PATH: Watchdog['LIVENESS_PROBE_PATH'];
 let livenessProbeUrl: Watchdog['livenessProbeUrl'];
 let evaluateStallRate: Watchdog['evaluateStallRate'];
+let evaluateRestartAdmission: Watchdog['evaluateRestartAdmission'];
+let recordRestartOutcome: Watchdog['recordRestartOutcome'];
+let restartFailureDetail: Watchdog['restartFailureDetail'];
 let buildEscalationCall: Watchdog['buildEscalationCall'];
 let decideRestartAfterRecheck: Watchdog['decideRestartAfterRecheck'];
 let MCP_PROXY_COMMITTED_HOT_PATHS: Watchdog['MCP_PROXY_COMMITTED_HOT_PATHS'];
@@ -33,6 +36,9 @@ beforeAll(async () => {
     LIVENESS_PROBE_PATH,
     livenessProbeUrl,
     evaluateStallRate,
+    evaluateRestartAdmission,
+    recordRestartOutcome,
+    restartFailureDetail,
     buildEscalationCall,
     decideRestartAfterRecheck,
     MCP_PROXY_COMMITTED_HOT_PATHS,
@@ -195,7 +201,7 @@ describe('mcp-proxy watchdog — committed hot-path activation (EI-2264723281798
       requestMcpProxyHotPathRestart('abc', {
         sh: async () => ({ err: new Error('boom'), stdout: '' }),
       }),
-    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'ptool_failed' });
+    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'ptool_failed', error: 'boom' });
     await expect(
       requestMcpProxyHotPathRestart('abc', {
         sh: async () => ({ err: null, stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }) }),
@@ -220,6 +226,69 @@ describe('mcp-proxy watchdog — committed hot-path activation (EI-2264723281798
     expect(activationIndex).toBeGreaterThan(-1);
     expect(activationIndex).toBeLessThan(livenessIndex);
     expect(source).toContain('if (!admitRestart(reason)) return { restartRequested: false, code: \'restart_suppressed\' };');
+  });
+});
+
+describe('mcp-proxy watchdog — actual restart accounting (WI-6554700010018605)', () => {
+  const NOW = 1_000_000;
+
+  it('does not spend restart history or debounce on failed, coalesced, or no-op activations', () => {
+    let state = { lastRestartMs: 0, restartTimesMs: [] as number[] };
+    const nonRestarts = [
+      { ok: false, restarted: false, code: 'ptool_failed', error: 'timeout' },
+      { ok: true, restarted: false, coalesced: true, code: 'coalesced' },
+      { ok: true, restarted: false, code: 'no_restart' },
+    ];
+    for (let i = 0; i < 6; i += 1) {
+      state = recordRestartOutcome(state, nonRestarts[i % nonRestarts.length], NOW + i);
+    }
+
+    expect(state).toEqual({ lastRestartMs: 0, restartTimesMs: [] });
+    expect(
+      evaluateRestartAdmission({
+        ...state,
+        nowMs: NOW + 10,
+        debounceMs: 300_000,
+        maxRestartsPerHour: 6,
+      }),
+    ).toMatchObject({ allowed: true, code: 'admitted', recentRestartTimesMs: [] });
+  });
+
+  it('counts confirmed restarts and opens the rolling circuit only at the actual-restart cap', () => {
+    let state = { lastRestartMs: 0, restartTimesMs: [] as number[] };
+    for (let i = 0; i < 6; i += 1) {
+      state = recordRestartOutcome(state, { ok: true, restarted: true }, NOW + i);
+    }
+
+    expect(state.restartTimesMs).toHaveLength(6);
+    expect(state.lastRestartMs).toBe(NOW + 5);
+    expect(
+      evaluateRestartAdmission({
+        ...state,
+        nowMs: NOW + 10,
+        debounceMs: 0,
+        maxRestartsPerHour: 6,
+      }),
+    ).toMatchObject({ allowed: false, code: 'circuit_open', recentRestartTimesMs: state.restartTimesMs });
+  });
+
+  it('prevents overlapping restart actions while one reservation is in flight', () => {
+    expect(
+      evaluateRestartAdmission({
+        restartTimesMs: [],
+        lastRestartMs: 0,
+        nowMs: NOW,
+        debounceMs: 300_000,
+        maxRestartsPerHour: 6,
+        inFlight: true,
+      }),
+    ).toMatchObject({ allowed: false, code: 'restart_in_flight' });
+  });
+
+  it('keeps ptool failure detail single-line and bounded for durable logs', () => {
+    expect(restartFailureDetail('ptool failed\n  transport closed')).toBe(' detail=ptool failed transport closed');
+    expect(restartFailureDetail('x'.repeat(400))).toBe(` detail=${'x'.repeat(300)}`);
+    expect(restartFailureDetail(null)).toBe('');
   });
 });
 

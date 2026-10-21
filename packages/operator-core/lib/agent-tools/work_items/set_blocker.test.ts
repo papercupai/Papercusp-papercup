@@ -53,6 +53,39 @@ vi.mock('../../coord-ops/ops/compose', () => ({
 vi.mock('../../coord-ops/prod-caps', () => ({
   buildCoordOpCtx: (...args: unknown[]) => makeCoordOpContext(...args),
 }));
+// event-wait-settlement-2026-10-20 P-006: the event ledger the write-time wait admission reads.
+// Only the DB read is faked; classification is the REAL reader (catalogue, announcement, latch).
+const announcedKeys = new Map<string, { cancelledAt?: string; firedAt?: string }>();
+const firedKeys = new Map<string, string>();
+const inspectEventKey = vi.fn(async (key: string) => ({
+  announcements: announcedKeys.has(key)
+    ? [{
+        supersededAt: null,
+        cancelledAt: announcedKeys.get(key)!.cancelledAt ?? null,
+        expiresTs: null,
+        firedAt: announcedKeys.get(key)!.firedAt ?? null,
+        firedReason: announcedKeys.get(key)!.firedAt ? 'event' : null,
+      }]
+    : [],
+  waiters: [],
+  deliveries: [],
+  fireLatch: firedKeys.has(key) ? { lastFiredAt: firedKeys.get(key) } : null,
+  composedRoot: null,
+}));
+const getPredicateWatch = vi.fn(async (_id: string): Promise<unknown> => null);
+vi.mock('../../external-condition-reachability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../external-condition-reachability')>();
+  return {
+    ...actual,
+    // The real reader through its own ledger seams: only the two DB reads are faked.
+    readEventConditionReachability: (key: string, opts: Parameters<typeof actual.readEventConditionReachability>[1] = {}) =>
+      actual.readEventConditionReachability(key, {
+        ...opts,
+        inspect: ((k: string) => inspectEventKey(k)) as never,
+        loadPredicateWatch: ((id: string) => getPredicateWatch(id)) as never,
+      }),
+  };
+});
 
 import tool, { ownerActionFlagsReleasedByClear } from './set_blocker';
 import { activeExternalBlockers } from '../../external-blockers';
@@ -83,9 +116,29 @@ beforeEach(() => {
   parkConsult.mockResolvedValue({ consultId: 'conv-r13' });
   parkWake.mockResolvedValue(undefined);
   parkNotify.mockResolvedValue(undefined);
+  announcedKeys.clear();
+  firedKeys.clear();
 });
 
 describe('work_items:set_blocker', () => {
+  // These fixtures predate P-006 (event-wait-settlement-2026-10-20) and name their condition by
+  // a free-text or uncatalogued key. Since P-006 such a NEW wait is refused unless a producer
+  // declared it, so each is modelled as an ANNOUNCED gate — the sanctioned form — and these
+  // tests keep exercising the guards they were written for. The refusal itself is pinned in
+  // 'work_items:set_blocker write-time wait admission (P-006)' below.
+  const PRE_P006_FIXTURE_GATES = [
+    'event:ready',
+    'deploy:ready:staging',
+    'papercusp-public-site:integration-equals-release',
+    'scorecards:peer-grading / WI-10001764',
+    'p2p-public-release-endgame-2026-09-01#D-047',
+    'gate.greenCheckpoint.ownership',
+    'gate-red-streak:papercusp / WI-212675',
+  ];
+  beforeEach(() => {
+    for (const key of PRE_P006_FIXTURE_GATES) announcedKeys.set(key, {});
+  });
+
   it('records the expensive handler seams as named dispatch phases', async () => {
     const item = { id: 'WI-1', family: 'issue', state: 'open', payload: {} };
     getWorkItem.mockResolvedValue(item);
@@ -1075,9 +1128,11 @@ describe('work_items:set_blocker', () => {
     const item = { id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', harness: 'papercup', payload: {} };
     getWorkItem.mockResolvedValue(item);
     mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
-    const out = await one({ id: 'WI-1', kind: 'event', ref: 'release:green', summary: 'wait for green' });
+    // Pre-P-006 this used the broad `release:green`, which P-006 now refuses (no subject).
+    announcedKeys.set('vendor:quote-received:acme', {});
+    const out = await one({ id: 'WI-1', kind: 'event', ref: 'vendor:quote-received:acme', summary: 'wait for the quote' });
     expect(out.ok).toBe(true);
-    expect(out.activeBlockers).toEqual([expect.objectContaining({ kind: 'event', ref: 'release:green' })]);
+    expect(out.activeBlockers).toEqual([expect.objectContaining({ kind: 'event', ref: 'vendor:quote-received:acme' })]);
   });
 
   it('accepts a clear-only request and infers the sole active blocker kind', async () => {
@@ -2212,5 +2267,111 @@ describe('work_items:set_blocker', () => {
       );
       expect(() => parse({ id: 'WI-1', migrateWorkItemRefs: true })).not.toThrow();
     });
+  });
+});
+
+// event-wait-settlement-2026-10-20 P-006 (Design 6, D-001 item 2) — R-11: a NEW event/gate wait
+// no fire can prove is refused with guidance; R-20: an already-fired proving key is refused as
+// already satisfied. Scenario S2.
+describe('work_items:set_blocker write-time wait admission (P-006)', () => {
+  const openItem = (payload: Record<string, unknown> = {}) => {
+    const item = { id: 'WI-1', family: 'issue', state: 'open', harness: 'papercusp', title: 't', summary: 's', payload };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+    return item;
+  };
+  const OPTIONS = /announced gate.*predicate watch.*runtime or human blocker with recheckAt/s;
+
+  it.each([
+    ['coord:inbox-wake:su-a', 'event', /broad wake/],
+    ['git-sync:committed', 'event', /broad wake/],
+    ['work-item:status:WI-9', 'event', /change notification/],
+    ['waiting on the vendor reply', 'gate', /not a catalogued event key/],
+    ['gate-red-streak:papercusp / WI-212675', 'gate', /not a catalogued event key/],
+  ])('AUTO-BAR-R-11-P-006: refuses %s as a %s wait no fire can prove, names the options, and writes nothing', async (ref, kind, why) => {
+    openItem();
+    const out = await one({ id: 'WI-1', kind, ref, summary: 'blocked', nextVerb: 'events:await' });
+
+    expect(out).toMatchObject({ ok: false, id: 'WI-1', code: 'wait_ref_unprovable' });
+    expect(out.error).toMatch(why);
+    expect(out.error).toMatch(OPTIONS);
+    expect(out.error).toMatch(/Blocker was not written/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('AUTO-BAR-R-20-P-006: refuses a proving key whose fire latch already records a fire, as already satisfied', async () => {
+    openItem();
+    firedKeys.set('release:deployed:abc123def', '2026-10-20T12:00:00.000Z');
+    const out = await one({ id: 'WI-1', kind: 'event', ref: 'release:deployed:abc123def', summary: 'wait for deploy' });
+
+    expect(out).toMatchObject({ ok: false, code: 'wait_ref_already_satisfied' });
+    expect(out.error).toMatch(/already fired \(2026-10-20T12:00:00\.000Z\).*already holds/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it('refuses an announced gate whose current announcement already fired, as already satisfied', async () => {
+    openItem();
+    announcedKeys.set('fleet:x:schema-ready', { firedAt: '2026-10-20T13:00:00.000Z' });
+    const out = await one({ id: 'WI-1', kind: 'gate', ref: 'fleet:x:schema-ready', summary: 'wait for schema' });
+
+    expect(out).toMatchObject({ ok: false, code: 'wait_ref_already_satisfied' });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it('refuses an announced gate whose announcement was cancelled, as unreachable', async () => {
+    openItem();
+    announcedKeys.set('fleet:x:schema-ready', { cancelledAt: '2026-10-20T13:00:00.000Z' });
+    const out = await one({ id: 'WI-1', kind: 'gate', ref: 'fleet:x:schema-ready', summary: 'wait for schema' });
+
+    expect(out).toMatchObject({ ok: false, code: 'wait_ref_unreachable' });
+    expect(out.error).toMatch(/can no longer fire/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the ledger cannot be read', async () => {
+    openItem();
+    inspectEventKey.mockRejectedValueOnce(new Error('pool exhausted'));
+    const out = await one({ id: 'WI-1', kind: 'event', ref: 'release:deployed:abc123def', summary: 'wait for deploy' });
+
+    expect(out).toMatchObject({ ok: false, code: 'wait_ref_unmeasured' });
+    expect(out.error).toMatch(/pool exhausted/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an unfired catalogued completion key', 'event', 'release:deployed:abc123def', () => undefined],
+    ['an announced gate', 'gate', 'fleet:x:schema-ready', () => { announcedKeys.set('fleet:x:schema-ready', {}); }],
+    ['a live predicate watch', 'event', 'predicate:pw-1', () => {
+      getPredicateWatch.mockResolvedValueOnce({ eventKey: 'predicate:pw-1', active: true });
+    }],
+  ])('accepts %s and writes the blocker', async (_label, kind, ref, arrange) => {
+    openItem();
+    arrange();
+    const out = await one({ id: 'WI-1', kind, ref, summary: 'blocked on it' });
+
+    expect(out).toMatchObject({ ok: true, id: 'WI-1', changed: true });
+    expect(out.activeBlockers).toEqual([expect.objectContaining({ kind, ref })]);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-1', 'blocked', expect.anything());
+  });
+
+  it('lets a holder re-assert an existing active row (not a new wait) and clear it', async () => {
+    const legacy = [{
+      kind: 'event', capability: 'live-dependency', ref: 'coord:inbox-wake:su-a', summary: 'old',
+      status: 'active', createdAt: '2026-10-01T00:00:00Z', createdBy: 'su-a', updatedAt: '2026-10-01T00:00:00Z',
+    }];
+    openItem({ externalBlockers: legacy });
+    const reasserted = await one({
+      id: 'WI-1', kind: 'event', ref: 'coord:inbox-wake:su-a', summary: 'still waiting', recheckAt: '2026-10-25T00:00:00Z',
+    });
+    expect(reasserted).toMatchObject({ ok: true });
+    expect(inspectEventKey).not.toHaveBeenCalled();
+
+    const cleared = await one({ id: 'WI-1', kind: 'event', ref: 'coord:inbox-wake:su-a', clear: true });
+    expect(cleared).toMatchObject({ ok: true });
+    expect(inspectEventKey).not.toHaveBeenCalled();
   });
 });

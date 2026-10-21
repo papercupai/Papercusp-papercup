@@ -40,11 +40,16 @@ describe('Guide uses the existing PostHog consent boundary', () => {
       recordTutorialHelpRequest('connection', 'ready');
       await act(async () => { await Promise.resolve(); });
       const requests = vi.mocked(fetch).mock.calls;
-      expect(requests).toHaveLength(3);
-      const payloads = requests.map(([url, init]) => {
+      expect(requests).toHaveLength(4);
+      const sent = requests.map(([url, init]) => {
         expect(url).toBe('/api/hosted/browser/monitoring/event');
         expect(init).toMatchObject({ method: 'POST', credentials: 'include', keepalive: true });
-        const payload = JSON.parse(String(init?.body));
+        return JSON.parse(String(init?.body));
+      });
+      // Starting the hosted tutorial is the disclosed feature choice, recorded once.
+      const adoption = sent.filter(payload => payload.event === 'cloud_feature_adoption');
+      expect(adoption.map(payload => payload.properties)).toEqual([{ feature: 'cloud_tutorial' }]);
+      const payloads = sent.filter(payload => payload.event !== 'cloud_feature_adoption').map(payload => {
         expect(Object.keys(payload).sort()).toEqual(['event', 'operation_id', 'properties']);
         expect(payload.event).toBe('cloud_tutorial');
         expect(payload.operation_id).toMatch(/^[a-f0-9-]{36}$/);

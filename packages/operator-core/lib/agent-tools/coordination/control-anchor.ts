@@ -978,9 +978,10 @@ export async function acknowledgeControlTransition(
  *   - `control_delivered_generation` (prompt text) is NOT touched, because the
  *     stack block was not delivered and must be retried next turn.
  *
- * It writes only when that record admits `desired` AND no longer admits the
- * current non-null `applied` — i.e. only when it replaces a certain total denial
- * with the authority the launch already carries, never otherwise.
+ * It writes only when that record admits `desired` AND either no longer admits
+ * the current non-null `applied`, or a failed render marked that EXACT already
+ * applied revision failed. The latter restores its authority status without
+ * pretending the pending stack text was delivered or applying a new state.
  */
 export async function convergeActivationToLaunchRecord(
   ownerId: string,
@@ -996,8 +997,9 @@ export async function convergeActivationToLaunchRecord(
   const converged = await sql.begin(async (tx) => {
     const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
     if (!launchRecordAdmitsApplied(launchSpec, revision)) return false;
-    const current = await tx<Array<{ applied: unknown }>>`
-      SELECT control_state->'activation'->'applied' AS applied
+    const current = await tx<Array<{ applied: unknown; activation_status: string | null }>>`
+      SELECT control_state->'activation'->'applied' AS applied,
+             control_state->'activation'->>'status' AS activation_status
         FROM harness_shared.session_briefs
        WHERE owner_id = ${ownerId}
          AND workspace_id = ${workspaceId}
@@ -1006,7 +1008,10 @@ export async function convergeActivationToLaunchRecord(
     const applied = current[0]?.applied as { specificationRevision?: unknown; stateRevision?: unknown } | null | undefined;
     if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return false;
     const appliedRevision = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
-    if (launchRecordAdmitsApplied(launchSpec, appliedRevision)) return false;
+    const failedAppliedRevision = current[0]?.activation_status === 'failed' &&
+      appliedRevision.specificationRevision === revision.specificationRevision &&
+      appliedRevision.stateRevision === revision.stateRevision;
+    if (launchRecordAdmitsApplied(launchSpec, appliedRevision) && !failedAppliedRevision) return false;
     return await writeLaunchProvenApplied(tx, ownerId, workspaceId, generation, revision, launchSpec, superseded);
   });
   await releaseAfterCommit(sql, superseded);

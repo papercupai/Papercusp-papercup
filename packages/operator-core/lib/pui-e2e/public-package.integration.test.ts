@@ -12,7 +12,7 @@
  * To verify an existing accepted generation with a newer committed test harness,
  * set PUI_PUBLIC_PACKAGE_ARCHIVE, PUI_PUBLIC_PACKAGE_SOURCE_SHA (full commit),
  * and PUI_PUBLIC_PACKAGE_ARCHIVE_SHA256. The archive becomes B after preflight;
- * A still builds its predecessor, and reproducibility still cold-builds B.
+ * The lifecycle case still builds predecessor A, and reproducibility still cold-builds B.
  *
  * "No operator" is modelled by pointing the default-port selector at a port
  * nothing listens on, so the dev box's own operator on :3070 cannot answer and
@@ -142,7 +142,6 @@ async function closedPort(): Promise<number> {
 let WORK = '';
 let TOOLS = '';
 let NO_OPERATOR_PORT = 0;
-let A: PackageResult;
 let B: PackageResult;
 let HEAD = '';
 
@@ -331,11 +330,7 @@ beforeAll(async () => {
     symlinkSync(execFileSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim(), path.join(TOOLS, tool));
   }
   NO_OPERATOR_PORT = await closedPort();
-  const previous = previousGeneration(HEAD);
-  for (const sha of [previous, HEAD]) {
-    assertPackageBuildDependencies(REPO_ROOT, readPackageBuildLock(REPO_ROOT, sha));
-  }
-  A = packageAt(previous, path.join(WORK, 'dist-a'));
+  assertPackageBuildDependencies(REPO_ROOT, readPackageBuildLock(REPO_ROOT, HEAD));
   B = pinned ?? packageAt(HEAD, path.join(WORK, 'dist-b'));
 }, 2 * BUILD_TIMEOUT_MS);
 
@@ -377,6 +372,53 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     expect(version.stdout.trim()).toBe(`pui ${B.version} (${B.sourceSha.slice(0, 10)})`);
     expect(stamp(launcher, env, home).sourceSha).toBe(HEAD);
     expect(statusJson(launcher, env, home).current).toMatchObject({ id: releaseId(B), problem: null });
+  });
+
+  test('AUTO-BAR-R-08-P-010: the installed launcher reaches first-run setup and lets a clean profile choose its operator explicitly', { timeout: 180_000 }, async () => {
+    const home = freshHome('onboarding');
+    const env = sandboxEnv(home);
+    expect(readdirSync(home)).toEqual(['tmp']);
+    for (const absent of ['cargo', 'git', 'node', 'npm', 'zellij']) {
+      expect(run('sh', ['-c', `command -v ${absent}`], env, home).status, absent).not.toBe(0);
+    }
+    // The harness supplies only an unused default port, never a working
+    // endpoint, credential, developer database or desktop environment.
+    for (const key of ['PUI_OPERATOR_URL', 'PUI_OPERATOR_TOKEN', 'DATABASE_URL', 'DISPLAY']) {
+      expect(env[key], key).toBeUndefined();
+    }
+    const unit = unpack(B.archive, 'onboarding');
+    const installed = run(path.join(unit, 'install.sh'), ['--yes'], env, home);
+    expect(installed.status, output(installed)).toBe(0);
+    const launcher = path.join(home, '.local', 'bin', 'pui');
+    expect(stamp(launcher, env, home).sourceSha).toBe(B.sourceSha);
+
+    const selectedPort = await closedPort();
+    const selectedUrl = `http://127.0.0.1:${selectedPort}`;
+    const pane = ptyRun(launcher, ['workbench'], { ...env, TERM: 'xterm-256color' }, home);
+    try {
+      await pane.waitFor('New session — 1 Context');
+      await pane.waitFor('Connection: Unavailable');
+      // An absent operator cannot be mistaken for a ready session.
+      pane.write('\r');
+      await pane.waitFor('New session — 1 Context');
+      expect(pane.screen()).not.toContain('New session — 3 Review');
+      pane.write('e');
+      await pane.waitFor('Operator connection');
+      expect(pane.screen()).toContain(`127.0.0.1:${NO_OPERATOR_PORT}`);
+      pane.write('\x15');
+      pane.write(selectedUrl);
+      pane.write('\r');
+      await pane.waitFor('New session — 1 Context');
+      await pane.waitFor(selectedUrl);
+      await pane.waitFor('Connection: Unavailable');
+      expect(pane.screen()).not.toContain('Connection: Connected');
+      console.info('PUI_INSTALLED_ONBOARDING_ACCEPTANCE', JSON.stringify({
+        sourceSha: B.sourceSha, archiveSha256: B.sha256,
+        cleanProfile: true, developerToolsAbsent: true,
+        explicitEndpoint: selectedUrl, missingOperatorBlocksLaunch: true,
+        scope: 'installed launcher through first-run endpoint selection; no first-reply claim',
+      }));
+    } finally { pane.kill(); }
   });
 
   test('AUTO-BAR-R-08-P-018: the archive ships psu on its own pinned Node — it runs in a HOME with no node, npm or checkout', { timeout: 300_000 }, () => {
@@ -650,7 +692,12 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     expect(existsSync(path.join(home, '.local', 'bin', 'pui'))).toBe(false);
   });
 
-  test('AUTO-BAR-R-11-P-011: install, update, roll back and uninstall across two generations preserve user data', { timeout: 600_000 }, () => {
+  test('AUTO-BAR-R-11-P-011: install, update, roll back and uninstall across two generations preserve user data', { timeout: BUILD_TIMEOUT_MS + 600_000 }, () => {
+    // Only this journey uses A. A focused install/setup check against pinned B
+    // must not rebuild a different generation before it can inspect B.
+    const previous = previousGeneration(HEAD);
+    assertPackageBuildDependencies(REPO_ROOT, readPackageBuildLock(REPO_ROOT, previous));
+    const A = packageAt(previous, path.join(WORK, 'dist-a'));
     expect(A.sourceSha).not.toBe(B.sourceSha);
     const home = freshHome('lifecycle');
     const env = sandboxEnv(home);

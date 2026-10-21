@@ -46,6 +46,7 @@ import { CupboardBlueprintForm } from './CupboardBlueprintForm';
 import { PublishPotCard } from './PublishPotCard';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
 import RouteLink from '../_components/RouteLink';
+import { provisioningNotice, type ProvisioningEnvelope } from './registration-provisioning';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ const WORK_HIVE_BLUEPRINT_ID = 'work';
  */
 type CreateMode = 'standalone' | 'into-hive';
 
-interface CreateResult {
+interface CreateResult extends ProvisioningEnvelope {
   ok: boolean;
   project: { slug: string; path: string };
 }
@@ -307,6 +308,18 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
       const data = (await res.json()) as CreateResult & {
         seededLearnings?: { packId: string; packVersion?: string; count?: number; error?: string };
       };
+      const notice = provisioningNotice(data, data.project.slug);
+      if (notice?.kind === 'failed') {
+        // WI-6554700010018437: registered but unusable — never toast it as success.
+        setError(notice.message);
+        setBusy(false);
+        return;
+      }
+      if (notice?.kind === 'reprovisioned') {
+        toast.success(notice.message);
+        onSuccess(data.project.slug);
+        return;
+      }
       if (hive) {
         toast.success(`${t('pot')} '${data.project.slug}' added to ${hive} at ${data.project.path}`);
       } else {
@@ -492,6 +505,18 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
       const data = (await res.json()) as CreateResult & {
         seededLearnings?: { packId: string; packVersion?: string; count?: number; error?: string };
       };
+      const notice = provisioningNotice(data, data.project.slug);
+      if (notice?.kind === 'failed') {
+        // WI-6554700010018437: registered but unusable — never toast it as success.
+        setError(notice.message);
+        setBusy(false);
+        return;
+      }
+      if (notice?.kind === 'reprovisioned') {
+        toast.success(notice.message);
+        onSuccess(data.project.slug);
+        return;
+      }
       if (hive) {
         toast.success(`${t('pot')} '${data.project.slug}' linked in place — ${data.project.path} (folder not moved)`);
       } else {

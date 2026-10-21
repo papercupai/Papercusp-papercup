@@ -210,8 +210,18 @@ export interface ConnectorSyncDeps {
 
 async function defaultAfterSourceSynced(sql: postgres.Sql, source: ConnectorSourceRow): Promise<unknown> {
   // Imported on use: the lifecycle module reaches back into data sources through work admission.
-  const { reconcileAdmissionLifecycle } = await import('../work-admission/lifecycle');
-  return reconcileAdmissionLifecycle(sql, { workspaceId: source.workspaceId, dataSourceId: source.id });
+  const { reconcileAdmissionLifecycle, STANDING_PR_AUDIT_REFUSED } = await import('../work-admission/lifecycle');
+  const result = await reconcileAdmissionLifecycle(sql, { workspaceId: source.workspaceId, dataSourceId: source.id });
+  // WI-6554700010018378: per-item failures and refused standing-PR receipts never throw, so
+  // without this line they were invisible (a refused merge receipt went unexplained for hours).
+  const refused = result.skipped.filter((s) => s.code === STANDING_PR_AUDIT_REFUSED);
+  if (result.failed.length || refused.length) {
+    console.warn(
+      `[admission-lifecycle] source ${source.id}: ${result.failed.length} failed, ${refused.length} standing-PR receipt(s) ` +
+        `refused by the delivery audit — ${JSON.stringify({ failed: result.failed.slice(0, 5), refused: refused.slice(0, 5) })}`,
+    );
+  }
+  return result;
 }
 
 function defaultServicesFor(provider: RegisteredProvider): Promise<ProviderServices | undefined> {

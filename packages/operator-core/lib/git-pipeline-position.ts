@@ -1010,13 +1010,16 @@ export function assessPipelinePosition(input: {
 }): PipelinePositionAssessment | null {
   if (
     (!input.targetSha && !input.dirtyUncommitted) ||
-    input.positionsUnknown.length > 0 ||
-    input.positionsNewerCommit.length > 0
+    input.positionsUnknown.length > 0
   ) {
     return null;
   }
   const { committedLocal, onStaging, inMain, deployed } = input.positions;
   if ((onStaging && !committedLocal) || (inMain && !onStaging) || (deployed && !inMain)) return null;
+  // WI-6646: `positionsNewerCommit` is a measured qualifier on a false
+  // ref-relative leg, not a failed read. Keep the ladder assessment available
+  // so the value-bearing cell remains interpretable; callers still have the
+  // structured qualifier and its marker re-read lever in the resolver payload.
   // EI-24049239243821100: a dirty path is 'uncommitted' however far its LAST COMMIT
   // travelled. The positions describe that older commit, not the edit on disk, so
   // gating this on `!committedLocal` let a dirty file whose previous commit was

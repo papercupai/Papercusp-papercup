@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { parseRequirementBars, validateAcceptanceBarSource } from './acceptance-bar-seed';
+import { parseBarMappings, parseRequirementBars, validateAcceptanceBarSource } from './acceptance-bar-seed';
 import {
+  acceptanceBarSourceFingerprint,
   amendedRequirementBarKeys,
+  applyBarMappingDelta,
+  barMappingDeltaHash,
   diffAmendedCriteriaAgainstRequirements,
+  normalizeBarMappingDelta,
   rerenderAmendedRequirementBlocks,
+  retireRequirementBarsFromSource,
 } from './acceptance-bar-amendment-requirements-drift';
 
 // EI-24816459669484550: a rubric amendment can leave the plan's ## Requirements block
@@ -359,5 +364,228 @@ describe('rerenderAmendedRequirementBlocks', () => {
     expect(parsed.bars[0]!.criterion).toMatchObject({ replication: 'Repeat the export on a fresh fixture.', productionConfiguration: { flags: { 'papercusp-loops': true } } });
     expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: parsed.bars, nextCriteria: criteria, changedBars }).inSync).toBe(true);
     expect(amendedRequirementBarKeys(prior, inSyncCriteria())).toEqual([]);
+  });
+});
+
+// EI-24358433996857425 (acceptance-bar-atomic-retirement-2026-10-15 D-002, R-6/R-7/R-27/R-32):
+// the amendment validates the PROPOSED source, derived from the baseline and the retiring set.
+describe('retireRequirementBarsFromSource', () => {
+  const retirementPlan = (requirements: string[], mapRows: string[]) => [
+    '# Retirement target',
+    '',
+    '## Requirements',
+    '',
+    'Intro prose stays.',
+    '',
+    ...requirements,
+    '## Phase 1',
+    '',
+    '- **P-001** `done` first outcome',
+    '- **P-002** `dropped` second outcome',
+    '- **P-003** `todo` third outcome',
+    '',
+    '## Design',
+    '',
+    '### Bar-to-work map for this plan',
+    '',
+    '| BAR | Items | Evidence plane |',
+    '|---|---|---|',
+    ...mapRows,
+    '',
+    '### Other design notes',
+    '',
+    '| R-2 | not a map row: outside the map table |',
+    '',
+    '## Decisions',
+    '',
+  ].join('\n');
+  const records = [
+    '**R-1 — Complete export.**',
+    '```requirement',
+    JSON.stringify(sections),
+    '```',
+    '',
+    '**R-2 — Dropped outcome.** Only dropped work discharged this.',
+    'A second line of the same record.',
+    '',
+    '**R-3 — Third outcome.** The third outcome holds.',
+    '',
+  ];
+  const rows = ['| R-1 | P-001 | tree |', '| R-2 | P-002 | tree |', '| R-3 | P-003 | tree |'];
+  const source = retirementPlan(records, rows);
+  const keys = (content: string) => {
+    const parsed = parseRequirementBars(content);
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+    return new Set(parsed.bars.map((bar) => bar.barKey));
+  };
+
+  it('removes exactly the retiring record and map row; every other byte survives and the result parses', () => {
+    const result = retireRequirementBarsFromSource(source, ['R-2']);
+    expect(result).toMatchObject({ ok: true, retired: ['R-2'], removedMapRows: ['R-2'] });
+    if (!result.ok) return;
+    // R-2's span is its header, its second line and its trailing blank line (records[5..7]):
+    // everything up to the next R-looking record, as parseRequirementBars reads it.
+    const expected = retirementPlan(
+      [...records.slice(0, 5), ...records.slice(8)],
+      rows.filter((row) => !row.startsWith('| R-2')),
+    );
+    expect(result.content).toBe(expected);
+    // The survivor-preservation half of the contract: the dropped item, intro prose and the
+    // look-alike row outside the map table are untouched.
+    expect(result.content).toContain('- **P-002** `dropped` second outcome');
+    expect(result.content).toContain('Intro prose stays.');
+    expect(result.content).toContain('| R-2 | not a map row: outside the map table |');
+    expect([...keys(result.content)]).toEqual(['R-1', 'R-3']);
+    expect(parseBarMappings(result.content, keys(result.content)).ok).toBe(true);
+  });
+
+  it('CONTROL: without the retirement the dropped-only R-2 is still refused, so the derivation is what admits it', () => {
+    const unchanged = retireRequirementBarsFromSource(source, []);
+    expect(unchanged).toEqual({ ok: true, content: source, retired: [], removedMapRows: [] });
+    const mappings = parseBarMappings(source, keys(source));
+    expect(mappings.ok).toBe(false);
+    if (!mappings.ok) expect(mappings.problems.map((problem) => problem.code)).toEqual(['bar_mapping_dropped_only']);
+    // Retiring a DIFFERENT BAR leaves the dropped-only survivor refused.
+    const other = retireRequirementBarsFromSource(source, ['R-3']);
+    expect(other.ok).toBe(true);
+    if (!other.ok) return;
+    const after = parseBarMappings(other.content, keys(other.content));
+    expect(after.ok).toBe(false);
+    if (!after.ok) expect(after.problems.map((problem) => `${problem.code}:${problem.barKey}`)).toEqual(['bar_mapping_dropped_only:R-2']);
+  });
+
+  it('removes an explicit ```requirement record including its whole fence', () => {
+    const result = retireRequirementBarsFromSource(source, ['R-1']);
+    expect(result).toMatchObject({ ok: true, retired: ['R-1'], removedMapRows: ['R-1'] });
+    if (!result.ok) return;
+    expect(result.content).not.toContain('```requirement');
+    expect(result.content).not.toContain(JSON.stringify(sections));
+    expect(result.content).toContain('**R-2 — Dropped outcome.**');
+  });
+
+  it('refuses a duplicated retiring record or map row with a bounded, actionable problem', () => {
+    const duplicateRecord = retireRequirementBarsFromSource(
+      retirementPlan([...records, '**R-2 — Dropped outcome again.** A copy.', ''], rows),
+      ['R-2'],
+    );
+    expect(duplicateRecord).toEqual({
+      ok: false,
+      problems: [{
+        code: 'retiring_bar_record_duplicate',
+        barKey: 'R-2',
+        detail: 'R-2 has 2 Requirements records; retire it only after removing the duplicate',
+      }],
+    });
+    const duplicateRow = retireRequirementBarsFromSource(retirementPlan(records, [...rows, '| `R-2` | P-002 | tree |']), ['R-2']);
+    expect(duplicateRow.ok).toBe(false);
+    if (!duplicateRow.ok) {
+      expect(duplicateRow.problems.map((problem) => problem.code)).toEqual(['retiring_bar_map_row_duplicate']);
+      expect(duplicateRow.problems[0]!.detail.length).toBeLessThan(200);
+    }
+  });
+
+  it('leaves a BAR already removed from the plan alone, and keeps a stale row for the parse to refuse', () => {
+    const removedFirst = retirementPlan(records.slice(0, 5).concat(records.slice(8)), rows.filter((row) => !row.startsWith('| R-2')));
+    expect(retireRequirementBarsFromSource(removedFirst, ['R-2'])).toEqual({
+      ok: true, content: removedFirst, retired: [], removedMapRows: [],
+    });
+    const staleRow = retirementPlan(records.slice(0, 5).concat(records.slice(8)), rows);
+    const result = retireRequirementBarsFromSource(staleRow, ['R-2']);
+    expect(result).toEqual({ ok: true, content: staleRow, retired: [], removedMapRows: [] });
+    const mappings = parseBarMappings(staleRow, keys(staleRow));
+    expect(mappings.ok).toBe(false);
+    if (!mappings.ok) expect(mappings.problems.map((problem) => problem.code)).toContain('bar_mapping_requirement_missing');
+  });
+
+  it('fingerprints only the Requirements body and the map table', () => {
+    const base = acceptanceBarSourceFingerprint(source);
+    expect(base).toMatch(/^[a-f0-9]{64}$/);
+    expect(acceptanceBarSourceFingerprint(`${source}\n### D-001 — A later Decision\nDate: 2026-10-21\n`)).toBe(base);
+    expect(acceptanceBarSourceFingerprint(source.replace('| R-3 | P-003 | tree |', '| R-3 | P-001 | tree |'))).not.toBe(base);
+    expect(acceptanceBarSourceFingerprint(source.replace('The third outcome holds.', 'The third outcome changed.'))).not.toBe(base);
+    const retired = retireRequirementBarsFromSource(source, ['R-2']);
+    expect(retired.ok && acceptanceBarSourceFingerprint(retired.content)).not.toBe(base);
+  });
+
+  // EI-24358433996857425 Part B (acceptance-bar-atomic-retirement-2026-10-15 R-6/R-8/R-28).
+  describe('applyBarMappingDelta', () => {
+    const move = (barKey: string, prior: string[], next: string[], plane: 'tree' | 'deployed' | 'live' = 'tree') => ({
+      barKey,
+      prior: { planItemIds: prior, evidencePlane: plane },
+      next: { planItemIds: next, evidencePlane: plane },
+    });
+
+    it('R-6: rewrites exactly the moved row from its locked prior; every other byte survives and the result parses', () => {
+      const result = applyBarMappingDelta(source, [move('R-2', ['P-002'], ['P-001', 'P-003'])]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.content).toBe(source.replace('| R-2 | P-002 | tree |', '| R-2 | P-001, P-003 | tree |'));
+      // The look-alike row outside the map table is not a map row and is never moved.
+      expect(result.content).toContain('| R-2 | not a map row: outside the map table |');
+      expect(result.applied).toEqual([move('R-2', ['P-002'], ['P-001', 'P-003'])]);
+      // Moving R-2 off its dropped-only item is the other repair for that state: the result parses.
+      expect(parseBarMappings(result.content, keys(result.content)).ok).toBe(true);
+      expect(acceptanceBarSourceFingerprint(result.content)).not.toBe(acceptanceBarSourceFingerprint(source));
+    });
+
+    it('R-6: composes with a retirement in one derivation over the same locked baseline', () => {
+      const retired = retireRequirementBarsFromSource(source, ['R-1']);
+      expect(retired.ok).toBe(true);
+      if (!retired.ok) return;
+      const moved = applyBarMappingDelta(retired.content, [move('R-2', ['P-002'], ['P-003'])]);
+      expect(moved.ok).toBe(true);
+      if (!moved.ok) return;
+      expect(moved.content).not.toContain('| R-1 | P-001 | tree |');
+      expect(moved.content).toContain('| R-2 | P-003 | tree |');
+      expect([...keys(moved.content)]).toEqual(['R-2', 'R-3']);
+      expect(parseBarMappings(moved.content, keys(moved.content)).ok).toBe(true);
+    });
+
+    it('R-6 COUNTER: a prior that is not the locked row refuses, naming both sides', () => {
+      const result = applyBarMappingDelta(source, [move('R-3', ['P-001'], ['P-002'])]);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.problems).toEqual([{
+        code: 'mapping_delta_prior_mismatch',
+        barKey: 'R-3',
+        detail: 'R-3 delta prior is P-001 (tree), but the locked row is P-003 (tree); re-derive the delta from the current map',
+      }]);
+      // A plane mismatch is a different map identity too.
+      const plane = applyBarMappingDelta(source, [move('R-3', ['P-003'], ['P-001'], 'live')]);
+      expect(plane.ok || plane.problems.map((problem) => problem.code)).toEqual(['mapping_delta_prior_mismatch']);
+    });
+
+    it('refuses a no-op, a duplicate, a missing or duplicated row, and malformed ids, with bounded details', () => {
+      const cases: Array<[Parameters<typeof applyBarMappingDelta>[1], string, string]> = [
+        [[move('R-1', ['P-001'], ['P-001'])], 'mapping_delta_noop', source],
+        [[move('R-1', ['P-001'], ['P-003']), move('R-1', ['P-001'], ['P-002'])], 'mapping_delta_duplicate', source],
+        [[move('R-9', ['P-001'], ['P-003'])], 'mapping_delta_row_missing', source],
+        [[move('R-3', ['P-003'], ['P-001'])], 'mapping_delta_row_duplicate', retirementPlan(records, [...rows, '| `R-3` | P-003 | tree |'])],
+        [[move('R-1', ['P-1'], ['P-003'])], 'mapping_delta_invalid', source],
+        [[move('R-1', ['P-001'], [])], 'mapping_delta_invalid', source],
+      ];
+      for (const [delta, code, content] of cases) {
+        const result = applyBarMappingDelta(content, delta);
+        expect(result.ok, code).toBe(false);
+        if (result.ok) continue;
+        expect(result.problems.map((problem) => problem.code)).toContain(code);
+        for (const problem of result.problems) expect(problem.detail.length).toBeLessThan(240);
+      }
+    });
+
+    it('normalizes order so the approval, idempotency key and request hash compare one canonical delta', () => {
+      const a = [move('R-10', ['P-003', 'P-001'], ['P-002']), move('R-2', ['P-002'], ['P-010', 'P-003', 'P-003'])];
+      const b = [move('R-2', ['P-002'], ['P-003', 'P-010']), move('R-10', ['P-001', 'P-003'], ['P-002'])];
+      expect(normalizeBarMappingDelta(a)).toEqual(normalizeBarMappingDelta(b));
+      expect(normalizeBarMappingDelta(a).map((entry) => entry.barKey)).toEqual(['R-2', 'R-10']);
+      expect(normalizeBarMappingDelta(a)[0]!.next.planItemIds).toEqual(['P-003', 'P-010']);
+      expect(barMappingDeltaHash(a)).toBe(barMappingDeltaHash(b));
+      // R-28: another map is another identity.
+      expect(barMappingDeltaHash([move('R-2', ['P-002'], ['P-003'])])).not.toBe(barMappingDeltaHash([move('R-2', ['P-002'], ['P-001'])]));
+    });
+
+    it('an empty delta is the identity derivation', () => {
+      expect(applyBarMappingDelta(source, [])).toEqual({ ok: true, content: source, applied: [] });
+    });
   });
 });

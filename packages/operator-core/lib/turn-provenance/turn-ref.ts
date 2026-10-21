@@ -28,7 +28,7 @@ import {
 } from '../search/self-session';
 import { parseEnvelope } from './turn-provenance';
 import { hasMachineSurfaceMarker, hasSyntheticMarker } from './machine-surface-catalogue';
-import { blockPayloadText, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../transcript-wire';
+import { blockPayloadText, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES, DIALOG_ANSWER_SOURCE_PREFIX, dialogAnswerText, claudeDialogProvenanceAttachment } from '../transcript-wire';
 
 /* ------------------------------------------------------------------ */
 /* Ref format                                                          */
@@ -198,13 +198,22 @@ export function classifyRecordedTurn(text: string): RecordedTurnClass {
   const env = parseEnvelope(text);
   if (env) return { verdict: 'agent-injected', origin: env.origin };
   const t = text ?? '';
+  if (t.startsWith(`${DIALOG_ANSWER_SOURCE_PREFIX}automatic⟧`)) {
+    return { verdict: 'agent-injected', origin: 'automatic-dialog' };
+  }
+  if (t.startsWith(`${DIALOG_ANSWER_SOURCE_PREFIX}human⟧`)) {
+    return { verdict: 'owner-dialog', origin: null };
+  }
+  if (t.startsWith(`${DIALOG_ANSWER_SOURCE_PREFIX}unknown⟧`)) {
+    return { verdict: 'unknown', origin: 'unverified-dialog' };
+  }
   // A malformed or truncated turn-origin envelope is still machine-originated
   // evidence. Never let a bad nonce or partial carry marker fall through to the
   // clean owner-typed default and grant authority.
   const malformedOrigin = t.match(/^\s*⟦turn-origin:([^\s⟧]*)/u);
   if (malformedOrigin) return { verdict: 'agent-injected', origin: malformedOrigin[1] || null };
   if (t.trimStart().startsWith(OWNER_DIALOG_TURN_MARKER)) {
-    return { verdict: 'owner-dialog', origin: null };
+    return { verdict: 'unknown', origin: 'unverified-dialog' };
   }
   // Both predicates apply the head bound themselves — see
   // CLASSIFY_HEAD_CHARS in ./machine-surface-catalogue.
@@ -395,7 +404,7 @@ function findClaudeOwnerDialogAnswer(content: readonly unknown[]): string | null
     if (part.type !== 'tool_result') continue;
     const payload = blockPayloadText(part.content).trim();
     if (!CLAUDE_OWNER_DIALOG_RESULT_PREFIXES.some((prefix) => payload.startsWith(prefix))) continue;
-    return `${OWNER_DIALOG_TURN_MARKER}\n${payload}`;
+    return dialogAnswerText(payload);
   }
   return null;
 }
@@ -473,6 +482,12 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
       continue; // torn first line of a tail read
     }
     if (o.type === 'attachment') {
+      const dialogProvenance = claudeDialogProvenanceAttachment(o);
+      if (dialogProvenance) {
+        out.push({ ts: typeof o.timestamp === 'string' ? o.timestamp : '', text: dialogProvenance });
+        awaitingStamp = null;
+        continue;
+      }
       const stamp = hookProvenanceStampOf(o);
       if (stamp) {
         if (awaitingStamp) awaitingStamp.hookStamp = stamp;

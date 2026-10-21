@@ -292,6 +292,17 @@ describe('unresolvedPathsInCompletion — multiple checkout integrity', () => {
     expect(got).toBeUndefined();
   });
 
+  it('resolves a qualified primary path alongside a bare path owned by a secondary checkout', () => {
+    const got = unresolvedPathsInCompletion(
+      ev([
+        'repo/packages/operator-core/lib/issues-engineer.ts',
+        'apps/host/src/papercup-chat.ts',
+      ]),
+      { ...probe, repoRoots: [ROOT, PORTAL_ROOT] },
+    );
+    expect(got).toBeUndefined();
+  });
+
   it('does not combine partial matches from different repositories into one false green', () => {
     const got = unresolvedPathsInCompletion(ev(['packages/operator-core/lib/issues-engineer.ts', 'only-there.ts']), {
       ...probe,

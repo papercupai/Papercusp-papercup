@@ -11,15 +11,18 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { clipWithMarker, payloadTierRecoveryHint } from '../plans/shape-clip';
 import {
+  getForegroundRunVerdictAsync,
   getRunAsync,
   getTestRunLedgerRecoveryAsync,
   TestingRunSnapshotUnavailableError,
   type DetachedRunLedgerRecovery,
+  type ForegroundRunVerdict,
   type RunSnapshot,
 } from '../../testing-run-store';
 
 export type TestingRunStatusResult =
   | { ok: true; snapshot: RunSnapshot }
+  | { ok: true; foreground: ForegroundRunVerdict }
   | { ok: true; ledgerRecovery: DetachedRunLedgerRecovery }
   | { ok: false; error: 'unknown_run'; runId: string; message: string }
   | { ok: false; error: 'snapshot_unavailable'; runId: string; retryable: true; message: string };
@@ -72,6 +75,16 @@ export default defineTool({
 
     const ledgerRecovery = await getTestRunLedgerRecoveryAsync(args.runId);
     if (ledgerRecovery) return { data: { ok: true, ledgerRecovery } };
+
+    // A foreground run (e.g. one released by a host-shutdown handoff) has no
+    // detached snapshot; its task row decides running vs recorded vs lost.
+    try {
+      const foreground = await getForegroundRunVerdictAsync(args.runId);
+      if (foreground) return { data: { ok: true, foreground } };
+    } catch (error) {
+      if (!(error instanceof TestingRunSnapshotUnavailableError)) throw error;
+      snapshotUnavailable = true;
+    }
 
     if (snapshotUnavailable) {
       return {

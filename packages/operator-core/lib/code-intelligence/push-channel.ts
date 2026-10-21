@@ -1,6 +1,6 @@
 /** P-034/D-016: one code-intelligence leg at the existing PostToolBatch sink. */
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, relative } from 'node:path';
+import { isAbsolute, join, posix, relative } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
@@ -11,7 +11,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
-import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
+import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
 import { FACT_FILE_ANCHOR_PREFIX, foldCodeNotesForPaths, isCodeNoteKey, isFactFileAnchor, type AgentFact } from '../agent-facts/store';
 import type { FactDependencyStaleness } from '../agent-tools/facts/dependency-staleness';
 import {
@@ -55,7 +55,7 @@ export interface PushFact {
   text: string;
   citedPaths: readonly string[];
   suggestedCall?: string;
-  sourceHashes?: readonly { path: string; sha256: string }[];
+  sourceHashes?: readonly PushProofSource[];
 }
 /** Measured attribution supplied by the incident caller. Static reach alone is
  * never upgraded to a change or work-item claim; callers must provide these
@@ -106,7 +106,7 @@ export async function readPushIncidentAttribution(input: PushInput, paths: strin
         AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
         AND p.path = ANY(${paths}::text[])
       )
-      SELECT id, state, title, relation, array_agg(path ORDER BY path) AS paths
+      SELECT id, state, title, relation, array_agg(path ORDER BY path COLLATE "C") AS paths
       FROM attributed GROUP BY id, state, title, relation
       ORDER BY relation, id LIMIT 8`;
     // Bound distinct relationships, not matched files: one broad work item
@@ -129,20 +129,112 @@ function pushCallInput(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown> : null;
 }
 
+/** `tools:invoke` and its MCP-mangled form (`mcp__…_tools_invoke`). */
+const TOOLS_INVOKE_RE = /(?:^|_|:)tools[_:]invoke$/;
+
+/**
+ * WI-6554700010018441: a call dispatched through `tools:invoke { name, args }` is the
+ * inner call. Every leg classifies the normalized call, so a wrapped `capability:read`
+ * or `capability:bash` is seen exactly like a direct one. One level only.
+ */
+export function normalizePushCall(call: PushCall): PushCall {
+  if (!TOOLS_INVOKE_RE.test(call.tool ?? '')) return call;
+  const outer = pushCallInput(call.toolInput);
+  const name = outer?.name;
+  if (typeof name !== 'string' || !name) return call;
+  return { ...call, tool: name, toolInput: outer?.args };
+}
+
 /** Native `Read`/`Edit`/`Write`, `capability:read|edit|write` and their MCP-mangled
  * forms (`mcp__…_capability_write`) — the same vocabulary the working-set ledger
  * counts as code tools (blind review 35 G-5: `Write` was not a first touch). */
 const FIRST_TOUCH_TOOL_RE = /(?:^|_|:)(?:Read|Edit|Write|read|edit|write)$/;
+/** Shell-running tools: native `Bash`, `capability:bash` (any mangling), Codex `exec_command`. */
+const SHELL_TOOL_RE = /(?:^|_|:)(?:Bash|bash)$|^exec_command$/;
+/** File-reading shell commands whose operands are first touches. */
+const SHELL_READ_COMMANDS = new Set(['cat', 'head', 'tail', 'sed']);
+/** head/tail options that consume the following word as their value. */
+const SHELL_VALUE_FLAGS = new Set(['-n', '-c', '--lines', '--bytes']);
+const SHELL_WORD = /'([^']*)'|"([^"\\$`]*)"|([^\s'"]+)/g;
+
+function shellWords(segment: string): Array<string | null> {
+  // null = a word this reader will not resolve (expansion, glob, home, command substitution).
+  return [...segment.matchAll(SHELL_WORD)].map(match => match[3] === undefined
+    ? (match[1] ?? match[2] ?? '')
+    : /[$`*?[{~]/.test(match[3]) ? null : match[3]);
+}
+
+function shellReadOperands(command: string, words: Array<string | null>): Array<string | null> {
+  const operands: Array<string | null> = [];
+  let scriptPending = command === 'sed';
+  for (let i = 1; i < words.length; i += 1) {
+    const word = words[i];
+    if (word !== null && /^[0-9]*[<>]/.test(word)) break; // a redirection or heredoc ends the operands
+    if (word !== null && word.length > 1 && word.startsWith('-')) {
+      if (command === 'sed' && (word === '-e' || word === '--expression')) { scriptPending = false; i += 1; }
+      else if (command === 'sed' && (word === '-f' || word === '--file')) { scriptPending = false; i += 1; }
+      else if (command !== 'sed' && SHELL_VALUE_FLAGS.has(word)) i += 1;
+      continue;
+    }
+    if (scriptPending) { scriptPending = false; continue; }
+    if (word !== '-') operands.push(word);
+  }
+  return operands;
+}
+
+/**
+ * WI-6554700010018441: files a shell command reads with `cat`, `head`, `tail` or `sed`.
+ * Only literal operands resolve; a relative operand is resolved against the tracked `cd`
+ * chain from `cwd` (the harness root when the call names none). A wrong guess is quiet,
+ * because a first-touch fact needs the path to be covered by the snapshot.
+ */
+export function shellReadPaths(command: string, cwd: string | undefined): string[] {
+  if (command.length > 4000) return [];
+  const paths: string[] = [];
+  let base = cwd;
+  for (const raw of command.split(/\n|;|&&|\|\||\|/)) {
+    const segment = raw.trim().replace(/^\(+/, '').replace(/\)+$/, '').trim();
+    const words = shellWords(segment);
+    const head = words[0];
+    if (head === 'cd') {
+      const target = words[1];
+      base = typeof target === 'string' && target
+        ? (isAbsolute(target) ? target : base ? join(base, target) : undefined)
+        : undefined;
+      continue;
+    }
+    if (!head || !SHELL_READ_COMMANDS.has(head)) continue;
+    for (const operand of shellReadOperands(head, words)) {
+      if (!operand) continue;
+      if (isAbsolute(operand)) paths.push(operand);
+      else if (base) paths.push(join(base, operand));
+    }
+  }
+  return paths;
+}
+
+function touchedRawPaths(call: PushCall, root: string | undefined): string[] {
+  const args = pushCallInput(call.toolInput);
+  if (FIRST_TOUCH_TOOL_RE.test(call.tool ?? '')) {
+    const raw = args?.file_path ?? args?.path;
+    return typeof raw === 'string' ? [raw] : [];
+  }
+  if (SHELL_TOOL_RE.test(call.tool ?? '')) {
+    const command = args?.command ?? args?.cmd;
+    if (typeof command !== 'string') return [];
+    const cwd = typeof args?.cwd === 'string' && args.cwd
+      ? (isAbsolute(args.cwd) ? args.cwd : root ? join(root, args.cwd) : undefined)
+      : root;
+    return shellReadPaths(command, cwd);
+  }
+  return [];
+}
 
 export function firstTouchPaths(input: PushInput): string[] {
-  return [...new Set(input.calls.flatMap(call => {
-    if (!FIRST_TOUCH_TOOL_RE.test(call.tool ?? '')) return [];
-    const args = pushCallInput(call.toolInput);
-    const raw = args?.file_path ?? args?.path;
-    if (typeof raw !== 'string') return [];
-    const path = isAbsolute(raw) && input.root ? relative(input.root, raw) : raw;
+  return [...new Set(input.calls.flatMap(rawCall => touchedRawPaths(normalizePushCall(rawCall), input.root).flatMap(raw => {
+    const path = isAbsolute(raw) ? (input.root ? relative(input.root, raw) : raw) : posix.normalize(raw);
     return safeSnapshotPath(path) ? [path] : [];
-  }))].slice(0, 4);
+  })))].slice(0, 4);
 }
 
 /** Existing P-016 anchors and P-015 measurement recipes; these are links, not proof of acceptance. */
@@ -651,7 +743,8 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
 registerCodeIntelPushLeg('incident', snapshotIncidentLeg);
 
 /** Only a single literal identifier lookup is resolved; arbitrary regexes remain quiet. */
-export function grepLookupSubject(call: PushCall): string | null {
+export function grepLookupSubject(rawCall: PushCall): string | null {
+  const call = normalizePushCall(rawCall);
   const args = pushCallInput(call.toolInput);
   const tool = call.tool ?? '';
   let pattern: string | null = null;
@@ -788,6 +881,8 @@ async function readResumeWithLinks(input: PushInput, deps: PushChannelDeps): Pro
 /** A failed optional push never drops memory, worn rules, or the failure hint. */
 export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps: PushChannelDeps = defaults): Promise<string> {
   if (!input.owner || !input.workspace || !input.calls.length || !deps.legs().size) return '';
+  // WI-6554700010018441: every leg classifies the call a `tools:invoke` wrapper dispatched.
+  input = { ...input, calls: input.calls.map(normalizePushCall) };
   const requestBudget = Math.max(0, CODE_INTEL_PUSH_TURN_CHARS - Math.max(0, memoryChars));
   if (!requestBudget) return '';
   const result = await withBoundedTimeout(async signal => {

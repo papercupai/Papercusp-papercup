@@ -42,6 +42,8 @@ import {
   isIndexLockFailure,
   isConfigLockFailure,
   isPathspecBeyondSymbolicLinkFailure,
+  isPathspecInSubmoduleFailure,
+  inSubmoduleProtectedExclusions,
   isTransientStatFailure,
   preflightInvalidIndex,
   MIN_VALID_GIT_INDEX_BYTES,
@@ -82,6 +84,8 @@ import {
 import { isVerbatimCheckIgnorePath } from './check-ignore-argv';
 import { dependencyGenerationRootRecord } from '../../release/dependency-generation-prebuild';
 import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribution';
+import { resolveAttributionRepo } from './attribution-repo';
+import { runGitLocal } from '../docs/git-runner';
 import type { ContentDetector } from '../../content-lint/registry';
 import { emitGitSyncCommittedEvent } from './git-sync-events';
 import { gitSyncScopePayloadFilter } from '../../agent-tools/events/git-sync-await-scope';
@@ -2163,6 +2167,82 @@ describe('runGitSync (real git, no submodule)', () => {
     ).toBe(true);
   });
 
+  /** A real submodule at apps/sub with one dirty file inside it (WI-6554700010018683). */
+  function addDirtySubmodule(): { subPath: string; insidePath: string } {
+    const subSource = join(root, 'sub-source');
+    git(root, 'init', '-q', '-b', 'main', subSource);
+    configUser(subSource);
+    writeFileSync(join(subSource, 'route.ts'), 'export {};\n');
+    git(subSource, 'add', '-A');
+    git(subSource, 'commit', '--no-verify', '-q', '-m', 'sub init');
+    git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subSource, 'apps/sub');
+    git(repo, 'commit', '--no-verify', '-q', '-m', 'add submodule');
+    writeFileSync(join(repo, 'apps', 'sub', 'route.ts'), 'export const held = 1;\n');
+    return { subPath: 'apps/sub', insidePath: 'apps/sub/route.ts' };
+  }
+
+  it('WI-6554700010018683: classifies a protected path inside a submodule instead of failing the preflight', async () => {
+    const { insidePath } = addDirtySubmodule();
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const runGit: RunGit = async (args, cwd) => {
+      try {
+        const stdout = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        return { code: 0, stdout, stderr: '' };
+      } catch (error) {
+        const e = error as { status?: number; stdout?: string; stderr?: string };
+        return { code: e.status ?? 1, stdout: String(e.stdout ?? ''), stderr: String(e.stderr ?? '') };
+      }
+    };
+
+    const result = await classifyProtectedPathExclusions(runGit, repo, [insidePath, 'file.txt']);
+
+    // Before the fix the 128 was unclassified, so the whole preflight failed open and
+    // returned NO classification at all.
+    expect(result.inSubmodule).toEqual(new Set([insidePath]));
+    expect(result.ignoredUntracked).toEqual(new Set());
+    expect(result.beyondSymlink).toEqual(new Set());
+  });
+
+  it('WI-6554700010018683: a held path inside a submodule does not abort the superproject add', async () => {
+    const { insidePath } = addDirtySubmodule();
+    writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const logs: string[] = [];
+
+    // submodulePaths: [] models any exclusion source that does not know the path is in
+    // a submodule, so the in-submodule pathspec reaches this repo's own stage.
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      submodulePaths: [],
+      excludePaths: [insidePath, 'file.txt'],
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
+    expect(logs.join('\n')).toContain('pre-filtering protected path(s) inside a submodule');
+    expect(logs.join('\n')).not.toMatch(/is in submodule/);
+  });
+
+  it('WI-6554700010018683: an add failure drops every exclusion under the submodule Git named, and only those', () => {
+    const output = "fatal: Pathspec ':(exclude,literal)apps/sub/app/api/quotes/route.ts' is in submodule 'apps/sub'\n";
+    expect(isPathspecInSubmoduleFailure(output)).toBe(true);
+    expect(isPathspecInSubmoduleFailure("fatal: pathspec 'x' is beyond a symbolic link")).toBe(false);
+    expect(
+      inSubmoduleProtectedExclusions(output, [
+        'apps/sub/app/api/quotes/route.ts',
+        'apps/sub/other.ts',
+        'apps/sub',
+        'apps/subway/x.ts',
+        'file.txt',
+      ]),
+    ).toEqual(['apps/sub/app/api/quotes/route.ts', 'apps/sub/other.ts']);
+    expect(inSubmoduleProtectedExclusions('fatal: something else', ['apps/sub/x.ts'])).toEqual([]);
+  });
+
   it('EI-21371380265465702: git-sync ignores in-progress dependency-generation build markers', async () => {
     // The production integration tree uses the canonical root policy. Copy it
     // into the throwaway clone so this test fails if the policy ever stops
@@ -4234,6 +4314,26 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
+  it('a bridged commit-only sync also reclaims an orphaned objects/maintenance.lock (WI-6554700010018483)', async () => {
+    // The canonical papercusp repo is a bridged hive: its superproject never reaches
+    // reconcileAndPushOneRepo, which is where the legacy reclaim lives.
+    const lock = join(repo, '.git', 'objects', 'maintenance.lock');
+    writeFileSync(lock, '');
+    const oldSeconds = (Date.now() - STALE_MAINTENANCE_LOCK_MS - 60_000) / 1000;
+    utimesSync(lock, oldSeconds, oldSeconds);
+    writeFileSync(join(repo, 'maintenance-lock-bridged.txt'), 'edit\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: { ...cfg, push: false, reconcileSuperprojectOrigin: false },
+      isGitLockOpen: async () => false,
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toEqual([]);
+    expect(existsSync(lock)).toBe(false);
+  });
+
   it('on a divergent conflict: aborts to a CLEAN tree and reports conflicted files', async () => {
     // a second clone pushes a conflicting change to origin/main
     const other = join(root, 'other');
@@ -4313,6 +4413,46 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
   });
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  // WI-6554700010018409: AttributionTally.scope must carry the repo label that
+  // git_sync_commit_attribution uses for the same commits (resolveAttributionRepo).
+  it('labels attribution tallies with each repo label from a superproject install', async () => {
+    const sub = join(repo, 'libs/sub');
+    writeFileSync(join(sub, 'sub-new.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      loadRoster: async () => [
+        {
+          agent: 'cup-7',
+          agentLabel: 'Cup Seven',
+          intent: 'wire the parser',
+          files: [join(sub, 'sub-new.txt'), join(repo, 'super-new.txt')],
+        },
+      ],
+    });
+    const scopes = (out.attribution ?? []).map((t) => t.scope).sort();
+    expect(scopes).toEqual(['libs/sub', 'superproject']);
+    for (const t of out.attribution ?? []) expect(t.agentCommitCount).toBe(1);
+    expect(await resolveAttributionRepo(sub, runGitLocal)).toBe('libs/sub');
+  });
+
+  it("labels a submodule install's tally with its submodule path, not 'superproject'", async () => {
+    const sub = join(repo, 'libs/sub');
+    git(sub, 'checkout', 'main');
+    writeFileSync(join(sub, 'sub-new.txt'), 'sub-v2\n');
+    const out = await runGitSync('test/libs/sub', {
+      repoPath: sub,
+      loadRoster: async () => [
+        { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: [join(sub, 'sub-new.txt')] },
+      ],
+    });
+    expect(out.attribution).toEqual([
+      { scope: 'libs/sub', agentGroupCount: 1, agentCommitCount: 1, failedGroups: 0, error: null },
+    ]);
+    // The same label the commit-attribution recorder writes for this repo's commits.
+    expect(out.attribution?.[0]?.scope).toBe(await resolveAttributionRepo(sub, runGitLocal));
+  });
 
   it('pushes the submodule branch to origin FIRST, then bumps+pushes the superproject pointer', () => {
     // dirty the submodule AND the superproject

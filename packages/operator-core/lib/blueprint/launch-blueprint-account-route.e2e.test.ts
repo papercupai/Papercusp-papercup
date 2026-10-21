@@ -13,6 +13,7 @@ import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspa
 import { CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
 import { ONE_MILLION_MODEL_ALIASES } from '../inference-gateway/model-aliases';
 import { makeCredentialResolver } from '../inference-gateway/credential-store';
+import { spawnObservedGatewayModel, spawnRouteGatewayModel } from '../fleet/spawn-tree';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(240_000);
@@ -114,18 +115,19 @@ it.for(['primary', 'capacity-failover'] as const)('records the exact real %s blu
       expect(receipt.firstRequest.requestId).toBe(receipt.telemetry.requestId);
       expect(receipt.firstRequest.servingAccountId).toBe(receipt.telemetry.servingAccountId);
       expect(receipt.route.resolvedAccountIds).toContain(receipt.firstRequest.servingAccountId);
-      expect(receipt.firstRequest.model).toBe(receipt.route.launchedModel);
+      expect(spawnObservedGatewayModel(receipt.firstRequest)).toBe(spawnRouteGatewayModel(receipt.route));
       expect(receipt.firstRequest.effort).toBe(receipt.route.launchedEffort);
       const [model, effort] = CODEX_SAFE_DEFAULT_MODEL.split(':');
-      const launchedModel = mode === 'capacity-failover' ? ONE_MILLION_MODEL_ALIASES.sonnet : model;
+      const gatewayModel = mode === 'capacity-failover' ? ONE_MILLION_MODEL_ALIASES.sonnet : model;
+      const launchSpecModel = mode === 'capacity-failover' ? `${gatewayModel}[1m]` : gatewayModel;
       const launchedEffort = mode === 'capacity-failover' ? 'high' : effort;
       expect(receipt.route).toMatchObject({ ownerId: receipt.spawnId, accountRoute: 'auto',
         requestedBackend: 'codex', launchedBackend: mode === 'capacity-failover' ? 'claude-code' : 'codex', requestedModel: model,
-        launchedModel, requestedEffort: effort, launchedEffort });
+        launchedModel: launchSpecModel, requestedEffort: effort, launchedEffort });
       expect(receipt).toMatchObject({ mode, injectedPrimaryWall: mode === 'capacity-failover' });
       expect(receipt.route.reason ?? null).toBe(mode === 'capacity-failover' ? 'capacity' : null);
-      expect(receipt.upstream).toMatchObject({ requestShape: { model: launchedModel, effort: launchedEffort }, error: null });
-      expect(receipt.childConfig).toMatchObject({ model: launchedModel, effort: launchedEffort });
+      expect(receipt.upstream).toMatchObject({ requestShape: { model: gatewayModel, effort: launchedEffort }, error: null });
+      expect(receipt.childConfig).toMatchObject({ model: launchSpecModel, effort: launchedEffort });
       expect(receipt.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(receipt.runtimeInputs.invoke).toBe(join(root, 'libs/papercusp/packages/orchestrator/bin/invoke-once.ts'));
       expect(receipt.privateGateUnchanged).toBe(true);

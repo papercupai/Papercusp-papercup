@@ -114,13 +114,22 @@ function first(res: Record<string, unknown> | null): Record<string, unknown> {
   return (Array.isArray(results) && results[0]) || res || {};
 }
 
+/**
+ * The activation audit refuses a plan without these two sections (plan-declarations.ts),
+ * so every fixture plan opts out of both with a reason, as activation-audit-gate does.
+ */
+const DECLARATION_SECTIONS =
+  '\n## Existing infrastructure reused\n\n```reuse\n' +
+  '{"searched":[],"reused":[],"newSurfaces":[],"notApplicable":"Test fixture; no code surface."}\n```\n' +
+  '\n## Third-party libraries\n\n```libraries\n{"needs":[],"notApplicable":"Test fixture; no library need."}\n```\n';
+
 function brief(x: unknown): string {
   return JSON.stringify(x).slice(0, 1500);
 }
 
 /** A plan with two items on the profile default: non-code under general, code under coding. */
 async function makePlan(slug: string, profile: 'coding' | 'general'): Promise<void> {
-  const created = await call('plans:new', { slug, title: `Genship ${slug}`, verificationProfile: profile, force: true });
+  const created = await call('plans:new', { slug, title: `Genship ${slug}`, verificationProfile: profile, force: true, content: DECLARATION_SECTIONS });
   expect(created?.ok, brief(created)).toBe(true);
   const added = await call('plans:add-item', {
     slug,
@@ -348,7 +357,7 @@ describe('R-10: a general plan ships on generic evidence alone', () => {
  */
 describe('R-10 with requirements: the ship snapshot reads profile and deliverables from Postgres', () => {
   async function makeDeclaredPlan(slug: string, profile: 'coding' | 'general'): Promise<void> {
-    const created = await call('plans:new', { slug, title: `Genship ${slug}`, verificationProfile: profile, force: true });
+    const created = await call('plans:new', { slug, title: `Genship ${slug}`, verificationProfile: profile, force: true, content: DECLARATION_SECTIONS });
     expect(created?.ok, brief(created)).toBe(true);
     const added = await call('plans:add-item', {
       slug,

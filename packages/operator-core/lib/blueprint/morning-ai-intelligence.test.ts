@@ -54,6 +54,14 @@ describe('morning AI operation admission and completion contracts', () => {
     expect(checkAgainstJsonSchema(inputSchema, input)).toEqual({ ok: true });
   });
 
+  it('requires opportunities analysis and an explicit quiet or partial-day disposition', () => {
+    const instructions = inputSchema.properties.instructions.const;
+    expect(instructions).toContain('dedicated Papercusp opportunities section');
+    expect(instructions).toContain('fit or existing seam, confidence and limits, and a recommended next action');
+    expect(instructions).toContain('no actionable Papercusp idea was found');
+    expect(instructions).toContain('coverage limits prevent a recommendation');
+  });
+
   it.each([
     ['oversized lookback', { lookbackHours: 73 }],
     ['zero lookback', { lookbackHours: 0 }],

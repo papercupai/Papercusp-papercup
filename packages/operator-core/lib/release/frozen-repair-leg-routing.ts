@@ -36,6 +36,15 @@ export interface FrozenRepairLegRoutingRequest {
   pipeline: string;
   /** See FrozenRepairLegRoutingInput.queue: null resolves every open leg of the pipeline. */
   queue: { candidate: string; repairHead: string; failingTests: readonly string[] } | null;
+  /**
+   * WI-6554700010018714: failure output the CALLER already holds, keyed by failing entry —
+   * the non-test legs (`lint:condition-rail`, …) the gate measured at repairHead this tick.
+   * test_runs is structurally test-file-only, so without this a lint leg's item said "none
+   * recorded for this leg" while the gate's own verdict line carried its tail, and the fixer
+   * reproduced it outside the gate's env, where it passed. An entry supplied here is not
+   * looked up in the ledger; every other new entry still is.
+   */
+  failureTails?: ReadonlyMap<string, string>;
 }
 
 export interface FrozenRepairLegRoutingOutcome {
@@ -54,15 +63,23 @@ export async function routeFrozenRepairLegs(
   const firstPass = planFrozenRepairLegRouting({ pipeline: req.pipeline, queue: req.queue, openLegKeys });
   let plan = firstPass;
   if (req.queue && firstPass.open.length > 0) {
-    let tails = new Map<string, string>();
-    try {
-      tails = await deps.readFailureTails({
-        candidate: req.queue.candidate,
-        repairHead: req.queue.repairHead,
-        entries: firstPass.open.map((o) => o.entry),
-      });
-    } catch {
-      // Best-effort: an item without its tail still names the leg and the admit call.
+    const tails = new Map<string, string>();
+    for (const o of firstPass.open) {
+      const known = req.failureTails?.get(o.entry);
+      if (typeof known === 'string' && known.trim()) tails.set(o.entry, known);
+    }
+    const fromLedger = firstPass.open.map((o) => o.entry).filter((e) => !tails.has(e));
+    if (fromLedger.length > 0) {
+      try {
+        const read = await deps.readFailureTails({
+          candidate: req.queue.candidate,
+          repairHead: req.queue.repairHead,
+          entries: fromLedger,
+        });
+        for (const [entry, tail] of read) if (!tails.has(entry)) tails.set(entry, tail);
+      } catch {
+        // Best-effort: an item without its tail still names the leg and the admit call.
+      }
     }
     plan = planFrozenRepairLegRouting({
       pipeline: req.pipeline,

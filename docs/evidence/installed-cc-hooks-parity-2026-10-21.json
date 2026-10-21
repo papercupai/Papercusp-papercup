@@ -1,0 +1,565 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Gated installed Claude Code hook parity",
+  "framework": "node",
+  "command": [
+    "PAPERCUSP_VERIFY_INSTALLED_CC_HOOKS=1",
+    "npx vitest run scripts/hooks/cc/__tests__/installed-hooks-parity.test.ts --config vitest.config.ts"
+  ],
+  "cwd": "apps/operator",
+  "exitCode": 0,
+  "startedAt": "2026-10-21T01:35:22Z",
+  "finishedAt": "2026-10-21T01:35:29Z",
+  "summary": "The gated installed-hook parity test ran with PAPERCUSP_VERIFY_INSTALLED_CC_HOOKS=1. All five tests passed, including the live source-to-installed byte-for-byte check; no skip occurred.",
+  "assertions": [
+    {
+      "id": "canonical-host-home-helper",
+      "passed": true,
+      "evidence": "pc_home.mjs matches libs/host-platform/src/home.mjs."
+    },
+    {
+      "id": "detached-install-loads-without-node-modules",
+      "passed": true,
+      "evidence": "Affected hooks load from a detached copy and missing pc_home.mjs fails with ERR_MODULE_NOT_FOUND."
+    },
+    {
+      "id": "source-directory-has-no-atomic-temporary-files",
+      "passed": true,
+      "evidence": "No source hook .tmp files were present."
+    },
+    {
+      "id": "fixture-drift-detection",
+      "passed": true,
+      "evidence": "Fixture detects missing installed hooks and byte drift, then accepts equal bytes."
+    },
+    {
+      "id": "installed-runtime-parity",
+      "passed": true,
+      "evidence": "62 source hook files all have matching installed bytes; missing=[]; drift=[]."
+    }
+  ],
+  "workItemId": "WI-6554700010017214",
+  "planSlug": "detached-hook-home-resolution-2026-10-18",
+  "source": {
+    "testPath": "apps/operator/scripts/hooks/cc/__tests__/installed-hooks-parity.test.ts",
+    "sourceDir": "apps/operator/scripts/hooks/cc",
+    "installedDir": "~/.papercusp/hooks/cc",
+    "gitHeadAtRead": "88570f924e4032ec4ce71409cd91e064d4942eec",
+    "sourceFiles": [
+      {
+        "path": "apps/operator/scripts/hooks/cc/artifact-url-delivery-guard.mjs",
+        "sha256": "e3fe546c7320805c4949698ba118de4bc9bba49b0268cd327930c291b74f8134"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/ask-gate-mirror.sh",
+        "sha256": "49d848ccc1577785a27232b15630a24f86a5bb53d5b1416ef77a23a63c1c98dc"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/guard-operator-desktop.mjs",
+        "sha256": "cbfa1345aeff76673b6f5fff2f5f841c16b86da6714b0392bb6af8f34e931d18"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/lifecycle-report.sh",
+        "sha256": "92b640b9509c140db37a4b82ad702e0de8cfcaea181951e17efc2e9c1eb56eac"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/mcp_response.py",
+        "sha256": "43b2a151eef4bc10889cff0124f70742ed582095da0278eb0c8212e9ac0ee3a5"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pc_home.mjs",
+        "sha256": "93e9c7297f613b2b360f292064ce4d21a749597a9a86630498cc66f8c8ac3ffd"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pc_nested_cli.mjs",
+        "sha256": "6dc08166f0d2dc94ca748a50aa1144ebb4d17bff63b457d526a7fdceed34d3a8"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pc_nested_cli.py",
+        "sha256": "20faf40eaf8ec41ab7d34aa0aaf55976fe99b8fa5f81080458dea5a7919a48a1"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pc_nested_cli.sh",
+        "sha256": "c08d46d0156a0727a713dd0c4dc664b2eef9e372c2870ed8ba30a2aab2a13adf"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pc_tty.py",
+        "sha256": "b12bf484bfeeb292263445172f50e216590068b91f352426542debb9843a23e3"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttoolbatch-locks-release.sh",
+        "sha256": "7aa0e1878117965e97e3db43accc979763f45e0f1f877b7717272586c98a555f"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttoolbatch-midturn-context.sh",
+        "sha256": "99021a28f407a1a1e48945e8ba56e9084aaae35a328a5a09e64e2147a123a066"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh",
+        "sha256": "fa9c5cf7b21f7f445eaeb3fe3efb3f8e459f286403f9548c8963894aca9676ec"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-behavioural-strand-nudge.mjs",
+        "sha256": "76960021dfdc8611633303a7c8919fa406a47b030243492f7a952dcf61368259"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-cli-entry-nudge.mjs",
+        "sha256": "557df4fabf9d3984ddd97588a885eeda52d23c38a0283a56d87a50a6a64c62bf"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-css-design-primitives-nudge.mjs",
+        "sha256": "f31265cbfb3d3ffc05b3f9061e7a98de69c7828d1f1f991e66a0debc37964f26"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs",
+        "sha256": "e232178c3987499f59ce18b6ec83bbb198cb63136339fbeab8db1922684cac91"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs",
+        "sha256": "8362b3c7e9f6be230a4c435be62ac4357aae923753912e8428026be68e877509"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-locks-release.sh",
+        "sha256": "2f81becc4c06515125c754e69a8425b392981cfc4a599b0552b7955f2cfea9d8"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-mdx-nudge.mjs",
+        "sha256": "eb7a5771dd5c8145a1ea11081f4a0c8b2d9a1233bcb94a28a2440ba288e4bf9c"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-migration-fixture-drift-nudge.mjs",
+        "sha256": "6e89ae3e6928e1b0b99dcb35437b363fb38b7336b809c98af233b19eef36a254"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
+        "sha256": "abba12fa5332db4da39fc05b4b94013f3f3f0740f5355b6122488a2c01d74c2a"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-mjs-import-declaration-nudge.mjs",
+        "sha256": "31685e5cca6da5240f557589650922850a41eef01ae3a6327a6c047bfab15004"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-mock-cast-escape-nudge.mjs",
+        "sha256": "275ca86e11850975a6cb0226782c10836624f270799028d408c6cae24dcad6b7"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
+        "sha256": "4e24b492c8eaf0549ce50ddaea0a9b235316c62157b155c53d06e982456a5711"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-objective-title.sh",
+        "sha256": "a13254737916f522ed3d1a15e9ebb65aa1b1a711af8de121fe5710c12fe922c8"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-proof-stale-nudge.mjs",
+        "sha256": "b4abcdcc66c1138b772b27521d9d83c0f782a25eb1b20a1ece419a345d6f3791"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-registry-census-drift-nudge.mjs",
+        "sha256": "69a3ccd31a11ba3e7ca41797da0198faaf07549b8d26893745a1a247979197c8"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs",
+        "sha256": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-resource-governor-nudge.mjs",
+        "sha256": "82e7bbb7e030d113ddf1db3ab079a2a610e6702ecced37cea2580f9c720c11b9"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-su-instance-override-reseed.mjs",
+        "sha256": "23612c5a499696173a1450d07156efd8adda5dfad25e734c3262f47ea858cb4b"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-tool-prompt-weight-nudge.mjs",
+        "sha256": "94e320a7e8a52ce1f5172312a018da9b0b656a0e7062d78fb0d2e7eb80d37bd9"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-ts-parse-nudge.mjs",
+        "sha256": "aa826219872b0b3b09185f52e76cbda7178a929bd24d3ba5d4d0c8387eaff8da"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-tsc-verdict-stale-nudge.mjs",
+        "sha256": "7ffa4836ff793a92ababfe6d27f9f97983e364737d0a372fe5b95ffdc2a61aa8"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/posttooluse-write-byte-integrity-guard.mjs",
+        "sha256": "cdf84e51d21b42afa9f7b69713682ad31b09e78c74b0777bc0263b60c99c14d7"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs",
+        "sha256": "1ad60cfceedf400743f5ba74b5cc9d0f7624e23b278716fad620104aee7efce4"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-activity-report.sh",
+        "sha256": "34c211b11529b74ce1edc53a67b8a43f6b9beb506b6e890e11e2846a59589fc4"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-apply-patch-duplicate-target-guard.mjs",
+        "sha256": "4cb0356059af220a9fa7046a0520ae8c8d9fbab45974df6f204cc14e9eaca377"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh",
+        "sha256": "004c6b0df957ed9f79151d85b0f4b32cb9052980e6e513eaab201ea3c9484f2a"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-codex-rtk-rewrite.mjs",
+        "sha256": "b5e2d8bad36ac4f9f28bcb8c2672c7131867340378500f05eb27b65a6f09fd1d"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-content-lint.mjs",
+        "sha256": "f4bbb5c2d4aedee359ee40b7385a9e5cb72245e91195757fe2d2fa5d3ffc13ad"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-control-bytes-content-guard.mjs",
+        "sha256": "fa76e25fa670ce2d13a3f31b336d1f95b233b3fb531bd07f1a9f86fd02c35ca5"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-generated-file-edit-guard.mjs",
+        "sha256": "a82a2e66e7e8047b961641e99402cf2245cb96163ffc4e044d91e04960dd0fb4"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-identity-guard.sh",
+        "sha256": "d848af4263a62a76bdfbed0081e533a190ebbec66cb940e7e51186e171cdb0d5"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-locks-acquire.sh",
+        "sha256": "471393a925babc0f1754730fbf70ba620692fe6f46165d3d11b553817c3238ff"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-nul-byte-edit-guard.mjs",
+        "sha256": "0f59e469bddd0803c37aabbb652dff0e98391a1d7e14383b7e605412223e8ba2"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-plans-read-guard.sh",
+        "sha256": "06de2548ccb4d8c627c14103b9b338fb906265b9a4564db5ed59f33b88bb7f30"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-restricted-egress-guard.mjs",
+        "sha256": "6e433f78c003ad9c4ec2aa69e9ca7958fa44f388166e9f8d6db63bf254d6c11c"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-schedule-wakeup-provenance.mjs",
+        "sha256": "057cf5b3d85558065422319c7d1f0caf106825ad914071b0d5d3621ade041de6"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs",
+        "sha256": "fa4e71a93cce2c31e1bc8a4917abb7e9ab29cdf6dfa23ec612fc72cc93e03b6b"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-tool-prompt-weight-guard.mjs",
+        "sha256": "8c775660ea92f7858981669b0dcc4c279cac6b72d7a412bfce097d099ae5b3b4"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-unreserved-migration-guard.mjs",
+        "sha256": "8027c3b9571b2fbf79ea23c96fa14662918daeb947d9b3d82701c1c29dd4ccdd"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/pretooluse-write-overwrite-guard.mjs",
+        "sha256": "8fb4af962db23ce14b557588e209140b56dc89b3684deb49f86caaf9b6bfcf27"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/regenerate-declaration-before-lock-release.mjs",
+        "sha256": "27309b74a5e14fd2e6123ea3dd2f0ca929ceada81651fb83c959d889a1a6e456"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/sessionstart-identity-context.sh",
+        "sha256": "83e92931595346d3b6d8b269f890807d3f4674ff714abe5dc9ab2405fb0f6ee9"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/statusline-fleet.sh",
+        "sha256": "83af4965f05f5db4cc5e775b0df7fddf68bbc43f5bdd495f631e674cdc988293"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/stop-identity-context.sh",
+        "sha256": "f73d3b4c5fb4cfc4c81433beccfbf6dca099af666ec79d0ad7c19e91126c6800"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
+        "sha256": "68918d309c479e916ef575c07bf56b14ba766526a3b2cb36bf3bf8e6b11327c5"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/stop-turn-journal.sh",
+        "sha256": "cff4666c6585693731f4186d1591e9f096e96dcbf6b5ecf5044d78e6cea71a94"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/userpromptsubmit-memory.sh",
+        "sha256": "95300dfbfa3d00636d352d843d50ac293a72e3c5e1dd42c1f97b4396fd58ddab"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh",
+        "sha256": "aedc7b80ff1fd22a6664a1ae85aa159965a157fb4c1d8e1dcc084110c943983d"
+      },
+      {
+        "path": "apps/operator/scripts/hooks/cc/workitem-verify-nudge.sh",
+        "sha256": "080bd9980aee7be45c70499c94b7dd1657371e0cd514cdf985222452239a6b69"
+      }
+    ],
+    "installedFilesChecked": [
+      {
+        "path": "artifact-url-delivery-guard.mjs",
+        "sha256": "e3fe546c7320805c4949698ba118de4bc9bba49b0268cd327930c291b74f8134"
+      },
+      {
+        "path": "ask-gate-mirror.sh",
+        "sha256": "49d848ccc1577785a27232b15630a24f86a5bb53d5b1416ef77a23a63c1c98dc"
+      },
+      {
+        "path": "guard-operator-desktop.mjs",
+        "sha256": "cbfa1345aeff76673b6f5fff2f5f841c16b86da6714b0392bb6af8f34e931d18"
+      },
+      {
+        "path": "lifecycle-report.sh",
+        "sha256": "92b640b9509c140db37a4b82ad702e0de8cfcaea181951e17efc2e9c1eb56eac"
+      },
+      {
+        "path": "mcp_response.py",
+        "sha256": "43b2a151eef4bc10889cff0124f70742ed582095da0278eb0c8212e9ac0ee3a5"
+      },
+      {
+        "path": "pc_home.mjs",
+        "sha256": "93e9c7297f613b2b360f292064ce4d21a749597a9a86630498cc66f8c8ac3ffd"
+      },
+      {
+        "path": "pc_nested_cli.mjs",
+        "sha256": "6dc08166f0d2dc94ca748a50aa1144ebb4d17bff63b457d526a7fdceed34d3a8"
+      },
+      {
+        "path": "pc_nested_cli.py",
+        "sha256": "20faf40eaf8ec41ab7d34aa0aaf55976fe99b8fa5f81080458dea5a7919a48a1"
+      },
+      {
+        "path": "pc_nested_cli.sh",
+        "sha256": "c08d46d0156a0727a713dd0c4dc664b2eef9e372c2870ed8ba30a2aab2a13adf"
+      },
+      {
+        "path": "pc_tty.py",
+        "sha256": "b12bf484bfeeb292263445172f50e216590068b91f352426542debb9843a23e3"
+      },
+      {
+        "path": "posttoolbatch-locks-release.sh",
+        "sha256": "7aa0e1878117965e97e3db43accc979763f45e0f1f877b7717272586c98a555f"
+      },
+      {
+        "path": "posttoolbatch-midturn-context.sh",
+        "sha256": "99021a28f407a1a1e48945e8ba56e9084aaae35a328a5a09e64e2147a123a066"
+      },
+      {
+        "path": "posttooluse-activity-report.sh",
+        "sha256": "fa9c5cf7b21f7f445eaeb3fe3efb3f8e459f286403f9548c8963894aca9676ec"
+      },
+      {
+        "path": "posttooluse-behavioural-strand-nudge.mjs",
+        "sha256": "76960021dfdc8611633303a7c8919fa406a47b030243492f7a952dcf61368259"
+      },
+      {
+        "path": "posttooluse-cli-entry-nudge.mjs",
+        "sha256": "557df4fabf9d3984ddd97588a885eeda52d23c38a0283a56d87a50a6a64c62bf"
+      },
+      {
+        "path": "posttooluse-css-design-primitives-nudge.mjs",
+        "sha256": "f31265cbfb3d3ffc05b3f9061e7a98de69c7828d1f1f991e66a0debc37964f26"
+      },
+      {
+        "path": "posttooluse-frozen-candidate-edit-nudge.mjs",
+        "sha256": "e232178c3987499f59ce18b6ec83bbb198cb63136339fbeab8db1922684cac91"
+      },
+      {
+        "path": "posttooluse-launch-prose-budget-nudge.mjs",
+        "sha256": "8362b3c7e9f6be230a4c435be62ac4357aae923753912e8428026be68e877509"
+      },
+      {
+        "path": "posttooluse-locks-release.sh",
+        "sha256": "2f81becc4c06515125c754e69a8425b392981cfc4a599b0552b7955f2cfea9d8"
+      },
+      {
+        "path": "posttooluse-mdx-nudge.mjs",
+        "sha256": "eb7a5771dd5c8145a1ea11081f4a0c8b2d9a1233bcb94a28a2440ba288e4bf9c"
+      },
+      {
+        "path": "posttooluse-migration-fixture-drift-nudge.mjs",
+        "sha256": "6e89ae3e6928e1b0b99dcb35437b363fb38b7336b809c98af233b19eef36a254"
+      },
+      {
+        "path": "posttooluse-migration-forward-compat-nudge.mjs",
+        "sha256": "abba12fa5332db4da39fc05b4b94013f3f3f0740f5355b6122488a2c01d74c2a"
+      },
+      {
+        "path": "posttooluse-mjs-import-declaration-nudge.mjs",
+        "sha256": "31685e5cca6da5240f557589650922850a41eef01ae3a6327a6c047bfab15004"
+      },
+      {
+        "path": "posttooluse-mock-cast-escape-nudge.mjs",
+        "sha256": "275ca86e11850975a6cb0226782c10836624f270799028d408c6cae24dcad6b7"
+      },
+      {
+        "path": "posttooluse-no-proc-path-fixture-nudge.mjs",
+        "sha256": "4e24b492c8eaf0549ce50ddaea0a9b235316c62157b155c53d06e982456a5711"
+      },
+      {
+        "path": "posttooluse-objective-title.sh",
+        "sha256": "a13254737916f522ed3d1a15e9ebb65aa1b1a711af8de121fe5710c12fe922c8"
+      },
+      {
+        "path": "posttooluse-proof-stale-nudge.mjs",
+        "sha256": "b4abcdcc66c1138b772b27521d9d83c0f782a25eb1b20a1ece419a345d6f3791"
+      },
+      {
+        "path": "posttooluse-registry-census-drift-nudge.mjs",
+        "sha256": "69a3ccd31a11ba3e7ca41797da0198faaf07549b8d26893745a1a247979197c8"
+      },
+      {
+        "path": "posttooluse-required-field-strand-nudge.mjs",
+        "sha256": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec"
+      },
+      {
+        "path": "posttooluse-resource-governor-nudge.mjs",
+        "sha256": "82e7bbb7e030d113ddf1db3ab079a2a610e6702ecced37cea2580f9c720c11b9"
+      },
+      {
+        "path": "posttooluse-su-instance-override-reseed.mjs",
+        "sha256": "23612c5a499696173a1450d07156efd8adda5dfad25e734c3262f47ea858cb4b"
+      },
+      {
+        "path": "posttooluse-tool-prompt-weight-nudge.mjs",
+        "sha256": "94e320a7e8a52ce1f5172312a018da9b0b656a0e7062d78fb0d2e7eb80d37bd9"
+      },
+      {
+        "path": "posttooluse-ts-parse-nudge.mjs",
+        "sha256": "aa826219872b0b3b09185f52e76cbda7178a929bd24d3ba5d4d0c8387eaff8da"
+      },
+      {
+        "path": "posttooluse-tsc-verdict-stale-nudge.mjs",
+        "sha256": "7ffa4836ff793a92ababfe6d27f9f97983e364737d0a372fe5b95ffdc2a61aa8"
+      },
+      {
+        "path": "posttooluse-write-byte-integrity-guard.mjs",
+        "sha256": "cdf84e51d21b42afa9f7b69713682ad31b09e78c74b0777bc0263b60c99c14d7"
+      },
+      {
+        "path": "precompact-managed-carry.mjs",
+        "sha256": "1ad60cfceedf400743f5ba74b5cc9d0f7624e23b278716fad620104aee7efce4"
+      },
+      {
+        "path": "pretooluse-activity-report.sh",
+        "sha256": "34c211b11529b74ce1edc53a67b8a43f6b9beb506b6e890e11e2846a59589fc4"
+      },
+      {
+        "path": "pretooluse-apply-patch-duplicate-target-guard.mjs",
+        "sha256": "4cb0356059af220a9fa7046a0520ae8c8d9fbab45974df6f204cc14e9eaca377"
+      },
+      {
+        "path": "pretooluse-bash-resource-gate.sh",
+        "sha256": "004c6b0df957ed9f79151d85b0f4b32cb9052980e6e513eaab201ea3c9484f2a"
+      },
+      {
+        "path": "pretooluse-codex-rtk-rewrite.mjs",
+        "sha256": "b5e2d8bad36ac4f9f28bcb8c2672c7131867340378500f05eb27b65a6f09fd1d"
+      },
+      {
+        "path": "pretooluse-content-lint.mjs",
+        "sha256": "f4bbb5c2d4aedee359ee40b7385a9e5cb72245e91195757fe2d2fa5d3ffc13ad"
+      },
+      {
+        "path": "pretooluse-control-bytes-content-guard.mjs",
+        "sha256": "fa76e25fa670ce2d13a3f31b336d1f95b233b3fb531bd07f1a9f86fd02c35ca5"
+      },
+      {
+        "path": "pretooluse-generated-file-edit-guard.mjs",
+        "sha256": "a82a2e66e7e8047b961641e99402cf2245cb96163ffc4e044d91e04960dd0fb4"
+      },
+      {
+        "path": "pretooluse-identity-guard.sh",
+        "sha256": "d848af4263a62a76bdfbed0081e533a190ebbec66cb940e7e51186e171cdb0d5"
+      },
+      {
+        "path": "pretooluse-locks-acquire.sh",
+        "sha256": "471393a925babc0f1754730fbf70ba620692fe6f46165d3d11b553817c3238ff"
+      },
+      {
+        "path": "pretooluse-nul-byte-edit-guard.mjs",
+        "sha256": "0f59e469bddd0803c37aabbb652dff0e98391a1d7e14383b7e605412223e8ba2"
+      },
+      {
+        "path": "pretooluse-plans-read-guard.sh",
+        "sha256": "06de2548ccb4d8c627c14103b9b338fb906265b9a4564db5ed59f33b88bb7f30"
+      },
+      {
+        "path": "pretooluse-restricted-egress-guard.mjs",
+        "sha256": "6e433f78c003ad9c4ec2aa69e9ca7958fa44f388166e9f8d6db63bf254d6c11c"
+      },
+      {
+        "path": "pretooluse-schedule-wakeup-provenance.mjs",
+        "sha256": "057cf5b3d85558065422319c7d1f0caf106825ad914071b0d5d3621ade041de6"
+      },
+      {
+        "path": "pretooluse-secrets-guard.mjs",
+        "sha256": "fa4e71a93cce2c31e1bc8a4917abb7e9ab29cdf6dfa23ec612fc72cc93e03b6b"
+      },
+      {
+        "path": "pretooluse-tool-prompt-weight-guard.mjs",
+        "sha256": "8c775660ea92f7858981669b0dcc4c279cac6b72d7a412bfce097d099ae5b3b4"
+      },
+      {
+        "path": "pretooluse-unreserved-migration-guard.mjs",
+        "sha256": "8027c3b9571b2fbf79ea23c96fa14662918daeb947d9b3d82701c1c29dd4ccdd"
+      },
+      {
+        "path": "pretooluse-write-overwrite-guard.mjs",
+        "sha256": "8fb4af962db23ce14b557588e209140b56dc89b3684deb49f86caaf9b6bfcf27"
+      },
+      {
+        "path": "regenerate-declaration-before-lock-release.mjs",
+        "sha256": "27309b74a5e14fd2e6123ea3dd2f0ca929ceada81651fb83c959d889a1a6e456"
+      },
+      {
+        "path": "sessionstart-identity-context.sh",
+        "sha256": "83e92931595346d3b6d8b269f890807d3f4674ff714abe5dc9ab2405fb0f6ee9"
+      },
+      {
+        "path": "statusline-fleet.sh",
+        "sha256": "83af4965f05f5db4cc5e775b0df7fddf68bbc43f5bdd495f631e674cdc988293"
+      },
+      {
+        "path": "stop-identity-context.sh",
+        "sha256": "f73d3b4c5fb4cfc4c81433beccfbf6dca099af666ec79d0ad7c19e91126c6800"
+      },
+      {
+        "path": "stop-owner-directive-check.mjs",
+        "sha256": "68918d309c479e916ef575c07bf56b14ba766526a3b2cb36bf3bf8e6b11327c5"
+      },
+      {
+        "path": "stop-turn-journal.sh",
+        "sha256": "cff4666c6585693731f4186d1591e9f096e96dcbf6b5ecf5044d78e6cea71a94"
+      },
+      {
+        "path": "userpromptsubmit-memory.sh",
+        "sha256": "95300dfbfa3d00636d352d843d50ac293a72e3c5e1dd42c1f97b4396fd58ddab"
+      },
+      {
+        "path": "userpromptsubmit-provenance.sh",
+        "sha256": "aedc7b80ff1fd22a6664a1ae85aa159965a157fb4c1d8e1dcc084110c943983d"
+      },
+      {
+        "path": "workitem-verify-nudge.sh",
+        "sha256": "080bd9980aee7be45c70499c94b7dd1657371e0cd514cdf985222452239a6b69"
+      }
+    ],
+    "installedExtraFilesIgnoredByCanonicalTest": [
+      "loop-halt-guard.sh",
+      "posttooluse-coord-inbox.sh",
+      "pretooluse-midturn-context.sh"
+    ]
+  },
+  "logs": [
+    {
+      "path": "~/.papercusp/scratch/installed-cc-hooks-parity-2026-10-21.log",
+      "sha256": "b9991e7dd2e8a19148c2c97ad1724bc582d1f7a2f0b4a9510dd66fba282148e8"
+    }
+  ],
+  "environment": {
+    "PAPERCUSP_VERIFY_INSTALLED_CC_HOOKS": "1"
+  },
+  "operationalAcceptance": true
+}

@@ -1466,14 +1466,24 @@ export default defineTool({
               `measurement, external) — a \`doc\` citation records a location, not evidence.`,
         });
       }
-      if (isNonCodeAuditVerdict(it.verdict) && itemDeliverable === 'code') {
-        // D-004 / D-006: a declared code deliverable cannot be audited out of code checks.
+      // D-004 / D-006, generalized by plan-item-types-registry-cupboard P-003: a deliverable
+      // whose DECLARED item type requires the code module cannot be audited out of it. The
+      // resolver decides (no kind literal here), so a namespaced type requiring code counts too.
+      const declaredResolution = itemDeliverable === null
+        ? null
+        : resolveVerification({ verificationProfile }, { deliverable: itemDeliverable });
+      if (
+        isNonCodeAuditVerdict(it.verdict) &&
+        declaredResolution?.deliverableSource === 'declared' &&
+        declaredResolution.codeDeliverable
+      ) {
         problems.push({
           itemId: it.itemId,
           code: 'not_code_contradicts_deliverable',
           detail:
-            `'${it.itemId}' declares deliverable 'code', so verdict 'not-code' cannot exempt it from code ` +
-            `verification. Cite the code, or change the declared deliverable with a recorded plan Decision first.`,
+            `'${it.itemId}' declares deliverable '${itemDeliverable}', whose item type requires the code module, so ` +
+            `verdict 'not-code' cannot exempt it from code verification. Cite the code, or change the declared ` +
+            `deliverable with a recorded plan Decision first.`,
         });
       }
       if (isNonCodeAuditVerdict(it.verdict) && !it.note) {

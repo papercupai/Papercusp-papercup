@@ -19,6 +19,11 @@ vi.mock('./resource-command-match', () => ({ checkBashCommand: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws') }));
 vi.mock('../../bash-substitution/registry', () => ({ getSubstitutionRows: vi.fn() }));
 vi.mock('./goal-mode-edit-guard', () => ({ checkGoalModeEditGuard: vi.fn() }));
+const identityM = vi.hoisted(() => ({ read: vi.fn(), wears: vi.fn() }));
+vi.mock('../../agent-identities/sync-hook-rules', () => ({
+  readAppliedIdentityRules: identityM.read,
+  wearsPapercuspEngineer: identityM.wears,
+}));
 vi.mock('../capability/base-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../capability/base-dir')>()),
   resolveCapabilityIntegrationRoot: vi.fn(() => '/repo'),
@@ -79,6 +84,8 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   rowsM.mockResolvedValue([]);
+  identityM.read.mockResolvedValue({ packagePins: [] });
+  identityM.wears.mockReturnValue(true);
   goalEditM.mockResolvedValue(null);
   frozenM.classify.mockReturnValue(null);
   frozenM.evaluate.mockResolvedValue({
@@ -208,6 +215,16 @@ describe('substitution verdict fold (P-015)', () => {
     });
   });
 
+  it('does not expose engineering advisories to a non-engineering identity', async () => {
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    rowsM.mockResolvedValue([sedRow]);
+    identityM.wears.mockReturnValue(false);
+
+    const out = body((await tool.handler({ command: "sed -n '1,40p' a.ts" } as never, {} as never)) as Out);
+    expect(out.substitutions).toEqual([]);
+    expect(out.substitutionTier).toBeNull();
+  });
+
   it('NEVER lets a substitution match change the lock decision', async () => {
     // Existing consumers key on `decision === 'block'`. A registry row about
     // `cat` has nothing to say about whether a peer is mid-migration, and
@@ -241,7 +258,7 @@ describe('substitution verdict fold (P-015)', () => {
   });
 
   it('uses the handler cwd to exempt an install in an independent tree', async () => {
-    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as CheckVerdict);
     rowsM.mockResolvedValue([dependencyRow]);
 
     const out = body((await tool.handler(

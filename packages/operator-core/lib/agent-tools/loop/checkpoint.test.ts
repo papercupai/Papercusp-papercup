@@ -1010,7 +1010,10 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   });
 
   it('guides authors through the cold-successor no-progress tripwire before compaction', () => {
+    const description = (tool as unknown as { description?: string }).description ?? '';
     const guidance = (tool as unknown as { guidance?: { when?: string } }).guidance?.when ?? '';
+    expect(description).toMatch(/writing it does NOT request a carry-respawn/i);
+    expect(description).toContain('session:request-compaction separately');
     expect(guidance).toContain('immediately runnable action');
     expect(guidance).toContain('session:request-compaction');
     expect(guidance).toContain('bounded progress read');

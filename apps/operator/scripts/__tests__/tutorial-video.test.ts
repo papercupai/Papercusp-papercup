@@ -38,6 +38,13 @@ describe('real-footage tutorial production contract', () => {
     expect(() => captionCues({ characters: ['a'], character_start_times_seconds: [NaN], character_end_times_seconds: [1] })).toThrow('timing');
     expect(vttTimestamp(3599.9996)).toBe('01:00:00.000');
   });
+  it('keeps narration paragraphs inside their caption cue instead of introducing WebVTT block separators', () => {
+    const text = 'First paragraph.\n\nSecond paragraph.\r\n \r\nKeep <all> words & spacing.';
+    expect(webVtt([
+      { start: 0, end: 4, text },
+      { start: 4, end: 6, text: 'The next cue must still be readable.' },
+    ])).toBe('WEBVTT\n\n1\n00:00:00.000 --> 00:00:04.000\nFirst paragraph. Second paragraph. Keep &lt;all&gt; words &amp; spacing.\n\n2\n00:00:04.000 --> 00:00:06.000\nThe next cue must still be readable.\n');
+  });
 });
 
 describe('published tutorial object verification', () => {

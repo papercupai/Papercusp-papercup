@@ -17,7 +17,8 @@ import { nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchRece
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 import { observeFallback } from './degradation/fallback-observations';
-import launchAgentTool, { INTERNAL_GRADING_AUDIT_TASK_DETAIL } from './agent-tools/capability/launch-agent';
+import launchAgentTool, { INTERNAL_GRADING_AUDIT_TASK_DETAIL, INTERNAL_GRADING_AUDIT_RUNTIME } from './agent-tools/capability/launch-agent';
+import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, type GradingAuditRuntimeBinding } from './release/grading-audit-runtime';
 import { advSessionsByTranscriptHandles, type AdvSessionRow } from './adv-sessions';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { findSessionTranscript } from './claude-sessions';
@@ -79,6 +80,7 @@ import {
   fetchGatewayOwnerExecution,
   type GatewayOwnerExecution,
 } from './inference-gateway/observability';
+import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -669,6 +671,9 @@ export interface DispatchPendingGradingAuditsDeps {
   listScorecards?: typeof listScorecards;
   /** Current evaluator build used to preflight pinned spec-test-adequacy recipes. */
   getEvaluatorBuild?: () => BuildInfo;
+  /** Retain an exact, confined endpoint before allowing a build-bound launch. */
+  ensureRuntime?: typeof ensureGradingAuditRuntime;
+  retireRuntimes?: typeof retireUnusedGradingAuditRuntimes;
   /** Atomically close the old audit lease after a newer card supersedes it. */
   cancelSuperseded?: typeof cancelSupersededPendingGradingAuditAtomically;
   /** Atomically close a pending lease whose exact evidence-binding selector is no longer current. */
@@ -2168,6 +2173,33 @@ export async function dispatchPendingGradingAudits(
       }
     },
   );
+  const retainedRuntimes = new Map<string, GradingAuditRuntimeBinding>();
+  const runtimeFailures = new Map<string, string>();
+  const runtimeCandidates = cards.filter(card => currentPendingScorecard(card) &&
+    !pausedOwners.has(card.createdBy ?? '') &&
+    (explicitTargetIds.length === 0 || explicitTargetIds.includes(card.issueId)) &&
+    (recordedEvaluatorBuildForRecipe(card.rerunRecipe) || card.gradedGeneration) &&
+    (!hasCitedSpecEvidenceBindings(card) || evidenceById.get(card.issueId)?.auditTarget.current === true))
+    .sort(oldestFirst).slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
+  await mapWithConcurrency(runtimeCandidates, GRADING_AUDIT_DISPATCH_CONCURRENCY, async card => {
+    const build = recordedEvaluatorBuildForRecipe(card.rerunRecipe) ?? liveEvaluatorBuild;
+    try {
+      if (!workspaceId) throw new Error('Exact audit runtime requires a concrete workspace');
+      const runtime = await (deps.ensureRuntime ?? ensureGradingAuditRuntime)({
+        workspaceId, issueId: card.issueId, evaluatorBuild: build,
+        allowSeed: build.sha === liveEvaluatorBuild.sha && build.version === liveEvaluatorBuild.version,
+      });
+      if (!build.sha || runtime.evaluatorBuild.sha !== build.sha || runtime.evaluatorBuild.version !== build.version ||
+          runtime.expiresAtSec <= Math.floor((deps.now?.() ?? Date.now()) / 1000)) {
+        throw new Error('Retained audit endpoint has no current exact evaluator proof');
+      }
+      retainedRuntimes.set(card.issueId, runtime);
+      // Only measured endpoint readiness permits bypassing this host's drift exclusion.
+      evaluatorBuildDriftIds.delete(card.issueId);
+    } catch (error) {
+      runtimeFailures.set(card.issueId, error instanceof Error ? error.message : String(error));
+    }
+  });
   const pendingCards = cards.filter((card) => {
     if (evaluatorBuildDriftIds.has(card.issueId)) return false;
     if (!currentPendingScorecard(card)) return false;
@@ -2361,6 +2393,10 @@ export async function dispatchPendingGradingAudits(
       };
     }
 
+    if (runtimeFailures.has(issueId)) return {
+      issueId, rubricRef: card.rubricRef, state: 'failed',
+      reason: `exact audit endpoint unavailable: ${runtimeFailures.get(issueId)}`,
+    };
     markPhase('rubric-read');
     const rubric = await inDispatchWorkspace(() => resolveRubric(card.rubricRef));
     if (!rubric) {
@@ -2955,6 +2991,12 @@ export async function dispatchPendingGradingAudits(
               [INTERNAL_GRADING_AUDIT_TASK_DETAIL]: taskDetail,
             } as GradingAuditLaunchContext
           : gradingAuditorLaunchCtx(input.ctx);
+        const retainedRuntime = retainedRuntimes.get(issueId);
+        if (retainedRuntime) {
+          (launchContext as GradingAuditLaunchContext & {
+            [INTERNAL_GRADING_AUDIT_RUNTIME]?: GradingAuditRuntimeBinding;
+          })[INTERNAL_GRADING_AUDIT_RUNTIME] = retainedRuntime;
+        }
         markPhase('auditor-launch');
         const result = (await launch(
           {
@@ -2983,12 +3025,16 @@ export async function dispatchPendingGradingAudits(
               useFallback
                 ? {
                     ...(harnessResolved ? { role: 'judge' } : {}),
+                    ...(harnessResolved ? { stack: [...GRADING_INTEGRITY_JUDGE_STACK] } : {}),
                     agent: GRADING_AUDIT_FALLBACK.agent,
                     model: GRADING_AUDIT_FALLBACK.model,
                     effort: GRADING_AUDIT_FALLBACK.effort,
                     account: GRADING_AUDIT_FALLBACK.account,
                   }
-                : { ...(harnessResolved ? { role: 'judge' } : {}), account: GRADING_AUDIT_ACCOUNT },
+                : {
+                    ...(harnessResolved ? { role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK] } : {}),
+                    account: GRADING_AUDIT_ACCOUNT,
+                  },
             ],
             label: `grading-audit:${issueId}`,
             idempotencyKey: currentIdempotencyKey,
@@ -3277,6 +3323,17 @@ export async function reconcilePendingGradingAudits(
   deps: DispatchPendingGradingAuditsDeps = {},
 ): Promise<PendingGradingAuditDispatchResult> {
   await retireSettledGradingAuditTasks(input, deps);
+  if (input.ctx.workspaceId) await (deps.retireRuntimes ?? retireUnusedGradingAuditRuntimes)(
+    input.ctx.workspaceId,
+    async ids => {
+      if (!ids.length) return [];
+      const current = await runWithWorkspaceIfConcrete(input.ctx.workspaceId, () =>
+        (deps.listScorecards ?? listScorecards)({ issueIds: ids, includeSuperseded: true, includeRetracted: true, limit: 200 }));
+      // An incomplete read is unknown; preserve its references until the bounded deadline.
+      if (current.length !== ids.length) return ids;
+      return current.filter(card => currentPendingScorecard(card)).map(card => card.issueId);
+    },
+  );
   const result = await dispatchPendingGradingAudits(input, deps);
   const recertifications =
     input.recertifyStranded === false ? [] : await recertifyStrandedSpecAdequacyCards(input, result.receipts, deps);

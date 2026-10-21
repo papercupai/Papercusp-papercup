@@ -4240,10 +4240,39 @@ export function tryRematerializeFromArchive(sessionId: string | null | undefined
  * for tests. Restore request failures throw with their preserved cause; only
  * an explicit archive-absence verdict returns false.
  */
-export function ensureResumeTranscriptPresent(source: any, { home, rematerialize }?: {
+export function ensureResumeTranscriptPresent(source: any, { home, rematerialize, warn, }?: {
     home?: string | undefined;
     rematerialize?: typeof tryRematerializeFromArchive | undefined;
+    warn?: ((m: any) => boolean) | undefined;
 }): Promise<any>;
+/**
+ * WI-6554700010018540 (owner directive #2095): the newest transcript a claude
+ * CHAIN actually wrote, for when the native id the chain is bound to never wrote
+ * one.
+ *
+ * A carry-respawn re-binds the chain to its successor's freshly minted id BEFORE
+ * that child has proven it started (pty-host `respawned` +
+ * `respawn-binding-confirmed` fire at spawn). A successor that dies at startup —
+ * su-807ee9d7 on 2026-10-20: 549ms, "System prompt file not found" — leaves the
+ * chain bound to an id with no transcript on disk and nothing in the archive,
+ * while its predecessor's transcript sits intact in the same isolated config
+ * dir. Refusing there told the owner "nothing to resume" about an agent whose
+ * whole conversation was on disk.
+ *
+ * Scope is deliberately narrow: only the owner's ISOLATED `CLAUDE_CONFIG_DIR`
+ * (every transcript there belongs to this one chain — the shared ~/.claude
+ * holds other sessions' conversations and is never searched), only the
+ * project dir claude itself would resume from (`cwd` slugged as claude does),
+ * only top-level non-empty `<uuid>.jsonl` files (subagent transcripts live in
+ * subdirectories). Pure-ish (reads FS); exported for tests.
+ */
+export function newestClaudeChainTranscript(source: any, { home }?: {
+    home?: string | undefined;
+}): {
+    id: string;
+    path: string;
+    mtimeMs: number;
+} | null;
 /**
  * Is a claude session's isolated `CLAUDE_CONFIG_DIR` LAUNCH-READY, or merely
  * transcript-bearing? The .mjs mirror of operator-core's

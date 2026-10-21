@@ -19,11 +19,18 @@ vi.mock('./_ctx-opts', () => ({ ctxToPlanSourceOpts: async () => ({}) }));
 vi.mock('./source', () => ({
   resolvePlanScope: async () => ({ workspaceId: 'ws-resolved', harnessSlug: 'papercusp' }),
 }));
+const recordBlindReview = vi.fn();
+const recordBlindGapDispositions = vi.fn();
+const evaluateBlindReviewGate = vi.fn();
+const archiveBlindReviewScratchPlans = vi.fn();
 vi.mock('../../blind-review-gate', () => ({
-  evaluateBlindReviewGate: vi.fn(),
+  evaluateBlindReviewGate: (...a: unknown[]) => evaluateBlindReviewGate(...a),
   loadBlindReviewBrief: (...a: unknown[]) => loadBlindReviewBrief(...a),
-  recordBlindGapDispositions: vi.fn(),
-  recordBlindReview: vi.fn(),
+  recordBlindGapDispositions: (...a: unknown[]) => recordBlindGapDispositions(...a),
+  recordBlindReview: (...a: unknown[]) => recordBlindReview(...a),
+}));
+vi.mock('../../blind-review-scratch-plans', () => ({
+  archiveBlindReviewScratchPlans: (...a: unknown[]) => archiveBlindReviewScratchPlans(...a),
 }));
 
 import tool from './blind-review';
@@ -31,10 +38,13 @@ import tool from './blind-review';
 const SLUG = 'demo-plan-2026-10-11';
 const CTX = { workspaceId: '*', ownerId: 'su-author' };
 
-async function call(args: Record<string, unknown>) {
+// op 'post' and 'dispose' attribute the record to the caller, so they need a resolvable identity.
+const REVIEWER_CTX = { workspaceId: '*', uiClientId: 'su-reviewer', isSuperuser: true };
+
+async function call(args: Record<string, unknown>, ctx: Record<string, unknown> = CTX) {
   const parsed = tool.args.safeParse(args);
   if (!parsed.success) throw new Error(parsed.error.message);
-  const out = (await tool.handler(parsed.data as never, CTX as never)) as {
+  const out = (await tool.handler(parsed.data as never, ctx as never)) as {
     content: Array<{ text: string }>;
     isError?: boolean;
   };
@@ -44,6 +54,53 @@ async function call(args: Record<string, unknown>) {
 beforeEach(() => {
   runBlindReviewMintOp.mockReset();
   loadBlindReviewBrief.mockReset();
+  recordBlindReview.mockReset();
+  recordBlindGapDispositions.mockReset();
+  evaluateBlindReviewGate.mockReset();
+  archiveBlindReviewScratchPlans.mockReset();
+});
+
+// verification-system-improvements-2026-10-10#D-050 (5): the reviewer's scratch plans are
+// archived once its gaps are recorded, without ever putting the recorded review at risk.
+describe('plans:blind-review op post — scratch-plan cleanup', () => {
+  const PREFIX = 'blind-review-scratch-abc123def456-';
+  beforeEach(() => {
+    recordBlindReview.mockResolvedValue({ ok: true, id: 9, activationAuditSeq: 3, gapIds: [] });
+    recordBlindGapDispositions.mockResolvedValue({ ok: true, id: 10, activationAuditSeq: 3, gapIds: ['G-1'] });
+    evaluateBlindReviewGate.mockResolvedValue({ satisfied: true, acceptedReviewIds: [9], rejectedReviews: [] });
+  });
+
+  it('archives the poster\'s own scratch plans after recording the review, and reports the count', async () => {
+    archiveBlindReviewScratchPlans.mockResolvedValue({ prefix: PREFIX, archived: 2 });
+    const { body, isError } = await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
+    expect(isError).toBe(false);
+    expect(body).toMatchObject({ ok: true, id: 9, counts: true, scratchPlans: { prefix: PREFIX, archived: 2 } });
+    expect(archiveBlindReviewScratchPlans).toHaveBeenCalledTimes(1);
+    expect(archiveBlindReviewScratchPlans).toHaveBeenCalledWith({ workspaceId: 'ws-resolved', ownerId: 'su-reviewer' });
+    expect(recordBlindReview.mock.invocationCallOrder[0]).toBeLessThan(archiveBlindReviewScratchPlans.mock.invocationCallOrder[0]!);
+  });
+
+  it('reports a cleanup failure without voiding the recorded review', async () => {
+    archiveBlindReviewScratchPlans.mockRejectedValue(new Error('pg down'));
+    const { body, isError } = await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
+    expect(isError).toBe(false);
+    expect(body).toMatchObject({ ok: true, id: 9, scratchPlans: { error: 'scratch_cleanup_failed', message: 'pg down' } });
+  });
+
+  it('leaves the response unchanged for a poster with no scratch boundary, and never cleans up on dispose', async () => {
+    archiveBlindReviewScratchPlans.mockResolvedValue(null);
+    const posted = await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
+    expect(posted.body).not.toHaveProperty('scratchPlans');
+    await call({ slug: SLUG, op: 'dispose', dispositions: [{ reviewId: 9, gapId: 'G-1', itemId: 'P-001' }] }, REVIEWER_CTX);
+    expect(archiveBlindReviewScratchPlans).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a failed record before any cleanup', async () => {
+    recordBlindReview.mockResolvedValue({ ok: false, code: 'stale_activation_audit', message: 'stale' });
+    const { isError } = await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
+    expect(isError).toBe(true);
+    expect(archiveBlindReviewScratchPlans).not.toHaveBeenCalled();
+  });
 });
 
 describe('plans:blind-review op mint', () => {

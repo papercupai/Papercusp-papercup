@@ -106,9 +106,54 @@ function runProbe(args: string[], extraEnv: Record<string, string | undefined> =
   return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
+// The mutation-descriptor READER is not what this file measures. That binding
+// has its own suite (packages/operator-core/lib/agent-tools/testing/
+// mutation-probe-descriptor-export.test.ts). Without this pin the probe picks
+// its reader from the route env: runLockedProbe's PAPERCUSP_OPERATOR_URL, or
+// the gate host's PAPERCUSP_HONO_PORT. It then infers READER_REQUIRED=1 and
+// dies at the descriptor preflight against the LIVE build, before any
+// sweep-fence code runs. MEASURED (WI-6554700010018610): 15/52 cases red at
+// staging tip and at the frozen gate head while :3070 served d740fc3802,
+// whose libs/test-config predates the descriptor parser. The gate could not
+// promote main while this test failed, and the test could not pass until main
+// advanced. EXPORT=never returns before any reader is contacted, so every
+// case stays hermetic; a case that needs a reader overrides it via extraEnv.
+//
+// NODE_OPTIONS has the same problem. `npm run test:file` exports
+// --import=<root>/scripts/lib/committed-source-loader.mjs through it, and a
+// guard such as `node {}` inherits it. The loader then judges the scratch
+// subject against the scratch repo, which has no HEAD commit, and crashes
+// before the subject runs (baseline_exit=1). The two .mjs unparseable-mutant
+// cases were red under test:file only. The gate's test:affected passes the
+// loader as execArgv, not NODE_OPTIONS. A scratch subject is not repo source,
+// so the probe's children run without that loader.
+function withoutCommittedSourceLoader(nodeOptions: string | undefined): string | undefined {
+  if (!nodeOptions) return nodeOptions;
+  const tokens = nodeOptions.split(/\s+/).filter(Boolean);
+  const kept: string[] = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.includes('committed-source-loader')) continue; // --import=<path>
+    if (/^--(import|loader|experimental-loader|require)$|^-r$/.test(token) && tokens[i + 1]?.includes('committed-source-loader')) {
+      i += 1; // --import <path>
+      continue;
+    }
+    kept.push(token);
+  }
+  return kept.length ? kept.join(' ') : undefined;
+}
+
+const HERMETIC_PROBE_ENV: Record<string, string | undefined> = {
+  PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never',
+  PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: undefined,
+  PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: undefined,
+  NODE_OPTIONS: withoutCommittedSourceLoader(process.env.NODE_OPTIONS),
+};
+
 function probeEnv(extraEnv: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   return {
       ...process.env,
+      ...HERMETIC_PROBE_ENV,
       TMPDIR: scratch,
       // Scrub the AMBIENT value so every case below measures what the PROBE
       // does, not who launched vitest. This is not hypothetical: the
@@ -163,6 +208,9 @@ function runLockedProbe(
     PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
     // ...process.env above re-adds the launcher's marker after runProbe's scrub (WI-10005002).
     PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
+    // ...process.env also re-adds any ambient descriptor setting, and the
+    // PAPERCUSP_OPERATOR_URL above would select the live :3070 as the reader.
+    ...HERMETIC_PROBE_ENV,
     ...extraEnv,
   });
   // spawnSync reports null when the child died on a signal; -1 keeps that distinct from every real exit code.
@@ -714,6 +762,46 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain('target=copy-out');
     expect(out).not.toContain('SWEEP race');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('pins its own descriptor reader, so an ambient operator route cannot fail a case (WI-6554700010018610)', () => {
+    // Recurrence guard for HERMETIC_PROBE_ENV. Port 1 is a reader that
+    // can never answer. Without the pin, this route makes the probe infer
+    // READER_REQUIRED=1 and die at the descriptor preflight, exactly as the
+    // live :3070 did. The other route variables are blanked so an ambient
+    // gate-host PAPERCUSP_HONO_PORT cannot win the selection instead. The
+    // reader override and requirement are cleared here as well (the pin
+    // clears them too). MEASURED: when an outer mutation probe exported
+    // READER_HEALTH_URL, the inherited override let the unpinned mutant pass
+    // (verdict=survived, test_runs:21490908).
+    const { status, out } = runProbe(
+      ['--file', subject, '--mutate', 's/GOOD/BAD/', '--test', 'grep -q GOOD {}'],
+      {
+        PAPERCUSP_OPERATOR_BASE: '',
+        PAPERCUSP_HONO_PORT: '',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: undefined,
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: undefined,
+      },
+    );
+
+    expect(out).not.toContain('reader preflight failed');
+    expect(out).not.toContain('reason=reader-unavailable');
+    expect(status).toBe(0);
+    expect(out).toContain('target=copy-out');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it("strips only test:file's committed-source loader from the probe children's NODE_OPTIONS", () => {
+    // The two .mjs unparseable-mutant cases depend on this under test:file;
+    // under test:affected NODE_OPTIONS carries no loader, so pin the helper directly.
+    expect(withoutCommittedSourceLoader('--import=/r/scripts/lib/committed-source-loader.mjs --max-old-space-size=4096'))
+      .toBe('--max-old-space-size=4096');
+    expect(withoutCommittedSourceLoader('--import /r/scripts/lib/committed-source-loader.mjs --enable-source-maps'))
+      .toBe('--enable-source-maps');
+    expect(withoutCommittedSourceLoader('--import=/r/scripts/lib/committed-source-loader.mjs')).toBeUndefined();
+    expect(withoutCommittedSourceLoader('--import=tsx --max-old-space-size=4096')).toBe('--import=tsx --max-old-space-size=4096');
+    expect(withoutCommittedSourceLoader(undefined)).toBeUndefined();
   });
 
   it('rejects a sweep acknowledgement passed WITHOUT --in-tree', () => {

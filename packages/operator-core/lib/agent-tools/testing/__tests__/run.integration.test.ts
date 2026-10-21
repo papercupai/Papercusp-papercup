@@ -66,6 +66,7 @@ import runTool, {
   shouldIngestVitestLedgerInProcess,
   type TestingRunPhaseTimings,
   TEST_RUN_ID_READBACK_TIMEOUT_MS,
+  withInProcessTestingRunForegroundCeiling,
 } from '../run';
 import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing-run-store';
 import { listDirtyFilesRecursive, readRestrictedWindowHoldings, type HoldRunGit } from '../../../personal-vault/git-sync-hold';
@@ -83,12 +84,22 @@ import type { TestRunArtifactPaths, TestRunDeadline } from '../run-artifacts';
  * overrides it with a fake `projectDir` to exercise the wrong-tree path.
  */
 function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
-  return (
+  const invoke = () => (
     runTool as unknown as {
       handler: (a: unknown, c: unknown) => Promise<unknown>;
     }
   ).handler(args, ctx);
+  // WI-6554700010018388: this call is in-process, so no MCP transport cap applies. A case that
+  // authors no timeoutMs is checking verdict CLASSIFICATION, so it gets a ceiling that box load
+  // cannot push a ~20s vitest cold start past. A case that passes timeoutMs is testing the budget
+  // itself, so it keeps the transport clamp.
+  return args.timeoutMs === undefined
+    ? withInProcessTestingRunForegroundCeiling(IN_PROCESS_CLASSIFICATION_CEILING_MS, invoke)
+    : invoke();
 }
+
+/** Below every classification case's own vitest timeout (>=120s) minus the handler's 20s phase headroom. */
+const IN_PROCESS_CLASSIFICATION_CEILING_MS = 90_000;
 
 /** The envelope testing:run returns (success and error shapes together). */
 interface RunResult {
@@ -149,6 +160,8 @@ const OPERATOR_CORE_RELATIVE_GREEN_TARGET = 'lib/testing-flakiness.test.ts';
 const FAILING_ASSERTION_TARGET =
   'packages/operator-core/lib/agent-tools/testing/__tests__/run-failure-fixture.test.ts';
 const FAILING_ASSERTION_TARGET_VAR = 'PAPERCUSP_TESTING_RUN_ASSERTION_FIXTURE';
+const HANG_TARGET = 'packages/operator-core/lib/agent-tools/testing/__tests__/run-hang-fixture.test.ts';
+const HANG_TARGET_VAR = 'PAPERCUSP_TESTING_RUN_HANG_FIXTURE';
 
 /**
  * A real in-repo suite that collects tests and executes NONE of them unless its env var is set
@@ -173,7 +186,15 @@ const GREEN_TARGET_TEST_NAME_FRAGMENT = 'computeFlakiness';
  * Chosen for being a pure readFileSync text guard: fast, PG-free, no Tauri/Xvfb.
  */
 const CROSS_WORKSPACE_GREEN_TARGET = 'apps/operator/lib/verify-tauri-headless-port-straggler.test.ts';
-const NODE_TEST_TARGET = 'papercusp-desktop/test/mac-vm-health.test.js';
+/**
+ * A real node:test file the router runs with `node --test`. It must stay FAST: every case
+ * using it goes through the public handler, whose foreground budget is about 25s. The previous
+ * target, mac-vm-health.test.js, grew to 33 cases of about 1.4s each (24.9s for the bare
+ * `node --test` on 2026-10-20), so the distill and byFile cases timed out on every run and
+ * reported `timeout` instead of their real verdict (WI-6554700010018388). This one is 4 pure
+ * in-process cases (~0.3s) with no child processes.
+ */
+const NODE_TEST_TARGET = 'papercusp-desktop/test/docs-search-server-terminal-state.test.js';
 
 // The real SideStage checkout is the measured external-Hive case. Keep the target discovery
 // dynamic so this suite remains portable to boxes that do not have a local Hive seed; the test
@@ -772,7 +793,10 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
       [sibling, 'sibling'],
     ] as const) {
       await mkdir(join(root, '.git'), { recursive: true });
-      await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+      // `type: module` like every routed papercusp workspace. Without it vite loads
+      // vitest.config.ts through CommonJS, and the committed-source loader refuses the bundled text
+      // (EI filed from WI-6554700010018388). This case tests mixed-checkout batching, not config loading.
+      await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, type: 'module', workspaces: [] }));
       await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
       await writeFile(
         join(root, `${label}.test.ts`),
@@ -1128,10 +1152,15 @@ describe('bounded foreground process termination', () => {
       expect(existsSync(reportDir)).toBe(true);
 
       close();
-      await vi.waitFor(() => expect(existsSync(reportDir)).toBe(false));
+      // The run's artifact packet is RETAINED by design (TestRunArtifactPacket.finish stages
+      // 'retained'). A late close records its cleanup receipt in the packet. It does not delete
+      // the evidence (WI-6554700010018388).
+      const packetDir = dirname(reportDir);
+      await vi.waitFor(() => expect(existsSync(join(packetDir, 'late-cleanup.json'))).toBe(true), { timeout: 10_000 });
+      expect(existsSync(reportDir)).toBe(true);
     } finally {
       close();
-      if (reportDir) await rm(reportDir, { recursive: true, force: true });
+      if (reportDir) await rm(basename(reportDir) === 'reports' ? dirname(reportDir) : reportDir, { recursive: true, force: true });
     }
   });
 });
@@ -2416,17 +2445,26 @@ describe('testing:run (integration)', () => {
   // `error:'timeout'` and reasonably believed nothing was still running, then
   // (per the tool's own advice) launched a SECOND concurrent run of the same suite.
   //
-  // A timeoutMs at zod's floor (1000ms) reliably fires before ANY real vitest cold
-  // start completes, so this deterministically exercises the timeout branch rather
-  // than racing a fast pass. Two green targets (spanning two workspaces) make the
-  // run slower still, widening the margin.
+  // The first target HANGS (env-gated fixture), so the child is guaranteed to still be running
+  // when the foreground budget expires, whatever the box load. The budget must also outlast the
+  // handler's preflight. That preflight is charged to the child cutoff, so the old 1000ms floor
+  // returned deadline_exhausted under load before any child spawned (WI-6554700010018388).
+  // Two workspaces keep the multi-file detached-recovery hint in play.
   it('kills the WHOLE process tree on the foreground timeout — no orphan survives', async () => {
-    const out = await body(
-      call({
-        files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET],
-        timeoutMs: 1000,
-      }),
-    );
+    const prior = process.env[HANG_TARGET_VAR];
+    process.env[HANG_TARGET_VAR] = '1';
+    let out: RunResult;
+    try {
+      out = await body(
+        call({
+          files: [HANG_TARGET, CROSS_WORKSPACE_GREEN_TARGET],
+          timeoutMs: 15_000,
+        }),
+      );
+    } finally {
+      if (prior === undefined) delete process.env[HANG_TARGET_VAR];
+      else process.env[HANG_TARGET_VAR] = prior;
+    }
 
     expect(out.ok).toBe(false);
     expect(out.error).toBe('timeout');
@@ -2450,7 +2488,7 @@ describe('testing:run (integration)', () => {
 
     const survivors = await pidsTaggedWithRun(out.runId as string);
     expect(survivors).toEqual([]);
-  }, 30_000);
+  }, 90_000);
 
   // EI-20949515346526475: code:run can terminate its worker while an inner testing:run
   // handler is still blocked in the router. The inner handler must honor that caller-owned

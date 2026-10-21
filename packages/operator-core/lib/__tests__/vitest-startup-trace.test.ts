@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createTextCollector } from '../child-output';
 import { loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 
 describe('focused runner startup tracing', () => {
@@ -41,10 +42,10 @@ describe('focused runner startup tracing', () => {
             if (entered && error?.signal === 'SIGKILL') resolve();
             else reject(error ?? new Error('interrupted writer unexpectedly returned'));
           });
-        child.stdout?.on('data', chunk => {
-          output += String(chunk);
+        createTextCollector(child.stdout, { retainText: false, onDecodedText: text => {
+          output += text;
           if (output.includes('NATIVE_WRITE_OPEN')) { entered = true; child.kill('SIGKILL'); }
-        });
+        } });
       });
       expect(entered).toBe(true);
       const names = readdirSync(`${out}.native-processes`);

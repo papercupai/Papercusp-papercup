@@ -16,6 +16,7 @@ import {
   lstatSync,
   realpathSync,
   readlinkSync,
+  utimesSync,
 } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -167,6 +168,7 @@ import {
   stripKickoffPositional,
   claudeStoreHasSession,
   ensureResumeTranscriptPresent,
+  newestClaudeChainTranscript,
   sessionHasTranscript,
   sessionIsResumable,
   sessionTranscriptFile,
@@ -1470,6 +1472,41 @@ describe("finalizeFreshSuArgs (fresh SU kickoff reaches the backend)", () => {
       );
     } finally {
       rmSync(provenanceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes the kickoff ledger under the bootstrap response home, not the parent env home", () => {
+    const parentHome = mkdtempSync(join(tmpdir(), "su-parent-home-"));
+    const childHome = mkdtempSync(join(tmpdir(), "su-child-home-"));
+    const parentDir = join(parentHome, "turn-provenance");
+    const childDir = join(childHome, "turn-provenance");
+    const previousHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = parentHome;
+      const result = finalizeFreshSuArgs(
+        "claude",
+        [],
+        {
+          envelopeEnv: {
+            PAPERCUSP_SID: "su-child-home-1",
+            PAPERCUSP_HOME: childHome,
+          },
+        },
+        parseArgs(["--no-picker", "--agent=claude"]),
+        {
+          PAPERCUSP_KICKOFF_PROMPT: KICK,
+          PAPERCUSP_HOME: parentHome,
+        },
+      );
+
+      expect(result.kickoffSeeded).toBe(true);
+      expect(existsSync(join(childDir, "su-child-home-1.jsonl"))).toBe(true);
+      expect(existsSync(join(parentDir, "su-child-home-1.jsonl"))).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousHome;
+      rmSync(parentHome, { recursive: true, force: true });
+      rmSync(childHome, { recursive: true, force: true });
     }
   });
 });
@@ -12653,6 +12690,87 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
         { home, rematerialize },
       ),
     ).resolves.toBe(false);
+  });
+
+  describe("a successor that died at startup (WI-6554700010018540, owner directive #2095)", () => {
+    // su-807ee9d7, 2026-10-20 20:05Z: a carry-respawn bound the chain to its
+    // successor's fresh id 5c35955f…, the successor died after 549ms, and
+    // `psu --resume su-807ee9d7-…` said "nothing to resume" while the conversation
+    // it was continuing (5b1a5ba3….jsonl) sat intact in the same config dir.
+    const DEAD = "5c35955f-eb03-4f1f-addd-b36e2e1816fb";
+    const PRED = "5b1a5ba3-5011-4b4e-96c6-b79f2b221872";
+    const OLDER = "11111111-2222-4333-8444-555555555555";
+    const writeTranscript = (dir: string, id: string, mtimeSec: number, body = `{"sessionId":"${id}"}\n`) => {
+      const f = join(dir, `${id}.jsonl`);
+      writeFileSync(f, body);
+      utimesSync(f, mtimeSec, mtimeSec);
+      return f;
+    };
+
+    it("resumes the newest transcript the chain actually wrote, and says so", async () => {
+      const owner = "su-startup-death";
+      const proj = projDirFor(owner);
+      mkdirSync(proj, { recursive: true });
+      writeTranscript(proj, OLDER, 1_000);
+      writeTranscript(proj, PRED, 2_000);
+      const source: Record<string, unknown> = { agent: "claude", sessionId: DEAD, coordOwnerId: owner, cwd: "/d" };
+      const rematerialize = vi.fn(async () => null);
+      const warn = vi.fn();
+      await expect(ensureResumeTranscriptPresent(source, { home, rematerialize, warn })).resolves.toBe(true);
+      // The archive is still asked first — a restorable own transcript always wins.
+      expect(rematerialize).toHaveBeenCalledWith(DEAD, "claude", { sourceSession: source, home });
+      expect(source.sessionId).toBe(PRED);
+      expect(source.reboundFromSessionId).toBe(DEAD);
+      expect(sessionHasTranscript(source, { home })).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(`${DEAD} never wrote a transcript`);
+      expect(String(warn.mock.calls[0][0])).toContain(PRED);
+    });
+
+    it("prefers the session's own archived transcript over a predecessor", async () => {
+      const owner = "su-own-archive";
+      const proj = projDirFor(owner);
+      mkdirSync(proj, { recursive: true });
+      writeTranscript(proj, PRED, 2_000);
+      const source: Record<string, unknown> = { agent: "claude", sessionId: DEAD, coordOwnerId: owner, cwd: "/d" };
+      const rematerialize = vi.fn(async () => {
+        writeTranscript(proj, DEAD, 1_000);
+        return { ok: true, written: 1 };
+      });
+      await expect(ensureResumeTranscriptPresent(source, { home, rematerialize, warn: vi.fn() })).resolves.toBe(true);
+      expect(source.sessionId).toBe(DEAD);
+      expect(source.reboundFromSessionId).toBeUndefined();
+    });
+
+    it("never borrows another chain's conversation: no isolated config dir, another project, empty or subagent files", async () => {
+      // No coordOwnerId/configDir ⇒ only the shared ~/.claude store could answer,
+      // and it holds OTHER sessions' conversations — refuse rather than guess.
+      const shared = join(home, ".claude", "projects", "-d");
+      mkdirSync(shared, { recursive: true });
+      writeTranscript(shared, PRED, 2_000);
+      const sharedOnly: Record<string, unknown> = { agent: "claude", sessionId: DEAD, cwd: "/d" };
+      await expect(
+        ensureResumeTranscriptPresent(sharedOnly, { home, rematerialize: vi.fn(async () => null), warn: vi.fn() }),
+      ).resolves.toBe(false);
+      expect(sharedOnly.sessionId).toBe(DEAD);
+
+      // A transcript under a DIFFERENT working directory is not resumable from this cwd;
+      // an empty file and a subagent transcript (a subdirectory) are not conversations.
+      const owner = "su-wrong-project";
+      const other = join(home, ".papercusp", "session-claude", owner, "projects", "-elsewhere");
+      const proj = projDirFor(owner);
+      mkdirSync(other, { recursive: true });
+      mkdirSync(join(proj, PRED, "subagents"), { recursive: true });
+      writeTranscript(other, PRED, 2_000);
+      writeTranscript(proj, OLDER, 3_000, "");
+      writeTranscript(join(proj, PRED, "subagents"), "22222222-2222-4333-8444-555555555555", 4_000);
+      const source: Record<string, unknown> = { agent: "claude", sessionId: DEAD, coordOwnerId: owner, cwd: "/d" };
+      expect(newestClaudeChainTranscript(source, { home })).toBeNull();
+      await expect(
+        ensureResumeTranscriptPresent(source, { home, rematerialize: vi.fn(async () => null), warn: vi.fn() }),
+      ).resolves.toBe(false);
+      expect(source.sessionId).toBe(DEAD);
+    });
   });
 
   it("pins a native resume to the relocated archive root before checking restored bytes", async () => {

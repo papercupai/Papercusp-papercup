@@ -348,6 +348,14 @@ export interface DeliveryWork extends DeliveryRow {
    * cell-backed predicate fire or the reading could not be taken in budget.
    */
   cellWakeFoldBlock?: string;
+  /**
+   * WI-6554700010018536 — for a `coord:inbox-wake:<owner>` delivery only: a one-line
+   * reminder of the recipient's held, unfinished work-items (and, in an autonomy mode
+   * with no loop armed, that nothing will wake it after this turn). Read at delivery
+   * time in the async path; absent when the recipient holds nothing or the read failed
+   * or ran out of budget ⇒ the wake body is byte-identical.
+   */
+  inboxWakeHeldWorkReminder?: string;
 }
 
 /** The wake executor's verdict for one delivery attempt. */

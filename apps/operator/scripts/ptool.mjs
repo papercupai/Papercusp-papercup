@@ -1996,6 +1996,12 @@ export const PTOOL_PLANS_GET_TIMEOUT_MS = 130_000;
 // (or the server's bounded timeout) wins the race.
 export const PTOOL_PLANS_AUDIT_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
+// EI-23705430436787379: plans:evaluate-spec-test-adequacy declares a 120s
+// handler budget, and MCP adds a 5s settlement buffer. Keep ptool beyond that
+// effective deadline on both direct and tools:invoke routes so a valid
+// evaluation returns its typed result instead of an outcome-unknown timeout.
+export const PTOOL_PLANS_EVALUATE_SPEC_TEST_ADEQUACY_TIMEOUT_MS = 130_000;
+
 // `plans:new` writes the plan under a slug lock and opts into idempotent
 // completion because the write may finish after the MCP transport's ~55s
 // boundary. The ordinary 30s ptool deadline can abandon that committed write
@@ -2349,11 +2355,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // Observe the bounded dispatch receipt before the client deadline, including
   // through tools:invoke, using the existing foreground transport allowance.
   ['plans:bind-spec-evidence', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
-  // EI-25924578200401207: a successful spec-test adequacy evaluation took
-  // 30.906s server-side, beyond ptool's ordinary 30s client cutoff. Keep both
-  // direct and tools:invoke routes on the foreground allowance so the typed
-  // evaluator result wins instead of surfacing an outcome-unknown timeout.
-  ['plans:evaluate-spec-test-adequacy', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-23705430436787379: the evaluator declares timeoutSec=120, giving MCP
+  // a 125s deadline with settlement buffer. Keep direct and tools:invoke calls
+  // above that full server budget so the typed result wins the race.
+  ['plans:evaluate-spec-test-adequacy', PTOOL_PLANS_EVALUATE_SPEC_TEST_ADEQUACY_TIMEOUT_MS],
   // EI-25882027630574649: the claim handler declares timeoutSec=120, giving
   // MCP a 125s deadline with settlement buffer. A successful claim took
   // 69.467s, beyond ptool's old 60s budget; cover direct and wrapped calls.

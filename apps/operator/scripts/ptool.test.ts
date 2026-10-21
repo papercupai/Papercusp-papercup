@@ -79,6 +79,7 @@ import {
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_PLANS_AUDIT_TIMEOUT_MS,
+  PTOOL_PLANS_EVALUATE_SPEC_TEST_ADEQUACY_TIMEOUT_MS,
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_PLANS_START_TIMEOUT_MS,
@@ -953,11 +954,21 @@ describe('ptool call deadlines', () => {
       args,
     });
 
-    // EI-25924578200401207: the server completed successfully at 30.906s,
-    // after the old 30s ptool client deadline had already elapsed.
-    expect(direct).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // The evaluator owns 120s and MCP adds 5s for settlement. Read the
+    // declaration so a future server-budget increase cannot silently outrun
+    // this client again (EI-23705430436787379).
+    const evaluatorSource = readFileSync(new URL(
+      '../../../packages/operator-core/lib/agent-tools/plans/evaluate-spec-test-adequacy.ts',
+      import.meta.url,
+    ), 'utf8');
+    const declaredTimeout = evaluatorSource.match(/timeoutSec:\s*(\d+)/);
+    expect(declaredTimeout).not.toBeNull();
+    const serverDeadlineMs = Number(declaredTimeout![1]) * 1000 + 5_000;
+
+    expect(PTOOL_PLANS_EVALUATE_SPEC_TEST_ADEQUACY_TIMEOUT_MS).toBe(130_000);
+    expect(direct).toBe(PTOOL_PLANS_EVALUATE_SPEC_TEST_ADEQUACY_TIMEOUT_MS);
+    expect(direct).toBeGreaterThan(serverDeadlineMs);
     expect(deferred).toBe(direct);
-    expect(direct).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
   it('lets logs:read return its structured journal timeout on both call routes', () => {

@@ -135,22 +135,25 @@ export async function resolveWindowIdForPid(pid: number): Promise<string | null>
 }
 
 /**
- * Pure matcher over `wmctrl -lp` stdout: return the FIRST window id whose TITLE
- * contains `fragment`, else null. Columns are `<win-id> <desktop> <pid> <host>
+ * Pure matcher over `wmctrl -lp` stdout: return a window id only when exactly
+ * one TITLE contains `fragment`. Columns are `<win-id> <desktop> <pid> <host>
  * <title…>` and the title is free-form (contains spaces + unicode) — so we skip
- * exactly the four leading fields and test the WHOLE remaining title. Extracted
- * as a pure fn so the parse is unit-testable without shelling out to wmctrl.
+ * exactly the four leading fields and test the WHOLE remaining title. An
+ * ambiguous fragment is unsafe: another terminal may mention the target owner
+ * in its own title or intent. Extracted as a pure fn so the parse is unit-
+ * testable without shelling out to wmctrl.
  */
 export function matchWindowIdInWmctrlOutput(stdout: string, fragment: string): string | null {
   const wanted = fragment.trim();
   if (!wanted) return null;
+  const matches = new Set<string>();
   for (const line of stdout.split('\n')) {
     const m = line.match(/^(\S+)\s+\S+\s+\S+\s+\S+\s+(.*)$/);
     if (!m) continue;
     const [, winId, title] = m;
-    if (title.includes(wanted)) return winId;
+    if (title.includes(wanted)) matches.add(winId);
   }
-  return null;
+  return matches.size === 1 ? [...matches][0] ?? null : null;
 }
 
 export async function resolveWindowIdForTitleFragment(fragment: string): Promise<string | null> {
@@ -176,8 +179,8 @@ export async function resolveWindowIdForTitleFragment(fragment: string): Promise
     // windows-desktop-windows.ts's module doc). Don't regress this.
     try {
       const windows = await listWindowsByTitle();
-      const match = windows.find((w) => w.title.includes(wanted));
-      return match ? match.title : null;
+      const matches = windows.filter((w) => w.title.includes(wanted));
+      return matches.length === 1 ? matches[0]?.title ?? null : null;
     } catch {
       return null;
     }

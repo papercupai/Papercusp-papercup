@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +88,7 @@ let port = 0;
 const seen: Seen[] = [];
 let tmpRoot = '';
 let repo = '';
+let clone = '';
 let home = '';
 
 function sse(res: ServerResponse, data: unknown) {
@@ -110,7 +111,7 @@ function handle(req: IncomingMessage, res: ServerResponse) {
         sse(res, { ok: false, error: 'No harness specified. Pass `harness` or run in a harness-scoped session.' });
         return;
       }
-      const bound = (args.paths as string[]).includes(BOUND);
+      const bound = (args.paths as string[]).includes(BOUND) && args.checkoutRoot === repo;
       sse(res, bound ? { ok: true, clauses: CLAUSES, totalClauses: 32, holders: HOLDERS } : { ok: true, clauses: [], totalClauses: 0, holders: [] });
     } else if (name === 'coord:send') {
       sse(res, { ok: true, results: [{ ok: true, msg_id: 'coord-send-test' }] });
@@ -123,9 +124,10 @@ function handle(req: IncomingMessage, res: ServerResponse) {
 // `harness: null` runs the hook in a session with NO harness slug in its env.
 function runHook(
   file: string,
-  opts: { hook?: string; operatorUrl?: string; harness?: string | null } = {},
+  opts: { hook?: string; operatorUrl?: string; harness?: string | null; editRoot?: string } = {},
 ): Promise<{ code: number | null; out: string }> {
   return new Promise((resolveRun) => {
+    const editRoot = opts.editRoot ?? repo;
     const env = { ...process.env };
     delete env.PAPERCUSP_LOCK_SID;
     delete env.CODEX_HOME;
@@ -138,12 +140,12 @@ function runHook(
       PAPERCUSP_OPERATOR_URL: opts.operatorUrl ?? `http://127.0.0.1:${port}`,
       PAPERCUSP_STAGING_OPERATOR_URL: opts.operatorUrl ?? `http://127.0.0.1:${port}`,
     });
-    const child = spawn(process.execPath, [opts.hook ?? HOOK], { cwd: repo, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [opts.hook ?? HOOK], { cwd: editRoot, env, stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '';
     child.stdout.on('data', (c) => (out += c));
     child.on('close', (code) => resolveRun({ code, out }));
     child.stdin.end(
-      JSON.stringify({ tool_name: 'Edit', cwd: repo, tool_input: { file_path: join(repo, file) }, tool_response: { success: true } }),
+      JSON.stringify({ tool_name: 'Edit', cwd: editRoot, tool_input: { file_path: join(editRoot, file) }, tool_response: { success: true } }),
     );
   });
 }
@@ -155,6 +157,7 @@ function advisoryOf(out: string): string | null {
 
 function resetState() {
   rmSync(join(repo, '.papercusp'), { recursive: true, force: true });
+  rmSync(join(clone, '.papercusp'), { recursive: true, force: true });
   seen.length = 0;
 }
 
@@ -164,13 +167,17 @@ beforeAll(async () => {
   port = (server.address() as AddressInfo).port;
   tmpRoot = mkdtempSync(join(tmpdir(), 'proof-stale-nudge-'));
   repo = join(tmpRoot, 'repo');
+  clone = join(tmpRoot, 'clone');
   home = join(tmpRoot, 'home');
   mkdirSync(join(repo, 'lib'), { recursive: true });
   mkdirSync(join(home, '.papercusp'), { recursive: true });
   writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token\n');
   execFileSync('git', ['init', '-q', repo]);
+  mkdirSync(join(clone, 'lib'), { recursive: true });
+  execFileSync('git', ['init', '-q', clone]);
   writeFileSync(join(repo, BOUND), 'export const x = 1;\n');
   writeFileSync(join(repo, UNBOUND), 'export const y = 1;\n');
+  writeFileSync(join(clone, BOUND), 'export const x = 1;\n');
 });
 
 afterAll(async () => {
@@ -195,8 +202,18 @@ describe('posttooluse-proof-stale-nudge (real hook process)', () => {
     expect(msg).toContain('Holders across all 32 clause(s): su-peer0002 30, su-peer0001 1, su-editor01 (you) 1 (1 BAR).');
     const lookup = seen.find((s) => s.tool === 'plans:evidence-measuring-paths');
     // WI-10004549: the lookup carries the session's harness — without it the real tool refuses.
-    expect(lookup?.args).toEqual({ harness: HARNESS, paths: [BOUND] });
+    expect(lookup?.args).toEqual({ harness: HARNESS, checkoutRoot: repo, paths: [BOUND] });
     expect(lookup?.client).toBe(EDITOR);
+  });
+
+  it('editing the same relative path in a different checkout does not stale canonical proof', async () => {
+    resetState();
+    const { code, out } = await runHook(BOUND, { editRoot: clone });
+    expect(code).toBe(0);
+    expect(out.trim()).toBe('');
+    const lookup = seen.find((s) => s.tool === 'plans:evidence-measuring-paths');
+    expect(lookup?.args).toEqual({ harness: HARNESS, checkoutRoot: realpathSync(clone), paths: [BOUND] });
+    expect(seen.filter((s) => s.tool === 'coord:send')).toHaveLength(0);
   });
 
   it('a session with NO harness slug skips silently: no operator call, no breaker, no advisory (WI-10004549)', async () => {

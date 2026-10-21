@@ -1151,7 +1151,13 @@ async function runInteractiveHealStep(
         }
       }
     } else {
-      sent = await discovery.mcpReconnectViaPty(step.ownerId);
+      // This sweep is only entered after the interactive detector has evidence
+      // of a toolless session (recent assistant turns without an agent-origin
+      // MCP call). Claude can still render the server as "connected" while its
+      // tools/list binding is gone, so the ordinary idempotent macro would
+      // close the dialog without pressing Reconnect. Carry the explicit force
+      // bit through the host envelope for this evidence-backed heal.
+      sent = await discovery.mcpReconnectViaPty(step.ownerId, 'papercusp-su', { force: true });
     }
     console.warn(
       `[mcp-dark-watchdog] interactive DARK ${step.ownerId} — heal ${sent}` +

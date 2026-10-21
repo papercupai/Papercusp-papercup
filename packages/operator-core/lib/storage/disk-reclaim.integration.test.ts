@@ -19,6 +19,7 @@ import { CACHEDIR_TAG_SIGNATURE, type RetentionClass } from './retention-policy'
 import { inspectRetentionTrees } from './disk-consumer-census';
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
 import { scanProcHolders } from '../release-cut-reclaim';
+import { readOpenWorkItemEvidenceReferences, readRetentionPins, renewWorkItemEvidencePins } from './retention-pins';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
 
 const inspectionProbe = vi.hoisted(() => ({ before: undefined as ((path: string) => (() => void) | undefined) | undefined }));
@@ -170,6 +171,58 @@ const fixtureBuildRemover = (entry: RetentionEntry, ms: number, _observe?: (timi
   }), undefined, dryRun);
 
 describe('retention on a real fixture tree', () => {
+  it('retains old evidence bound to an open acceptance item and reclaims it after terminal lease expiry', async () => {
+    const { root, options } = await setup();
+    const db = await createFreshPgDb('open-evidence-retention');
+    const home = join(root, 'home'), repository = join(fixture!, 'repo'), dir = join(fixture!, 'leases');
+    const evidenceRoot = join(home, '.papercusp/evidence');
+    const retained = join(evidenceRoot, 'WI-open-native'), unrelated = join(evidenceRoot, 'unrelated');
+    await mkdir(retained, { recursive: true }); await mkdir(unrelated);
+    await writeFile(join(retained, 'result.json'), '{"passed":true}'); await writeFile(join(unrelated, 'data'), 'expired');
+    await mkdir(join(repository, 'docs/evidence'), { recursive: true });
+    const evidenceRef = 'docs/evidence/native.json';
+    await writeFile(join(repository, evidenceRef), JSON.stringify({ retainedEvidence: {
+      root: '.papercusp/evidence/WI-open-native', pathBase: 'Operating account home directory',
+    } }));
+    const nowMs = options.nowMs + 48 * 3_600_000;
+    const repositories = new Map([['fixture', repository]]);
+    try {
+      await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared;
+        CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text);
+        CREATE TABLE harness_shared.spec_evidence_bindings (workspace_id text, harness_slug text, work_item_id text, evidence_ref text, retracted_at timestamptz)`);
+      await db.sql`INSERT INTO harness_shared.work_items VALUES ('fixture', 'fixture', 'WI-open', 'blocked'),
+        ('fixture', 'fixture', 'WI-done', 'done'), ('foreign', 'fixture', 'WI-foreign', 'open'),
+        ('fixture', 'fixture', 'WI-retracted', 'open')`;
+      await db.sql`INSERT INTO harness_shared.spec_evidence_bindings VALUES
+        ('fixture', 'fixture', 'WI-open', ${evidenceRef}, NULL), ('fixture', 'fixture', 'WI-done', ${evidenceRef}, NULL),
+        ('fixture', 'fixture', 'WI-foreign', ${evidenceRef}, NULL), ('fixture', 'fixture', 'WI-retracted', ${evidenceRef}, now())`;
+      expect(await readOpenWorkItemEvidenceReferences(db.sql, 'fixture')).toEqual([
+        { harness_slug: 'fixture', work_item_id: 'WI-open', evidence_ref: evidenceRef },
+      ]);
+      const readProtection = async () => {
+        const refs = await readOpenWorkItemEvidenceReferences(db.sql, 'fixture');
+        const renewal = await renewWorkItemEvidencePins(refs, { repositories, home, dir, nowMs });
+        expect(renewal.missing).toEqual([]);
+        return { paths: [], pins: readRetentionPins({ dir, nowMs }).pins };
+      };
+      const policy = options.policy.map(cls => ({ ...cls, roots: [evidenceRoot] }));
+      const receipt = await runDiskReclaimOnce({ ...options, nowMs, policy, roots: [{ path: evidenceRoot, classId: 'fixture' }], readProtection });
+      expect(receipt.errors).toEqual([]);
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'protected' }));
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path: unrelated, status: 'removed' }));
+      expect(JSON.parse(await readFile(join(retained, 'result.json'), 'utf8'))).toEqual({ passed: true });
+      await expect(stat(unrelated)).rejects.toMatchObject({ code: 'ENOENT' });
+      await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = 'WI-open'`;
+      expect(await readOpenWorkItemEvidenceReferences(db.sql, 'fixture')).toEqual([]);
+      const later = nowMs + 73 * 3_600_000;
+      const final = await runDiskReclaimOnce({ ...options, nowMs: later, policy, roots: [{ path: evidenceRoot, classId: 'fixture' }],
+        readProtection: async () => ({ paths: [], pins: readRetentionPins({ dir, nowMs: later }).pins }) });
+      expect(final.errors).toEqual([]);
+      expect(final.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'removed' }));
+      await expect(stat(retained)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await db.cleanup(); }
+  }, 120_000);
+
   it.each(['local', 'native'])('keeps a hardlinked population already within its cap (%s)', async route => {
     const { root, options } = await setup();
     const tree = join(root, 'tree'); await mkdir(tree);

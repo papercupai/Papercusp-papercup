@@ -201,6 +201,9 @@ export const COMPLETION_AUDITS = [
   'intermittent-underevidenced',
   'reconciler-sourced',
   'claim-since-falsified',
+  // change-kind-declared-proof-2026-10-15 R-4: a close whose filesChanged touches a
+  // layout-bearing file while its latest change-kind declaration omits 'ui'.
+  'change-kind-mismatch',
 ] as const;
 export type CompletionAudit = (typeof COMPLETION_AUDITS)[number];
 
@@ -497,6 +500,31 @@ function geometryUnverifiedWhereSql(sql: OrgSql, filesChangedExpr: unknown, veri
 }
 
 /**
+ * change-kind-declared-proof-2026-10-15 R-4 — the `change-kind-mismatch` WHERE fragment. Reuses
+ * the same layout-bearing extension test as {@link touchesLayoutBearingFiles} (`.css`/`.tsx`/
+ * `.jsx`), and reads the item's LATEST declaration from the append-only declaration history: a
+ * row matches when that declaration exists and does not include 'ui'. An item with no
+ * declaration is outside this bucket (it predates the change-kind gate, or never declared).
+ */
+function changeKindMismatchWhereSql(sql: OrgSql, filesChangedExpr: unknown, workspaceIdExpr: unknown, featureIdExpr: unknown) {
+  return sql`(
+    EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(COALESCE(${filesChangedExpr as string}, '[]'::jsonb)) AS f
+       WHERE f ~* '\\.(css|tsx|jsx)$'
+    )
+    AND EXISTS (
+      SELECT 1 FROM (
+        SELECT d.kinds FROM harness_shared.work_item_change_kind_declarations d
+         WHERE d.workspace_id = ${workspaceIdExpr as string} AND d.feature_id = ${featureIdExpr as string}
+         ORDER BY d.declared_at DESC, d.id DESC
+         LIMIT 1
+      ) latest
+       WHERE NOT ('ui' = ANY(latest.kinds))
+    )
+  )`;
+}
+
+/**
  * EI-18716652701919665 — title patterns that classify a work-item as a known-intermittent
  * bug. Word-bounded so e.g. "flaky" doesn't also match inside an unrelated word.
  */
@@ -630,6 +658,14 @@ export function auditPredicateSql(sql: OrgSql, audit: WorkItemAudit) {
       sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'verifiedHow'`),
     );
   }
+  if (audit === 'change-kind-mismatch') {
+    return changeKindMismatchWhereSql(
+      sql,
+      sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->'filesChanged'`),
+      sql.unsafe('workspace_id'),
+      sql.unsafe('feature_id'),
+    );
+  }
   if (audit === 'intermittent-underevidenced') {
     return intermittentUnderevidencedWhereSql(
       sql,
@@ -675,6 +711,14 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: WorkItemAudit, alias: s
       sql,
       sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->'filesChanged'`),
       sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'verifiedHow'`),
+    );
+  }
+  if (audit === 'change-kind-mismatch') {
+    return changeKindMismatchWhereSql(
+      sql,
+      sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->'filesChanged'`),
+      sql.unsafe(`${alias}.workspace_id`),
+      sql.unsafe(`${alias}.feature_id`),
     );
   }
   if (audit === 'intermittent-underevidenced') {

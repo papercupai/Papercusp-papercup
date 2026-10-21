@@ -1,0 +1,7 @@
+{
+  "origin": "http://127.0.0.1:3170",
+  "backgroundOrigin": "http://127.0.0.1:3271",
+  "workspaceId": "papercusp-workspace",
+  "potSlug": "papercusp",
+  "runtimeUnits": ["hono-host:3170", "hono-host:3271"]
+}

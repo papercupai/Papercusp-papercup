@@ -302,6 +302,28 @@ describe('work_items:claim idempotent-completion opt-in (EI-21593186656422114)',
 });
 
 describe('work_items:claim handler (keyed-array)', () => {
+  it('refuses terminal state claims before mutation and names the explicit reopen path', async () => {
+    getM.mockResolvedValue(issueItem({
+      id: 'WI-terminal',
+      state: 'done',
+      terminalOwner: 'su-original-closer',
+      terminalCompletionRef: 'completed by original owner',
+    }));
+
+    const b = await body({ id: 'WI-terminal' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-terminal',
+      error: 'claim_terminal_item',
+      terminalOwner: 'su-original-closer',
+    });
+    expect(b.results[0].hint).toContain('work_items:set_state');
+    expect(b.results[0].hint).toContain('force: true');
+    expect(b.results[0].hint).toContain('reason:');
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
   it('claims one inline for the caller and returns the workItem', async () => {
     const b = await body({ id: 'WI-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
@@ -937,7 +959,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     const contract = `${(tool as { description?: string }).description ?? ''}\n${
       (tool as { guidance?: { when?: string } }).guidance?.when ?? ''
     }`;
-    expect(contract).toMatch(/not fleet scope or born-pending admission\/trust/);
+    expect(contract).toMatch(/not terminal state, fleet scope or born-pending admission\/trust/);
     expect(contract).toContain('server-derived dispatch\/force may bypass pending rows');
     // A floor that advertises no bound renders EXACTLY the pre-existing hint — the
     // EI-21973318733042066 clauses below are strictly additive.

@@ -70,6 +70,7 @@ import { trackDetached } from './detached-imports';
 import { activeExternalBlockers } from './external-blockers';
 import type { assignAndWakeActionableWorkItems } from './agent-tools/coordination/actionable-work-item-dispatch';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { intakeStageAdmitsClaim } from './harness/improvements/agent-review-policy';
 
 const AWAIT_LATCH_ITEM_READ_OPTIONS = {
   acquireTimeoutMs: 1_500,
@@ -259,6 +260,55 @@ function mayHavePlanItemLinkage(wi: WorkItem): boolean {
   return Boolean(planItem && typeof planItem === 'object' && !Array.isArray(planItem));
 }
 
+/**
+ * Apply the unconditional self-select floors that can be evaluated from one
+ * loaded work-item row before emitting the broad claimable wake. Caller-relative
+ * floors (rig availability, cooldown, origin ownership, and plan reservations)
+ * stay in the scheduler because a scoped caller may legitimately pass them.
+ *
+ * Keeping this as a pure row check makes the producer and the registration latch
+ * share the same parity guard without opening a second database read. The
+ * database-dependent universal floors remain in their existing seams below.
+ */
+export function workItemClaimableUniversalFloor(wi: WorkItem): boolean {
+  const createdAtMs = wi.createdAt ? Date.parse(wi.createdAt) : NaN;
+  if (!intakeStageAdmitsClaim({
+    payload: wi.payload,
+    kind: wi.kind,
+    title: wi.title,
+    summary: wi.summary,
+    createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
+  })) return false;
+
+  // The remaining unconditional floors below are issue-family self-select
+  // predicates. Feature-family rows use their native blocked state for typed
+  // blockers and do not carry these issue claim columns.
+  if (wi.family !== 'issue') return true;
+
+  const payload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+    ? wi.payload as Record<string, unknown>
+    : null;
+  if (activeExternalBlockers(wi.payload).length > 0) return false;
+  if (String(payload?.needsOwnerAction) === 'true') return false;
+
+  const ei = payload?._ei;
+  const createdBy = ei && typeof ei === 'object' && !Array.isArray(ei)
+    ? (ei as Record<string, unknown>).created_by
+    : undefined;
+  if (createdBy === 'system:replication-liveness') return false;
+
+  // Mirrors loopIterationNoiseExclusionSql's two unconditional title floors.
+  if (/^Loop wake #/i.test(wi.title) || /^AUTO loop iteration:/i.test(wi.title)) return false;
+
+  // Mirrors alreadyTerminallyCompletedExclusionSql: a completion-owned row is
+  // not re-offered even if its lifecycle state was left open by a caller.
+  const terminalOwner = wi.terminalOwner?.trim() ?? '';
+  const terminalCompletionRef = wi.terminalCompletionRef?.trim() ?? '';
+  if (terminalOwner && (terminalCompletionRef || wi.completionAuthority !== null)) return false;
+
+  return true;
+}
+
 /** The states an unassigned item can be pulled from — get_next/claim_next's floor. */
 const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
 
@@ -299,6 +349,7 @@ export function emitWorkItemClaimableEvent(
   // D-005: observation-lane rows are captured reflections, not work-queue material. Keep
   // the broad wake on the same floor as scheduler:get_next and fleet placement.
   if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload) || isObservationLaneItem(wi.payload)) return;
+  if (!workItemClaimableUniversalFloor(wi)) return;
   const emit = deps.emit ?? emitAwaitedEvent;
   const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
   const payload = workItemClaimableEventPayload(wi, reason);
@@ -414,6 +465,7 @@ export async function liveWorkItemClaimableEventPayload(
   const getItem = deps.getItem ?? getWorkItem;
   const wi = await getItem(id, harness);
   if (!wi || wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload) || isObservationLaneItem(wi.payload)) return null;
+  if (!workItemClaimableUniversalFloor(wi)) return null;
   const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
   try {
     if (!(await checkAdmission(wi.id))) return null;

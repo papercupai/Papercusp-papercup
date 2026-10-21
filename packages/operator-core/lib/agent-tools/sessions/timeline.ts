@@ -907,6 +907,7 @@ export default defineTool({
          AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
          AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
          AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
+         AND (${args.goalRef ?? null}::text IS NULL OR goal_ref = ${args.goalRef ?? null})
     `;
       // P-024 ACCEPTANCE / D-046 FLOOR: adoption of this read is measured on
       // the goalRef filter, and if it is never passed it is P-009's STAMP

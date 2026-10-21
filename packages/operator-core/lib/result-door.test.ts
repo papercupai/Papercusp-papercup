@@ -145,6 +145,90 @@ describe('fleet admission receipt recovery', () => {
   });
 });
 
+describe('release:repair-queue signature evidence projection', () => {
+  function repairQueueResponse() {
+    const signature = Array.from({ length: 50 }, (_, index) => ({
+      kind: 'test-file',
+      id: `packages/operator-core/lib/failure-${index}.test.ts`,
+      recipe: `npm run test:file -- packages/operator-core/lib/failure-${index}.test.ts`,
+      workspace: '@papercusp/operator-core',
+      admittedRound: 1,
+      measuredHead: 'a'.repeat(40),
+      cases: Array.from({ length: 8 }, (_, caseIndex) => `case-${index}-${caseIndex}`),
+      errors: Array.from({ length: 7 }, (_, errorIndex) => `error-${index}-${errorIndex}`),
+    }));
+    return {
+      ok: true,
+      op: 'get',
+      callerAuthorization: { status: 'authorized-delegate', authorized: true, callerSpawnId: 'fixer-1' },
+      repairQueueRead: { status: 'value', schemaVersion: 4 },
+      repairQueue: {
+        phase: 'awaiting-fixer',
+        candidate: 'b'.repeat(40),
+        repairHead: 'c'.repeat(40),
+        decision: 'recover-dead-fixer',
+        nextAction: "release:repair-queue { op: 'admit', paths: ['<your changed path>'] }",
+        signature,
+        failingTests: signature.map((entry) => entry.id),
+        ...Object.fromEntries(Array.from({ length: 16 }, (_, index) => [`diagnostic${index}`, 'D'.repeat(900)])),
+      },
+    };
+  }
+
+  it('keeps total signature cardinality and bounded case/error evidence through a nested rewalk', () => {
+    const source = repairQueueResponse();
+    const raw = { content: [{ type: 'text' as const, text: JSON.stringify(source) }] };
+    expect(raw.content[0]!.text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const direct = applyResultDoor(raw, { toolName: 'release:repair-queue', workspaceId: 'ws-1', runId: RUN_ID });
+    const directBody = boundedBody(direct) as any;
+    expect(directBody.repairQueue).toMatchObject({
+      signatureCount: 50,
+      signatureShownCount: 6,
+      signatureOmittedCount: 44,
+      signatureComplete: false,
+    });
+    expect(directBody.repairQueue.signature).toHaveLength(6);
+    expect(directBody.repairQueue.signature[0]).toMatchObject({
+      kind: 'test-file',
+      id: source.repairQueue.signature[0].id,
+      recipe: source.repairQueue.signature[0].recipe,
+      cases: source.repairQueue.signature[0].cases.slice(0, 6),
+      casesCount: 8,
+      casesOmittedCount: 2,
+      errors: source.repairQueue.signature[0].errors.slice(0, 6),
+      errorsCount: 7,
+      errorsOmittedCount: 1,
+    });
+    expect(directBody._compactProjection).toMatchObject({ kind: 'release:repair-queue' });
+    expect(measureResultContextBytes(direct)).toBeLessThanOrEqual(BUDGET_CHARS);
+
+    const nested = applyResultDoor(direct, {
+      toolName: 'tools:invoke',
+      nestedTargetToolName: 'release:repair-queue',
+      workspaceId: 'ws-1',
+      runId: RUN_ID,
+    });
+    const nestedBody = boundedBody(nested) as any;
+    expect(nestedBody.repairQueue).toMatchObject({
+      signatureCount: 50,
+      signatureShownCount: 6,
+      signatureOmittedCount: 44,
+    });
+    expect(nestedBody.repairQueue.signature).toHaveLength(6);
+    expect(nestedBody.repairQueue.signature[0]).toMatchObject({
+      id: source.repairQueue.signature[0].id,
+      casesCount: 8,
+      errorsCount: 7,
+    });
+    expect(measureResultContextBytes(nested)).toBeLessThanOrEqual(BUDGET_CHARS);
+
+    const control = applyResultDoor(raw, { toolName: 'plans:list', workspaceId: 'ws-1', runId: RUN_ID });
+    const controlBody = boundedBody(control) as any;
+    expect(controlBody.repairQueue?.signatureCount).toBeUndefined();
+  });
+});
+
 describe('plans:start write receipt recovery', () => {
   const receipt = () => ({
     ok: false, counts: { ok: 0, failed: 1 }, results: [{

@@ -17,6 +17,7 @@ import {
   reconcileCriticalWorkItemAlert,
   selectCriticalWorkItemAlerts,
   settleEdgeReadersFor,
+  workItemClaimableUniversalFloor,
   workItemClaimableEventPayload,
   workItemEventPayload,
   workItemIdFromRef,
@@ -720,6 +721,83 @@ describe('emitWorkItemCreatedEvent (EI-8296)', () => {
 });
 
 describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
+  it('shares the intake-stage floor with ordinary scheduler claims while preserving reproduction validation work', async () => {
+    const pending = wi({
+      id: 'EI-INTAKE-PENDING',
+      kind: 'bug',
+      family: 'issue',
+      state: 'open',
+      assignee: null,
+      payload: { agentReview: { status: 'pending' } },
+    });
+    expect(workItemClaimableUniversalFloor(pending)).toBe(false);
+
+    const pendingEmit = typedEmit();
+    emitWorkItemClaimableEvent(pending, 'released', {
+      emit: pendingEmit,
+      duplicateAdmissionCheck: async () => true,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pendingEmit).not.toHaveBeenCalled();
+    await expect(
+      liveWorkItemClaimableEventPayload(pending.id, pending.harness ?? undefined, {
+        getItem: vi.fn(async () => pending) as never,
+        duplicateAdmissionCheck: async () => true,
+      }),
+    ).resolves.toBeNull();
+
+    const reproduction = wi({
+      id: 'EI-INTAKE-REPRO',
+      kind: 'bug',
+      family: 'issue',
+      state: 'open',
+      assignee: null,
+      payload: { agentReview: { status: 'revision-requested', revisionKind: 'reproduction' } },
+    });
+    expect(workItemClaimableUniversalFloor(reproduction)).toBe(true);
+    const reproductionEmit = typedEmit();
+    emitWorkItemClaimableEvent(reproduction, 'released', {
+      emit: reproductionEmit,
+      duplicateAdmissionCheck: async () => true,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(reproductionEmit).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['owner-action', { needsOwnerAction: true }],
+    ['active-external-blocker', {
+      externalBlockers: [{
+        kind: 'event', capability: 'live-dependency', capabilitySource: 'inferred', ref: 'event:x',
+        summary: 'wait', status: 'active', createdAt: '2026-01-01T00:00:00.000Z',
+        createdBy: 'su-test', updatedAt: '2026-01-01T00:00:00.000Z',
+      }],
+    }],
+    ['federation-detector', { _ei: { created_by: 'system:replication-liveness' } }],
+  ])('does not wake the broad pool for the universal %s floor', async (_name, payload) => {
+    const item = wi({ id: `WI-UNIVERSAL-${_name}`, state: 'open', assignee: null, payload });
+    expect(workItemClaimableUniversalFloor(item)).toBe(false);
+    const emit = typedEmit();
+    emitWorkItemClaimableEvent(item, 'released', { emit, duplicateAdmissionCheck: async () => true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not wake loop-noise or already-completed rows that remain open', async () => {
+    const loopNoise = wi({ id: 'WI-LOOP-NOISE', state: 'open', assignee: null, title: 'AUTO loop iteration: carry' });
+    const completed = wi({
+      id: 'WI-COMPLETED-OPEN', state: 'open', assignee: null,
+      terminalOwner: 'su-closer', terminalCompletionRef: 'commit:abc',
+    });
+    for (const item of [loopNoise, completed]) {
+      expect(workItemClaimableUniversalFloor(item)).toBe(false);
+      const emit = typedEmit();
+      emitWorkItemClaimableEvent(item, 'released', { emit, duplicateAdmissionCheck: async () => true });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(emit).not.toHaveBeenCalled();
+    }
+  });
+
   it('announces a newly admitted row with the canonical claimability guard', async () => {
     const emit = typedEmit();
     emitWorkItemClaimableEvent(

@@ -32,6 +32,10 @@
  * imports, Web API method names, the report-bug callback ids and :bug: reaction). The
  * markers are proven against the real packages, so they describe how this code actually
  * looks, not a guess at it.
+ *
+ * The detection rules and the census itself live in provider-census.ts (WI-6554700010018633),
+ * so the spec-evidence evaluator re-runs exactly this census over a committed tree. This file
+ * owns the working-tree walk, the CENSUS allowance and every assertion.
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,68 +44,27 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 import { bundledSocialProviderDescriptors } from '../capability-verbs/social-provider.fixture';
+import {
+  APP_ROOTS,
+  NOT_STRICT_SPECIFIC,
+  SOCIAL_DOMAIN_SEAMS,
+  TEST_FILE,
+  isCensusSourceName,
+  isCensusSourcePath,
+  isSkippedCensusName,
+  providerCensusOutput,
+  providerSpecificPathsIn,
+  providerWordsIn,
+  strictContentKindsAfterAllowance,
+  strictKindsInContent,
+  strictKindsInPath,
+  strictViolationsIn,
+  type StrictAllowance,
+} from './provider-census';
 
 const REPO_ROOT =
   process.env.PROVIDER_CENSUS_ROOT ??
   resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-
-/** App-code roots. Provider packages (libs/papercusp/plugins) are the destination, not app code. */
-const APP_ROOTS = [
-  'apps/operator',
-  'packages/operator-core',
-  'packages/agent-mcp',
-  'papercusp-desktop/src',
-  'orchestrator',
-  'bin',
-] as const;
-
-const SKIP_DIRS = new Set([
-  'node_modules',
-  'dist',
-  '.next',
-  'coverage',
-  '.vitest-tmp',
-  'sidecar',
-  'e2e',
-  '__tests__',
-  'prompts',
-  'target',
-]);
-
-/** Provider names whose appearance as a path word marks a module provider-specific. */
-export const PROVIDER_TOKENS = [
-  'slack',
-  'discord',
-  'telegram',
-  'whatsapp',
-  'bluesky',
-  'mastodon',
-  'reddit',
-  'facebook',
-  'instagram',
-  'threads',
-  'tiktok',
-  'youtube',
-  'linkedin',
-  'twitter',
-  'social',
-  'google',
-  'gmail',
-  'gcal',
-  'asana',
-  'linear',
-  'jira',
-  'notion',
-] as const;
-
-/**
- * Provider tokens deliberately NOT counted, each with its reason. `github` is excluded because
- * GitHub in app code is the platform's own source-hosting identity (repo import, user profile,
- * PAT), not an integration; GitHub as a ticket provider already ships as a package (P-010).
- */
-const EXCLUDED_TOKENS: Record<string, string> = {
-  github: 'platform source-hosting identity, not an integration provider',
-};
 
 type CensusGroup = 'google-workspace' | 'discord';
 
@@ -135,24 +98,6 @@ export const CENSUS: readonly CensusEntry[] = [
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
 export const CENSUS_HIGH_WATERMARK = 0;
 
-/**
- * Paths that contain a provider word but are not provider-specific, each with its reason.
- * Keep this short; a provider module does not belong here.
- */
-const SOCIAL_DOMAIN_SEAMS = [
-  'packages/operator-core/lib/agent-tools/social/delete.ts',
-  'packages/operator-core/lib/agent-tools/social/post.ts',
-  'packages/operator-core/lib/agent-tools/social/read.ts',
-  'packages/operator-core/lib/agent-tools/social/reply.ts',
-  'packages/operator-core/lib/agent-tools/social/search.ts',
-  'packages/operator-core/lib/capability-verbs/social-delete.ts',
-  'packages/operator-core/lib/capability-verbs/social-read.ts',
-  'packages/operator-core/lib/capability-verbs/social.ts',
-] as const;
-const NOT_PROVIDER_SPECIFIC: Record<string, string> = Object.fromEntries(SOCIAL_DOMAIN_SEAMS.map((path) => [
-  path, 'Provider-neutral social datatype/authorization/dispatch seam; installed descriptors own vendor selectors, coordinates, capabilities and HTTP. Guarded by the no-social-census test below.',
-]));
-
 /** Exact vendor selectors and package egress literals cannot return to a retained domain seam. */
 function socialVendorLiterals(source: string): string[] {
   const descriptors = bundledSocialProviderDescriptors();
@@ -171,24 +116,6 @@ function socialVendorLiterals(source: string): string[] {
   return found;
 }
 
-const SOURCE_EXT = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
-const TEST_FILE = /\.(test|spec|integration\.test)\.(ts|tsx|mts|js|mjs)$|\.fixture\.ts$/;
-
-/** Split a repo-relative path into lower-case words (dirs, kebab, snake, camelCase). */
-export function pathWords(path: string): string[] {
-  return path
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-}
-
-/** Provider tokens named by a path, excluding EXCLUDED_TOKENS. */
-export function providerWordsIn(path: string): string[] {
-  const tokens = new Set<string>(PROVIDER_TOKENS);
-  return [...new Set(pathWords(path).filter((w) => tokens.has(w) && !(w in EXCLUDED_TOKENS)))];
-}
-
 function walk(absDir: string, out: string[], root: string): void {
   let names: string[];
   try {
@@ -197,8 +124,7 @@ function walk(absDir: string, out: string[], root: string): void {
     return;
   }
   for (const name of names) {
-    // dist-* holds esbuild bundles (dist-devhost, dist-sidecar, ...): built copies, not source.
-    if (SKIP_DIRS.has(name) || name.startsWith('.') || /^dist-/.test(name)) continue;
+    if (isSkippedCensusName(name)) continue;
     const abs = join(absDir, name);
     let isDir = false;
     try {
@@ -207,15 +133,20 @@ function walk(absDir: string, out: string[], root: string): void {
       continue;
     }
     if (isDir) walk(abs, out, root);
-    else if (SOURCE_EXT.test(name) && !TEST_FILE.test(name)) out.push(relative(root, abs).split(sep).join('/'));
+    else if (isCensusSourceName(name)) out.push(relative(root, abs).split(sep).join('/'));
   }
+}
+
+/** Every app-code source file under `root` the census lists (the working-tree census input). */
+function censusFilesAt(root: string): string[] {
+  const files: string[] = [];
+  for (const r of APP_ROOTS) walk(join(root, r), files, root);
+  return files;
 }
 
 /** Every app-code source file under `root` whose path names a provider. */
 export function detectProviderSpecificPaths(root = REPO_ROOT): string[] {
-  const files: string[] = [];
-  for (const r of APP_ROOTS) walk(join(root, r), files, root);
-  return files.filter((f) => providerWordsIn(f).length > 0 && !(f in NOT_PROVIDER_SPECIFIC)).sort();
+  return providerSpecificPathsIn(censusFilesAt(root));
 }
 
 /** Provider-specific modules under `root` that the census does not list (growth). */
@@ -242,144 +173,19 @@ export function staleCensusEntries(root: string, census: readonly CensusEntry[])
   return stale;
 }
 
-/** Integrations that must leave app code entirely (R-3): no census entry, no allowance. */
-export type StrictKind = 'slack' | 'asana' | 'bug-workflow';
-
-/**
- * Protocol markers per strict kind. Each must match the kind's real package (asserted below)
- * and nothing in app code outside NOT_STRICT_SPECIFIC. Web API method names count only as
- * quoted strings, so `deps.conversations.list(...)` or `reviews.push(...)` never match.
- */
-export const STRICT_CONTENT_MARKERS: Record<StrictKind, RegExp> = {
-  slack: new RegExp(
-    [
-      String.raw`\bslack\.com\b`,
-      String.raw`\bxox[abpr]-`,
-      String.raw`\bxapp-\d`,
-      String.raw`@slack\/`,
-      String.raw`x-slack-(?:signature|request-timestamp)`,
-      String.raw`['"\x60\/](?:apps\.connections\.open|chat\.(?:postMessage|postEphemeral|update)|conversations\.(?:history|replies|members|list|info|join)|views\.(?:open|publish|update|push)|reactions\.(?:add|get|remove))['"\x60?]`,
-      String.raw`['"](?:url_verification|event_callback|block_actions|view_submission|message_action)['"]`,
-    ].join('|'),
-    'i',
-  ),
-  asana: new RegExp(
-    [
-      String.raw`\basana\.com\b`,
-      String.raw`\bopt_fields\b`,
-      String.raw`\bresource_subtype\b`,
-      String.raw`(?:from\s+|require\(\s*)['"]asana['"]`,
-    ].join('|'),
-    'i',
-  ),
-  'bug-workflow': new RegExp(
-    [
-      String.raw`\breport[-_]bug\b`,
-      String.raw`:bug:`,
-      String.raw`\bchat_bug_suggestions\b`,
-      String.raw`\b(?:is)?[Bb]ug_?[Rr]eport(?:s|ing)?\b`,
-      String.raw`\b(?:reportBug|chatBug|bugTriage|bug_triage|bugSuggest|bug_suggest)`,
-    ].join('|'),
-  ),
-};
-
-const BUG_PATH_WORDS = new Set(['bug', 'bugs']);
-/** A bug word next to one of these in a path names the chat bug-report workflow. */
-const BUG_WORKFLOW_PATH_PARTNERS = new Set([
-  'report',
-  'reports',
-  'triage',
-  'suggest',
-  'suggestion',
-  'suggestions',
-  'intake',
-  'chat',
-  'reaction',
-]);
-
-/** Strict kinds a module's path names. */
-export function strictKindsInPath(path: string): StrictKind[] {
-  const words = pathWords(path);
-  const kinds: StrictKind[] = [];
-  if (words.includes('slack')) kinds.push('slack');
-  if (words.includes('asana')) kinds.push('asana');
-  if (words.some((w) => BUG_PATH_WORDS.has(w)) && words.some((w) => BUG_WORKFLOW_PATH_PARTNERS.has(w))) {
-    kinds.push('bug-workflow');
-  }
-  return kinds;
-}
-
-/** Strict kinds whose protocol a module body speaks. */
-export function strictKindsInContent(body: string): StrictKind[] {
-  return (Object.keys(STRICT_CONTENT_MARKERS) as StrictKind[]).filter((k) => STRICT_CONTENT_MARKERS[k].test(body));
-}
-
-/**
- * App-code modules that match a strict marker but are not specific to that kind, each with
- * its reason. An entry must keep matching (stale entries fail) and may never name a kind
- * by path. Keep this short; a Slack, Asana or bug-workflow module does not belong here.
- */
-interface StrictAllowance {
-  kinds: StrictKind[];
-  /** Only these metadata literals are exempt; protocol elsewhere in the file still fails. */
-  contentAllowance?: RegExp;
-  reason?: string;
-}
-
-export const NOT_STRICT_SPECIFIC: Record<string, StrictAllowance> = {
-  'packages/operator-core/lib/personal-vault/provider-egress.mjs': {
-    kinds: ['slack'],
-    reason:
-      'egress classifier over every provider host (Google, Microsoft, Slack, Discord, Telegram, ...); ' +
-      'Slack is one row of a provider-neutral list',
-  },
-  'packages/operator-core/lib/db-schema-reference/index-manifest.ts': {
-    kinds: ['bug-workflow'],
-    reason:
-      'GENERATED index census of every table; lists chat_bug_suggestions until the contract ' +
-      'migration WI-6554700010008890 drops it, after which this entry goes stale and is removed',
-  },
-  'packages/operator-core/lib/data-governance/organization-data-receipts.ts': {
-    kinds: ['bug-workflow'],
-    contentAllowance: /(['"])harness_shared\.chat_bug_suggestions\1/g,
-    reason: 'Provider-neutral organization deletion order names a legacy data-source FK child; ' +
-      'only the quoted qualified table name is metadata, not the bug-report workflow.',
-  },
-  'packages/operator-core/lib/data-governance/pilot-processing-map.ts': {
-    kinds: ['bug-workflow'],
-    contentAllowance: /(['"])harness_shared\.chat_bug_suggestions\1/g,
-    reason: 'Provider-neutral retention inventory names the same legacy FK child. ' +
-      'The exemption ends when that table leaves the inventory.',
-  },
-};
-
 /** Every app-code module under `root` specific to a strict kind, as `path: kinds`. */
 export function strictViolations(
   root: string,
-  allow: Record<string, StrictAllowance> = NOT_STRICT_SPECIFIC,
+  allow: Readonly<Record<string, StrictAllowance>> = NOT_STRICT_SPECIFIC,
 ): string[] {
-  const files: string[] = [];
-  for (const r of APP_ROOTS) walk(join(root, r), files, root);
-  const out: string[] = [];
-  for (const f of files.sort()) {
-    const byPath = strictKindsInPath(f);
-    const allowed = new Set(allow[f]?.kinds ?? []);
-    const body = readFileSync(join(root, f), 'utf8');
-    const contentAllowance = allow[f]?.contentAllowance;
-    const remainingKinds = contentAllowance
-      ? strictKindsInContent(body.replace(contentAllowance, ''))
-      : [];
-    const byContent = strictKindsInContent(body).filter((k) => !allowed.has(k) || remainingKinds.includes(k));
-    const kinds = [...new Set([...byPath, ...byContent])];
-    if (kinds.length > 0) out.push(`${f}: ${kinds.join(', ')}`);
-  }
-  return out;
+  return strictViolationsIn(censusFilesAt(root), (f) =>
+    strictContentKindsAfterAllowance(f, readFileSync(join(root, f), 'utf8'), allow));
 }
 
 /** NOT_STRICT_SPECIFIC entries that no longer match their kinds, or that name a kind by path. */
 export function staleStrictAllowances(
   root: string,
-  allow: Record<string, StrictAllowance> = NOT_STRICT_SPECIFIC,
+  allow: Readonly<Record<string, StrictAllowance>> = NOT_STRICT_SPECIFIC,
 ): string[] {
   const stale: string[] = [];
   for (const [path, { kinds, contentAllowance }] of Object.entries(allow)) {
@@ -423,6 +229,45 @@ describe('provider-specific code census (shrink-only)', () => {
     walk(join(REPO_ROOT, 'packages/operator-core/lib/integrations'), files, REPO_ROOT);
     expect(files).toContain('packages/operator-core/lib/integrations/provider-options.ts');
     expect(files.some((f) => TEST_FILE.test(f))).toBe(false);
+  });
+
+  it('the path predicate the evaluator uses on a committed tree lists exactly what the walk lists', () => {
+    const planted = [
+      'packages/operator-core/lib/integrations/provider-options.ts',
+      'packages/operator-core/lib/integrations/slack-bridge.ts',
+      'apps/operator/app/settings/DiscordCard.tsx',
+      'bin/tool.mjs',
+      'packages/operator-core/lib/integrations/slack-bridge.test.ts',
+      'packages/operator-core/lib/integrations/slack.fixture.ts',
+      'packages/operator-core/lib/integrations/README.md',
+      'packages/operator-core/node_modules/slack/index.js',
+      'packages/operator-core/lib/.cache/slack.ts',
+      'apps/operator/dist-host/slack.mjs',
+      'apps/operator/dist/slack.js',
+      'apps/operator/prompts/slack.ts',
+      'packages/other/lib/slack.ts',
+    ];
+    const root = fixtureRoot(Object.fromEntries(planted.map((path) => [path, 'export {};\n'])));
+    try {
+      expect(planted.filter(isCensusSourcePath).sort()).toEqual(censusFilesAt(root).sort());
+      expect(censusFilesAt(root).sort()).toEqual([
+        'apps/operator/app/settings/DiscordCard.tsx',
+        'bin/tool.mjs',
+        'packages/operator-core/lib/integrations/provider-options.ts',
+        'packages/operator-core/lib/integrations/slack-bridge.ts',
+      ]);
+      expect(providerCensusOutput(censusFilesAt(root), () => [])).toEqual({
+        providerSpecificPaths: [
+          'apps/operator/app/settings/DiscordCard.tsx',
+          'packages/operator-core/lib/integrations/slack-bridge.ts',
+        ],
+        strictViolations: ['packages/operator-core/lib/integrations/slack-bridge.ts: slack'],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    // On the real tree too: every walked file passes the predicate.
+    expect(censusFilesAt(REPO_ROOT).filter((path) => !isCensusSourcePath(path))).toEqual([]);
   });
 
   it('control: a new provider module outside the census is caught', () => {

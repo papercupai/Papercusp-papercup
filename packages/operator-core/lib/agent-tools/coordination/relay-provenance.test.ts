@@ -29,7 +29,6 @@ import { parseHumanTurns, resolveRelayProvenance } from './relay-provenance-reso
 import { getMessageById } from './messages';
 import { resolveSelfSession } from '../../search/self-session';
 import type { AgentIdentity } from './identity';
-import { OWNER_DIALOG_TURN_MARKER } from '../../turn-provenance/turn-ref';
 
 vi.mock('./messages', () => ({ getMessageById: vi.fn() }));
 vi.mock('../../search/self-session', () => ({ resolveSelfSession: vi.fn() }));
@@ -251,7 +250,7 @@ describe('parseHumanTurns — owner-typed turns out of a session JSONL', () => {
   // tool-result plumbing (the test above) and silently dropped, so a
   // relayOf:'owner-turn' send answering a dialog stamped `unverified` even
   // though the decision is real, platform-provable owner speech.
-  it('extracts a Claude AskUserQuestion dialog answer as an owner turn, marker-tagged for classification', () => {
+  it('does not extract an unproven Claude AskUserQuestion answer as an owner turn', () => {
     const answer = 'The user answered: "Ship?"="yes". Read the answers carefully.';
     const turns = parseHumanTurns(
       row({
@@ -260,9 +259,7 @@ describe('parseHumanTurns — owner-typed turns out of a session JSONL', () => {
         message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answer }] },
       }),
     );
-    expect(turns).toEqual([
-      { ts: '2026-09-02T20:14:00.000Z', text: `${OWNER_DIALOG_TURN_MARKER}\n${answer}` },
-    ]);
+    expect(turns).toEqual([]);
   });
 
   // Regression guard for the same change: an ordinary (non-dialog) tool_result
@@ -506,6 +503,14 @@ describe('resolveRelayProvenance — platform-verified tiers (mocked stores)', (
           type: 'user',
           timestamp: '2026-09-02T20:14:00.000Z',
           message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answer }] },
+        },
+        {
+          type: 'attachment',
+          sessionId: 'sess-1',
+          timestamp: '2026-09-02T20:14:00.000Z',
+          attachment: { type: 'hook_additional_context', hookEvent: 'PostToolUse', content: [
+            '⟦dialog-answer-provenance⟧ {"source":"human","sessionId":"sess-1","toolUseId":"toolu_ask"}\nHuman terminal submission.\nAnswer: ' + answer,
+          ] },
         },
       ]),
     );

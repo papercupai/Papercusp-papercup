@@ -127,6 +127,7 @@ import {
   type CheckpointQualificationTransaction,
   type RunnerLiveness,
 } from '../../release/checkpoint-qualification-transaction';
+import { isCheckpointRunLockHeldCheap } from '../../release-checkpoint-lock';
 import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
 import { createTextCollector } from '../../child-output';
 import {
@@ -2813,42 +2814,48 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // WI-10006274: size the request by the suite this install actually runs. The operator home
   // runs the Papercusp Vitest fork runner; a foreign pot's own `npm test` requests the overhead.
   const checkpointMemoryG = checkpointScopeMemoryMaxGForGreenCmd(routing.greenCmd ?? null);
-  const memoryAdmission = admitCheckpointMemory({ requestG: checkpointMemoryG });
-  if (!memoryAdmission.admit) {
-    console.warn(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${memoryAdmission.detail}`);
-    await appendPipelineEvent({
-      workspaceId: ctx.workspaceId,
-      installSlug: ctx.installSlug,
-      kind: 'green_checkpoint',
-      status: 'skipped-memory-budget',
-      detail: withGateFireId({
-        reason: memoryAdmission.reason,
-        requestG: memoryAdmission.requestG,
-        committedG: memoryAdmission.committedG,
-        budgetG: memoryAdmission.budgetG,
-        scopes: memoryAdmission.scopes,
-        unbounded: memoryAdmission.unbounded,
-        retryAfterMinutes: TRANSIENT_ABORT_REQUEUE_MINS,
-      }),
-    });
-    // A capacity refusal is safe but not terminal: the competing scopes are expected to
-    // drain before the next hourly cron. Reuse the same forward-only/pause-aware requeue
-    // contract as transient aborts so a frozen candidate gets another ordinary attempt within
-    // minutes, while the admission guard still protects the host. If the metadata write fails,
-    // the cron remains the fail-safe fallback and the refusal is already recorded above.
-    try {
-      const { getOrgPg } = await import('@papercusp/db-org');
-      await requeueGreenCheckpointAfterCapacity(getOrgPg().sql, ctx.installSlug);
-    } catch (e) {
-      console.warn(
-        `${orchestratorStdoutTag()} memory-budget prompt requeue failed: ${e instanceof Error ? e.message : e}`,
-      );
+  // Returns true when it REFUSED (skip recorded, prompt requeue armed) so the caller returns.
+  // A closure because it can run at two points: here, or after the join classification when
+  // the pre-admission probe below expected a join that did not happen.
+  const refuseOverMemoryBudget = async (): Promise<boolean> => {
+    const memoryAdmission = admitCheckpointMemory({ requestG: checkpointMemoryG });
+    if (!memoryAdmission.admit) {
+      console.warn(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${memoryAdmission.detail}`);
+      await appendPipelineEvent({
+        workspaceId: ctx.workspaceId,
+        installSlug: ctx.installSlug,
+        kind: 'green_checkpoint',
+        status: 'skipped-memory-budget',
+        detail: withGateFireId({
+          reason: memoryAdmission.reason,
+          requestG: memoryAdmission.requestG,
+          committedG: memoryAdmission.committedG,
+          budgetG: memoryAdmission.budgetG,
+          scopes: memoryAdmission.scopes,
+          unbounded: memoryAdmission.unbounded,
+          retryAfterMinutes: TRANSIENT_ABORT_REQUEUE_MINS,
+        }),
+      });
+      // A capacity refusal is safe but not terminal: the competing scopes are expected to
+      // drain before the next hourly cron. Reuse the same forward-only/pause-aware requeue
+      // contract as transient aborts so a frozen candidate gets another ordinary attempt within
+      // minutes, while the admission guard still protects the host. If the metadata write fails,
+      // the cron remains the fail-safe fallback and the refusal is already recorded above.
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        await requeueGreenCheckpointAfterCapacity(getOrgPg().sql, ctx.installSlug);
+      } catch (e) {
+        console.warn(
+          `${orchestratorStdoutTag()} memory-budget prompt requeue failed: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+      return true;
     }
-    return;
-  }
-  // Log the admitted verdict too: a bound nobody can see working is indistinguishable from a
-  // bound that is silently failing open, which is exactly the failure mode this guard risks.
-  console.log(`${orchestratorStdoutTag()} ${ctx.installSlug}: ${memoryAdmission.detail}`);
+    // Log the admitted verdict too: a bound nobody can see working is indistinguishable from a
+    // bound that is silently failing open, which is exactly the failure mode this guard risks.
+    console.log(`${orchestratorStdoutTag()} ${ctx.installSlug}: ${memoryAdmission.detail}`);
+    return false;
+  };
   // Join the existing logical attempt, or create its successor before spawning a physical run.
   // A scheduled tick is not suite progress: record its own clock while retaining the exact
   // attempt identity that the CLI and terminal marker will later settle.
@@ -2868,6 +2875,58 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     qualificationAtLaunch.status === 'present' && qualificationAtLaunch.transaction.phase !== 'terminal'
       ? qualificationAtLaunch.transaction
       : null;
+  // WI-6554700010018575: a fire against THIS root's own in-flight run is not a capacity
+  // question. The memory admission counts every live checkpoint scope, this root's own run
+  // included, so a fire that landed while its own suite ran was refused as
+  // `skipped-memory-budget` and then requeued every TRANSIENT_ABORT_REQUEUE_MINS. Measured
+  // 2026-10-20 22:09-23:05Z: 7 such skips on papercusp, each counting its own run fc4e96c0
+  // among 3 live scopes (86 GiB committed). That tripped the non-verdict-reason alarm for a
+  // run that was progressing. The memory admission is consulted only after both checks below.
+  //
+  // (1) A live JOIN: skip the admission and let the locked classification below record
+  // `skipped-joined-attempt`, which P-033 exempts from the non-verdict count. The probe result
+  // is reused below for the same runner, so one fire still makes one liveness probe.
+  const preAdmissionProbe = await probeJoinableIncumbent(activeAttempt);
+  const liveJoinAtAdmission =
+    activeAttempt !== null &&
+    preAdmissionProbe !== null &&
+    classifyScheduledQualificationJoin(activeAttempt, preAdmissionProbe.liveness) === 'join';
+  if (liveJoinAtAdmission) {
+    console.log(
+      `${orchestratorStdoutTag()} ${ctx.installSlug}: checkpoint-memory: not consulted — this fire joins live ` +
+        `runner ${preAdmissionProbe!.runnerId} (attempt ${activeAttempt!.attemptId}), whose own scope is the committed memory`,
+    );
+  } else {
+    // (2) The root's run lock is held by a live process, but there is no joinable attempt (for
+    // example, the run already recorded its verdict and is in post-verdict legs). A launch
+    // would be refused by the child's own lock (`skipped-locked`), so record that directly.
+    // Do NOT arm the capacity requeue: the holder's own exit frees the slot, and a 10-minute
+    // requeue loop is what turned one long run into 7 non-verdict outcomes.
+    const ownRunLock = isCheckpointRunLockHeldCheap(root);
+    if (ownRunLock.held) {
+      console.log(
+        `${orchestratorStdoutTag()} skip ${ctx.installSlug}: run lock for ${root} held by live pid ${ownRunLock.pid}` +
+          (ownRunLock.elapsedSec !== null ? ` for ${ownRunLock.elapsedSec}s` : '') +
+          ' — not launching a second run, and not consulting the memory admission (that pid owns one of its scopes)',
+      );
+      await appendPipelineEvent({
+        workspaceId: ctx.workspaceId,
+        installSlug: ctx.installSlug,
+        kind: 'green_checkpoint',
+        status: 'skipped-locked',
+        detail: withGateFireId({
+          stage: 'pre-admission',
+          root,
+          holderPid: ownRunLock.pid ?? null,
+          holderElapsedSec: ownRunLock.elapsedSec,
+          attemptId: qualificationAtLaunch.status === 'present' ? qualificationAtLaunch.transaction.attemptId : null,
+          attemptPhase: qualificationAtLaunch.status === 'present' ? qualificationAtLaunch.transaction.phase : null,
+        }),
+      });
+      return;
+    }
+    if (await refuseOverMemoryBudget()) return;
+  }
   // Read the queue once for both the eligibility pin and fixer-liveness probe. A pin from this
   // snapshot is only a request: beginStoredQualification re-reads the same routine row FOR UPDATE
   // and compares the exact repairHead before preserving the queue, so a moved head stays blocked.
@@ -2965,7 +3024,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   }
   const qualificationAttemptId = scheduled.transaction.attemptId;
   const runner = scheduled.transaction.currentPhysicalRunner;
-  const runnerLiveness = await probeRunnerLiveness(runner);
+  // Reuse the pre-admission probe when it measured this same runner (WI-6554700010018575).
+  const runnerLiveness =
+    preAdmissionProbe && runner && runner.id === preAdmissionProbe.runnerId
+      ? preAdmissionProbe.liveness
+      : await probeRunnerLiveness(runner);
   const join = classifyScheduledQualificationJoin(scheduled.transaction, runnerLiveness);
   if (join !== 'launch') {
     await appendPipelineEvent({
@@ -2982,6 +3045,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     });
     return;
   }
+  // The pre-admission probe expected a join, but the locked reconciliation says launch (the
+  // incumbent settled in between). This fire will create a scope, so it owes the admission it
+  // skipped above. Still before any scope or runner reservation exists.
+  if (liveJoinAtAdmission && (await refuseOverMemoryBudget())) return;
   // Reserve the physical slot BEFORE the child starts. A second scheduler fire sees this
   // placeholder and joins/fails closed; the child replaces it with its measured PID identity.
   const reserved = await reserveStoredQualificationRunner(ctx, {
@@ -4337,6 +4404,26 @@ export function gateStallNoopLogMessage(status: string, detail?: string | null):
  * no-verdict rate alarm pages on. Exported for the trackGateStall requeue test.
  */
 export const TRANSIENT_ABORT_REQUEUE_MINS = 10;
+
+/**
+ * WI-6554700010018575: liveness of the incumbent runner of the only attempt shape a scheduled
+ * fire can JOIN (running, non-terminal, with a physical runner), measured before the memory
+ * admission. Returns null without probing for any other shape. `'live'` passed to the
+ * classifier here is a shape test: it asks whether some liveness could make this a join.
+ */
+async function probeJoinableIncumbent(
+  attempt: CheckpointQualificationTransaction | null,
+): Promise<{ runnerId: string; liveness: RunnerLiveness } | null> {
+  const runner = attempt?.currentPhysicalRunner;
+  if (!attempt || !runner || classifyScheduledQualificationJoin(attempt, 'live') !== 'join') return null;
+  let liveness: RunnerLiveness;
+  try {
+    liveness = await probeRunnerLiveness(runner);
+  } catch {
+    liveness = 'unknown';
+  }
+  return { runnerId: runner.id, liveness };
+}
 
 /**
  * Pull a scheduled green-checkpoint fire forward after a capacity-shaped skip.

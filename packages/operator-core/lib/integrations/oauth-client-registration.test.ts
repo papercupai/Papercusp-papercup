@@ -306,3 +306,61 @@ describe('the connect flow reads what the page saved (SPEC-R-2-P-009)', () => {
     expect(provider?.config).toMatchObject({ clientId: 'page-client', clientSecret: SECRET, redirectUri: `${OPERATOR_BASE}/api/oauth/callback` });
   });
 });
+
+// WI-6554700010018599: Google's Desktop client lived in ~/.config/papercusp/google-oauth-client.json,
+// never in oauth-apps.json. When gmail, calendar and contacts became the provider:google group, the
+// refresh of every adopted token resolved no provider (provider_google_oauth_provider_not_registered).
+describe('host-held installed-app client fallback (WI-6554700010018599)', () => {
+  const installedFile = (ref: string) => join(home, '.config', 'papercusp', `${ref}-oauth-client.json`);
+  async function writeInstalled(ref: string, body: unknown): Promise<void> {
+    await fs.mkdir(join(home, '.config', 'papercusp'), { recursive: true });
+    await fs.writeFile(installedFile(ref), typeof body === 'string' ? body : JSON.stringify(body), 'utf8');
+  }
+  beforeEach(() => {
+    vi.stubEnv('HOME', home);
+  });
+
+  it('resolves a descriptor group whose ref has no oauth-apps.json entry from the installed-app file', async () => {
+    const lead = descriptor('unit-legacy-mail', { credentialGroup: 'unit-legacy', clientRegistrationRef: 'unit-legacy-ref' });
+    const member = descriptor('unit-legacy-people', { credentialGroup: 'unit-legacy', clientRegistrationRef: 'unit-legacy-ref' });
+    for (const d of [lead, member]) {
+      await providerRegistry().register({ descriptor: d, adapter: adapter(d), pluginName: PLUGIN_NAME });
+    }
+    expect(await resolveOAuthProvider('provider:unit-legacy')).toBeNull();
+
+    await writeInstalled('unit-legacy-ref', { installed: { client_id: 'desktop-client', client_secret: OTHER_SECRET, redirect_uris: ['http://localhost'] } });
+
+    expect(await readOAuthClientRegistration('unit-legacy-ref')).toEqual({ clientId: 'desktop-client', clientSecret: OTHER_SECRET });
+    const status = await oauthClientRegistrationStatus('unit-legacy-ref');
+    expect(status).toMatchObject({ configured: true, clientId: 'desktop-client', hasClientSecret: true, savedAt: null });
+    expect(JSON.stringify(status)).not.toContain(OTHER_SECRET);
+    expect((await oauthClientRegistrationStatuses(['unit-legacy-ref'])).get('unit-legacy-ref')).toMatchObject({ configured: true, clientId: 'desktop-client' });
+    const provider = await resolveOAuthProvider('provider:unit-legacy');
+    expect(provider?.config).toMatchObject({ clientId: 'desktop-client', clientSecret: OTHER_SECRET });
+    // Read-only fallback: the secret is never copied into oauth-apps.json.
+    await expect(fs.readFile(file(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('prefers a saved oauth-apps.json entry over the installed-app file', async () => {
+    await writeInstalled('unit-both', { installed: { client_id: 'desktop-client', client_secret: OTHER_SECRET } });
+    await saveOAuthClientRegistration('unit-both', { clientId: 'page-client', clientSecret: SECRET }, { requireSecret: true });
+    expect(await readOAuthClientRegistration('unit-both')).toMatchObject({ clientId: 'page-client' });
+  });
+
+  it('ignores an installed-app file without both values, malformed JSON, and a ref that is not a plain id', async () => {
+    await writeInstalled('unit-no-secret', { installed: { client_id: 'desktop-client' } });
+    await writeInstalled('unit-web', { web: { client_id: 'web-client', client_secret: OTHER_SECRET } });
+    await writeInstalled('unit-broken', '{ not json');
+    expect(await readOAuthClientRegistration('unit-no-secret')).toBeNull();
+    expect(await readOAuthClientRegistration('unit-web')).toBeNull();
+    expect(await readOAuthClientRegistration('unit-broken')).toBeNull();
+    expect(await readOAuthClientRegistration('../unit-no-secret')).toBeNull();
+    expect(await readOAuthClientRegistration('unit-absent')).toBeNull();
+  });
+
+  it('never falls through to the installed-app file when oauth-apps.json exists but cannot be parsed', async () => {
+    await writeInstalled('unit-guarded', { installed: { client_id: 'desktop-client', client_secret: OTHER_SECRET } });
+    await fs.writeFile(file(), '{ not json', 'utf8');
+    expect(await readOAuthClientRegistration('unit-guarded')).toBeNull();
+  });
+});

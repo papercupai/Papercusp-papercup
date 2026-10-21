@@ -257,6 +257,25 @@ describe('durable launch confinement at the dispatch boundary', () => {
     expect(target).toHaveBeenCalledTimes(2);
   });
 
+  // verification-system-improvements-2026-10-10#D-050: the reviewer's own scratch plans pass
+  // the real seat, direct and nested; the reviewed plan and an unprefixed slug do not.
+  it('admits the blind reviewer\'s own scratch plans at the real seat, and nothing else', async () => {
+    const prefix = 'blind-review-scratch-abc123def456-';
+    await declare(OWNER, blindReviewerConfinement('demo-plan', undefined,
+      { scratchPrefix: prefix, reviewedSlug: 'demo-plan', harness: 'papercusp' }));
+    const mine = { slug: `${prefix}probe`, title: 'Probe' };
+    expect(await dispatch('plans:new', mine)).toMatchObject({ ok: true });
+    expect(await dispatch('tools:invoke', { name: 'plans:new', args: mine })).toMatchObject({ ok: true });
+    expect(target).toHaveBeenCalledTimes(2);
+    for (const args of [{ slug: 'demo-plan', title: 'x' }, { slug: 'other-plan', title: 'x' }, { ...mine, content: 'see demo-plan' }]) {
+      expect(await dispatch('plans:new', args), JSON.stringify(args)).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+      const nested = await dispatch('tools:invoke', { name: 'plans:new', args });
+      expect(nested.ok, `tools:invoke ${JSON.stringify(args)}`).toBe(false);
+    }
+    expect(await dispatch('plans:items', { slug: `${prefix}probe` })).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+    expect(target).toHaveBeenCalledTimes(2);
+  });
+
   it('reads another process connection immediately and ignores a stale or empty local cache', async () => {
     await declare(OWNER, ceiling(['benchmark:spend']));
     const other = postgres(db.url, { max: 1, onnotice: () => {} });

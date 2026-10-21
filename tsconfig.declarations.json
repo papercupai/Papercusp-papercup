@@ -78,6 +78,8 @@
   // emitting declarations for every future script in the repo.
   "files": [
     "scripts/mcp-call.mjs",
+    // Imported by apps/operator/scripts/mcp-reconnect.test.ts (TS7016 without it; EI-26553890541062376).
+    "scripts/mcp-reconnect.mjs",
     // WI-10007656: native DAO verification and its regression import this fixture.
     "scripts/fixtures/dao-workbench-identity.mjs",
     // EI-25217214806027261 — bundle-host's free-reference guard, imported directly by
@@ -332,6 +334,7 @@
     "apps/operator/scripts/psu-pty-host.mjs",
     // WI-10007614: the asynchronous TTY bridge and offline customer diagnostics.
     "apps/operator/scripts/psu-terminal-output.mjs",
+    "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",
     // Live terminal repair is imported by its conventional TypeScript regression.
     "apps/operator/scripts/psu-terminal-repair.mjs",
     "apps/operator/scripts/psu-terminal-diagnostics.mjs",

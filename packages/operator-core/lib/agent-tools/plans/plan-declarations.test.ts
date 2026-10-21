@@ -122,6 +122,28 @@ describe('plan declarations', () => {
     expect(decisionRules.diagnostics.map((d) => d.path)).toEqual([
       'needs.0.sourceRef', 'needs.1.existingUse', 'needs.2.reason', 'needs.3.candidates',
     ]);
+
+    // D-003: a not-applicable reason must be a real one-line reason — an empty or
+    // whitespace-only string is refused at path `notApplicable` in either section.
+    for (const blank of ['', '   ']) {
+      const blankReuse = previewPlanDeclarations(plan(
+        reuseSection({ searched: [], reused: [], newSurfaces: [], notApplicable: blank }),
+        librariesSection(validLibraries),
+      ));
+      expect(blankReuse.ok).toBe(false);
+      expect(blankReuse.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'declaration_invalid', section: REUSE_SECTION_HEADING, path: 'notApplicable' }),
+      ]));
+
+      const blankLibraries = previewPlanDeclarations(plan(
+        reuseSection(validReuse),
+        librariesSection({ needs: [], notApplicable: blank }),
+      ));
+      expect(blankLibraries.ok).toBe(false);
+      expect(blankLibraries.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'declaration_invalid', section: LIBRARIES_SECTION_HEADING, path: 'notApplicable' }),
+      ]));
+    }
   });
 
   it('reports a missing section, a missing block and an empty declaration', () => {

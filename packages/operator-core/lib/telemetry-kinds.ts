@@ -24,6 +24,17 @@ const cloudEvent = <N extends string, P extends z.ZodRawShape>(event: N, propert
 
 export const CLOUD_MONITORING_DISCLOSURE_VERSION = '2026-10-13' as const;
 export const CLOUD_ERROR_CODES = ['render_failure', 'request_failure', 'provisioning_failure', 'connector_unavailable'] as const;
+export type CloudErrorCode = typeof CLOUD_ERROR_CODES[number];
+/** Error constructor names that may cross the cloud boundary; any other value is reported as 'Error'. */
+export const CLOUD_ERROR_TYPE_NAMES = ['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError'] as const;
+/** The single fingerprint input. The server hashes it with node:crypto and the
+ * browser with SubtleCrypto, so one code/type pair groups identically whichever
+ * side observed it. No message, stack, URL, component name or customer value is
+ * part of it. */
+export function cloudErrorFingerprintInput(code: CloudErrorCode, error: unknown): string {
+  const type = error instanceof Error && (CLOUD_ERROR_TYPE_NAMES as readonly string[]).includes(error.name) ? error.name : 'Error';
+  return JSON.stringify([code, type]);
+}
 
 export const cloudDiagnosticAggregateSchema = z.object({
   period_start: instant,

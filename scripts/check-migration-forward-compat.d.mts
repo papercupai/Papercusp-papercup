@@ -204,12 +204,18 @@ export function readScannedFiles(directory: string, files: string[], { allowMiss
  *
  * @param {string} sqlText
  * @param {Array<{file: string, text: string}>} sourceFiles
+ * @param {{ onParserWork?: (stage: 'comments'|'dependency-units', source: {file: string, text: string}) => void }} [options]
  * @returns {{ columns: string[], references: Array<{column: string, file: string, line: number}>, unresolvedTargets: string[] }}
  */
 export function findDraftColumnReferences(sqlText: string, sourceFiles?: Array<{
     file: string;
     text: string;
-}>): {
+}>, { onParserWork }?: {
+    onParserWork?: (stage: "comments" | "dependency-units", source: {
+        file: string;
+        text: string;
+    }) => void;
+}): {
     columns: string[];
     references: Array<{
         column: string;

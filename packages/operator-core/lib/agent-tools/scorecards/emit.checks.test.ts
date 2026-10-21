@@ -12,6 +12,11 @@
  * burns a suite).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { judgePortalPlaywrightRows } from '../../rubrics-playwright-checks';
+import type { TaskRow } from '../../task-manager/types';
 import { createPhaseTracker } from '@papercusp/tooldef';
 
 const getRubric = vi.fn();
@@ -100,6 +105,7 @@ import scorecardEmitTool, {
   emitScorecard,
   emitScorecardForToolContext,
   runRecoverableScorecardChecks,
+  recoverScorecardCheckRun,
   scorecardCheckRunPrefix,
   SCORECARD_EMIT_TIMEOUT_SEC,
   SCORECARD_TEST_CHECK_TIMEOUT_MS,
@@ -122,6 +128,66 @@ import { REPO_ROOT } from '../docs/_repo-paths';
 
 type EvaluateChecks = typeof evaluateCriterionTestChecks;
 type EvaluateCargoChecks = typeof evaluateCriterionCargoChecks;
+
+describe('Portal Playwright interrupted scorecard recovery', () => {
+  it('recovers the exact Portal rows and refuses nonzero, stale, foreign or incomplete receipts', () => {
+    const root = mkdtempSync(join(tmpdir(), 'scorecard-portal-recovery-'));
+    try {
+      const file = 'e2e/portal-billing.spec.ts';
+      mkdirSync(join(root, 'e2e'));
+      const pw = ['@playwright', 'test'].join('/');
+      writeFileSync(join(root, file), `import { test } from '${pw}';`);
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@papercusp-portal/app',
+        scripts: { 'test:e2e:browser': 'playwright test --config=playwright.config.ts' } }));
+      writeFileSync(join(root, 'playwright.config.ts'), `
+        const reporter = "@papercusp/operator-core/lib/testing-playwright-reporter";
+        export default defineConfig({ testDir: './e2e', testMatch: /portal-billing\\.spec\\.ts$/, reporter: portalBrowserReporters() });`);
+      const sha = 'a'.repeat(40);
+      const workspaceId = 'ws-test', harnessSlug = 'portal', runId = 'request-bound';
+      const row = { id: 81, framework: 'playwright', file_path: file, status: 'pass',
+        finished_at: '2026-10-20T21:00:00Z', workspace_id: workspaceId, harness_slug: harnessSlug,
+        run_group_id: runId, commit_sha: sha, worktree_dirty: false, execution_details: {
+          schemaVersion: 1, root, filePath: file, runGroupId: runId, workspaceId, harnessSlug,
+          testLayer: 'e2e', testNamePattern: null, mutationPhase: null, passed: 1, failed: 0, skipped: 0,
+          collectionFailed: false, commitSha: sha, worktreeDirty: false, passedCaseTitles: ['billing > retained case'],
+        } };
+      const input = { rows: [row], files: [join(root, file)], root, sourceSha: sha,
+        workspaceId, harnessSlug, runId, task: { state: 'exited', exitCode: 0 } satisfies Pick<TaskRow, 'state' | 'exitCode'> };
+      expect(recoverScorecardCheckRun(input)).toMatchObject({ ok: true, testRunIds: [81],
+        casesByFile: { [join(root, file)]: [{ caseKey: 'billing > retained case', status: 'pass' }] } });
+      expect(recoverScorecardCheckRun({ ...input, task: { state: 'exited', exitCode: 1 } })).toBeNull();
+      expect(recoverScorecardCheckRun({ ...input, sourceSha: 'b'.repeat(40) })).toBeNull();
+      expect(recoverScorecardCheckRun({ ...input, rows: [{ ...row, workspace_id: 'foreign' }] })).toBeNull();
+      expect(recoverScorecardCheckRun({ ...input, rows: [] })).toBeNull();
+      // Mixed requests use distinct recovery prefixes; replay the Portal route without rerunning it.
+      const unit = join(root, 'unit.test.ts');
+      writeFileSync(unit, 'export {};');
+      const runFiles = vi.fn(async (request: { files: string[]; runId?: string }) => {
+        expect(request.files).toEqual([unit]);
+        return { ok: true, root, runId: request.runId!, passed: 1, failed: 0, skipped: 0, files: 1,
+          byFile: { [unit]: { passed: 1, failed: 0, skipped: 0, collectionFailed: false } },
+          failures: [], failuresTruncated: false, durationMs: 1, testRunIds: [82] };
+      });
+      const binding = { rubricRef: 'acceptance-portal', rubricRevision: 1, criteriaHash: 'criteria',
+        evidenceFingerprint: 'fingerprint', createdBy: 'su-independent', subjectRef: 'WI-10007843' };
+      const portalPrefix = scorecardCheckRunPrefix({ ...binding, workspaceId, harnessSlug, root, sourceSha: sha, files: [join(root, file)] });
+      const portalRunId = `${portalPrefix}-0`;
+      const retainedRow = { ...row, run_group_id: portalRunId,
+        execution_details: { ...row.execution_details, runGroupId: portalRunId } };
+      return runRecoverableScorecardChecks({ root, files: [unit, join(root, file)], workspaceId, harnessSlug }, binding, {
+        sourceSha: () => sha,
+        runFiles,
+        readRows: async query => query.runGroupId === portalRunId ? [retainedRow] : [],
+        listTaskRows: async owner => owner === `testing:run:${portalRunId}` ? [{ state: 'exited', exitCode: 0 }] : [],
+      }).then(result => {
+        expect(result).toMatchObject({ ok: true, passed: 2, testRunIds: [82, 81] });
+        expect(runFiles).toHaveBeenCalledOnce();
+        expect(judgePortalPlaywrightRows({ rows: [retainedRow], route: { root, files: [file] },
+          workspaceId, harnessSlug, runId: portalRunId }).error).toBeUndefined();
+      }).finally(() => rmSync(root, { recursive: true, force: true }));
+    } catch (error) { rmSync(root, { recursive: true, force: true }); throw error; }
+  });
+});
 
 describe('scorecards:emit interrupted check-run recovery (EI-24189399333592974)', () => {
   const files = Array.from({ length: 5 }, (_, i) => `packages/operator-core/lib/check-${i}.test.ts`);

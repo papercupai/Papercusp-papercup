@@ -410,9 +410,35 @@ describe('R-6 — a close that owes no reason and carries every catalog proof fo
 
   it('a declaration made at close replaces the stored one for this check', async () => {
     const r = await evaluateChangeKindGate(
-      input({ kinds: ['ui'], declaredAtClose: ['docs'], kindEvidence: [FULL_PROOF.docs] }),
+      input({
+        kinds: ['ui'],
+        declaredAtClose: ['docs'],
+        declaredReason: 'The UI half moved to a follow-up item; this item only updates the guide.',
+        kindEvidence: [FULL_PROOF.docs],
+      }),
     );
     expect(r).toEqual({ applicable: true, outcome: 'pass', kinds: ['docs'] });
+  });
+
+  // R-4 (P-004): the same replacement without a reason drops 'ui' silently — it lands proposed.
+  it('a close-time replacement that drops a kind without a reason proposes rather than passes', async () => {
+    const r = await evaluateChangeKindGate(
+      input({ kinds: ['ui'], declaredAtClose: ['docs'], kindEvidence: [FULL_PROOF.docs] }),
+    );
+    expect(r).toMatchObject({ applicable: true, outcome: 'propose', kinds: ['docs'], narrowed: ['ui'], mismatchFiles: [] });
+    expect(JSON.stringify(r)).toMatch(/changeKindReason/);
+  });
+
+  // R-4 (P-004): UI-looking files without 'ui' are a non-blocking tripwire, explained by a reason.
+  it('UI-looking files without a ui declaration propose unless a reason explains them', async () => {
+    const root = { testsRun: 'npx vitest run ranking.test.ts', testResult: '2 passed', filesChanged: ['apps/operator/app/dao/page.tsx', 'lib/ranking.ts'] };
+    const reasonless = await evaluateChangeKindGate(input({ kinds: ['logic'], root }));
+    expect(reasonless).toMatchObject({ applicable: true, outcome: 'propose', narrowed: [], mismatchFiles: ['apps/operator/app/dao/page.tsx'] });
+    const reasoned = await evaluateChangeKindGate(input({ kinds: ['logic'], root, declaredReason: 'Type-only import change in the page.' }));
+    expect(reasoned).toEqual({ applicable: true, outcome: 'pass', kinds: ['logic'], mismatchFiles: ['apps/operator/app/dao/page.tsx'] });
+    const withUi = await evaluateChangeKindGate(input({ kinds: ['ui', 'logic'], root, kindEvidence: [FULL_PROOF.ui, { ...FULL_PROOF.logic }] }, ), { verifyUiArtifacts: async () => ({ ok: true, basis: 'image', artifacts: [] }), unretainedUiArtifacts: async () => [] });
+    expect(withUi).toMatchObject({ applicable: true, outcome: 'pass' });
+    expect(withUi).not.toHaveProperty('mismatchFiles');
   });
 });
 

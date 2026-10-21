@@ -113,7 +113,7 @@ describe('ledger-derived mutation catches (R-7)', () => {
     expect(result.rating).toBe('unknown');
     expect(result.evidence).toContain('mutationLinkage=unverified');
     expect(result.evidence).toContain('mutant subjectPath "src/guard.ts" is missing from measured sourcePaths ["src/other.ts"]');
-    expect(result.evidence).not.toContain('Canonical execution details or mutation catch linkage are incomplete');
+    expect(result.evidence).not.toContain('no canonical test-run execution verdict');
     expect(result.suggestion).toContain('verify the measured subject and same-invocation passing baseline');
   });
 

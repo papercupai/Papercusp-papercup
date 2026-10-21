@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SnapshotSymbol } from './push-snapshot';
+import { PACKAGE_NAME_PROOF_DIGEST, packageNameProofSha256 } from './proof-digest';
 
 const state = vi.hoisted(() => ({ root: '', registeredRoot: '', file: '', workspace: 'fixture-workspace', stalled: false }));
 vi.mock('@papercusp/module-singleton', () => ({ pinModuleState: (_key: string, init: () => unknown) => init() }));
@@ -156,6 +157,22 @@ describe('source-corroborated snapshot queries', () => {
     expect(await query({ op: 'definition', file: 'app/use.ts', line1: 2, character: 0 })).toBeNull();
     expect(await query({ workspaceId: 'another-workspace' })).toBeNull();
     state.registeredRoot = tmpdir();
+    expect(await query()).toBeNull();
+  });
+
+  it('answers past a manifest edit that keeps its name and reports the manifest content it read (P-001)', async () => {
+    const manifest = (extra: object) => JSON.stringify({ name: '@fx/lib', ...extra });
+    await writeFile(join(state.root, 'lib/package.json'), manifest({ version: '1.0.0' }));
+    await load([{ ...symbols[0]!, sources: [...symbols[0]!.sources!,
+      { path: 'lib/package.json', sha256: packageNameProofSha256(manifest({}))!, digest: PACKAGE_NAME_PROOF_DIGEST }] }]);
+    const edited = manifest({ version: '2.0.0', scripts: { test: 'vitest' } });
+    await writeFile(join(state.root, 'lib/package.json'), edited);
+    const answer = await query();
+    expect(answer?.error).toBeNull();
+    // supportingFiles promises a full-source hash, never the narrower name digest.
+    expect(answer!.evidence!.sourceScope.supportingFiles).toContainEqual(expect.objectContaining({
+      path: 'lib/package.json', contentHash: hash(edited), representation: 'full-source' }));
+    await writeFile(join(state.root, 'lib/package.json'), JSON.stringify({ name: '@fx/renamed' }));
     expect(await query()).toBeNull();
   });
 

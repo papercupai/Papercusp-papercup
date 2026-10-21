@@ -640,6 +640,48 @@ if not isinstance(command, str) or not command.strip():
 # command before/after mcp-call cannot affect the verdict.
 try:
     def _mcp_call_segments(text):
+        # A heredoc body is stdin DATA, not another shell command. The body can
+        # legitimately mention `scripts/mcp-call.mjs` (for example, an
+        # improvements:capture recovery record describing the command). If it
+        # is left in the flat segment stream, the marker regex below can match
+        # that prose in the middle of a JSON string and report the trailing
+        # quote as an unterminated shell quote (EI-26155938766341956).
+        #
+        # Keep this local to the mcp-call scanner. The broader shell guards
+        # deliberately inspect executable heredocs such as `bash <<EOF`; this
+        # diagnostic only classifies the direct mcp-call command and must not
+        # change those safety rails.
+        _heredoc_start = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+        _without_heredoc_bodies = []
+        _cursor = 0
+        _text_len = len(text)
+        while _cursor < _text_len:
+            _heredoc = _heredoc_start.search(text, _cursor)
+            if not _heredoc:
+                _without_heredoc_bodies.append(text[_cursor:])
+                break
+            _line_end = text.find('\n', _heredoc.end())
+            if _line_end == -1:
+                _without_heredoc_bodies.append(text[_cursor:])
+                break
+            _without_heredoc_bodies.append(text[_cursor:_line_end + 1])
+            _delimiter = _heredoc.group(2)
+            _close = re.search(
+                r'^[ \t]*' + re.escape(_delimiter) + r'\s*$',
+                text[_line_end + 1:],
+                re.MULTILINE,
+            )
+            if not _close:
+                # An unterminated heredoc is already a shell syntax error; do
+                # not inspect arbitrary trailing payload as shell syntax.
+                break
+            _cursor = _line_end + 1 + _close.end()
+            if _cursor < _text_len and text[_cursor] == '\n':
+                # Preserve the command boundary after the terminator so a
+                # genuine mcp-call on a later line is still inspected.
+                _without_heredoc_bodies.append('\n')
+                _cursor += 1
+        text = ''.join(_without_heredoc_bodies)
         segments, start, quote, escaped = [], 0, None, False
         for index, char in enumerate(text):
             if escaped:

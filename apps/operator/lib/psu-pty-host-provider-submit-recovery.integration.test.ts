@@ -51,6 +51,9 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
     process.stdin.setRawMode(true); process.stdin.setEncoding('utf8');
     process.stdin.on('data', data => { for (const c of data) {
       if (c === '\\x04') { process.exit(0); return; }
+      if (c === '\\x03' || c === '\\x1b') {
+        line = ''; process.stdout.write('INTERRUPTED\\n'); continue;
+      }
       if (c !== '\\r') { line += c; continue; }
       process.stdout.write('ENTER:'+ ++crs +'\\n');
       if (!fs.existsSync(${JSON.stringify(recovered)})) {
@@ -110,29 +113,107 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
 }
 
 describe('pending submission after provider recovery (EI-25878022553042846)', () => {
-  it('records the generation refusal after unpark, when the host already ACKed acceptance', async () => {
+  it.each(['\x1b', '\x03'])('a terminal interrupt does not veto a later independent wake (%j, WI-6554700010018590)', async interrupt => {
+    const f = await fixture('claude', 'API Error: 502 Bad Gateway');
+    try {
+      f.recover();
+      const interruptedAt = Date.now();
+      f.stdin.emit('data', Buffer.from(interrupt));
+      await until(() => f.output().includes('INTERRUPTED'));
+      // The loop reconciler reads this field before another fire exists. A
+      // false standing hold here would prevent that fresh wake being created.
+      await until(() => {
+        const { execution } = JSON.parse(readFileSync(metaPathFor(f.envelope.ownerId), 'utf8'));
+        return execution?.observedAt > interruptedAt && execution.ownerStopRequested === false;
+      });
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
+        .toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed' &&
+        row.deliveryId === f.envelope.deliveryId), 3_000,
+      () => JSON.stringify({ events: f.rows(), output: f.output() }));
+      expect(f.output().match(/SUBMITTED:/g)).toHaveLength(1);
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
+        .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+    } finally { await f.close(); }
+  }, 15_000);
+
+  it.each(['before-refusal', 'after-refusal'])('reports an interrupted queued wake when the next fire arrives %s (WI-6554700010018590)', async timing => {
+    const f = await fixture('claude', 'API Error: 502 Bad Gateway', true, {
+      env: { PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '300', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '2000' },
+    });
+    try {
+      f.recover();
+      const stopped = { ...f.envelope, routineId: 'owner-stop-loop', fireNumber: 1 };
+      const next = { ...stopped, deliveryId: `${f.envelope.deliveryId}-next`, fireNumber: 2,
+        data: `⟦turn-origin:loop-fire nonce:${'e'.repeat(16)}⟧\nnext independent loop wake` };
+      expect(await injectIntoHostWithConfirmation(f.sock, stopped))
+        .toMatchObject({ ok: true, reason: 'accepted' });
+      f.stdin.emit('data', Buffer.from('\x1b'));
+      if (timing === 'before-refusal') {
+        expect(await injectIntoHostWithConfirmation(f.sock, next))
+          .toMatchObject({ ok: true, reason: 'accepted' });
+      }
+      await until(() => f.rows().some(row => row.kind === 'gated-delivery-refused' &&
+        row.deliveryId === f.envelope.deliveryId && row.reason === 'deferred-owner-stop'));
+      expect(await injectIntoHostWithConfirmation(f.sock, stopped))
+        .toMatchObject({ ok: false, reason: 'deferred-owner-stop' });
+      if (timing === 'after-refusal') {
+        expect(f.output()).not.toContain('SUBMITTED:');
+        expect(await injectIntoHostWithConfirmation(f.sock, next))
+          .toMatchObject({ ok: true, reason: 'accepted' });
+      }
+      await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed' &&
+        row.deliveryId === next.deliveryId));
+      expect(f.output().match(/SUBMITTED:/g)).toHaveLength(1);
+      expect(f.output()).not.toContain(f.data);
+    } finally { await f.close(); }
+  }, 20_000);
+
+  it.each(['agent message', 'awaited event'])('starts a guarded %s wake after unpark on its first delivery', async (source) => {
     const f = await fixture('claude', 'API Error: 502 Bad Gateway', true, {
       env: { PAPERCUSP_PSU_PARK_IDLE_MS: '300', PAPERCUSP_PSU_PARK_RESUME_WAIT_MS: '3000' },
     });
     try {
       await until(() => f.rows().some(row => row.kind === 'child-parked'), 6_000,
         () => JSON.stringify({ output: f.output(), events: f.rows() }));
+      f.recover();
+      f.envelope.data += ` (${source})`;
       expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
         .toMatchObject({ ok: true, reason: 'accepted' });
       await until(() => f.rows().some(row => row.kind === 'child-unparked'), 6_000,
         () => JSON.stringify({ output: f.output(), events: f.rows() }));
       const resumedMeta = JSON.parse(readFileSync(metaPathFor(f.envelope.ownerId), 'utf8'));
       expect(resumedMeta.execution.childGeneration).toBe(f.envelope.expectedChildGeneration! + 1);
-      await until(() => f.rows().some(row => row.kind === 'gated-delivery-refused' &&
+      await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed' &&
         row.deliveryId === f.envelope.deliveryId), 6_000,
       () => JSON.stringify({ output: f.output(), events: f.rows() }));
+      expect(f.rows().filter(row => row.kind === 'gated-delivery-refused' &&
+        row.deliveryId === f.envelope.deliveryId)).toEqual([]);
+      const prompts = readFileSync(f.transcript, 'utf8').split('\n').filter(Boolean)
+        .map(line => JSON.parse(line)).filter(row => row.type === 'user');
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0].message.content).toContain(source);
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
+        .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+    } finally { await f.close(); }
+  }, 20_000);
+
+  it.each(['child', 'host'])('still refuses a guarded wake with a stale %s binding after unpark', async (binding) => {
+    const f = await fixture('claude', 'API Error: 502 Bad Gateway', true, {
+      env: { PAPERCUSP_PSU_PARK_IDLE_MS: '300', PAPERCUSP_PSU_PARK_RESUME_WAIT_MS: '3000' },
+    });
+    try {
+      await until(() => f.rows().some(row => row.kind === 'child-parked'));
+      f.recover();
+      if (binding === 'child') f.envelope.expectedChildGeneration! -= 1;
+      else f.envelope.expectedHostStartedAt! -= 1;
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
+        .toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => f.rows().some(row => row.kind === 'gated-delivery-refused' &&
+        row.deliveryId === f.envelope.deliveryId));
       expect(f.rows()).toContainEqual(expect.objectContaining({
-        kind: 'gated-delivery-refused',
-        mode: 'turn',
-        deliveryId: f.envelope.deliveryId,
+        kind: 'gated-delivery-refused', deliveryId: f.envelope.deliveryId,
         reason: 'stale-execution-generation',
-        expectedChildGeneration: f.envelope.expectedChildGeneration,
-        childGeneration: f.envelope.expectedChildGeneration! + 1,
       }));
       expect(f.output()).not.toContain('SUBMITTED:');
     } finally { await f.close(); }

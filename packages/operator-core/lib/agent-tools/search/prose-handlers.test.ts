@@ -11,7 +11,7 @@
  *   - scope normalization: empty/absent → the 4 historic default sources
  *     (escalations/brainstorm/turns/decisions, unchanged so existing unscoped
  *     callers see no behavior change); explicit `all` → every registered
- *     source (EI-6984 + session-search-scope-2026-07-05, 7 today); an
+ *     source from the live registry; an
  *     explicit subset passes through verbatim;
  *   - `SEARCH_SOURCES.filter(scope.includes(name))` → which sources reach
  *     the engine;
@@ -99,21 +99,12 @@ vi.mock('@papercusp/search', async (importOriginal) => ({
   configureSearchDefaults: vi.fn(),
 }));
 
-// SEARCH_SOURCES: minimal stand-ins mirroring the real registry's 7 names
-// (session-search-scope-2026-07-05 added session_turn + coord_message) so the
-// handler's `.filter(scope.includes(name))` and its `'all'` expansion
-// (SEARCH_SOURCES.map(s => s.name)) see the registry-shaped set.
-vi.mock('./sources', () => ({
-  SEARCH_SOURCES: [
-    { name: 'escalations' },
-    { name: 'brainstorm' },
-    { name: 'turns' },
-    { name: 'decisions' },
-    { name: 'work_item' },
-    { name: 'session_turn' },
-    { name: 'coord_message' },
-  ],
-}));
+// Keep engine stand-ins tied to the real registry: a stale seven-source
+// fixture hid plan/report/doc coverage from these handler tests.
+vi.mock('./sources', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./sources')>();
+  return { ...actual, SEARCH_SOURCES: actual.SEARCH_SOURCES.map(({ name }) => ({ name })) };
+});
 
 // rerankProseHits is identity-passthrough (sliced) — its own fail-safe
 // behavior is covered in rerank.test.ts; here it must not reorder/drop so we
@@ -326,7 +317,7 @@ describe('search:fulltext — scope normalization', () => {
     const tool = (await import('./fulltext')).default;
     const res = await tool.handler({ query: 'x', scope: ['all'] } as never, CTX() as never);
     expect(payloadOf(res as never).scope).toEqual([
-      'escalations', 'brainstorm', 'turns', 'decisions', 'work_item', 'session_turn', 'coord_message',
+      'escalations', 'brainstorm', 'turns', 'decisions', 'work_item', 'session_turn', 'coord_message', 'report', 'plan', 'doc',
     ]);
   });
 
@@ -791,17 +782,16 @@ describe('search:semantic — coverage honesty (P-009)', () => {
 });
 
 // =============================================================================
-// EI-20838436704308881 — zero-hit scope residue, at the HANDLER boundary.
+// Partial-corpus coverage, at the HANDLER boundary.
 //
 // ./scope-residue.test.ts covers the pure helper and the registry bijection.
 // These tests exist because those cannot fail if someone deletes the
-// `...(residue ? { scope_residue: residue } : {})` spread or the
-// `totalHits === 0` gate from the two handlers: the helper would stay perfect
-// while callers silently went back to receiving an unqualified zero, which IS
-// the filed defect. A tool's OUTPUT is part of its contract, so it is asserted
+// `...(residue ? { scope_residue: residue } : {})` spread from the handlers:
+// the helper would stay perfect while callers mistook narrow matches for
+// complete discovery. A tool's OUTPUT is part of its contract, so it is asserted
 // on the tool.
 // =============================================================================
-describe('search:fulltext — zero-hit scope residue', () => {
+describe('search:fulltext — scope residue', () => {
   it('a zero from a partial scope discloses the corpora it never queried', async () => {
     const tool = (await import('./fulltext')).default;
     const res = await tool.handler({ query: 'x', scope: ['turns'] } as never, CTX() as never);
@@ -814,17 +804,21 @@ describe('search:fulltext — zero-hit scope residue', () => {
     expect(p.scope_residue.caveat).toMatch(/NOT AN ABSENCE CLAIM/);
   });
 
-  it('CALIBRATION: a search WITH hits pays no residue tax', async () => {
-    // The disclosure is for the false-absence moment only. Without this
-    // control, a handler that attached the residue unconditionally would pass
-    // the test above while taxing every successful search.
+  it('discloses unsearched plan items even when work-items and decisions have hits', async () => {
     ftResult = {
       results: [{ source: 'turns', source_id: 't1', excerpt: 'e', highlight: 'h', score: 0.5 }],
       totalHits: 1,
     };
     const tool = (await import('./fulltext')).default;
-    const res = await tool.handler({ query: 'x', scope: ['turns'] } as never, CTX() as never);
-    expect(payloadOf(res as never).scope_residue).toBeUndefined();
+    const res = await tool.handler({ query: 'duplicates', scope: ['work_item', 'decisions'] } as never, CTX() as never);
+    const p = payloadOf(res as never);
+    expect(p.total_hits).toBe(1);
+    expect(p.results).toHaveLength(1);
+    expect(p.scope_residue.searched).toEqual(['decisions', 'work_item']);
+    expect(p.scope_residue.not_searched.find((row: { scope: string }) => row.scope === 'plan').holds)
+      .toMatch(/P-NNN.*draft.*unstarted/i);
+    expect(p.scope_residue.caveat).toMatch(/NOT AN ABSENCE CLAIM/);
+    expect(p.scope_residue.caveat).not.toMatch(/THIS ZERO/);
   });
 
   it('CALIBRATION: a zero over scope:["all"] has no residue — nothing was left out', async () => {
@@ -836,7 +830,7 @@ describe('search:fulltext — zero-hit scope residue', () => {
   });
 });
 
-describe('search:semantic — zero-hit scope residue', () => {
+describe('search:semantic — scope residue', () => {
   it('discloses the unsearched corpora on a zero, same as fulltext', async () => {
     const tool = (await import('./semantic')).default;
     const res = await tool.handler({ query: 'x', scope: ['turns'] } as never, CTX() as never);
@@ -847,14 +841,17 @@ describe('search:semantic — zero-hit scope residue', () => {
       .toContain('session_turn');
   });
 
-  it('CALIBRATION: a semantic search WITH hits pays no residue tax', async () => {
+  it('keeps plan-item exclusions visible alongside positive semantic matches', async () => {
     hybridResult = {
       results: [{ source: 'turns', source_id: 't1', excerpt: 'e', highlight: 'h', score: 0.5 }],
       totalHits: 1,
       embedderAvailable: true,
     };
     const tool = (await import('./semantic')).default;
-    const res = await tool.handler({ query: 'x', scope: ['turns'] } as never, CTX() as never);
-    expect(payloadOf(res as never).scope_residue).toBeUndefined();
+    const res = await tool.handler({ query: 'duplicates', scope: ['work_item', 'decisions'] } as never, CTX() as never);
+    const p = payloadOf(res as never);
+    expect(p.total_hits).toBe(1);
+    expect(p.scope_residue.not_searched.find((row: { scope: string }) => row.scope === 'plan').holds)
+      .toMatch(/P-NNN.*draft.*unstarted/i);
   });
 });

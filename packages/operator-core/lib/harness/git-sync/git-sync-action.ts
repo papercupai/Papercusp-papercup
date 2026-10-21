@@ -64,6 +64,7 @@ import {
 } from '../../personal-vault/git-sync-hold';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
+import { resolveNestedPotCheckouts } from './nested-pot-checkouts';
 import { describeFetchError, loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
 import { sendMessage } from '../../agent-tools/coordination/messages';
@@ -3612,6 +3613,27 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // fork, never the main repository. Applied after the hive-git-mode block — a
   // bridged/p2p hive is already commit-only and its bridge leg honours fork_remote.
   const integrationCommitOnly = cfg.push ? await applyIntegrationPushTarget(slug, cfg, gate.integration, repoPath) : null;
+  // WI-6554700010018602: another pot's checkout nested inside this tree (a submodule that is
+  // ALSO a registered pot with its own git-sync) belongs to that pot's delivery route. This
+  // tick never commits, merges or pushes inside it, and never pins a gitlink its origin
+  // cannot resolve.
+  cfg.nestedPotCheckouts = await resolveNestedPotCheckouts(
+    slug,
+    repoPath,
+    {
+      loadProjects: async () => (await loadHarnessRegistry(workspaceId)).projects,
+      activeGitSyncSlugs: async (candidates) => {
+        const { sql } = getOrgPg();
+        const rows = await sql<{ install_slug: string }[]>`
+          SELECT install_slug FROM harness_shared.routines
+           WHERE workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
+             AND active AND install_slug = ANY(${[...candidates]}::text[])
+        `;
+        return new Set(rows.map((r) => r.install_slug));
+      },
+    },
+    (line) => console.log(line),
+  );
   // EI-18812945811758018: the EFFECTIVE push mode for this tick, recorded later as part
   // of recordOutcome's SINGLE metadata write (never its own patch — a skipped tick must
   // still write nothing, and the settle write is asserted as the only one).

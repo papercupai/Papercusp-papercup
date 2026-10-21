@@ -37,6 +37,7 @@ import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
 import { STALE_CLAIM_GRACE_MS } from '../../work-items-stale-claims';
 import { clampText, softText } from '../limits';
 import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
+import { admitWaitRef } from '../../wait-ref-admission';
 import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
 import { PREMISE_STAMPS_FIELD } from '../coordination/premise-resolve';
 import { healOwnNodeIssueOrigin as healOwnNodeOrigin } from '../../issues-engineer';
@@ -516,6 +517,22 @@ export default defineTool({
         const reasonDisclosure = reasonTruncated ? { reasonTruncated: true as const } : {};
         const claimHold = it.claimHold ?? args.claimHold;
         const claimHoldReleaseInput = it.claimHoldRelease ?? args.claimHoldRelease;
+        // event-wait-settlement-2026-10-20 P-006 (D-001 item 2; R-11, R-20): a durable park's
+        // trigger is the key every park-settlement path releases on, so it must be one a fire
+        // can prove — refused, with the options, before anything is released or written.
+        // Previously an unprovable trigger was accepted and only stamped reachability:'blocked'.
+        if (claimHold === true && claimHoldReleaseInput) {
+          const admission = await admitWaitRef(claimHoldReleaseInput.trigger, { surface: 'park' });
+          if (!admission.ok) {
+            return {
+              ok: false as const,
+              id: it.id,
+              code: admission.code,
+              error: `work_item '${it.id}' durable park refused — ${admission.detail} Nothing was released or parked.`,
+              reachability: admission.reachability,
+            };
+          }
+        }
         const releaseContract =
           claimHold === true && claimHoldReleaseInput
             ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId, it.id)

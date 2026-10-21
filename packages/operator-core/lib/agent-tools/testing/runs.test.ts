@@ -17,6 +17,7 @@ import {
 import { PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import {
   defaultRollupSource,
+  foregroundRunMetadata,
   isSaturationSuspect,
   MUTANT_DIFF_INLINE_CHARS,
   normalizeRunGroupFilter,
@@ -31,6 +32,11 @@ const sqlMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlMock }),
+}));
+const foregroundVerdictMock = vi.hoisted(() => vi.fn(async (_runId: string): Promise<unknown> => null));
+vi.mock('../../testing-run-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../testing-run-store')>()),
+  getForegroundRunVerdictAsync: foregroundVerdictMock,
 }));
 
 /** Render the SQL text carried by postgres.js tagged fragments in the mock. */
@@ -1000,5 +1006,61 @@ describe('isSaturationSuspect', () => {
     expect(CRITICAL_P95_MS).toBeGreaterThan(0);
     expect(isSaturationSuspect(CRITICAL_P95_MS - 0.5)).toBe(false);
     expect(isSaturationSuspect(CRITICAL_P95_MS + 0.5)).toBe(true);
+  });
+});
+
+// WI-6554700010018414 — a foreground run killed at its scope RuntimeMaxSec after a
+// host-shutdown handoff writes ZERO rows; the empty exact-runGroup read must say so.
+describe('testing:runs foreground verdict on an empty exact runGroup', () => {
+  const verdict = (v: 'running' | 'recorded' | 'lost') => ({
+    runId: 'run-x', taskId: 'task-x', taskState: v === 'running' ? 'running' : 'ended_unobserved',
+    startedAt: 1, endedAt: v === 'running' ? null : 2, exitCode: null, ledgerRows: v === 'recorded' ? 3 : 0, verdict: v,
+  });
+
+  beforeEach(() => {
+    foregroundVerdictMock.mockReset();
+    foregroundVerdictMock.mockResolvedValue(null);
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      return /^\s*(SELECT|WITH)\b/i.test(call.strings.join('')) ? Promise.resolve([]) : call;
+    });
+  });
+
+  it('labels a lost run as never reporting, so the empty set is not read as pending', async () => {
+    const out = await foregroundRunMetadata('run-x', async () => verdict('lost'));
+    expect(out).toMatchObject({ foregroundRun: { verdict: 'lost', taskId: 'task-x' } });
+    expect((out as { foregroundRunHint?: string }).foregroundRunHint).toContain('NOTHING was measured');
+  });
+
+  it('routes a still-running run to testing:run-status instead of a re-run', async () => {
+    const out = await foregroundRunMetadata('run-x', async () => verdict('running'));
+    expect((out as { foregroundRunHint?: string }).foregroundRunHint).toContain('testing:run-status');
+  });
+
+  it('adds no hint for a recorded run and nothing for a non-foreground group', async () => {
+    expect(await foregroundRunMetadata('run-x', async () => verdict('recorded'))).toEqual({
+      foregroundRun: verdict('recorded'),
+    });
+    expect(await foregroundRunMetadata('run-x', async () => null)).toEqual({});
+  });
+
+  it('reports an unreadable task ledger instead of guessing a verdict', async () => {
+    const out = await foregroundRunMetadata('run-x', async () => { throw new Error('ledger down'); });
+    expect(out).toEqual({ foregroundRunUnavailable: true });
+  });
+
+  it('attaches the verdict to a zero-row exact runGroup read through the handler', async () => {
+    foregroundVerdictMock.mockResolvedValue(verdict('lost'));
+    const result = (await runsTool.handler({ runGroup: 'run-x' } as never, {} as never)) as {
+      data?: Record<string, unknown>; content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    expect(foregroundVerdictMock).toHaveBeenCalledWith('run-x');
+    expect(data).toMatchObject({ count: 0, notRecorded: true, foregroundRun: { verdict: 'lost' } });
+  });
+
+  it('does not consult the task ledger for an exact testRunIds receipt read', async () => {
+    await runsTool.handler({ runGroup: 'run-x', testRunIds: [1] } as never, {} as never);
+    expect(foregroundVerdictMock).not.toHaveBeenCalled();
   });
 });

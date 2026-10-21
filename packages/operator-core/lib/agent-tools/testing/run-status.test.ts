@@ -13,9 +13,11 @@ vi.mock('../../testing-run-store', async (orig) => ({
   getRun: vi.fn(),
   getRunAsync: vi.fn(),
   getTestRunLedgerRecoveryAsync: vi.fn(),
+  getForegroundRunVerdictAsync: vi.fn(),
 }));
 
 import {
+  getForegroundRunVerdictAsync,
   getRunAsync,
   getTestRunLedgerRecoveryAsync,
   TestingRunSnapshotUnavailableError,
@@ -26,6 +28,7 @@ import { detachedRecoveryHint, detachedTestTimeoutHint } from './run';
 
 const getRunMock = vi.mocked(getRunAsync);
 const ledgerRecoveryMock = vi.mocked(getTestRunLedgerRecoveryAsync);
+const foregroundMock = vi.mocked(getForegroundRunVerdictAsync);
 const tool = (await import('./run-status')).default;
 
 type Output = { data: Record<string, unknown> };
@@ -36,6 +39,43 @@ beforeEach(() => {
   getRunMock.mockReset();
   ledgerRecoveryMock.mockReset();
   ledgerRecoveryMock.mockResolvedValue(null);
+  foregroundMock.mockReset();
+  foregroundMock.mockResolvedValue(null);
+});
+
+describe('testing:run-status foreground verdict (WI-6554700010018414)', () => {
+  it('reports a LOST foreground run instead of unknown_run when its task ended with no ledger row', async () => {
+    getRunMock.mockResolvedValue(null);
+    const foreground = {
+      runId: '041def13', taskId: 'task-1', taskState: 'ended_unobserved',
+      startedAt: 1, endedAt: 2, exitCode: null, ledgerRows: 0, verdict: 'lost' as const,
+    };
+    foregroundMock.mockResolvedValue(foreground);
+
+    const out = await call('041def13');
+
+    expect(out.data).toEqual({ ok: true, foreground });
+    expect(foregroundMock).toHaveBeenCalledWith('041def13');
+  });
+
+  it('prefers a terminal ledger recovery over the foreground task lookup', async () => {
+    getRunMock.mockResolvedValue(null);
+    ledgerRecoveryMock.mockResolvedValue({ runId: 'r' } as unknown as DetachedRunLedgerRecovery);
+
+    const out = await call('r');
+
+    expect(out.data).toMatchObject({ ok: true, ledgerRecovery: { runId: 'r' } });
+    expect(foregroundMock).not.toHaveBeenCalled();
+  });
+
+  it('returns retryable snapshot_unavailable when the foreground lookup is unreadable', async () => {
+    getRunMock.mockResolvedValue(null);
+    foregroundMock.mockRejectedValue(new TestingRunSnapshotUnavailableError());
+
+    const out = await call('r2');
+
+    expect(out.data).toMatchObject({ ok: false, error: 'snapshot_unavailable', retryable: true });
+  });
 });
 
 describe('testing:run-status handler', () => {

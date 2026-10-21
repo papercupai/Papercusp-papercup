@@ -424,8 +424,38 @@ export interface GovernedProcessClient {
   end(): Promise<void>;
 }
 
+/**
+ * WI-6554700010018666: the explicit database a process-scoped governed admission
+ * persists to. Only this client reads it, so a DSN-free process can carry it without
+ * exposing a database to the code it runs.
+ *
+ * The green-checkpoint suite env is a DSN-free allowlist (canonicalGreenCheckpointSourceEnv),
+ * and the checkpoint tree has no apps/operator/.env.local. adminUrl() therefore fell
+ * through to $HOME/.papercusp/embedded-pg.json. On this box that file belongs to the
+ * installed Papercusp Server (:18058), whose harness_admin rejects the file's password.
+ * Every affected-test task then failed admission with 28P01 and zero tests ran (runs
+ * 63b14b89, 10-20 18:07Z, 10-18 10:23Z). Even with a matching password, admissions
+ * would have landed in the wrong cluster, out of the operator governor's view.
+ */
+export const GOVERNED_ADMISSION_DATABASE_URL_ENV = 'PAPERCUSP_GOVERNED_ADMISSION_DATABASE_URL';
+
+/** The explicit governed-admission target from `env`, or undefined to keep adminUrl(). */
+export function governedAdmissionDatabaseUrl(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string | undefined {
+  return env[GOVERNED_ADMISSION_DATABASE_URL_ENV]?.trim() || undefined;
+}
+
+/** Options for the process-scoped admission client (exported for its unit test). */
+export function governedProcessClientOptions(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): { readonly max: number; readonly url?: string } {
+  const url = governedAdmissionDatabaseUrl(env);
+  return url ? { max: 2, url } : { max: 2 };
+}
+
 function buildDefaultGovernedProcessClient(): GovernedProcessClient {
-  const { sql } = createDedicatedOrgPg('governed-process', { max: 2 });
+  const { sql } = createDedicatedOrgPg('governed-process', governedProcessClientOptions());
   return {
     sql,
     async end() {

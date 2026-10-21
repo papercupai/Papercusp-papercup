@@ -24,6 +24,7 @@ import {
   recordBlindReview,
 } from '../../blind-review-gate';
 import { runBlindReviewMintOp } from './blind-review-mint-op';
+import { archiveBlindReviewScratchPlans } from '../../blind-review-scratch-plans';
 
 const text =(payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -132,6 +133,17 @@ export default defineTool({
       : await recordBlindGapDispositions({ ...scope, createdBy, dispositions: args.dispositions ?? [], summary: args.summary });
     if (!written.ok) return text({ error: written.code, slug: args.slug, message: written.message }, true);
 
+    // D-050 (5): the reviewer's scratch plans are done with once its gaps are recorded.
+    // Best-effort: a cleanup failure is reported and never voids the recorded review.
+    let scratchPlans: Record<string, unknown> | null = null;
+    if (args.op === 'post') {
+      try {
+        scratchPlans = await archiveBlindReviewScratchPlans({ workspaceId, ownerId: createdBy });
+      } catch (e) {
+        scratchPlans = { error: 'scratch_cleanup_failed', message: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
     // Report the door's view now, so a reviewer learns at once whether its post counts.
     const verdict = await evaluateBlindReviewGate({ ...scope });
     const rejected = verdict.rejectedReviews.find((r) => r.reviewId === written.id);
@@ -142,6 +154,7 @@ export default defineTool({
       activationAuditSeq: written.activationAuditSeq,
       gapIds: written.gapIds,
       ...(args.op === 'post' ? { counts: verdict.acceptedReviewIds.includes(written.id), ...(rejected ? { rejected } : {}) } : {}),
+      ...(scratchPlans ? { scratchPlans } : {}),
       door: { satisfied: verdict.satisfied, code: verdict.code ?? null, message: verdict.message ?? null },
     });
   },

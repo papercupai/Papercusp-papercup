@@ -111,7 +111,7 @@ export default defineTool({
   description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. The required free-text argument is `query` — `q` is not an alias. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding "no duplicate exists": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.',
   guidance: {
     when: 'You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).',
-    chaining: 'work_items:search (dedup) → work_items:create, or → work_items:get { id } for detail.',
+    chaining: 'Before claiming no planned work covers a topic, also run plans:search {query,harness} with scope omitted (includes items and decisions). Draft/unstarted P-NNN items are not work-items. Then work_items:get for detail or work_items:create after dedup.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
@@ -183,6 +183,7 @@ export default defineTool({
         ok: true,
         count: items.length,
         items: items.map(projectWorkItemSearchMatch),
+        plan_scope_hint: 'Plan items (P-NNN), including draft and unstarted plans, were NOT searched. Before claiming no plan covers this work, also run plans:search with the same query and harness; omit scope to include items and decisions.',
         legs,
         // A degraded search is fail-open for availability, but it is not a
         // sound dedup answer. Give callers a machine-readable receipt so a

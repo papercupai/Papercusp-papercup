@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Android wake-word implemented-backend source and regression mapping",
+  "command": ["read-only mobile-repository source/test hash inspection"],
+  "workItemId": "EI-25888168611402385",
+  "parentFeature": "WI-10004772",
+  "planSlug": "android-public-release-2026-10-01",
+  "sourceRepository": "papercup-rust-mobile",
+  "sourceRepositoryKind": "independent mobile repository; not a path under the Papercusp operator checkout",
+  "sourceHead": "d28b573ba5796ccc2a8261642508a6f548b21eb6",
+  "fixCommit": "051a793636cbd49aafeecd501ccb3ef5ff9ec5fe",
+  "fixCommitParent": "e7a3d9e38c6442b50d13d01b6e6b06c6cfc707f7",
+  "fixCommitMessage": "sync(android): android (3 files, +85/-56) [skip ci]",
+  "sourceWorkingTree": {
+    "overallDirty": true,
+    "unrelatedDirtyPath": "docs/COORDINATION.md",
+    "relevantFilesClean": true,
+    "diffBetweenFixCommitAndHeadForRelevantFiles": []
+  },
+  "files": [
+    {
+      "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/WakeWordEngine.kt",
+      "sha256": "2c2c5820367d1c010b287eb5bd4249aa99b5bcc619b024caec0cabfb4b987b3f",
+      "role": "implemented Porcupine backend and availability/start gate"
+    },
+    {
+      "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/WakeWordAvailability.kt",
+      "sha256": "eb82aba4b73697599b2006d8e25e8b3b34c8d0500820dbe7b2ce1b84cfd83d70",
+      "role": "pure backend-selection and displayed-keyword helpers"
+    },
+    {
+      "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/WakeWordAvailabilityTest.kt",
+      "sha256": "da19c1f069f949c0d1840a51d59e825a76fdaf7b7592df22f3eff7d5e3d6b70a",
+      "role": "conventional JUnit regression coverage"
+    }
+  ],
+  "behaviorMatrix": [
+    {
+      "useOww": true,
+      "picovoiceAccessKey": "configured-key",
+      "configured": false,
+      "available": false,
+      "startResult": false,
+      "porcupineSelected": false,
+      "microphoneAdvertised": false,
+      "reason": "openWakeWord backend is unimplemented"
+    },
+    {
+      "useOww": true,
+      "picovoiceAccessKey": "",
+      "configured": false,
+      "available": false,
+      "startResult": false,
+      "porcupineSelected": false,
+      "microphoneAdvertised": false,
+      "reason": "openWakeWord backend is unimplemented"
+    },
+    {
+      "useOww": false,
+      "picovoiceAccessKey": "",
+      "configured": false,
+      "available": false,
+      "startResult": false,
+      "porcupineSelected": false,
+      "microphoneAdvertised": false,
+      "reason": "Porcupine requires a nonblank access key"
+    },
+    {
+      "useOww": false,
+      "picovoiceAccessKey": "configured-key",
+      "configured": true,
+      "available": true,
+      "startResult": true,
+      "porcupineSelected": true,
+      "microphoneAdvertised": true,
+      "keyword": "hey papercup when hey-papercup.ppn is bundled, otherwise Jarvis"
+    }
+  ],
+  "reviewConclusion": "USE_OWW=true neither falls back to Porcupine nor reports a running engine. Porcupine is selected only when USE_OWW=false and the access key is nonblank.",
+  "regressionTests": [
+    "porcupineNeedsANonblankKey",
+    "unimplementedOpenWakeWordCannotStartTheMicrophone",
+    "selectingOpenWakeWordDoesNotSilentlyUseThePaidBackend",
+    "aBundledKeywordCannotMakeAnUnconfiguredEngineAvailable",
+    "missingCustomModelDisplaysTheActualBuiltinKeyword",
+    "bundledCustomModelDisplaysHeyPapercup"
+  ],
+  "historicalTestReport": {
+    "debug": { "passed": 6, "failed": 0, "skipped": 0, "date": "2026-10-14" },
+    "release": { "passed": 6, "failed": 0, "skipped": 0, "date": "2026-10-14" },
+    "rerunForThisRevision": false
+  },
+  "scope": "Source and conventional regression mapping only; no new native Android execution, device claim, or shipment claim."
+}

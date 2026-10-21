@@ -14,7 +14,7 @@ export function isVitestTestFileArg(arg: any): boolean;
  */
 export function workspaceTestInvocation(argv?: string[], repoRoot?: string): {
     command: string;
-    args: string[];
+    args: any[];
     cwd: string;
     routed: boolean;
 };

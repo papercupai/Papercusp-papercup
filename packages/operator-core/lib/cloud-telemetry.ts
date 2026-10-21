@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { isHostedPrincipal, type HostedPrincipal } from './auth/hosted-principal';
-import { cloudTelemetryConsentSchema, cloudTelemetryConsentUpdateSchema, cloudTelemetryEventSchema, CLOUD_ERROR_CODES, DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudTelemetryConsent, type CloudTelemetryEvent } from './telemetry-kinds';
+import { cloudErrorFingerprintInput, cloudTelemetryConsentSchema, cloudTelemetryConsentUpdateSchema, cloudTelemetryEventSchema, DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudErrorCode, type CloudTelemetryConsent, type CloudTelemetryEvent } from './telemetry-kinds';
 import type { AccountTutorialProgressRecord } from './onboarding/cloud-tutorial-progress';
 
 /** Existing hosted preference storage supplies the consent. Require the
@@ -187,9 +187,7 @@ export async function deliverCloudTelemetry(input: unknown, context: CloudTeleme
 
 /** No free-form message, stack, URL, component name or customer value crosses
  * the error boundary. The fingerprint groups only reviewed code/type pairs. */
-export function safeCloudError(code: typeof CLOUD_ERROR_CODES[number], error: unknown) {
-  const allowedNames = ['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError'];
-  const type = error instanceof Error && allowedNames.includes(error.name) ? error.name : 'Error';
-  return { code, fingerprint: createHash('sha256').update(JSON.stringify([code, type])).digest('hex') };
+export function safeCloudError(code: CloudErrorCode, error: unknown) {
+  return { code, fingerprint: createHash('sha256').update(cloudErrorFingerprintInput(code, error)).digest('hex') };
 }
 

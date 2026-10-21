@@ -1,0 +1,239 @@
+{
+  "kind": "source-input-admission-only",
+  "sha": "9aef0217564c998598bb5b69f34b7706d3708232",
+  "tooling": 41,
+  "explicit": 11,
+  "paths": [
+    {
+      "path": "apps/operator-vite/src/components/adv/AdvEnterpriseTab.tsx",
+      "sha256": "fd414c9a4d8f835dc554471f232bf9ddbbf4513c7a78691c8b3f09f964c68a8a"
+    },
+    {
+      "path": "apps/operator-vite/src/components/adv/AdvWorkflowsTab.tsx",
+      "sha256": "43139bdb05a81e211c2c6ed39be983d908a31a947474ccd53402200dc59af5d3"
+    },
+    {
+      "path": "apps/operator-vite/src/components/adv/WorkflowAdministration.tsx",
+      "sha256": "0e0c7c27a617b8ee99c1f74949a07df0f1b110d0e1e1a1f28804c5f137d5d5ee"
+    },
+    {
+      "path": "apps/operator-vite/src/components/adv/WorkflowInspector.tsx",
+      "sha256": "9601b17560e3ca60f0bf0685836ab6e0a784494617b8797099ebf268193bfde1"
+    },
+    {
+      "path": "apps/operator-vite/src/components/adv/WorkflowOperationResult.tsx",
+      "sha256": "1ac26f72660e89b547800e5445f7f08a931d1f3c64eaceba091c04150f45f181"
+    },
+    {
+      "path": "apps/operator-vite/src/components/adv/WorkflowSupportForm.tsx",
+      "sha256": "0b038dd31853bacf02a665f8d873ccd6f1b5e7d580a81eff0262719738a285e0"
+    },
+    {
+      "path": "apps/operator/bin/bundle-host-common.sh",
+      "sha256": "70a7f4fdce4e93ec2bb5166788a337c6175798173b548577829f12a8caefb3fd"
+    },
+    {
+      "path": "apps/operator/bin/bundle-host.sh",
+      "sha256": "b4875de3cb0908026c2e20d646084df414ec572a0bad7e8c7a60bf79254780c9"
+    },
+    {
+      "path": "apps/operator/bin/release/dependency-generation.sh",
+      "sha256": "645aaa7f68413fe7799e478403751ba27a72d6928a58953c8c6dfda93f104982"
+    },
+    {
+      "path": "apps/operator/e2e/_fake-llm-fixture-child.ts",
+      "sha256": "081b96a12afc0810f4f0e5785ada0e01c09408e1026ef44e1305ad4c961c58a2"
+    },
+    {
+      "path": "apps/operator/e2e/_fake-llm-fixture.ts",
+      "sha256": "e1c17ba455f8ab2a70a87eafac4db68d27ce3d4587c16220eebae82d5184e5cf"
+    },
+    {
+      "path": "apps/operator/e2e/_support-workflow-native-fixture.ts",
+      "sha256": "d617c591e83f7f8890e4c2c90a41f01f6120ebf4b1f737c5e4b50130a0f6e9af"
+    },
+    {
+      "path": "apps/operator/e2e/support-workflow-native.spec.mts",
+      "sha256": "2ea6007ddec88503faecb0f9029649ec3006819980700d636cd25046bf086f47"
+    },
+    {
+      "path": "apps/operator/playwright.config.mts",
+      "sha256": "b3c13939da4197e1e5ce76dc3c9a2d53ed001d77823a14c6558e1edbc10a90a3"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "a6f52d2d96d720f4287cd902306c31f866161f349654e084c4812710b257eadf"
+    },
+    {
+      "path": "package.json",
+      "sha256": "b409184ab1d6df6cfa842079122d81b1ddf649546762f564862f3ee8f7021f5d"
+    },
+    {
+      "path": "packages/operator-core/lib/blueprint/support-workflow-native-fixture.integration.test.ts",
+      "sha256": "83cd53d89419278c2ad3b55799dc650079aa7d86bc74aa9fe45071fffc08db18"
+    },
+    {
+      "path": "packages/operator-core/lib/blueprint/support-workflow-native-launch.ts",
+      "sha256": "ff9425fdc584c2fbc3f3ab634aad6c57730c695ac264fc31f72ad21cd89e5e97"
+    },
+    {
+      "path": "packages/operator-core/lib/gnome-terminal-policy.json",
+      "sha256": "0dbaa9d2be3c77f201ad1a08a5bf7ed0ff41ada304e5f04f44dfaf8de8aad4a3"
+    },
+    {
+      "path": "packages/operator-core/lib/process-identity.ts",
+      "sha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb"
+    },
+    {
+      "path": "packages/operator-core/lib/testing-native-runtime.ts",
+      "sha256": "d6569541741f9fad0919feb43b5972ee2fee8c7646d5f6c9a814af6f4a2a3647"
+    },
+    {
+      "path": "packages/operator-core/lib/testing-playwright-reporter.ts",
+      "sha256": "7c0f7d4cabb2e1845dedfbcdd50b5ce60fbea7c7a5d4fac1b424f17e8b11c649"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/cargo-target-root.sh",
+      "sha256": "e7298435cd9dfc1938872e428af7cfd2971e0bc73428aa3d89ff9e15313a800a"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/claim-target-dir.sh",
+      "sha256": "689b5f70267a30f78cda18495ef29fc9e73e2e415c52b09357623394facaa13e"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/disk-preflight.sh",
+      "sha256": "db928e2f8919dff5338e5cb3c611396bf5bf5c84418a67d2e4fdda2a0c956541"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/federation-asserts.sh",
+      "sha256": "08fec4e1158040851c6c05b9bd76dca920b87b3b05fc125562aa6e6f14c5e0aa"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/pinned-deps.sh",
+      "sha256": "c176127bf51b260e97f79672ef0bf2fd20f509fdfc8e8c184584862d5b01a939"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/release-artifacts.sh",
+      "sha256": "2208d7bbd7abd0d6063cf0c3a50b3b5795039a1f855b9838e8f36e0f756ceabc"
+    },
+    {
+      "path": "papercusp-desktop/bin/tauri-guarded",
+      "sha256": "4d1ea0e814d5fb81619b2e80c51ad88d02f18c70cc0952c7f6ca2105fc5aed54"
+    },
+    {
+      "path": "papercusp-desktop/package-lock.json",
+      "sha256": "1234d89f2767f7c4d2b16e9d51532f5f0614dc52df349e861b8589648d4a2c8d"
+    },
+    {
+      "path": "papercusp-desktop/package.json",
+      "sha256": "6333164d85180ae01c212b149034858ced8801ae4709269cf994227313f072b2"
+    },
+    {
+      "path": "papercusp-desktop/src-tauri/src/main.rs",
+      "sha256": "a95c05b3b91578f96c0437b048420345c16a1aa74080a9ffae0ea04c4d333dc8"
+    },
+    {
+      "path": "papercusp-desktop/src-tauri/src/native_console.rs",
+      "sha256": "843489dda883c0bfa6c4056a691422f3a9f802dd264459a9cd8dcb31585b322d"
+    },
+    {
+      "path": "papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs",
+      "sha256": "b52b4e4c7023bc11643f2f9b2162aafd992005ad97209ebfd8ac6079560c20be"
+    },
+    {
+      "path": "papercusp-desktop/test/monorepo-host-preflight.mjs",
+      "sha256": "fbc35e5679ed948f9844780498405b52772d848931620e3f7a59b7d703e40f0f"
+    },
+    {
+      "path": "papercusp-desktop/test/native-console-gnome.test.mjs",
+      "sha256": "c085d385fcda6c6de2342e86d6037d3b6bcf67bc21f468a60d601eb855925301"
+    },
+    {
+      "path": "scripts/lib/budgeted-task-scheduler.mjs",
+      "sha256": "1fdca9d8ac5e397d9ceed892c988c683ff448dcb4ac80693bcc9368bc8466eb5"
+    },
+    {
+      "path": "scripts/lib/committed-source-loader.mjs",
+      "sha256": "2a23726d00da0f8ea46388be32aaa3e527d8b9c47265a0fa0ddb1af98038a61a"
+    },
+    {
+      "path": "scripts/lib/node-test-host-preflight.mjs",
+      "sha256": "8f04a13c47f68170c95a5cf00d2b99634d6d39aabb53eb662f5767d2825d4a58"
+    },
+    {
+      "path": "scripts/lib/operator-e2e-assertion.sh",
+      "sha256": "497aa82ab19af35f64137639aa4980d29493940897d733785e030d13403f3e65"
+    },
+    {
+      "path": "scripts/lib/run-in-isolated-netns.sh",
+      "sha256": "c1ea9d198233e429a64f07c5aa93d19878a4e459c6bc7023bea96122e84bc65d"
+    },
+    {
+      "path": "scripts/lib/spa-require-built.sh",
+      "sha256": "b3b10e8e677dc9b8b05471922095594d6a288b24d8cfff03163e361eceaafaf7"
+    },
+    {
+      "path": "scripts/lib/task-cgroup-limits.mjs",
+      "sha256": "87231319018b6a052d0e780ba30a7a4345b976327d59a4b530e0577aed1f03c4"
+    },
+    {
+      "path": "scripts/lib/task-deadline.mjs",
+      "sha256": "613c6521326991a90fe7ffc571664dd6b303d514e4b2e6a558498637b60b6292"
+    },
+    {
+      "path": "scripts/lib/verify-tauri-assertion-env.mjs",
+      "sha256": "95fe6ac9d0ddd2b9e206792c3ed9f812c9edf188ec0a30177a0cc86a75037cda"
+    },
+    {
+      "path": "scripts/lib/verify-tauri-deadline.mjs",
+      "sha256": "d281002071082923b7bcf0fe56288b1049b2fa06295f3cda07d3a781fb460cb7"
+    },
+    {
+      "path": "scripts/npm-install-safe.mjs",
+      "sha256": "830d49b6ec82bb598e1c911424c3b1f2f3e8e35ef13754986ead3efa81d974a5"
+    },
+    {
+      "path": "scripts/pc-heavy.sh",
+      "sha256": "6b3acbef803ad81cd572180872e0afaae4227652c0cbe209397f439fd8c6d21a"
+    },
+    {
+      "path": "scripts/restricted-hold-tree-gate.mjs",
+      "sha256": "9d0c8cfa4d9ea10f00c77ef36f74c5002dca6d0ab7542e46980f424f8870ba10"
+    },
+    {
+      "path": "scripts/run-operator-e2e-isolated.sh",
+      "sha256": "c80eb9650297274f3a928b5449e0d4ff08bc0d420d9a06e87dd05bfa37aa8e04"
+    },
+    {
+      "path": "scripts/source-preview.mjs",
+      "sha256": "0987dc228bb6e0ebf04e5e179a55472c475c8db5486d8cfd7be11bb172bc194a"
+    },
+    {
+      "path": "scripts/verify-tauri-headless.sh",
+      "sha256": "453514fa0fd6c2838b7339bae27b1185e60cf8baeda949c7de1cdd149d6277b3"
+    }
+  ],
+  "capturedWorkerPublication": {
+    "candidateSha": "a8efa2abff0f7f6a38570ee9f79ee8e26d493218",
+    "observedRemoteStagingSha": "7395c59c0032f6810f995a1ecf7966c92ac83448",
+    "candidateIsRemoteStagingAncestor": true,
+    "captureArtifacts": [
+      "docs/evidence/enterprise-tooling-source-qualification-2026-10-21.json",
+      "docs/evidence/enterprise-p012-fixture-source-qualification-2026-10-21.json"
+    ],
+    "scope": "repository-worker-vite-original-sources",
+    "uniqueCapturedPaths": 2348,
+    "conflictingCapturedHashes": [],
+    "candidateMissingPaths": [],
+    "candidateMismatchedHashes": [],
+    "preparedAdmissionPaths": 52,
+    "preparedAdmissionMismatches": [],
+    "verification": "Read-only SHA256 comparison of retained capture hashes and prepared input hashes against immutable Git blobs, recursively following recorded submodule gitlinks; git ls-remote verified the remote staging tip and git merge-base verified candidate ancestry. No passing tests were replayed.",
+    "observedRemoteTipMismatches": [
+      "packages/operator-core/lib/capability-envelope/session-confinement-store.ts",
+      "packages/operator-core/lib/capability-envelope/session-confinement.ts"
+    ],
+    "limits": "The qualified source pin is the named candidate, not the later remote tip. This is publication/source identity only; config/main-process closure, runtime admission, isolation, business/native acceptance, provider approval, storage clearance and shipment are not established."
+  },
+  "boundary": "No export, dependency snapshot, build, runtime, provider, reviewer, deploy or gate action."
+}

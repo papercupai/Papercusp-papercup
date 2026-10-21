@@ -226,6 +226,32 @@ describe('accepted Codex provider attestation', () => {
     });
   });
 
+  it('refuses an observed auxiliary native thread before upstream work', async () => {
+    let upstreamCalls = 0;
+    const record = vi.fn(async () => undefined);
+    await bootCodex((_req, res) => {
+      upstreamCalls++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(completedCodexResponse().response));
+    }, [codexAcct('cdx-1')], {
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: record,
+    });
+    const response = await postResponses({
+      ...boundCodexRequest,
+      client_metadata: {
+        'x-codex-turn-metadata': JSON.stringify({
+          session_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          thread_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          turn_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        }),
+      },
+    }, { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(403);
+    expect(upstreamCalls).toBe(0);
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it('accepts an alias-equivalent provider model under the exact policy', async () => {
     const record = vi.fn(async () => undefined);
     await bootCodex((_req, res) => {

@@ -290,7 +290,9 @@ export const CLASSIFY_HEAD_CHARS = 240;
 // 8 → 9 (WI-6554700010017528): Claude Code cross-session messages (a peer
 // session's SendMessage) were persisted as `unenrolled-origin` and captured as
 // owner directives. Make the existing rows findable for reclassification.
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 9;
+// 9 → 10: a dialog's answer wording alone does not prove human authorship.
+// Reclassify legacy owner-dialog rows through the existing provenance backfill.
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 10;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {

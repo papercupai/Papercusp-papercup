@@ -17,7 +17,15 @@
  * Out of scope (D-041 (4)): reads that are not MCP calls (native Read, or capability:bash
  * `cat` of a plan file). The ceiling closes the MCP half only.
  */
-import { validProductReadBoundary, type ProductReadBoundary, type SessionToolConfinement } from './capability-envelope/session-confinement';
+import {
+  SCRATCH_PLAN_TOOLS,
+  validProductReadBoundary,
+  validScratchPlanBoundary,
+  type ProductReadBoundary,
+  type ScratchPlanBoundary,
+  type SessionToolConfinement,
+} from './capability-envelope/session-confinement';
+import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
 import { BLIND_REVIEW_TOOL, loadBlindReviewBrief } from './blind-review-gate';
 import type { BlindReviewBrief } from './blind-review-brief';
 
@@ -57,16 +65,21 @@ export type BlindReviewerProductReads = {
   testFiles?: string[];
 };
 
-export function blindReviewerConfinement(slug: string, productReads?: ProductReadBoundary): SessionToolConfinement {
+export function blindReviewerConfinement(slug: string, productReads?: ProductReadBoundary,
+  scratchPlans?: ScratchPlanBoundary): SessionToolConfinement {
   return Object.freeze({
     denyTools: Object.freeze([] as string[]),
-    denyOutside: productReads ? Object.freeze([...BLIND_REVIEWER_TOOL_CEILING,
-      ...(productReads.docsSlugs.length ? ['docs:get'] : []),
-      ...(productReads.testFiles.length ? ['testing:runs', 'testing:run'] : []),
+    denyOutside: productReads || scratchPlans ? Object.freeze([...BLIND_REVIEWER_TOOL_CEILING,
+      ...(productReads?.docsSlugs.length ? ['docs:get'] : []),
+      ...(productReads?.testFiles.length ? ['testing:runs', 'testing:run', 'testing:run-status'] : []),
+      // Admitted only together with denyPlansOutside, which narrows each verb to the
+      // reviewer's own scratch slugs (D-050). Without it they stay outside the ceiling.
+      ...(scratchPlans ? SCRATCH_PLAN_TOOLS : []),
     ]) : BLIND_REVIEWER_TOOL_CEILING,
     ...(productReads ? { denyProductReadsOutside: Object.freeze({ ...productReads,
       docsSlugs: Object.freeze([...productReads.docsSlugs]), testFiles: Object.freeze([...productReads.testFiles]),
     }) } : {}),
+    ...(scratchPlans ? { denyPlansOutside: Object.freeze({ ...scratchPlans }) } : {}),
     denyAmbientContext: true as const,
     imposedBy: BLIND_GAP_REVIEW_ACTOR,
     reason:
@@ -75,7 +88,8 @@ export function blindReviewerConfinement(slug: string, productReads?: ProductRea
   });
 }
 
-export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: string | null, productReads?: ProductReadBoundary): string {
+export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: string | null, productReads?: ProductReadBoundary,
+  scratchPlans?: ScratchPlanBoundary): string {
   const run = howToRun?.trim()
     ? howToRun.trim()
     : 'Find the running build yourself (dev:service_health), then exercise it with capability:bash.';
@@ -84,7 +98,7 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
     '',
     'You review a finished feature WITHOUT seeing its plan. Below are the owner\'s own words.',
     'Run the product, then list every place where what the owner asked for is missing,',
-    'wrong, or only partly there. Plan, rubric and evidence tools are refused for this',
+    'wrong, or only partly there. This plan, its rubric and its evidence are refused for this',
     'session on purpose; a refusal is expected, not an obstacle to route around.',
     '',
     '## How to run the product',
@@ -96,7 +110,16 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
       ...productReads.testFiles.map(file => `testing:runs { harness: '${productReads.harness}', filePath: '${file}', source: 'mutation-probe', sinceHours: 24, limit: 20 }`),
       ...productReads.testFiles.map(file => `testing:run { harness: '${productReads.harness}', files: ['${file}'], timeoutMs: 120000, maxFailures: 5 }`),
       'Run nominated tests through testing:run: its server-side source-hold preflight admits the exact files before execution. The offline capability:bash sandbox cannot query that ledger.',
+      'testing:run caps its foreground wait below the requested timeoutMs, so a longer run returns a detachedRunId. Poll it with testing:run-status { runId: \'<that id>\' } until it reports pass, fail, cancelled or error; a foreground timeout is not a test result.',
       'These are maintained product docs and raw test-file history, not the plan, its bound proof, or an author-selected proof ID.',
+    ] : []),
+    ...(scratchPlans ? [
+      '',
+      '## Your scratch plans',
+      `To exercise plan-tool behaviour, create plans of your own. Every slug must start with ${scratchPlans.scratchPrefix}, for example ${scratchPlans.scratchPrefix}probe.`,
+      'plans:new, plans:add-item, plans:set-status, plans:audit and plans:get accept those slugs only, and plans:set-plan-status accepts them only with dryRun: true.',
+      'Never name the reviewed plan in a scratch call. Such a call is refused, and the attempt is recorded as reading the plan, which voids your review.',
+      'Your scratch plans are archived when you post your gaps.',
     ] : []),
     '',
     '## The owner\'s words',
@@ -117,7 +140,7 @@ export interface MintBlindGapReviewerDeps {
 }
 
 export type MintBlindGapReviewerResult =
-  | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number }
+  | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number; scratchPrefix: string | null }
   | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_owner_turns' | 'invalid_product_reads'; message: string };
 
 async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementKey: symbol }> {
@@ -154,7 +177,12 @@ export async function mintBlindGapReviewer(
   if (productReads && !validProductReadBoundary(productReads)) {
     return { ok: false, code: 'invalid_product_reads', message: 'Product reads require exact documentation slugs, test file paths and concrete harnesses.' };
   }
-  const kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads);
+  // D-050: the reviewer may author and exercise its own scratch plans. A slug or harness
+  // the boundary cannot represent leaves the plan verbs refused, as before D-050.
+  const scratchCandidate: ScratchPlanBoundary = { scratchPrefix: blindReviewScratchPrefix(),
+    reviewedSlug: input.slug, harness: input.harness };
+  const scratchPlans = validScratchPlanBoundary(scratchCandidate) ? scratchCandidate : undefined;
+  const kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
   const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
   // A SYSTEM effect, not the caller's personal launch: the reviewer must descend from this
   // actor, or the door's lineage check rejects it as the author's child. Same pattern as
@@ -169,7 +197,7 @@ export async function mintBlindGapReviewer(
     ownerId: BLIND_GAP_REVIEW_ACTOR,
     ownerLabel: 'blind gap review',
     userId: null,
-    [confinementKey]: blindReviewerConfinement(input.slug, productReads),
+    [confinementKey]: blindReviewerConfinement(input.slug, productReads, scratchPlans),
   };
   const launch = await handler(
     {
@@ -187,5 +215,6 @@ export async function mintBlindGapReviewer(
     },
     systemCtx as never,
   );
-  return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq };
+  return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
+    scratchPrefix: scratchPlans?.scratchPrefix ?? null };
 }

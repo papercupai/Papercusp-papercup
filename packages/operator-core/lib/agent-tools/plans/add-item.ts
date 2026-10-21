@@ -26,7 +26,7 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { DELIVERABLE_KINDS, type DeliverableKind } from '@papercusp/plan-parser';
+import { DELIVERABLE_KINDS, TYPE_SLUG_PATTERN } from '@papercusp/plan-parser';
 import {
   findTerminalPlanChildMutations,
   parsePlan,
@@ -94,9 +94,12 @@ const BLOCKED_BY = z
   .array(z.string().regex(/^P-\d{3,}$/))
   .describe('Item IDs that must complete before this one can effectively start.');
 
+// plan-item-types-registry-cupboard P-002: a built-in kind or a namespaced item type, grammar
+// only, as the parser accepts; activation refuses a type the registry cannot resolve.
 const DELIVERABLE = z
-  .enum(DELIVERABLE_KINDS)
-  .describe("What the item delivers; overrides the plan profile's default kind. Omit to inherit it.");
+  .union([z.enum(DELIVERABLE_KINDS), z.string().regex(TYPE_SLUG_PATTERN)])
+  .describe("What the item delivers: a built-in kind or an item type id (acme/memo). Omit to inherit the plan's default.");
+type ItemDeliverable = z.infer<typeof DELIVERABLE>;
 
 /**
  * tool-contract-repair-2026-09-05 P-006. `title` and `body` are the names a
@@ -246,7 +249,7 @@ interface NewItem {
   text: string;
   importance: Importance;
   blockedBy?: string[];
-  deliverable?: DeliverableKind;
+  deliverable?: ItemDeliverable;
   harness?: string;
   rationale?: string;
 }
@@ -310,7 +313,7 @@ export function buildItemLine(
   text: string,
   blockedBy: string[],
   importance: Importance = 'normal',
-  deliverable?: DeliverableKind,
+  deliverable?: ItemDeliverable,
 ): string {
   const bbSuffix = blockedBy.length > 0 ? ` blocked-by: ${blockedBy.join(', ')}` : '';
   // Emit the importance keyword only when it departs from the parser

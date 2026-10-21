@@ -23,7 +23,7 @@
  * rubrics.ts (which imports withPlanLock — the cycle this file exists to avoid).
  */
 
-import { rubricTemplateDataSchema } from './rubric-template';
+import { knownRubricCriterionKeys, rubricTemplateDataSchema } from './rubric-template';
 import type { AcceptanceBarContract, AcceptanceBarProvenance } from './rubric-template';
 import { hashPlanContent } from './content-hash';
 import { pgTimestampToIso } from '../../pg-timestamp';
@@ -415,6 +415,219 @@ function deriveProvenance(
 }
 
 /**
+ * True when the stored document, read WITHOUT this build's schema, is an acceptance
+ * rubric carrying a server-owned barContract object. Used only to fail closed when the
+ * strict parse cannot see a contract the raw row plainly has (WI-6554700010018464).
+ */
+function rawStoredHasStartedBarContract(stored: unknown): boolean {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return false;
+  const raw = stored as { kind?: unknown; barContract?: unknown };
+  return (
+    raw.kind === 'acceptance' &&
+    typeof raw.barContract === 'object' &&
+    raw.barContract !== null &&
+    !Array.isArray(raw.barContract)
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** kind and subjectPlan are server-owned once a contract has started. */
+function assertServerOwnedIdentityUnchanged(
+  slug: string,
+  stored: Record<string, unknown>,
+  next: Record<string, unknown>,
+): void {
+  if (next.kind !== 'acceptance' || next.subjectPlan !== stored.subjectPlan) {
+    throw new Error(
+      `invalid_args: rubric '${slug}' has a started acceptance BAR contract; ` +
+        'kind and subjectPlan are server-owned and cannot be changed by a generic template_data write',
+    );
+  }
+}
+
+/**
+ * The ONE BAR comparison: which bars were added, removed, changed in meaning, or had
+ * their provenance touched. Both the parsed path and the version-skew path call it, so
+ * the two cannot drift into different definitions of "BAR meaning changed".
+ */
+function diffBarCriteria(
+  storedCriteria: readonly Record<string, unknown>[],
+  nextCriteria: readonly Record<string, unknown>[],
+): {
+  priorByKey: Map<string, Record<string, unknown>>;
+  changes: AcceptanceBarWriteGuardResult['changes'];
+  changedMeaning: boolean;
+} {
+  const priorByKey = new Map(storedCriteria.map((criterion) => [barKeyOf(criterion), criterion]));
+  const nextByKey = new Map(nextCriteria.map((criterion) => [barKeyOf(criterion), criterion]));
+  const changes: AcceptanceBarWriteGuardResult['changes'] = [];
+  for (const [key, prior] of priorByKey) {
+    const candidate = nextByKey.get(key);
+    if (!candidate) {
+      changes.push({ barKey: key, kind: 'removed', fields: ['bar'] });
+      continue;
+    }
+    const fields = ACCEPTANCE_BAR_MEANING_FIELDS.filter((field) => !equalValue(prior[field], candidate[field]));
+    if (fields.length > 0) changes.push({ barKey: key, kind: 'meaning', fields: [...fields] });
+    if (!equalValue(prior.barProvenance, candidate.barProvenance)) {
+      changes.push({ barKey: key, kind: 'provenance', fields: ['barProvenance'] });
+    }
+  }
+  for (const key of nextByKey.keys()) {
+    if (!priorByKey.has(key)) changes.push({ barKey: key, kind: 'added', fields: ['bar'] });
+  }
+  const changedMeaning = changes.some((change) => ['added', 'removed', 'meaning'].includes(change.kind));
+  return { priorByKey, changes, changedMeaning };
+}
+
+function describeMeaningChanges(changes: AcceptanceBarWriteGuardResult['changes']): string {
+  return changes
+    .filter((change) => change.kind !== 'provenance')
+    .map((change) => `${change.barKey}:${change.fields.join('|')}`)
+    .join(', ');
+}
+
+function assertAmendmentAuthenticated(args: AcceptanceBarWriteGuardInput): void {
+  if (!args.amendment) return;
+  if (!args.amendment.actorId.trim() || !args.amendment.reason.trim()) {
+    throw new Error(`invalid_args: rubric '${args.slug}' amendment requires authenticated actorId and a reason`);
+  }
+  if (args.actorId && args.actorId !== args.amendment.actorId) {
+    throw new Error(`invalid_args: rubric '${args.slug}' amendment actorId does not match the authenticated writer`);
+  }
+}
+
+/**
+ * WI-6554700010018489 — a write that CARRIES a contract over a started contract this
+ * build cannot parse (a stored rubric written by a NEWER build).
+ *
+ * Before this, the guard returned such a write unchanged: the stored side was
+ * unreadable, so nothing was compared, and an older build serving a generic
+ * template_data writer could rewrite BAR meaning (e.g. R-6's `check`) without the
+ * amendment capability. The comparison itself never needed the schema — it is a
+ * field-by-field check of `ACCEPTANCE_BAR_MEANING_FIELDS` per barKey — so run it on
+ * the RAW stored criteria, exactly as the parsed path runs it on the parsed ones.
+ *
+ * - A BAR meaning change is refused for EVERY writer, amendment included. The parsed
+ *   path lets an amendment through because it can re-derive and validate the final
+ *   contract; this build cannot read the contract it would be amending, so it fails
+ *   closed and names the build to retry on. (rubrics:amend reads the stored rubric
+ *   through this same schema, so it cannot normally reach here anyway.)
+ * - Everything else (METHOD edits, a federated replay of an unchanged peer row) is
+ *   allowed, and the server-owned values are canonicalized FROM THE RAW STORED ROW the
+ *   same way the parsed path canonicalizes them from the parsed one: contract via
+ *   `deriveContract`, per-bar provenance via `deriveProvenance`, proposedBy/ratifiedBy
+ *   preserved. A caller-supplied contract or provenance is never trusted.
+ * - The stored `barSetHash` is preserved rather than recomputed. BAR meaning is
+ *   unchanged by construction here, so the stored hash is still the truth, and this
+ *   build is not the authority on how a newer build computes it.
+ * - The final document is NOT re-parsed with this build's schema: it carries stored
+ *   values this build cannot represent, which is the premise of this branch. Every
+ *   value in it is either from `next` (validated above) or copied from the stored row.
+ * - Stored fields this build's schema does not know are CARRIED FORWARD, not dropped
+ *   (WI-6554700010018513): see `unknownStoredFields`.
+ *
+ * The federated whole-plan replay (sync/hyperbee/projections/harness-plans.ts) passes no
+ * amendment, so a replayed meaning change is now refused here exactly as it already is
+ * on the parsed path; an unchanged replay still passes.
+ */
+/**
+ * WI-6554700010018513 — the stored fields a skewed write must carry forward.
+ *
+ * Under version skew `next` was parsed by THIS build's strict schema, so it cannot carry
+ * a field a newer build added; spreading `next` alone silently dropped every such stored
+ * field. This build is not the authority on fields it cannot read (the same reason the
+ * stored barSetHash is preserved), so they are copied from the raw stored row: top-level
+ * keys the template schema does not know, and per bar (matched by barKey) criterion keys
+ * the criterion schema does not know. A key this build DOES know is never carried: its
+ * absence from `next` is the writer's choice, judged by the checks in the caller. The
+ * alternative policy, refusing the write, would block every METHOD fill (D-002) through
+ * an older build for as long as any newer build had written to the row.
+ *
+ * Only the started-contract skew path may use this. The guard runs on EVERY plan's
+ * template_data write, and on a non-rubric template every key is "unknown" to the rubric
+ * schema, so the unstarted path must keep returning `next` unchanged.
+ */
+function unknownStoredFields(
+  stored: Record<string, unknown> | undefined,
+  known: ReadonlySet<string>,
+): Record<string, unknown> {
+  if (!stored) return {};
+  return Object.fromEntries(Object.entries(stored).filter(([key, value]) => !known.has(key) && value !== undefined));
+}
+
+function guardSkewedStartedContractWrite(
+  args: AcceptanceBarWriteGuardInput,
+  next: Record<string, unknown>,
+  storedIssue: { path: PropertyKey[]; message: string } | undefined,
+): AcceptanceBarWriteGuardResult {
+  const where = storedIssue
+    ? `${storedIssue.path.map(String).join('.') || '(root)'}: ${storedIssue.message}`
+    : 'unknown field';
+  const skew = (detail: string) =>
+    new Error(
+      `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract that this build cannot ` +
+        `validate (stored template_data fails this build's rubric schema at ${where}); ${detail}. Retry on a ` +
+        'build whose rubric schema reads the stored rubric (version skew, WI-6554700010018489).',
+    );
+  const stored = args.storedTemplateData as Record<string, unknown>;
+  const rawCriteria = Array.isArray(stored.criteria) ? stored.criteria : null;
+  if (!rawCriteria || !rawCriteria.every(isPlainRecord)) {
+    throw skew('the stored criteria are not a list of records, so BAR meaning cannot be compared');
+  }
+  assertServerOwnedIdentityUnchanged(args.slug, stored, next);
+  const nextCriteria = (next.criteria as unknown[]).map((criterion) => criterion as Record<string, unknown>);
+  const { priorByKey, changes, changedMeaning } = diffBarCriteria(rawCriteria, nextCriteria);
+  if (changedMeaning) {
+    throw skew(`refusing a write that changes BAR meaning (changes: ${describeMeaningChanges(changes)})`);
+  }
+  assertAmendmentAuthenticated(args);
+
+  const now = args.now ?? new Date().toISOString();
+  const contract = deriveContract(
+    stored.barContract as AcceptanceBarContract,
+    args.subjectPlan,
+    next.barContract as AcceptanceBarContract | undefined,
+  );
+  const knownCriterionKeys = knownRubricCriterionKeys();
+  const canonicalCriteria = nextCriteria.map((criterion) => {
+    const prior = priorByKey.get(barKeyOf(criterion));
+    const provenance = deriveProvenance(
+      prior?.barProvenance as AcceptanceBarProvenance | undefined,
+      contract,
+      args.subjectPlan,
+      args.actorId,
+      args.amendment,
+      now,
+      false,
+      criterion.barProvenance as AcceptanceBarProvenance | undefined,
+    );
+    return { ...unknownStoredFields(prior, knownCriterionKeys), ...criterion, barProvenance: provenance };
+  });
+  const storedSetHash = typeof stored.barSetHash === 'string' ? stored.barSetHash : undefined;
+  const setHash = storedSetHash ?? barSetHash(canonicalCriteria);
+  return {
+    data: {
+      ...unknownStoredFields(stored, new Set(Object.keys(rubricTemplateDataSchema.shape))),
+      ...next,
+      kind: 'acceptance',
+      subjectPlan: stored.subjectPlan,
+      criteria: canonicalCriteria,
+      barContract: contract,
+      ...(setHash ? { barSetHash: setHash } : {}),
+      ...(stored.proposedBy !== undefined ? { proposedBy: stored.proposedBy } : {}),
+      ...(stored.ratifiedBy !== undefined ? { ratifiedBy: stored.ratifiedBy } : {}),
+    },
+    started: true,
+    changed: changes.length > 0,
+    changes,
+  };
+}
+
+/**
  * Guard every template_data persistence path after a subject's BAR contract has
  * started.  BAR meaning changes are rejected unless the caller is the canonical
  * amendment operation; provenance/approver fields are canonicalized from the
@@ -427,11 +640,16 @@ export function guardAcceptanceBarTemplateDataWrite(
 ): AcceptanceBarWriteGuardResult {
   const storedParsed = rubricTemplateDataSchema.safeParse(args.storedTemplateData);
   const nextParsed = rubricTemplateDataSchema.safeParse(args.nextTemplateData);
+  // WI-6554700010018464: a started contract is judged from the RAW stored document as
+  // well as the parsed one. A stored rubric written by a NEWER build can fail this
+  // build's strict schema (measured: d740fc3802 rejected R-6's `check.all` probe set),
+  // and the parsed-only test then read "no contract" and let a generic writer drop it.
+  const storedRawHasStartedContract = rawStoredHasStartedBarContract(args.storedTemplateData);
   if (!nextParsed.success) {
     // The registry/schema writer will provide the richer validation diagnostic;
     // this guard only adds the important started-BAR refusal for a destructive
     // clear or malformed direct upgrade.
-    if (storedParsed.success && storedParsed.data.barContract) {
+    if ((storedParsed.success && storedParsed.data.barContract) || storedRawHasStartedContract) {
       throw new Error(
         `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract; ` +
           'template_data cannot be cleared or replaced with an unvalidated shape outside rubrics:amend',
@@ -467,8 +685,32 @@ export function guardAcceptanceBarTemplateDataWrite(
     throw new Error(
       `invalid_args: rubric '${args.slug}' belongs to a subject that already adopted an acceptance BAR ` +
         `contract, but the stored rubric is missing its server-owned barContract; generic template_data ` +
-        `writes are refused until the orphaned contract is repaired through the acceptance BAR recovery path`,
+        `writes are refused until the orphaned contract is repaired through the acceptance BAR recovery path: ` +
+        `rubrics:amend { rubricRef:'${args.slug}', restoreOrphanedBarContract:true, reason, dryRun:true } ` +
+        `(WI-6554700010018395), then apply without dryRun`,
     );
+  }
+  if (!storedParsed.success && storedRawHasStartedContract && !(next as { barContract?: unknown }).barContract) {
+    // Version skew: this build cannot read the stored rubric, so it can neither verify
+    // nor re-attach the started contract. Refuse rather than persist a document that
+    // silently drops it (the 2026-10-18 strip of the cloud-monitoring rubric).
+    // A write that CARRIES a contract (e.g. a federated replay of the newer peer's own
+    // row) is not a drop; guardSkewedStartedContractWrite judges it against the raw row.
+    const issue = storedParsed.error.issues[0];
+    const where = issue ? `${issue.path.join('.') || '(root)'}: ${issue.message}` : 'unknown field';
+    throw new Error(
+      `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract that this build cannot ` +
+        `validate (stored template_data fails this build's rubric schema at ${where}); refusing a ` +
+        'template_data write that would drop the contract. Retry on a build whose rubric schema reads ' +
+        'the stored rubric (version skew, WI-6554700010018464).',
+    );
+  }
+  if (!storedParsed.success && storedRawHasStartedContract) {
+    // WI-6554700010018489: the write CARRIES a contract, so it is not a drop — but it is
+    // still a write over a started contract this build cannot parse. Judge it against the
+    // RAW stored row with the same BAR comparison the parsed path uses, instead of letting
+    // it through unread.
+    return guardSkewedStartedContractWrite(args, next, storedParsed.error.issues[0]);
   }
   if (!storedParsed.success || storedParsed.data.kind !== 'acceptance' || !storedParsed.data.barContract) {
     return { data: next, started: false, changed: false, changes: [] };
@@ -477,51 +719,16 @@ export function guardAcceptanceBarTemplateDataWrite(
   const storedContract = stored.barContract as AcceptanceBarContract;
   const storedCriteria = (stored.criteria as unknown[]).map((criterion) => criterion as Record<string, unknown>);
   const nextCriteria = (next.criteria as unknown[]).map((criterion) => criterion as Record<string, unknown>);
-  if (next.kind !== 'acceptance' || next.subjectPlan !== stored.subjectPlan) {
-    throw new Error(
-      `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract; ` +
-        'kind and subjectPlan are server-owned and cannot be changed by a generic template_data write',
-    );
-  }
+  assertServerOwnedIdentityUnchanged(args.slug, stored, next);
 
-  const priorByKey = new Map(storedCriteria.map((criterion) => [barKeyOf(criterion), criterion]));
-  const nextByKey = new Map(nextCriteria.map((criterion) => [barKeyOf(criterion), criterion]));
-  const changes: AcceptanceBarWriteGuardResult['changes'] = [];
-  for (const [key, prior] of priorByKey) {
-    const candidate = nextByKey.get(key);
-    if (!candidate) {
-      changes.push({ barKey: key, kind: 'removed', fields: ['bar'] });
-      continue;
-    }
-    const fields = ACCEPTANCE_BAR_MEANING_FIELDS.filter((field) => !equalValue(prior[field], candidate[field]));
-    if (fields.length > 0) changes.push({ barKey: key, kind: 'meaning', fields: [...fields] });
-    if (!equalValue(prior.barProvenance, candidate.barProvenance)) {
-      changes.push({ barKey: key, kind: 'provenance', fields: ['barProvenance'] });
-    }
-  }
-  for (const key of nextByKey.keys()) {
-    if (!priorByKey.has(key)) changes.push({ barKey: key, kind: 'added', fields: ['bar'] });
-  }
-  const changedMeaning = changes.some((change) => ['added', 'removed', 'meaning'].includes(change.kind));
+  const { priorByKey, changes, changedMeaning } = diffBarCriteria(storedCriteria, nextCriteria);
   if (changedMeaning && !args.amendment) {
     throw new Error(
       `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract; ` +
-        `BAR meaning cannot change outside rubrics:amend (changes: ${changes
-          .filter((change) => change.kind !== 'provenance')
-          .map((change) => `${change.barKey}:${change.fields.join('|')}`)
-          .join(', ')})`,
+        `BAR meaning cannot change outside rubrics:amend (changes: ${describeMeaningChanges(changes)})`,
     );
   }
-  if (args.amendment) {
-    if (!args.amendment.actorId.trim() || !args.amendment.reason.trim()) {
-      throw new Error(`invalid_args: rubric '${args.slug}' amendment requires authenticated actorId and a reason`);
-    }
-    if (args.actorId && args.actorId !== args.amendment.actorId) {
-      throw new Error(
-        `invalid_args: rubric '${args.slug}' amendment actorId does not match the authenticated writer`,
-      );
-    }
-  }
+  assertAmendmentAuthenticated(args);
 
   const now = args.now ?? new Date().toISOString();
   const contract = deriveContract(

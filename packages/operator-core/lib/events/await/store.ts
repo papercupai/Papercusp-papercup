@@ -42,7 +42,7 @@ import {
 } from './turn-proof';
 import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
-import { activeEventWaitBlockerSql, reconcileEventExternalBlockers } from '../../work-items';
+import { activeEventWaitBlockerSql, EVENT_WAIT_BLOCKER_KINDS, reconcileEventExternalBlockers } from '../../work-items';
 import { durableParkOnTriggerSql, reconcileEventDurableParks } from '../../work-items-durable-park-audit';
 import { followUpSystemClears, type SystemClearedBlockerItem } from '../../work-item-ref-blocker-auto-clear';
 import { fireCertifiesCondition } from '../../external-condition-reachability';
@@ -3863,6 +3863,65 @@ export async function settleProvingFire(
   });
   await followUpSystemClears(settled);
   return settled.length;
+}
+
+/**
+ * event-wait-settlement-2026-10-20 P-005 (Design 5, R-9) — the recovery read for the
+ * blocker re-check sweep. The emit-time settlement above is fail-soft and its waiter probe
+ * is lock-free, so a crash between the latch upsert and {@link settleProvingFire}, a
+ * settlement that threw, or a wait committed concurrently with the fire can each leave a
+ * wait active although its key has already fired. This finds those keys: a key some ACTIVE
+ * wait names (an event/gate blocker on a non-terminal item, or an unclaimed durable park's
+ * release trigger) whose fire latch shows a fire AFTER that wait was created, and a fire of
+ * which proves its condition ({@link fireCertifiesCondition}). "Fired since" is exact: the
+ * wait's own createdAt (`claim_hold_at` for a park) against the latch's `last_fired_at`. A
+ * wait whose creation time does not parse is never selected.
+ *
+ * The wait predicates mirror the settlement reconcilers (activeEventWaitBlockerSql and
+ * durableParkOnTriggerSql), which match across workspaces; the latch is read in the
+ * events workspace, as {@link recordKeyFire} writes it. Returns at most `limit` keys,
+ * sorted, and whether more qualified.
+ */
+export async function listMissedProvingFireKeys(input: { limit: number }): Promise<{
+  keys: string[];
+  truncatedByLimit: boolean;
+}> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ ref: string | null; created_at: string | null; last_fired_at: Date | string }>>`
+    WITH waits AS (
+      SELECT btrim(b ->> 'ref') AS ref, b ->> 'createdAt' AS created_at
+        FROM harness_shared.work_items w
+       CROSS JOIN LATERAL jsonb_array_elements(
+               CASE WHEN jsonb_typeof(w.payload -> 'externalBlockers') = 'array'
+                    THEN w.payload -> 'externalBlockers' ELSE '[]'::jsonb END) b
+       WHERE (w.payload -> 'externalBlockers') @> '[{"status":"active"}]'::jsonb
+         AND w.status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+         AND b ->> 'status' = 'active'
+         AND b ->> 'kind' = ANY(${[...EVENT_WAIT_BLOCKER_KINDS]}::text[])
+      UNION ALL
+      SELECT btrim(w.payload -> 'claim_hold_release' ->> 'trigger'), w.payload ->> 'claim_hold_at'
+        FROM harness_shared.work_items w
+       WHERE w.payload ? 'claim_hold_release'
+         AND w.payload ->> '_claimHold' = 'true'
+         AND NULLIF(w.payload ->> 'claim_hold_by', '') IS NOT NULL
+         AND (w.taken_by IS NULL OR btrim(w.taken_by) = '')
+    )
+    SELECT waits.ref, waits.created_at, f.last_fired_at
+      FROM waits
+      JOIN harness_shared.event_key_fires f
+        ON f.workspace_id = ${eventsWs()} AND f.event_key = waits.ref
+  `;
+  const missed = new Set<string>();
+  for (const row of rows) {
+    const ref = row.ref?.trim();
+    const createdAt = row.created_at ? Date.parse(row.created_at) : NaN;
+    const firedAt = new Date(row.last_fired_at).getTime();
+    if (!ref || !Number.isFinite(createdAt) || !Number.isFinite(firedAt)) continue;
+    if (firedAt > createdAt && fireCertifiesCondition(ref)) missed.add(ref);
+  }
+  const keys = [...missed].sort();
+  const limit = Math.max(0, Math.floor(input.limit));
+  return { keys: keys.slice(0, limit), truncatedByLimit: keys.length > limit };
 }
 
 /** ACTIVE announcements (not cancelled, not lapsed) — the discovery read for

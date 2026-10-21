@@ -18,6 +18,8 @@ import type { Context } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import type { ZodTypeAny } from 'zod';
 import type { Principal } from '@papercusp/agent-mcp';
+// RouteDiagnostics lives in tooldef and agent-mcp does not re-export it.
+import type { RouteDiagnostics } from '@papercusp/tooldef';
 import { PrincipalCheckError, requirePrincipal } from '../auth/require-principal';
 import { AgentIdentityRequiredError } from '../auth/identity-required-error';
 import { principalFromCookie } from '../auth/principal/from-cookie';
@@ -41,6 +43,47 @@ import {
 export type RouteStepName = 'auth' | 'input' | 'invoke';
 
 const committedResponses = new WeakSet<Response>();
+
+const ROUTE_DIAGNOSTICS_HISTORY_CAP = 32;
+const ROUTE_DIAGNOSTICS_PHASE_RE = /^[a-z][a-z0-9._-]{0,63}$/;
+
+/**
+ * Keep the route seam cheap and bounded. The generic phase tracker already
+ * handles async work, thrown handlers, and history eviction; this adapter
+ * exposes the smaller route-facing contract and returns only numeric phase
+ * durations suitable for sanitized route metadata.
+ */
+export function createRouteDiagnostics(): RouteDiagnostics {
+  const completed: Array<{ phase: string; durationMs: number }> = [];
+  const active = new Map<number, { phase: string; startedAt: number }>();
+  let nextId = 0;
+  return {
+    measure<T>(phase: string, work: () => T | PromiseLike<T>): Promise<T> {
+      if (!ROUTE_DIAGNOSTICS_PHASE_RE.test(phase)) return Promise.resolve().then(work);
+      const id = ++nextId;
+      active.set(id, { phase, startedAt: Date.now() });
+      return Promise.resolve().then(work).finally(() => {
+        const started = active.get(id);
+        active.delete(id);
+        if (!started) return;
+        completed.push({ phase, durationMs: Math.max(0, Date.now() - started.startedAt) });
+        if (completed.length > ROUTE_DIAGNOSTICS_HISTORY_CAP) completed.shift();
+      });
+    },
+    snapshot(): Readonly<Record<string, number>> {
+      const snapshot: Record<string, number> = Object.create(null) as Record<string, number>;
+      for (const phase of completed) {
+        const durationMs = Number.isFinite(phase.durationMs)
+          ? Math.min(86_400_000, Math.max(0, Math.round(phase.durationMs)))
+          : null;
+        if (durationMs === null) continue;
+        snapshot[phase.phase] = Math.min(86_400_000,
+          (snapshot[phase.phase] ?? 0) + durationMs);
+      }
+      return { ...snapshot };
+    },
+  };
+}
 
 /**
  * Preserve a receipt only AFTER its durable effect has committed. A deadline
@@ -79,6 +122,8 @@ export interface RouteExecution {
    *  header when present. Null for streaming/chunked responses (no header) —
    *  never consumes/clones the body, so this can't break a streaming route. */
   responseBytes: number | null;
+  /** Optional bounded route phase recorder, installed by the default stack. */
+  routeDiagnostics?: RouteDiagnostics;
   /** Profile-specific presentation for unexpected handler/stack failures. */
   errorPresenter?: (error: unknown) => { code: string; message: string };
 }
@@ -524,6 +569,7 @@ const invokeStep: RouteStep = {
         input: exec.input,
         params: exec.hono.req.param() as Record<string, string>,
         peerAddress: exec.peerAddress ?? null,
+        routeDiagnostics: exec.routeDiagnostics,
         log: (level, msg, meta) => {
           // R1: console. R2 routes this through the telemetry logger.
           const line = `[route ${exec.def.method} ${exec.def.path}] ${msg}`;
@@ -605,6 +651,7 @@ export async function runRouteStack(
     timeoutTimer: null,
     status: 'error',
     responseBytes: null,
+    routeDiagnostics: createRouteDiagnostics(),
   };
   // Initialized (never actually surfaced — both try/catch below always
   // overwrite it) purely so TS's definite-assignment analysis considers it
@@ -613,7 +660,7 @@ export async function runRouteStack(
   try {
     let short: Response | null = null;
     for (const step of stack) {
-      short = await step.run(exec);
+      short = await exec.routeDiagnostics!.measure(step.name, () => step.run(exec));
       if (short) break;
     }
     // `invoke` is terminal — the loop always ends with a Response.

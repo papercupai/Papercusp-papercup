@@ -1437,15 +1437,21 @@ export function callerChoseReporting(vitestArgs) {
  * row, so without a private report the name-filter guard cannot distinguish a real match from a
  * zero-match run.
  *
+ * `progressHeartbeat` (default ON; the router is the only caller) also retains the throttled
+ * per-test-case heartbeat reporter whenever CLI reporters replace the configured list. Without it
+ * a long single file that passes test after test prints nothing on a non-TTY until the file ends,
+ * and the progress-aware watchdog reaps a healthy run as stalled (EI-26528263655722045).
+ *
  * @param {string[]} vitestArgs
  * @param {string | null} reportPath
- * @param {{ repoRoot?: string, env?: NodeJS.ProcessEnv, requireTestCounts?: boolean }} [options]
+ * @param {{ repoRoot?: string, env?: NodeJS.ProcessEnv, requireTestCounts?: boolean, progressHeartbeat?: boolean }} [options]
  * @returns {{ args: string[], injectedReportPath: string | null }}
  */
 export function withInjectedJsonReport(vitestArgs, reportPath, {
   repoRoot = REPO_ROOT,
   env = process.env,
   requireTestCounts = false,
+  progressHeartbeat = true,
 } = {}) {
   const args = vitestArgs ?? [];
   const humanReporters = new Set(['default', 'verbose', 'dot']);
@@ -1478,6 +1484,10 @@ export function withInjectedJsonReport(vitestArgs, reportPath, {
   const sourceMapReporter = join(repoRoot, 'libs/test-config/src/executed-source-map-reporter.ts');
   if (env.PC_EXECUTED_SOURCE_MAP_WORKSPACE?.trim() && existsSync(sourceMapReporter) && !alreadySelected(sourceMapReporter)) {
     evidenceReporters.push(`--reporter=${sourceMapReporter}`);
+  }
+  const heartbeatReporter = join(repoRoot, 'scripts/lib/test-progress-heartbeat-reporter.mjs');
+  if (progressHeartbeat && existsSync(heartbeatReporter) && !alreadySelected(heartbeatReporter)) {
+    evidenceReporters.push(`--reporter=${heartbeatReporter}`);
   }
   if (!injectPrivateJson) {
     return { args: [...args, ...evidenceReporters], injectedReportPath: null };

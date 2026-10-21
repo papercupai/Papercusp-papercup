@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   INLINE_MEASUREMENT_MAX_CHARS,
+  filterBindingsToCheckout,
   normalizeRepoRelativePath,
   packMeasuringClauses,
   type MeasuringBindingRow,
@@ -80,6 +81,31 @@ describe('packMeasuringClauses', () => {
   it('holder is the live assignee, else whoever bound the proof once the item is terminal', () => {
     expect(pack([row({ work_item_status: 'done' })]).clauses[0]).toMatchObject({ holder: 'su-binder', holderSource: 'bound-by' });
     expect(pack([row({ work_item_taken_by: null })]).clauses[0]).toMatchObject({ holder: 'su-binder', holderSource: 'bound-by' });
+  });
+
+  it('filters path collisions to the registered checkout that supplied the proof', () => {
+    const canonical = row({ id: 100 });
+    const sibling = row({ id: 101, root_harness_slug: 'sibling' });
+    const registeredRoots = new Map([
+      ['papercusp', '/tmp/papercusp-canonical'],
+      ['sibling', '/tmp/papercusp-sibling'],
+    ]);
+
+    expect(filterBindingsToCheckout([canonical, sibling], {
+      harnessSlug: 'papercusp',
+      checkoutRoot: '/tmp/papercusp-canonical',
+      registeredRoots,
+    }).map((r) => r.id)).toEqual([100]);
+    expect(filterBindingsToCheckout([canonical, sibling], {
+      harnessSlug: 'papercusp',
+      checkoutRoot: '/tmp/papercusp-sibling',
+      registeredRoots,
+    }).map((r) => r.id)).toEqual([101]);
+    expect(filterBindingsToCheckout([canonical, sibling], {
+      harnessSlug: 'papercusp',
+      checkoutRoot: '/tmp/papercusp-unregistered-clone',
+      registeredRoots,
+    })).toEqual([]);
   });
 
   it('the re-measure call is complete and supersedes; an execution proof must be re-RUN, not re-bound', () => {

@@ -153,6 +153,73 @@ describe('resource-governor live-health contract', () => {
     expect(Object.keys(observations['memory.workingSetBytes']).sort()).toEqual([newer.id, older.id].sort());
   });
 
+  it('never lets a newer writer that cannot measure a signal shadow a fresh measurement from another writer', () => {
+    const key = 'latency.eventLoopP95Ms' as const;
+    const unmonitored = writer('operator.process:3528160', 'operator');
+    const measuring = writer('operator.process:2389820', 'operator');
+    const expiredWriter = writer('operator.process:77', 'operator');
+    const fragment = (owner: LiveHealthWriter, publishedAtMs: number, value: number | null): LiveHealthFragment => ({
+      schemaVersion: LIVE_HEALTH_FRAGMENT_SCHEMA_VERSION,
+      publishedAtMs,
+      writer: owner,
+      signals: {
+        [key]:
+          value === null
+            ? unknownLiveHealthReading({
+                key,
+                writerId: owner.id,
+                observedAtMs: publishedAtMs,
+                window: liveHealthWindow('rolling', publishedAtMs, publishedAtMs),
+                reason: 'event-loop-monitor-unavailable',
+              })
+            : measuredLiveHealthReading({
+                key,
+                value,
+                writerId: owner.id,
+                observedAtMs: publishedAtMs,
+                window: liveHealthWindow('rolling', publishedAtMs - 10_000, publishedAtMs),
+              }),
+      },
+    });
+
+    const signals = emptyLiveHealthSignals(NOW);
+    const observations = emptyLiveHealthObservations();
+    mergeLiveHealthFragments(
+      signals,
+      {},
+      [fragment(measuring, NOW - 5_000, 37.3), fragment(unmonitored, NOW - 500, null)],
+      NOW,
+      observations,
+    );
+    expect(signals[key]).toMatchObject({ state: 'measured', writerId: measuring.id, value: 37.3 });
+    expect(observations[key][unmonitored.id]).toMatchObject({ state: 'unknown' });
+
+    // With no fresh measurement anywhere, expired evidence still outranks no evidence.
+    const expiredAtMs = NOW - LIVE_HEALTH_SIGNAL_SPECS[key].freshForMs - 1;
+    const fallback = emptyLiveHealthSignals(NOW);
+    mergeLiveHealthFragments(
+      fallback,
+      {},
+      [fragment(expiredWriter, expiredAtMs, 12), fragment(unmonitored, NOW - 500, null)],
+      NOW,
+    );
+    expect(fallback[key]).toMatchObject({ state: 'stale', writerId: expiredWriter.id, value: null });
+
+    // An expired UNKNOWN never carried evidence, so it must not outrank a fresh unknown.
+    const neither = emptyLiveHealthSignals(NOW);
+    mergeLiveHealthFragments(
+      neither,
+      {},
+      [fragment(expiredWriter, expiredAtMs, null), fragment(unmonitored, NOW - 500, null)],
+      NOW,
+    );
+    expect(neither[key]).toMatchObject({
+      state: 'unknown',
+      writerId: unmonitored.id,
+      reason: 'event-loop-monitor-unavailable',
+    });
+  });
+
   it('turns an expired reading stale without carrying its numeric value forward', () => {
     const owner = writer('provider:acct-a', 'provider');
     const observedAtMs = NOW - LIVE_HEALTH_SIGNAL_SPECS['provider.waitP95Ms'].freshForMs - 1;

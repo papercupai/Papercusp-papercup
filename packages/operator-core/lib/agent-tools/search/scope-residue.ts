@@ -1,5 +1,5 @@
 /**
- * The residue disclosure a ZERO-HIT prose search owes its caller.
+ * The coverage disclosure a partial-scope prose search owes its caller.
  *
  * THE CLASS THIS CLOSES. A scoped search that finds nothing returns
  * `total_hits: 0` — a result BYTE-IDENTICAL to "this content does not exist
@@ -59,7 +59,7 @@ export const SOURCE_CORPUS: Readonly<Record<string, string | undefined>> = {
   coord_message: 'coord:* inter-agent traffic (coord_event_log)',
   report:
     'published reports visible to the caller (latest non-retired edition per lineage), including titles, summaries, and body text',
-  plan: 'saved Papercusp and harness plans (titles, status, and plan content, including historical plans)',
+  plan: 'saved plan titles, status and content, including P-NNN items in draft and unstarted plans, plan decisions and historical plans',
   doc: 'maintained Papercusp engineering and harness documentation (section titles and content)',
 };
 
@@ -97,9 +97,9 @@ export function scopeResidue(scope: readonly string[]): ScopeResidue | null {
       holds: SOURCE_CORPUS[name] ?? `(no corpus description registered for '${name}')`,
     })),
     caveat:
-      `THIS ZERO IS NOT AN ABSENCE CLAIM — the search covered ${searched.length} of ` +
+      `NOT AN ABSENCE CLAIM — the search covered ${searched.length} of ` +
       `${names.length} corpora, and the ${unsearched.length} listed above were never queried. ` +
-      'Content you are looking for may sit in one of them. Before reporting that something ' +
+      'Matches in searched corpora do not establish coverage of the others. Before reporting that something ' +
       "does not exist, re-run with scope:['all'], or with the specific corpus named above.",
   };
 }

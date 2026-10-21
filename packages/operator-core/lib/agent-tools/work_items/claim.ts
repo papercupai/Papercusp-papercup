@@ -27,6 +27,7 @@ import {
   commentWorkItem,
   explainIssueClaimFloors,
   getWorkItem,
+  isSettledWorkItemState,
   readNonAgentWorkCategory,
   readUnresolvedDepBlockers,
   type ClaimFloorAttribution,
@@ -75,7 +76,6 @@ import {
   planItemLandedWarning,
 } from '../../work-item-plan-item-landed';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
-import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 import {
   assessForceRelease,
@@ -147,22 +147,18 @@ async function claimStackProofGuidance(
 }
 
 /**
- * WI-5826: the warning a by-id claim MUST carry when the claimed row is already terminal.
+ * WI-5826: warning for the legacy open-row shape that still carries completion stamps.
  *
- * Claiming a finished item by id is deliberately ALLOWED (EI-8972 — "a completed row is STILL
- * directly claimable by id; the floor only gates self-select"): naming a finished item is how you
- * reopen it, inherit ownership, or attach follow-up work. What was missing is any SIGNAL — the
- * tool returned a bare ok:true on a state='done' row, so an agent could not distinguish fresh work
- * from finished work. Confirmed live 2026-07-26: work_items:claim{id:'EI-18645423267952485'} came
- * back ok:true on a row already done with terminalCompletionRef stamped, and was caught only
- * because that agent happened to read the returned workItem closely.
+ * A true terminal lifecycle state is now refused before the claim writer. This warning remains
+ * for a legacy row whose lifecycle still says open while terminal_owner and
+ * terminal_completion_ref both say a completion exists; the warning does not authorize that
+ * state transition or replace the explicit reopen path.
  *
  * EI-529 saw this class and mitigated it with a checkpointWarning, but that fires only when a
- * prior CHECKPOINT happens to exist; a completed item without one — the common case — still looked
- * like fresh work. This keys on the item's own terminal state instead, so it cannot be missed.
+ * prior CHECKPOINT happens to exist. This warning is the remaining signal for an open row whose
+ * terminal completion stamps survived without a terminal lifecycle state.
  *
- * Pure + exported so the guarantee is directly testable: the claim must keep SUCCEEDING (EI-8972's
- * decision) AND keep WARNING (this fix), and a future edit must not be able to silently drop one.
+ * Pure + exported so the remaining legacy-stamp warning is directly testable.
  */
 export function terminalClaimWarning(
   workItem:
@@ -175,25 +171,13 @@ export function terminalClaimWarning(
     | undefined,
 ): string | null {
   if (!workItem) return null;
-  const state = String(workItem.state ?? '').trim();
   const owner = String(workItem.terminalOwner ?? '').trim();
   const ref = String(workItem.terminalCompletionRef ?? '').trim();
 
-  // "Finished" has TWO independent expressions here and the warning must catch both, because
-  // the live miss and the pre-existing test each exhibit a DIFFERENT one:
-  //   (a) a terminal `state` (done/resolved/closed/…) — the shape reported live 2026-07-26;
-  //   (b) terminal_owner AND terminal_completion_ref both stamped — the shape EI-8972's
-  //       self-select floor keys on, which can sit on a row whose state is still 'open'.
-  // Keying on (a) alone silently missed (b) — caught by the guard test below, which seeds
-  // exactly that row. EI-8972 is deliberate that BOTH columns are required for (b): a row with
-  // only ONE set is NOT a genuine completion (it has its own two tests asserting it stays
-  // claimable by self-select), so requiring both here keeps this warning consistent with the
-  // floor instead of inventing a second, stricter notion of "done".
-  const stateTerminal = state !== '' && ANY_FAMILY_TERMINAL_STATES.includes(state.toLowerCase());
   const genuinelyCompleted = owner !== '' && ref !== '';
-  if (!stateTerminal && !genuinelyCompleted) return null;
+  if (!genuinelyCompleted) return null;
 
-  const label = stateTerminal ? state.toUpperCase() : 'COMPLETED';
+  const label = 'COMPLETED';
   return (
     `⚠ THIS ITEM IS ALREADY ${label}` +
     (ref ? ` (completed: "${ref}"${owner ? ` by ${owner}` : ''})` : '') +
@@ -202,6 +186,29 @@ export function terminalClaimWarning(
     'completion first and verify against the tree. If you wanted new work, release this and use ' +
     'scheduler:get_next instead.'
   );
+}
+
+/** Terminal-state refusal returned before a by-id claim can rewrite its assignee. */
+function terminalClaimRefusal(workItem: {
+  state?: string | null;
+  terminalOwner?: string | null;
+  terminalCompletionRef?: string | null;
+} | null | undefined, id: string): { error: string; terminalOwner: string | null; hint: string } | null {
+  if (!workItem || !isSettledWorkItemState(workItem.state)) return null;
+  const state = String(workItem.state ?? '').trim();
+  const terminalOwner = String(workItem.terminalOwner ?? '').trim() || null;
+  const completionRef = String(workItem.terminalCompletionRef ?? '').trim() || null;
+  return {
+    error: 'claim_terminal_item',
+    terminalOwner,
+    hint:
+      `work-item '${id}' is already terminal (${state})` +
+      `${terminalOwner ? `; terminal_owner is ${terminalOwner}` : ''}` +
+      `${completionRef ? `; completion ref is "${completionRef}"` : ''}. ` +
+      'The claim was refused without changing its assignee. To deliberately reopen it, first use ' +
+      `work_items:set_state { id: '${id}', state: 'open', force: true, reason: '<why reopening>' }; ` +
+      'then claim the reopened item by id. `force:true` on work_items:claim is only a holder takeover and does not reopen terminal work.',
+  };
 }
 
 /**
@@ -387,40 +394,6 @@ async function claimOne(
       hint: 'pilotRole is accepted only for the caller\'s own run-owned claim; dispatching a named assignee cannot mint their identity receipt.',
     };
   }
-  // EI-19313376980892266: start the concurrency read NOW, the moment the claimer is known, and
-  // await it only in the success branch — it is independent of admission, the pre-claim lookup
-  // and the claim itself, so overlapping them keeps this off the claim's critical path.
-  //
-  // PRE-claim on purpose. `evaluateClaimConcurrency` answers "would the scheduler refuse this
-  // bee another item", i.e. `activeClaims >= max`. Read AFTER the claim landed, an ordinary
-  // single claim under a cap of 1 satisfies that (1 >= 1) and would warn on every normal claim
-  // — the warning has to key on the state the caller was in when they asked, which is exactly
-  // the state get_next would have judged.
-  //
-  // Resolves the claimer's OWN effective limit (getClaimSpecRecord applies the bee → fleet →
-  // DEFAULT inheritance). Defaulting to 1 here would be the easy wiring and would be WRONG in
-  // the expensive direction: a member legitimately running under a leader-authored
-  // concurrency > 1 would be warned it is over a cap that does not exist, which is the
-  // false-positive mirror of the false-negative that produced this item.
-  //
-  // Fail-soft to null (never a fabricated verdict): this is a signal, not a floor, so a
-  // degraded spec/claims read must cost the warning and never the claim.
-  const concurrencyBefore = (async (): Promise<ClaimConcurrencyVerdict | null> => {
-    try {
-      const { readClaimConcurrency, getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
-      const rec = await getClaimSpecRecord({
-        cupId: claimer,
-        workspaceId: identity.workspaceId ?? undefined,
-      }).catch(() => null);
-      return await readClaimConcurrency({
-        cupId: claimer,
-        workspaceId: identity.workspaceId ?? undefined,
-        maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
-      });
-    } catch {
-      return null;
-    }
-  })();
   // Read the canonical row before the workspace-scope gate. Exact plan exceptions
   // are keyed by the item's persisted source_plan_slug, not by the caller's optional
   // harness argument. Keeping this read distinct from a missing row also preserves
@@ -438,6 +411,42 @@ async function claimOne(
     };
   }
   const preClaimItem = preClaim.status === 'found' ? preClaim.item : null;
+  const terminalRefusal = terminalClaimRefusal(preClaimItem, it.id);
+  if (terminalRefusal) {
+    return {
+      ok: false,
+      id: it.id,
+      ...terminalRefusal,
+      workItem: preClaimItem,
+    };
+  }
+  // EI-19313376980892266: start the concurrency read as soon as the claimer and a
+  // non-terminal target are known, then await it only in the success branch. This
+  // keeps it off the claim's critical path while terminal refusals remain side-effect-free.
+  //
+  // PRE-claim on purpose. `evaluateClaimConcurrency` answers "would the scheduler refuse this
+  // bee another item", i.e. `activeClaims >= max`. Read AFTER the claim landed, an ordinary
+  // single claim under a cap of 1 satisfies that (1 >= 1) and would warn on every normal claim.
+  //
+  // Resolve the claimer's OWN effective limit (getClaimSpecRecord applies bee → fleet → DEFAULT
+  // inheritance). Fail-soft to null: this is a signal, not a floor, so a degraded read only
+  // costs the warning and never the claim.
+  const concurrencyBefore = (async (): Promise<ClaimConcurrencyVerdict | null> => {
+    try {
+      const { readClaimConcurrency, getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+      const rec = await getClaimSpecRecord({
+        cupId: claimer,
+        workspaceId: identity.workspaceId ?? undefined,
+      }).catch(() => null);
+      return await readClaimConcurrency({
+        cupId: claimer,
+        workspaceId: identity.workspaceId ?? undefined,
+        maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
+      });
+    } catch {
+      return null;
+    }
+  })();
   const claimScopeHarness = preClaimItem?.harness ?? it.harness;
   const claimScopePlan =
     typeof preClaimItem?.sourcePlanSlug === 'string' && preClaimItem.sourcePlanSlug.trim()
@@ -1094,6 +1103,17 @@ async function claimOne(
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
   const current = await getWorkItem(it.id, it.harness);
+  // A completion may have raced the pre-claim read. The core UPDATE also has a
+  // terminal-state predicate; classify its zero-row result from this fresh read.
+  const terminalRaceRefusal = terminalClaimRefusal(current, it.id);
+  if (terminalRaceRefusal) {
+    return {
+      ok: false,
+      id: it.id,
+      ...terminalRaceRefusal,
+      workItem: current,
+    };
+  }
   // EI-22074465800337362: a force-reclaim's CAS already matched the liveness/authority
   // leg (claimWorkItem was called with `expectedAssignee: forced.holder`), yet the UPDATE
   // still returned 0 rows. `admittedWhereSql`/`autoPickableWhereSql` are applied to EVERY
@@ -1294,11 +1314,11 @@ export default defineTool({
   //     use (Bash/Read/vitest, zero platform calls) inside a >10–15min claim (EI-6772); call
   //     work_items:checkpoint partway, which is both a progress note and a liveness pulse.
   description:
-    'Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness/lifecycle floors and report advisories, not fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. `force:true` is an audited, liveness-checked takeover requiring reason.',
+    'Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.',
   guidance: {
-    when: 'Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness/lifecycle floors, not fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.',
+    when: 'Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness floors, not terminal state, fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.',
     notWhen:
-      '`claim_conflict` means a peer currently holds it. If that holder is dead or stale, retry the named claim with `force:true` and a reason; the takeover is liveness-checked and audited. A live holder still requires coordination. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person\'s job.',
+      '`claim_conflict` means a peer currently holds it. If that holder is dead or stale, retry the named claim with `force:true` and a reason; the takeover is liveness-checked and audited. A live holder still requires coordination. `claim_terminal_item` means a terminal row was left unchanged; reopen it explicitly with work_items:set_state { state:"open", force:true, reason } before claiming. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person\'s job.',
     chaining:
       'work_items:list → claim → set_state → release/close. No heartbeat; platform calls refresh liveness. During long local-only work, checkpoint (EI-6772).',
     seeAlso: [
@@ -1360,14 +1380,14 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'default for the inline id / every id in `ids`: checked-reclaim another agent\'s claim with `reason`; self-select readiness/lifecycle floors are already overridden by naming an id, but ordinary born-pending admission remains enforced. An authorized force takeover mints the exact pending-row exception, and every cross-holder takeover is audited + notifies the holder and owner.',
+          'default for the inline id / every id in `ids`: checked-reclaim another agent\'s non-terminal claim with `reason`; terminal items must first be explicitly reopened with work_items:set_state. Self-select readiness floors are overridden by naming an id, but terminal state and ordinary born-pending admission remain enforced.',
         ),
       reason: z
         .string()
         .max(500)
         .optional()
         .describe(
-          'default for the inline id / every id in `ids`: required when `force:true` replaces another agent\'s claim; recorded in the forced result, audit, and holder/owner notifications.',
+          'default for the inline id / every id in `ids`: required when `force:true` replaces another agent\'s claim; recorded in the forced result, audit, and holder/owner notifications. A terminal reopen reason belongs on work_items:set_state.',
         ),
       pilotRole: z
         .enum(PILOT_PARTICIPANT_ROLES)

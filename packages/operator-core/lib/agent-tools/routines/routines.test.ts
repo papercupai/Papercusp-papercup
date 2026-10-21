@@ -341,6 +341,34 @@ describe('routines:list', () => {
     expect(result.routines[0]?.health).toBeNull();
   });
 
+  // WI-6554700010018198 / WI-6554700010018409: git-sync's attribution-outage evidence is read
+  // from this tool, so both keys must survive the healthOf allowlist, a zero counter included.
+  it.each([7, 0])('surfaces git-sync attribution health (consecutive_zero_attribution_ticks=%i)', async (ticks) => {
+    const lastAttribution = {
+      at: Date.now() - 60_000,
+      repos: [{ scope: 'libs/sub', agentGroupCount: 3, agentCommitCount: 0, failedGroups: 3, error: 'index.lock' }],
+    };
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    sqlMock.mockResolvedValue([
+      gitSyncRoutineRow({
+        last_status: 'synced',
+        last_synced_at: Date.now() - 60_000,
+        consecutive_zero_attribution_ticks: ticks,
+        last_attribution: lastAttribution,
+      }),
+    ]);
+
+    const result = body(await listTool.handler(
+      { installSlug: 'home-harness', name: 'git-sync' } as never,
+      { role: 'su' } as never,
+    ));
+
+    expect(result.routines[0]?.health).toMatchObject({
+      consecutive_zero_attribution_ticks: ticks,
+      last_attribution: lastAttribution,
+    });
+  });
+
   it('bounds the conditional DBOS read and returns unavailable when that phase times out', async () => {
     sqlMock.mockResolvedValueOnce([{ ...gitSyncRoutineRow({}), install_slug: 'other-harness' }]);
     boundedOrgTxnMock.mockRejectedValueOnce(Object.assign(new Error('statement timeout'), { code: '57014' }));

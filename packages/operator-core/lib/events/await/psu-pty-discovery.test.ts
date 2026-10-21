@@ -1004,6 +1004,20 @@ describe('mcpReconnectViaPty (mcp-transport-resilience P-004 — the in-place /m
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(1);
     expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'mcp-reconnect', data: 'papercusp-su', ownerId });
+
+    // A forced heal is additive on the same v1 envelope. It is what lets the
+    // watchdog and the self-serve CLI press Reconnect when Claude's status row
+    // still says connected even though tools/list is gone.
+    expect(await mcpReconnectViaPty(ownerId, 'papercusp-su', { ...ID_OK, force: true })).toBe('sent');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(recv.length).toBe(2);
+    expect(JSON.parse(recv[1])).toEqual({
+      v: 1,
+      mode: 'mcp-reconnect',
+      data: 'papercusp-su',
+      ownerId,
+      force: true,
+    });
   });
 });
 

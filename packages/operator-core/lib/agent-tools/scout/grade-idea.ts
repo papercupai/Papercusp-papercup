@@ -189,6 +189,9 @@ export const gradeIdeaArgs = z
     feedback: hardText(GRADE_IDEA_FEEDBACK_MAX_CHARS)
       .optional()
       .describe('Reviewer feedback up to 16,000 characters; longer input is rejected before grading.'),
+    repeatJustification: hardText(2_000)
+      .optional()
+      .describe('Explain why identical feedback still applies after the reviewed source changed; required for an exact repeat by the same reviewer.'),
   })
   .refine((a) => (a.ideaId == null) !== (a.routedRef == null), {
     message: 'Pass exactly one of ideaId or routedRef.',
@@ -771,6 +774,7 @@ export async function runGradeIdea(
     grade: args.grade,
     gradedBy,
     ...(feedback !== undefined ? { feedback } : {}),
+    ...(args.repeatJustification !== undefined ? { repeatJustification: args.repeatJustification } : {}),
   }));
   if (agentReviewPreflight.refusal) {
     return {
@@ -835,7 +839,13 @@ export async function runGradeIdea(
   let agentReview: AgentReviewReconcileOutcome | undefined;
   if (agentReviewPreflight.applicable && result.reason !== 'not-found') {
     const reconciled = await measure('reconcileAgentReviewGrade', () => {
-      const input = { ideaId, gradedBy };
+      const input = {
+        ideaId,
+        gradedBy,
+        ...(agentReviewPreflight.repeatJustificationAccepted && args.repeatJustification?.trim()
+          ? { repeatJustification: args.repeatJustification.trim() }
+          : {}),
+      };
       if (!diagnostics) return deps.reconcileAgentReviewGrade(input);
       return deps.reconcileAgentReviewGrade(input, undefined, {
         onDiagnostics: (reconcileDiagnostics) => {

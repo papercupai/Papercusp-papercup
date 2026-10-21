@@ -38,7 +38,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import { getOrgPg } from '@papercusp/db-org';
-import { agentReviewRoundComment } from './flow-metrics';
+import { AGENT_REVIEW_ROUND_COMMENT_MARKER, agentReviewRoundComment } from './flow-metrics';
 import {
   claimWorkItem,
   commentWorkItem,
@@ -1235,16 +1235,76 @@ export interface AgentReviewGradePreflight {
   applicable: boolean;
   workItemId?: string;
   state?: AgentReviewState;
+  /** True only when an exact repeated critique needed and received explicit justification. */
+  repeatJustificationAccepted?: boolean;
   refusal?:
     | 'agent-review-feedback-required'
     | 'agent-review-not-pending'
     | 'agent-review-source-revision-unbound'
     | 'agent-review-source-revision-stale'
-    | 'agent-review-reviewer-mismatch';
+    | 'agent-review-reviewer-mismatch'
+    | 'agent-review-repeat-feedback-justification-required';
+}
+
+interface PriorAgentReviewGrade {
+  reviewer: string;
+  grade: number;
+  feedback: string;
+  reviewedSourceRevision?: string;
+}
+
+/**
+ * Read the immediately prior revision-requested round from the durable round comment.
+ * The versioned marker already records the claimed source revision, reviewer and grade;
+ * older markers predate the explicit feedback field, so recover it from their comment body.
+ */
+async function readPriorAgentReviewGrade(
+  workItem: WorkItem,
+  current: AgentReviewState,
+  deps: AgentReviewDeps,
+): Promise<PriorAgentReviewGrade | null> {
+  if (current.round <= 1) return null;
+  const detail = await deps.getWorkItemDetail(workItem.id, workItem.harness ?? undefined);
+  const posts = record(detail).posts;
+  if (!Array.isArray(posts)) return null;
+  let prior: PriorAgentReviewGrade | null = null;
+  for (const rawPost of posts) {
+    const post = record(rawPost);
+    const body = typeof post.body === 'string' ? post.body : '';
+    const markerAt = body.indexOf(AGENT_REVIEW_ROUND_COMMENT_MARKER);
+    if (markerAt < 0) continue;
+    try {
+      const snapshot = record(JSON.parse(body.slice(markerAt + AGENT_REVIEW_ROUND_COMMENT_MARKER.length)));
+      const review = readAgentReviewState({ agentReview: snapshot.review });
+      const author = post.author_id ?? post.authorId ?? post.author;
+      if (
+        snapshot.id !== workItem.id || (snapshot.harness ?? null) !== (workItem.harness ?? null) ||
+        !review || review.status !== 'revision-requested' || review.round !== current.round - 1 ||
+        snapshot.reviewer !== author || typeof snapshot.reviewer !== 'string' ||
+        typeof snapshot.grade !== 'number' || !Number.isSafeInteger(snapshot.grade) ||
+        snapshot.grade < 1 || snapshot.grade > AGENT_REVIEW_MAX_REVISION_GRADE
+      ) continue;
+      const summary = body.slice(0, markerAt);
+      const prefix = `Agent review round ${review.round}: revision requested by ${snapshot.reviewer} (grade ${snapshot.grade}/5).\n\n`;
+      const feedback = typeof snapshot.feedback === 'string'
+        ? snapshot.feedback
+        : summary.startsWith(prefix) ? summary.slice(prefix.length) : null;
+      if (feedback === null) continue;
+      prior = {
+        reviewer: snapshot.reviewer,
+        grade: snapshot.grade,
+        feedback,
+        ...(review.reviewedSourceRevision ? { reviewedSourceRevision: review.reviewedSourceRevision } : {}),
+      };
+    } catch {
+      // A malformed history post is not evidence for a repeated critique.
+    }
+  }
+  return prior;
 }
 
 export async function preflightAgentReviewGrade(
-  input: { ideaId: string; grade: number; gradedBy: string; feedback?: string },
+  input: { ideaId: string; grade: number; gradedBy: string; feedback?: string; repeatJustification?: string },
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<AgentReviewGradePreflight> {
   const ledger = await deps.readLedgerGrade(input.ideaId);
@@ -1264,14 +1324,41 @@ export async function preflightAgentReviewGrade(
   if (acceptanceSourceRevision(workItem!) !== state.reviewedSourceRevision) {
     return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-source-revision-stale' };
   }
-  if (input.grade <= AGENT_REVIEW_MAX_REVISION_GRADE && !input.feedback?.trim()) {
+  const feedback = input.feedback?.trim() ?? '';
+  if (input.grade <= AGENT_REVIEW_MAX_REVISION_GRADE && !feedback) {
     return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-feedback-required' };
   }
-  return { applicable: true, workItemId: workItem!.id, state };
+  let repeatJustificationAccepted = false;
+  if (input.grade <= AGENT_REVIEW_MAX_REVISION_GRADE) {
+    const prior = await readPriorAgentReviewGrade(workItem!, state, deps);
+    if (
+      prior && prior.reviewer === input.gradedBy && prior.feedback.trim() === feedback &&
+      (!prior.reviewedSourceRevision || prior.reviewedSourceRevision !== state.reviewedSourceRevision)
+    ) {
+      if (!input.repeatJustification?.trim()) {
+        return {
+          applicable: true,
+          workItemId: workItem!.id,
+          state,
+          refusal: 'agent-review-repeat-feedback-justification-required',
+        };
+      }
+      repeatJustificationAccepted = true;
+    }
+  }
+  return {
+    applicable: true,
+    workItemId: workItem!.id,
+    state,
+    ...(repeatJustificationAccepted ? { repeatJustificationAccepted: true } : {}),
+  };
 }
 
-function revisionComment(round: number, grade: number, feedback: string, gradedBy: string): string {
-  return `Agent review round ${round}: revision requested by ${gradedBy} (grade ${grade}/5).\n\n${feedback}`;
+function revisionComment(round: number, grade: number, feedback: string, gradedBy: string, repeatJustification?: string): string {
+  const summary = `Agent review round ${round}: revision requested by ${gradedBy} (grade ${grade}/5).\n\n${feedback}`;
+  return repeatJustification
+    ? `${summary}\n\nRepeat justification: ${repeatJustification}`
+    : summary;
 }
 
 function approvalComment(round: number, grade: number, gradedBy: string): string {
@@ -1330,7 +1417,7 @@ export interface AgentReviewReconcileDiagnostics {
 }
 
 export async function reconcileAgentReviewGrade(
-  input: { ideaId: string; gradedBy: string },
+  input: { ideaId: string; gradedBy: string; repeatJustification?: string },
   deps: AgentReviewDeps = defaultDeps,
   options: { onDiagnostics?: (diagnostics: AgentReviewReconcileDiagnostics) => void } = {},
 ): Promise<AgentReviewReconcileOutcome | null> {
@@ -1436,9 +1523,17 @@ export async function reconcileAgentReviewGrade(
       },
     ));
     if (!merged) throw new Error(`agent review could not persist revision state on '${workItem.id}'`);
+    const repeatJustification = input.repeatJustification?.trim() || undefined;
     const commentAdded = await measure('ensureComment', () => ensureComment(
       workItem,
-      agentReviewRoundComment(revisionComment(current.round, grade, feedback, gradedBy), workItem, next, grade, gradedBy),
+      agentReviewRoundComment(
+        revisionComment(current.round, grade, feedback, gradedBy, repeatJustification),
+        workItem,
+        next,
+        grade,
+        gradedBy,
+        { feedback, ...(repeatJustification ? { repeatJustification } : {}) },
+      ),
       gradedBy,
       deps,
     ));

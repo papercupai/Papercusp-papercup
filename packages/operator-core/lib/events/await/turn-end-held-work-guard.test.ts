@@ -6,6 +6,7 @@ import {
   TURN_END_HELD_WORK_LISTED_CAP,
   type TurnEndHeldWorkDeps,
 } from './turn-end-held-work-guard';
+import { turnEndRewakeKey, type TurnEndRewakeOutcome } from './turn-end-rewake';
 import type { HeldWorkItem, WakeSourceAwait } from './wake-source-predicate';
 
 // WI-6554700010015550: the incident shape. An AUTO session holding two items ends an inbox-wake
@@ -37,9 +38,116 @@ function deps(over: Partial<TurnEndHeldWorkDeps> = {}): Partial<TurnEndHeldWorkD
     listParkedAwaits: async () => [inboxKeepalive],
     readAwaitTargets: async () => new Map(),
     hasPendingDeliberateWakeDelivery: async () => false,
+    armRewake: async () => ({ kind: 'armed', attempt: 1, timeoutSec: 900 }),
+    cancelRewake: async () => undefined,
     ...over,
   };
 }
+
+/** Records the rewake calls the gate makes (WI-6554700010018567). */
+function rewakeSpy(outcome: TurnEndRewakeOutcome | Error = { kind: 'armed', attempt: 1, timeoutSec: 900 }) {
+  const calls = { armed: [] as string[][], cancelled: 0 };
+  return {
+    calls,
+    deps: {
+      armRewake: async (input: { ownerId: string; held: readonly HeldWorkItem[] }) => {
+        calls.armed.push(input.held.map((h) => h.id));
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      },
+      cancelRewake: async () => {
+        calls.cancelled += 1;
+      },
+    } satisfies Partial<TurnEndHeldWorkDeps>,
+  };
+}
+
+const rewakeAwait: WakeSourceAwait = {
+  subscriberId: OWNER,
+  eventKey: turnEndRewakeKey(OWNER),
+  expiresTs: FUTURE,
+  timeoutBehavior: 'wake',
+  once: true,
+};
+
+describe('turn-end rewake timer (WI-6554700010018567)', () => {
+  it('arms the timer when it refuses, and says so in the refusal', async () => {
+    const spy = rewakeSpy();
+    const text = await evaluateTurnEndHeldWorkStop({ ownerId: OWNER, workspaceId: WS, deps: deps(spy.deps) });
+    expect(text).toContain('TURN-END REFUSED');
+    expect(text).toContain('Rewake timer set');
+    expect(text).toContain('15 min');
+    expect(spy.calls.armed).toEqual([['WI-1', 'WI-2']]);
+    expect(spy.calls.cancelled).toBe(0);
+  });
+
+  it('does not count its own pending timer as a wake source, so a later stop is still refused', async () => {
+    const spy = rewakeSpy();
+    const text = await evaluateTurnEndHeldWorkStop({
+      ownerId: OWNER,
+      workspaceId: WS,
+      deps: deps({ ...spy.deps, listParkedAwaits: async () => [inboxKeepalive, rewakeAwait] }),
+    });
+    expect(text).toContain('TURN-END REFUSED');
+    expect(spy.calls.armed).toHaveLength(1);
+    expect(spy.calls.cancelled).toBe(0);
+  });
+
+  it('reports an exhausted budget instead of arming', async () => {
+    const spy = rewakeSpy({ kind: 'exhausted', firedWithoutProgress: 2 });
+    const text = await evaluateTurnEndHeldWorkStop({ ownerId: OWNER, workspaceId: WS, deps: deps(spy.deps) });
+    expect(text).toContain('TURN-END REFUSED');
+    expect(text).toContain('No rewake timer: 2 timed rewakes');
+  });
+
+  it('still refuses when arming the timer fails', async () => {
+    const spy = rewakeSpy(new Error('db down'));
+    const text = await evaluateTurnEndHeldWorkStop({ ownerId: OWNER, workspaceId: WS, deps: deps(spy.deps) });
+    expect(text).toContain('TURN-END REFUSED');
+    expect(text).not.toContain('Rewake timer');
+  });
+
+  it('cancels the pending timer when a stop is known safe', async () => {
+    const safeShapes: Array<Partial<TurnEndHeldWorkDeps>> = [
+      { readHeldWorkItems: async () => [] },
+      { getLoopActive: async () => true },
+      { hasPendingDeliberateWakeDelivery: async () => true },
+      {
+        listParkedAwaits: async () => [
+          inboxKeepalive,
+          rewakeAwait,
+          { subscriberId: OWNER, eventKey: 'gate:green', expiresTs: FUTURE, timeoutBehavior: 'wake', once: true },
+        ],
+      },
+    ];
+    for (const shape of safeShapes) {
+      const spy = rewakeSpy();
+      const text = await evaluateTurnEndHeldWorkStop({
+        ownerId: OWNER,
+        workspaceId: WS,
+        deps: deps({ ...spy.deps, ...shape }),
+      });
+      expect(text).toBe('');
+      expect(spy.calls.cancelled).toBe(1);
+      expect(spy.calls.armed).toHaveLength(0);
+    }
+  });
+
+  it('touches no timer outside an autonomy mode or on an unknown loop status', async () => {
+    for (const shape of [{ getModes: async () => [] }, { getLoopActive: async () => null }] as Array<
+      Partial<TurnEndHeldWorkDeps>
+    >) {
+      const spy = rewakeSpy();
+      const text = await evaluateTurnEndHeldWorkStop({
+        ownerId: OWNER,
+        workspaceId: WS,
+        deps: deps({ ...spy.deps, ...shape }),
+      });
+      expect(text).toBe('');
+      expect(spy.calls).toEqual({ armed: [], cancelled: 0 });
+    }
+  });
+});
 
 describe('turn-end held-work guard (WI-6554700010015550)', () => {
   it('refuses the incident shape: AUTO + held work + no loop + only the inbox keepalive', async () => {

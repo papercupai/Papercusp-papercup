@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
-import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
+import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, normalizePushCall, shellReadPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
+import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
+import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { readPushIncidentAttribution, type PushInput } from './push-channel';
 
@@ -328,6 +329,98 @@ describe('shared snapshot-backed push channel', () => {
     }
   });
 
+  describe('WI-6554700010018441: wrapped and shell reads are first touches', () => {
+    const rooted = { ...input, root: '/repo' };
+    const touch = (tool: string, toolInput: unknown, base: PushInput = rooted) => firstTouchPaths({ ...base, calls: [{ tool, toolInput }] });
+
+    it('unwraps tools:invoke to the capability call it dispatched, in object and serialized form', () => {
+      for (const tool of ['mcp__papercusp-su__tools_invoke', 'tools:invoke']) {
+        for (const name of ['capability:read', 'capability:edit', 'capability:write']) {
+          expect(touch(tool, { name, args: { file_path: '/repo/lib/target.ts' } })).toEqual(['lib/target.ts']);
+          expect(touch(tool, JSON.stringify({ name, args: { file_path: 'lib/target.ts' } }))).toEqual(['lib/target.ts']);
+        }
+      }
+      expect(normalizePushCall({ tool: 'tools:invoke', toolInput: { name: 'capability:read', args: { file_path: 'x' } }, toolResponse: 'r' }))
+        .toEqual({ tool: 'capability:read', toolInput: { file_path: 'x' }, toolResponse: 'r' });
+    });
+
+    it('a wrapper that dispatched no file tool, or carries no name, is not a touch', () => {
+      expect(touch('tools:invoke', { name: 'coord:send', args: { file_path: 'lib/target.ts' } })).toEqual([]);
+      expect(touch('tools:invoke', { args: { file_path: 'lib/target.ts' } })).toEqual([]);
+      expect(touch('tools:invoke', '{"name":"capability:read"')).toEqual([]);
+      // The wrapper's own name is not reclassified as anything else.
+      expect(normalizePushCall({ tool: 'tools:invoke', toolInput: null })).toEqual({ tool: 'tools:invoke', toolInput: null });
+    });
+
+    it.each([
+      ["sed -n '1,40p' lib/target.ts"],
+      ['cat lib/target.ts'],
+      ['head -n 20 lib/target.ts'],
+      ['head -20 lib/target.ts | grep foo'],
+      ['tail -n 5 /repo/lib/target.ts'],
+      ['sed -n -e 1,5p ./lib/target.ts'],
+      ['cd /repo || exit 1; cat "lib/target.ts"'],
+      ['cd /repo/lib && cat target.ts'],
+    ])('reads lib/target.ts from a shell read: %s', command => {
+      for (const tool of ['Bash', 'mcp__papercusp-su__capability_bash', 'capability:bash', 'exec_command']) {
+        expect(touch(tool, { command })).toEqual(['lib/target.ts']);
+      }
+      expect(touch('mcp__papercusp-su__tools_invoke', { name: 'capability:bash', args: { cmd: command } })).toEqual(['lib/target.ts']);
+    });
+
+    it('resolves relative operands against a capability:bash cwd, absolute or root-relative', () => {
+      expect(touch('capability:bash', { cmd: 'cat target.ts', cwd: '/repo/lib' })).toEqual(['lib/target.ts']);
+      expect(touch('capability:bash', { cmd: 'cat target.ts', cwd: 'lib' })).toEqual(['lib/target.ts']);
+    });
+
+    it.each([
+      ['cat "$F"'],
+      ['cat lib/*.ts'],
+      ['cat ~/lib/target.ts'],
+      ['grep -rn foo lib/target.ts | head -5'],
+      ['cat > lib/target.ts <<EOF'],
+      ['cat <<EOF'],
+      ['cd "$ROOT" && cat lib/target.ts'],
+      ['cd lib && cat ../../outside.ts'],
+      ['cat /etc/passwd'],
+      ['ls lib/target.ts'],
+    ])('does not guess a path from: %s', command => {
+      expect(touch('Bash', { command })).toEqual([]);
+    });
+
+    it('never treats a sed script or a head/tail option value as a file', () => {
+      expect(shellReadPaths("sed -n '1,5p' a.ts", '/r')).toEqual(['/r/a.ts']);
+      expect(shellReadPaths("sed -e 's/x/y/' -n a.ts b.ts", '/r')).toEqual(['/r/a.ts', '/r/b.ts']);
+      expect(shellReadPaths('head -n 20 a.ts', '/r')).toEqual(['/r/a.ts']);
+      expect(shellReadPaths('tail --lines 20 a.ts', '/r')).toEqual(['/r/a.ts']);
+      expect(shellReadPaths('cat a.ts', undefined)).toEqual([]);
+      expect(shellReadPaths('cat ' + 'a'.repeat(4001), '/r')).toEqual([]);
+    });
+
+    it('without a registered root, an absolute shell operand is not a snapshot path', () => {
+      expect(touch('Bash', { command: 'cat /repo/lib/target.ts' }, input)).toEqual([]);
+    });
+
+    it('every registered leg receives the call a tools:invoke wrapper dispatched, not the wrapper', async () => {
+      const seen: Array<string | undefined> = [];
+      const d = deps();
+      d.legs = () => new Map([['incident', (legInput: PushInput) => { seen.push(...legInput.calls.map(call => call.tool)); return []; }]]);
+      await codeIntelPushText({ ...input, calls: [
+        { tool: 'mcp__papercusp-su__tools_invoke', toolInput: { name: 'testing:run', args: { files: ['lib/target.test.ts'] } }, toolResponse: 'r' },
+        { tool: 'Read', toolInput: { file_path: 'lib/target.ts' } },
+      ] }, 0, d);
+      expect(seen).toEqual(['testing:run', 'Read']);
+    });
+
+    it('the grep leg sees a search dispatched through tools:invoke', () => {
+      expect(grepLookupSubject({ tool: 'mcp__papercusp-su__tools_invoke',
+        toolInput: { name: 'capability:bash', args: { cmd: 'grep -rn "export function firstTouchPaths" packages' } } }))
+        .toBe('firstTouchPaths');
+      expect(grepLookupSubject({ tool: 'tools:invoke', toolInput: { name: 'Grep', args: { pattern: 'firstTouchPaths' } } }))
+        .toBe('firstTouchPaths');
+    });
+  });
+
   it.each([false, true])('answers a literal grep with a unique snapshot symbol and aliases (serialized native input: %s)', serialized => {
     const snap = snapshot();
     snap.symbols = new Map([['target', [{ id: 'target', name: 'target', path: 'lib/target.ts', line: 2, column: 1,
@@ -367,6 +460,44 @@ describe('shared snapshot-backed push channel', () => {
       expect(await corroboratePushSources(root, Array(65).fill(sources[0]), signal)).toBe(false);
       expect(await corroboratePushSources(undefined, sources, signal)).toBe(false);
       expect(await corroboratePushSources(root, [{ ...sources[0]!, path: '../outside' }], signal)).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  // plan-item-code-anchors-2026-10-20#P-001 root cause: every symbol in a workspace carried that
+  // workspace's package.json as a full-content proof source, so ANY manifest edit (a script, a
+  // version, a dependency) suppressed every push for the package. Resolution reads only `name`.
+  it('pins a workspace manifest by its name only, so unrelated package.json edits keep the push', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'code-intel-manifest-'));
+    const manifest = JSON.stringify({ name: '@fx/pkg', scripts: { test: 'vitest' } });
+    const files: Record<string, string> = { 'pkg/package.json': manifest,
+      'pkg/lib/target.ts': 'export function target() {}',
+      'pkg/app/use.ts': 'import { target } from "../lib/target"; target();' };
+    const paths = Object.keys(files);
+    const signal = new AbortController().signal;
+    const write = (path: string, text: string) => writeFile(join(root, path), text);
+    try {
+      for (const path of paths) { await mkdir(dirname(join(root, path)), { recursive: true }); await write(path, files[path]!); }
+      const built = buildSymbolSnapshot({ files: paths, readSource: (file: string) => files[file] ?? null,
+        resolveModule: (file: string, spec: string) => relativeSymbolModule(file, spec, new Set(paths)),
+        workspacePackages: [['@fx/pkg', ['pkg']]] });
+      const sources = built.symbols.find((symbol: { name: string }) => symbol.name === 'target')!.sources as PushProofSource[];
+      expect(sources.map(source => source.path)).toContain('pkg/package.json');
+      const push = () => { const d = deps();
+        d.legs = () => new Map([['first-touch', () => [{ ...fact, sourceHashes: sources }]]]);
+        return codeIntelPushText({ ...input, root }, 0, d); };
+      expect(await push()).toContain('Static consumer');
+      await write('pkg/package.json', JSON.stringify({ name: '@fx/pkg', version: '2.0.0', scripts: { test: 'vitest run' } }, null, 2));
+      expect(await corroboratePushSources(root, sources, signal)).toBe(true);
+      expect(await push()).toContain('Static consumer');
+      for (const text of [JSON.stringify({ name: '@fx/renamed' }), '{ not json', '[]']) {
+        await write('pkg/package.json', text);
+        expect(await corroboratePushSources(root, sources, signal)).toBe(false);
+        expect(await push()).toBe('');
+      }
+      await write('pkg/package.json', manifest);
+      expect(await corroboratePushSources(root, sources, signal)).toBe(true);
+      const unknown = sources.map(source => source.path.endsWith('package.json') ? { ...source, digest: 'unknown-v9' } : source);
+      expect(await corroboratePushSources(root, unknown as PushProofSource[], signal)).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

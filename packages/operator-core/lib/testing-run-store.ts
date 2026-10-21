@@ -529,6 +529,64 @@ async function readLiveForegroundSnapshot(
     output: 'The exact managed foreground task is still in flight; no test verdict has been recorded.' };
 }
 
+/** What became of a FOREGROUND testing:run, read from its task row plus its
+ * exact run_group_id ledger rows. A host-shutdown handoff leaves the confined
+ * router running only until its scope RuntimeMaxSec (the original foreground
+ * budget); when it dies there, no test_runs row is ever written and readers
+ * would otherwise answer an ambiguous "unknown" forever (WI-6554700010018414). */
+export interface ForegroundRunVerdict {
+  runId: string;
+  taskId: string;
+  taskState: string;
+  startedAt: number | null;
+  endedAt: number | null;
+  exitCode: number | null;
+  ledgerRows: number;
+  /** running: task still live · recorded: ledger rows exist · lost: the task
+   * ended and wrote no ledger row, so no verdict will ever arrive. */
+  verdict: 'running' | 'recorded' | 'lost';
+}
+
+const FOREGROUND_LIVE_TASK_STATES = new Set(['pending', 'running']);
+
+export async function getForegroundRunVerdictAsync(
+  runId: string,
+  sqlOverride?: SqlLike,
+): Promise<ForegroundRunVerdict | null> {
+  const sql = await snapshotSql(sqlOverride);
+  if (!sql) return null;
+  const tasks = await boundedSnapshotQuery<Array<{
+    task_id: string; state: string; started_at: Date | string | number | null;
+    ended_at: Date | string | number | null; exit_code: number | null;
+  }>>(sql`
+    SELECT task_id, state, started_at, ended_at, exit_code
+      FROM harness_shared.task_ledger
+     WHERE class = 'test-run' AND launched_by = ${`testing:run:${runId}`}
+       AND detail->>'runGroup' = ${runId} AND detail->>'foreground' = 'true'
+     LIMIT 2
+  `);
+  // Unreadable or ambiguous is not evidence of an absent or lost run.
+  if (tasks === null || tasks.length > 1) throw new TestingRunSnapshotUnavailableError();
+  const task = tasks[0];
+  if (!task) return null;
+  const counted = await boundedSnapshotQuery<Array<{ n: number | string }>>(sql`
+    SELECT count(*)::int AS n FROM harness_shared.test_runs WHERE run_group_id = ${runId}
+  `);
+  if (counted === null) throw new TestingRunSnapshotUnavailableError();
+  const ledgerRows = Number(counted[0]?.n ?? 0);
+  const live = FOREGROUND_LIVE_TASK_STATES.has(task.state);
+  return {
+    runId,
+    taskId: task.task_id,
+    taskState: task.state,
+    startedAt: epochMs(task.started_at),
+    endedAt: epochMs(task.ended_at),
+    exitCode: task.exit_code,
+    ledgerRows,
+    verdict: ledgerRows > 0 ? 'recorded' : live ? 'running' : 'lost',
+  };
+}
+
 async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) throw new TestingRunSnapshotUnavailableError();
@@ -2670,6 +2728,7 @@ export interface HarnessTestRunIdQuery {
 
 export interface HarnessTestRunEvidence {
   id: number;
+  framework?: string;
   file_path: string;
   status: string;
   finished_at: string | Date | null;
@@ -2695,7 +2754,7 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
     const requestedTestRunIds = params.testRunIds === undefined ? null : params.testRunIds;
     const resultLimit = requestedTestRunIds === null ? 200 : Math.max(1, requestedTestRunIds.length);
     const rows = await sql`
-      SELECT id, workspace_id, harness_slug, run_group_id, file_path, status, finished_at,
+      SELECT id, framework, workspace_id, harness_slug, run_group_id, file_path, status, finished_at,
              commit_sha, worktree_dirty,
              to_jsonb(test_runs)->'execution_details' AS execution_details,
              to_jsonb(test_runs)->'configuration_snapshot' AS configuration_snapshot

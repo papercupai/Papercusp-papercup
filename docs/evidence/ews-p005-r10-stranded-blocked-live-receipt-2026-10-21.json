@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "event-wait-settlement-2026-10-20 AUTO-BAR-R-10-P-005@3 live reading: no blocked item with every blocker cleared and no other hold after a re-check sweep tick",
+  "framework": "operational",
+  "command": [
+    "sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-F", "|", "-v", "ON_ERROR_STOP=1",
+    "-v", "tick=2026-10-21T01:56:54Z", "-f", "docs/evidence/ews-p005-r10-stranded-blocked-live.sql"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T01:59:07.731Z",
+  "finishedAt": "2026-10-21T01:59:08.279Z",
+  "summary": "Read-only query (docs/evidence/ews-p005-r10-stranded-blocked-live.sql, inside BEGIN READ ONLY ... ROLLBACK) on the live papercusp operator database, after the re-check sweep tick at 2026-10-21T01:56:54.286Z on papercusp-bg-host.service (journal: '[blocker-default-reaper] examined 11 item(s) ...'), whose build 35322dd5cd contains P-005 (dev:pipeline_position servingRuntimes bg-host containsChange true, method blob; P-005 committed in 1f5eb062f0). Output row: all_cleared_blocked 19 | reblocked_after_clear 6 | missing_times 0 | other_hold 13 | falsifying_stranded 0 | cleared_after_last_tick 0 | measured_at 2026-10-21 01:59:07.941269Z | repair_audit_rows 6. Partition 6 + 13 + 0 + 0 = 19 with missing_times 0, so no row fell through a NULL comparison. Falsifier threshold: falsifying_stranded > 0.",
+  "assertions": [
+    {
+      "id": "live:no-blocked-item-with-every-blocker-cleared-and-no-other-hold-after-sweep-tick",
+      "passed": true,
+      "evidence": "falsifying_stranded = 0 of all_cleared_blocked = 19 (6 re-blocked after their last clear, 13 under another hold, 0 cleared after the 01:56:54Z tick); missing_times = 0."
+    },
+    {
+      "id": "live:stranded-repair-audit-rows-present-after-deploy",
+      "passed": true,
+      "evidence": "repair_audit_rows = 6: harness_shared.audit_log rows by system:blocker-stranded-repair (STRANDED_BLOCKED_REPAIR_ACTOR), written 2026-10-20T22:24:55.115Z..22:24:58.617Z when P-005 first reached bg-host. Positive control: the live sweep reopened stranded items, so a zero falsifier count is not an instrument blind to them. Pre-deploy baseline (decideStrandedRepair doc comment): 20 all-cleared blocked items, 6 re-blocked after the clear."
+    }
+  ],
+  "plan": "event-wait-settlement-2026-10-20",
+  "planItem": "P-005",
+  "workItem": "WI-6554700010018157",
+  "clause": "AUTO-BAR-R-10-P-005@3",
+  "behavior": "An item left blocked with every blocker cleared returns to open on the next re-check sweep tick.",
+  "priorReading": "docs/evidence/ews-p005-r10-stranded-blocked-live-2026-10-21.json (same predicate, 2026-10-21T01:42:49Z after the 01:40:02Z tick: 19 / 6 / 13 / 0 / 0)."
+}

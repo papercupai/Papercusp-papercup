@@ -107,6 +107,15 @@ async function call(tool: string, args: Record<string, unknown>): Promise<Record
   return (Array.isArray(results) && results[0]) || res;
 }
 
+/**
+ * The activation audit refuses a plan without these two sections (plan-declarations.ts),
+ * so every fixture plan opts out of both with a reason, as activation-audit-gate does.
+ */
+const DECLARATION_SECTIONS =
+  '\n## Existing infrastructure reused\n\n```reuse\n' +
+  '{"searched":[],"reused":[],"newSurfaces":[],"notApplicable":"Test fixture; no code surface."}\n```\n' +
+  '\n## Third-party libraries\n\n```libraries\n{"needs":[],"notApplicable":"Test fixture; no library need."}\n```\n';
+
 function brief(x: unknown): string {
   return JSON.stringify(x).slice(0, 1500);
 }
@@ -147,7 +156,7 @@ async function makeFinishedPlan(
   items: ItemSpec[],
   mappings: Mapping[] = [],
 ): Promise<void> {
-  const created = await call('plans:new', { slug, title: `Noncode ${slug}`, verificationProfile: profile, force: true });
+  const created = await call('plans:new', { slug, title: `Noncode ${slug}`, verificationProfile: profile, force: true, content: DECLARATION_SECTIONS });
   expect(created.ok, brief(created)).toBe(true);
   const added = await call('plans:add-item', { slug, phase: 'Phase 1', importance: 'normal', items });
   expect(added.ok, brief(added)).toBe(true);
@@ -288,7 +297,7 @@ beforeAll(async () => {
   fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
   await registerHarnessProject(admin, WS, HARNESS);
-  const evidencePlan = await call('plans:new', { slug: EVIDENCE_PLAN, title: 'Vendor comparison memo', verificationProfile: 'general', force: true });
+  const evidencePlan = await call('plans:new', { slug: EVIDENCE_PLAN, title: 'Vendor comparison memo', verificationProfile: 'general', force: true, content: DECLARATION_SECTIONS });
   expect(evidencePlan.ok, brief(evidencePlan)).toBe(true);
 }, 180_000);
 
@@ -469,7 +478,7 @@ describe('plans:add-item declares a non-code deliverable at definition time', ()
   // plan item itself.
   it('accepts deliverable doc, stores it, and resolves it as non-code even in a coding plan', async () => {
     const slug = 'zzz-noncode-declared-doc-2026-10-20';
-    const created = await call('plans:new', { slug, title: 'Noncode declared doc', verificationProfile: 'coding', force: true });
+    const created = await call('plans:new', { slug, title: 'Noncode declared doc', verificationProfile: 'coding', force: true, content: DECLARATION_SECTIONS });
     expect(created.ok, brief(created)).toBe(true);
     const added = await call('plans:add-item', {
       slug, phase: 'Phase 1', importance: 'normal',

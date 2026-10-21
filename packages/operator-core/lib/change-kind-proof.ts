@@ -29,6 +29,7 @@ import {
   TEST_RUNNER_COMMAND_RE,
   isBackedLiveDroveUiClaim,
   isBackedLiveServiceClaim,
+  touchesLayoutBearingFiles,
   type LiveDroveUiArtifactVerdict,
 } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
@@ -98,8 +99,27 @@ export interface ChangeKindGateInput {
 
 export type ChangeKindGateResult =
   | { applicable: false }
-  | { applicable: true; outcome: 'pass'; kinds: ChangeKind[] }
+  | {
+      applicable: true;
+      outcome: 'pass';
+      kinds: ChangeKind[];
+      /** R-4: layout-bearing files this close changed without declaring 'ui' — explained by the reason. */
+      mismatchFiles?: string[];
+    }
   | { applicable: true; outcome: 'warn'; kinds: null; warning: string }
+  /**
+   * R-4: every declared kind carries its proof, but a kind declared earlier was dropped, or a
+   * layout-bearing file changed without 'ui', and no `changeKindReason` explains it. The close
+   * lands with authority 'proposed' (out of burn-down); the handler applies that grade.
+   */
+  | {
+      applicable: true;
+      outcome: 'propose';
+      kinds: ChangeKind[];
+      warning: string;
+      narrowed: ChangeKind[];
+      mismatchFiles: string[];
+    }
   | {
       applicable: true;
       outcome: 'refuse';
@@ -332,6 +352,34 @@ function closeReasonOnRecord(stored: ChangeKindsView | null): boolean {
   return (stored?.history ?? []).some((h) => h.step === 'complete' && Boolean(h.reason?.trim()));
 }
 
+/**
+ * R-4: kinds dropped from an earlier declaration with no reason recorded for the drop. Walks the
+ * declaration history oldest-first, then this call's close-time declaration (reasonless here: the
+ * caller only asks when this call carries no `changeKindReason`). A drop is explained by a reason
+ * on the entry that made it; a kind declared again later is no longer dropped. A reasonless
+ * narrowing recorded by an earlier close attempt therefore stays unexplained on the retry.
+ */
+function unexplainedNarrowing(stored: ChangeKindsView | null, declaredNow: readonly ChangeKind[] | null): ChangeKind[] {
+  const steps: Array<{ kinds: readonly ChangeKind[]; reason?: string | null }> = [...(stored?.history ?? [])];
+  if (declaredNow) steps.push({ kinds: declaredNow, reason: null });
+  const unexplained = new Set<ChangeKind>();
+  let previous: ReadonlySet<ChangeKind> | null = null;
+  for (const step of steps) {
+    const next = new Set<ChangeKind>(step.kinds);
+    if (previous && !step.reason?.trim()) {
+      for (const kind of previous) if (!next.has(kind)) unexplained.add(kind);
+    }
+    for (const kind of next) unexplained.delete(kind);
+    previous = next;
+  }
+  return [...unexplained];
+}
+
+/** R-4: the layout-bearing files (the existing `geometry-unverified` heuristic) this close changed. */
+function layoutBearingFiles(filesChanged: readonly string[] | undefined): string[] {
+  return (filesChanged ?? []).filter((file) => touchesLayoutBearingFiles([file]));
+}
+
 /** Was this claim taken before the cutover? An unknown start counts as before (no claim recorded). */
 export function claimPredatesChangeKindCutover(at: string | Date | null | undefined): boolean {
   const ms = claimStartMs(at);
@@ -455,7 +503,30 @@ export async function evaluateChangeKindGate(
     if (gaps.length > 0) missing.push({ kind, missing: gaps, proof: CHANGE_KIND_CATALOG[kind].proof });
   }
 
-  if (missing.length === 0 && problems.length === 0) return { applicable: true, outcome: 'pass', kinds };
+  if (missing.length === 0 && problems.length === 0) {
+    const mismatchFiles = kinds.includes('ui') ? [] : layoutBearingFiles(input.root.filesChanged);
+    if (reason) return { applicable: true, outcome: 'pass', kinds, ...(mismatchFiles.length ? { mismatchFiles } : {}) };
+    const narrowed = unexplainedNarrowing(input.stored, declaredNow);
+    if (narrowed.length === 0 && mismatchFiles.length === 0) return { applicable: true, outcome: 'pass', kinds };
+    const why: string[] = [];
+    if (narrowed.length) {
+      why.push(`it drops ${narrowed.map((k) => `'${k}'`).join(', ')}, declared earlier for this item`);
+    }
+    if (mismatchFiles.length) {
+      why.push(`it changes UI-looking files (${mismatchFiles.slice(0, 3).join(', ')}${mismatchFiles.length > 3 ? ', …' : ''}) without declaring 'ui'`);
+    }
+    return {
+      applicable: true,
+      outcome: 'propose',
+      kinds,
+      narrowed,
+      mismatchFiles,
+      warning:
+        `${input.itemId} landed authority:'proposed' (out of burn-down): ${why.join(', and ')}, and no ` +
+        '`changeKindReason` says why. Re-close with a one-line `changeKindReason` (and `changeKinds` if the ' +
+        "declared set is wrong — add 'ui' when the change is visible) to count it toward done.",
+    };
+  }
   return {
     applicable: true,
     outcome: 'refuse',

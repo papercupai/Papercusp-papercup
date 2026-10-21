@@ -440,16 +440,57 @@ export interface NativePushActivity {
   tool: string;
   status: string | null;
   detail: Record<string, unknown> | null;
+  /** agent_activity.harness_slug — selects the registered repo root an absolute path is relativized against. */
+  harness?: string | null;
+}
+
+/**
+ * The activity ledger records the papercusp-su MCP server under BOTH spellings
+ * (`mcp__papercusp-su__*` and `mcp__papercusp_su__*`; measured 2026-10-21: capability_read only
+ * ever appears underscored). Canonicalize for the push reader only — D-011's frozen adoption
+ * reader keeps its exact name lists.
+ */
+export function canonicalPushActivityTool(tool: string): string {
+  return tool.replace(/^mcp__papercusp_su__/, 'mcp__papercusp-su__');
+}
+
+/**
+ * Repo-relative form of a recorded file path, or null when it cannot be placed exactly.
+ * Native Read/Edit/Write always record absolute paths, so an absolute path is accepted only
+ * under the EXACT registered repo root of the activity's own harness — never by suffix or
+ * basename. capability:read records `file_path`; native tools record `file`.
+ */
+export function pushActivityRepoPath(
+  detail: Record<string, unknown>, harness: string | null | undefined,
+  repoRoots: ReadonlyMap<string, string> | undefined,
+): string | null {
+  const raw = typeof detail.file === 'string' ? detail.file : typeof detail.file_path === 'string' ? detail.file_path : null;
+  if (raw === null || raw.length === 0) return null;
+  let rel = raw;
+  if (raw.startsWith('/')) {
+    const root = harness ? repoRoots?.get(harness) : undefined;
+    if (!root || !root.startsWith('/')) return null;
+    const prefix = `${root.replace(/\/+$/, '')}/`;
+    if (!raw.startsWith(prefix)) return null;
+    rel = raw.slice(prefix.length);
+  }
+  return isRepoRelativePath(rel) ? rel : null;
+}
+
+function isRepoRelativePath(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0 && !value.startsWith('/') && !value.includes('\\')
+    && !value.split('/').some(part => part === '..' || part === '.' || part === '');
 }
 
 /** Interpret recorded post-tool evidence only. Unsupported/truncated inputs stay unknown. */
 export function nativePushFollowThrough(input: {
   leg: string; subject: string; citedPaths: readonly string[]; suggestedCall: string | null;
   activities: readonly NativePushActivity[]; executedTests: readonly string[];
+  /** harness slug → absolute registered repo root; absent → absolute paths stay unknown. */
+  repoRoots?: ReadonlyMap<string, string>;
 }): Pick<NativePushOutcomeRow, 'actedOn' | 'grepAfterPush'> {
-  const relativePath = (value: unknown): value is string => typeof value === 'string'
-    && value.length > 0 && !value.startsWith('/') && !value.includes('\\')
-    && !value.split('/').some(part => part === '..' || part === '.' || part === '');
+  const relativePath = isRepoRelativePath;
   const cited = new Set(input.citedPaths.filter(relativePath));
   let fileObserved = false;
   let fileUnknown = false;
@@ -460,17 +501,21 @@ export function nativePushFollowThrough(input: {
     if (activity.status !== 'ok') continue;
     telemetry = true;
     const detail = activity.detail ?? {};
-    if (FILE_FOLLOW_TOOLS.includes(activity.tool)) {
-      if (relativePath(detail.file)) fileObserved ||= cited.has(detail.file);
-      else fileUnknown = true; // No persisted snapshot root: never match an absolute suffix/basename.
+    const tool = canonicalPushActivityTool(activity.tool);
+    if (FILE_FOLLOW_TOOLS.includes(tool)) {
+      const path = pushActivityRepoPath(detail, activity.harness, input.repoRoots);
+      if (path !== null) fileObserved ||= cited.has(path);
+      // A spilled tool-output page is not a repository file, so it is neither a hit nor a gap.
+      else if (!(typeof detail.uri === 'string' && detail.uri.startsWith('papercusp://scratch/')
+        && detail.file === undefined && detail.file_path === undefined)) fileUnknown = true;
     }
     const command = detail.command ?? detail.cmd;
-    const nativeGrep = /(?:^|_|:)Grep$/.test(activity.tool);
+    const nativeGrep = /(?:^|_|:)Grep$/.test(tool);
     if (nativeGrep) {
       if (typeof detail.pattern !== 'string' || detail.pattern.length >= 500) grepUnknown = true;
       else if (detail.pattern === input.subject) grepObserved = true;
       else if (!/^[A-Za-z_$][\w$]*$/.test(detail.pattern)) grepUnknown = true;
-    } else if (SHELL_ACTIVITY_TOOLS.includes(activity.tool) || activity.tool === 'exec_command') {
+    } else if (SHELL_ACTIVITY_TOOLS.includes(tool) || tool === 'exec_command') {
       if (typeof command !== 'string' || command.length >= 500) { grepUnknown = true; continue; }
       for (const segment of command.split(/\n|;|&&|\|\||\|/).map(part => part.trim())) {
         if (!SEARCH_COMMAND.test(segment)) continue;
@@ -506,7 +551,29 @@ export function nativePushFollowThrough(input: {
  * A missing/overlapping native session, intervening prompt, or earlier completion fails closed.
  * No elapsed-time fallback, launch-time membership, or journal prose enters the measurement.
  */
-export async function readNativePushOutcomes(window: NativeAdoptionWindow, sql: Sql = getOrgPg().sql): Promise<NativePushOutcomeRow[]> {
+/** Registered repo root per harness slug (exact checkout path from the harness registry). */
+export type PushRepoRootResolver = (harnessSlugs: readonly string[], workspaceId: string) => Promise<ReadonlyMap<string, string>>;
+
+async function registryRepoRoots(harnessSlugs: readonly string[], workspaceId: string): Promise<ReadonlyMap<string, string>> {
+  const roots = new Map<string, string>();
+  if (harnessSlugs.length === 0) return roots;
+  try {
+    const { loadHarnessRegistry, resolveHarnessContentPath } = await import('../harness-registry');
+    const registry = await loadHarnessRegistry(workspaceId);
+    for (const slug of harnessSlugs) {
+      const root = resolveHarnessContentPath(registry, slug);
+      if (root && root.startsWith('/')) roots.set(slug, root);
+    }
+  } catch {
+    // An unreadable registry leaves absolute paths unknown (null), never negative.
+    roots.clear();
+  }
+  return roots;
+}
+
+export async function readNativePushOutcomes(
+  window: NativeAdoptionWindow, sql: Sql = getOrgPg().sql, resolveRepoRoots: PushRepoRootResolver = registryRepoRoots,
+): Promise<NativePushOutcomeRow[]> {
   // Share the pure summary's exact scope/window validation, without touching the frozen D-011 reader.
   summarizeNativePushOutcomes({ window, rows: [] });
   const end = new Date(window.windowEnd).toISOString();
@@ -558,7 +625,7 @@ export async function readNativePushOutcomes(window: NativeAdoptionWindow, sql: 
     )
     SELECT p.id::text, p.workspace_id, p.leg, p.subject, p.pushed_at, p.cited_paths, p.suggested_call,
       (SELECT count(*)::int FROM candidates c WHERE c.id = p.id) AS window_count,
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('tool', a.tool_name, 'status', a.status, 'detail', a.detail))
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('tool', a.tool_name, 'status', a.status, 'detail', a.detail, 'harness', a.harness_slug))
         FROM candidates c JOIN harness_shared.agent_activity a
           ON a.workspace_id = p.workspace_id AND a.owner_id = p.owner_id AND a.session_id = c.session_id
           AND a.created_at > p.pushed_at AND a.created_at <= c.ended_at AND a.kind = 'tool' AND a.phase = 'post'
@@ -574,12 +641,15 @@ export async function readNativePushOutcomes(window: NativeAdoptionWindow, sql: 
         WHERE c.id = p.id), '{}'::text[]) AS executed_tests
     FROM pushes p ORDER BY p.pushed_at, p.id
   `;
+  const harnesses = new Set<string>();
+  for (const row of rows) for (const a of row.activities) if (typeof a.harness === 'string' && a.harness) harnesses.add(a.harness);
+  const repoRoots = await resolveRepoRoots([...harnesses].sort(), window.workspaceId);
   return rows.map(row => ({
     id: row.id, workspaceId: row.workspace_id, leg: row.leg, pushedAt: iso(row.pushed_at),
     windowComplete: row.window_count === 1,
     ...(row.window_count === 1 ? nativePushFollowThrough({
       leg: row.leg, subject: row.subject, citedPaths: row.cited_paths, suggestedCall: row.suggested_call,
-      activities: row.activities, executedTests: row.executed_tests,
+      activities: row.activities, executedTests: row.executed_tests, repoRoots,
     }) : { actedOn: null, grepAfterPush: null }),
   }));
 }
@@ -632,7 +702,7 @@ export function summarizeNativePushOutcomes(input: {
     'A leg without recorded symbol identity cannot measure same-symbol grep; that outcome stays unknown.',
     'Historical closure requires one correlated native prompt and Stop-hook completion; missing or overlapping sessions stay unknown.',
     'Only successful recorded post-tool events are observed; missing telemetry is not evidence of inactivity.',
-    'Absolute file paths lack a persisted snapshot root and are not matched by suffix; truncated/unsupported search commands stay unknown.',
+    'Absolute file paths count only under the exact registered repo root of the activity\'s harness (never by suffix); paths outside it, rows without a harness, and truncated/unsupported search commands stay unknown.',
     'Suggested tests require matching completed test-run ledger rows linked through the testing invocation run group; requesting tests alone does not count.',
   ] };
 }

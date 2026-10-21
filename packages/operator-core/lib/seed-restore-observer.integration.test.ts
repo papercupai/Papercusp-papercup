@@ -15,6 +15,7 @@ import { createCdpClient, closeInspector, readSeedRestoreDiagnostics,
   captureSeedRestorePhases, waitForInspectorClosed } from '../../../scripts/cdp-inspector.mjs';
 // @ts-ignore -- same maintained kernel listener/entry lifetime pin as CPU capture.
 import { readInspectorProcessIdentity } from '../../../scripts/cpu-sample.mjs';
+import { createTextCollector } from './child-output';
 
 const root = resolve(import.meta.dirname, '../../..');
 const workerPath = 'packages/operator-core/test/fixtures/seed-restore-observer-worker.mts';
@@ -89,13 +90,13 @@ it.runIf(process.platform === 'linux')(
         const heldPromise = new Promise<SeedObserverFixtureEvent>(resolve => { resolveHeld = resolve; });
         const endpointPromise = new Promise<string>(resolve => { resolveEndpoint = resolve; });
         let stdout = '', stderr = '';
-        child.stderr!.on('data', chunk => {
-          stderr += String(chunk);
+        createTextCollector(child.stderr, { retainText: false, onDecodedText: text => {
+          stderr += text;
           const endpoint = stderr.match(/ws:\/\/127\.0\.0\.1:\d+\/[^\s]+(?=\s)/)?.[0];
           if (endpoint) resolveEndpoint(endpoint);
-        });
-        child.stdout!.on('data', chunk => {
-          stdout += String(chunk);
+        } });
+        createTextCollector(child.stdout, { retainText: false, onDecodedText: text => {
+          stdout += text;
           const lines = stdout.split('\n');
           stdout = lines.pop()!;
           for (const line of lines) {
@@ -104,7 +105,7 @@ it.runIf(process.platform === 'linux')(
             if (value.kind === 'ready') resolveReady(value);
             if (value.kind === 'held') resolveHeld(value);
           }
-        });
+        } });
         const captured = captureIsolatedWorker(child, evidenceDir, options);
         // Keep the original capture alive on all failures so its teardown can
         // still be observed and retained; never replace it with another child.

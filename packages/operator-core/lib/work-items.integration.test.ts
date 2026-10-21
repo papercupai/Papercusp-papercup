@@ -1265,6 +1265,43 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
     expect(after?.state).toBe('open');
   });
 
+  it('ALLOWS blocked -> needs-human when the linked plan lane remains needs-human', async () => {
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'credential',
+        ref: 'credential:test',
+        summary: 'Provide test credential',
+        nextVerb: 'provide credential',
+        defaultIfUnanswered: 'stay parked until the credential is supplied',
+      },
+      'agA',
+    );
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'blocked to needs-human owner park',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: {
+        plan_item: { plan_slug: 'a-plan', item_id: 'P-9' },
+        externalBlockers: blockers,
+      },
+    });
+    await wi.setWorkItemState(bug.id, 'blocked', { harness: 'papercup', by: 'agA' });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively needs-human',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'needs-human',
+    });
+
+    const parked = await wi.setWorkItemState(bug.id, 'needs-human', { harness: 'papercup', by: 'agA' });
+
+    expect(parked?.state).toBe('needs-human');
+    expect(planItemLaneBlockReasonMock).not.toHaveBeenCalled();
+  });
+
   it('ALLOWS an unblock through a sole plan block attributed to this work-item after its external blockers clear', async () => {
     const feat = await wi.createWorkItem({
       kind: 'feature',

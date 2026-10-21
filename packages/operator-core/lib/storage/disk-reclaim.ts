@@ -1520,15 +1520,35 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   let isPinnedPath: (path: string) => boolean = () => { throw new Error('retention protection has not been read'); };
   const readProtection = async () => {
     const dir = defaultRetentionDir();
+    const { readOpenWorkItemEvidenceReferences, renewWorkItemEvidencePins } = await import('./retention-pins');
+    const references = await readOpenWorkItemEvidenceReferences(getOrgPg().sql, activeWorkspaceId());
+    let renewedPins: RetentionPinProtection[] = [];
+    if (references.length) {
+      const { loadHarnessRegistry, resolveHarnessContentPath } = await import('../harness-registry');
+      const registry = await loadHarnessRegistry(activeWorkspaceId(), { fresh: true });
+      const repositories = new Map<string, string>();
+      for (const ref of references) {
+        const root = resolveHarnessContentPath(registry, ref.harness_slug);
+        if (root) repositories.set(ref.harness_slug, root);
+      }
+      const renewal = await renewWorkItemEvidencePins(references, { repositories, dir, dryRun: options.dryRun });
+      renewedPins = renewal.pins;
+      // Missing evidence is distinct from a historical test failure. Preserve
+      // the exact custody gap on the standing cleaner's existing audit surface.
+      if (renewal.missing.length) await writeReclaimAudit(getOrgPg().sql, activeWorkspaceId(), 'disk-retention', 'progress', {
+        phase: 'missing-open-work-item-evidence', missing: renewal.missing,
+      });
+    }
     const leaseRead = readRetentionLeases(dir);
     const { readRetentionPins } = await import('./retention-pins');
     const pinRead = readRetentionPins({ dir });
+    const pins = [...pinRead.pins, ...renewedPins];
     const errors = [...leaseRead.errors, ...pinRead.errors];
     // Unknown/malformed leases are a hard refusal, rather than disappearing from protection.
     if (errors.length) throw new Error(`retention leases unreadable: ${errors.join('; ')}`);
     const { pinProtection } = await import('../../../../scripts/lib/retention-pins.mjs');
-    isPinnedPath = pinProtection(pinRead.pins);
-    return { paths: leaseRead.leases.filter((lease) => isLeaseLive(lease, Date.now())).flatMap((lease) => lease.paths), pins: pinRead.pins };
+    isPinnedPath = pinProtection(pins);
+    return { paths: leaseRead.leases.filter((lease) => isLeaseLive(lease, Date.now())).flatMap((lease) => lease.paths), pins };
   };
   const require = createRequire(import.meta.url);
   const delegates: ReclaimDelegate[] = [

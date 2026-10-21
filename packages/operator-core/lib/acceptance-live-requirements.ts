@@ -57,13 +57,26 @@ function neutralCheck(check: LiveRequirementCheck): LiveRequirementCheck {
  * keeping it would smuggle the test file list back into the meaning. Every field it summarises
  * that carries meaning is still compared directly.
  */
-export function verificationNeutralCriterion<T extends LiveVerificationFields & { barHash?: unknown }>(
+export function verificationNeutralCriterion<
+  T extends LiveVerificationFields & { bar?: unknown; barHash?: unknown; barProvenance?: unknown },
+>(
   criterion: T,
-): Omit<T, 'method' | 'replication' | 'barHash'> {
-  const { method: _method, replication: _replication, barHash: _derived, check, ...meaning } = criterion;
+): Omit<T, 'method' | 'replication' | 'bar' | 'barHash' | 'barProvenance'> {
+  // `bar` is the read-only acceptance projection alias of `model`, while
+  // `barHash` and `barProvenance` are server-owned identity/lifecycle fields.
+  // None belongs in the meaning comparison used by the live plan overlay.
+  const {
+    method: _method,
+    replication: _replication,
+    bar: _alias,
+    barHash: _derived,
+    barProvenance: _provenance,
+    check,
+    ...meaning
+  } = criterion;
   return check === undefined
-    ? (meaning as Omit<T, 'method' | 'replication' | 'barHash'>)
-    : ({ ...meaning, check: neutralCheck(check) } as Omit<T, 'method' | 'replication' | 'barHash'>);
+    ? (meaning as Omit<T, 'method' | 'replication' | 'bar' | 'barHash' | 'barProvenance'>)
+    : ({ ...meaning, check: neutralCheck(check) } as Omit<T, 'method' | 'replication' | 'bar' | 'barHash' | 'barProvenance'>);
 }
 
 function stableJson(value: unknown): string {
@@ -100,13 +113,15 @@ export function classifyRequirementBarEdit<B extends LiveVerificationFields, A e
     : 'meaning';
 }
 
+export type LiveRequirementCriterion = LiveVerificationFields & Record<string, unknown>;
+
 export interface LiveRequirementBar {
   barKey: string;
   /** Present only for an explicit ```requirement block; legacy prose has no verification of its own. */
-  criterion?: LiveVerificationFields;
+  criterion?: LiveRequirementCriterion;
 }
 
-export type LiveRequirementKeptReason = 'no-explicit-block' | 'check-kind-changed';
+export type LiveRequirementKeptReason = 'no-explicit-block' | 'check-kind-changed' | 'meaning-changed';
 
 export interface LiveRequirementOverlay<C> {
   criteria: C[];
@@ -146,6 +161,21 @@ export function overlayLiveRequirementVerification<C extends LiveVerificationFie
     }
     if ((criterion.check?.kind ?? null) !== (block.check?.kind ?? criterion.check?.kind ?? null)) {
       kept.push({ barKey, reason: 'check-kind-changed' });
+      return criterion;
+    }
+    // A plan can be rewritten before its acceptance rubric amendment lands. In
+    // that window the same R-N key may carry a new promise, while the stored
+    // rubric still carries the old promise. Overlaying the new verification
+    // fields onto the old criterion makes methods/checks appear one BAR away
+    // from their model and falsifier. Only a meaning-preserving edit may supply
+    // live verification fields; the canonical amendment remains responsible for
+    // adopting a changed BAR.
+    // The parser normally returns a complete criterion, but callers can provide a
+    // verification-only projection (for example, a test path/method patch). Merge
+    // the live block over the stored criterion before comparing meaning so omitted
+    // meaning fields remain inherited instead of looking like a BAR rewrite.
+    if (classifyRequirementBarEdit(criterion, { ...criterion, ...block }) === 'meaning') {
+      kept.push({ barKey, reason: 'meaning-changed' });
       return criterion;
     }
     const next: C = { ...criterion };

@@ -498,6 +498,52 @@ describe('dependency source checkout boundaries', () => {
     expect(result.stdout).toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
     expect(readFileSync(join(foreign, 'node_modules/foreign/index.js'), 'utf8')).toBe('unrelated\n');
   }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-6554700010018380: an ignored install-generated lockfile is not a live input, so the live key still matches the exact ref', () => {
+    const integration = makeIntegration();
+    commitFixture(integration, 'seed source repository');
+    // A submodule that ignores the lockfile its nested kit's install writes.
+    const vendor = join(integration, 'libs/vendor');
+    mkdirSync(join(vendor, 'kit'), { recursive: true });
+    writeFileSync(join(vendor, 'package-lock.json'), '{"name":"vendor","lockfileVersion":3,"packages":{}}\n');
+    writeFileSync(join(vendor, 'kit/package.json'), '{"name":"kit","private":true}\n');
+    writeFileSync(join(vendor, '.gitignore'), '/kit/package-lock.json\n');
+    const vendorCommit = commitAllFixture(vendor, 'seed submodule inputs');
+    writeFileSync(join(integration, '.gitmodules'), '[submodule "vendor"]\n\tpath = libs/vendor\n\turl = ./vendor\n');
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${vendorCommit},libs/vendor`], { cwd: integration });
+    // The superproject ignores one too.
+    mkdirSync(join(integration, 'tools'), { recursive: true });
+    writeFileSync(join(integration, '.gitignore'), '/tools/package-lock.json\n');
+    const sourceCommit = commitAllFixture(integration, 'record submodule and ignore rules');
+
+    // Install artifacts the commits can never carry.
+    writeFileSync(join(vendor, 'kit/package-lock.json'), '{"name":"kit","lockfileVersion":3,"packages":{}}\n');
+    writeFileSync(join(integration, 'tools/package-lock.json'), '{"name":"tools","lockfileVersion":3,"packages":{}}\n');
+    const live = () => spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_input_manifest "$INTEGRATION"',
+      'printf "LIVE_INPUT="; dependency_generation_input_fingerprint "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+
+    const result = live();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('libs/vendor/package-lock.json');
+    expect(result.stdout).not.toContain('libs/vendor/kit/package-lock.json');
+    expect(result.stdout).not.toContain('tools/package-lock.json');
+    const exact = fingerprintRef(integration, sourceCommit);
+    expect(exact.status, exact.stderr).toBe(0);
+    expect(result.stdout).toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
+
+    // An untracked lockfile that is NOT ignored is still a live input: it could be
+    // committed, so the comparison must keep refusing until it is.
+    mkdirSync(join(integration, 'packages/c'), { recursive: true });
+    writeFileSync(join(integration, 'packages/c/package-lock.json'), '{"name":"c","lockfileVersion":3,"packages":{}}\n');
+    const withUntracked = live();
+    expect(withUntracked.status, withUntracked.stderr).toBe(0);
+    expect(withUntracked.stdout).toContain('packages/c/package-lock.json');
+    expect(withUntracked.stdout).not.toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 });
 
 describe('WI-10002299: patch-package patches are dependency inputs', () => {
@@ -4476,7 +4522,7 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
       ...process.env, LIB: SCRIPT, WORK: join(root, 'copied-bytes'),
       DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock, DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1',
     } });
-    holder.stderr!.on('data', chunk => { holderOutput += chunk.toString(); });
+    createTextCollector(holder.stderr, { retainText: false, onDecodedText: text => { holderOutput += text; } });
     const exited = new Promise(resolve => holder.once('exit', resolve));
     try {
       for (let i = 0; i < 100 && !existsSync(`${lock}.holder`); i++)

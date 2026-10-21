@@ -17,7 +17,7 @@
  * advisory lock — the delete+insert must be atomic with the harness_plans
  * upsert or a concurrent reader can observe a plan with no items.
  */
-import { isDeliverableKind } from '@papercusp/plan-parser';
+import { isDeliverableRef } from '@papercusp/plan-parser';
 import type { PlanIndexDecision, PlanIndexItem } from './source';
 import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './plan-lock-key';
 
@@ -76,9 +76,11 @@ export async function writePlanIndexRows(
     importance: typeof it.importance === 'string' ? it.importance : null,
     phase: typeof it.phase === 'string' ? it.phase : null,
     ownerGateMarker: typeof it.ownerGateMarker === 'string' ? it.ownerGateMarker : null,
-    // Migration 1536 CHECKs the column; an unknown word (a federated row from a
-    // newer vocabulary) degrades to "undeclared" instead of aborting the write.
-    deliverable: isDeliverableKind(it.deliverable) ? it.deliverable : null,
+    // Migration 1542 CHECKs the column against the parser's grammar (a built-in kind or a
+    // namespaced item-type slug); a value outside it (a federated row from a newer
+    // vocabulary) degrades to "undeclared" instead of aborting the write. Grammar only:
+    // whether the type is registered is the resolver's question, not storage's.
+    deliverable: isDeliverableRef(it.deliverable) ? it.deliverable : null,
     blockedBy: asStringArray(it.blockedBy),
     decisionRefs: asStringArray(it.decisionRefs),
   }));

@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-041 native push-outcome instrument over live ledgers (R-32/R-33/R-34)",
+  "command": [
+    "npx",
+    "tsx",
+    ".papercusp/scratch/p041-live-evidence.mts",
+    "2026-10-14T02:00:00.000Z",
+    "2026-10-21T02:00:00.000Z",
+    "docs/evidence/native-p041-push-outcomes-live-2026-10-21.json"
+  ],
+  "startedAt": "2026-10-21T02:28:26.448Z",
+  "finishedAt": "2026-10-21T02:28:28.098Z",
+  "exitCode": 0,
+  "summary": "Committed instrument packages/operator-core/lib/code-intelligence/native-adoption.ts (blob 35aa3912392bcfe13fe77a6cec2832e1f96cb034, staging d43bf085ce) measured live harness_shared ledgers for papercusp-workspace [2026-10-14T02:00:00.000Z, 2026-10-21T02:00:00.000Z). 5/5 assertions passed.",
+  "instrumentKeys": {
+    "issued": "code-intel:native-push-issued-measured",
+    "actedOn": "code-intel:native-push-acted-on-measured",
+    "grepAfterPush": "code-intel:native-push-grep-after-measured"
+  },
+  "window": {
+    "workspaceId": "papercusp-workspace",
+    "windowStart": "2026-10-14T02:00:00.000Z",
+    "windowEnd": "2026-10-21T02:00:00.000Z"
+  },
+  "measurement": {
+    "byLeg": {
+      "grep": {
+        "issued": 20,
+        "closedWindows": 4,
+        "actedOn": {
+          "measured": 3,
+          "positive": 0,
+          "rate": 0
+        },
+        "grepAfterPush": {
+          "measured": 3,
+          "positive": 0,
+          "rate": 0
+        }
+      },
+      "interface": {
+        "issued": 1,
+        "closedWindows": 0,
+        "actedOn": {
+          "measured": 0,
+          "positive": 0,
+          "rate": null
+        },
+        "grepAfterPush": {
+          "measured": 0,
+          "positive": 0,
+          "rate": null
+        }
+      },
+      "first-touch": {
+        "issued": 10,
+        "closedWindows": 3,
+        "actedOn": {
+          "measured": 2,
+          "positive": 2,
+          "rate": 1
+        },
+        "grepAfterPush": {
+          "measured": 0,
+          "positive": 0,
+          "rate": null
+        }
+      },
+      "resume": {
+        "issued": 17,
+        "closedWindows": 2,
+        "actedOn": {
+          "measured": 0,
+          "positive": 0,
+          "rate": null
+        },
+        "grepAfterPush": {
+          "measured": 0,
+          "positive": 0,
+          "rate": null
+        }
+      }
+    },
+    "cannotObserve": [
+      "Issued counts server hook-response ledger rows, not confirmed client receipt or attention.",
+      "Open turn windows and unmeasured outcomes are excluded from each rate denominator.",
+      "A read, edit or suggested-test execution is follow-through evidence, not proof of causation or usefulness.",
+      "A leg without recorded symbol identity cannot measure same-symbol grep; that outcome stays unknown.",
+      "Historical closure requires one correlated native prompt and Stop-hook completion; missing or overlapping sessions stay unknown.",
+      "Only successful recorded post-tool events are observed; missing telemetry is not evidence of inactivity.",
+      "Absolute file paths count only under the exact registered repo root of the activity's harness (never by suffix); paths outside it, rows without a harness, and truncated/unsupported search commands stay unknown.",
+      "Suggested tests require matching completed test-run ledger rows linked through the testing invocation run group; requesting tests alone does not count."
+    ],
+    "ratings": {
+      "issued": {
+        "verdict": "pass",
+        "reason": "issued: [{\"leg\":\"grep\",\"measured\":20,\"rate\":null},{\"leg\":\"interface\",\"measured\":1,\"rate\":null},{\"leg\":\"first-touch\",\"measured\":10,\"rate\":null},{\"leg\":\"resume\",\"measured\":17,\"rate\":null}]. Measurement available; this is not a usefulness or client-receipt verdict."
+      },
+      "actedOn": {
+        "verdict": "unknown",
+        "reason": "actedOn: [{\"leg\":\"grep\",\"measured\":3,\"rate\":0},{\"leg\":\"interface\",\"measured\":0,\"rate\":null},{\"leg\":\"first-touch\",\"measured\":2,\"rate\":1},{\"leg\":\"resume\",\"measured\":0,\"rate\":null}]. Unmeasured legs: interface, resume."
+      },
+      "grepAfterPush": {
+        "verdict": "pass",
+        "reason": "grepAfterPush: [{\"leg\":\"grep\",\"measured\":3,\"rate\":0}]. Measurement available; this is not a usefulness or client-receipt verdict."
+      }
+    }
+  },
+  "oracle": {
+    "issuedByLeg": {
+      "first-touch": 10,
+      "grep": 20,
+      "interface": 1,
+      "resume": 17
+    },
+    "foreignWorkspaceRowsInWindow": 0
+  },
+  "assertions": [
+    {
+      "id": "R-32.issued-matches-ledger",
+      "passed": true,
+      "evidence": "instrument issued per leg {\"first-touch\":10,\"grep\":20,\"interface\":1,\"resume\":17} vs independent SQL count over code_intel_pushes {\"first-touch\":10,\"grep\":20,\"interface\":1,\"resume\":17} for workspace papercusp-workspace [2026-10-14T02:00:00.000Z, 2026-10-21T02:00:00.000Z); 0 foreign-workspace rows in the same window were excluded."
+    },
+    {
+      "id": "R-32.issued-not-receipt",
+      "passed": true,
+      "evidence": "Per leg, closedWindows <= issued: issuance is counted from the server push ledger, not from a client receipt."
+    },
+    {
+      "id": "R-33.acted-on-denominators",
+      "passed": true,
+      "evidence": "acted-on per leg {\"grep\":{\"measured\":3,\"positive\":0,\"rate\":0},\"interface\":{\"measured\":0,\"positive\":0,\"rate\":null},\"first-touch\":{\"measured\":2,\"positive\":2,\"rate\":1},\"resume\":{\"measured\":0,\"positive\":0,\"rate\":null}}; measured <= closedWindows, positive <= measured, rate = positive/measured, null when nothing was measured (never 0)."
+    },
+    {
+      "id": "R-34.grep-after-grep-leg-only",
+      "passed": true,
+      "evidence": "grep-after per leg {\"grep\":{\"measured\":3,\"positive\":0,\"rate\":0},\"interface\":{\"measured\":0,\"positive\":0,\"rate\":null},\"first-touch\":{\"measured\":0,\"positive\":0,\"rate\":null},\"resume\":{\"measured\":0,\"positive\":0,\"rate\":null}}; only the grep leg has a measured denominator, rate = positive/measured, null when unmeasured."
+    },
+    {
+      "id": "R-32..34.instrument-ratings",
+      "passed": true,
+      "evidence": "rateNativePushOutcomes per criterion: {\"issued\":{\"verdict\":\"pass\",\"reason\":\"issued: [{\\\"leg\\\":\\\"grep\\\",\\\"measured\\\":20,\\\"rate\\\":null},{\\\"leg\\\":\\\"interface\\\",\\\"measured\\\":1,\\\"rate\\\":null},{\\\"leg\\\":\\\"first-touch\\\",\\\"measured\\\":10,\\\"rate\\\":null},{\\\"leg\\\":\\\"resume\\\",\\\"measured\\\":17,\\\"rate\\\":null}]. Measurement available; this is not a usefulness or client-receipt verdict.\"},\"actedOn\":{\"verdict\":\"unknown\",\"reason\":\"actedOn: [{\\\"leg\\\":\\\"grep\\\",\\\"measured\\\":3,\\\"rate\\\":0},{\\\"leg\\\":\\\"interface\\\",\\\"measured\\\":0,\\\"rate\\\":null},{\\\"leg\\\":\\\"first-touch\\\",\\\"measured\\\":2,\\\"rate\\\":1},{\\\"leg\\\":\\\"resume\\\",\\\"measured\\\":0,\\\"rate\\\":null}]. Unmeasured legs: interface, resume.\"},\"grepAfterPush\":{\"verdict\":\"pass\",\"reason\":\"grepAfterPush: [{\\\"leg\\\":\\\"grep\\\",\\\"measured\\\":3,\\\"rate\\\":0}]. Measurement available; this is not a usefulness or client-receipt verdict.\"}}"
+    }
+  ]
+}

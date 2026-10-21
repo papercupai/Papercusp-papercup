@@ -145,7 +145,7 @@ export class SuNativeCards {
         const answered = await this.handleClaude('AskUserQuestion', record(input.args), turnId, options);
         if (!answered || answered.behavior !== 'allow') return answered ?? deny();
         const answers = record(record(answered).updatedInput).answers;
-        return deny(`PUI owner answered AskUserQuestion: ${JSON.stringify(answers)}. The MCP wrapper cannot execute this native tool; continue using the recorded answer without asking again.`);
+        return deny(`PUI answered AskUserQuestion: ${JSON.stringify(answers)}. The answer source is not established by this card result; do not attribute it to the owner without separate human provenance. The MCP wrapper cannot execute this native tool; continue using the recorded answer without asking again.`);
       }
       if (toolName !== 'AskUserQuestion') {
         // P-008: a readable question and the change itself; the raw arguments

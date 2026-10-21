@@ -87,6 +87,10 @@ export interface SessionToolConfinement {
   /** Nominated product documentation and raw per-file test history only. This
    * narrows existing read tools; it grants no plan/bound-evidence access. */
   readonly denyProductReadsOutside?: ProductReadBoundary;
+  /** The session's own scratch plans only (verification-system-improvements-2026-10-10
+   * D-050). This narrows the SCRATCH_PLAN_TOOLS a ceiling admits. It never admits a
+   * plan verb by itself, and it never reaches the reviewed plan. */
+  readonly denyPlansOutside?: ScratchPlanBoundary;
   /** Why this session is confined — surfaced verbatim in the refusal. */
   readonly reason: string;
   /** Who imposed it (the launching director/fleet), for audit and for the refusal text. */
@@ -132,7 +136,8 @@ function withinProductReadBoundary(tool: string, args: unknown, boundary: Produc
   const row = args as Record<string, unknown>;
   const keys = tool === 'docs:get' ? ['harness', 'slugs', 'heading', 'offset'] :
     tool === 'testing:run' ? ['harness', 'files', 'timeoutMs', 'maxFailures'] :
-      ['harness', 'filePath', 'source', 'since', 'sinceHours', 'status', 'limit'];
+      tool === 'testing:run-status' ? ['runId'] :
+        ['harness', 'filePath', 'source', 'since', 'sinceHours', 'status', 'limit'];
   if (Object.keys(row).some(key => !keys.includes(key) && key !== 'projection' && key !== 'payloadTier')) return false;
   if (tool === 'docs:get') return row.harness === boundary.docsHarness && Array.isArray(row.slugs) &&
     row.slugs.length > 0 && row.slugs.length <= 10 && row.slugs.every(s => boundary.docsSlugs.includes(s));
@@ -142,6 +147,12 @@ function withinProductReadBoundary(tool: string, args: unknown, boundary: Produc
     row.files.length > 0 && row.files.length <= 20 && row.files.every(s => boundary.testFiles.includes(s)) &&
     Number.isInteger(row.timeoutMs) && Number(row.timeoutMs) >= 1000 && Number(row.timeoutMs) <= 120000 &&
     Number.isInteger(row.maxFailures) && Number(row.maxFailures) >= 1 && Number(row.maxFailures) <= 5;
+  // A foreground testing:run timeout hands back a detached run id, and polling it is the
+  // only way to read that run's verdict (WI-6554700010018202). The id names one execution
+  // the reviewer was handed (its own detached run, or a run group already visible in a
+  // nominated file's history); it reads test output, never the plan, rubric or bound proof.
+  if (tool === 'testing:run-status') return typeof row.runId === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(row.runId);
   // Exact file selectors avoid broad ledger reads and author-selected proof IDs.
   // Bound the raw history; the reviewer discovers observations independently.
   return row.harness === boundary.harness && typeof row.filePath === 'string' && boundary.testFiles.includes(row.filePath) &&
@@ -149,6 +160,93 @@ function withinProductReadBoundary(tool: string, args: unknown, boundary: Produc
     Number.isInteger(row.limit) && Number(row.limit) >= 1 && Number(row.limit) <= 20 &&
     (typeof row.since === 'string' && Number.isFinite(Date.parse(row.since)) ||
       typeof row.sinceHours === 'number' && row.sinceHours > 0 && row.sinceHours <= 168);
+}
+
+/**
+ * A blind reviewer's own scratch plans (D-050). The mint draws `scratchPrefix` fresh for
+ * each reviewer, so no other session's plan can match it. `reviewedSlug` is never
+ * reachable: a call whose arguments contain it anywhere is refused.
+ */
+export interface ScratchPlanBoundary {
+  readonly scratchPrefix: string;
+  readonly reviewedSlug: string;
+  readonly harness: string;
+}
+
+/** The plan verbs a scratch boundary narrows. A ceiling must still name each one; a
+ * ceiling without the boundary leaves them refused like every other plan tool. */
+export const SCRATCH_PLAN_TOOLS: readonly string[] = Object.freeze([
+  'plans:new', 'plans:add-item', 'plans:set-status', 'plans:audit', 'plans:get', 'plans:set-plan-status',
+]);
+
+// Exact top-level keys per verb. Left out on purpose: multi-plan selectors (slugs),
+// session reads (sourceRanges, mappings), work-item references (findings, evidence,
+// verification, priorAttemptRefs, operationalBrief), rubric classes (classRef), and
+// workspace or force overrides.
+const SCRATCH_PLAN_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  'plans:new': ['harness', 'slug', 'title', 'status', 'goal', 'content', 'rationale', 'verificationProfile'],
+  'plans:add-item': ['harness', 'slug', 'phase', 'text', 'title', 'body', 'blockedBy', 'importance', 'deliverable', 'items', 'rationale'],
+  'plans:set-status': ['harness', 'slug', 'item', 'itemIds', 'items', 'status', 'note', 'rationale', 'expectedStatus'],
+  'plans:audit': ['harness', 'slug', 'phase', 'dryRun', 'items', 'summary', 'auditedSha'],
+  'plans:get': ['harness', 'slug', 'items', 'itemIds', 'decisionId', 'decisions', 'decisionIds', 'mode', 'detail',
+    'heading', 'include', 'includeHistory', 'shipReadiness', 'activationReadiness'],
+  'plans:set-plan-status': ['harness', 'slug', 'status', 'rationale', 'expectedCurrent', 'dryRun'],
+});
+// Keys of one batch entry. An entry's own slug and harness are checked like the top level's.
+const SCRATCH_PLAN_ENTRY_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  'plans:add-item': ['slug', 'harness', 'phase', 'text', 'title', 'body', 'blockedBy', 'importance', 'deliverable', 'rationale'],
+  'plans:set-status': ['slug', 'harness', 'item', 'status', 'note', 'rationale'],
+  'plans:audit': ['itemId', 'verdict', 'citations', 'note'],
+});
+const ITEM_ID = /^P-\d{3,}$/;
+const DECISION_ID = /^D-\d{3,}$/;
+
+export function validScratchPlanBoundary(value: unknown): value is ScratchPlanBoundary {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).every(key => ['scratchPrefix', 'reviewedSlug', 'harness'].includes(key)) &&
+    typeof row.scratchPrefix === 'string' && /^blind-review-scratch-[a-z0-9]{6,32}-$/.test(row.scratchPrefix) &&
+    typeof row.reviewedSlug === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(row.reviewedSlug) &&
+    typeof row.harness === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(row.harness) && row.harness !== 'all';
+}
+
+function withinScratchPlanBoundary(tool: string, args: unknown, boundary: ScratchPlanBoundary): boolean {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  // The blind-review ledger probe counts any plan-family call whose arguments contain the
+  // reviewed slug (D-039 (4)). Refusing every such call keeps that probe exact and keeps
+  // the reviewed plan out of reach however its slug is spelled into a field.
+  if (JSON.stringify(args).includes(boundary.reviewedSlug)) return false;
+  const row = args as Record<string, unknown>;
+  const keys = SCRATCH_PLAN_KEYS[tool];
+  if (!keys || Object.keys(row).some(key => !keys.includes(key) && key !== 'projection' && key !== 'payloadTier')) return false;
+  const scratch = (slug: unknown) => typeof slug === 'string' && slug.length > boundary.scratchPrefix.length &&
+    slug.length <= 200 && slug.startsWith(boundary.scratchPrefix);
+  const id = (value: unknown, re: RegExp) => value === undefined || typeof value === 'string' && re.test(value);
+  const ids = (value: unknown, re: RegExp) => value === undefined ||
+    Array.isArray(value) && value.length <= 200 && value.every(v => typeof v === 'string' && re.test(v));
+  if (!scratch(row.slug) || row.harness !== undefined && row.harness !== boundary.harness) return false;
+  // A real ship call recruits an acceptance grader. The reviewer may only preview one.
+  if (tool === 'plans:set-plan-status' && row.dryRun !== true) return false;
+  // Item and decision selectors stay inside the named plan: bare P- and D- ids only.
+  if (!id(row.item, ITEM_ID) || !ids(row.itemIds, ITEM_ID) || !ids(row.blockedBy, ITEM_ID) ||
+      !id(row.decisionId, DECISION_ID) || !ids(row.decisions, DECISION_ID) || !ids(row.decisionIds, DECISION_ID)) return false;
+  if (row.items === undefined) return true;
+  if (tool === 'plans:get') return ids(row.items, ITEM_ID);
+  const entryKeys = SCRATCH_PLAN_ENTRY_KEYS[tool];
+  if (!entryKeys || !Array.isArray(row.items) || row.items.length === 0 || row.items.length > 200) return false;
+  return row.items.every(entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const e = entry as Record<string, unknown>;
+    if (Object.keys(e).some(key => !entryKeys.includes(key)) || e.slug !== undefined && !scratch(e.slug) ||
+        e.harness !== undefined && e.harness !== boundary.harness ||
+        !id(e.item, ITEM_ID) || !id(e.itemId, ITEM_ID) || !ids(e.blockedBy, ITEM_ID)) return false;
+    // Audit citations: code and test paths, and a reasoned `none`. Work-item, artifact,
+    // measurement, doc and external citations resolve objects outside the scratch plan.
+    return e.citations === undefined || Array.isArray(e.citations) && e.citations.every(c =>
+      !!c && typeof c === 'object' && !Array.isArray(c) &&
+      ['code', 'test', 'none'].includes(String((c as Record<string, unknown>).kind)) &&
+      Object.keys(c).every(key => ['kind', 'path', 'line', 'symbol', 'reason'].includes(key)));
+  });
 }
 
 export function validWorkItemBoundary(value: unknown): value is NonNullable<SessionToolConfinement['denyWorkItemsOutside']> {
@@ -273,14 +371,23 @@ export function evaluateSessionConfinement(args: {
   }
   if (confinement.denyProductReadsOutside !== undefined &&
       (!validProductReadBoundary(confinement.denyProductReadsOutside) ||
-       args.purpose !== 'listing' && ['docs:get', 'testing:runs', 'testing:run'].includes(toolName.trim()) &&
+       args.purpose !== 'listing' && ['docs:get', 'testing:runs', 'testing:run', 'testing:run-status'].includes(toolName.trim()) &&
        !withinProductReadBoundary(toolName.trim(), args.args, confinement.denyProductReadsOutside))) {
     return { allowed: false, applied: true, matchedGlob: 'outside-exact-product-read',
       reason: `tool "${toolName.trim()}" must use the nominated product read boundary imposed by ${confinement.imposedBy}: ${confinement.reason}` };
   }
+  if (confinement.denyPlansOutside !== undefined &&
+      (!validScratchPlanBoundary(confinement.denyPlansOutside) ||
+       args.purpose !== 'listing' && SCRATCH_PLAN_TOOLS.includes(toolName.trim()) &&
+       !withinScratchPlanBoundary(toolName.trim(), args.args, confinement.denyPlansOutside))) {
+    const scope = validScratchPlanBoundary(confinement.denyPlansOutside)
+      ? ` (a slug starting ${confinement.denyPlansOutside.scratchPrefix}, the verb's listed keys only, dryRun:true for plans:set-plan-status)` : '';
+    return { allowed: false, applied: true, matchedGlob: 'outside-exact-scratch-plan',
+      reason: `tool "${toolName.trim()}" may only touch this session's own scratch plans${scope}, under the boundary imposed by ${confinement.imposedBy}: ${confinement.reason}` };
+  }
   if (confinement.denyTools.length === 0)
     return confinement.denyOutside === undefined && confinement.denyWorkItemsOutside === undefined &&
-      confinement.denyProductReadsOutside === undefined ? UNCONFINED : ALLOWED;
+      confinement.denyProductReadsOutside === undefined && confinement.denyPlansOutside === undefined ? UNCONFINED : ALLOWED;
 
   const key = toDenyMatchKey(toolName);
   for (const glob of confinement.denyTools) {

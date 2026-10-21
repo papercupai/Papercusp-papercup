@@ -107,6 +107,14 @@ describe('resource governor enforcement lint', () => {
     ).not.toContain('resource-start-outside-admission');
   });
 
+  it('does not treat record-proxy request-limit admit as governor admission or a resource start', () => {
+    const path = 'scripts/agent-capacity/record-proxy.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    expect(source).toContain('opts.requestLimit?.admit(');
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(scanInventory([[path, source]])).toEqual([]);
+  });
+
   it('detects called lazy promisify wrappers and preserves their reviewed start dispositions', () => {
     const wrapper = `
       let memo;
@@ -303,7 +311,7 @@ describe('resource governor enforcement lint', () => {
       source.replace('env.PAPERCUSP_VERIFY_TAURI_ISOLATED', 'env.UNVERIFIED_ISOLATION'),
       source.replace('profile.tauriPID === Number(env.VERIFY_TAURI_PID)', 'true'),
       source.replace('const testEnv = nativeTestDatabaseEnvironment(profile);', 'const testEnv = process.env;'),
-      source.replace('env: { ...testEnv,', 'env: { ...process.env,'),
+      source.replace('PAPERCUSP_TEST_RUN_COMMIT: receipt.sourceCommit', "PAPERCUSP_TEST_RUN_COMMIT: 'unchecked'"),
       source.replace('recordedDataDir === dataDir && port === address.port', 'true'),
       source.replace("command[command.indexOf('-D') + 1] === dataDir", 'true'),
       source.replace('env.PAPERCUSP_SKIP_PG_DISCOVERY', 'env.UNVERIFIED_PG_DISCOVERY'),
@@ -381,20 +389,17 @@ describe('resource governor enforcement lint', () => {
     expect(scanInventory([[daoPath, dao.replace('PAPERCUSP_VERIFY_TAURI_ISOLATED', 'UNSCOPED_RUNTIME')]])).toContain(daoFinding);
   });
 
-  it('bounds the per-use chokepoint disposition to funding admission with no process start', () => {
+  it('does not treat the per-use funding admission method as a resource start', () => {
     const path = 'packages/operator-core/lib/agent-tools/per-use-chokepoint.ts';
     const source = readFileSync(ROOT + path, 'utf8');
     const finding = `${path}:resource-start-outside-admission`;
-    // The detector's `.admit(` arm does fire here; the reviewed row is what clears it.
-    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(BYPASS_REGISTRY.has(`${path}::resource-start-outside-admission`)).toBe(false);
     expect(scanInventory([[path, source]])).not.toContain(finding);
-    expect(BYPASS_REGISTRY.get(`${path}::resource-start-outside-admission`)?.reason).toContain('WI-10007542');
     for (const unsafe of [
       source + "\nspawn('resident-worker', []);",
       source + "\nconst launch = execFile; launch('git', []);",
       source + "\nnew Worker('resident-worker');",
-      `import { execFileSync } from 'node:child_process';\n${source}`,
-      source.replace("type NativeAdmissionContext = Parameters<SuCodexTurnLifecycle['admit']>[0];", 'type NativeAdmissionContext = unknown;'),
     ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
   });
 

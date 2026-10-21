@@ -24,24 +24,42 @@
 /** Same Vitest title when its hierarchy joiner or leading `it.each` string label is rendered differently. */
 export function hasSameCaseTitleIdentity(declaredCaseTitle: string, measuredCaseTitle: string): boolean {
   if (declaredCaseTitle === measuredCaseTitle) return true;
-  const normalize = (title: string) => title
+  return normalizedCaseTitle(declaredCaseTitle) === normalizedCaseTitle(measuredCaseTitle);
+}
+
+function normalizedCaseTitle(title: string): string {
+  return title
     .split(' > ')
     .map((segment) => segment.replace(/^'([^'\s]+)'(?=\s)/, '$1'))
     .join(' ');
-  return normalize(declaredCaseTitle) === normalize(measuredCaseTitle);
 }
+
+type CaseTitleSnapshot = { titles: readonly string[]; identities: Set<string> };
+const caseTitleSnapshots = new WeakMap<readonly string[], CaseTitleSnapshot>();
 
 /** Match a complete title or a complete suffix at a Vitest hierarchy boundary. */
 export function hasMatchingDeclaredCaseTitle(
   declaredCaseTitle: string,
   executedCaseTitles: readonly string[],
 ): boolean {
-  return executedCaseTitles.some((executedCaseTitle) => {
-    const hierarchy = executedCaseTitle.split(' > ');
-    return hierarchy.some((_part, start) =>
-      hasSameCaseTitleIdentity(declaredCaseTitle, hierarchy.slice(start).join(' > ')),
-    );
-  });
+  let snapshot = caseTitleSnapshots.get(executedCaseTitles);
+  // Evidence rendering and grading ask many questions of the same ledger array.
+  // Normalize its suffix identities once, while retaining mutation semantics for
+  // callers that replace an entry or reuse a mutable array. Weak keys keep the
+  // index's lifetime bounded by the ledger snapshot rather than the host process.
+  if (!snapshot || snapshot.titles.length !== executedCaseTitles.length ||
+      snapshot.titles.some((title, index) => title !== executedCaseTitles[index])) {
+    const identities = new Set<string>();
+    for (const title of executedCaseTitles) {
+      const hierarchy = title.split(' > ').map((segment) => segment.replace(/^'([^'\s]+)'(?=\s)/, '$1'));
+      for (let start = 0; start < hierarchy.length; start += 1) {
+        identities.add(hierarchy.slice(start).join(' '));
+      }
+    }
+    snapshot = { titles: [...executedCaseTitles], identities };
+    caseTitleSnapshots.set(executedCaseTitles, snapshot);
+  }
+  return snapshot.identities.has(normalizedCaseTitle(declaredCaseTitle));
 }
 
 export interface TestCaseFilter {

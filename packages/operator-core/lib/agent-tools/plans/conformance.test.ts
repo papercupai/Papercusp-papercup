@@ -108,11 +108,13 @@ const PLAN = [
   '',
 ].join('\n');
 
-const call = async (args: Record<string, unknown>) =>
-  JSON.parse(
-    ((await tool.handler(args as never, { workspaceId: 'ws', harnessSlug: 'h' } as never)) as { content: { text: string }[] })
-      .content[0].text,
-  ) as Record<string, unknown>;
+const call = async (args: Record<string, unknown>) => {
+  const output = (await tool.handler(args as never, { workspaceId: 'ws', harnessSlug: 'h' } as never)) as {
+    data?: Record<string, unknown>;
+    content?: { text: string }[];
+  };
+  return output.data ?? JSON.parse(output.content![0].text) as Record<string, unknown>;
+};
 
 describe('plans:conformance handler', () => {
   beforeEach(() => {

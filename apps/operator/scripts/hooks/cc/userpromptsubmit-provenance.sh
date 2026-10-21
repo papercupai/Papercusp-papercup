@@ -193,8 +193,10 @@ def ttl_ms():
         pass
     return 600_000
 
+papercusp_home = os.environ.get('PAPERCUSP_HOME', '').strip() or os.path.join(
+    os.path.expanduser('~'), '.papercusp')
 ledger_dir = os.environ.get('PAPERCUSP_TURN_PROVENANCE_DIR') or os.path.join(
-    os.path.expanduser('~'), '.papercusp', 'turn-provenance')
+    papercusp_home, 'turn-provenance')
 safe = re.sub(r'[^a-zA-Z0-9._-]', '_', sid or 'unknown')[:200]
 rows = []
 try:

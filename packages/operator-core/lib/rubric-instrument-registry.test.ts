@@ -12,6 +12,7 @@ import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics'
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
+import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt-instrument';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
@@ -208,6 +209,7 @@ describe('the registry seed set', () => {
       ...Object.values(nativeAdoption.NATIVE_PUSH_INSTRUMENT_KEYS),
       RATCHET_METRICS_INSTRUMENT_KEY,
       POSTGRES_RETENTION_INSTRUMENT_KEY,
+      SILENT_HALT_STRANDED_INSTRUMENT_KEY,
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
@@ -234,6 +236,10 @@ describe('the registry seed set', () => {
                 ? 24 * 60 * 60_000 : 72 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');
             if (harnessFamilies.includes(key)) expect(instrument.rescore?.scope).toBe('harness');
+          } else if (key === SILENT_HALT_STRANDED_INSTRUMENT_KEY) {
+            expect(instrument.rescore?.windowMs).toBe(60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('workspace');
           } else expect(instrument.rescore).toBeUndefined();
           continue;
         }

@@ -32,12 +32,14 @@ import { resolvePlanScope } from './source';
 import { trackDetached } from '../../detached-imports';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { measureNativeColdEnvironment, nativeColdInstrumentKeySchema } from '../../storage/cold-tier-evidence';
+import { foldTreeInstrumentFingerprint, measureTreeInstrumentAtCommit, treeInstrumentKeySchema, type TreeInstrumentKey } from './tree-instruments';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
   createCommittedTreeDiagnostics,
   defaultBlobBatchReader,
   fingerprintRepoFileSetAtCommit,
   listCommittedGlobMatches,
+  locateCommittedBlobs,
   repoFileSetFingerprint,
   REPO_FILE_SET_READ_LIMITS,
   REPO_FIXTURE_READ_LIMITS,
@@ -48,6 +50,7 @@ import {
 } from './committed-tree-reader';
 import {
   MEASUREMENT_PIN_DETAILS_KEY,
+  defaultGitRunner,
   buildMeasurementPin,
   diffMeasuredFiles,
   readMeasurementPin,
@@ -187,6 +190,12 @@ export const repoFilesEvidenceMeasurementSchema = z
     artifactReceiptPath: repoMeasurementPathSchema.optional(),
     /** Native physical storage observations re-run their registered instrument on this host. */
     nativeInstrumentKey: nativeColdInstrumentKeySchema.optional(),
+    /**
+     * A whole-tree test (a shrink-only census) re-runs its registered tree instrument over the
+     * files committed at the measurement commit; the output's digest joins the source
+     * fingerprint (tree-instruments.ts, WI-6554700010018633). Committed measurements only.
+     */
+    treeInstrumentKey: treeInstrumentKeySchema.optional(),
     /** Completed isolated tests certify retained source/lifecycle artifacts, not a live deployment. */
     completedRuntime: z.discriminatedUnion('kind', [z.object({
       kind: z.literal('verification-harness'),
@@ -390,6 +399,75 @@ async function expandedRepoSourcePathsAtRoot(
 ): Promise<string[]> {
   const globPaths = await expandRepoMeasurementGlobsAtRoot(root, parsed.sourceGlobs ?? []);
   return [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
+}
+
+/**
+ * Detect the narrow class of tests whose subject is a repository tree rather than the
+ * first-ring imports from the test file.  A directory read alone is not enough: ordinary
+ * fixtures often inspect one directory.  The detector requires all three signals of a
+ * broad census: a root collection (`APP_ROOTS`, `REPO_ROOT`, `SCAN_DIRS`, ...), a directory
+ * or glob read, and a traversal helper (`walk`, `scanTree`, ...).  AST identifiers keep
+ * comments and string fixtures from self-triggering this guard.
+ */
+export function detectBroadRepoTreeScan(source: string): boolean {
+  const file = ts.createSourceFile('repo-measurement.test.ts', source, ts.ScriptTarget.Latest, true);
+  let hasRootCollection = false;
+  let hasDirectoryRead = false;
+  let hasTraversal = false;
+  const expressionName = (expression: ts.Expression): string | null => {
+    if (ts.isIdentifier(expression)) return expression.text;
+    if (ts.isPropertyAccessExpression(expression)) return expression.name.text;
+    return null;
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) {
+      const name = node.text.toUpperCase();
+      if (/ROOTS?$|(?:DIRS|DIRECTORIES)$/.test(name) && name.length > 4) hasRootCollection = true;
+      if (/^(?:WALK|SCAN(?:TREE|DIRECTORY|FILES)?|VISIT)$/i.test(node.text)) hasTraversal = true;
+    }
+    if (ts.isCallExpression(node)) {
+      const name = expressionName(node.expression);
+      if (name && /^(?:READDIR|READDIRSYNC|GLOB|GLOBSYNC|FASTGLOB)$/i.test(name)) hasDirectoryRead = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return hasRootCollection && hasDirectoryRead && hasTraversal;
+}
+
+async function readCommittedMeasurementText(
+  root: string,
+  commit: string,
+  path: string,
+): Promise<string | null> {
+  const locations = await locateCommittedBlobs(root, commit, [path]);
+  const location = locations.get(path);
+  if (!location || !location.isFile) return null;
+  const repoPath = location.repo === '.' ? path : path.slice(location.repo.length + 1);
+  return defaultGitRunner(join(root, location.repo), ['show', `${location.commitSha}:${repoPath}`]);
+}
+
+/**
+ * A tree-plane repo-files measurement must name the files its test-side tree walk can see.
+ * Without explicit sourceGlobs or a registered tree instrument (which re-runs the scan over
+ * the committed tree), the normal first-ring source derivation is a false witness for a
+ * broad scanner, so the read path fails closed instead of reporting current proof.
+ */
+async function broadRepoTreeScanGuard(
+  root: string,
+  recipe: RepoFilesEvidenceMeasurement,
+  commit: string | null,
+): Promise<string | null> {
+  if (recipe.sourceGlobs?.length || recipe.treeInstrumentKey || !recipe.testPaths?.length) return null;
+  for (const path of recipe.testPaths) {
+    const source = await (commit
+      ? readCommittedMeasurementText(root, commit, path)
+      : readFile(resolve(root, path), 'utf8')).catch(() => null);
+    if (source !== null && detectBroadRepoTreeScan(source)) {
+      return `repo_measurement_broad_tree_scan_requires_source_globs:${path}`;
+    }
+  }
+  return null;
 }
 
 /** Resolve the bounded source file set recorded by a repo-files measurement. */
@@ -692,8 +770,15 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
   ]);
   if (fixtureIsWorkingTree) await refuseMutationProbePaths(fixtureRoot, fixturePaths);
   const fixtureIdentity = fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {};
+  let sourceFingerprint = source.fingerprint;
+  if (parsed.treeInstrumentKey) {
+    // The instruments scan superproject roots; a submodule's own commit has no such tree.
+    if (prefix) throw new Error(`repo_measurement_tree_instrument_requires_root_repository:${parsed.treeInstrumentKey}`);
+    const output = await measureTreeInstrumentAtCommit(parsed.treeInstrumentKey, root, commit, deps);
+    sourceFingerprint = foldTreeInstrumentFingerprint(source.fingerprint, parsed.treeInstrumentKey, output);
+  }
   return {
-    sourceFingerprint: source.fingerprint,
+    sourceFingerprint,
     testFingerprint: test?.fingerprint ?? null,
     ...(fixture ? { fixtureFingerprint: fixture.fingerprint } : {}),
     files: [
@@ -702,6 +787,11 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
       ...(fixture?.files ?? []).map((file) => ({ ...file, ...fixtureIdentity, dimension: 'fixture' as const })),
     ],
   };
+}
+
+/** A working-tree read cannot reproduce a tree instrument's basis: refuse instead of under-measuring. */
+function refuseWorkingTreeInstrument(key: TreeInstrumentKey | undefined): void {
+  if (key) throw new Error(`repo_measurement_tree_instrument_requires_commit:${key}`);
 }
 
 async function repoFilesPrimaryPathsAtRoot(root: string, parsed: RepoFilesEvidenceMeasurement): Promise<string[]> {
@@ -717,6 +807,7 @@ async function fingerprintRepoFilesMeasurement(
   fixtureRootHarnessSlug?: string,
   expandedFixturePaths?: readonly string[],
 ): Promise<DetailedRepoEvidenceMeasurement> {
+  refuseWorkingTreeInstrument(parsed.treeInstrumentKey);
   const sourcePaths = expandedSourcePaths ?? (await expandedRepoSourcePathsAtRoot(root, parsed));
   const fixturePaths = expandedFixturePaths ?? (await expandedRepoFixturePathsAtRoot(fixtureRoot, parsed));
   const [source, test, fixture] = await Promise.all([
@@ -1352,7 +1443,7 @@ interface PriorTestRunBindingRow {
 /** Resolve the selector and append one idempotent exact evidence binding. */
 export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<BindSpecEvidenceResult> {
   const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
-  return withWorkspace(scope.workspaceId, async (tx) => {
+  const writeBinding = (): Promise<BindSpecEvidenceResult> => withWorkspace(scope.workspaceId, async (tx) => {
     // P-022 / D-018: a caller with no plan gets the harness's shared ad-hoc spec scope
     // rather than being forced to invent a plan slug. Everything downstream then runs
     // unchanged, which is the point: no PK, FK, index or freshness invariant moves.
@@ -1990,6 +2081,17 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       ...(duplicateLiveTestRunAdvisory ? { advisory: duplicateLiveTestRunAdvisory } : {}),
     };
   });
+  // Pin explicitly retained bytes before accepting a receipt binding. The
+  // standing cleaner renews this same finite lease while the item stays open.
+  if (/^docs\/evidence\/.+\.json$/.test(input.evidenceRef)) {
+    const repository = await resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug);
+    if (existsSync(resolve(repository, input.evidenceRef))) {
+      const { withWorkItemEvidenceRetention } = await import('../../storage/retention-pins');
+      return withWorkItemEvidenceRetention({ harness_slug: scope.harnessSlug, work_item_id: input.workItemId,
+        evidence_ref: input.evidenceRef }, { repositories: new Map([[scope.harnessSlug, repository]]) }, writeBinding);
+    }
+  }
+  return writeBinding();
 }
 
 export type FingerprintState = 'current' | 'stale' | 'unknown' | 'not-applicable';
@@ -4013,6 +4115,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             : hasRepoFixturePaths(recipe)
               ? await measurementCommitFor(fixtureRoot)
               : null;
+          const broadTreeScanRefusal = await broadRepoTreeScanGuard(
+            measurementRoot,
+            recipe,
+            measuredAtCommit,
+          );
+          if (broadTreeScanRefusal) throw new Error(broadTreeScanRefusal);
           // Same single read as before; the per-file hashes it now also returns are what
           // name the moved paths below at zero extra IO. Under a batch probe snapshot the
           // pre-read fence is decided locally; its post-read half runs after this loop.

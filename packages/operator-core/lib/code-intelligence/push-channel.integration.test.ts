@@ -1,9 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { commitPushFacts, CODE_INTEL_PUSH_TURN_CHARS, type PushFact } from './push-channel';
-import { parsePushSnapshot } from './push-snapshot';
+import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_TURN_CHARS, snapshotFirstTouchLeg, snapshotGrepLeg,
+  type PushFact, type PushInput, type PushLeg, type PushLegId } from './push-channel';
+import { parsePushSnapshot, type PushSnapshot } from './push-snapshot';
 import { readPushIncidentAttribution } from './push-channel';
+import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 
 let db: OrgTestDb;
 vi.mock('@papercusp/db-org', async importOriginal => ({
@@ -108,5 +112,87 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     });
     expect(leaked).toHaveLength(0);
     expect(await deliver([fact('too-large')], workspace, 10)).toBe('');
+  });
+
+  // plan-item-code-anchors-2026-10-20 P-001: replay real tool calls through the push channel
+  // (real legs, real proof corroboration against a fixture checkout, real ledger) and read
+  // back what each session recorded.
+  describe('recorded pushes per session (P-001)', () => {
+    const workspace = 'push-integration-sessions';
+    const manifest = JSON.stringify({ name: '@fx/pkg', scripts: { test: 'vitest' } });
+    const files: Record<string, string> = { 'pkg/package.json': manifest,
+      'pkg/lib/target.ts': 'export function target() {}\n',
+      'pkg/app/use.ts': 'import { target } from "../lib/target";\ntarget();\n' };
+    const paths = Object.keys(files);
+    let root = '';
+    let fixture: PushSnapshot;
+    beforeAll(async () => {
+      root = await mkdtemp(join(tmpdir(), 'code-intel-push-sessions-'));
+      for (const path of paths) {
+        await mkdir(dirname(join(root, path)), { recursive: true });
+        await writeFile(join(root, path), files[path]!);
+      }
+      const symbols = buildSymbolSnapshot({ files: paths, readSource: (file: string) => files[file] ?? null,
+        resolveModule: (file: string, spec: string) => relativeSymbolModule(file, spec, new Set(paths)),
+        workspacePackages: [['@fx/pkg', ['pkg']]] });
+      fixture = parsePushSnapshot(JSON.stringify({ schema: 'graph-dependency-snapshot-v1',
+        index: { backend: 'first-party-imports', lastCommit: 'd'.repeat(40) }, generatedAt: new Date().toISOString(),
+        edges: [{ importer: 'pkg/app/use.ts', imported: 'pkg/lib/target.ts', importerSha256: 'e'.repeat(64) }], symbols }))!;
+      // Warm the app-role pool under another owner so the channel's 250ms wall times the channel, not a cold connect.
+      await commitPushFacts({ ...input, workspace, owner: 'warm-up' }, fixture, [fact('warm-up')],
+        CODE_INTEL_PUSH_TURN_CHARS, new AbortController().signal);
+    }, 60_000);
+    afterAll(async () => { if (root) await rm(root, { recursive: true, force: true }); });
+
+    const replay = (owner: string, calls: PushInput['calls']) =>
+      codeIntelPushText({ owner, workspace, harness: 'papercusp', root, calls }, 0, {
+        snapshot: async () => fixture, enabled: async () => true, commit: commitPushFacts,
+        legs: () => new Map<PushLegId, PushLeg>([['grep', snapshotGrepLeg], ['first-touch', snapshotFirstTouchLeg]]) });
+    const recorded = (owner: string) => db.adminSql<{ leg: string; subject: string }[]>`SELECT leg, subject
+      FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace} AND owner_id = ${owner} ORDER BY id`;
+    const search = { tool: 'Bash', toolInput: { command: 'rg -n "target" pkg' } };
+
+    it('SPEC-P-001: an eligible symbol search records one grep answer for that symbol', async () => {
+      const text = await replay('session-search', [search]);
+      expect(text.match(/## Code intelligence \(grep\)/g)).toHaveLength(1);
+      expect(text).toContain('target: definition pkg/lib/target.ts:1');
+      expect(await replay('session-search', [search])).toBe('');
+      expect(await recorded('session-search')).toEqual([{ leg: 'grep', subject: 'target' }]);
+    });
+
+    it('SPEC-P-001-FIRST-READ: a first read of a covered file records one first-touch answer for that file', async () => {
+      const read = { tool: 'Read', toolInput: { file_path: join(root, 'pkg/lib/target.ts') } };
+      expect(await replay('session-read', [read])).toContain('pkg/lib/target.ts: 1 static file importers');
+      expect(await replay('session-read', [read])).toBe('');
+      expect(await recorded('session-read')).toEqual([{ leg: 'first-touch', subject: 'pkg/lib/target.ts' }]);
+    });
+
+    it.each([
+      ['tools:invoke-wrapped capability:read', () => ({ tool: 'mcp__papercusp-su__tools_invoke',
+        toolInput: JSON.stringify({ name: 'capability:read', args: { file_path: join(root, 'pkg/lib/target.ts') } }) })],
+      ['shell sed range read', () => ({ tool: 'Bash', toolInput: { command: `cd ${root} || exit 1; sed -n '1,20p' pkg/lib/target.ts` } })],
+      ['tools:invoke-wrapped capability:bash cat', () => ({ tool: 'mcp__papercusp-su__tools_invoke',
+        toolInput: { name: 'capability:bash', args: { cmd: 'cat lib/target.ts', cwd: join(root, 'pkg') } } })],
+    ])('SPEC-P-001-FIRST-READ (WI-6554700010018441): a first read via %s records one first-touch answer', async (label, call) => {
+      const owner = 'session-read-' + label.replace(/\W+/g, '-');
+      expect(await replay(owner, [call()])).toContain('pkg/lib/target.ts: 1 static file importers');
+      expect(await replay(owner, [call()])).toBe('');
+      expect(await recorded(owner)).toEqual([{ leg: 'first-touch', subject: 'pkg/lib/target.ts' }]);
+    });
+
+    it('SPEC-P-001 (WI-6554700010018441): a symbol search dispatched through tools:invoke records its grep answer', async () => {
+      const wrapped = { tool: 'mcp__papercusp-su__tools_invoke', toolInput: { name: 'capability:bash', args: { cmd: 'rg -n "target" pkg' } } };
+      expect(await replay('session-search-wrapped', [wrapped])).toContain('target: definition pkg/lib/target.ts:1');
+      expect(await recorded('session-search-wrapped')).toEqual([{ leg: 'grep', subject: 'target' }]);
+    });
+
+    it('SPEC-P-001-CAUSE (D-012): a search after a workspace package.json edit still records its grep answer', async () => {
+      await writeFile(join(root, 'pkg/package.json'),
+        JSON.stringify({ name: '@fx/pkg', version: '2.0.0', scripts: { test: 'vitest run' } }, null, 2));
+      try {
+        expect(await replay('session-manifest-edit', [search])).toContain('target: definition pkg/lib/target.ts:1');
+        expect(await recorded('session-manifest-edit')).toEqual([{ leg: 'grep', subject: 'target' }]);
+      } finally { await writeFile(join(root, 'pkg/package.json'), manifest); }
+    });
   });
 });

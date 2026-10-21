@@ -61,13 +61,10 @@ export default defineTool({
       if (requestedSlug && requestedSlug !== slug) {
         return {
           isError: true,
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'judge_harness_scope_mismatch',
-              detail: 'The evidence-only judge may read autoloop status only for its dispatched harness.',
-            }),
-          }],
+          data: {
+            error: 'judge_harness_scope_mismatch',
+            detail: 'The evidence-only judge may read autoloop status only for its dispatched harness.',
+          },
         };
       }
     } else {

@@ -10,12 +10,26 @@ const WS = 'ws-dependency-clear';
 const HARNESS = 'dependency-clear';
 const actorTime = '2026-10-07T00:00:00.000Z';
 
+/** Seed the state these cases exercise: a row still `blocked` after its dependency cleared.
+ * Migration 1474/1477 lets a row ENTER `blocked` only while it names its blocker, so reach the
+ * state the way production does — block it behind a scaffold edge, then remove the edge. The
+ * payload stays exactly as given: planDependencyBlockedClear deep-compares it with the snapshot. */
 async function seed(id: string, payload: Record<string, unknown> = {}, kind = 'bug'): Promise<WorkItem> {
+  const blockedKind = kind === 'feature' ? 'feature' : 'issue';
+  const blockedRef = kind === 'feature' ? `${HARNESS}#${id}` : id;
+  await sql`
+    INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+    VALUES (${WS}, ${blockedKind}, ${blockedRef}, 'issue', 'WI-SEED-SCAFFOLD', 'blocks')`;
   await sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, status, origin, created_ts, updated_ts, payload)
     VALUES (${WS}, ${HARNESS}, ${id}, ${kind}, ${id}, 'blocked', 'local', 10, 10,
             ${sql.json(payload as Parameters<typeof sql.json>[0])})`;
+  await sql`
+    DELETE FROM harness_shared.work_item_deps
+     WHERE workspace_id = ${WS} AND blocked_kind = ${blockedKind} AND blocked_ref = ${blockedRef}
+       AND blocker_ref = 'WI-SEED-SCAFFOLD'`;
   return { id, harness: HARNESS, family: kind === 'feature' ? 'feature' : 'issue', state: 'blocked',
     origin: 'local', assignee: null, payload, updatedAt: new Date(10).toISOString() } as WorkItem;
 }

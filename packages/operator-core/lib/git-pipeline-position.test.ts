@@ -1120,6 +1120,10 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.positions.inMain).toBe(false);
       // …but it is now SAYABLE that this false is about a newer commit, not the caller.
       expect(res.positionsNewerCommit).toContain('inMain');
+      // The cell still needs a decision-ready ladder code. The qualifier above is
+      // structured ambiguity evidence; it must not turn the value-bearing assessment
+      // into UNINTERPRETED (the live probe compares this code across sibling paths).
+      expect(res.assessments.pipelinePosition).toBe('awaiting-gate');
       expect(res.notes.join('\n')).toMatch(/FALSE ABOUT A NEWER COMMIT/);
       // And it must name the lever, or the caller is left with a warning and no move.
       expect(res.notes.join('\n')).toMatch(/`marker`/);
@@ -8546,9 +8550,18 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
       expected: null,
     },
     {
-      name: 'newer-commit artifact',
-      input: { ...pipelineBase, positionsNewerCommit: ['deployed'] },
-      expected: null,
+      name: 'newer-commit qualifier preserves the measured ladder code',
+      input: {
+        ...pipelineBase,
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        positionsNewerCommit: ['inMain'],
+      },
+      expected: 'awaiting-gate',
+    },
+    {
+      name: 'dirty edit outranks a newer-commit qualifier',
+      input: { ...pipelineBase, dirtyUncommitted: true, positionsNewerCommit: ['inMain'] },
+      expected: 'uncommitted',
     },
     {
       name: 'onStaging cannot excuse committedLocal=false',

@@ -39,6 +39,9 @@ import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import {
+  SILENT_HALT_STRANDED_INSTRUMENT_KEY, SILENT_HALT_STRANDED_WINDOW_MS, measureSilentHaltStranded,
+} from './system-health/silent-halt-instrument';
+import {
   NATIVE_ADOPTION_INSTRUMENT_KEYS, measureNativeAdoptionWindow,
   nativeAdoptionCriterionForInstrument, rateNativeAdoption,
   NATIVE_PUSH_INSTRUMENT_KEYS, measureNativePushOutcomesWindow, nativePushCriterionForInstrument, rateNativePushOutcomes,
@@ -690,6 +693,8 @@ export function platformComputedInstrumentKeys(): string[] {
     ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS),
     // green-main-ratchet-convergence-2026-10-17 P-010 (R-9): the ratchet debt alarm.
     RATCHET_METRICS_INSTRUMENT_KEY,
+    // WI-6554700010018579: autonomous holders the silent-halt sweep calls halted.
+    SILENT_HALT_STRANDED_INSTRUMENT_KEY,
   ];
 }
 
@@ -780,6 +785,9 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
           const sql = getOrgPg().sql as unknown as Parameters<typeof measureRatchetMetrics>[0];
           return ratchetMetricsVerdict(await measureRatchetMetrics(sql, { ...window, harnessSlug: window.harnessSlug }));
         },
+      } } : key === SILENT_HALT_STRANDED_INSTRUMENT_KEY ? { rescore: {
+        windowMs: SILENT_HALT_STRANDED_WINDOW_MS, unit: 'count' as const, scope: 'workspace' as const,
+        resolve: async window => measureSilentHaltStranded({ workspaceId: window.workspaceId }),
       } } : overheadCriterion ? { rescore: {
         windowMs: 24 * 60 * 60_000,
         unit: 'count' as const,

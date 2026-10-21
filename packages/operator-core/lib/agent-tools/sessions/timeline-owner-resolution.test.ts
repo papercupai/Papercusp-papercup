@@ -55,13 +55,13 @@ function makeTx() {
   return tx;
 }
 
-function run(owner: string, tx = makeTx()) {
+function run(owner: string, tx = makeTx(), overrides: Record<string, unknown> = {}) {
   return (
     tool as unknown as {
       handler: (args: unknown, ctx: unknown) => Promise<unknown>;
     }
   ).handler(
-    { owner, since: '2026-08-23T12:00:00Z', until: '2026-08-23T14:00:00Z' },
+    { owner, since: '2026-08-23T12:00:00Z', until: '2026-08-23T14:00:00Z', ...overrides },
     { workspaceId: 'ws-test', tx },
   );
 }
@@ -130,6 +130,28 @@ describe('sessions:timeline owner resolution', () => {
     expect(sqlText).toContain("metadata_json->'requestOrigin'->'query'->>'client'");
     expect(sqlText).toContain("'system:' || role || '/' ||");
     expect(ownerPredicates[0]!.values).toEqual([owner, owner, owner]);
+  });
+
+  it('constrains the audit count to goalRef on a goal-scoped read', async () => {
+    const owner = 'su-12345678-1234-4234-8234-123456789abc';
+    const goalRef = 'EI-25639616235584912';
+    const tx = makeTx();
+
+    await run(owner, tx, { goalRef });
+
+    const invocationQueries = tx.mock.calls.filter(
+      (call) =>
+        Array.isArray(call[0]) &&
+        call[0].some(
+          (part: unknown) =>
+            typeof part === 'string' && part.includes('FROM harness_shared.tool_invocations'),
+        ),
+    );
+    expect(invocationQueries).toHaveLength(2);
+    const auditQuery = invocationQueries[1]!;
+    const auditSql = (auditQuery[0] as readonly string[]).join(' ');
+    expect(auditSql).toContain('goal_ref =');
+    expect(auditQuery.slice(1)).toContain(goalRef);
   });
 
   it('normalizes a unique short owner handle before constructing the history query', async () => {

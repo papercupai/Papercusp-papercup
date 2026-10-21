@@ -272,6 +272,19 @@ export function activeExternalBlockers(payload: unknown): ExternalBlockerRecord[
   return readExternalBlockers(payload).filter((blocker) => blocker.status === 'active');
 }
 
+/**
+ * Active blockers that name no re-check time (WI-6554700010018551). Nothing revisits these: the
+ * blocker reaper selects on `recheckAt <= now`, which a missing value never matches, and the
+ * holder has no deadline to wake on. {@link updateExternalBlockerHistory} stamps a default on
+ * every set or re-declaration, so these are rows written before that default existed (measured
+ * 2026-10-21: 91 of 96 active blockers held by loop-off AUTO sessions).
+ */
+export function activeBlockersWithoutRecheck(payload: unknown): ExternalBlockerRecord[] {
+  return activeExternalBlockers(payload).filter(
+    (blocker) => !(blocker.recheckAt && Number.isFinite(Date.parse(blocker.recheckAt))),
+  );
+}
+
 /** Pure history-preserving upsert. Clearing marks the record; it never deletes it,
  * and it never touches internal work-item dependency edges. */
 export function updateExternalBlockerHistory(

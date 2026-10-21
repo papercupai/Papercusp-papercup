@@ -166,6 +166,26 @@ dependency_generation_is_foreign_checkout() {
   return 1
 }
 
+# An install-generated lockfile that its OWN repository ignores can never be part
+# of any commit, so the ref-side manifest (git ls-tree) can never list it. Counting
+# it on the live side made every exact candidate non-equivalent to the live tree
+# ("dependency input exists only in the live tree") for as long as the artifact sat
+# on disk, a refusal that never clears on its own (WI-6554700010018380: an ignored
+# apps/slack-asana-bug-drill/template-kit/package-lock.json wedged a pot gate).
+# Ask the repository that contains the file (a submodule answers for itself), from
+# the file's own directory, and treat only exit 0 as ignored: 1 is "not ignored",
+# 128 is a git error, and both keep the file as an input. Tracked files are never
+# reported ignored, and filesystem-only fixtures keep their existing walk.
+dependency_generation_is_ignored_input() {
+  local root="$1" path="$2" source_root
+  source_root="$(cd "$root" && pwd -P)" || return 1
+  [ -e "$source_root/.git" ] || return 1
+  (
+    cd "$source_root" && cd "$(dirname "$path")" || exit 1
+    git check-ignore -q -- "$(basename "$path")" 2>/dev/null
+  )
+}
+
 # A small, source-controlled description of the install inputs. The immutable
 # generation itself is keyed from the much larger node_modules metadata walk;
 # this fingerprint is the cheap lookup key a later checkpoint can derive from
@@ -176,6 +196,7 @@ dependency_generation_input_manifest() {
     cd "$root" || exit 1
     while IFS= read -r file; do
       dependency_generation_is_foreign_checkout . "$file" && continue
+      dependency_generation_is_ignored_input . "$file" && continue
       rel="${file#./}"
       digest="$(dependency_generation_sha256 < "$file")" || exit 1
       printf '%s\t%s\n' "$rel" "$digest"

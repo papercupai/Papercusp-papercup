@@ -27,6 +27,8 @@
  * vocabulary is owned by `@papercusp/plan-parser` (the item keyword is plan text,
  * P-002); that generic lib imports nothing from operator-core.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { AdequacyCriterion } from './agent-tools/plans/spec-test-adequacy';
 import {
   isDeliverableKind,
@@ -44,11 +46,21 @@ export {
   type VerificationProfile,
 } from '@papercusp/plan-parser';
 
-export const VERIFICATION_MODULES = ['generic-core', 'code', 'design-evidence', 'packaged-artifact'] as const;
-export type VerificationModule = (typeof VERIFICATION_MODULES)[number];
-
-export const DOMAIN_MODULES = ['design-evidence', 'packaged-artifact'] as const satisfies readonly VerificationModule[];
-export type DomainModule = (typeof DOMAIN_MODULES)[number];
+// The module catalog is a leaf so the registry can read it during module evaluation; the
+// registry resolver below is this module's default (plan-item-types-registry P-002).
+import {
+  DOMAIN_MODULES,
+  VERIFICATION_MODULES,
+  type DomainModule,
+  type VerificationModule,
+} from './plan-types/verification-modules';
+import { createRegistryVerificationResolver } from './plan-types/resolve-verification';
+export {
+  VERIFICATION_MODULES,
+  DOMAIN_MODULES,
+  type DomainModule,
+  type VerificationModule,
+} from './plan-types/verification-modules';
 
 /** The module list: which family of checks each module owns. */
 export const VERIFICATION_MODULE_CHECKS: Readonly<Record<VerificationModule, readonly string[]>> = {
@@ -191,6 +203,13 @@ export function unfinishedItemsAreAuditedNonCode(
 export interface VerificationPlanInput {
   /** Declared from P-002; absent today, so the profile is inferred. */
   verificationProfile?: string | null;
+  /**
+   * The plan's declared plan TYPE, a namespaced slug from the `type:` frontmatter key
+   * (plan-item-types-registry-cupboard P-002). When set it replaces the profile: its plan-type
+   * definition supplies the default item type, and an unresolvable one fails safe to the full
+   * module catalog. Absent means the profile's first-party plan type.
+   */
+  planType?: string | null;
 }
 
 export interface VerificationItemInput {
@@ -214,6 +233,13 @@ export interface VerificationResolution {
    * work is non-code but no kind has been declared yet.
    */
   deliverable: DeliverableKind | null;
+  /**
+   * The item type the modules came from (`papercusp/code`, `acme/legal-review`), or null when
+   * a non-code signal decided without one. A third-party type has a null `deliverable` and a
+   * non-null `itemType`. plan-item-types-registry-cupboard P-002.
+   */
+  itemType: string | null;
+  /** True exactly when `modules` includes `code`. */
   codeDeliverable: boolean;
   deliverableSource: DeliverableSource;
   /** Always starts with 'generic-core'; never empty. */
@@ -288,13 +314,69 @@ export function describeVerificationProfile(plan: {
   return `Verification profile '${plan.verificationProfile}' (${source})`;
 }
 
+// ---------------------------------------------------------------------------
+// The resolver seam (plan-item-types-registry-cupboard-2026-10-20 P-001).
+// ---------------------------------------------------------------------------
+
+/** A whole resolver: the legacy constants below, or the registry (plan-types/resolve-verification.ts). */
+export type VerificationResolver = (plan: VerificationPlanInput, item: VerificationItemInput) => VerificationResolution;
+
 /**
- * Resolve the verification modules for one plan item. A declared deliverable wins.
- * Otherwise today's non-code signals decide, and otherwise the profile default does.
- * A declared value outside the known vocabulary is ignored, so it can neither throw
- * nor invent a module set.
+ * The resolver in force for the current async context. Pinned through `pinModuleState`: if
+ * this module were loaded twice, two storages would let an override set through one copy go
+ * unseen by gates reading the other, and a census would compare legacy with legacy.
+ */
+const resolverState = pinModuleState('@papercusp/operator-core.verification-resolver', () => ({
+  storage: new AsyncLocalStorage<VerificationResolver>(),
+  /** The default: the registry resolver over the first-party catalog, built on first use. */
+  defaultResolver: null as VerificationResolver | null,
+}));
+
+/**
+ * The resolver that answers outside any override: the registry resolver over the first-party
+ * catalog (plan-item-types-registry-cupboard P-002). On every built-in input it equals the
+ * legacy resolver (the P-001 census proved that over every live plan); a namespaced type it
+ * cannot resolve fails safe to the full module catalog. A caller holding a workspace registry
+ * snapshot installs it with `withVerificationResolver`. Built lazily: this module and the
+ * registry modules import each other, so nothing here may touch them during evaluation.
+ */
+function defaultVerificationResolver(): VerificationResolver {
+  return (resolverState.defaultResolver ??= createRegistryVerificationResolver());
+}
+
+/**
+ * Run `fn` with `resolver` answering every `resolveVerification` call inside it, including
+ * calls made by the real gates it awaits. The registry census uses this to evaluate the same
+ * gates under the legacy resolver and under the registry; a gate holding a workspace registry
+ * snapshot uses it to resolve third-party types. Outside such a scope the default answers.
+ */
+export function withVerificationResolver<T>(resolver: VerificationResolver, fn: () => T): T {
+  return resolverState.storage.run(resolver, fn);
+}
+
+/** The resolver override in force here, or null when the default (registry) resolver answers. */
+export function activeVerificationResolver(): VerificationResolver | null {
+  return resolverState.storage.getStore() ?? null;
+}
+
+/**
+ * Resolve the verification modules for one plan item through the resolver in force: an
+ * override installed by `withVerificationResolver`, otherwise the default registry resolver.
  */
 export function resolveVerification(
+  plan: VerificationPlanInput,
+  item: VerificationItemInput,
+): VerificationResolution {
+  const override = resolverState.storage.getStore();
+  return (override ?? defaultVerificationResolver())(plan, item);
+}
+
+/**
+ * The legacy resolver: today's constants. A declared deliverable wins. Otherwise today's
+ * non-code signals decide, and otherwise the profile default does. A declared value outside
+ * the known vocabulary is ignored, so it can neither throw nor invent a module set.
+ */
+export function resolveVerificationLegacy(
   plan: VerificationPlanInput,
   item: VerificationItemInput,
 ): VerificationResolution {
@@ -323,6 +405,7 @@ export function resolveVerification(
     profile,
     profileSource,
     deliverable,
+    itemType: deliverable === null ? null : `papercusp/${deliverable}`,
     codeDeliverable,
     deliverableSource,
     modules: modulesFor(codeDeliverable, domainModules),

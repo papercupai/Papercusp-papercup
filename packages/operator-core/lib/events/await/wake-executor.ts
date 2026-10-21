@@ -133,6 +133,7 @@ import { resolveSessionStates } from '../../agent-tools/coordination/liveness-or
 import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
 import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 import { prepareCellWakeFold } from './cell-wake-fold';
+import { prepareInboxWakeHeldWorkReminder } from './inbox-wake-held-work-reminder';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   findLiveHostAsync,
@@ -1061,6 +1062,31 @@ type FleetContextCriticalFreshness = {
 };
 
 /**
+ * WI-6554700010018677 — the TENANT workspace for a delivery-time read about `ownerId`.
+ *
+ * Delivery rows are pinned to DEFAULT_COORD_WORKSPACE (WI-3575), so `d.workspaceId` is the
+ * coordination namespace, not a tenant. A tenant-keyed read handed it reads an empty store
+ * and nothing throws (measured 2026-10-21: fleet roster 0 rows vs 1 for a live member; carry
+ * brief 0 held items / 0 open directives vs 4 / 185). A non-default delivery workspace already
+ * names a tenant. Otherwise resolve the owner's persisted adv-session workspace, bounded.
+ * `null` means it could not be established: callers fail soft, and never substitute the
+ * host's ambient workspace.
+ */
+export async function deliveryTenantWorkspace(
+  deliveryWorkspaceId: string,
+  ownerId: string,
+  resolveOwnerWorkspace: typeof workspaceForCoordOwner = workspaceForCoordOwner,
+): Promise<string | null> {
+  if (deliveryWorkspaceId !== DEFAULT_COORD_WORKSPACE) return concreteWorkspaceIdOrNull(deliveryWorkspaceId);
+  const scope = await withBoundedTimeout(() => resolveOwnerWorkspace(ownerId), {
+    fallback: null,
+    timeoutMs: 1_000,
+    label: 'wake-delivery-tenant-workspace',
+  });
+  return concreteWorkspaceIdOrNull(scope.value);
+}
+
+/**
  * A queued fleet context-critical delivery can outlive the member that caused
  * it. Confirm the target still has a current presence or active claim in that
  * fleet, and suppress a known ended or recorded/non-wakeable claimless session.
@@ -1071,15 +1097,22 @@ async function currentFleetContextCriticalMemberStaleReason(
   getCurrentAssignments: typeof listFleetAssignments,
   resolveStates: typeof resolveSessionStates,
   timeoutMs: number,
+  resolveMemberWorkspace: typeof workspaceForCoordOwner = workspaceForCoordOwner,
 ): Promise<string | null> {
   const parsed = parseFleetContextCriticalPayload(d.payload);
   if (!parsed || d.eventKey.slice(FLEET_CONTEXT_CRITICAL_PREFIX.length) !== parsed.fleetSlug) return null;
 
   const [rows, verdicts] = await Promise.all([
     withWakeTimeout(
-      Promise.resolve().then(() =>
-        getCurrentAssignments({ workspaceId: d.workspaceId, fleet: parsed.fleetSlug, agent: parsed.agentId }),
-      ),
+      Promise.resolve().then(async () => {
+        // WI-6554700010018677: the roster is keyed by the MEMBER's tenant. Under the delivery's
+        // coordination namespace it read empty, so every live member looked absent and the
+        // wake was retracted as stale. An unknown tenant is an unknown roster (null), which
+        // preserves the wake.
+        const workspaceId = await deliveryTenantWorkspace(d.workspaceId, parsed.agentId, resolveMemberWorkspace);
+        if (workspaceId === null) return null;
+        return getCurrentAssignments({ workspaceId, fleet: parsed.fleetSlug, agent: parsed.agentId });
+      }),
       `fleet context-critical roster/${parsed.agentId}`,
       Math.max(1, timeoutMs),
     ),
@@ -1113,6 +1146,7 @@ async function currentFleetContextCriticalIsStale(
   getCurrentAssignments: typeof listFleetAssignments,
   resolveStates: typeof resolveSessionStates,
   timeoutMs: number,
+  resolveMemberWorkspace: typeof workspaceForCoordOwner = workspaceForCoordOwner,
 ): Promise<FleetContextCriticalFreshness> {
   if (!d.eventKey.startsWith(FLEET_CONTEXT_CRITICAL_PREFIX) || d.eventKey.length <= FLEET_CONTEXT_CRITICAL_PREFIX.length) {
     return { stale: false, currentPressure: null, currentEpoch: null, memberStaleReason: null };
@@ -1133,7 +1167,7 @@ async function currentFleetContextCriticalIsStale(
           `fleet context-critical generation/${parsed.agentId}`,
           Math.max(1, timeoutMs),
         ),
-    currentFleetContextCriticalMemberStaleReason(d, getCurrentAssignments, resolveStates, timeoutMs),
+    currentFleetContextCriticalMemberStaleReason(d, getCurrentAssignments, resolveStates, timeoutMs, resolveMemberWorkspace),
   ]);
   const currentPressure =
     pressureRead === 'ok' || pressureRead === 'high' || pressureRead === 'critical' ? pressureRead : null;
@@ -1208,6 +1242,8 @@ export interface GradingAuditResumeGuardDeps {
     subscriberId: string;
     reason: typeof AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent;
   }) => Promise<unknown>;
+  /** Resolves the subscriber's tenant when the delivery sits in the coordination namespace. */
+  resolveOwnerWorkspace?: typeof workspaceForCoordOwner;
   timeoutMs?: number;
 }
 
@@ -1250,6 +1286,17 @@ export async function revalidateGradingAuditChannel2Delivery(
 ): Promise<{ action: 'proceed' } | { action: 'drop'; reason: string }> {
   const nativeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
   if (!nativeSessionId || !delivery.workspaceId || !delivery.subscriberId) return { action: 'proceed' };
+  // WI-6554700010018677: task_ledger rows and issues are keyed by the TENANT. Under the
+  // delivery's coordination namespace ('default', WI-3575) both reads return nothing, so
+  // the guard silently proceeded on every delivery (measured 2026-10-21: 0 agent-session
+  // ledger rows under 'default' vs 6000 under papercusp-workspace in 3 days). An unknown
+  // tenant keeps the guard's fail-open contract.
+  const workspaceId = await deliveryTenantWorkspace(
+    delivery.workspaceId,
+    delivery.subscriberId,
+    deps.resolveOwnerWorkspace,
+  );
+  if (workspaceId === null) return { action: 'proceed' };
   const timeoutMs = Math.max(1, deps.timeoutMs ?? GRADING_AUDIT_RESUME_LOOKUP_TIMEOUT_MS);
   const readTasks = deps.readTasks ?? (async (input: GradingAuditResumeTaskLookup) => {
     const { listTasks } = await import('../../task-manager/store');
@@ -1266,7 +1313,7 @@ export async function revalidateGradingAuditChannel2Delivery(
   try {
     tasks = await withWakeTimeout(
       Promise.resolve().then(() => readTasks({
-        workspaceId: delivery.workspaceId,
+        workspaceId,
         subscriberId: delivery.subscriberId,
         sessionId: nativeSessionId,
       })),
@@ -1279,7 +1326,7 @@ export async function revalidateGradingAuditChannel2Delivery(
   if (!Array.isArray(tasks) || tasks.length !== 1) return { action: 'proceed' };
   const task = tasks[0]!;
   if (
-    task.workspaceId !== delivery.workspaceId || task.class !== 'agent-session' ||
+    task.workspaceId !== workspaceId || task.class !== 'agent-session' ||
     task.sessionId !== nativeSessionId || !isRecord(task.detail) ||
     task.detail.coordOwnerId !== delivery.subscriberId
   ) return { action: 'proceed' };
@@ -1301,7 +1348,7 @@ export async function revalidateGradingAuditChannel2Delivery(
   let target: GradingAuditResumeTarget | null;
   try {
     target = await withWakeTimeout(
-      Promise.resolve().then(() => readTarget({ workspaceId: delivery.workspaceId, issueId: binding.issueId })),
+      Promise.resolve().then(() => readTarget({ workspaceId, issueId: binding.issueId })),
       `grading-audit target/${binding.issueId}`,
       timeoutMs,
     );
@@ -1796,12 +1843,19 @@ export function wakeTurnText(d: DeliveryWork): string {
   const inboxWakeReconcile = d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)
     ? " NOTE (inbox-wake): the quoted message may ALREADY have been surfaced + handled by your own coord:inbox read before this wake was consumed — reconcile against coord:inbox's cursor-free VIEW and do NOT re-do handled mail or trust the quoted body as necessarily new."
     : '';
+  // WI-6554700010018536: the NOTE above tells the agent what NOT to do with the mail and
+  // nothing about the lane it still holds, so "mail handled" read as "lane done" (an AUTO
+  // session ended its turn with two held items and no loop, silent 4h28m). The reminder
+  // is read at delivery time (inbox-wake-held-work-reminder.ts) and set only for
+  // inbox-wake keys; absent ⇒ byte-identical.
+  const heldWorkReminder =
+    inboxWakeReconcile && d.inboxWakeHeldWorkReminder ? ` ${d.inboxWakeHeldWorkReminder}` : '';
   // P-006 (fleet-member-dx, EI-9018): `d.id` is the DELIVERY-LOG row id, not a
   // wake count — unlabeled "wake #12672" next to a loop's own "wake #5" read as
   // two contradictory counters and confused resuming agents. Label it as an id.
   const base = (
     `[await-event] ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
-    `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)${inboxWakeReconcile}`
+    `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)${inboxWakeReconcile}${heldWorkReminder}`
   ).replace(/\s*\n\s*/g, ' ');
   // Ambient-push rail (P-003) and the P-022 cell fold: prepared blocks ride the wake
   // injection. Appended AFTER the collapse so they keep their own line formatting;
@@ -3317,6 +3371,13 @@ export interface ExecuteWakeDeps {
    *  pass `null` to force-disable even with the flag on (hermetic tests that must
    *  not touch the ambient store). */
   prepareAmbientPushBlock?: ((input: { ownerId: string }) => Promise<string>) | null;
+  /** WI-6554700010018536: read the inbox-wake recipient's held-work reminder at delivery
+   *  time (default: the real prepareInboxWakeHeldWorkReminder, budget-bounded and
+   *  fail-soft). Only consulted for `coord:inbox-wake:<owner>` keys. Inject a stub for
+   *  tests; pass `null` to disable. */
+  prepareInboxWakeHeldWorkReminder?:
+    | ((input: { ownerId: string; deliveryWorkspaceId: string }) => Promise<string>)
+    | null;
   /** P-023 / D-008: advance the subscriber's CONTEXT GENERATION when a cold wake
    *  discards its context (see the call site). Injected for tests for the SAME
    *  unmockable-real-PG reason as getLoopStatusFn above — the default reaches
@@ -3758,7 +3819,14 @@ async function injectPsuHostWake(
     try {
       const buildBrief = deps.buildCarryBriefFn ?? (await import('../../carry-brief')).buildCarryBrief;
       const { annotateCarryNoteLiveContradictions, renderCarryBriefColdExtras } = await import('../../carry-brief');
-      const brief = await buildBrief(d.subscriberId, { workspaceId: d.workspaceId });
+      // WI-6554700010018677: the brief's legs (held items, owner directives, facts) are keyed by
+      // the subscriber's tenant. The adv-session path hands this a delivery already re-scoped to
+      // the session's workspace, but the handle-less socket path hands it the raw delivery,
+      // whose workspace is the coordination namespace; a brief built under that is empty.
+      const briefWorkspaceId =
+        (await deliveryTenantWorkspace(d.workspaceId, d.subscriberId, deps.workspaceForCoordOwnerFn)) ??
+        d.workspaceId;
+      const brief = await buildBrief(d.subscriberId, { workspaceId: briefWorkspaceId });
       // EI-19362981097884026: put the live contradiction on the exact carried
       // imperative the successor reads, not only in the roster below it. The
       // brief already paid to hydrate citedRefs; consuming that same result here
@@ -4491,6 +4559,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       getCurrentFleetContextAssignments,
       resolveMemberLiveness,
       fleetContextCriticalLookupTimeoutMs,
+      deps.workspaceForCoordOwnerFn,
     );
     if (contextCriticalCheck.stale) {
       const parsedContextCritical = parseFleetContextCriticalPayload(d.payload);
@@ -4626,6 +4695,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       /* a fold must never break a wake */
     }
 
+    // WI-6554700010018536 — remind an inbox-wake recipient of the work it still holds, read
+    // HERE (delivery time) for the same fire→delivery staleness reason as the fold above.
+    // Same fail-soft contract: the helper is budget-bounded and returns '' on any fault.
+    // d.workspaceId is the coordination namespace (WI-3575), not the recipient's tenant: the
+    // helper resolves the tenant itself (WI-6554700010018671 — passing it as the tenant read
+    // every recipient's held work under 'default' and the reminder never fired).
+    if (d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX) && deps.prepareInboxWakeHeldWorkReminder !== null) {
+      try {
+        const prepare = deps.prepareInboxWakeHeldWorkReminder ?? prepareInboxWakeHeldWorkReminder;
+        const reminder = await prepare({ ownerId: d.subscriberId, deliveryWorkspaceId: d.workspaceId });
+        if (reminder) d.inboxWakeHeldWorkReminder = reminder;
+      } catch {
+        /* a reminder must never break a wake */
+      }
+    }
+
     let handle = d.wakeHandle;
     if (!handle) {
       // Registered without a resumable session (warned at registration). BUT a
@@ -4669,6 +4754,24 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
 
     // ── adv-session handle ───────────────────────────────────────────────
     let fresh = await getSession(handle.advSessionId).catch(() => null);
+    // The delivery subscriber is the authority for the wake target. A stale or
+    // corrupted adv-session handle can resolve to another owner's row; using that
+    // row's native session/config data would resume or inject the wake into the
+    // wrong conversation, while the provenance ledger remains keyed to the
+    // subscriber (EI-26532418294401270). Park before any host lookup or process
+    // side effect so the retry/reconciliation path can repair the binding.
+    if (
+      fresh?.coordOwnerId !== null &&
+      fresh?.coordOwnerId !== undefined &&
+      fresh.coordOwnerId !== d.subscriberId
+    ) {
+      return {
+        kind: 'park',
+        reason:
+          `captured adv-session #${handle.advSessionId} belongs to ${fresh.coordOwnerId}, not wake subscriber ${d.subscriberId}; ` +
+          'parked before wake injection or resume (EI-26532418294401270)',
+      };
+    }
     const sessionIsAlive = async (
       row: Awaited<ReturnType<typeof getSession>>,
       candidateHandle: Extract<WakeHandle, { kind: 'adv-session' }>,
@@ -5445,6 +5548,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         readTasks: deps.readGradingAuditTasks,
         readTarget: deps.readGradingAuditTarget,
         cancelAwait: deps.cancelGradingAuditAwait,
+        resolveOwnerWorkspace: deps.workspaceForCoordOwnerFn,
         timeoutMs: deps.gradingAuditResumeLookupTimeoutMs,
       },
     );

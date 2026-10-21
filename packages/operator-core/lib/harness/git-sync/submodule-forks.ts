@@ -138,12 +138,22 @@ export function missingSubmoduleForks(submodules: readonly SubmoduleEntry[], for
 // ─── git-sync: point each submodule at its fork ─────────────────────────────
 
 export type SubmoduleForkSetupResult =
-  | { ok: true; configured: string[] }
+  | {
+      ok: true;
+      configured: string[];
+      /** WI-6554700010018380: checked-out submodules with no recorded fork whose HEAD is
+       *  already contained in a remote ref. git-sync leaves them untouched (no commit,
+       *  merge or push inside them), so the superproject's gitlink keeps resolving. */
+      unforked: string[];
+    }
   | {
       ok: false;
       reason: 'working_copy_submodule_fork_missing' | 'working_copy_submodule_setup_failed';
       path: string;
       message: string;
+      /** Submodules with no recorded fork, when known. git-sync skips them even on a
+       *  commit-only tick, so it never adds local commits nothing can publish. */
+      unforked?: string[];
     };
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -181,12 +191,13 @@ export async function ensureSubmoduleForkBranch(
 }
 
 /**
- * git-sync's working-copy leg for submodules: every checked-out submodule must have a
- * recorded fork; its `pot-fork` remote is pointed at it, its checkout is attached to the
- * integration branch, and that branch exists on the fork. The first failure stops the
- * tick's pushes (commit-only), naming the submodule. A missing fork is detected for
- * EVERY submodule before any submodule is touched, so a refusal leaves no remote or
- * fork changed.
+ * git-sync's working-copy leg for submodules: each checked-out submodule with a recorded
+ * fork gets its `pot-fork` remote pointed at it, its checkout attached to the integration
+ * branch, and that branch created on the fork. A submodule with NO fork is returned in
+ * `unforked` when its HEAD is already published, and refuses the tick (commit-only) when
+ * it is not (WI-6554700010018380). The first failure stops the tick's pushes, naming the
+ * submodule. Missing forks are judged for EVERY submodule before any submodule is
+ * touched, so a refusal leaves no remote or fork changed.
  */
 export async function applySubmoduleForkRemotes(
   repoPath: string,
@@ -202,18 +213,39 @@ export async function applySubmoduleForkRemotes(
   // Not checked out: nothing local to push.
   const checkedOut = submodules.filter((sub) => existsSync(join(repoPath, sub.path, '.git')));
   const missing = missingSubmoduleForks(checkedOut, forks);
-  if (missing.length) {
+  // WI-6554700010018380: a submodule can have no fork for a legitimate reason (its main
+  // repository is owned by the fork account itself, so GitHub cannot fork it). If its
+  // HEAD is already in a remote ref, the gitlink resolves without a fork: git-sync
+  // leaves that submodule untouched and the rest of the pot still pushes. Only a
+  // submodule carrying commits no remote holds refuses the tick (commit-only).
+  const unpublished: string[] = [];
+  for (const path of missing) {
+    const contained = await deps.codeRunGit(
+      ['for-each-ref', '--contains', 'HEAD', '--count=1', '--format=%(refname)', 'refs/remotes/'],
+      join(repoPath, path),
+    );
+    if (contained.code !== 0 || !contained.stdout.trim()) unpublished.push(path);
+  }
+  if (unpublished.length) {
     return {
       ok: false,
       reason: 'working_copy_submodule_fork_missing',
-      path: missing[0],
+      path: unpublished[0],
+      unforked: missing,
       message:
-        `submodule${missing.length > 1 ? 's' : ''} ${missing.map((p) => `'${p}'`).join(', ')} ` +
-        `ha${missing.length > 1 ? 've' : 's'} no fork recorded for this working copy (${SUBMODULE_FORKS_SETTING_KEY})`,
+        `submodule${unpublished.length > 1 ? 's' : ''} ${unpublished.map((p) => `'${p}'`).join(', ')} ` +
+        `ha${unpublished.length > 1 ? 've' : 's'} no fork recorded for this working copy (${SUBMODULE_FORKS_SETTING_KEY}) ` +
+        'and a HEAD that no remote ref contains (unpublished commits)',
     };
   }
+  if (missing.length) {
+    deps.log?.(
+      `submodule${missing.length > 1 ? 's' : ''} ${missing.map((p) => `'${p}'`).join(', ')} ` +
+        `ha${missing.length > 1 ? 've' : 's'} no fork but a published HEAD — left untouched (no commit, merge or push inside)`,
+    );
+  }
   const configured: string[] = [];
-  for (const sub of checkedOut) {
+  for (const sub of checkedOut.filter((s) => !missing.includes(s.path))) {
     const subDir = join(repoPath, sub.path);
     const fork = forks[sub.path];
     try {
@@ -239,7 +271,7 @@ export async function applySubmoduleForkRemotes(
     }
     configured.push(sub.path);
   }
-  return { ok: true, configured };
+  return { ok: true, configured, unforked: missing };
 }
 
 // ─── mode switch: create the submodule forks ─────────────────────────────────

@@ -3352,6 +3352,10 @@ export async function claimIssue(
       assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
        AND ${selection.where}
+       -- EI-26547411992035448: direct-by-id claims must preserve attribution on
+       -- terminal rows. The earlier single-id pre-read is only advisory; keep
+       -- this in the atomic writer so a concurrent completion wins the race.
+       AND lower(btrim(COALESCE(target.state, ''))) <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
        AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
          payload: 'target.payload', id: 'target.issue_id', harness: 'target.scope',
        })}
@@ -3447,12 +3451,10 @@ export async function claimIssue(
        -- self-selection, so pending, rejected, stale-approved, unreviewed or
        -- metadata-missing intake cannot be taken by naming it. Exempt: a same-holder
        -- re-claim, the reviewer admission for a pending review, self-filed fallout
-       -- (the creator taking its own filing), the submitter's own revision interval,
-       -- and a terminal row (the WI-5826 reopen escape hatch below).
+       -- (the creator taking its own filing), and the submitter's own revision interval.
        AND (
          ${sameHolderPredicate}
          ${agentReviewAdmission || selfFiledFalloutAdmission ? sql`OR TRUE` : sql``}
-         OR target.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[])
          OR (
            COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested'
            AND COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${assignee}
@@ -3463,17 +3465,9 @@ export async function claimIssue(
          OR ${agentReviewRevisionAdoptionSql(sql, revisionAdoptionAdmission, 'target.payload')}
          OR ${intakeStageClaimFloorSql(sql, 'target.payload', 'engineer_issues')}
        )
-       -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
-       -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:
-       -- "a completed row is STILL directly claimable by id — the floor only gates
-       -- self-select"), because taking a finished item by name is how you reopen it,
-       -- inherit ownership, or attach follow-up work. The self-select path
-       -- (claimNextIssueWorkItem) is the one that must never opportunistically serve
-       -- finished work, and it enforces that as its alreadyCompleted floor.
-       -- The real WI-5826 defect was that the CALLER GOT NO SIGNAL — work_items:claim
-       -- returned a bare ok:true on a state='done' row, so an agent could not tell fresh
-       -- work from finished work. That is fixed where it belongs, in the claim TOOL's
-       -- success path (a loud terminalWarning), not by removing this escape hatch.
+       -- EI-26547411992035448 supersedes the earlier WI-5826 by-id escape hatch:
+       -- a terminal item is not reassigned by claim. Reopen it explicitly through
+       -- work_items:set_state { force:true, reason } and then claim the non-terminal row.
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   }, { client: sql }));
   if (!rows[0]) return null;

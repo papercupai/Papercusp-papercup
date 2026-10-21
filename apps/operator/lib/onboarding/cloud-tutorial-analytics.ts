@@ -20,10 +20,17 @@ export function recordTutorialHelpRequest(step: TutorialStepId, status: StepStat
   emit(captureTutorialTelemetry, 'help_requested', step, status, version);
 }
 
+/** Disclosed feature choice: a hosted user actually started the tutorial.
+ * Desktop hosts have no cloud feature-adoption event, so they send nothing. */
+function recordHostedTutorialAdoption() {
+  if (!readHostedBrowserApiMarker()) return;
+  try { void captureBrowserTelemetry('cloud_feature_adoption', { feature: 'cloud_tutorial' }, 'cloud').catch(() => {}); } catch { /* optional diagnostics */ }
+}
+
 /** Observe the controller's confirmed state, never intent clicks or AI answers.
  * The per-mount cursor prevents render/StrictMode duplicates and resets on scope
  * changes without placing tenant/user/workspace identifiers in telemetry. */
-export function createTutorialAnalytics(sink: Capture = captureTutorialTelemetry) {
+export function createTutorialAnalytics(sink: Capture = captureTutorialTelemetry, adopt: () => void = recordHostedTutorialAdoption) {
   let version = CLOUD_TUTORIAL_VERSION;
   const capture: Capture = (event, properties) => sink(event, { ...properties, lesson_version: version });
   let previous: TutorialState | null = null;
@@ -39,7 +46,7 @@ export function createTutorialAnalytics(sink: Capture = captureTutorialTelemetry
         previous = null; displayed = undefined; confirmed.clear(); started = false; completed = false;
       }
       const status = tutorialStepStatus(state);
-      if (!started && state.disposition === 'active') { started = true; emit(capture, 'start'); }
+      if (!started && state.disposition === 'active') { started = true; emit(capture, 'start'); adopt(); }
       if (previous && state.disposition !== previous.disposition) {
         const action = { paused: 'pause', active: 'resume', skipped: 'skip', closed: 'exit' } as const;
         emit(capture, action[state.disposition]);

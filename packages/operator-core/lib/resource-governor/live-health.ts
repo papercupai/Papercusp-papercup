@@ -848,10 +848,21 @@ export function isLiveHealthFragment(value: unknown): value is LiveHealthFragmen
   return true;
 }
 
+/** Lower ranks win the compact signal: evidence first, then expired evidence, then none. */
+const MERGE_STATE_RANK: Readonly<Record<LiveHealthReadingState, number>> = {
+  measured: 0,
+  stale: 1,
+  unknown: 2,
+};
+
 /**
- * Merge valid fragments newest-first. Expired evidence is represented as stale;
- * absent evidence remains unknown. A fragment can never override another writer
- * kind's signal.
+ * Merge valid fragments into the compact host signals. For each key the compact
+ * signal is the newest MEASURED reading; only when no writer has fresh evidence
+ * does it fall back to the newest stale reading, then the newest unknown one. A
+ * writer that cannot measure a signal (e.g. a process with no event-loop monitor)
+ * must not shadow a fresh measurement from another writer of the same kind.
+ * Expired evidence is represented as stale; absent evidence remains unknown. A
+ * fragment can never override another writer kind's signal.
  */
 export function mergeLiveHealthFragments(
   signals: Record<LiveHealthSignalKey, LiveHealthReading>,
@@ -861,7 +872,7 @@ export function mergeLiveHealthFragments(
   observations?: Record<LiveHealthSignalKey, Record<string, LiveHealthReading>>,
 ): void {
   const ordered = [...fragments].sort((a, b) => b.publishedAtMs - a.publishedAtMs);
-  const selected = new Set<LiveHealthSignalKey>();
+  const selected = new Map<LiveHealthSignalKey, { reading: LiveHealthReading; rank: number }>();
   for (const fragment of ordered) {
     writers[fragment.writer.id] = fragment.writer;
     for (const [rawKey, reading] of Object.entries(fragment.signals)) {
@@ -871,9 +882,14 @@ export function mergeLiveHealthFragments(
       const normalized =
         ageMs > LIVE_HEALTH_SIGNAL_SPECS[key].freshForMs ? staleLiveHealthReading(key, reading, nowMs) : reading;
       if (observations) observations[key][reading.writerId] = normalized;
-      if (selected.has(key)) continue;
-      selected.add(key);
-      signals[key] = normalized;
+      // An expired UNKNOWN is normalized to 'stale' too, but it never carried evidence:
+      // rank it by its original state so it cannot outrank a fresh unknown.
+      const rank = MERGE_STATE_RANK[reading.state === 'unknown' ? 'unknown' : normalized.state];
+      const current = selected.get(key);
+      // Newest-first iteration: a later candidate replaces the pick only with strictly better evidence.
+      if (current && rank >= current.rank) continue;
+      selected.set(key, { reading: normalized, rank });
     }
   }
+  for (const [key, pick] of selected) signals[key] = pick.reading;
 }

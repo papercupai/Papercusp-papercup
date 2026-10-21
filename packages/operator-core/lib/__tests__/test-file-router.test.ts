@@ -1004,12 +1004,27 @@ describe('workspace test launcher — explicit paths use the owning-config guard
     expect(packageJson.scripts?.test).toBe('node ../../scripts/workspace-test.mjs --passWithNoTests');
   });
 
+  it('rewrites package-relative focused paths when npm runs the launcher from the workspace cwd', () => {
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(resolve(REPO_ROOT, 'packages/operator-core'));
+      const invocation = workspaceTestInvocation([
+        '--passWithNoTests',
+        'lib/pui-e2e/agent-chat-pty.integration.test.ts',
+      ]);
+      expect(invocation.args).toContain('packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts');
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
   it('routes a mixed workspace request instead of letting Vitest silently narrow it', () => {
     const invocation = workspaceTestInvocation([
       '--passWithNoTests',
       'lib/agent-tools/release/checkpoint-run.test.ts',
       'lib/release/green-checkpoint.test.ts',
     ]);
+    const packagePrefix = process.cwd() === REPO_ROOT ? '' : 'packages/operator-core/';
 
     expect(invocation).toMatchObject({ command: process.execPath, routed: true });
     // WI-10005802: the router starts under the committed-source loader, so its own code runs HEAD bytes.
@@ -1017,7 +1032,7 @@ describe('workspace test launcher — explicit paths use the owning-config guard
       '--import',
       resolve(REPO_ROOT, 'scripts/lib/committed-source-loader.mjs'),
       resolve(REPO_ROOT, 'scripts/test-files.mjs'),
-      'lib/agent-tools/release/checkpoint-run.test.ts',
+      `${packagePrefix}lib/agent-tools/release/checkpoint-run.test.ts`,
       'lib/release/green-checkpoint.test.ts',
     ]);
   });

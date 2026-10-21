@@ -21,6 +21,8 @@ import {
   type SilentHaltWakeMarker,
 } from './silent-halt-reconcile';
 import { resolveFleetParkResumePath } from '../../fleet-park-resume-path';
+import { broadcastSevereEvent } from '../../severe-event-broadcast';
+import { resolveAlarm } from '../../alarm-attention';
 import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
 
 // Never publish synthetic halt conditions to the shared fleet.
@@ -116,6 +118,39 @@ describe('evaluateSilentHalt', () => {
     expect(v.halted).toBe(false);
     expect(v.exemption).toContain('holds-only-active-external-blockers');
     expect(v.exemption).toContain('WI-CREDENTIAL');
+  });
+
+  it('a blocker park with NO re-check time names no wake: a WAKE-ONLY halt (WI-6554700010018551)', () => {
+    const v = evaluateSilentHalt(haltedInput({
+      heldWorkItems: 0,
+      blockerParkedWorkItemIds: ['WI-BOUNDED', 'WI-LEGACY'],
+      unboundedBlockerParkedWorkItemIds: ['WI-LEGACY'],
+    }));
+    expect(v.halted).toBe(true);
+    expect(v.wakeOnly).toBe(true);
+    expect(v.exemption).toBeNull();
+    expect(v.reason).toContain('blocker names no wake (no re-check time): WI-LEGACY');
+    expect(v.reason).not.toContain('actionable held work item(s)');
+  });
+
+  it('a wake-only park still respects every earlier exemption and both clocks', () => {
+    const park = { heldWorkItems: 0, unboundedBlockerParkedWorkItemIds: ['WI-LEGACY'] };
+    expect(evaluateSilentHalt(haltedInput({ ...park, pendingAwaits: 1 })).exemption).toMatch(/pending-await/);
+    expect(evaluateSilentHalt(haltedInput({ ...park, loopActive: true })).exemption).toMatch(/loop-armed/);
+    expect(evaluateSilentHalt(haltedInput({ ...park, hasPosture: false })).exemption).toMatch(/no-autonomy-posture/);
+    expect(evaluateSilentHalt(haltedInput({ ...park, lastRealTurnAgeMs: 5 * MIN })).exemption).toMatch(/recent-turn/);
+  });
+
+  it('actionable held work keeps the PAGEABLE verdict even beside an unbounded park', () => {
+    const v = evaluateSilentHalt(haltedInput({
+      heldWorkItems: 1,
+      blockerParkedWorkItemIds: ['WI-LEGACY'],
+      unboundedBlockerParkedWorkItemIds: ['WI-LEGACY'],
+    }));
+    expect(v.halted).toBe(true);
+    expect(v.wakeOnly).toBe(false);
+    expect(v.reason).toContain('1 actionable held work item');
+    expect(v.reason).toContain('active external-blocker parks excluded: WI-LEGACY (no re-check time: WI-LEGACY)');
   });
 
   it('still pages on actionable held work and names coexisting blocker-parked IDs', () => {
@@ -492,6 +527,93 @@ describe('sweepSilentHalts — wake-first rung (P-003)', () => {
     expect(r.paged).toEqual([]);
   });
 
+  describe('WAKE-ONLY halts: a blocker park that names no wake (WI-6554700010018551)', () => {
+    const wakeOnlyCandidate = (over: Partial<SilentHaltCandidate> = {}) =>
+      candidate({
+        heldWorkItems: 0,
+        blockerParkedWorkItemIds: ['WI-LEGACY'],
+        unboundedBlockerParkedWorkItemIds: ['WI-LEGACY'],
+        ...over,
+      });
+    const relaunch: StalledLoopHostClass = {
+      kind: 'needs-relaunch',
+      condition: 'unbound-successor' as never,
+      why: 'the carry-respawn child never bound a native session.',
+      remedy: 'Relaunch the session (psu --resume).',
+    };
+
+    it('wakes the holder with name-your-wake guidance and raises no owner-facing condition', async () => {
+      vi.mocked(broadcastSevereEvent).mockClear();
+      vi.mocked(resolveAlarm).mockClear();
+      const h = sweepHarness([wakeOnlyCandidate()], halted, { nowMs: now, wakeFirstEnabled: true });
+      const r = await h.run();
+
+      expect(r.halted).toEqual(['su-halted']);
+      expect(r.wakeOnly).toEqual(['su-halted']);
+      expect(r.woken).toEqual(['su-halted']);
+      expect(r.paged).toEqual([]);
+      expect(h.notify).not.toHaveBeenCalled();
+      expect(broadcastSevereEvent).not.toHaveBeenCalled();
+      // Nothing pageable is halted, so the aggregate condition is resolved, not refreshed.
+      expect(resolveAlarm).toHaveBeenCalledWith('alarm:silent-halt:ws', 'silent-halt-reconcile');
+      const body = h.sendWakeMessage.mock.calls[0][2] as string;
+      expect(body).toContain('blocker names no wake: WI-LEGACY');
+      expect(body).toContain('work_items:set_blocker');
+      expect(body).toMatch(/does not\s+page the human owner/);
+      expect(body).not.toMatch(/next sweep tick pages/);
+    });
+
+    it('a spent wake for this epoch is never followed by a page', async () => {
+      const marker: SilentHaltWakeMarker = {
+        to: ['su-halted'],
+        summary: wakeMarkerSummary('su-halted', disarmEpochToken(now, 120 * MIN)),
+        ts: new Date(now - 10 * MIN).toISOString(),
+      };
+      const h = sweepHarness([wakeOnlyCandidate()], halted, { nowMs: now, wakeFirstEnabled: true, markers: [marker] });
+      const r = await h.run();
+
+      expect(r.wakeOnly).toEqual(['su-halted']);
+      expect(r.woken).toEqual([]);
+      expect(r.paged).toEqual([]);
+      expect(h.notify).not.toHaveBeenCalled();
+    });
+
+    it('with the wake rung off, or a host that needs a relaunch, it still never pages', async () => {
+      for (const opts of [
+        { wakeFirstEnabled: false },
+        { wakeFirstEnabled: true, readHostClass: async () => relaunch },
+      ]) {
+        const h = sweepHarness([wakeOnlyCandidate()], halted, { nowMs: now, ...opts });
+        const r = await h.run();
+        expect(r.woken).toEqual([]);
+        expect(r.paged).toEqual([]);
+        expect(h.notify).not.toHaveBeenCalled();
+      }
+    });
+
+    it('actionable strands are woken first under the cap, and only they reach the owner condition', async () => {
+      vi.mocked(broadcastSevereEvent).mockClear();
+      const parked = Array.from({ length: SILENT_HALT_MAX_WAKES_PER_SWEEP }, (_, i) => `su-park-${i}`);
+      const owners = [...parked, 'su-actionable'];
+      const h = sweepHarness(
+        [...parked.map((ownerId) => wakeOnlyCandidate({ ownerId })), candidate({ ownerId: 'su-actionable' })],
+        Object.fromEntries(owners.map((o) => [o, { active: false, lastRealTurnAt: oldTurn }])),
+        { nowMs: now, wakeFirstEnabled: true },
+      );
+      const r = await h.run();
+
+      expect(r.halted).toHaveLength(owners.length);
+      expect(r.wakeOnly).toEqual(parked);
+      expect(r.wakeCapReached).toBe(true);
+      expect(r.woken).toHaveLength(SILENT_HALT_MAX_WAKES_PER_SWEEP);
+      expect(r.woken[0]).toBe('su-actionable');
+      expect(r.paged).toEqual([]);
+      const event = vi.mocked(broadcastSevereEvent).mock.calls[0][0] as { summary: string; body: string };
+      expect(event.summary).toBe('1 autonomous session(s) silently halted while holding work');
+      expect(event.body).not.toContain('su-park-');
+    });
+  });
+
   it('wake produced a turn but the session re-halted in the SAME epoch: the page says so', async () => {
     const marker: SilentHaltWakeMarker = {
       to: ['su-halted'],
@@ -741,6 +863,8 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
           createdAt: new Date(now).toISOString(),
           createdBy: 'su-x',
           updatedAt: new Date(now).toISOString(),
+          // A named wake: the blocker reaper revisits it then (WI-6554700010018551).
+          recheckAt: new Date(now + 60 * MIN).toISOString(),
         }],
       }]);
       expect(r.checked).toBe(1);
@@ -750,10 +874,36 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
         expect(r.exempt['su-x']).toContain('WI-CREDENTIAL');
       } else {
         expect(r.halted).toEqual(['su-x']);
+        expect(r.wakeOnly).toEqual([]);
         expect(r.exempt).not.toHaveProperty('su-x');
       }
     },
   );
+
+  it.each([
+    { label: 'no recheckAt (a pre-default legacy row)', recheckAt: undefined },
+    { label: 'an unparseable recheckAt', recheckAt: 'not-a-date' },
+  ])('a blocker park with $label names no wake: halted as WAKE-ONLY, not exempt', async ({ recheckAt }) => {
+    const r = await sweepWithAwaits([], [], [{
+      owner_id: 'su-x',
+      work_item_id: 'WI-LEGACY',
+      status: 'blocked',
+      external_blockers: [{
+        kind: 'runtime',
+        ref: 'runtime:provider',
+        summary: 'Waiting for the provider',
+        status: 'active',
+        createdAt: new Date(now).toISOString(),
+        createdBy: 'su-x',
+        updatedAt: new Date(now).toISOString(),
+        ...(recheckAt !== undefined ? { recheckAt } : {}),
+      }],
+    }]);
+    expect(r.checked).toBe(1);
+    expect(r.exempt).not.toHaveProperty('su-x');
+    expect(r.halted).toEqual(['su-x']);
+    expect(r.wakeOnly).toEqual(['su-x']);
+  });
 
   it('a host that needs a relaunch is NOT woken; it is paged at once with the HOST UNHEALTHY remedy', async () => {
     const h = sweepHarness([candidate()], haltedAs('su-halted'), {

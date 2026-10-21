@@ -17,6 +17,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
+import { normalizeBarMappingDelta } from './acceptance-bar-amendment-requirements-drift';
 import {
   setSpecClause,
   specClauseContentHash,
@@ -158,10 +159,9 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     const { verificationNeutralCriterion } = await import('./acceptance-live-requirements');
     const { normalizeAcceptanceBarCriterion } = await import('./rubrics');
     const meaning = (criterion: (typeof existingBarCriteria)[number]) => {
-      // Provenance belongs to the canonical writer, not the authored block.
-      // Preserve every other field except the existing verification-HOW allowlist.
-      const { barProvenance: _provenance, ...neutral } = verificationNeutralCriterion(normalizeAcceptanceBarCriterion(criterion));
-      return canonicalJson(neutral);
+      // Provenance belongs to the canonical writer, not the authored block; verificationNeutralCriterion
+      // already drops it (f75a6e5600). Preserve every other field except the verification-HOW allowlist.
+      return canonicalJson(verificationNeutralCriterion(normalizeAcceptanceBarCriterion(criterion)));
     };
     for (const criterion of materialized) {
       const canonical = existingBarCriteria.find((candidate) => candidate.barKey === criterion.barKey);
@@ -212,6 +212,22 @@ export async function synchronizeAcceptanceBarSubjectRevision(
   return true;
 }
 
+const acceptanceBarMappingSideSchema = z
+  .object({
+    planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(100),
+    evidencePlane: z.enum(['tree', 'deployed', 'live']),
+  })
+  .strict();
+
+/** One explicit prior-to-next Bar-to-work map move (rubrics:amend `barMappingDelta`). */
+export const acceptanceBarMappingDeltaEntrySchema = z
+  .object({
+    barKey: z.string().regex(/^R-\d+$/),
+    prior: acceptanceBarMappingSideSchema,
+    next: acceptanceBarMappingSideSchema,
+  })
+  .strict();
+
 /** A reviewer posts this JSON through an authenticated Threadable verb (for
  * example work_items:comment). Authorship/time come from the append-only post,
  * never from this body or the amendment caller. Per-BAR hashes permit one review
@@ -246,6 +262,14 @@ export const acceptanceBarApprovalSchema = z
       )
       .min(1)
       .max(1000),
+    /** EI-24358433996857425: the reviewed proposed-source fingerprint
+     * (acceptanceBarSourceFingerprint) when the amendment rewrites the subject's Requirements
+     * or Bar-to-work map, e.g. a retirement. Absent when the amendment leaves the source alone. */
+    proposedSourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    /** EI-24358433996857425 Part B: the explicit prior-to-next Bar-to-work map delta of a
+     * mapping-only move (BAR hashes unchanged). Compared in normalized form; absent when the
+     * amendment moves no mapping. An approval of another map cannot authorize this one. */
+    mappingDelta: z.array(acceptanceBarMappingDeltaEntrySchema).min(1).max(50).optional(),
   })
   .strict()
   .refine(
@@ -454,6 +478,31 @@ export async function resolveAcceptanceBarApproval(
         `current prior=${showHash(expected.priorBarHash)}, next=${showHash(expected.nextBarHash)}). ` +
         'Re-run dryRun and obtain review of the current preview; do not repost the same stale receipt.' +
         (mismatched.length > 1 ? ` ${mismatched.length - 1} additional BAR hash mismatch(es).` : ''),
+    );
+  }
+  // The BAR hashes say which criteria changed; they do not say which plan source the change
+  // was derived from. An approval of one proposed source cannot authorize a different one.
+  if ((receipt.proposedSourceHash ?? null) !== (args.expected.proposedSourceHash ?? null)) {
+    const show = (hash: string | undefined) => (hash ? hash.slice(0, 12) : 'none');
+    throw new Error(
+      `acceptance_bar_approval_source_mismatched: the approval reviewed proposed source ` +
+        `${show(receipt.proposedSourceHash)}, but this amendment derives ${show(args.expected.proposedSourceHash)}. ` +
+        'Re-run dryRun and obtain review of the current preview; do not repost the same receipt.',
+    );
+  }
+  // R-28: a mapping-only move leaves every BAR hash unchanged, so the hash comparison above
+  // cannot tell one map from another. The reviewed delta itself has to match.
+  const deltaOf = (delta: AcceptanceBarApproval['mappingDelta']) =>
+    delta?.length ? JSON.stringify(normalizeBarMappingDelta(delta)) : null;
+  if (deltaOf(receipt.mappingDelta) !== deltaOf(args.expected.mappingDelta)) {
+    const show = (delta: AcceptanceBarApproval['mappingDelta']) => delta?.length
+      ? normalizeBarMappingDelta(delta).map((entry) =>
+          `${entry.barKey} ${entry.prior.planItemIds.join('+')}→${entry.next.planItemIds.join('+')}`).join('; ')
+      : 'none';
+    throw new Error(
+      `acceptance_bar_approval_mapping_mismatched: the approval reviewed mapping delta ${show(receipt.mappingDelta)}, ` +
+        `but this amendment moves ${show(args.expected.mappingDelta)}. ` +
+        'Re-run dryRun and obtain review of the current preview; do not repost the same receipt.',
     );
   }
   if (args.approvedBy && args.approvedBy.trim() !== post.author_id) {
@@ -928,6 +977,10 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     rubricRevision: number;
     templateData: unknown;
     previousTemplateData?: unknown;
+    /** EI-24358433996857425: the amendment's PROPOSED subject source. The apply writes it before
+     * synchronizeAcceptanceBarRevision reads the plan, so the preview must check that same source,
+     * not the stored one a retirement is about to rewrite. Omitted: read the stored subject. */
+    subjectContent?: string;
   },
 ): Promise<void> {
   const parsed = rubricTemplateDataAuthoringSchema.safeParse(args.templateData);
@@ -945,16 +998,17 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
      WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
        AND plan_slug = ${subjectPlan}`;
   if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
+  const subjectContent = args.subjectContent ?? subjects[0]!.content;
 
   const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
-  const requirements = parseRequirementBars(subjects[0]!.content);
+  const requirements = parseRequirementBars(subjectContent);
   if (!requirements.ok) {
     throw new Error(
       `acceptance_bar_revision_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
     );
   }
-  const mappings = parseBarMappings(subjects[0]!.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+  const mappings = parseBarMappings(subjectContent, new Set(requirements.bars.map((bar) => bar.barKey)));
   if (!mappings.ok) {
     throw new Error(
       `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
@@ -1384,6 +1438,8 @@ export function acceptanceBarAmendmentKey(parts: {
   reason: string;
   priorRubricRevision: number;
   nextBarHashes: readonly string[];
+  /** barMappingDeltaHash of a mapping-only move; omitted (not null) keeps every older key stable. */
+  mappingDeltaHash?: string;
 }): string {
   // Keep this helper dependency-free.  The caller supplies the hash material
   // already produced by the canonical rubric writer; a NUL-delimited tuple is
@@ -1395,6 +1451,9 @@ export function acceptanceBarAmendmentKey(parts: {
     parts.reason.trim(),
     String(parts.priorRubricRevision),
     ...[...parts.nextBarHashes].sort(),
+    // R-28: BAR hashes are unchanged by a map move, so without the delta two different moves
+    // under the same reason would share a key and the second would replay as the first.
+    ...(parts.mappingDeltaHash ? [`mapping-delta:${parts.mappingDeltaHash}`] : []),
   ].join('\0');
   return createHash('sha256').update(material).digest('hex');
 }

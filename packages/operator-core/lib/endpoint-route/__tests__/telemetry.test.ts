@@ -160,6 +160,32 @@ describe('recordRouteInvocation — Codex home repair correlation confidentialit
     }
   });
 
+  it('persists only bounded numeric route phase timings for a validated repair attempt', async () => {
+    const exec = execWith({ method: 'POST', path,
+      headers: { 'x-papercusp-repair-attempt': attemptId },
+    });
+    exec.routeDiagnostics = {
+      snapshot: () => ({
+        'handler.read-session-row': 3.6,
+        'handler.too-large': 90_000_001,
+        'handler.negative': -1,
+        'handler.nan': Number.NaN,
+        'handler.infinity': Number.POSITIVE_INFINITY,
+        'Bad phase': 7,
+      }),
+      measure: async (_phase, work) => work(),
+    };
+    recordRouteInvocation(exec);
+
+    await vi.waitFor(() => expect(metadata()).toEqual({
+      codexHomeRepairAttemptId: attemptId,
+      routePhaseTimingsMs: {
+        'handler.read-session-row': 4,
+        'handler.too-large': 86_400_000,
+      },
+    }));
+  });
+
   it.each([
     ['missing', undefined],
     ['arbitrary content', 'private-invalid-attempt-marker'],

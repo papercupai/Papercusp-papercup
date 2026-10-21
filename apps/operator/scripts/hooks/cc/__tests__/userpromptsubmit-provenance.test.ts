@@ -15,7 +15,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +36,7 @@ function sha256Normalized(s: string): string {
   return createHash('sha256').update(s.replace(/\r\n?/g, '\n').trim(), 'utf8').digest('hex');
 }
 
-function writeRow(over: Record<string, unknown> = {}): void {
+function writeRow(over: Record<string, unknown> = {}, dir = ledgerDir): void {
   const row = {
     sid: SID,
     nonce: 'aabbccddeeff0011',
@@ -45,7 +45,7 @@ function writeRow(over: Record<string, unknown> = {}): void {
     ts: Date.now(),
     ...over,
   };
-  writeFileSync(join(ledgerDir, `${SID}.jsonl`), JSON.stringify(row) + '\n');
+  writeFileSync(join(dir, `${SID}.jsonl`), JSON.stringify(row) + '\n');
 }
 
 function runHook(
@@ -165,6 +165,23 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('origin: wake-pump');
     expect(ctx).toContain('NOT typed by the human owner');
     expect(ctx).not.toContain('hash differs');
+  });
+
+  it('uses PAPERCUSP_HOME when the explicit ledger directory is absent', () => {
+    const scopedHome = mkdtempSync(join(tmpdir(), 'prov-hook-home-'));
+    const scopedLedger = join(scopedHome, 'turn-provenance');
+    mkdirSync(scopedLedger, { recursive: true });
+    try {
+      writeRow({}, scopedLedger);
+      const ctx = contextOf(runHook(
+        { prompt: '⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧\nthe injected payload' },
+        { PAPERCUSP_HOME: scopedHome, PAPERCUSP_TURN_PROVENANCE_DIR: '' },
+      ));
+      expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
+      expect(ctx).toContain('origin: wake-pump');
+    } finally {
+      rmSync(scopedHome, { recursive: true, force: true });
+    }
   });
 
   it('envelope + live nonce + MANGLED payload → still VERIFIED, hash-differs noted', () => {

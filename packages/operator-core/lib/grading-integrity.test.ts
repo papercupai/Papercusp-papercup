@@ -45,6 +45,7 @@ import {
   type DispatchPendingGradingAuditsDeps,
   type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
+import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
 
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
 type ReadEvidence = NonNullable<DispatchPendingGradingAuditsDeps['readEvidence']>;
@@ -160,6 +161,11 @@ function deps() {
   const listScorecards = vi.fn<ListScorecards>().mockResolvedValue([]);
   const cancelSuperseded = vi.fn(async () => false);
   const getEvaluatorBuild = vi.fn(() => ({ sha: 'live-evaluator-sha', version: '1.2.3' }));
+  const ensureRuntime = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['ensureRuntime']>>(async input => {
+    if (input.allowSeed === false) throw new Error('No retained source');
+    return { taskId: 'runtime-exact', baseUrl: 'http://127.0.0.1:45187',
+      evaluatorBuild: input.evaluatorBuild, bundleSha256: 'a'.repeat(64), expiresAtSec: 4102444800 };
+  });
   const readEvidence = vi.fn<ReadEvidence>().mockResolvedValue({ kind: 'not_found' });
   const getRubric = vi.fn<GetRubric>().mockResolvedValue(standardRubric());
   const launch = vi
@@ -188,6 +194,8 @@ function deps() {
     listScorecards,
     cancelSuperseded,
     getEvaluatorBuild,
+    ensureRuntime,
+    retireRuntimes: vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['retireRuntimes']>>(async () => {}),
     readEvidence,
     getRubric,
     launch,
@@ -1216,9 +1224,44 @@ describe('dispatchPendingGradingAudits', () => {
     expect(compatible.route).not.toHaveBeenCalled();
     expect(compatible.launch).toHaveBeenCalledWith(
       expect.objectContaining({ mcpTarget: 'spawn-host', independent: true }),
-      auditorCtx,
+      expect.objectContaining(auditorCtx),
     );
     expect(result.receipts[0]).toMatchObject({ state: 'launched' });
+  });
+
+  it('recovers an evaluator-drift card only after exact retained endpoint readiness is proven', async () => {
+    const d = deps();
+    const issueId = 'EI-retained-exact-recovery';
+    const rerunRecipe: NonNullable<ScorecardRow['rerunRecipe']> = {
+      schemaVersion: 1, evaluator: 'plans:evaluate-spec-test-adequacy',
+      evaluatorBuild: { sha: 'old-evaluator', version: '1.2.2' }, evaluatorRevision: 20,
+      classRef: 'plan-class-bugfix',
+      args: { harness: 'papercusp', slug: 'retained-recovery', classRef: 'plan-class-bugfix',
+        specIds: ['SPEC-RETAINED-RECOVERY'], includeDraft: true },
+      selection: { planSlug: 'retained-recovery', specId: 'SPEC-RETAINED-RECOVERY', specRevision: 1,
+        specFingerprint: 'retained-recovery-fingerprint', bindingIds: [], evidence: [] },
+      current: { supplied: false, fingerprints: [] },
+      derivation: { kind: 'listSpecEvidence.currentness', classifier: 'classifySpecEvidenceCurrentness', unknownWhenMissing: true },
+    };
+    d.listScorecards.mockResolvedValue([card(issueId, { rerunRecipe })]);
+    const runtime = { taskId: 'retained-old', baseUrl: 'http://127.0.0.1:45188',
+      evaluatorBuild: { sha: 'old-evaluator', version: '1.2.2' }, bundleSha256: 'b'.repeat(64), expiresAtSec: 4102444800 };
+    d.ensureRuntime.mockResolvedValue(runtime);
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ state: 'launched' });
+    expect(d.ensureRuntime).toHaveBeenCalledWith(expect.objectContaining({ issueId, allowSeed: false }));
+    const { INTERNAL_GRADING_AUDIT_RUNTIME } = await import('./agent-tools/capability/launch-agent');
+    expect(d.launch.mock.calls[0]?.[1]).toMatchObject({ [INTERNAL_GRADING_AUDIT_RUNTIME]: runtime });
+  });
+
+  it('never falls back to a mutable spawn host when exact endpoint admission fails', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-runtime-refused', { gradedGeneration: { deployedSha: '2222222' } as ScorecardRow['gradedGeneration'] })]);
+    d.ensureRuntime.mockRejectedValue(new Error('bundle digest changed'));
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-runtime-refused'], ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: expect.stringContaining('bundle digest changed') });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
   });
 
   it('does not dispatch an audit for a stale or unbound rubric-subject attestation', async () => {
@@ -1755,7 +1798,7 @@ describe('dispatchPendingGradingAudits', () => {
     await dispatchPendingGradingAudits({ targetIds: ['EI-pinned-audit'], ctx: { ...ctx, gradingLaunch: profile } as never, harness: 'papercusp' }, d);
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({
-      ...profile, independent: true, members: [{ role: 'judge', ...profile }],
+      ...profile, independent: true, members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], ...profile }],
     }), expect.objectContaining({ ownerId: GRADING_AUDIT_DISPATCH_ACTOR }));
   });
 
@@ -1877,7 +1920,7 @@ describe('dispatchPendingGradingAudits', () => {
         independent: true,
         account: 'auto',
         count: 1,
-        members: [{ role: 'judge', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], account: 'auto' }],
         label: 'grading-audit:EI-audit-1',
         idempotencyKey: 'grading-audit:EI-audit-1',
       }),
@@ -2561,7 +2604,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         agent: 'codex',
         account: 'auto',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
         idempotencyKey: expect.stringMatching(
           /^grading-audit:EI-live-terminal-auditor:recovery:[a-f0-9]{16}$/,
         ),
@@ -2883,7 +2926,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect(d.launch.mock.calls[1]).toEqual([
         expect.objectContaining({
           independent: true, agent: 'codex', account: 'auto',
-          members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+          members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
           idempotencyKey: expect.stringContaining(':recovery:'),
         }),
         auditorCtx,
@@ -3074,7 +3117,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         agent: 'codex',
         account: 'auto',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
         idempotencyKey: expect.stringMatching(/^grading-audit:EI-weekly-limit:recovery:[a-f0-9]{16}$/),
       }),
     );
@@ -3156,7 +3199,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).toHaveBeenCalledTimes(2);
     const retry = d.launch.mock.calls[1]?.[0] as Record<string, unknown>;
     expect(retry).not.toHaveProperty('agent');
-    expect(retry.members).toEqual([{ role: 'judge', account: 'auto' }]);
+    expect(retry.members).toEqual([{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], account: 'auto' }]);
     // And the one-retry ceiling still holds: the retry was CONSUMED, not refunded.
     expect(d.launch).not.toHaveBeenCalledTimes(3);
   });
@@ -3175,7 +3218,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({
         agent: 'codex',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
       }),
     );
   });
@@ -3267,7 +3310,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         agent: 'codex',
         account: 'auto',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
         idempotencyKey: expect.stringMatching(/^grading-audit:EI-gateway-500:recovery:[a-f0-9]{16}$/),
       }),
     );

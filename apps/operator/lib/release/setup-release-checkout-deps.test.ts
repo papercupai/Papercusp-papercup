@@ -1341,17 +1341,17 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
 
   /**
    * Run rebuild_stale_native_addons() with fake node/npm stubs that let us
-   * control whether require() and npm rebuild succeed or fail.
+   * control whether the native load probe and npm rebuild succeed or fail.
    *
-   * `nodeLoads`: what `node -e "require('$addon')"` returns (0=ok, 1=fail).
-   *   Pass an array for sequential calls: [firstCallExit, secondCallExit, …].
-   *   If a call count exceeds the array, the last entry is reused.
+   * `nodeLoads`: exit codes for the full native load probe (0=ok, 1=fail).
+   *   The wrapper-only require path succeeds by default, modeling lazy binding
+   *   failures. Arrays configure sequential probes; the last value is reused.
    * `npmRebuildExit`: what `npm rebuild $addon` returns (0=ok, 1=fail).
    */
   function runGuard(opts: {
     releaseRoot: string;
     addonName?: string;
-    /** Per-call exit codes for `node -e "require(...)"`. Single number = constant. */
+    /** Per-call exit codes for the native load probe. Single number = constant. */
     nodeLoads?: number | number[];
     /** Exit code for `npm rebuild`. */
     npmRebuildExit?: number;
@@ -1367,14 +1367,17 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
       : String(opts.nodeLoads ?? 0);
     const nodeStub = [
       '#!/usr/bin/env bash',
-      // Only intercept the require() probe; delegate real node calls (e.g. -p) to the real node.
-      'if [[ "$*" == *"require("* ]]; then',
+      // Intercept the DB/query probe; a wrapper-only require succeeds by design.
+      'if [[ "$*" == *"prepare"* && "$*" == *"SELECT 1"* ]]; then',
       `  exits=(${exitsArg})`,
       `  count_file=${JSON.stringify(callCountFile)}`,
       '  count=0; [ -f "$count_file" ] && count="$(cat "$count_file")"',
       '  idx=$(( count < ${#exits[@]} ? count : ${#exits[@]} - 1 ))',
       '  echo $(( count + 1 )) > "$count_file"',
       '  exit "${exits[$idx]}"',
+      'fi',
+      'if [[ "$*" == *"require("* ]]; then',
+      '  exit 0',
       'fi',
       // For non-require calls (e.g. `node -p ...`), forward to the real node.
       `exec ${process.execPath} "$@"`,
@@ -1391,7 +1394,7 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
       'set -uo pipefail',
       // Extract rebuild_stale_native_addons from the script, plus the log helper it calls.
       'log() { echo "[setup-release] $*"; }',
-      `source <(sed -n '/^rebuild_stale_native_addons()/,/^}/p' "$SETUP_SCRIPT")`,
+      "source <(sed -n -e '/^native_addon_load_check()/,/^rebuild_stale_native_addons()/ { /^rebuild_stale_native_addons()/!p; }' -e '/^rebuild_stale_native_addons()/,/^}/p' \"$SETUP_SCRIPT\")",
       'rebuild_stale_native_addons',
     ].join('\n');
 
@@ -1416,16 +1419,17 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     expect(r.stdout).not.toMatch(/WARN|ERROR|rebuild/i);
   });
 
-  it('skips an addon that loads cleanly (ABI matches — no rebuild needed)', () => {
+  it('skips an addon whose native binding opens and queries cleanly', () => {
     const rel = join(work, 'release');
     mkdirSync(join(rel, 'node_modules', 'better-sqlite3'), { recursive: true });
-    const r = runGuard({ releaseRoot: rel, nodeLoads: 0 }); // require() → OK
+    const r = runGuard({ releaseRoot: rel, nodeLoads: 0 }); // native binding probe → OK
     expect(r.status).toBe(0);
     expect(r.stdout).not.toMatch(/WARN|ERROR|rebuild/i);
   });
 
-  it('rebuilds when the addon fails to load, and succeeds (the ABI-mismatch auto-heal path)', () => {
-    // 1st require() call → fail (ABI mismatch); 2nd (post-rebuild) → OK
+  it('rebuilds when require succeeds but the lazy native binding cannot open a database', () => {
+    // The JS wrapper require succeeds; the binding/query probe fails first,
+    // then passes after npm rebuild.
     const rel = join(work, 'release');
     mkdirSync(join(rel, 'node_modules', 'better-sqlite3'), { recursive: true });
     const r = runGuard({ releaseRoot: rel, nodeLoads: [1, 0], npmRebuildExit: 0 });
@@ -1438,7 +1442,7 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
   it('logs ERROR and returns non-zero when addon still will not load after rebuild', () => {
     const rel = join(work, 'release');
     mkdirSync(join(rel, 'node_modules', 'better-sqlite3'), { recursive: true });
-    // require() always fails; npm rebuild "succeeds" but the binary still doesn't load
+    // The wrapper require succeeds; the native binding probe fails both times.
     const r = runGuard({ releaseRoot: rel, nodeLoads: 1, npmRebuildExit: 0 });
     expect(r.status).not.toBe(0);
     expect(r.stdout).toMatch(/WARN.*will not load/);
@@ -1474,7 +1478,7 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     const wrapper = [
       'set -uo pipefail',
       'log() { echo "[setup-release] $*"; }',
-      `source <(sed -n '/^rebuild_stale_native_addons()/,/^}/p' "$SETUP_SCRIPT")`,
+      "source <(sed -n -e '/^native_addon_load_check()/,/^rebuild_stale_native_addons()/ { /^rebuild_stale_native_addons()/!p; }' -e '/^rebuild_stale_native_addons()/,/^}/p' \"$SETUP_SCRIPT\")",
       'rebuild_stale_native_addons',
     ].join('\n');
     const r = spawnSync('bash', ['-c', wrapper], {

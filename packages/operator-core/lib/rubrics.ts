@@ -77,9 +77,14 @@ import {
 import { acceptanceBarContractGaps } from './acceptance-bar-contract-completeness';
 import { classifyAmendmentAdditivity } from './acceptance-bar-amendment-additivity';
 import {
+  acceptanceBarSourceFingerprint,
   amendedRequirementBarKeys,
+  applyBarMappingDelta,
+  barMappingDeltaHash,
   diffAmendedCriteriaAgainstRequirements,
   rerenderAmendedRequirementBlocks,
+  retireRequirementBarsFromSource,
+  type BarMappingDeltaEntry,
 } from './acceptance-bar-amendment-requirements-drift';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
 import { assertChangedAcceptanceBarProjectionsAtomic } from './acceptance-bar-projection';
@@ -96,6 +101,7 @@ export {
   type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate, type PlanWritePreimage } from './agent-tools/plans/with-plan-lock';
+import { selectOrphanedAcceptanceBarWitness } from './acceptance-bar-contract-restore';
 import {
   withAcceptanceBarAmendmentTransaction,
   acceptanceBarAmendmentKey,
@@ -3872,6 +3878,26 @@ export interface AmendRubricInput {
   approvalRef?: string;
   approvedBy?: string;
   approvedAt?: string;
+  /**
+   * WI-6554700010018395 — the acceptance BAR recovery path. Opt in to restoring an
+   * ORPHANED started contract (the subject plan still pins this rubric, but its live
+   * template_data lost barContract): the single immutable snapshot of the pinned
+   * revision is substituted as the stored rubric, and this amendment writes it back as
+   * the next revision through the ordinary started-contract transaction. The orphaning
+   * revision's content is discarded from the live row (it stays in plan_revisions);
+   * criteria passed alongside are classified against the restored contract, so a BAR
+   * meaning change still needs outside-lineage approval. Refused on a rubric that still
+   * has its contract.
+   */
+  restoreOrphanedBarContract?: boolean;
+  /**
+   * EI-24358433996857425 Part B (acceptance-bar-atomic-retirement-2026-10-15 R-6/R-8/R-28):
+   * acceptance-kind only. Move the Bar-to-work map row of a BAR whose meaning is UNCHANGED from
+   * `prior` (which must equal the locked row) to `next`. The move needs outside-lineage approval
+   * of this exact delta, writes a rubric + subject revision and re-projects the (BAR, item) pairs.
+   * A BAR whose hash this amendment changes or retires cannot also carry a delta.
+   */
+  barMappingDelta?: BarMappingDeltaEntry[];
   /** Test-only rollback probe; production callers should omit it. */
   faultInjection?: 'after-decision' | 'after-rubric' | 'after-projection' | 'after-rebind';
   /** Workspace root used to validate structured test checks and cited paths. */
@@ -3894,10 +3920,14 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     !input.criterionEvidencePlane &&
     input.methodRef === undefined &&
     input.classRef === undefined &&
-    input.composes === undefined
+    input.composes === undefined &&
+    // WI-6554700010018395: a bare restore re-writes the substituted pinned contract.
+    !input.restoreOrphanedBarContract &&
+    // EI-24358433996857425 Part B: a bare map move changes only the subject's Bar-to-work map.
+    !input.barMappingDelta?.length
   ) {
     throw new Error(
-      'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, classRef, and/or composes',
+      'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, classRef, composes, barMappingDelta, and/or restoreOrphanedBarContract',
     );
   }
   if (
@@ -4259,6 +4289,14 @@ export interface AcceptanceBarAmendmentPreview {
    * author sees the drift here instead of an outside reviewer finding it after the apply.
    */
   requirementsDrift: import('./acceptance-bar-amendment-requirements-drift').RequirementsDrift;
+  /** EI-24358433996857425: the proposed source this amendment validates and writes, derived
+   * from the locked baseline and the exact retiring set. Equal fingerprints mean no rewrite. */
+  sourceDerivation: {
+    baselineSourceFingerprint: string;
+    proposedSourceFingerprint: string;
+    retired: string[];
+    removedMapRows: string[];
+  };
   /**
    * EI-24372605712471072: check files and method/replication citations that are not in the
    * tree yet and were accepted only because the subject plan has not started (draft/ready).
@@ -4442,6 +4480,8 @@ function amendmentRequestHash(input: AmendRubricInput): string {
       input.methodRef ?? null,
       input.composes ?? null,
       input.approvalRef ?? null,
+      // Appended only when present: a trailing null would change every existing Request-Hash.
+      ...(input.barMappingDelta?.length ? [barMappingDeltaHash(input.barMappingDelta)] : []),
     ]),
   );
 }
@@ -4729,6 +4769,81 @@ export function buildAcceptanceBarAmendmentCandidate(
   };
 }
 
+type AcceptanceAmendmentTx = Parameters<Parameters<typeof withAcceptanceBarAmendmentTransaction>[1]>[0];
+
+/**
+ * WI-6554700010018395: read the subject pin and the immutable snapshot(s) naming the
+ * pinned rubric revision inside the amendment's locked transaction, and let the pure
+ * selector decide. Any refusal throws its code — a restore never falls back to
+ * amending the orphan as if it were a fresh rubric.
+ */
+async function resolveOrphanedAcceptanceBarRestore(
+  tx: AcceptanceAmendmentTx,
+  args: {
+    rubricScope: { workspaceId: string; harnessSlug: string };
+    subjectScope: { workspaceId: string; harnessSlug: string };
+    rubricSlug: string;
+    subjectPlan: string;
+    currentRevision: number;
+    storedTemplateData: unknown;
+  },
+): Promise<{ templateData: Record<string, unknown>; pinnedRevision: number; witnessSeq: number; barSetHash: string }> {
+  const [pinRow] = await tx<Array<{
+    acceptance_bar_rubric_slug: string | null;
+    acceptance_bar_rubric_revision: number | string | null;
+    acceptance_bar_set_hash: string | null;
+    acceptance_bar_epoch: number | string | null;
+    acceptance_bar_cohort: string | null;
+    acceptance_bar_seeded_at: Date | string | null;
+    acceptance_bar_seeded_by: string | null;
+  }>>`
+    SELECT acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_set_hash,
+           acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_seeded_at, acceptance_bar_seeded_by
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${args.subjectScope.workspaceId}
+       AND harness_slug = ${args.subjectScope.harnessSlug}
+       AND plan_slug = ${args.subjectPlan}`;
+  const pinnedRevision = pinRow?.acceptance_bar_rubric_revision == null
+    ? null
+    : Number(pinRow.acceptance_bar_rubric_revision);
+  // Bounded like getRubricAtRevision: only rows carrying the exact enriched marker are
+  // candidates, and a third match is already ambiguous.
+  const marker = `"rubricRevision": ${pinnedRevision},`;
+  const snapshots = pinnedRevision == null || !Number.isInteger(pinnedRevision)
+    ? []
+    : await tx<Array<{ seq: number | string; content_snapshot: string }>>`
+        SELECT seq, content_snapshot FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${args.rubricScope.workspaceId}
+           AND harness_slug = ${args.rubricScope.harnessSlug}
+           AND plan_slug = ${args.rubricSlug}
+           AND position(${marker} in content_snapshot) > 0
+         ORDER BY seq LIMIT 3`;
+  const selection = selectOrphanedAcceptanceBarWitness({
+    rubricSlug: args.rubricSlug,
+    currentRevision: args.currentRevision,
+    storedTemplateData: args.storedTemplateData,
+    pin: {
+      rubricSlug: pinRow?.acceptance_bar_rubric_slug ?? null,
+      rubricRevision: pinnedRevision,
+      barSetHash: pinRow?.acceptance_bar_set_hash ?? null,
+      epoch: pinRow?.acceptance_bar_epoch == null ? null : Number(pinRow.acceptance_bar_epoch),
+      cohort: pinRow?.acceptance_bar_cohort ?? null,
+      seededAt: pinRow?.acceptance_bar_seeded_at == null ? null : String(pinRow.acceptance_bar_seeded_at),
+      seededBy: pinRow?.acceptance_bar_seeded_by ?? null,
+    },
+    candidates: snapshots.map((snapshot) => {
+      const parsed = parseRubricRevisionSnapshot(snapshot.content_snapshot);
+      return {
+        seq: Number(snapshot.seq),
+        ...(parsed?.rubricRevision !== undefined ? { rubricRevision: parsed.rubricRevision } : {}),
+        templateData: parsed?.templateData ?? null,
+      };
+    }),
+  });
+  if (!selection.ok) throw new Error(`${selection.code}: ${selection.detail}`);
+  return selection;
+}
+
 async function amendAcceptanceBarRubric(
   input: AmendRubricInput,
   rubricScope: { workspaceId: string; harnessSlug: string },
@@ -4790,9 +4905,26 @@ async function amendAcceptanceBarRubric(
                AND harness_slug = ${subjectScope.harnessSlug}
                AND plan_slug = ${subjectPlanHint}
              FOR UPDATE`;
-      const rubricRow = rubricRows[0];
+      const lockedRubricRow = rubricRows[0];
       const subjectRow = subjectRows[0];
-      if (!rubricRow || !subjectRow) return null;
+      if (!lockedRubricRow || !subjectRow) return null;
+      // WI-6554700010018395 — the acceptance BAR recovery path. The orphan's live
+      // template_data has no contract to amend; the pinned revision's immutable snapshot
+      // IS the adopted contract, so it stands in as the stored rubric for every comparison,
+      // guard and projection below. The row identity (content, version, CAS) stays live.
+      const orphanRestore = input.restoreOrphanedBarContract
+        ? await resolveOrphanedAcceptanceBarRestore(tx, {
+            rubricScope,
+            subjectScope,
+            rubricSlug: input.rubricId,
+            subjectPlan: subjectPlanHint,
+            currentRevision: Number(lockedRubricRow.version),
+            storedTemplateData: lockedRubricRow.template_data,
+          })
+        : null;
+      const rubricRow: typeof lockedRubricRow = orphanRestore
+        ? { ...lockedRubricRow, template_data: orphanRestore.templateData as typeof lockedRubricRow.template_data }
+        : lockedRubricRow;
       const stored = rubricFromLockedPlan(input.rubricId, rubricRow.content, rubricRow.template_data, rubricScope);
       if (!stored || stored.kind !== 'acceptance' || stored.subjectPlan !== subjectPlanHint ||
           (stored.subjectHarnessSlug && stored.subjectHarnessSlug !== subjectScope.harnessSlug)) return null;
@@ -4902,6 +5034,86 @@ async function amendAcceptanceBarRubric(
       const changedBars = guard.changes
         .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
         .map((change) => change.barKey);
+      const removedBars = new Set(
+        guard.changes.filter((change) => change.kind === 'removed').map((change) => change.barKey),
+      );
+      // EI-24358433996857425 (acceptance-bar-atomic-retirement-2026-10-15 D-002): every source
+      // check below runs on the PROPOSED source, i.e. the locked baseline with each retiring BAR's
+      // Requirements record and map row removed. Validating the original first refused a
+      // retirement of a BAR whose only work was dropped (`bar_mapping_dropped_only`) before the
+      // removal could run, which made the one repair for that state unreachable.
+      const retirementSource = retireRequirementBarsFromSource(subjectRow.content, removedBars);
+      if (!retirementSource.ok) {
+        throw new Error(
+          `acceptance_bar_amendment_retirement_source_invalid:${retirementSource.problems.map((problem) =>
+            `${problem.code}: ${problem.detail}`).join('; ')}`,
+        );
+      }
+      // EI-24358433996857425 Part B (R-6/R-8/R-28): an explicit prior-to-next map move for a BAR
+      // whose meaning is unchanged, derived from the same locked baseline in the same derivation
+      // as the retirement. A BAR this amendment rewords, adds or retires cannot also move: its
+      // map follows its own changed contract, and a delta there would be a second, unreviewed
+      // source of truth for the same row.
+      const deltaInput = input.barMappingDelta ?? [];
+      if (deltaInput.length > 50) {
+        throw new Error('invalid_args: acceptance BAR barMappingDelta accepts at most 50 entries');
+      }
+      const storedBarKeys = new Set(stored.criteria.map((criterion) => criterion.barKey ?? criterion.key));
+      const unknownDeltaBars = deltaInput.filter((entry) => !storedBarKeys.has(entry.barKey.trim()));
+      if (unknownDeltaBars.length) {
+        throw new Error(
+          `acceptance_bar_amendment_mapping_delta_unknown_bar: ${unknownDeltaBars.map((entry) => entry.barKey).join(', ')} ` +
+            'is not a BAR of this rubric',
+        );
+      }
+      const changedDeltaBars = deltaInput.filter((entry) => changedBars.includes(entry.barKey.trim()));
+      if (changedDeltaBars.length) {
+        throw new Error(
+          `acceptance_bar_amendment_mapping_delta_bar_changed: ${changedDeltaBars.map((entry) => entry.barKey).join(', ')} ` +
+            'changes meaning or retires in this amendment; a mapping delta is only for a BAR whose hash is unchanged',
+        );
+      }
+      const nextPlaneOf = (barKey: string) => (guard.data.criteria as Array<Record<string, unknown>>)
+        .find((criterion) => (criterion.barKey ?? criterion.key) === barKey)?.evidencePlane;
+      const planeMismatches = deltaInput.filter((entry) => {
+        const plane = nextPlaneOf(entry.barKey.trim());
+        return typeof plane === 'string' && plane !== entry.next.evidencePlane;
+      });
+      if (planeMismatches.length) {
+        throw new Error(
+          `acceptance_bar_amendment_mapping_delta_plane_mismatch: ${planeMismatches.map((entry) =>
+            `${entry.barKey} next plane ${entry.next.evidencePlane} != BAR plane ${String(nextPlaneOf(entry.barKey.trim()))}`).join('; ')}. ` +
+            'Change a BAR plane with criterionEvidencePlane, not a mapping delta',
+        );
+      }
+      const deltaSource = applyBarMappingDelta(retirementSource.content, deltaInput);
+      if (!deltaSource.ok) {
+        throw new Error(
+          `acceptance_bar_amendment_mapping_delta_invalid:${deltaSource.problems.map((problem) =>
+            `${problem.code}: ${problem.detail}`).join('; ')}`,
+        );
+      }
+      const mappingDelta = deltaSource.applied;
+      const proposedSource = deltaSource.content;
+      const sourceDerivation = {
+        baselineSourceFingerprint: acceptanceBarSourceFingerprint(subjectRow.content),
+        proposedSourceFingerprint: acceptanceBarSourceFingerprint(proposedSource),
+        retired: retirementSource.retired,
+        removedMapRows: retirementSource.removedMapRows,
+        ...(mappingDelta.length
+          ? {
+              mappingDelta: mappingDelta.map((entry) => ({
+                ...entry,
+                retiredProjections: entry.prior.planItemIds
+                  .filter((id) => !entry.next.planItemIds.includes(id))
+                  .map((id) => `AUTO-BAR-${entry.barKey}-${id}`),
+                addedProjections: entry.next.planItemIds
+                  .filter((id) => !entry.prior.planItemIds.includes(id))
+                  .map((id) => `AUTO-BAR-${entry.barKey}-${id}`),
+              })),
+            }
+          : {}),
+      };
       // Provenance corrections need the authenticated amendment capability too.
       // Sending them through the generic METHOD writer makes its boundary guard
       // correctly preserve the old declaration and silently loses the correction.
@@ -4918,7 +5130,10 @@ async function amendAcceptanceBarRubric(
         next: guard.data.criteria as Array<Record<string, unknown>>,
         barKeyOf: (criterion) => String(criterion.barKey ?? criterion.key),
       });
-      const approvalRequired = changedBars.length > 0 && additivity.approvalRequired;
+      // A map move changes which work discharges a BAR, so it is never additive: it always needs
+      // the outside reviewer, who approves that exact delta (R-28).
+      const approvalRequired = (changedBars.length > 0 && additivity.approvalRequired) || mappingDelta.length > 0;
+      const approvalBars = [...changedBars, ...mappingDelta.map((entry) => entry.barKey)];
 
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
@@ -4927,7 +5142,8 @@ async function amendAcceptanceBarRubric(
         kind: 'acceptance-bar-amendment-approval',
         rubricRef: input.rubricId,
         subjectPlan: subjectPlanHint,
-        bars: changedBars.map((barKey) => ({
+        // A moved BAR appears with prior == next hash: the review covers its map, not its meaning.
+        bars: approvalBars.map((barKey) => ({
           barKey,
           priorBarHash:
             stored.criteria.find((criterion) => (criterion.barKey ?? criterion.key) === barKey)?.barHash ?? null,
@@ -4936,9 +5152,16 @@ async function amendAcceptanceBarRubric(
               (criterion) => (criterion.barKey ?? criterion.key) === barKey,
             )?.barHash as string | undefined) ?? null,
         })),
+        // A retirement rewrites the source, so the reviewer approves that exact proposed source:
+        // an approval of a different derivation (the baseline moved between preview and apply,
+        // or another retiring set) cannot authorize this one. Absent when the source is unchanged.
+        ...(proposedSource !== subjectRow.content
+          ? { proposedSourceHash: sourceDerivation.proposedSourceFingerprint }
+          : {}),
+        ...(mappingDelta.length ? { mappingDelta } : {}),
       };
       const shouldResolveApproval =
-        changedBars.length > 0 &&
+        approvalBars.length > 0 &&
         (input.approvalRef !== undefined || (!preview && approvalRequired));
       const approval = shouldResolveApproval
         ? await resolveAcceptanceBarApproval(tx as never, {
@@ -4980,6 +5203,7 @@ async function amendAcceptanceBarRubric(
           reason,
           priorRubricRevision: oldRubricRevision,
           nextBarHashes,
+          ...(mappingDelta.length ? { mappingDeltaHash: barMappingDeltaHash(mappingDelta) } : {}),
         });
       if (decisionHasAmendmentKey(subjectRow.content, idempotencyKey)) {
         return {
@@ -5015,13 +5239,13 @@ async function amendAcceptanceBarRubric(
          ORDER BY c.spec_id LIMIT 1001`;
       if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
       const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
-      const requirements = parseRequirementBars(subjectRow.content);
+      const requirements = parseRequirementBars(proposedSource);
       if (!requirements.ok) {
         throw new Error(
           `acceptance_bar_amendment_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
         );
       }
-      const sourceMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+      const sourceMappings = parseBarMappings(proposedSource, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!sourceMappings.ok) {
         throw new Error(
           `acceptance_bar_amendment_mapping_invalid:${sourceMappings.problems.map((problem) =>
@@ -5059,7 +5283,7 @@ async function amendAcceptanceBarRubric(
           requirements.bars.some((bar) => bar.barKey === entry.barKey && bar.criterion),
         ).map((entry) => entry.barKey) : []),
       ])];
-      const requirementsRerender = rerenderAmendedRequirementBlocks(subjectRow.content, {
+      const requirementsRerender = rerenderAmendedRequirementBlocks(proposedSource, {
         nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
         changedBars: requirementChangedBars,
       });
@@ -5095,9 +5319,6 @@ async function amendAcceptanceBarRubric(
       // requirements are mutually exclusive, so every started-bar retirement refused whichever
       // way the caller turned. This check exists to stop an amendment binding a bar to DEAD
       // work; a removal is the one case where "no mapped item" is the correct end state.
-      const removedBars = new Set(
-        guard.changes.filter((change) => change.kind === 'removed').map((change) => change.barKey),
-      );
       for (const barKey of changedBars) {
         if (removedBars.has(barKey)) continue;
         const mappedItemIds = new Set([
@@ -5107,6 +5328,16 @@ async function amendAcceptanceBarRubric(
         if (![...mappedItemIds].some((planItemId) => liveItems.has(planItemId))) {
           throw new Error(
             `acceptance_bar_amendment_no_live_discharge_mapping: BAR '${barKey}' has no live mapped plan item`,
+          );
+        }
+      }
+      // A moved BAR is judged on its NEXT items alone: the clauses on its prior items are the
+      // projections this move supersedes, so counting them would accept a move onto dead work.
+      for (const entry of mappingDelta) {
+        if (!entry.next.planItemIds.some((planItemId) => liveItems.has(planItemId))) {
+          throw new Error(
+            `acceptance_bar_amendment_no_live_discharge_mapping: BAR '${entry.barKey}' would move to no live plan item ` +
+              `(${entry.next.planItemIds.join(', ')})`,
           );
         }
       }
@@ -5200,7 +5431,12 @@ async function amendAcceptanceBarRubric(
 
       // An identical canonical contract can repair an older writer's projection
       // without creating an amendment, rubric revision, or fresh proof cohort.
-      const projectionOnly = canonicalUnchanged && changedBars.length === 0 && !provenanceChanged;
+      // A restore must WRITE even when it changes nothing against the restored contract:
+      // the live row is the orphan, so "unchanged" here still means "rewrite the row".
+      // A mapping delta is never projection-only or method-only: it is a reviewed source change
+      // that writes its own Decision, rubric revision and re-projection.
+      const projectionOnly = !orphanRestore && canonicalUnchanged && changedBars.length === 0 && !provenanceChanged &&
+        mappingDelta.length === 0;
       if (projectionOnly && !preview) {
         if (requirementsRerender.rerendered.length === 0) return {
           rubric: { ...stored, revision: oldRubricRevision }, decisionId: '', rubricRevision: oldRubricRevision,
@@ -5249,7 +5485,8 @@ async function amendAcceptanceBarRubric(
         };
       }
 
-      if (changedBars.length === 0 && !provenanceChanged && requirementsRerender.rerendered.length === 0 && !preview) return {
+      if (!orphanRestore && changedBars.length === 0 && !provenanceChanged && requirementsRerender.rerendered.length === 0 &&
+          mappingDelta.length === 0 && !preview) return {
         rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
         subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
         changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
@@ -5257,7 +5494,7 @@ async function amendAcceptanceBarRubric(
       };
 
       if (preview) {
-        if (changedBars.length > 0) {
+        if (changedBars.length > 0 || mappingDelta.length > 0) {
           await validateAcceptanceBarRevisionProjectionPreview(tx as never, {
             workspaceId: subjectScope.workspaceId,
             harnessSlug: subjectScope.harnessSlug,
@@ -5265,6 +5502,7 @@ async function amendAcceptanceBarRubric(
             rubricRevision: nextRubricRevision,
             templateData: guard.data,
             previousTemplateData: rubricRow.template_data,
+            subjectContent: requirementsRerender.content,
           });
         }
         const changes = diffAcceptanceBarContractSnapshots(snapshot, candidate, 'amend').changes;
@@ -5292,7 +5530,7 @@ async function amendAcceptanceBarRubric(
         let approverEligibility: AcceptanceBarAmendmentPreview['approverEligibility'];
         const norm = (identity: string | null | undefined) => (identity ?? '').trim();
         const prospectiveApprover = norm(input.approvedBy);
-        if (changedBars.length > 0 || prospectiveApprover) {
+        if (approvalBars.length > 0 || prospectiveApprover) {
           // WI-10002357: the population stays byte-identical to the apply rail, but we now
           // remember WHY each identity is in it. `actorId` is present because THIS caller
           // would perform the apply — a curable condition — whereas the rubric author, the
@@ -5313,7 +5551,7 @@ async function amendAcceptanceBarRubric(
           attribute(stored.createdBy, 'rubric-author');
           attribute(subjectRow.owner, 'subject-owner');
           attribute(actorId, 'caller');
-          if (changedBars.length > 0) previewImplementers = [...roles.keys()].sort();
+          if (approvalBars.length > 0) previewImplementers = [...roles.keys()].sort();
           if (prospectiveApprover) {
             const evaluation = prospectiveApprover === norm(actorId)
               ? {
@@ -5387,17 +5625,21 @@ async function amendAcceptanceBarRubric(
               rubric: { from: oldRubricRevision, to: projectionOnly ? oldRubricRevision : nextRubricRevision },
               subject: {
                 from: oldSubjectRevision,
-                to: changedBars.length || provenanceChanged || requirementsRerender.rerendered.length
+                to: changedBars.length || provenanceChanged || requirementsRerender.rerendered.length || mappingDelta.length
                   ? nextSubjectRevision
                   : oldSubjectRevision,
               },
             },
             ...proofPartition,
-            invalidatedScorecardIds: changedBars.length ? [...snapshot.sourceRevisions.scorecardIds].sort() : [],
+            // A map move writes a new rubric revision too, so the revision-pinned grades go stale.
+            invalidatedScorecardIds: changedBars.length || mappingDelta.length
+              ? [...snapshot.sourceRevisions.scorecardIds].sort()
+              : [],
             invalidatedAdequacyCardSubjects: invalidatedAdequacyCardSubjects(
               subjectPlanHint ?? '', snapshot.bars, changedBars, new Set(candidate.bars.map((bar) => bar.barKey)),
             ),
-            authorVerdictBecomesStale: changedBars.length > 0 && ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
+            authorVerdictBecomesStale: (changedBars.length > 0 || mappingDelta.length > 0) &&
+              ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
             reboundWorkItemIds: open.map((row) => row.work_item_id),
             cohortDisposition: {
               cohort: snapshot.plan?.cohort ?? null,
@@ -5413,12 +5655,20 @@ async function amendAcceptanceBarRubric(
               changedBars: requirementChangedBars,
               removedBars,
             }),
+            sourceDerivation,
             plannedPaths,
             nextRepair: missingMethod
               ? {
                   code: 'bar_snapshot_method_missing',
                   action: `${floorWarning}Fill every mandatory METHOD before vetting or grading.`,
                 }
+              : changedBars.length === 0 && mappingDelta.length > 0
+                ? {
+                    code: 'bar_snapshot_mapping_moved',
+                    action: `No BAR meaning changed; the discharge map moves for ${mappingDelta.map((entry) => entry.barKey).join(', ')}. ` +
+                      'Get outside review of this exact mappingDelta, apply with its approvalRef, then bind proof for the ' +
+                      'added projections and refresh vetting and independent grading for the new rubric revision.',
+                  }
               : changedBars.length === 0
                 ? {
                     code: 'bar_snapshot_method_updated',
@@ -5462,8 +5712,17 @@ async function amendAcceptanceBarRubric(
             ? [`Approval: not required — every change is additive (${additivity.additiveBars.join(', ')})`]
             : []),
         `Rubric revision: ${oldRubricRevision} → ${nextRubricRevision}`,
+        ...(orphanRestore
+          ? [
+              `Restored-Contract-From: rubric revision ${orphanRestore.pinnedRevision} (plan_revisions seq ${orphanRestore.witnessSeq}, BAR set ${orphanRestore.barSetHash})`,
+              `Orphaned-Revision-Discarded: ${oldRubricRevision} (retained in plan_revisions; re-apply its intent through rubrics:amend)`,
+            ]
+          : []),
         `Subject plan revision: ${oldSubjectRevision} → ${nextSubjectRevision}`,
         `Changed BARs: ${changedBars.join(', ')}`,
+        ...mappingDelta.map((entry) =>
+          `Mapping delta: ${entry.barKey} ${entry.prior.planItemIds.join(', ')} (${entry.prior.evidencePlane}) → ` +
+            `${entry.next.planItemIds.join(', ')} (${entry.next.evidencePlane})`),
         'Prior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.',
         ...(requirementsRerender.rerendered.length
           ? [`Requirements re-rendered from the amended criterion: ${requirementsRerender.rerendered.join(', ')}`]
@@ -5776,7 +6035,10 @@ export async function previewAcceptanceBarAmendment(
 ): Promise<AcceptanceBarAmendmentPreview | null> {
   const current = await getRubric(input.rubricId);
   if (!current) return null;
-  if (current.kind !== 'acceptance' || !current.barContract || !current.barSetHash) {
+  // An orphan restore previews the cross-plan transaction against the pinned witness;
+  // the locked transaction refuses it if no admissible witness exists.
+  const restoring = input.restoreOrphanedBarContract === true && current.kind === 'acceptance';
+  if (!restoring && (current.kind !== 'acceptance' || !current.barContract || !current.barSetHash)) {
     const revisionHint = current.revision ? `:${current.revision}` : ':<current revision from rubrics:get>';
     throw new Error(
       `invalid_args: rubrics:amend dryRun previews only the cross-plan transaction for a started acceptance ` +
@@ -5925,7 +6187,13 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   // returns methodOnly only after comparing the rebuilt hashes, and those writes
   // then continue on the ordinary single-plan path below.
   const currentForRouting = await getRubric(input.rubricId);
-  if (currentForRouting?.kind === 'acceptance' && currentForRouting.barContract) {
+  if (input.restoreOrphanedBarContract && currentForRouting?.kind !== 'acceptance') {
+    throw new Error(
+      `acceptance_bar_restore_not_acceptance: rubric '${input.rubricId}' is not an acceptance rubric; ` +
+        'restoreOrphanedBarContract applies only to an orphaned started acceptance BAR contract',
+    );
+  }
+  if (currentForRouting?.kind === 'acceptance' && (currentForRouting.barContract || input.restoreOrphanedBarContract)) {
     const amended = await amendAcceptanceBarRubric(input, scope);
     // A null reread still refuses. Only an explicit, locked method-only result
     // may use the ordinary writer, which refreshes the dependent revision pins.

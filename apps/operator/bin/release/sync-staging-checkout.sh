@@ -392,11 +392,44 @@ staging_generation_holder_evidence() {
 
 prune_staging_generations() {
   local current_root candidate_root resolved_root candidate_home refs_collected=0
+  local audit_pin audit_expiry audit_mtime audit_now audit_pinned
   [[ -d "$STAGING_GENERATIONS_ROOT" ]] || return 0
   current_root="$(realpath -e "$STAGING_ROOT" 2>/dev/null || true)"
   while IFS= read -r -d '' candidate_root; do
     resolved_root="$(realpath -e "$candidate_root" 2>/dev/null || true)"
     [[ -n "$resolved_root" && "$resolved_root" != "$current_root" ]] || continue
+    # EI-25971079852455067: a process reference disappears at exactly the
+    # moment crash recovery needs its immutable source. Pending audit runtimes
+    # leave bounded pins before launch; terminal cleanup removes its own pin.
+    # Keep corrupt/incomplete pins only for one recovery window, with an alarm.
+    candidate_home="$(dirname "$resolved_root")"
+    audit_now="$(date +%s)"
+    audit_pinned=0
+    for audit_pin in "$candidate_home/.audit-runtime-pins/"*; do
+      [[ -f "$audit_pin" ]] || continue
+      audit_expiry=""
+      IFS= read -r audit_expiry < "$audit_pin" || true
+      if [[ "$audit_expiry" =~ ^[0-9]{1,10}$ ]] &&
+         ((10#$audit_expiry > audit_now && 10#$audit_expiry <= audit_now + 21600)); then
+        audit_pinned=1
+        break
+      fi
+      if [[ "$audit_expiry" =~ ^[0-9]{1,10}$ ]] && ((10#$audit_expiry <= audit_now)); then
+        rm -f -- "$audit_pin"
+        continue
+      fi
+      audit_mtime="$(stat -c %Y -- "$audit_pin" 2>/dev/null || true)"
+      if [[ ! "$audit_mtime" =~ ^[0-9]{1,10}$ ]] || ((audit_now - 10#$audit_mtime < 21600)); then
+        log "ALARM: malformed audit source pin retained within recovery window: $audit_pin"
+        audit_pinned=1
+        break
+      fi
+      rm -f -- "$audit_pin"
+    done
+    if [[ "$audit_pinned" -eq 1 ]]; then
+      log "retaining prior staging generation for a bounded audit runtime pin: $resolved_root"
+      continue
+    fi
     # Scan /proc only when there is something to prune, so the every-tick prune
     # at sync start costs nothing in the steady state.
     if [[ "$refs_collected" -eq 0 ]]; then

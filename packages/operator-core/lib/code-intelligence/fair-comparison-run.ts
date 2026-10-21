@@ -244,9 +244,15 @@ async function runFreshArm(
       const final = await resourceSample(context, 'final', clock);
       reps.push({ rep, answers, outcome: index.ok ? 'completed' : 'setup-failed',
         index, setupWallMs, identity, coldAnswers, warmupAnswers, resources: { ready, warm, final } });
-    } finally {
-      await arm.close?.();
+    } catch (error) {
+      // A cleanup failure must not replace the error that ended the repetition:
+      // a masked first failure leaves the run undiagnosable.
+      try { await arm.close?.(); } catch (closeError) {
+        throw new AggregateError([error, closeError], `fair repetition ${rep} failed (${String(error)}); its close also failed (${String(closeError)})`);
+      }
+      throw error;
     }
+    await arm.close?.();
   }
   return { ...base, measurementMode: 'fresh-repetitions', index: reps[0]?.index ?? null, reps, finishedAt: clock() };
 }

@@ -34,7 +34,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => {
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { registerRoute } from '../define-route';
-import { DEFAULT_ROUTE_STACK } from '../route-stack';
+import { createRouteDiagnostics, DEFAULT_ROUTE_STACK } from '../route-stack';
 import { registerAllRoutes } from '../register';
 import { requirePrincipal, PrincipalCheckError } from '../../auth/require-principal';
 import { AgentIdentityRequiredError } from '../../auth/identity-required-error';
@@ -65,6 +65,40 @@ describe('route-stack — step order', () => {
 
   it('is frozen', () => {
     expect(Object.isFrozen(DEFAULT_ROUTE_STACK)).toBe(true);
+  });
+});
+
+describe('route diagnostics', () => {
+  it('passes diagnostics through mounted handlers and records each stack phase', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/diagnostics', auth: 'public',
+      handler: (_req, ctx) => {
+        expect(ctx.routeDiagnostics).toBeDefined();
+        return Response.json({ ok: true });
+      },
+    }));
+
+    const response = await app.request('/diagnostics');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    const execution = vi.mocked(recordRouteInvocation).mock.calls.at(-1)?.[0];
+    expect(execution?.routeDiagnostics?.snapshot()).toEqual(expect.objectContaining({
+      auth: expect.any(Number),
+      input: expect.any(Number),
+      invoke: expect.any(Number),
+    }));
+  });
+
+  it('records rejected work while ignoring unbounded phase names', async () => {
+    const diagnostics = createRouteDiagnostics();
+    await expect(diagnostics.measure('handler.phase', async () => {
+      throw new Error('diagnostic failure marker');
+    })).rejects.toThrow('diagnostic failure marker');
+    await diagnostics.measure('handler.phase', () => undefined);
+    await diagnostics.measure('Bad phase', () => undefined);
+
+    expect(diagnostics.snapshot()).toEqual({ 'handler.phase': expect.any(Number) });
   });
 });
 

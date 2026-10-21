@@ -1859,6 +1859,23 @@ build_pinned_workspace_runtime_outputs
 # Named function so it can be extracted + unit-tested in setup-release-checkout-deps.test.ts
 # (same sed-extraction pattern as need_node_modules / sync_one_node_modules).
 # Reads RELEASE_ROOT + PAPERCUSP_PREFLIGHT_ADDONS from the outer scope.
+#
+# A plain require() is insufficient for better-sqlite3: its JS wrapper can load
+# while the native .node binding is missing. Exercise the same lazy binding path
+# as native-addon-preflight.ts with an in-memory DB and a trivial query.
+native_addon_load_check() {
+  local addon="$1"
+  node -e '
+const name = process.argv[1];
+const loaded = require(name);
+if (name === "better-sqlite3") {
+  const db = new loaded(":memory:");
+  try { db.prepare("SELECT 1").get(); }
+  finally { db.close(); }
+}
+' "$addon"
+}
+
 rebuild_stale_native_addons() {
   command -v node >/dev/null 2>&1 || { log "skip native-addon ABI guard (node not on PATH — pre-build phase)"; return 0; }
   local node_abi
@@ -1870,13 +1887,13 @@ rebuild_stale_native_addons() {
     addon="${addon//[[:space:]]/}"   # trim whitespace
     [ -n "$addon" ] || continue
     [ -d "$RELEASE_ROOT/node_modules/$addon" ] || continue   # not installed on this path
-    if (cd "$RELEASE_ROOT" && node -e "require('$addon')") >/dev/null 2>&1; then
+    if (cd "$RELEASE_ROOT" && native_addon_load_check "$addon") >/dev/null 2>&1; then
       continue   # loads cleanly under the runtime Node — ABI matches, nothing to do
     fi
     log "WARN native addon '$addon' will not load under Node ABI $node_abi — rebuilding in the release checkout"
     copy_up_generation_dependency_path "$RELEASE_ROOT/node_modules/$addon"
     if (cd "$RELEASE_ROOT" && npm rebuild "$addon") >/dev/null 2>&1 \
-       && (cd "$RELEASE_ROOT" && node -e "require('$addon')") >/dev/null 2>&1; then
+       && (cd "$RELEASE_ROOT" && native_addon_load_check "$addon") >/dev/null 2>&1; then
       log "native addon '$addon' rebuilt OK for Node ABI $node_abi"
     else
       log "ERROR native addon '$addon' STILL will not load after rebuild — the deploy-gate addon preflight will block this promotion"

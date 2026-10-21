@@ -11,7 +11,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { resetSinkEvaluatorForTests } from './sink-evaluator';
 import {
   dueSyncContextRules, evaluateHookContextSink, evaluatePreToolGuards, memoryHookTurnStore,
-  ruleMatchesTool, turnStartSyncRuleRequests, wornSyncRules, type WornSyncRules,
+  isPapercuspEngineerIdentity, ruleMatchesTool, turnStartSyncRuleRequests, wearsPapercuspEngineer,
+  wornSyncRules, type WornSyncRules,
 } from './sync-hook-rules';
 import { evaluateTurnStartPackageSink, packageSinkReceipt } from './turn-start-package-sink';
 
@@ -44,6 +45,18 @@ describe('wornSyncRules', () => {
     ));
     expect(worn.unreadable).toEqual([]);
     expect(worn.rules).toEqual([expect.objectContaining({ identityId: 'safe-coder', pinRef: 'no-rm' })]);
+  });
+
+  it('recognizes the engineer layer in bare and slot-qualified applied identities only', () => {
+    expect(isPapercuspEngineerIdentity('papercusp-engineer')).toBe(true);
+    expect(isPapercuspEngineerIdentity('domain:papercusp-engineer')).toBe(true);
+    expect(isPapercuspEngineerIdentity('domain:researcher')).toBe(false);
+    expect(wearsPapercuspEngineer({ packagePins: [
+      { packageKind: 'blueprint', ref: 'domain:papercusp-engineer', revision: '1', contentHash: 'h' },
+    ] })).toBe(true);
+    expect(wearsPapercuspEngineer({ packagePins: [
+      { packageKind: 'blueprint', ref: 'researcher', revision: '1', contentHash: 'h' },
+    ] })).toBe(false);
   });
 
   it('keeps a pin that no longer parses as unreadable, named', () => {
@@ -147,6 +160,32 @@ describe('tool filters and due context rules', () => {
 describe('evaluateHookContextSink (fail open, visibly)', () => {
   const wearer = { stack: ['identity:coder'], attachmentRevision: 'spec:state', potSlug: 'pot' };
   const worn = wornSyncRules(artifact(layer('coder', ['a', 'b']), contextPin('a', 'stop'), contextPin('b', 'stop')));
+
+  it('can reserve a PostToolUse sink for the papercusp-engineer identity', async () => {
+    const nonEngineer = wornSyncRules(artifact(
+      layer('researcher', ['a']), contextPin('a', 'post-tool'),
+    ));
+    const engineer = wornSyncRules(artifact(
+      layer('papercusp-engineer', ['a']), contextPin('a', 'post-tool'),
+    ));
+    const deps = {
+      readWearer: async () => wearer,
+      turns: memoryHookTurnStore(),
+      produceContext: async () => 'engineering advisory',
+    };
+    const quiet = await evaluateHookContextSink({
+      ownerId: 'su-hooks-engineering-quiet', workspaceId: 'w', sink: 'post-tool',
+      tools: ['capability:bash'], engineeringOnly: true,
+      deps: { ...deps, readWornRules: async () => nonEngineer },
+    });
+    expect(quiet.text).toBe('');
+    const loud = await evaluateHookContextSink({
+      ownerId: 'su-hooks-engineering-loud', workspaceId: 'w', sink: 'post-tool',
+      tools: ['capability:bash'], engineeringOnly: true,
+      deps: { ...deps, readWornRules: async () => engineer },
+    });
+    expect(loud.text).toContain('engineering advisory');
+  });
 
   it('delivers provider text and renders a failed provider as an omission marker', async () => {
     const out = await evaluateHookContextSink({

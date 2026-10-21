@@ -847,6 +847,7 @@ export default defineTool({
       job = startBackground(
         {
           command: execCommand,
+          originalCommand: command,
           cwd,
           stateDir: ctx.stateDir,
           dispatchCallId: ctx.dispatchCallId,

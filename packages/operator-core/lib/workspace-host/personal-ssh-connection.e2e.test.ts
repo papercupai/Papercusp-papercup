@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, inject, test } from 'vitest';
 import { startDockerAllocationOwner } from '../../../../scripts/with-documenso-sandbox.mjs';
+import { createTextCollector } from '../child-output';
 import {
   defaultPsuConnectionStorePath, normalizeSshProfile, PSU_CONNECTION_STORE_VERSION,
   runPsuConnectionFrontController, savePsuConnectionStore,
@@ -86,15 +87,14 @@ async function nativePsu(args: string[], input?: string) {
     });
     let output = '';
     let sent = false;
-    const capture = (data: Buffer) => {
-      output += data.toString('utf8');
+    const capture = (text: string) => {
+      output += text;
       if (input != null && !sent && output.includes('PERSONAL_SSH_INPUT_READY')) {
         sent = true;
         child.stdin.write(`${input}\n`);
       }
     };
-    child.stdout.on('data', capture);
-    child.stderr.on('data', capture);
+    createTextCollector(child.stdout, { retainText: false, onDecodedText: capture }).attach(child.stderr);
     child.stdin.on('error', () => { /* refusal can close stdin before input */ });
     const timeout = setTimeout(() => child.kill('SIGTERM'), 30_000);
     child.once('error', error => { clearTimeout(timeout); reject(error); });

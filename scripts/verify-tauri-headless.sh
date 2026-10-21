@@ -611,6 +611,10 @@ TAURI_OWNER_SID="${PAPERCUSP_SID:-}"
   exit 1
 }
 TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID:run:$(date +%s%N)-$$-$RANDOM"
+# Children used to prepare and run this rig inherit the same exact per-run
+# identity. The frozen-source reaper below uses it with /proc path evidence so
+# it can stop this invocation's survivors without touching another run's work.
+export PAPERCUSP_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"
 
 # EI-21107555111779921: `npm run install:safe` rewrites the shared root
 # node_modules while holding this repo's fs mutex. Starting a verifier in that
@@ -1114,7 +1118,7 @@ preflight_verifier_copy_memory() {
     const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
     const limit = readTaskCgroupMemoryMaxMb();
     if (!(Number.isFinite(limit) && limit > 0)) {
-      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; launch with the tracked capability:bash test runner");
+      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). require_task_confinement alone does not reserve memory.");
       process.exit(2);
     }
     console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
@@ -1328,14 +1332,223 @@ release_verifier_disk_reservations() {
   done
   VERIFIER_DISK_RESERVATIONS=()
 }
+
+# A process survives source snapshot teardown when any kernel-held path still
+# points into that unique run's frozen tree. Reuse the repository's exact
+# /proc-environment provenance contract (find_pid_by_env below) and PID start
+# ticks so a recycled PID is never signalled. This helper is copied into $WORK
+# for the generated --boot-only stop.sh, whose parent session has already
+# exited by the time the caller eventually stops the rig.
+frozen_source_path_is_inside() {
+  local candidate="$1" root="$2"
+  candidate="${candidate% (deleted)}"
+  root="${root%/}"
+  [ -n "$root" ] || root="/"
+  [[ "$candidate" == "$root" || "$candidate" == "$root/"* ]]
+}
+
+frozen_source_process_rooted() {
+  local pid="$1" root="$2" link path escaped_root
+  [ -d "/proc/$pid" ] || return 1
+  for link in cwd root exe; do
+    path="$(readlink "/proc/$pid/$link" 2>/dev/null || true)"
+    frozen_source_path_is_inside "$path" "$root" && return 0
+  done
+  [ -r "/proc/$pid/maps" ] || return 1
+  # grep reads the maps file in one process. Parsing every line in Bash (or
+  # starting sed for each VMA) makes a host-wide census scale with every
+  # process mapping rather than the number of candidate processes.
+  grep -Fq -- "$root/" "/proc/$pid/maps" 2>/dev/null && return 0
+  # procfs octal-escapes whitespace and backslashes in mapped pathnames.
+  escaped_root="${root//\\/\\134}"
+  escaped_root="${escaped_root// /\\040}"
+  escaped_root="${escaped_root//$'\n'/\\012}"
+  grep -Fq -- "$escaped_root/" "/proc/$pid/maps" 2>/dev/null && return 0
+  return 1
+}
+
+frozen_source_rooted_processes() {
+  local root="$1" escaped_root
+  escaped_root="${root//\\/\\134}"
+  escaped_root="${escaped_root// /\\040}"
+  escaped_root="${escaped_root//$'\n'/\\012}"
+  {
+    # Let find resolve procfs links in C instead of spawning readlink once per
+    # pid; only matching processes need their environment inspected.
+    find /proc -mindepth 2 -maxdepth 2 -uid "$EUID" -type l \
+      \( -name cwd -o -name root -o -name exe \) \
+      \( -lname "$root" -o -lname "$root/*" \) -printf '%h\n' 2>/dev/null
+    # Search maps files in a bounded grep process set; include procfs's escaped
+    # spelling for roots containing whitespace or backslashes.
+    find /proc/[0-9]*/maps -uid "$EUID" -type f -print0 2>/dev/null |
+      xargs -0 -r grep -lF -e "$root/" -e "$escaped_root/" 2>/dev/null |
+      sed 's#/maps$##'
+  } | sort -u
+}
+
+frozen_source_process_start_ticks() {
+  local pid="$1" stat rest
+  stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+  # comm is parenthesized and may itself contain spaces or ')'. Remove through
+  # its last close-paren; starttime (field 22) is then field 20.
+  rest="${stat##*) }"
+  awk '{ print $20 }' <<<"$rest"
+}
+
+frozen_source_process_owned() {
+  local pid="$1" provenance="$2" env_p entry
+  env_p="$(tr '\0' '\n' 2>/dev/null <"/proc/$pid/environ")" || return 1
+  while IFS= read -r entry; do
+    [ "$entry" = "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$provenance" ] && return 0
+  done <<<"$env_p"
+  return 1
+}
+
+frozen_source_process_matches() {
+  local pid="$1" expected_ticks="$2" root="$3" provenance="$4" ticks
+  [ -d "/proc/$pid" ] || return 1
+  ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null)" || return 1
+  [ -n "$expected_ticks" ] && [ "$ticks" = "$expected_ticks" ] || return 1
+  frozen_source_process_owned "$pid" "$provenance" || return 1
+  frozen_source_process_rooted "$pid" "$root"
+}
+
+reap_frozen_source_survivors() (
+  local root="$1" provenance="$2" proc pid uid ticks owned unowned=0
+  local attempt any_owned
+  local -a owned_pids=() owned_ticks=()
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  [ -n "$provenance" ] || {
+    echo "FATAL: cannot inspect frozen operator source without this run's provenance; preserving $root" >&2
+    return 1
+  }
+  root="$(cd "$root" 2>/dev/null && pwd -P)" || {
+    echo "FATAL: cannot resolve frozen operator source root; preserving $root" >&2
+    return 1
+  }
+  # Do not let the cleanup shell itself keep the snapshot busy through cwd.
+  cd / || {
+    echo "FATAL: cannot leave the frozen operator source before cleanup; preserving $root" >&2
+    return 1
+  }
+  while IFS= read -r proc; do
+    [ -d "$proc" ] || continue
+    pid="${proc##*/}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    # The snapshot directory is private to this account. Other users cannot
+    # hold paths below it, so skip their proc entries rather than misreading
+    # hidepid/permission failures as an empty process map.
+    [ -O "$proc" ] || continue
+    frozen_source_process_rooted "$pid" "$root" || continue
+    ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null || true)"
+    [ -n "$ticks" ] || continue
+    if frozen_source_process_owned "$pid" "$provenance"; then
+      printf 'FROZEN_SOURCE_SURVIVOR pid=%s ownership=run\n' "$pid" >&2
+      owned_pids+=("$pid")
+      owned_ticks+=("$ticks")
+    else
+      printf 'FROZEN_SOURCE_SURVIVOR pid=%s ownership=unverified; preserving snapshot\n' "$pid" >&2
+      unowned=1
+    fi
+  done < <(frozen_source_rooted_processes "$root")
+
+  local i
+  for i in "${!owned_pids[@]}"; do
+    pid="${owned_pids[$i]}"
+    ticks="${owned_ticks[$i]}"
+    frozen_source_process_matches "$pid" "$ticks" "$root" "$provenance" || continue
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  for attempt in {1..20}; do
+    any_owned=0
+    for i in "${!owned_pids[@]}"; do
+      frozen_source_process_matches "${owned_pids[$i]}" "${owned_ticks[$i]}" "$root" "$provenance" && any_owned=1
+    done
+    [ "$any_owned" -eq 1 ] || break
+    sleep 0.1
+  done
+  for i in "${!owned_pids[@]}"; do
+    pid="${owned_pids[$i]}"
+    ticks="${owned_ticks[$i]}"
+    if frozen_source_process_matches "$pid" "$ticks" "$root" "$provenance"; then
+      printf 'FROZEN_SOURCE_REAP pid=%s signal=KILL\n' "$pid" >&2
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+
+  # Re-census after signalling. Any process still rooted here without the exact
+  # run marker is outside our authority; fail closed and leave the source intact.
+  while IFS= read -r proc; do
+    [ -d "$proc" ] || continue
+    pid="${proc##*/}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [ -O "$proc" ] || continue
+    frozen_source_process_rooted "$pid" "$root" || continue
+    ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null || true)"
+    [ -n "$ticks" ] || continue
+    if frozen_source_process_owned "$pid" "$provenance"; then
+      printf 'FROZEN_SOURCE_SURVIVOR pid=%s ownership=run-after-reap; preserving snapshot\n' "$pid" >&2
+    else
+      printf 'FROZEN_SOURCE_SURVIVOR pid=%s ownership=unverified; preserving snapshot\n' "$pid" >&2
+    fi
+    unowned=1
+  done < <(frozen_source_rooted_processes "$root")
+  if [ "$unowned" -ne 0 ]; then
+    echo "FATAL: frozen operator source still has unverified or unreaped process survivors; preserving $root" >&2
+    return 1
+  fi
+  return 0
+)
+
+write_frozen_source_reaper_script() {
+  local helper="$WORK/frozen-source-reaper.sh"
+  {
+    declare -f frozen_source_path_is_inside
+    declare -f frozen_source_process_rooted
+    declare -f frozen_source_rooted_processes
+    declare -f frozen_source_process_start_ticks
+    declare -f frozen_source_process_owned
+    declare -f frozen_source_process_matches
+    declare -f reap_frozen_source_survivors
+  } >"$helper" || return 1
+  chmod 700 "$helper"
+}
+
+write_frozen_source_reaper_script || {
+  echo "FATAL: could not prepare frozen-source survivor guard under $WORK" >&2
+  exit 1
+}
+
+normalize_operator_source_root() {
+  local root="$1" normalized
+  normalized="$(cd "$root" 2>/dev/null && pwd -P)" || {
+    echo "FATAL: could not resolve frozen operator source root: $root" >&2
+    return 1
+  }
+  [ -d "$normalized" ] || {
+    echo "FATAL: frozen operator source root is missing: $normalized" >&2
+    return 1
+  }
+  OPERATOR_SOURCE_ROOT="$normalized"
+}
+
 cleanup_operator_source_snapshot() {
   release_verifier_disk_reservations
   if [ -n "${OPERATOR_SOURCE_WORK:-}" ]; then
-    rm -rf -- "$OPERATOR_SOURCE_WORK" 2>/dev/null || true
+    local frozen_source_root="$(cd "$OPERATOR_SOURCE_WORK/operator-source" 2>/dev/null && pwd -P)"
+    if [ -n "$frozen_source_root" ] && ! reap_frozen_source_survivors "$frozen_source_root" "$TAURI_LAUNCH_PROVENANCE"; then
+      echo "FATAL: refusing to delete frozen operator source with live survivors: $frozen_source_root" >&2
+      return 1
+    fi
+    if ! rm -rf -- "$OPERATOR_SOURCE_WORK"; then
+      echo "FATAL: could not remove frozen operator source work directory: $OPERATOR_SOURCE_WORK" >&2
+      return 1
+    fi
     OPERATOR_SOURCE_WORK=""
     OPERATOR_SOURCE_ROOT=""
     OPERATOR_HOST_BUNDLE=""
   fi
+  return 0
 }
 # Set before the first EXIT trap so the generated stop script can safely expand
 # the value even when boot fails before the isolated branch runs.
@@ -1603,7 +1816,7 @@ snapshot_verifier_pinned_deps() {
       const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
       const limit = readTaskCgroupMemoryMaxMb();
       if (!(Number.isFinite(limit) && limit > 0)) {
-        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max");
+        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). require_task_confinement alone does not reserve memory.");
         process.exit(2);
       }
       console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
@@ -1700,7 +1913,8 @@ snapshot_operator_source() {
     echo "FATAL: verifier source snapshot failed its exact marker check" >&2
     return 1
   }
-  OPERATOR_SOURCE_ROOT="$(cd "$snapshot_root" && pwd -P)" || return 1
+  normalize_operator_source_root "$snapshot_root" || return 1
+  snapshot_root="$OPERATOR_SOURCE_ROOT"
   log "operator source/dependency snapshot frozen at $OPERATOR_SOURCE_ROOT — IMMUTABLE for this run"
 }
 snapshot_committed_operator_source() {
@@ -1748,6 +1962,8 @@ snapshot_committed_operator_source() {
   TMPDIR="$OPERATOR_SNAPSHOT_PARENT" node "$source_repo/scripts/source-preview.mjs" verifier-prepare \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" --git-checkout \
     "${input_args[@]}" --receipt "$receipt" || return 1
+  normalize_operator_source_root "$snapshot_root" || return 1
+  snapshot_root="$OPERATOR_SOURCE_ROOT"
   # Caller receipt is outside the archive; verify before loading any exported helper.
   node "$REPO_DIR/scripts/source-preview.mjs" verifier-verify \
     --out "$snapshot_root" --receipt "$receipt" || return 1
@@ -1756,7 +1972,7 @@ snapshot_committed_operator_source() {
   fi
   snapshot_verifier_pinned_deps "$snapshot_root" \
     "$snapshot_root/papercusp-desktop/bin/lib/pinned-deps.sh" || return $?
-  DESKTOP_DIR="$snapshot_root/papercusp-desktop"
+  DESKTOP_DIR="$OPERATOR_SOURCE_ROOT/papercusp-desktop"
   export VERIFY_TAURI_SOURCE_RECEIPT="$receipt"
   log "committed verifier source verified; provenance: $receipt; dependency donor: $REPO_DIR"
 }
@@ -2935,12 +3151,27 @@ done
 [ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
 # Boot-only stop.sh owns the per-run source/dependency snapshot.
 # Assertion teardown retains reports first and owns its own snapshot cleanup.
-[ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK" 2>/dev/null
+SOURCE_CLEANUP_FAILED=0
+if [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then
+  # The original verifier shell has exited in --boot-only mode, so use the
+  # identical proc census/reaper that normal teardown calls.
+  if ! source "$WORK/frozen-source-reaper.sh" \
+    || ! reap_frozen_source_survivors "$OPERATOR_SOURCE_ROOT" "$TAURI_LAUNCH_PROVENANCE"; then
+    echo "FATAL: preserving frozen operator source with process survivors: $OPERATOR_SOURCE_ROOT" >&2
+    SOURCE_CLEANUP_FAILED=1
+  elif ! rm -rf -- "$OPERATOR_SOURCE_WORK"; then
+    echo "FATAL: could not remove frozen operator source work directory: $OPERATOR_SOURCE_WORK" >&2
+    SOURCE_CLEANUP_FAILED=1
+  fi
+fi
 # EI-20191224828837149: the isolated verifier owns a disposable Tauri/WebKit
 # profile too. Remove it on the explicit --boot-only stop path as well as the
 # normal EXIT teardown; otherwise localStorage would outlive the run.
 [ -n "$ISOLATED_WEBVIEW_ROOT" ] && rm -rf "$ISOLATED_WEBVIEW_ROOT" 2>/dev/null
 echo "stopped (display :$DISPLAY_NUM, port $DEV_PORT)"
+if [ "\$SOURCE_CLEANUP_FAILED" -ne 0 ]; then
+  exit 1
+fi
 STOP
   chmod +x "$WORK/stop.sh"
 }
@@ -3067,6 +3298,7 @@ capture_isolated_pg_diagnostics() {
 
 teardown() {
   local ec=$?
+  local stop_rc=0
   [ "$SIGNAL_EXIT_CODE" -ne 0 ] && ec="$SIGNAL_EXIT_CODE"
   # Cleanup can itself run commands which receive a signal. Disable all traps
   # before the first side effect so the EXIT path cannot run twice.
@@ -3094,7 +3326,11 @@ teardown() {
   log "tearing down (exit=$ec)"
   capture_isolated_pg_diagnostics
   write_stop_script
-  "$WORK/stop.sh" >/dev/null 2>&1 || true
+  "$WORK/stop.sh" >/dev/null 2>&1 || stop_rc=$?
+  if [ "$stop_rc" -ne 0 ]; then
+    [ "$ec" -ne 0 ] || ec=1
+    log "FATAL: generated stop script failed (exit=$stop_rc)"
+  fi
   # EI-211769: the dev bridge writes a per-PID authentication token in the
   # runtime temp directory (the same os.tmpdir()/std::env::temp_dir contract
   # tauri-agent-tools uses for discovery).
@@ -3129,7 +3365,10 @@ teardown() {
   # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
   rm -rf "$WORK/spa" 2>/dev/null
   if [ "$artifacts_retained" -eq 1 ]; then
-    cleanup_operator_source_snapshot
+    cleanup_operator_source_snapshot || {
+      [ "$ec" -ne 0 ] || ec=1
+      log "FATAL: could not safely clean frozen operator source; preserving it"
+    }
   else
     release_verifier_disk_reservations
   fi

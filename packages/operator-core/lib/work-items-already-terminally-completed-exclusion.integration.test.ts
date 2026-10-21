@@ -22,7 +22,8 @@
  *     oldest (would otherwise win the oldest-first steal);
  *   • a row with only ONE of the two columns set (a dedup/hygiene flip, per WI-1405's
  *     completion-integrity contract) is NOT excluded — only a GENUINE completion (both set) is;
- *   • a completed row is STILL directly claimable BY ID (the floor only gates self-select);
+ *   • a terminal lifecycle state is refused BY ID without changing the original attribution;
+ *   • an open row carrying completion markers remains a distinct legacy shape, covered by its warning;
  *   • diagnoseClaimNextMiss reports an already-completed-ONLY backlog as DRAINED
  *     (pendingUnclaimed===0, drained===true) — it is not work-queue material AT ALL;
  *   • a real ready item alongside a completed one counts fully (the completed row neither
@@ -68,14 +69,15 @@ async function seedIssue(
     createdTs?: number;
     terminalOwner?: string | null;
     terminalCompletionRef?: string | null;
+    admission?: string | null;
   } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload,
-       terminal_owner, terminal_completion_ref)
+       terminal_owner, terminal_completion_ref, admission)
     VALUES (${H}, ${id}, ${opts.kind ?? 'task'}, ${opts.title ?? `title ${id}`}, ${opts.status ?? 'open'}, ${null},
-       ${WS}, ${opts.createdTs ?? 0}, 0, ${null}, ${opts.terminalOwner ?? null}, ${opts.terminalCompletionRef ?? null})`;
+       ${WS}, ${opts.createdTs ?? 0}, 0, ${null}, ${opts.terminalOwner ?? null}, ${opts.terminalCompletionRef ?? null}, ${opts.admission ?? null})`;
 }
 
 beforeAll(async () => {
@@ -130,24 +132,29 @@ describe('claimNextWorkItem SKIPS an already-genuinely-terminally-completed row 
     expect(got?.id).toBe('WI-partial-ref-only');
   });
 
-  it('a completed row is STILL directly claimable by id (the floor only gates self-select)', async () => {
+  it('a terminal lifecycle state is not claimable by id and keeps its original attribution', async () => {
     await seedIssue('WI-completed-direct', {
       createdTs: 100,
+      status: 'done',
       terminalOwner: 'su-peer',
       terminalCompletionRef: 'Duplicate of WI-3543',
+      admission: 'auto',
     });
+    const { claimIssue } = await import('./issues-engineer');
+    // Exercise the atomic issue writer directly as well as its work-items wrapper:
+    // the SQL terminal predicate must still win if a completion races the wrapper's read.
+    expect(await claimIssue('WI-completed-direct', 'p2p-fleet', { workspaceId: WS })).toBeNull();
     const claimed = await wi.claimWorkItem('WI-completed-direct', 'p2p-fleet', { harness: H });
-    expect(claimed?.id).toBe('WI-completed-direct');
-    expect(claimed?.assignee).toBe('p2p-fleet');
+    expect(claimed).toBeNull();
+    const rows = await db.sql<{ status: string; taken_by: string | null; terminal_owner: string | null }[]>`
+      SELECT status, taken_by, terminal_owner FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-completed-direct'`;
+    expect(rows[0]).toEqual({ status: 'done', taken_by: null, terminal_owner: 'su-peer' });
   });
 
-  // WI-5826: the by-id escape hatch above is deliberate, but for a long time it was also
-  // SILENT — work_items:claim returned a bare ok:true on a finished row, so an agent could not
-  // tell fresh work from finished work. Confirmed live 2026-07-26 (a fleet member claimed a
-  // state='done' row by id and only noticed because they read the returned workItem closely).
-  // Both halves are pinned HERE, together, so a future change cannot quietly drop one: the
-  // claim must keep SUCCEEDING (EI-8972's decision, asserted above) AND must keep WARNING.
-  it('the deliberate by-id claim of a completed row is LOUD — a terminalWarning is attached', async () => {
+  // Terminal states are refused by id; the WI-5826 warning remains for the
+  // inconsistent legacy shape where state is open but completion stamps are present.
+  it('an open row carrying completion markers remains claimable with a terminal warning', async () => {
     const { terminalClaimWarning } = await import('./agent-tools/work_items/claim');
     await seedIssue('WI-completed-warn', {
       createdTs: 100,
@@ -155,7 +162,7 @@ describe('claimNextWorkItem SKIPS an already-genuinely-terminally-completed row 
       terminalCompletionRef: 'Duplicate of WI-3543',
     });
 
-    // The escape hatch still works — this must NOT become a refusal.
+    // The row's lifecycle state is still open, so it is not covered by the terminal-state floor.
     const claimed = await wi.claimWorkItem('WI-completed-warn', 'p2p-fleet', { harness: H });
     expect(claimed?.id).toBe('WI-completed-warn');
 
@@ -171,11 +178,9 @@ describe('claimNextWorkItem SKIPS an already-genuinely-terminally-completed row 
     const live = await wi.claimWorkItem('WI-live-row', 'p2p-fleet', { harness: H });
     expect(terminalClaimWarning(live)).toBeNull();
 
-    // "Finished" has TWO expressions and both must warn. The row above is the
-    // terminal_owner+ref shape (state may still be 'open'); this is the terminal-STATE shape,
-    // which is what was actually reported live on 2026-07-26.
-    expect(terminalClaimWarning({ state: 'done' })).toMatch(/ALREADY DONE/i);
-    expect(terminalClaimWarning({ state: 'resolved' })).toBeTruthy();
+    // Terminal lifecycle states are refused before any successful-claim warning is computed.
+    expect(terminalClaimWarning({ state: 'done' })).toBeNull();
+    expect(terminalClaimWarning({ state: 'resolved' })).toBeNull();
 
     // …and the PARTIAL shapes must stay silent, matching EI-8972's rule that only ONE of the
     // two terminal columns is NOT a genuine completion (it has its own tests above asserting

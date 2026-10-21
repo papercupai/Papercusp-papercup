@@ -25,9 +25,16 @@ import { createFrozenCandidateQueue } from "@papercusp/operator-core/lib/release
 import {
   augmentWithRepairTickLegs,
   checkNpmScript,
+  DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
+  FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS,
   isTransientSetupLockContention,
   measureRepairTickLegs,
   NON_TEST_GATE_SCRIPTS,
+  POST_VERDICT_DEADLINE_RECORD_BOUND_MS,
+  POST_VERDICT_FINALIZE_WATCHDOG_MS,
+  POST_VERDICT_WATCHDOG_MS,
+  REPAIR_TICK_LEGS_ABORT_GRACE_MS,
+  REPAIR_TICK_LEGS_DEADLINE_MS,
   REPAIR_TICK_SETUP_LOCK_MAX_RETRIES,
   type CheckpointDeps,
   type CheckpointResult,
@@ -122,6 +129,39 @@ describe("measureRepairTickLegs", () => {
     expect(measured!.failingSignatures).toEqual(["b", "c"]);
     expect(measured!.ok).toBe(false);
     expect(measured!.head).toBe(HEAD);
+  });
+
+  // WI-6554700010018556: a deadline abort mid-pass yields an UNMEASURED tick — never a partial
+  // leg set reported as the complete failing set — and no later leg starts.
+  it("returns null once aborted mid-pass and starts no later leg; logs each leg on entry and exit", async () => {
+    const controller = new AbortController();
+    const runScript = vi.fn(async (script: string) => {
+      if (script === "s2") {
+        controller.abort();
+        throw new Error("npm run s2 aborted by caller deadline");
+      }
+      return { code: 0, tail: "" };
+    });
+    const log = vi.fn((_line: string) => {});
+    const io = makeIo({ runScript, signal: controller.signal, log });
+    const measured = await measureRepairTickLegs(io, HEAD, { a: ["s1"], b: ["s2"], c: ["s3"] });
+    expect(measured).toBeNull();
+    expect(runScript.mock.calls.map((c) => c[0])).toEqual(["s1", "s2"]);
+    const lines: string[] = log.mock.calls.map((c) => String(c[0]));
+    expect(lines).toContain("repair-tick leg 1/3 s1 started");
+    expect(lines.some((l) => /^repair-tick leg 1\/3 s1 exit 0 in \d+ms$/.test(l))).toBe(true);
+    expect(lines).toContain("repair-tick leg 2/3 s2 started");
+    expect(lines.some((l) => l.includes("repair-tick legs aborted during s2"))).toBe(true);
+    expect(lines.some((l) => l.includes("s3"))).toBe(false);
+  });
+
+  it("returns null without setting up the tree when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const io = makeIo({ signal: controller.signal });
+    expect(await measureRepairTickLegs(io, HEAD, { a: ["s1"] })).toBeNull();
+    expect(io.setupTree).not.toHaveBeenCalled();
+    expect(io.runScript).not.toHaveBeenCalled();
   });
 
   it("reports ok with no outputTail noise when every leg passes", async () => {
@@ -404,8 +444,10 @@ describe("augmentWithRepairTickLegs", () => {
     // exactly the registry — this hold's queue holds `a/one.test.ts` and nothing re-runnable.
     // WI-10004340: the frozen queue's clock rides along, so a guard leg measured on the
     // hold tick judges sidecar reviewBy as of the freeze, not the wall clock.
+    // WI-6554700010018556: plus the legs-deadline abort signal.
     expect(runRepairTickLegs).toHaveBeenCalledWith(HEAD, Object.keys(NON_TEST_GATE_SCRIPTS), {
       frozenCandidateOpenedAtMs: 1_000,
+      signal: expect.any(AbortSignal),
     });
     expect(result.repairTickLegs).toEqual(measured);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("FAILING lint:tsc"));
@@ -481,6 +523,83 @@ describe("augmentWithRepairTickLegs", () => {
     const result = await augmentWithRepairTickLegs(base, { runRepairTickLegs, log: vi.fn() });
     expect(result).toBe(base);
     expect(result.repairTickLegs).toBeUndefined();
+  });
+
+  // WI-6554700010018556: run fc4e96c0 recorded its verdict (~22:15Z), entered these legs under
+  // the 60m post-verdict ceiling, and was SIGKILLed by the self-watchdog at 23:15Z — so its
+  // terminal read `error`. A leg pass that never finishes must NOT hold the run past its bound.
+  describe("legs deadline (WI-6554700010018556)", () => {
+    it("a measurement that never finishes is aborted at the deadline and the tick stays unmeasured", async () => {
+      let seenSignal: AbortSignal | undefined;
+      const runRepairTickLegs = vi.fn(
+        (_ref: string, _ids: readonly string[], opts?: { signal?: AbortSignal }) =>
+          new Promise<RepairTickLegs | null>((resolve) => {
+            seenSignal = opts?.signal;
+            // Unwinds ONLY when aborted, like a killed leg.
+            opts?.signal?.addEventListener("abort", () => resolve(null), { once: true });
+          }),
+      );
+      const recordPostVerdictStepDeadline = vi.fn(async () => {});
+      const log = vi.fn();
+      const base = holdResult();
+      const startedAt = Date.now();
+      const result = await augmentWithRepairTickLegs(
+        base,
+        { runRepairTickLegs, log, recordPostVerdictStepDeadline },
+        { deadlineMs: 30, abortGraceMs: 1_000 },
+      );
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(result).toBe(base);
+      expect(result.repairTickLegs).toBeUndefined();
+      expect(seenSignal?.aborted).toBe(true);
+      expect(log).toHaveBeenCalledWith(
+        expect.stringMatching(/repair-tick legs deadline-exceeded .*in-flight leg aborted; tick stays unmeasured/),
+      );
+      expect(recordPostVerdictStepDeadline).toHaveBeenCalledTimes(1);
+      expect(recordPostVerdictStepDeadline).toHaveBeenCalledWith(
+        expect.objectContaining({ label: "P-009 repair-tick legs", deadlineMs: 30 }),
+      );
+    });
+
+    it("a measurement that ignores the abort still cannot hold the run past deadline + grace", async () => {
+      const runRepairTickLegs = vi.fn(() => new Promise<RepairTickLegs | null>(() => {}));
+      const log = vi.fn();
+      const base = holdResult();
+      const result = await augmentWithRepairTickLegs(
+        base,
+        { runRepairTickLegs, log },
+        { deadlineMs: 20, abortGraceMs: 20 },
+      );
+      expect(result).toBe(base);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("did not unwind within 20ms"));
+    });
+
+    it("a measurement that finishes inside the deadline is attached exactly as before", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const recordPostVerdictStepDeadline = vi.fn(async () => {});
+      const result = await augmentWithRepairTickLegs(
+        holdResult(),
+        { runRepairTickLegs, log: vi.fn(), recordPostVerdictStepDeadline },
+        { deadlineMs: 5_000 },
+      );
+      expect(result.repairTickLegs).toEqual(measured);
+      expect(recordPostVerdictStepDeadline).not.toHaveBeenCalled();
+    });
+
+    it("the legs deadline + every other bounded post-verdict step + terminal finalize fit inside the post-verdict ceiling", () => {
+      const postVerdictBudgetMs =
+        DERIVED_FREEZE_DISPOSITION_DEADLINE_MS +
+        REPAIR_TICK_LEGS_DEADLINE_MS +
+        REPAIR_TICK_LEGS_ABORT_GRACE_MS +
+        FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS +
+        // one bounded overrun record per bounded step
+        3 * POST_VERDICT_DEADLINE_RECORD_BOUND_MS +
+        POST_VERDICT_FINALIZE_WATCHDOG_MS;
+      expect(postVerdictBudgetMs).toBeLessThanOrEqual(POST_VERDICT_WATCHDOG_MS);
+      // And still roomy above the measured ~20m baseline pass (1,170,263ms at 19:45Z), so the
+      // bound cuts a runaway, not an ordinary tick.
+      expect(REPAIR_TICK_LEGS_DEADLINE_MS).toBeGreaterThanOrEqual(30 * 60_000);
+    });
   });
 
   it("swallows a thrown measurement — the hold verdict must never break on a leg run", async () => {

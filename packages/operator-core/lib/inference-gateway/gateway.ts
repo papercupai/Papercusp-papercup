@@ -9761,6 +9761,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let preBody: Buffer | undefined;
     let requestModel: string | null = null;
     let requestEffort: string | null = null;
+    let requestNativeCorrelation: ReturnType<typeof readGatewayNativeCorrelation> | null = null;
     const outputLimitHeader = req.headers[REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER];
     const hostOutputLimit = carryTrialRequests.has(req) ? carryTrial?.outputTokenLimit : undefined;
     const requiresOutputTokenLimit = outputLimitHeader !== undefined || hostOutputLimit !== undefined;
@@ -9799,6 +9800,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const parsed = JSON.parse(preBody.toString('utf8')) as Record<string, unknown>;
         // Same parsed request for bearer, OAuth and CLI routes, before model
         // policy/account selection; diagnostic ids are never routing inputs.
+        requestNativeCorrelation = readGatewayNativeCorrelation(parsed);
         stageSpan?.setNativeCorrelation(parsed);
         if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object')
           throw new Error('request body must be a JSON object');
@@ -9874,6 +9876,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (!requestModel || !acceptedCodexModelAllows(operationModelPolicy.policy, requestModel, requestEffort)) {
           sendJson(res, 403, { type: 'error',
             error: { type: 'permission_error', message: 'requested model or effort is outside the accepted Codex operation policy' },
+            gateway: true }, { 'x-should-retry': 'false' });
+          return;
+        }
+        // A worker's accepted operation is bound to its applied native session.
+        // Codex may create hidden auxiliary threads (for example, title
+        // generation) under the same owner; allowing those requests through
+        // this policy would append provider attestations to the worker receipt
+        // with the wrong native session. Correlation is diagnostic input, but
+        // when it is present it is a required boundary check.
+        if (requestNativeCorrelation?.status === 'observed' &&
+            requestNativeCorrelation.threadId !== operationModelPolicy.attestation?.nativeSessionId) {
+          sendJson(res, 403, { type: 'error',
+            error: { type: 'permission_error', message: 'accepted operation native session differs from the worker binding' },
             gateway: true }, { 'x-should-retry': 'false' });
           return;
         }

@@ -64,7 +64,7 @@ export default defineTool({
     notWhen:
       'When the user knows the exact keyword they want. `search:fulltext` is faster + cheaper there (no embedding API call). For structured queries (tasks/goals/projects rows by title), use `search:query`.',
     chaining:
-      'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a hit.',
+      'For planned-work discovery include scope:["plan","work_item","decisions"]; defaults exclude plans/work-items. Read scope_residue before any absence claim. Fetch plan hits with plans:get.',
     seeAlso: [
       'search:fulltext (faster + cheaper keyword recall)',
       'search:query (structured rows by title)',
@@ -250,8 +250,9 @@ export default defineTool({
     // and none of them says which corpora were never in scope at all. A zero
     // from a correctly-working, fully-embedded source still reads as "this does
     // not exist" when the content simply lives in a corpus the caller did not
-    // name. Zero-hit only, and derived from SEARCH_SOURCES; see ./scope-residue.
-    const residue = totalHits === 0 ? scopeResidue(scope) : null;
+    // name. Hits in one corpus do not establish coverage of another; disclose
+    // omissions on positive pages too, derived from SEARCH_SOURCES.
+    const residue = scopeResidue(scope);
 
     // A zero from a real search with no query embedder is not an observed
     // absence. In hybrid mode the lexical fallback may still produce a valid

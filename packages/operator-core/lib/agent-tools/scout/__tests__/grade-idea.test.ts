@@ -640,6 +640,42 @@ describe('agent-review grade lifecycle (abolish-human-review D-003/P-004)', () =
     });
   });
 
+  it('passes an accepted repeat justification to reconciliation for durable review history', async () => {
+    const preflight = vi.fn(async () => ({
+      applicable: true,
+      workItemId: 'WI-42',
+      state: pending,
+      repeatJustificationAccepted: true,
+    }));
+    const reconcile = vi.fn(async () => ({
+      workItemId: 'WI-42',
+      status: 'revision-requested' as const,
+      round: 2,
+      changed: true,
+    }));
+    const deps = fakeDeps({ preflightAgentReviewGrade: preflight, reconcileAgentReviewGrade: reconcile });
+
+    await runGradeIdea({
+      ideaId: 'idea-1',
+      grade: 3,
+      feedback: 'The retry path still lacks current evidence.',
+      repeatJustification: 'The new routines evidence does not cover the separate mounted-volume condition.',
+    }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(preflight).toHaveBeenCalledWith({
+      ideaId: 'idea-1',
+      grade: 3,
+      gradedBy: 'su-reviewer',
+      feedback: 'The retry path still lacks current evidence.',
+      repeatJustification: 'The new routines evidence does not cover the separate mounted-volume condition.',
+    });
+    expect(reconcile).toHaveBeenCalledWith({
+      ideaId: 'idea-1',
+      gradedBy: 'su-reviewer',
+      repeatJustification: 'The new routines evidence does not cover the separate mounted-volume condition.',
+    });
+  });
+
   it('writes an accepted grade, reconciles the work item, and returns the lifecycle transition', async () => {
     const reconciled = {
       workItemId: 'WI-42',

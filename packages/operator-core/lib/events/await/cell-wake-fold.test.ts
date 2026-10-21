@@ -108,6 +108,17 @@ describe('the healthy fold', () => {
     expect(env).toEqual({ workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', role: 'su' });
   });
 
+  // WI-6554700010018677: a real delivery carries the coordination namespace ('default'), not
+  // the reader's tenant. The watch row is stamped with the tenant at registration.
+  it("reads under the WATCH ROW's tenant, not the delivery's coordination namespace", async () => {
+    getPredicateWatchMock.mockResolvedValue({ ...ROW, workspaceId: 'tenant-ws' });
+
+    await prepareCellWakeFold({ eventKey: 'predicate:w1', workspaceId: 'default' });
+
+    const [, , env] = readCellMock.mock.calls[0];
+    expect(env).toEqual({ workspaceId: 'tenant-ws', harnessSlug: 'papercusp', role: 'su' });
+  });
+
   it('re-derives the cell from the REGISTRY at delivery time, not from the fire payload', async () => {
     await prepareCellWakeFold(INPUT);
 

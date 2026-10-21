@@ -1803,6 +1803,53 @@ describe('background job deadlines (WI-6677)', () => {
     }
   });
 
+  it('RTK budget identity: budgets the original test while executing and recording the rewritten command', async () => {
+    const originalCommand = 'npm run test:e2e:isolated -- e2e/content-reading.spec.ts';
+    const command = 'printf rewritten-command-executed';
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({ command, originalCommand, cwd: STATE, stateDir: STATE }, 10_000);
+      try {
+        expect(begin).toHaveBeenLastCalledWith({
+          class: 'bash-job', runtimeMaxSec: 10,
+          memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX,
+        });
+        expect(complete.mock.lastCall?.[1]).toMatchObject({
+          argv: ['bash', '-o', 'pipefail', '-c', command],
+          memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX,
+          detail: { workloadClass: 'test-run', budgetPolicy: 'capability-bash-test-v1' },
+        });
+        await waitForStatus(job.id);
+        expect(job.status).toBe('completed');
+        expect(job.exitCode).toBe(0);
+        expect(readJobOutput(job)).toBe('rewritten-command-executed');
+      } finally { killJob(job); }
+    } finally {
+      begin.mockRestore(); complete.mockRestore();
+    }
+  });
+
+  it('RTK budget identity: a rewritten test-looking command cannot promote an original non-test command', () => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    try {
+      // STATE has no package.json or verifier: no native/browser work can start.
+      const job = startBackground({
+        command: 'npm run test:e2e:isolated', originalCommand: 'printf diagnostic', cwd: STATE, stateDir: STATE,
+      }, 5_000);
+      try {
+        expect(begin).toHaveBeenLastCalledWith({ class: 'bash-job', runtimeMaxSec: 5 });
+        const spec = complete.mock.lastCall?.[1];
+        expect(spec).not.toHaveProperty('memoryMaxBytes');
+        expect(spec).not.toHaveProperty('tasksMax');
+        expect(spec?.detail).toMatchObject({ workloadClass: 'other', budgetPolicy: 'deadline-only-v1' });
+      } finally { killJob(job); }
+    } finally {
+      begin.mockRestore(); complete.mockRestore();
+    }
+  });
+
   it('keeps the finite test task budget above the latest measured legitimate subtree peak', () => {
     // A real background affected run reached the old 2,048 cgroup ceiling and
     // failed before any suite verdict existed. Pin the safety relationship
@@ -1877,6 +1924,47 @@ describe('background job deadlines (WI-6677)', () => {
     } finally {
       begin.mockRestore();
       complete.mockRestore();
+    }
+  });
+
+  it('classifies maintained verifier entrypoints without classifying diagnostic mentions', () => {
+    for (const command of [
+      'scripts/run-operator-e2e-isolated.sh e2e/ongoing-work-ui.spec.ts',
+      "env PAPERCUSP_TEST_RUN_HARNESS=papercusp bash scripts/run-operator-e2e-isolated.sh e2e/ongoing-work-ui.spec.ts --grep 'ongoing work stays visible|mobile strip preserves' --workers=1",
+      'VERIFY_TAURI_ISOLATED_DB=1 bash ./scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+      'cd apps/operator && bash ../../scripts/run-operator-e2e-isolated.sh e2e/content-reading.spec.ts',
+      'env -- FOO=1 bash -- /workspace/papercusp/scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+    ]) expect(isBackgroundTestCommand(command), command).toBe(true);
+    for (const command of [
+      'rg scripts/run-operator-e2e-isolated.sh',
+      'printf "bash scripts/verify-tauri-headless.sh"',
+      'cat scripts/verify-tauri-headless.sh',
+      'bash scripts/verify-tauri-headless.sh.backup',
+      'bash scripts/unrelated.sh',
+    ]) expect(isBackgroundTestCommand(command), command).toBe(false);
+  });
+
+  it.each([
+    "env PAPERCUSP_TEST_RUN_HARNESS=papercusp bash scripts/run-operator-e2e-isolated.sh e2e/ongoing-work-ui.spec.ts --grep 'ongoing work stays visible|mobile strip preserves' --workers=1",
+    'bash scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+  ])('budgets a maintained verifier before preparation: %s', (command) => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    try {
+      // STATE has no scripts directory: exercise real enrollment without booting a verifier.
+      const job = startBackground({ command, cwd: STATE, stateDir: STATE }, 45_000);
+      try {
+        expect(begin).toHaveBeenLastCalledWith({
+          class: 'bash-job', runtimeMaxSec: 45,
+          memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX,
+        });
+        expect(complete.mock.lastCall?.[1]).toMatchObject({
+          memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX,
+          detail: { workloadClass: 'test-run', budgetPolicy: 'capability-bash-test-v1' },
+        });
+      } finally { killJob(job); }
+    } finally {
+      begin.mockRestore(); complete.mockRestore();
     }
   });
 

@@ -54,4 +54,12 @@ describe('buildItemLine — deliverable override (plan-verification-profiles P-0
     expect(items[0]?.blockedBy).toEqual(['P-001']);
     expect(items[0]?.text).toBe('write the runbook');
   });
+
+  it('writes a namespaced item type the parser reads back (plan-item-types-registry-cupboard P-002)', () => {
+    const line = buildItemLine('P-007', 'draft the clause', [], 'normal', 'acme/legal-review');
+    expect(line).toBe('- **P-007** `todo` draft the clause deliverable: acme/legal-review');
+    const items = parsePlan('## Phase 1\n\n' + line).items;
+    expect(items[0]?.deliverable).toBe('acme/legal-review');
+    expect(items[0]?.text).toBe('draft the clause');
+  });
 });

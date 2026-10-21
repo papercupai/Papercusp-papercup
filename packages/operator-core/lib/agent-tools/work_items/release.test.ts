@@ -10,6 +10,7 @@
  * silently cleared.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ExternalConditionReachability } from '../../external-condition-reachability';
 
 const identity = vi.hoisted(() => ({ ownerId: 'me' }));
 vi.mock('../coordination/identity', () => ({
@@ -51,7 +52,7 @@ const checkpointStore = vi.hoisted(() => ({
 vi.mock('../../work-item-checkpoint', () => checkpointStore);
 
 const reachabilityM = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (): Promise<ExternalConditionReachability> => ({
     verdict: 'reachable' as const,
     basis: 'live-resolver' as const,
     authoritative: true,
@@ -715,6 +716,44 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
       trigger: 'deploy:ready:staging',
       reachability: 'reachable',
     });
+  });
+
+  // event-wait-settlement-2026-10-20 P-006 (D-001 item 2; R-11, R-20): a durable park's trigger
+  // is refused at write when no fire can prove it, or when it already fired — before anything
+  // is released. (Previously both were accepted and only stamped reachability:'blocked'.)
+  it('AUTO-BAR-R-11-P-006: refuses a durable park whose trigger is a broad wake, names the options, and releases nothing', async () => {
+    reachabilityM.mockResolvedValueOnce({
+      verdict: 'unknown', basis: 'unmeasured', authoritative: false,
+      evidence: 'trigger "coord:inbox-wake:me" may wake a consumer but cannot establish the specific release condition',
+      checkedAt: '2026-10-20T12:00:00.000Z', uncertifiedReason: 'broad',
+    });
+    const b = await body({
+      id: 'WI-1', claimHold: true, reason: 'wait for a reply',
+      claimHoldRelease: { condition: 'the reviewer replies', trigger: 'coord:inbox-wake:me' },
+    });
+
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-1', code: 'wait_ref_unprovable' });
+    expect(b.results[0].error).toMatch(/park trigger 'coord:inbox-wake:me' is a broad wake/);
+    expect(b.results[0].error).toMatch(/announced gate.*predicate watch.*recheckAt/s);
+    expect(releaseM).not.toHaveBeenCalled();
+    expect(holdM).not.toHaveBeenCalled();
+  });
+
+  it('AUTO-BAR-R-20-P-006: refuses a durable park whose proving trigger already fired, as already satisfied', async () => {
+    reachabilityM.mockResolvedValueOnce({
+      verdict: 'reachable', basis: 'fired', authoritative: true,
+      evidence: 'event fired at 2026-10-20T12:00:00.000Z', firedAt: '2026-10-20T12:00:00.000Z',
+      checkedAt: '2026-10-20T12:30:00.000Z',
+    });
+    const b = await body({
+      id: 'WI-1', claimHold: true, reason: 'wait for the deploy',
+      claimHoldRelease: { condition: 'abc123def is deployed', trigger: 'release:deployed:abc123def' },
+    });
+
+    expect(b.results[0]).toMatchObject({ ok: false, code: 'wait_ref_already_satisfied' });
+    expect(b.results[0].error).toMatch(/already fired \(2026-10-20T12:00:00\.000Z\)/);
+    expect(releaseM).not.toHaveBeenCalled();
+    expect(holdM).not.toHaveBeenCalled();
   });
 
   it('claimHold:false clears a prior hold', async () => {

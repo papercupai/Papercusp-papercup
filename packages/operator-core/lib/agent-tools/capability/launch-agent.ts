@@ -135,6 +135,8 @@ export interface GradingAuditTaskDetail {
 
 /** Server-only direct-handler seam; it is intentionally absent from the MCP schema. */
 export const INTERNAL_GRADING_AUDIT_TASK_DETAIL: unique symbol = Symbol('internal-grading-audit-task-detail');
+/** Verified server-owned endpoint; never an MCP caller-supplied URL override. */
+export const INTERNAL_GRADING_AUDIT_RUNTIME: unique symbol = Symbol('internal-grading-audit-runtime');
 
 /** Private controller seam, absent from the public tool schema. */
 export const INTERNAL_SCOPED_INFERENCE_GATEWAY: unique symbol = Symbol('internal-scoped-inference-gateway');
@@ -879,6 +881,22 @@ export default defineTool({
     const gradingAuditTaskDetail = (ctx as typeof ctx & {
       [INTERNAL_GRADING_AUDIT_TASK_DETAIL]?: GradingAuditTaskDetail;
     })[INTERNAL_GRADING_AUDIT_TASK_DETAIL];
+    const auditRuntime = (ctx as typeof ctx & {
+      [INTERNAL_GRADING_AUDIT_RUNTIME]?: import('../../release/grading-audit-runtime').GradingAuditRuntimeBinding;
+    })[INTERNAL_GRADING_AUDIT_RUNTIME];
+    if (auditRuntime) {
+      try {
+        const endpoint = new URL(auditRuntime.baseUrl);
+        if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || !endpoint.port ||
+            endpoint.pathname !== '/' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
+            !auditRuntime.taskId || !auditRuntime.evaluatorBuild?.sha || !auditRuntime.evaluatorBuild.version ||
+            !/^[a-f0-9]{64}$/i.test(auditRuntime.bundleSha256) ||
+            !Number.isSafeInteger(auditRuntime.expiresAtSec) || auditRuntime.expiresAtSec <= Math.floor(Date.now() / 1000) ||
+            args.mcpTarget !== 'spawn-host' || !args.headless || args.fork) {
+          return err('Internal grading-audit runtime binding is invalid; no process was spawned.');
+        }
+      } catch { return err('Internal grading-audit runtime binding is invalid; no process was spawned.'); }
+    }
     // Internal seam used by fleet:respawn-member: a replacement must be
     // identity-correlated before it is spawned, because concurrent respawns
     // cannot safely identify one another by roster ordering after launch.
@@ -1818,7 +1836,7 @@ export default defineTool({
         workspaceId,
         slug,
         operatorBaseUrl: spawnHostOperatorBaseUrl,
-        ...(args.mcpTarget === 'spawn-host' ? { agentMcpBaseUrl: spawnHostOperatorBaseUrl } : {}),
+        ...(args.mcpTarget === 'spawn-host' ? { agentMcpBaseUrl: auditRuntime?.baseUrl ?? spawnHostOperatorBaseUrl } : {}),
         // A launched AGENT is an MCP-connected console (unlike capability:terminal,
         // which just runs a command) — it needs the superuser .mcp.json.
         skipMcpJson: false,
@@ -1995,6 +2013,9 @@ export default defineTool({
       if (sourceAction || count !== 1 || foldedConfigs[0]?.headless !== true) {
         return err('Grading-audit task metadata requires one fresh headless launch; no process was spawned.');
       }
+    }
+    if (auditRuntime && (sourceAction || count !== 1 || foldedConfigs[0]?.headless !== true)) {
+      return err('Internal grading-audit runtime binding requires one fresh headless launch; no process was spawned.');
     }
     if (scopedGateway && (foldedConfigs.length !== 1 || foldedConfigs.some(config => config.agent !== 'codex'))) {
       return err('Scoped inference gateway requires the supported Codex transport.');
@@ -2455,8 +2476,8 @@ export default defineTool({
                 launchedBy: callerOwnerId ?? undefined,
                 fleetSlug,
                 ...(gradingAuditTaskDetail
-                  ? { ledgerDetail: { gradingAudit: gradingAuditTaskDetail } }
-                  : {}),
+                  ? { ledgerDetail: { gradingAudit: gradingAuditTaskDetail, ...(auditRuntime ? { gradingAuditRuntimeBinding: auditRuntime } : {}) } }
+                  : auditRuntime ? { ledgerDetail: { gradingAuditRuntimeBinding: auditRuntime } } : {}),
                 kickoffProof: requireKickoffProof,
                 // Fresh members and successors are explicitly pre-pinned. An
                 // in-place resume re-attaches its source owner. Each fork's

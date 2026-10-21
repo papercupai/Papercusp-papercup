@@ -63,6 +63,16 @@ describe('resolveWindowIdForTitleFragment — Windows-desktop-host branch', () =
     expect(await resolveWindowIdForTitleFragment('abc-123')).toBeNull();
   });
 
+  it('refuses an owner fragment that appears in more than one window title', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(true);
+    listWindowsByTitleMock.mockResolvedValueOnce([
+      { hwnd: '0x1', pid: 111, title: 'Papercup — su-807ee' },
+      { hwnd: '0x2', pid: 222, title: 'Taking over su-807ee9d7-5fd7-40ee-af99-6f37d89faa7b per owner request' },
+    ]);
+    const { resolveWindowIdForTitleFragment } = await import('./adv-session-windows');
+    expect(await resolveWindowIdForTitleFragment('su-807ee')).toBeNull();
+  });
+
   it('fails soft to null if the helper throws', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
     listWindowsByTitleMock.mockRejectedValueOnce(new Error('powershell exploded'));
@@ -306,6 +316,15 @@ describe('matchWindowIdInWmctrlOutput — full-title match (owner-hit 2026-07-11
   it('returns null when no title contains the fragment', async () => {
     const { matchWindowIdInWmctrlOutput } = await import('./adv-session-windows');
     expect(matchWindowIdInWmctrlOutput(SAMPLE, 'su-99999')).toBeNull();
+  });
+
+  it('refuses an ambiguous short owner id instead of taking the first matching terminal', async () => {
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-session-windows');
+    const ambiguous = [
+      '0x01a0000a  2 12345 dev-box-linux ▶ · ☕2 · 3p · su-807ee · 🔭 target terminal',
+      '0x01b0000a  1 6789 dev-box-linux 🔭 intent mentions su-807ee9d7-5fd7-40ee-af99-6f37d89faa7b',
+    ].join('\n');
+    expect(matchWindowIdInWmctrlOutput(ambiguous, 'su-807ee')).toBeNull();
   });
 
   it('does NOT match the host/pid columns — only the title (no wrong-window kill)', async () => {

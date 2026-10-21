@@ -129,6 +129,7 @@ describe('native requests through the shared PUI card correlator', () => {
     expect(f.answer({ picks: ['1'] }).ok).toBe(true);
     await expect(pending).resolves.toMatchObject({ behavior: 'deny',
       message: expect.stringContaining('"Keep or change?":"Change"') });
+    await expect(pending).resolves.toMatchObject({ message: expect.stringContaining('source is not established') });
     expect(f.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
   });
 

@@ -149,6 +149,13 @@ const PACKAGE_TEST_SCRIPT_RE = new RegExp(
   `${TEST_SEGMENT_PREFIX}(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?test(?::[A-Za-z0-9_.-]+)*(?:\\s|$)`,
   'i',
 );
+// Maintained verification scripts are test launchers too. Confinement alone
+// supplies a deadline; these entrypoints also need the finite copy-memory budget.
+const MAINTAINED_VERIFIER_RE = new RegExp(
+  `${TEST_SEGMENT_PREFIX}(?:env\\s+(?:--\\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\\S+\\s+)*)?` +
+    String.raw`(?:bash\s+(?:--\s+)?)?(?:\./|(?:\.\./)+|/(?:[^\s"';&|]+/)*)?scripts/(?:run-operator-e2e-isolated|verify-tauri-headless)\.sh(?:\s|$)`,
+  'i',
+);
 
 /** Conservative shell-segment classifier for the test budget above.
  *
@@ -158,7 +165,7 @@ const PACKAGE_TEST_SCRIPT_RE = new RegExp(
  * policy classification only; the command is still executed byte-for-byte.
  */
 export function isBackgroundTestCommand(command: string): boolean {
-  return DIRECT_TEST_RUNNER_RE.test(command) || PACKAGE_TEST_SCRIPT_RE.test(command);
+  return DIRECT_TEST_RUNNER_RE.test(command) || PACKAGE_TEST_SCRIPT_RE.test(command) || MAINTAINED_VERIFIER_RE.test(command);
 }
 
 /** Reserved child-env provenance for long-running physical drills. Only the
@@ -2108,6 +2115,9 @@ export function formatSelfRedirectAdvice(
 
 export interface RunOptions {
   command: string;
+  /** Server-owned authorized command before output rewriting. Policy classification
+   * uses this identity; command remains the exact text to execute and record. */
+  originalCommand?: string;
   cwd: string;
   stateDir: string | undefined;
   /** Server-owned dispatch identity for recovery when the launch response is lost. */
@@ -2673,7 +2683,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // the same task and is reaped at the caller-selected deadline; a service that
   // needs a separate lifetime belongs behind its dedicated launcher/chokepoint.
   const runtimeMaxSec = Math.max(1, Math.ceil(effectiveTimeoutMs / 1000));
-  const isTestRun = isBackgroundTestCommand(opts.command);
+  const isTestRun = isBackgroundTestCommand(opts.originalCommand ?? opts.command);
   const testBudget = isTestRun ? { memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX } : {};
   const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec, ...testBudget });
   if (opts.requireTaskConfinement && (!enrolment.enrolled || !enrolment.confined || !enrolment.scopeUnit)) {

@@ -115,7 +115,12 @@ const COMMON_WORDS = new Set(
     'see sees seeing say said says saying know knows known think thinks thought made make makes take takes ' +
     'taken gets goes went left right keep keeps kept lets put puts rest others else enough sure yet far long ' +
     'later soon today currently current existing exists exist pre non via everything anything something nothing ' +
-    'everyone anyone someone whole half lot lots bit bits stuff'
+    'everyone anyone someone whole half lot lots bit bits stuff ' +
+    // 2026-10-20 live backtest (WI-6554700010018142): these words formed
+    // recurring completion/review boilerplate pairs, not coined fleet terms.
+    // Keep the filter pair-based so a domain word still preserves a useful
+    // phrase (for example, "green gate" and "bug drain").
+    'root cause head public release item created files changed build system wide remains open revision requested'
   ).split(/\s+/),
 );
 
@@ -171,6 +176,10 @@ function extractTermsFromSanitized(text: string): Set<string> {
     const words = m[0].split('-');
     if (words.length > MAX_TERM_WORDS) continue;
     if (words.length === 2 && GRAMMATICAL_PREFIXES.has(words[0])) continue;
+    // Hyphenated boilerplate (for example, "root-cause") is still ordinary
+    // prose. Apply the same pair filter as the spaced path; coined terms such
+    // as "cold-wake" and "bug-drain" retain a domain-ish half and survive.
+    if (words.length === 2 && words.every((word) => COMMON_WORDS.has(word))) continue;
     if (words.every((w) => !STOPWORDS.has(w))) terms.add(words.join(' '));
   }
 

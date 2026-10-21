@@ -6,17 +6,22 @@
  * `external-blockers.ts` — clearing "never touches internal work-item dependency
  * edges".
  *
- * There IS exactly one automatic clear path, and knowing its shape is what sets
- * this guard's bounds: `reconcileEventExternalBlockers` (work-items.ts), called
- * from the event-await store when a key fires, clears blockers whose row matches
- * `kind:'event'` AND whose `ref` equals the fired event key. So an EVENT blocker
- * naming a real key self-heals; a gate/runtime/human blocker never does, and an
- * event blocker whose ref is not a real key never does either.
+ * Every automatic clear of an event or gate row is keyed on a FIRED EVENT KEY equal to
+ * the row's `ref`, and only when that key passes `fireCertifiesCondition`
+ * (external-condition-reachability.ts): emit-time settlement when a proving key fires,
+ * announced-gate settlement, the blocker re-check sweep, and its recovery pass for a
+ * missed fire (event-wait-settlement-2026-10-20 P-001..P-005). Runtime and human rows
+ * are never cleared by an event; they clear by their typed next action or re-check.
  *
  * A bare id such as `WI-40086` therefore matches nothing that will ever fire — it
  * is INERT TEXT: no event key, nothing to await, nothing to clear. The blocked
  * row waits forever. This was not hypothetical — 22 papercusp rows sat blocked on
  * already-terminal items, 18 of them on WI-40086 alone, several parked for weeks.
+ *
+ * This guard owns ONLY the bare-id shape. Whether a non-id event/gate ref can be proved
+ * by a fire at all is decided separately, at the same write, by `admitWaitRef`
+ * (wait-ref-admission.ts, P-006), which refuses broad, uncatalogued, free-text and
+ * already-fired refs.
  *
  * SCOPE, and why it is narrower than it could be — both bounds are set by the
  * measured population, not by taste:
@@ -26,15 +31,18 @@
  *     accepted: `WI-212675 / gate-red-streak:papercusp`,
  *     `gate.greenCheckpoint / WI-212675`, `EI-19458231972377007-owner-provenance`,
  *     `owner-capability:EI-8574:external-service-action`. Only a component that
- *     is EXACTLY an id — carrying no other information — is refused.
+ *     is EXACTLY an id — carrying no other information — is refused HERE. (Since
+ *     P-006 most of those free-text gate refs are still refused at the same write,
+ *     by `admitWaitRef`, because no fire can prove them; the qualifier form itself
+ *     is not this guard's concern.)
  *
  *  2. EVENT KEYS ARE NOT REFUSED. `work-item:done:<id>` is a real, registered
- *     await key with a working clear path (observed cleared in live rows for
- *     WI-40509 and WI-41441). Refusing it would break a pattern that works. Its
- *     one bad case — the referent is DROPPED, so `work-item:done` can never fire
- *     and the row is permanently unreachable (observed: EI-21564741982937381 →
- *     EI-21568004123678857, dropped) — is a different defect, in event emission,
- *     and is deliberately NOT addressed by this guard.
+ *     completion key. A ref made ONLY of such keys and bare ids is not written as an
+ *     external row at all: set_blocker converts it to a `blocks` edge
+ *     (`pureWorkItemDependencyReferents` below, WI-10005020), which also settles a
+ *     DROPPED referent — the case where `work-item:done` never fires
+ *     (EI-21564741982937381 → EI-21568004123678857). A done key mixed with other
+ *     components stays a row and is validated by `admitWaitRef`.
  *
  * Splitting: `;` and `,` separate list components; `/` does NOT, because the
  * live data uses `/` to qualify (`WI-212675 / gate-red-streak:papercusp`).

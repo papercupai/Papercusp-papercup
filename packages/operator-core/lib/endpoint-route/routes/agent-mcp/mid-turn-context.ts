@@ -815,6 +815,25 @@ const POST_TOOL_RULE_BUDGET_MS = 1000;
  * worn-rule reads as well as the evaluation, because `respond` waits on this and
  * a slow read must not cost the batch its recall too. Never throws.
  */
+/**
+ * The request's harness: the declared `harness`, else the one detected from the
+ * hook's `cwd` (EI-18893248175645463: an operator/superuser-scope session never
+ * exports PAPERCUSP_HARNESS_SLUG, so its hook sends harness ''). Resolved once per
+ * request and shared by the code-intel push and the recall (WI-6554700010018438).
+ * Never throws: an undetectable harness is '' (a bare-session pull, no snapshot).
+ */
+export async function resolveMidTurnHarness(body: { harness?: unknown; cwd?: unknown }): Promise<string> {
+  const declared = typeof body.harness === 'string' ? body.harness.trim() : '';
+  if (declared) return declared;
+  if (typeof body.cwd !== 'string' || !body.cwd.trim()) return '';
+  try {
+    const { detectHarnessSlugSync } = await import('../../../memory/detect-harness-slug');
+    return detectHarnessSlugSync({ cwd: body.cwd.trim() }).slug ?? '';
+  } catch {
+    return '';
+  }
+}
+
 async function postToolRuleContextText(ownerId: string, workspace: Promise<string>, tools: string[]): Promise<string> {
   if (tools.length === 0) return '';
   try {
@@ -824,7 +843,9 @@ async function postToolRuleContextText(ownerId: string, workspace: Promise<strin
       workspace,
     ]);
     const bounded = await withBoundedTimeout(
-      (signal) => evaluateHookContextSink({ ownerId, workspaceId, sink: 'post-tool', tools, signal }),
+      (signal) => evaluateHookContextSink({
+        ownerId, workspaceId, sink: 'post-tool', tools, signal, engineeringOnly: true,
+      }),
       { fallback: { text: '', result: null }, timeoutMs: POST_TOOL_RULE_BUDGET_MS, label: 'mid-turn:post-tool-rules' },
     );
     return bounded.value.text;
@@ -1087,11 +1108,16 @@ const midTurnContext = defineTool({
     // Awaited inside the try below; an early throw there must not leave it unhandled.
     workspaceIdResolved.catch(() => undefined);
     const ruleContextText = postToolRuleContextText(owner, workspaceIdResolved, batchTools);
+    // WI-6554700010018438: resolve the harness ONCE, before the code-intel push.
+    // The push used to read raw body.harness, which an operator/superuser-scope
+    // hook sends empty, so its snapshot resolved to null on every leg; only the
+    // recall below recovered harness from cwd, after the push had already run.
+    const harnessResolved = resolveMidTurnHarness(body);
     const respond = async (memoryBlock = ''): Promise<Response> => {
       const [failureHint, ruleContext] = await Promise.all([failureHintText, ruleContextText]);
       const { codeIntelPushText } = await import('../../../code-intelligence/push-channel');
       const codeIntel = await codeIntelPushText({ owner, workspace: await workspaceIdResolved,
-        harness: body.harness, client: body.client,
+        harness: (await harnessResolved) || undefined, client: body.client,
         incidentAttribution: body.incidentAttribution,
         calls: Array.isArray(body.toolCalls) && body.toolCalls.length ? body.toolCalls : [{ tool: body.tool, toolInput: body.toolInput }],
       }, clampToBudget(memoryBlock).length).catch(() => '');
@@ -1154,7 +1180,8 @@ const midTurnContext = defineTool({
       if (!admitCall(owner, derived, Date.now())) return respond();
       pruneRateState(Date.now());
 
-      let harness = (body.harness ?? '').trim();
+      // Resolved once above (resolveMidTurnHarness), shared with the code-intel push.
+      const harness = await harnessResolved;
       // EI-18893248175645463, mid-turn half (P-038). PAPERCUSP_HARNESS_SLUG is
       // only exported for harness-scoped spawns, so an operator/superuser-scope
       // session never sends `harness` — and BOTH the harness AND hive pools
@@ -1166,14 +1193,6 @@ const midTurnContext = defineTool({
       // failure (F-B) when the ceiling was working fine and the other two pools
       // were simply never asked. Same fallback the turn-start sibling uses, on
       // the CLIENT's cwd (loopback hook, so its cwd is the session's).
-      if (!harness && typeof body.cwd === 'string' && body.cwd.trim()) {
-        try {
-          const { detectHarnessSlugSync } = await import('../../../memory/detect-harness-slug');
-          harness = detectHarnessSlugSync({ cwd: body.cwd.trim() }).slug ?? '';
-        } catch {
-          /* best-effort — an empty harness just stays a bare-session pull */
-        }
-      }
 
       const { withMidTurnMemoryAdmission } = await import('../../../memory/mid-turn-admission');
       const admitted = await withMidTurnMemoryAdmission(async () => {

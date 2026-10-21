@@ -87,6 +87,7 @@ case "$2" in
   "git status") echo "rtk git status"; exit 0 ;;
   "git log -n 3") echo "warning on stderr" >&2; echo "rtk git log -n 3"; exit 3 ;;
   "cd /tmp && git status") echo "cd /tmp && rtk git status"; exit 0 ;;
+  "npm run test:e2e:isolated -- e2e/content-reading.spec.ts") echo "rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts"; exit 0 ;;
   deny*) exit 2 ;;
   slow*) sleep 5; echo "rtk slow"; exit 0 ;;
   crash*) exit 9 ;;
@@ -329,11 +330,24 @@ function makeCtx(projectDir: string, extra: Record<string, unknown> = {}) {
   } as never;
 }
 
-function spawned(): { command: string; env?: Record<string, string> } {
+function spawned(): { command: string; originalCommand?: string; env?: Record<string, string> } {
   return vi.mocked(startBackground).mock.calls[0]![0] as never;
 }
 
 describe('capability:bash — RTK at the spawn seam', () => {
+  it.each([false, true])('RTK budget identity: passes the authorized original separately from the spawned rewrite (background=%s)', async (run_in_background) => {
+    process.env[RTK_BIN_ENV] = fakeRtk;
+    const command = 'npm run test:e2e:isolated -- e2e/content-reading.spec.ts';
+    const result = await bash.handler({
+      command, cwd: root, run_in_background,
+      // This is a server-owned RunOptions field, never trusted from tool input.
+      originalCommand: 'printf caller-forged-identity',
+    }, makeCtx(root));
+    expect(spawned().command).toBe('rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts');
+    expect(spawned().originalCommand).toBe(command);
+    expect(result.content[0]!.text).toContain(RTK_RESULT_NOTE);
+  });
+
   it('spawns the RTK form, adds the rtk directory to PATH, and says so in the result', async () => {
     process.env[RTK_BIN_ENV] = fakeRtk;
     const result = await bash.handler({ command: 'git status', cwd: root }, makeCtx(root));

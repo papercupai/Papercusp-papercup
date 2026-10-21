@@ -262,6 +262,9 @@ export default defineTool({
               ...(conversationGate.declarationBlockers
                 ? { declarationBlockers: conversationGate.declarationBlockers }
                 : {}),
+              ...(conversationGate.unregisteredTypes
+                ? { unregisteredTypes: conversationGate.unregisteredTypes }
+                : {}),
             };
           }
         }

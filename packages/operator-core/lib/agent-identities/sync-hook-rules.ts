@@ -362,6 +362,8 @@ export async function evaluateHookContextSink(input: {
   sink: Exclude<HookContextSink, 'turn-start'>;
   /** post-tool: the batch's tool names, matched against each rule's `tools`. */
   tools?: readonly string[];
+  /** The shared PostToolUse advisory port is reserved for the engineer identity. */
+  engineeringOnly?: boolean;
   signal?: AbortSignal;
   deps?: Partial<SyncHookRuleDeps>;
 }): Promise<HookContextSinkResult> {
@@ -372,8 +374,10 @@ export async function evaluateHookContextSink(input: {
     wearer = await deps.readWearer(input.ownerId, input.workspaceId);
     const worn = wearer ? await deps.readWornRules(input.ownerId, input.workspaceId) : null;
     if (!wearer || !worn) return { text: '', result: null };
+    const due = dueSyncContextRules(worn, input.sink, input.tools)
+      .filter((entry) => !input.engineeringOnly || isPapercuspEngineerIdentity(entry.identityId));
     requests = syncContextRequests({
-      due: dueSyncContextRules(worn, input.sink, input.tools), workspaceId: input.workspaceId,
+      due, workspaceId: input.workspaceId,
       ownerId: input.ownerId, potSlug: wearer.potSlug, produceContext: deps.produceContext,
     });
   } catch (error) {
@@ -469,6 +473,23 @@ export interface AppliedIdentityRules {
    * requires ∪ optional); null when it declares no grants at all.
    */
   readonly declaredClassNeeds: readonly string[] | null;
+}
+
+/**
+ * Engineering context is an identity capability, not a property of the host
+ * CLI.  Keep the slot-qualified and bare forms equivalent because launch
+ * records carry the former while package pins carry the latter.
+ */
+export function isPapercuspEngineerIdentity(ref: string): boolean {
+  const value = String(ref).trim();
+  const id = value.includes(':') ? value.slice(value.lastIndexOf(':') + 1) : value;
+  return id === 'papercusp-engineer';
+}
+
+/** True only when the applied identity closure contains the engineer layer. */
+export function wearsPapercuspEngineer(identity: Pick<AppliedIdentityRules, 'packagePins'>): boolean {
+  return identity.packagePins.some((pin) =>
+    pin.packageKind === 'blueprint' && isPapercuspEngineerIdentity(pin.ref));
 }
 
 /**

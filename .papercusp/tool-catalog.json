@@ -18621,7 +18621,7 @@
           "POST"
         ]
       },
-      "description": "COLD carry-note. Read {read:true,ownerId?,harness?}; write {did,left,insight,next}, {note} or {checkpoint}. Clips are reported. carry mode belongs to loop:arm; loop:checkpoint does not accept a `carry` argument. rowsMode:'merge' preserves; rowsMode:'replace' retires; empty list with replace clears. `confirmShrink` is accepted by `work_items:checkpoint` only.",
+      "description": "COLD carry-note only: writing it does NOT request a carry-respawn; call session:request-compaction separately when fresh context is needed. Read {read:true,ownerId?,harness?}; write {did,left,insight,next}, {note} or {checkpoint}. Clips are reported. carry mode belongs to loop:arm; loop:checkpoint does not accept a `carry` argument. rowsMode:'merge' preserves; rowsMode:'replace' retires; empty list with replace clears. `confirmShrink` is accepted by `work_items:checkpoint` only.",
       "capabilities": [
         "routines:write"
       ],
@@ -18647,7 +18647,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "COLD: pair facts with work_items:checkpoint. Same-line [turn:<session>@<iso-ts>] refs; never invent a ref; label [self-imposed]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance an immediately runnable action or do a bounded progress read; writing this checkpoint alone is not post-note progress. cold-successor-no-progress may refuse; scheduled fire/compaction is a narrow boundary exception. carry mode belongs to loop:arm, not loop:checkpoint; do not retry a rejected `carry` argument here. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. `{kind:'tool',tool,args?,schemaRevision,expect}` or `{kind:'state-cell',cell,as,schemaRevision,expect}`. Required: kind, target, schemaRevision, expect; args defaults to `{}`. `probe:{ expect:... }` has no target; omit `probe` and use `recheck` for a human command.",
+        "when": "COLD: pair facts with work_items:checkpoint. Same-line [turn:<session>@<iso-ts>] refs; never invent a ref; label [self-imposed]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance an immediately runnable action or do a bounded progress read; writing this checkpoint alone is not post-note progress. cold-successor-no-progress may refuse; scheduled fire/compaction is a narrow boundary exception. carry mode belongs to loop:arm, not loop:checkpoint; do not retry a rejected `carry` argument here. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. Probe: `{kind:'tool',tool,args?}` or `{kind:'state-cell',cell,as}`, each with schemaRevision + expect (full shape: checks[].probe).",
         "notWhen": "WARM: use live transcript; work_items:checkpoint for state.",
         "chaining": "Retune: read loop:status, then loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes."
       }
@@ -31285,7 +31285,7 @@
           "POST"
         ]
       },
-      "description": "Search workspace prose (escalations, brainstorm notes, older operator turns, and — with scope:[\"work_item\"] — bug/change/task issue titles+bodies) by keyword match (BM25-style). Ranked by relevance. Returns excerpts.",
+      "description": "Search workspace prose by keyword (BM25-style). Use scope:[\"plan\",\"work_item\",\"decisions\"] for planned-work discovery, including draft plan items; the default prose scope excludes plans and work-items. Returns ranked excerpts and unsearched-corpus disclosure.",
       "capabilities": [
         "search:read"
       ],
@@ -31358,7 +31358,7 @@
       "guidance": {
         "when": "User asks about a concept by paraphrase rather than the exact keyword used in the recorded text. Examples: \"when did we talk about authentication strategy\" (could match \"login flow\", \"auth approach\", \"JWT decision\"). Prefer mode=hybrid for best recall.",
         "notWhen": "When the user knows the exact keyword they want. `search:fulltext` is faster + cheaper there (no embedding API call). For structured queries (tasks/goals/projects rows by title), use `search:query`.",
-        "chaining": "Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a hit."
+        "chaining": "For planned-work discovery include scope:[\"plan\",\"work_item\",\"decisions\"]; defaults exclude plans/work-items. Read scope_residue before any absence claim. Fetch plan hits with plans:get."
       }
     },
     {
@@ -33258,7 +33258,7 @@
           "POST"
         ]
       },
-      "description": "Native checks: planTerminalCensus:{slug} measures canonical terminal state; gitScratchPlacement:{ref} uses an exact empty committed tree to measure production scratch-clone placement/root refusal and cleanup. Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. Evidence limit: 262144 bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.",
+      "description": "Native checks execute and record directly: planTerminalCensus:{slug}, gitScratchPlacement:{ref}, syncBatchCoverageAccounting:{} (see each arg). Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. Evidence limit: 262144 bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.",
       "capabilities": [
         "testing:run"
       ],
@@ -33321,7 +33321,7 @@
       "guidance": {
         "when": "A completed Playwright, Cargo, node, shell, desktop, or other operational acceptance run needs a numeric ledger record; or historical mutation case identities need recovery.",
         "notWhen": "Not for Vitest (use testing:run), temporary logs, or checks that did not run.",
-        "chaining": "Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence. The planTerminalCensus variant executes directly and returns the same numeric ledger IDs."
+        "chaining": "Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence. Native variants execute directly and return the same numeric ledger IDs."
       }
     },
     {
@@ -35352,7 +35352,7 @@
           "POST"
         ]
       },
-      "description": "Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness/lifecycle floors and report advisories, not fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. `force:true` is an audited, liveness-checked takeover requiring reason.",
+      "description": "Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.",
       "capabilities": [
         "work_items:write"
       ],
@@ -35379,8 +35379,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness/lifecycle floors, not fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.",
-        "notWhen": "`claim_conflict` means a peer currently holds it. If that holder is dead or stale, retry the named claim with `force:true` and a reason; the takeover is liveness-checked and audited. A live holder still requires coordination. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person's job.",
+        "when": "Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness floors, not terminal state, fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.",
+        "notWhen": "`claim_conflict` means a peer currently holds it. If that holder is dead or stale, retry the named claim with `force:true` and a reason; the takeover is liveness-checked and audited. A live holder still requires coordination. `claim_terminal_item` means a terminal row was left unchanged; reopen it explicitly with work_items:set_state { state:\"open\", force:true, reason } before claiming. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person's job.",
         "chaining": "work_items:list → claim → set_state → release/close. No heartbeat; platform calls refresh liveness. During long local-only work, checkpoint (EI-6772)."
       }
     },
@@ -36498,7 +36498,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).",
-        "chaining": "work_items:search (dedup) → work_items:create, or → work_items:get { id } for detail."
+        "chaining": "Before claiming no planned work covers a topic, also run plans:search {query,harness} with scope omitted (includes items and decisions). Draft/unstarted P-NNN items are not work-items. Then work_items:get for detail or work_items:create after dedup."
       }
     },
     {

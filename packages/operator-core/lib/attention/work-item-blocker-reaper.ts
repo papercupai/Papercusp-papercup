@@ -46,6 +46,58 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { followUpSystemClears, type SystemClearedBlockerItem } from '../work-item-ref-blocker-auto-clear';
 
 export const BLOCKER_DEFAULT_REAPER_ACTOR = 'system:blocker-default-reaper';
+/** event-wait-settlement-2026-10-20 P-005: who settles a missed proving fire on recovery. */
+export const MISSED_FIRE_RECOVERY_ACTOR = 'system:event-settlement-recovery';
+/** event-wait-settlement-2026-10-20 P-005: who returns a stranded blocked item to open. */
+export const STRANDED_BLOCKED_REPAIR_ACTOR = 'system:blocker-stranded-repair';
+
+/** A `blocked` item whose external blockers are all non-active (P-005, R-10). */
+export interface StrandedBlockedCandidate {
+  id: string;
+  harness: string;
+  family: 'feature' | 'issue';
+  holder: string | null;
+  /** When the item last changed lifecycle state (work_items.state_changed_at, migration 896). */
+  stateChangedAt: string | null;
+  /** The raw `payload.externalBlockers` array. */
+  blockers: unknown;
+}
+
+export type StrandedSkipReason = 'no-blocker' | 'active-blocker' | 'no-clear-time' | 'no-state-time' | 'reblocked-after-clear';
+
+/** What restoring one stranded item did: reconcileClearedDependencyBlockedState's outcome. */
+export type StrandedRepairOutcome =
+  | 'cleared' | 'not-blocked' | 'stale-control' | 'external-blocker' | 'reserved' | 'live-dependency'
+  | 'plan-blocked' | 'read-failed';
+
+/**
+ * P-005 (R-10): is this `blocked` item stranded — left blocked by a clear that did not
+ * restore its lifecycle? It is when it has at least one blocker, none is active, and it was
+ * ALREADY blocked when its last blocker was cleared (state_changed_at at or before the latest
+ * clear). An item moved into `blocked` after its blockers were all cleared was blocked for a
+ * reason the blocker history does not record, so it is left alone (measured 2026-10-20: 6 of
+ * 20 such items, re-blocked 24 minutes to 12 days after the last clear). A non-active record
+ * without `clearedAt` contributes its `updatedAt`.
+ */
+export function decideStrandedRepair(input: { stateChangedAt: string | null; blockers: unknown }):
+  | { repair: true; lastClearedAt: string }
+  | { repair: false; why: StrandedSkipReason } {
+  const records = Array.isArray(input.blockers)
+    ? input.blockers.filter((b): b is Record<string, unknown> => !!b && typeof b === 'object' && !Array.isArray(b))
+    : [];
+  if (records.length === 0) return { repair: false, why: 'no-blocker' };
+  if (records.some((b) => b.status === 'active')) return { repair: false, why: 'active-blocker' };
+  let lastClear = NaN;
+  for (const b of records) {
+    const at = Date.parse(String(b.clearedAt ?? b.updatedAt ?? ''));
+    if (Number.isFinite(at) && !(at <= lastClear)) lastClear = at;
+  }
+  if (!Number.isFinite(lastClear)) return { repair: false, why: 'no-clear-time' };
+  const stateAt = input.stateChangedAt ? Date.parse(input.stateChangedAt) : NaN;
+  if (!Number.isFinite(stateAt)) return { repair: false, why: 'no-state-time' };
+  if (stateAt > lastClear) return { repair: false, why: 'reblocked-after-clear' };
+  return { repair: true, lastClearedAt: new Date(lastClear).toISOString() };
+}
 
 export interface BlockerReapCandidate {
   id: string;
@@ -76,6 +128,15 @@ export interface BlockerReapDeps {
    *  claimable views, message and wake the holder — event-wait-settlement-2026-10-20
    *  P-003). Optional so a test's fake deps opt in; the production deps always run it. */
   followUp?(items: SystemClearedBlockerItem[]): Promise<unknown>;
+  /** P-005 (Design 5, R-9): proving keys whose fire latch shows a fire after an active wait on
+   *  them was created — a settlement the emit missed. Optional: absent, the pass is skipped. */
+  listMissedFireKeys?(limit: number): Promise<{ keys: string[]; truncatedByLimit: boolean }>;
+  /** Settle every wait on one proving key (settleProvingFire); resolves to how many it settled. */
+  settleFiredKey?(key: string): Promise<number>;
+  /** P-005 (R-10): `blocked` items whose external blockers are all non-active. Optional. */
+  listStrandedBlocked?(limit: number): Promise<StrandedBlockedCandidate[]>;
+  /** Return one stranded item to open under a row lock, re-checking every other hold. */
+  repairStranded?(candidate: StrandedBlockedCandidate): Promise<StrandedRepairOutcome>;
 }
 
 export interface BlockerSweepResult {
@@ -84,6 +145,15 @@ export interface BlockerSweepResult {
   rechecked: { cleared: number; escalated: number };
   skipped: Partial<Record<BlockerDefaultSkipReason | 'lost-race' | 'read-failed', number>>;
   truncatedByLimit: boolean;
+  /** P-005 (R-9): missed proving fires the sweep settled. `settled` counts waits, `failed` keys. */
+  recovered: { keys: number; settled: number; failed: number; truncatedByLimit: boolean };
+  /** P-005 (R-10): stranded `blocked` items examined and returned to open, with why others stayed. */
+  repaired: {
+    examined: number;
+    reopened: number;
+    skipped: Partial<Record<StrandedSkipReason | Exclude<StrandedRepairOutcome, 'cleared'> | 'failed', number>>;
+    truncatedByLimit: boolean;
+  };
 }
 
 function bump(result: BlockerSweepResult, why: keyof BlockerSweepResult['skipped']): void {
@@ -182,7 +252,152 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
     }
   },
   followUp: (items) => followUpSystemClears(items),
+  // P-005: imported lazily — events/await/store and work-item-blocking are heavy, and this
+  // module is loaded on the gate-watcher tick path.
+  async listMissedFireKeys(limit) {
+    const { listMissedProvingFireKeys } = await import('../events/await/store');
+    return listMissedProvingFireKeys({ limit });
+  },
+  async settleFiredKey(key) {
+    const { settleProvingFire } = await import('../events/await/store');
+    return settleProvingFire(key, { firedBy: MISSED_FIRE_RECOVERY_ACTOR });
+  },
+  async listStrandedBlocked(limit) {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{
+      id: string; harness: string; item_kind: string | null; taken_by: string | null;
+      state_changed_at: Date | string | null; blockers: unknown;
+    }>>`
+      SELECT w.feature_id AS id, w.harness_slug AS harness, w.item_kind, w.taken_by,
+             w.state_changed_at, w.payload -> 'externalBlockers' AS blockers
+        FROM harness_shared.work_items w
+       WHERE w.workspace_id = ${activeWorkspaceId()}
+         AND w.status = 'blocked'
+         AND w.lane IS DISTINCT FROM 'observation'
+         AND jsonb_array_length(CASE WHEN jsonb_typeof(w.payload -> 'externalBlockers') = 'array'
+                                     THEN w.payload -> 'externalBlockers' ELSE '[]'::jsonb END) > 0
+         AND NOT ((w.payload -> 'externalBlockers') @> '[{"status":"active"}]'::jsonb)
+       ORDER BY w.feature_id
+       LIMIT ${limit}`;
+    return rows.map((r) => ({
+      id: r.id,
+      harness: r.harness,
+      family: ['bug', 'change', 'task'].includes(String(r.item_kind)) ? 'issue' as const : 'feature' as const,
+      holder: r.taken_by?.trim() || null,
+      stateChangedAt: r.state_changed_at ? new Date(r.state_changed_at).toISOString() : null,
+      blockers: r.blockers,
+    }));
+  },
+  async repairStranded(candidate) {
+    const item = await getWorkItem(candidate.id, candidate.harness);
+    if (!item) return 'read-failed';
+    const { reconcileClearedDependencyBlockedState } = await import('../work-item-blocking');
+    // The shared checked restore: under a row lock it re-reads the item and refuses when a
+    // live dependency, an active blocker, a durable park, an owner reservation or a blocked
+    // plan lane still holds it. Readiness and review floors survive the state change.
+    return reconcileClearedDependencyBlockedState(item, 'external-blockers-all-cleared', {
+      actor: STRANDED_BLOCKED_REPAIR_ACTOR,
+    });
+  },
 };
+
+/**
+ * P-005 (Design 5, R-9) — settle waits whose proving key fired but whose settlement never
+ * ran (a crash between the latch and settlement, a settlement that threw, a wait committed
+ * concurrently with the fire). One settlement per key: settleProvingFire takes the per-key
+ * lock and settles every wait on it, then runs the shared follow-up. A failed key is
+ * counted and the pass continues.
+ */
+async function recoverMissedFires(
+  deps: BlockerReapDeps,
+  limit: number,
+  dryRun: boolean,
+): Promise<BlockerSweepResult['recovered']> {
+  const out: BlockerSweepResult['recovered'] = { keys: 0, settled: 0, failed: 0, truncatedByLimit: false };
+  if (!deps.listMissedFireKeys || !deps.settleFiredKey) return out;
+  let listed: { keys: string[]; truncatedByLimit: boolean };
+  try {
+    listed = await deps.listMissedFireKeys(limit);
+  } catch (err) {
+    console.warn(`[blocker-recheck] ! missed-fire listing: ${err instanceof Error ? err.message : String(err)}`);
+    out.failed += 1;
+    return out;
+  }
+  out.keys = listed.keys.length;
+  out.truncatedByLimit = listed.truncatedByLimit;
+  if (dryRun) return out;
+  for (const key of listed.keys) {
+    try {
+      out.settled += await deps.settleFiredKey(key);
+    } catch (err) {
+      out.failed += 1;
+      console.warn(`[blocker-recheck] ! missed-fire ${key}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * P-005 (R-10) — return to open the items a clear left `blocked` with nothing holding them.
+ * decideStrandedRepair picks them; the checked restore re-verifies every other hold under a
+ * row lock; the holder is told through the shared system-clear follow-up.
+ */
+async function repairStrandedItems(
+  deps: BlockerReapDeps,
+  limit: number,
+  dryRun: boolean,
+): Promise<BlockerSweepResult['repaired']> {
+  const out: BlockerSweepResult['repaired'] = { examined: 0, reopened: 0, skipped: {}, truncatedByLimit: false };
+  if (!deps.listStrandedBlocked || !deps.repairStranded) return out;
+  const skip = (why: keyof BlockerSweepResult['repaired']['skipped']) => {
+    out.skipped[why] = (out.skipped[why] ?? 0) + 1;
+  };
+  let rows: StrandedBlockedCandidate[];
+  try {
+    rows = await deps.listStrandedBlocked(limit + 1);
+  } catch (err) {
+    console.warn(`[blocker-recheck] ! stranded listing: ${err instanceof Error ? err.message : String(err)}`);
+    skip('failed');
+    return out;
+  }
+  out.truncatedByLimit = rows.length > limit;
+  const batch = out.truncatedByLimit ? rows.slice(0, limit) : rows;
+  out.examined = batch.length;
+  for (const candidate of batch) {
+    const decision = decideStrandedRepair(candidate);
+    if (!decision.repair) { skip(decision.why); continue; }
+    if (dryRun) { out.reopened += 1; continue; }
+    let outcome: StrandedRepairOutcome;
+    try {
+      outcome = await deps.repairStranded(candidate);
+    } catch (err) {
+      console.warn(`[blocker-recheck] ! stranded ${candidate.id}: ${err instanceof Error ? err.message : String(err)}`);
+      skip('failed');
+      continue;
+    }
+    if (outcome !== 'cleared') { skip(outcome); continue; }
+    out.reopened += 1;
+    if (deps.followUp) {
+      try {
+        await deps.followUp([{
+          workspaceId: activeWorkspaceId(),
+          featureId: candidate.id,
+          harnessSlug: candidate.harness,
+          family: candidate.family,
+          status: 'open',
+          holder: candidate.holder,
+          restored: true,
+          activeRemaining: 0,
+          cleared: [],
+          clearedBy: STRANDED_BLOCKED_REPAIR_ACTOR,
+        }]);
+      } catch (err) {
+        console.warn(`[blocker-recheck] follow-up ${candidate.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+  return out;
+}
 
 /** The follow-up input for one blocker the re-check sweep cleared. */
 function recheckClearedItem(input: {
@@ -224,6 +439,10 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
   const deps = opts?.deps ?? defaultBlockerReapDeps;
   const now = opts?.now ?? new Date();
   const limit = opts?.limit ?? 200;
+  const dryRun = opts?.dryRun === true;
+  // P-005: settle missed proving fires first, so the re-check below does not escalate a
+  // wait whose key already fired.
+  const recovered = await recoverMissedFires(deps, limit, dryRun);
   const rows = await deps.listCandidates(limit + 1);
   const truncatedByLimit = rows.length > limit;
   const batch = truncatedByLimit ? rows.slice(0, limit) : rows;
@@ -233,6 +452,8 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
     rechecked: { cleared: 0, escalated: 0 },
     skipped: {},
     truncatedByLimit,
+    recovered,
+    repaired: { examined: 0, reopened: 0, skipped: {}, truncatedByLimit: false },
   };
 
   for (const row of batch) {
@@ -350,6 +571,143 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
         );
         bump(result, 'read-failed');
       }
+    }
+  }
+  // P-005: last, so it also catches an item this tick's re-check or default left blocked.
+  result.repaired = await repairStrandedItems(deps, limit, dryRun);
+  return result;
+}
+
+/** event-wait-settlement-2026-10-20 P-006 (R-12): who stamped a backfilled re-check date. */
+export const UNPROVABLE_WAIT_BACKFILL_ACTOR = 'system:unprovable-wait-backfill';
+
+/**
+ * `plan-lane:<plan>#<item>` gate rows are the plan-item lane's own marker, written and cleared
+ * by the plan reconcile (plan-items/reconcile-linked-work-items.ts), never by an event — they
+ * are not an agent's event wait, so the backfill leaves them alone.
+ */
+const PLAN_LANE_REF_RE = /^plan-lane:/;
+
+export interface UnprovableWaitBackfillDeps {
+  /** Non-terminal items carrying an active event/gate row with no recheckAt (plan-lane excluded). */
+  listUnstampedWaits(limit: number): Promise<BlockerReapCandidate[]>;
+  readPayload: BlockerReapDeps['readPayload'];
+  writeBlockers: BlockerReapDeps['writeBlockers'];
+  /** The releasing paths' own predicate: readEventConditionReachability with requireSpecificCondition. */
+  classify(ref: string): Promise<ExternalConditionReachability>;
+}
+
+export interface UnprovableWaitBackfillResult {
+  /** Items examined. */
+  items: number;
+  /** Active event/gate rows with no recheckAt that were classified. */
+  examined: number;
+  /** Of those, rows no fire can prove (broad, change notification, uncatalogued, free text). */
+  unprovable: number;
+  /** Rows given a recheckAt (0 on a dry run). */
+  stamped: number;
+  /** Rows a fire can prove — left alone. */
+  provable: number;
+  /** Rows the backfill never touches, by reason. */
+  skipped: Partial<Record<'unmeasured' | 'lost-race' | 'read-failed', number>>;
+  /** Unprovable rows by reason, for the before/after record (R-12). */
+  byReason: Partial<Record<string, number>>;
+  truncatedByLimit: boolean;
+}
+
+export const defaultUnprovableWaitBackfillDeps: UnprovableWaitBackfillDeps = {
+  async listUnstampedWaits(limit) {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ id: string; harness: string; payload: unknown }>>`
+      SELECT w.feature_id AS id, w.harness_slug AS harness, w.payload AS payload
+        FROM harness_shared.work_items w
+       WHERE w.workspace_id = ${activeWorkspaceId()}
+         AND NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+         AND jsonb_typeof(w.payload->'externalBlockers') = 'array'
+         AND EXISTS (
+               SELECT 1 FROM jsonb_array_elements(w.payload->'externalBlockers') b
+                WHERE b->>'status' = 'active' AND b->>'kind' IN ('event', 'gate')
+                  AND b->>'recheckAt' IS NULL AND b->>'ref' !~ '^plan-lane:')
+       ORDER BY w.feature_id
+       LIMIT ${limit}
+    `;
+    return rows.map((r) => ({ id: r.id, harness: r.harness, payload: r.payload }));
+  },
+  readPayload: defaultBlockerReapDeps.readPayload,
+  writeBlockers: defaultBlockerReapDeps.writeBlockers,
+  classify: (ref) => readEventConditionReachability(ref, { requireSpecificCondition: true }),
+};
+
+/**
+ * event-wait-settlement-2026-10-20 P-006 (D-001 item 1, R-12): give every pre-existing active
+ * event/gate wait that no fire can prove a re-check date of `now`, so the next re-check sweep
+ * (sweepWorkItemBlockerDefaults above) escalates it to its holder. It CLEARS NOTHING — the
+ * owner ruled these are neither cleared nor left silent — and never touches a row that
+ * already has a recheckAt, a provable row, or a row whose classification failed. New
+ * unprovable waits are refused at write (wait-ref-admission.ts), so this is a backfill of the
+ * existing population; it is idempotent (a stamped row is no longer a candidate).
+ *
+ * Compare-and-set on the raw history, like every reaper write: unknown/legacy fields on a
+ * row are preserved, and a concurrent set/clear makes this item a counted lost race.
+ */
+export async function backfillUnprovableWaitRecheckDates(opts?: {
+  now?: Date;
+  limit?: number;
+  dryRun?: boolean;
+  deps?: UnprovableWaitBackfillDeps;
+}): Promise<UnprovableWaitBackfillResult> {
+  const deps = opts?.deps ?? defaultUnprovableWaitBackfillDeps;
+  const now = opts?.now ?? new Date();
+  const limit = opts?.limit ?? 500;
+  const dryRun = opts?.dryRun === true;
+  const rows = await deps.listUnstampedWaits(limit + 1);
+  const truncatedByLimit = rows.length > limit;
+  const batch = truncatedByLimit ? rows.slice(0, limit) : rows;
+  const result: UnprovableWaitBackfillResult = {
+    items: batch.length, examined: 0, unprovable: 0, stamped: 0, provable: 0,
+    skipped: {}, byReason: {}, truncatedByLimit,
+  };
+  const skip = (why: keyof UnprovableWaitBackfillResult['skipped']) => {
+    result.skipped[why] = (result.skipped[why] ?? 0) + 1;
+  };
+  const verdicts = new Map<string, Promise<ExternalConditionReachability>>();
+  for (const row of batch) {
+    try {
+      const fresh = await deps.readPayload(row.id, row.harness);
+      const raw = (fresh?.payload as { externalBlockers?: unknown } | null | undefined)?.externalBlockers;
+      if (!fresh || !Array.isArray(raw)) { skip('read-failed'); continue; }
+      const next = JSON.parse(JSON.stringify(raw)) as Array<Record<string, unknown>>;
+      let changed = 0;
+      for (const entry of next) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        const ref = typeof entry.ref === 'string' ? entry.ref : null;
+        if (entry.status !== 'active' || (entry.kind !== 'event' && entry.kind !== 'gate')) continue;
+        if (!ref || entry.recheckAt != null || PLAN_LANE_REF_RE.test(ref)) continue;
+        result.examined += 1;
+        let verdict = verdicts.get(ref);
+        if (!verdict) { verdict = deps.classify(ref); verdicts.set(ref, verdict); }
+        const reachability = await verdict;
+        if (!reachability.uncertifiedReason) {
+          if (reachability.basis === 'unmeasured') skip('unmeasured');
+          else result.provable += 1;
+          continue;
+        }
+        result.unprovable += 1;
+        result.byReason[reachability.uncertifiedReason] = (result.byReason[reachability.uncertifiedReason] ?? 0) + 1;
+        entry.recheckAt = now.toISOString();
+        entry.recheckSource = UNPROVABLE_WAIT_BACKFILL_ACTOR;
+        entry.reachability = reachability;
+        changed += 1;
+      }
+      if (changed === 0 || dryRun) continue;
+      if (!(await deps.writeBlockers(row.id, row.harness, next as unknown as ExternalBlockerRecord[], raw))) {
+        skip('lost-race');
+        continue;
+      }
+      result.stamped += changed;
+    } catch (err) {
+      console.warn(`[unprovable-wait-backfill] ! ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+      skip('read-failed');
     }
   }
   return result;

@@ -1700,14 +1700,14 @@ export function unresolvedPathsInCompletion(
   // roots. Keep the old whole-root rule as the fallback, so an unqualified path cannot
   // borrow existence from an unrelated checkout.
   const primaryRoot = repoRoots[0]!;
-  const hasQualifiedSecondaryPath = declared.slice(0, MAX_PATHS_PROBED).some((raw) => {
+  const hasQualifiedCheckoutPath = declared.slice(0, MAX_PATHS_PROBED).some((raw) => {
     const declaredPath = raw.trim();
     return (
       !nodePath.isAbsolute(declaredPath) &&
-      repoRoots.slice(1).some((root) => declaredPath.startsWith(`${nodePath.basename(root)}/`))
+      repoRoots.some((root) => declaredPath.startsWith(`${nodePath.basename(root)}/`))
     );
   });
-  if (hasQualifiedSecondaryPath) {
+  if (hasQualifiedCheckoutPath) {
     let everyPathResolves = true;
     for (const raw of declared.slice(0, MAX_PATHS_PROBED)) {
       const declaredPath = raw.trim();
@@ -1748,6 +1748,26 @@ export function unresolvedPathsInCompletion(
           );
         });
         if (qualifiedRootHit) continue;
+
+        // A qualified path may name the primary checkout while a bare path in the same
+        // completion belongs to a secondary checkout. This occurs when an agent runs from
+        // a sibling repo and also records a superproject evidence file. Once any explicit
+        // checkout-qualified path is present, accept a bare path only when exactly one
+        // candidate root contains it; two matches are ambiguous and remain a warning.
+        const hasQualifiedPrefix = repoRoots.some((root) =>
+          declaredPath.startsWith(`${nodePath.basename(root)}/`),
+        );
+        if (!hasQualifiedPrefix) {
+          const bareRootHits = repoRoots.filter((root) => {
+            const candidate = nodePath.resolve(root, declaredPath);
+            return (
+              candidate !== root &&
+              candidate.startsWith(root + nodePath.sep) &&
+              exists(candidate)
+            );
+          });
+          if (bareRootHits.length === 1) continue;
+        }
         everyPathResolves = false;
         break;
       } catch {
@@ -2959,6 +2979,8 @@ export interface FinishWorkReceipt {
   planItemReflection?: string;
   /** True when a live plan-item claim blocked the terminal reflection and must be coordinated before replay. */
   planItemClaimConflict?: boolean;
+  /** Work-items restored after the reflected plan status cleared their dependency. */
+  dependentRetry?: string[];
   claimRelease: 'not-linked' | 'released-or-absent' | 'failed';
   errors?: string[];
 }
@@ -3035,6 +3057,49 @@ async function readCommittedPlanItemStatus(stamp: FinishPlanStamp, ctx: UnifiedT
     .trim()
     .toLowerCase();
   return status || null;
+}
+
+/**
+ * Reconcile successors after the reflected plan-item write is visible.
+ *
+ * A root completion can settle its dependency before `plans:set-status` has
+ * reflected the root plan item. The dependency-clear guard intentionally
+ * refuses a successor while its plan lane still reads blocked, so the first
+ * settle event leaves that successor parked. Once the reflection commits,
+ * re-read the dependent plan items and run the same canonical dependency-clear
+ * reconciler against their current work-item rows. This is deliberately
+ * best-effort and idempotent; the periodic reconciler remains the backstop.
+ */
+async function retryClearedDependentWorkItems(
+  stamp: FinishPlanStamp,
+  clearedById: string,
+): Promise<string[]> {
+  try {
+    const [lane, blocking] = await Promise.all([
+      import('../../plan-items/reconcile-linked-work-items'),
+      import('../../work-item-blocking'),
+    ]);
+    const dependentPlanItems = await lane.resyncDependentPlanItemLanesNow(
+      stamp.plan_slug,
+      stamp.item_id,
+      stamp.harness_slug,
+    );
+    const restored: string[] = [];
+    for (const dependentItemId of new Set(dependentPlanItems)) {
+      const linked = await lane.findAllLinkedWorkItems(stamp.plan_slug, dependentItemId);
+      for (const candidate of linked) {
+        const current = await getWorkItem(candidate.id, candidate.harness ?? undefined).catch(() => null);
+        if (!current || current.state !== 'blocked') continue;
+        const outcome = await blocking.reconcileClearedDependencyBlockedState(current, clearedById, {
+          actor: 'work-items:finish:dependent-retry',
+        });
+        if (outcome === 'cleared') restored.push(current.id);
+      }
+    }
+    return [...new Set(restored)];
+  } catch {
+    return [];
+  }
 }
 
 /** Compact, bounded rendering of a reaction's tool result for a finish-leg error. */
@@ -3179,6 +3244,7 @@ export async function synchronizeFinishWork(
   let planItem: FinishWorkReceipt['planItem'] = 'not-linked';
   let planItemReflection: string | undefined;
   let planItemClaimConflict = false;
+  let dependentRetry: string[] | undefined;
   let claimRelease: FinishWorkReceipt['claimRelease'] = 'not-linked';
   if (stamp && reflected) {
     const fireSetStatus = () => fire({
@@ -3261,6 +3327,9 @@ export async function synchronizeFinishWork(
                 describeReactionResult((statusResult as { result?: unknown }).result),
             );
           }
+          if (committedStatus === reflected) {
+            dependentRetry = await retryClearedDependentWorkItems(stamp, opts.id);
+          }
         } else {
           planItem = 'failed';
           errors.push(
@@ -3311,6 +3380,7 @@ export async function synchronizeFinishWork(
     planItem,
     ...(planItemReflection ? { planItemReflection } : {}),
     ...(planItemClaimConflict ? { planItemClaimConflict: true } : {}),
+    ...(dependentRetry && dependentRetry.length > 0 ? { dependentRetry } : {}),
     claimRelease,
     ...(errors.length ? { errors } : {}),
   };

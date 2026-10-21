@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import { focusWindowId, sameX11WindowId } from './adv-session-windows';
+import { createTextCollector } from './child-output';
 
 const exec = promisify(execFile);
 const supported = process.platform === 'linux' && existsSync('/usr/bin/Xvfb') && existsSync('/usr/bin/openbox') && existsSync('/usr/bin/xmessage');
@@ -27,17 +28,17 @@ describe.runIf(supported)('real X11 workspace focus', () => {
       const wm = spawn('/usr/bin/openbox', ['--sm-disable', '--startup', '/usr/bin/printf PC_FOCUS_WM_READY'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
       children.push(wm);
       let wmError = '';
-      wm.stderr!.on('data', (data: Buffer) => { wmError = (wmError + data.toString()).slice(-1500); });
+      createTextCollector(wm.stderr, { retainText: false, onDecodedText: text => { wmError = (wmError + text).slice(-1500); } });
       // _NET_SUPPORTING_WM_CHECK is published before startup finishes. Mapping
       // during that phase can lose the MapRequest. Use the WM's own startup
       // completion hook, not the early property, as the fixture readiness gate.
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`Openbox startup did not complete: ${wmError}`)), 5000);
         let output = '';
-        wm.stdout!.on('data', (data: Buffer) => {
-          output += data.toString();
+        createTextCollector(wm.stdout, { retainText: false, onDecodedText: text => {
+          output += text;
           if (output.includes('PC_FOCUS_WM_READY')) { clearTimeout(timer); resolve(); }
-        });
+        } });
         wm.once('error', (error) => { clearTimeout(timer); reject(error); });
       });
       await vi.waitFor(async () => expect((await command('wmctrl', ['-m'])).status).toBe(0), { timeout: 5000 });
@@ -47,7 +48,7 @@ describe.runIf(supported)('real X11 workspace focus', () => {
       const message = spawn('/usr/bin/xmessage', ['-title', title, '-fn', 'fixed', '-geometry', '260x100+40+40', 'Existing focus test window'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
       children.push(message);
       let messageError = '';
-      message.stderr!.on('data', (data: Buffer) => { messageError = (messageError + data.toString()).slice(-1500); });
+      createTextCollector(message.stderr, { retainText: false, onDecodedText: text => { messageError = (messageError + text).slice(-1500); } });
       let id = '';
       try { await vi.waitFor(async () => {
         if (message.exitCode !== null || message.signalCode !== null) throw new Error(`xmessage exited (${message.exitCode}/${message.signalCode}): ${messageError}`);

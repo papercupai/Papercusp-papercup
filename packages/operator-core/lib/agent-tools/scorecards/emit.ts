@@ -1,6 +1,8 @@
 /** scorecards:emit — the typed write facade over the canonical observation ledger. */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
+import { judgePortalPlaywrightRows, mergeCriterionTestRuns, partitionCriterionTestFiles } from '../../rubrics-playwright-checks';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
 import { isNonCodeAuditVerdict } from '../../plan-verification-profile';
@@ -249,6 +251,15 @@ export function recoverScorecardCheckRun(input: {
   harnessSlug: string;
 }): CriterionCheckRunnerResult | null {
   if (!input.task || !isTerminalState(input.task.state) || input.rows.length !== input.files.length) return null;
+  let routes: ReturnType<typeof partitionCriterionTestFiles>;
+  try { routes = partitionCriterionTestFiles([...input.files], input.root); } catch { return null; }
+  if (routes.length === 1 && routes[0]!.kind === 'portal-playwright' && routes[0]!.root === input.root) {
+    if (input.task.exitCode !== 0 || input.rows.some(row => row.commit_sha !== input.sourceSha)) return null;
+    const result = judgePortalPlaywrightRows({ rows: [...input.rows],
+      route: { root: input.root, files: input.files.map(file => file.startsWith(input.root + '/') ? file.slice(input.root.length + 1) : file) },
+      runId: input.runId, workspaceId: input.workspaceId, harnessSlug: input.harnessSlug });
+    return result.error === undefined ? mergeCriterionTestRuns([result], input.root, input.runId) : null;
+  }
   const ids = input.rows.map((row) => row.id);
   if (new Set(ids).size !== ids.length || new Set(input.files).size !== input.files.length) return null;
   const expectedFiles = new Set(input.files);
@@ -326,6 +337,23 @@ export async function runRecoverableScorecardChecks(
     sourceSha?: (root: string) => string | null | Promise<string | null>;
   } = {},
 ): Promise<CriterionCheckRunnerResult> {
+  // Each executor owns a distinct request-bound recovery prefix and source checkout.
+  // A mixed Vitest/Portal request must never recover one executor from the other's rows.
+  let groups: ReturnType<typeof partitionCriterionTestFiles>;
+  try { groups = partitionCriterionTestFiles(opts.files, opts.root); }
+  catch (error) { return { ok: false, runId: opts.runId ?? 'unroutable', root: opts.root, error: 'route_error', hint: String(error) }; }
+  if (groups.some(group => group.kind === 'portal-playwright') &&
+    (groups.length > 1 || groups[0]!.root !== opts.root)) {
+    const deadline = Date.now() + (opts.timeoutMs ?? SCORECARD_TEST_CHECK_TIMEOUT_MS);
+    const runs: CriterionCheckRunnerResult[] = [];
+    for (const group of groups) {
+      const result = await runRecoverableScorecardChecks({ ...opts, root: group.root,
+        files: group.files.map(file => resolve(opts.root, file)), timeoutMs: Math.max(1, deadline - Date.now()) }, binding, deps);
+      if (result.error !== undefined) return result;
+      runs.push(result);
+    }
+    return mergeCriterionTestRuns(runs, opts.root, opts.runId ?? 'mixed-executors');
+  }
   const executeFiles = deps.runFiles ?? runCriterionCheckFiles;
   const runFiles: CriterionCheckRunner = (request) => executeFiles({ ...request, actorId: binding.createdBy });
   const workspaceId = opts.workspaceId;

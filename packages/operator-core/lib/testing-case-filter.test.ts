@@ -1,9 +1,10 @@
 // Plan test-rubric-unification-2026-10-12 P-002 / R-2: the {file, testName} resolver shared
 // by rubric tests checks and spec evidence bindings. The bar: a citation whose filter matches
 // zero recorded cases is refused rather than counted as a pass.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   hasMatchingDeclaredCaseTitle,
+  hasSameCaseTitleIdentity,
   resolveTestCaseFilter,
   sameTestFile,
   type RecordedTestCase,
@@ -100,6 +101,60 @@ describe('hasMatchingDeclaredCaseTitle', () => {
   it('matches across an it.each quoted leading label', () => {
     expect(hasMatchingDeclaredCaseTitle("kind 'tests' accepts", ["suite > 'tests' accepts"])).toBe(false);
     expect(hasMatchingDeclaredCaseTitle('tests accepts', ["suite > 'tests' accepts"])).toBe(true);
+  });
+
+  it('bounds normalization work across repeated queries of one ledger snapshot', () => {
+    const titles = Array.from({ length: 36 }, (_, i) => `suite > group ${i} > 'tests' accepts > case ${i}`);
+    const queries = Array.from({ length: 18 }, (_, i) => `missing case ${i}`);
+    const countWork = (match: typeof hasMatchingDeclaredCaseTitle) => {
+      const split = vi.spyOn(String.prototype, 'split');
+      let count: number;
+      let results: boolean[];
+      try {
+        results = queries.map((query) => match(query, titles));
+        count = split.mock.calls.filter(([separator]) => String(separator) === ' > ').length;
+      } finally {
+        split.mockRestore();
+      }
+      expect(results!).toEqual(queries.map(() => false));
+      return count!;
+    };
+    // Resident negative control: the pre-fix loop repeatedly normalized both sides
+    // of every candidate suffix. Count the work, independent of machine speed.
+    const legacy: typeof hasMatchingDeclaredCaseTitle = (declared, executed) => executed.some((title) => {
+      const hierarchy = title.split(' > ');
+      return hierarchy.some((_part, start) =>
+        hasSameCaseTitleIdentity(declared, hierarchy.slice(start).join(' > ')),
+      );
+    });
+    const budget = titles.length * 5 + queries.length;
+    expect(countWork(legacy)).toBeGreaterThan(budget * 8);
+    expect(countWork(hasMatchingDeclaredCaseTitle)).toBeLessThanOrEqual(budget);
+  });
+
+  it('observes appended, replaced and removed titles in a reused array', () => {
+    const titles = ['suite > original'];
+    expect(hasMatchingDeclaredCaseTitle('original', titles)).toBe(true);
+    titles[0] = 'suite > replacement';
+    expect(hasMatchingDeclaredCaseTitle('original', titles)).toBe(false);
+    expect(hasMatchingDeclaredCaseTitle('replacement', titles)).toBe(true);
+    titles.push('suite > appended');
+    expect(hasMatchingDeclaredCaseTitle('appended', titles)).toBe(true);
+    titles.pop();
+    expect(hasMatchingDeclaredCaseTitle('appended', titles)).toBe(false);
+  });
+
+  it.each([
+    ['nested leaf', 'suite > nested > leaf', true],
+    ['nested > leaf', 'suite > nested > leaf', true],
+    ['leaf', 'suite > nested > leaf', true],
+    ['ested leaf', 'suite > nested > leaf', false],
+    ['nested', 'suite > nested > leaf', false],
+    ['tests accepts', "suite > 'tests' accepts", true],
+    ["kind 'tests' accepts", "suite > 'tests' accepts", false],
+    ['', 'suite > ', true],
+  ])('preserves title identity for %j within %j', (declared, executed, expected) => {
+    expect(hasMatchingDeclaredCaseTitle(declared as string, [executed as string])).toBe(expected);
   });
 });
 

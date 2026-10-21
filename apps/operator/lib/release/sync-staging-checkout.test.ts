@@ -922,6 +922,52 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
 describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)', () => {
   const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'staging_generation_holder_evidence', 'prune_staging_generations'];
 
+  it('retains crashed audit replay source until its bounded pin expires, then collects it (EI-25971079852455067)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-audit-pin-'));
+    try {
+      const generations = join(root, 'generations');
+      const candidate = join(generations, '.candidate-old.audit');
+      const checkout = join(candidate, 'checkout');
+      const pins = join(candidate, '.audit-runtime-pins');
+      mkdirSync(checkout, { recursive: true });
+      mkdirSync(pins);
+      const pin = join(pins, 'owner');
+      writeFileSync(pin, `${Math.floor(Date.now() / 1000) + 600}\n{}\n`);
+      const env = { STAGING_ROOT: join(root, 'absent-current'), STAGING_GENERATIONS_ROOT: generations,
+        STAGING_PROC_ROOT: join(root, 'absent-proc'), INTEGRATION_ROOT: root };
+      const retained = runFn(PRUNE_FNS, 'log() { echo "$*"; }; prune_staging_generations', { env });
+      expect(retained.status).toBe(0);
+      expect(retained.stdout).toContain('bounded audit runtime pin');
+      expect(existsSync(checkout)).toBe(true);
+      writeFileSync(pin, '1\n{}\n');
+      const collected = runFn(PRUNE_FNS, 'log() { echo "$*"; }; prune_staging_generations', { env });
+      expect(collected.status).toBe(0);
+      expect(collected.stdout).toContain(`pruned unused staging generation ${checkout}`);
+      expect(existsSync(candidate)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('alarms and retains a newly damaged audit pin without treating its payload as shell code', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-audit-pin-corrupt-'));
+    try {
+      const generations = join(root, 'generations');
+      const candidate = join(generations, '.candidate-old.audit');
+      const checkout = join(candidate, 'checkout');
+      const pins = join(candidate, '.audit-runtime-pins');
+      mkdirSync(checkout, { recursive: true });
+      mkdirSync(pins);
+      writeFileSync(join(pins, 'owner'), '$(touch SHOULD_NOT_EXIST)\n');
+      const result = runFn(PRUNE_FNS, 'log() { echo "$*"; }; prune_staging_generations', {
+        env: { STAGING_ROOT: join(root, 'absent-current'), STAGING_GENERATIONS_ROOT: generations,
+          STAGING_PROC_ROOT: join(root, 'absent-proc'), INTEGRATION_ROOT: root },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('ALARM: malformed audit source pin');
+      expect(existsSync(checkout)).toBe(true);
+      expect(existsSync(join(candidate, 'SHOULD_NOT_EXIST'))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('removes superseded generations but keeps the current one and any a process still runs from', async () => {
     const root = mkdtempSync(join(tmpdir(), 'staging-prune-'));
     const generationRoot = join(root, 'papercusp-staging.generations');

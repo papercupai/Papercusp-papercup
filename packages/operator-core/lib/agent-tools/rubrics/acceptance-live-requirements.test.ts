@@ -132,6 +132,32 @@ describe('overlayLiveRequirementVerification', () => {
     const overlay = overlayLiveRequirementVerification([stored[0]!], [{ barKey: 'R-1', criterion: { check: { kind: 'tests', files: [NEW_TEST] } } }]);
     expect(overlay.criteria[0]!.method).toBe('old');
   });
+
+  it('keeps stored verification when a same-key live block changes BAR meaning before amendment', () => {
+    const storedCriterion = {
+      key: 'r-2',
+      barKey: 'R-2',
+      model: 'The settlement lookup uses the index.',
+      driftMarkers: 'The lookup scans the table.',
+      method: 'Run the settlement integration suite.',
+      check: { kind: 'tests', files: [OLD_TEST] },
+    };
+    const overlay = overlayLiveRequirementVerification([storedCriterion], [{
+      barKey: 'R-2',
+      criterion: {
+        key: 'r-2',
+        barKey: 'R-2',
+        model: 'Every event family has a proof classification.',
+        driftMarkers: 'An unclassified family leaves the catalogue test green.',
+        method: 'Run the catalogue classification suite.',
+        check: { kind: 'tests', files: [NEW_TEST] },
+      },
+    }]);
+    expect(overlay.criteria[0]).toBe(storedCriterion);
+    expect(overlay.live).toEqual([]);
+    expect(overlay.changed).toEqual([]);
+    expect(overlay.kept).toEqual([{ barKey: 'R-2', reason: 'meaning-changed' }]);
+  });
 });
 
 describe('readLiveAcceptanceCriteria (the acceptance read)', () => {
@@ -159,6 +185,33 @@ describe('readLiveAcceptanceCriteria (the acceptance read)', () => {
     );
     expect(read.criteria[0]!.check).toMatchObject({ kind: 'tests', files: [NEW_TEST] });
     expect(read.status).toMatchObject({ source: 'live-plan', subjectPlanVersion: 7, live: ['R-1'], changed: ['R-1'] });
+  });
+
+  it('does not pair a changed BAR meaning with the pre-amendment live method/check', async () => {
+    const original = fixturePlan(requirementBlock());
+    const edited = fixturePlan(requirementBlock({
+      condition: 'A different promise now holds.',
+      method: 'Run the replacement proof.',
+      file: NEW_TEST,
+    }));
+    const seeded = parseRequirementBars(original);
+    if (!seeded.ok) throw new Error('fixture must parse');
+    const storedCriteria = seeded.bars.map((bar) => ({ ...bar.criterion!, barKey: bar.barKey }));
+
+    const read = await readLiveAcceptanceCriteria(
+      { kind: 'acceptance', subjectPlan: 'live-view-fixture', subjectHarnessSlug: 'papercusp', criteria: storedCriteria },
+      { readSubjectPlanContent: async () => ({ content: edited, version: 8 }), parseRequirementBars: realParser },
+    );
+    expect(read.criteria[0]!.model).toBe(storedCriteria[0]!.model);
+    expect(read.criteria[0]!.method).toBe(storedCriteria[0]!.method);
+    expect(read.criteria[0]!.check).toEqual(storedCriteria[0]!.check);
+    expect(read.status).toMatchObject({
+      source: 'live-plan',
+      subjectPlanVersion: 8,
+      live: [],
+      changed: [],
+      kept: [{ barKey: 'R-1', reason: 'meaning-changed' }],
+    });
   });
 
   it('falls back to the stored criteria, naming why, when the subject plan cannot be read', async () => {

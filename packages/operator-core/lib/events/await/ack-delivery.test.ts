@@ -3,6 +3,7 @@
  * the capability-gated pty host confirms its exact pre-write cancellation barrier.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 type SqlResponse = (text: string, values: unknown[]) => unknown;
 
@@ -161,9 +162,9 @@ describe('ackDelivery for a pump-claimed row', () => {
       if (text.includes("channel = 'suppressed-redundant'")) return [{ id: 7 }];
       return [];
     };
-    vi.mocked(pty.injectIntoHostWithConfirmation).mockResolvedValue({
+    mockResolvedTyped(vi.mocked(pty.injectIntoHostWithConfirmation), {
       ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
-    } as never);
+    });
 
     await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
       acked: true,
@@ -188,9 +189,9 @@ describe('ackDelivery for a pump-claimed row', () => {
       }
       return [];
     };
-    vi.mocked(pty.injectIntoHostWithConfirmation).mockResolvedValue({
+    mockResolvedTyped(vi.mocked(pty.injectIntoHostWithConfirmation), {
       ok: true, confirmation: 'acked', reason,
-    } as never);
+    });
 
     await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
       acked: false,
@@ -209,9 +210,9 @@ describe('ackDelivery for a pump-claimed row', () => {
       if (text.includes("channel = 'suppressed-redundant'")) return [{ id: 7 }];
       return [];
     };
-    vi.mocked(pty.injectIntoHostWithConfirmation).mockResolvedValue({
+    mockResolvedTyped(vi.mocked(pty.injectIntoHostWithConfirmation), {
       ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
-    } as never);
+    });
 
     await expect(store.settleCaughtUpInboxWakeDeliveries({
       subscriberId: 'su-ack',

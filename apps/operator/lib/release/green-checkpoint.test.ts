@@ -6263,6 +6263,52 @@ describe("runGreenCheckpoint", () => {
     }
   });
 
+  // WI-6554700010018556: the repair-tick legs deadline aborts an in-flight leg. The abort must
+  // KILL the leg's whole subtree (npm -> sh -> node workers) — an abandoned leg would keep
+  // running in the checkpoint tree after the run returned.
+  it("WI-6554700010018556: an abort signal group-kills the child AND its grandchild, then rejects", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "green-checkpoint-abort-"));
+    const pidfile = join(dir, "pid");
+    try {
+      const controller = new AbortController();
+      const run = runCmd("bash", ["-c", `sleep 20 & echo $! > ${pidfile}; sleep 20`], {
+        killProcessGroupOnTimeout: true,
+        signal: controller.signal,
+      });
+      // Abort only once the grandchild exists, so the kill has something to reach.
+      const startDeadline = Date.now() + 5_000;
+      while (!(existsSync(pidfile) && readFileSync(pidfile, "utf8").trim())) {
+        if (Date.now() > startDeadline) throw new Error("grandchild never started");
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      controller.abort();
+      await expect(run).rejects.toThrow(/aborted by caller deadline/);
+      const pid = Number(readFileSync(pidfile, "utf8").trim());
+      const deadline = Date.now() + 5_000;
+      while (grandchildStillRunning(pid) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(grandchildStillRunning(pid)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("WI-6554700010018556: an already-aborted signal rejects without spawning anything", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "green-checkpoint-abort-"));
+    const marker = join(dir, "ran");
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        runCmd("bash", ["-c", `touch ${marker}`], { signal: controller.signal }),
+      ).rejects.toThrow(/aborted before spawn/);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("WI-7069: WITHOUT killProcessGroupOnTimeout, a timeout kill orphans the grandchild — documents the bug this option closes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "green-checkpoint-grandchild-"));
     const pidfile = join(dir, "pid");

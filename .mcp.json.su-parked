@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "papercusp": {
-      "url": "http://127.0.0.1:9071/api/mcp?superuser=1&workspace=papercusp-workspace",
+      "url": "http://127.0.0.1:32779/api/mcp?superuser=1&workspace=papercusp-workspace",
       "headers": {
         "Authorization": "Bearer 0UZp37QmE7hbUwN5JPrUNlHsD8mDuREX"
       }

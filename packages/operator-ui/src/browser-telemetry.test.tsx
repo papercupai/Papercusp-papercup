@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OperatorWorkspaceLocationProvider } from './seam';
-import { captureBrowserTelemetry, CloudMonitoringPreferences, PostHogProvider } from './browser-telemetry';
+import { createHash } from 'node:crypto';
+import { captureBrowserTelemetry, CloudMonitoringPreferences, CloudPortalVisit, PostHogProvider, reportCloudError, useCloudFeatureAdoption } from './browser-telemetry';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '@papercusp/operator-core/lib/telemetry-kinds';
 
 const sdkFixture = vi.hoisted(() => ({
@@ -143,5 +144,62 @@ describe('browser telemetry host consent boundary', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('owner or administrator');
     expect(diagnostics.checked).toBe(false);
     expect(diagnostics.disabled).toBe(false);
+  });
+});
+
+const hostedEvents = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls
+  .filter(([url]) => url === '/api/hosted/browser/monitoring/event')
+  .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+
+describe('portal producers for the disclosed analytics (blind review G-1..G-3)', () => {
+  it('records one hosted return per portal shell mount and nothing for a local shell', async () => {
+    const captureFetch = vi.fn(async () => new Response('{}', { status: 202 })); vi.stubGlobal('fetch', captureFetch);
+    const local = render(<CloudPortalVisit location="local" />);
+    local.unmount();
+    expect(captureFetch).not.toHaveBeenCalled();
+    const view = render(<CloudPortalVisit location="cloud" />);
+    view.rerender(<CloudPortalVisit location="cloud" />);
+    await waitFor(() => expect(captureFetch).toHaveBeenCalledTimes(1));
+    expect(hostedEvents(captureFetch)).toMatchObject([{ event: 'cloud_portal_session', properties: { action: 'returned' } }]);
+    // The seam location is the default when the host passes none.
+    render(<OperatorWorkspaceLocationProvider location="cloud"><CloudPortalVisit /></OperatorWorkspaceLocationProvider>);
+    await waitFor(() => expect(captureFetch).toHaveBeenCalledTimes(2));
+  });
+
+  it('records each disclosed feature once per mount, only when hosted and active', async () => {
+    const captureFetch = vi.fn(async () => new Response('{}', { status: 202 })); vi.stubGlobal('fetch', captureFetch);
+    function Surface({ active, location }: { active: boolean; location?: 'cloud' | 'local' }) {
+      useCloudFeatureAdoption('connection_setup', { active, location });
+      return null;
+    }
+    const local = render(<Surface active location="local" />);
+    local.unmount();
+    const view = render(<Surface active={false} location="cloud" />);
+    expect(captureFetch).not.toHaveBeenCalled();
+    view.rerender(<Surface active location="cloud" />);
+    view.rerender(<Surface active={false} location="cloud" />);
+    view.rerender(<Surface active location="cloud" />);
+    await waitFor(() => expect(captureFetch).toHaveBeenCalledTimes(1));
+    expect(hostedEvents(captureFetch)).toMatchObject([{ event: 'cloud_feature_adoption', properties: { feature: 'connection_setup' } }]);
+  });
+
+  it('reports a hosted render failure as a code plus the server-compatible fingerprint, never the message', async () => {
+    const captureFetch = vi.fn(async () => new Response('{}', { status: 202 })); vi.stubGlobal('fetch', captureFetch);
+    const failure = new TypeError('private-profile acme-corp /secret/path');
+    await reportCloudError('render_failure', failure, 'local');
+    expect(captureFetch).not.toHaveBeenCalled();
+    await reportCloudError('render_failure', failure, 'cloud');
+    const [event] = hostedEvents(captureFetch);
+    // Pinned to the server's safeCloudError formula: sha256(JSON.stringify([code, type])).
+    const expected = createHash('sha256').update(JSON.stringify(['render_failure', 'TypeError'])).digest('hex');
+    expect(event).toMatchObject({ event: 'cloud_error', properties: { code: 'render_failure', fingerprint: expected } });
+    expect(Object.keys(event.properties).sort()).toEqual(['code', 'fingerprint']);
+    expect(JSON.stringify(captureFetch.mock.calls)).not.toContain('private-profile');
+    // An unreviewed error type collapses to Error, exactly as on the server.
+    class CustomerError extends Error { override name = 'AcmeCorpError'; }
+    await reportCloudError('render_failure', new CustomerError('x'), 'cloud');
+    expect(hostedEvents(captureFetch)[1].properties.fingerprint)
+      .toBe(createHash('sha256').update(JSON.stringify(['render_failure', 'Error'])).digest('hex'));
+    expect(JSON.stringify(captureFetch.mock.calls)).not.toContain('AcmeCorp');
   });
 });

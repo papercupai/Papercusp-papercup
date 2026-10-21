@@ -59,6 +59,6 @@ export default defineTool({
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const now = new Date();
     const reading = await readBugInflowDaily(workspaceId, { days: args.days, now });
-    return { content: [{ type: 'text' as const, text: JSON.stringify(bugInflowPayload(reading, now)) }] };
+    return { data: bugInflowPayload(reading, now) };
   },
 });

@@ -1933,11 +1933,16 @@ export async function shutdownViaPty(
 export async function mcpReconnectViaPty(
   ownerId: string,
   serverName = 'papercusp-su',
-  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+  opts: { verifyIdentity?: VerifyPidIdentity; force?: boolean } = {},
 ): Promise<'sent' | 'no-host' | 'no-cap' | 'send-failed'> {
   const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   if (!host) return 'no-host';
   if (!hostSupports(host, 'mcp-reconnect')) return 'no-cap';
-  const ok = await injectIntoHost(host.sock, { mode: 'mcp-reconnect', data: serverName, ownerId });
+  const ok = await injectIntoHost(host.sock, {
+    mode: 'mcp-reconnect',
+    data: serverName,
+    ownerId,
+    ...(opts.force === true ? { force: true } : {}),
+  });
   return ok ? 'sent' : 'send-failed';
 }

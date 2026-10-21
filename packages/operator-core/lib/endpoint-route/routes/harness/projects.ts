@@ -9,7 +9,7 @@
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 44 — the final batch; harness.ts itself is empty after this).
  */
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
@@ -203,7 +203,22 @@ const create = defineTool({
     }
 
     const reg = await loadHarnessRegistry();
-    if (reg.projects.some((p) => p.slug === slug)) {
+    const existing = reg.projects.find((p) => p.slug === slug);
+    if (existing) {
+      // WI-6554700010018437: re-registering the SAME slug at the SAME folder is an
+      // idempotent "ensure provisioned", not a conflict. A registry row whose schema
+      // went missing (500 'relation agent_chats does not exist') otherwise has no
+      // supported repair: DELETE is operator-only and the scaffold CLI is absent on
+      // hosted guests. The scaffold is CREATE ... IF NOT EXISTS / OR REPLACE, so a
+      // healthy row is untouched. A different folder under the same slug stays a 409.
+      const requestedPath = typeof body.path === 'string' ? body.path.trim() : '';
+      if (requestedPath && isSameProjectPath(requestedPath, existing.path)) {
+        const provisioning = await provisionHarnessSchema(slug);
+        return Response.json(
+          { ok: provisioning.ok, project: { slug, path: existing.path }, provisioning, reprovisioned: true },
+          { status: provisioning.ok ? 200 : 500 },
+        );
+      }
       return Response.json({ error: 'slug already exists' }, { status: 409 });
     }
 
@@ -389,15 +404,7 @@ const create = defineTool({
       migratedConfigFields = r.fields;
     } catch { /* ignore — registration succeeded; config lift is best-effort */ }
 
-    let provisioning: { ok: true } | { ok: false; error: string };
-    try {
-      const { scaffoldHarnessSchema } = await import('../../../scaffold-harness-schema');
-      await scaffoldHarnessSchema(slug);
-      provisioning = { ok: true };
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      provisioning = { ok: false, error: msg.slice(0, 300) };
-    }
+    const provisioning = await provisionHarnessSchema(slug);
 
     // P-010 (hive-from-github-url / D-007) — standalone-from-URL: a cloned repo
     // gets a detection-generated blueprint so it is immediately runnable, like
@@ -872,6 +879,30 @@ const registerSubs = defineTool({
  * unit-tested without fs/PG (mirrors `resolveCreatePotMembership`). Exported
  * for tests + the POST handler.
  */
+/** WI-6554700010018437: run the idempotent per-harness schema scaffold, reporting (never throwing) its outcome. */
+export async function provisionHarnessSchema(slug: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const { scaffoldHarnessSchema } = await import('../../../scaffold-harness-schema');
+    await scaffoldHarnessSchema(slug);
+    return { ok: true };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg.slice(0, 300) };
+  }
+}
+
+/** Same folder? Compares realpaths when both exist (symlinks, trailing slashes), else lexical resolve(). */
+export function isSameProjectPath(a: string, b: string): boolean {
+  const canon = (p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  return canon(a) === canon(b);
+}
+
 export function resolveProjectHiveMembership(
   projects: ReadonlyArray<{ slug: string; harness_kind?: string }>,
   hiveScope: string,

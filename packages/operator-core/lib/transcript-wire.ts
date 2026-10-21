@@ -89,6 +89,37 @@ export const CLAUDE_OWNER_DIALOG_RESULT_PREFIXES = [
   'Your questions have been answered:',
 ] as const;
 
+export type DialogAnswerSource = 'human' | 'automatic' | 'unknown';
+export const DIALOG_ANSWER_SOURCE_PREFIX = '⟦dialog-answer-source:';
+
+/** Wording such as "The user answered" identifies a dialog, not its author. */
+export function dialogAnswerText(payload: string, source: DialogAnswerSource = 'unknown'): string {
+  return `${DIALOG_ANSWER_SOURCE_PREFIX}${source}⟧\n${payload}`;
+}
+
+/** Only the native PostToolUse attachment carries a completed source receipt.
+ * Keep the same extraction for the search index and raw transcript verifier. */
+export function claudeDialogProvenanceAttachment(obj: Record<string, unknown>): string | null {
+  if (obj.type !== 'attachment') return null;
+  const a = obj.attachment as { type?: unknown; hookEvent?: unknown; hookName?: unknown; content?: unknown } | undefined;
+  if (a?.type !== 'hook_additional_context' || ![a.hookEvent, a.hookName].some((name) =>
+    typeof name === 'string' && /^PostToolUse(?::|$)/.test(name))) return null;
+  const parts = Array.isArray(a.content) ? a.content : [a.content];
+  for (const part of parts) {
+    if (typeof part !== 'string' || !part.startsWith('⟦dialog-answer-provenance⟧ ')) continue;
+    const head = part.split('\n', 1)[0].slice('⟦dialog-answer-provenance⟧ '.length);
+    try {
+      const receipt = JSON.parse(head) as Record<string, unknown>;
+      if (!['human', 'automatic', 'unknown'].includes(String(receipt.source)) ||
+        typeof receipt.toolUseId !== 'string' || !receipt.toolUseId ||
+        typeof receipt.sessionId !== 'string' || !receipt.sessionId ||
+        (typeof obj.sessionId === 'string' && obj.sessionId !== receipt.sessionId)) continue;
+      return dialogAnswerText(part, receipt.source as DialogAnswerSource);
+    } catch { /* malformed receipts never establish owner authority */ }
+  }
+  return null;
+}
+
 /**
  * The RAW arguments of a codex tool-call response item, whatever field this
  * build of Codex put them in — `function_call` uses `arguments` (a JSON

@@ -621,6 +621,14 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
     expect(row[0].taken_by).toBe('agA'); // unchanged
   });
 
+  it('refuses a terminal feature claim by id without changing the taken_by attribution', async () => {
+    await seedFeature('F-terminal-claim', { status: 'done', admission: 'auto' });
+    expect(await wi.claimWorkItem('F-terminal-claim', 'agB', { harness: H })).toBeNull();
+    const row = await db.sql<{ status: string; taken_by: string | null }[]>`
+      SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id='F-terminal-claim'`;
+    expect(row[0]).toEqual({ status: 'done', taken_by: null });
+  });
+
   it('re-claiming by the same assignee is idempotent', async () => {
     await seedFeature('F-3');
     expect((await wi.claimWorkItem('F-3', 'agA', { harness: H }))?.assignee).toBe('agA');

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { buildArm, fairProcessCensus, FAIR_ARM_IDS, frozenGraphRequest, indexFileCensus, loadFairInputs, materializeFrozenControls,
+import { buildArm, createFairWorkerChannel, fairProcessCensus, FAIR_ARM_IDS, frozenGraphRequest, indexFileCensus, loadFairInputs, materializeFrozenControls,
   materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
   verifyFairWorkerSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
@@ -300,5 +300,57 @@ describe('raw native tool token witnesses', () => {
   it('refuses absent JSON bytes instead of manufacturing a zero-token measurement', async () => {
     await expect(measureFairToolPayload(undefined, {})).rejects.toThrow(/JSON representation/);
     await expect(measureFairToolPayload({}, undefined)).rejects.toThrow(/JSON representation/);
+  });
+});
+
+describe('fresh worker channel', () => {
+  // P-026 R-7: one overrun query used to throw out of the arm and discard the
+  // lsp-query and no-third-party runs. It is a scored outcome, and the worker
+  // is still busy with it, so the next request must wait for the late reply.
+  const kase = (id: string) => ({ id }) as unknown as Parameters<ReturnType<typeof createFairWorkerChannel>['query']>[0];
+  const flush = (ms = 0) => new Promise(done => setTimeout(done, ms));
+  function channelUnderTest(deadlineMs: number, drainCapMs: number) {
+    const sent: Array<{ id: number; method: string }> = [];
+    let clock = 0;
+    const channel = createFairWorkerChannel({
+      send: (line, done) => { sent.push(JSON.parse(line)); done(null); },
+      isLive: () => true, deadlineMs: () => deadlineMs, drainCapMs, now: () => (clock += 5),
+    });
+    const reply = (id: number, body: { result?: unknown; error?: string }) =>
+      channel.receive(`FAIR_WORKER_REPLY=${JSON.stringify({ id, ...body })}`);
+    return { channel, sent, reply };
+  }
+
+  it('scores an overrun query timed-out and sends nothing more until the late reply frees the worker', async () => {
+    const { channel, sent, reply } = channelUnderTest(20, 5_000);
+    await expect(channel.query(kase('slow'))).resolves.toEqual({
+      caseId: 'slow', status: 'timed-out', sites: [], latencyMs: 5, detail: 'fresh worker query deadline' });
+    const next = channel.query(kase('next'));
+    await flush(40);
+    expect(sent.map(request => request.id)).toEqual([1]);
+    reply(1, { result: { caseId: 'slow', status: 'answered', sites: [], latencyMs: 90_000 } });
+    await flush();
+    expect(sent.map(request => [request.id, request.method])).toEqual([[1, 'query'], [2, 'query']]);
+    reply(2, { result: { caseId: 'next', status: 'answered', sites: [], latencyMs: 3 } });
+    await expect(next).resolves.toEqual({ caseId: 'next', status: 'answered', sites: [], latencyMs: 3 });
+  });
+
+  it('fails the repetition loudly when an overrun worker never frees up', async () => {
+    const { channel, sent } = channelUnderTest(10, 30);
+    await channel.query(kase('stuck'));
+    await expect(channel.query(kase('after'))).rejects.toThrow('fresh worker still busy 30ms after a request deadline');
+    expect(sent).toHaveLength(1);
+  });
+
+  it('keeps worker-reported and transport failures as errors, never a scored timeout', async () => {
+    const { channel, reply } = channelUnderTest(1_000, 1_000);
+    const reported = channel.query(kase('crash'));
+    await flush();
+    reply(1, { error: 'worker query before frozen source indexing' });
+    await expect(reported).rejects.toThrow('worker query before frozen source indexing');
+    const exited = channel.query(kase('exit'));
+    await flush();
+    channel.failAll(new Error('fresh worker exited'));
+    await expect(exited).rejects.toThrow('fresh worker exited');
   });
 });

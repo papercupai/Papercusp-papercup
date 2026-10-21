@@ -59,6 +59,8 @@ const TAB_HREFS = [
   "/admin/schedules",
   "/admin/tasks",
   "/admin/work-scope",
+  // P-005 (WI-6554700010011434): inherited governance policy section (bb0fc5540b).
+  "/admin/governance-policy",
   "/admin/cupboard-moderation",
 ];
 

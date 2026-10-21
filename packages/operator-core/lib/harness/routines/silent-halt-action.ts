@@ -20,7 +20,9 @@ registerSystemAction('reconcile-silent-halts', async (ctx: SystemActionCtx) => {
       `[reconcile-silent-halts] SILENTLY HALTED ${result.halted.length}/${result.checked} autonomous ` +
         `session(s) — process alive, autonomy posture registered, loop inactive, no pending await, no ` +
         `recent turn. Nothing will wake these without a human: ${result.halted.join(', ')}` +
-        (result.dryRun ? ' (dry_run — no owner page sent)' : ` — paged ${result.paged.length}`),
+        (result.dryRun ? ' (dry_run — no owner page sent)' : ` — paged ${result.paged.length}`) +
+        // WI-6554700010018551: these hold only blocker parks that name no wake; woken, never paged.
+        (result.wakeOnly.length > 0 ? `; ${result.wakeOnly.length} wake-only (never paged)` : ''),
     );
   }
 

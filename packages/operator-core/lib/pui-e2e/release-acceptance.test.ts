@@ -9,6 +9,7 @@ import { createServer } from 'node:http';
 import { createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
 import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import * as path from 'node:path';
+import { createTextCollector } from '../child-output';
 import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
@@ -363,8 +364,7 @@ cp "$PUI_FIXTURE_TSX" "$target/node_modules/.bin/tsx"
     fixture.env.HARNESS_ADMIN_DATABASE_URL = `postgresql://fixture:PRIVATE_SOCKET_PASSWORD@127.0.0.1:${(server.address() as AddressInfo).port}/ledger`;
     const child = spawn('bash', [fixture.wrapper, '--archive', fixture.archive], { env: fixture.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
-    child.stdout.on('data', chunk => { output += chunk.toString(); });
-    child.stderr.on('data', chunk => { output += chunk.toString(); });
+    createTextCollector(child.stdout, { retainText: false, onDecodedText: text => { output += text; } }).attach(child.stderr);
     const exited = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
     try {
       expect(await exited).toBe(2);

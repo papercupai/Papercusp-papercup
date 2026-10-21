@@ -47,6 +47,9 @@ import {
   type TestFilesCoreResult,
 } from './agent-tools/testing/run';
 import { findHarnessTestRunIds } from './testing-run-store';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { mergeCriterionTestRuns, partitionCriterionTestFiles, playwrightRecordedCases, resolveCriterionTestRoute,
+  runPortalPlaywrightChecks, type PortalPlaywrightResult } from './rubrics-playwright-checks';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadTestCaseResults } from './agent-tools/testing/runs';
 import {
@@ -229,8 +232,6 @@ function describeUnroutableTestPath(file: string): string | null {
   );
 }
 
-const PLAYWRIGHT_IMPORT_RE = /(?:from\s*|require\(\s*|import\(\s*)['"]@playwright\/test['"]/;
-
 /**
  * WI-10004678 — a Playwright spec has the right FILENAME (`*.spec.ts`), so the shape rule
  * above admits it, but scorecards:emit runs check files through the Vitest router, and
@@ -242,19 +243,8 @@ const PLAYWRIGHT_IMPORT_RE = /(?:from\s*|require\(\s*|import\(\s*)['"]@playwrigh
  * @returns a teaching reason when the file imports `@playwright/test`, else null.
  */
 function describePlaywrightSpec(absPath: string): string | null {
-  let head: string;
-  try {
-    head = readFileSync(absPath, 'utf8').slice(0, 64 * 1024);
-  } catch {
-    return null; // unreadable: the resolve check above owns that answer
-  }
-  if (!PLAYWRIGHT_IMPORT_RE.test(head)) return null;
-  return (
-    'is a Playwright spec (imports @playwright/test) — scorecards:emit runs kind:"tests" ' +
-    'files through the Vitest router, which cannot run it, so this criterion could never be ' +
-    'graded. Cite the Playwright run as recorded evidence in the criterion method (leave the ' +
-    'check off), or name a Vitest *.test.ts file that covers the same behaviour'
-  );
+  const route = resolveCriterionTestRoute(absPath);
+  return route.kind === 'unsupported' ? route.reason : null;
 }
 
 /**
@@ -699,9 +689,7 @@ export type CriterionCheckEvaluation =
   | CriterionRequirementsRefusal;
 
 /** The scorecard runner may add the exact scoped ledger rows produced by the run. */
-export type CriterionCheckRunnerResult = TestFilesCoreResult & {
-  testRunIds?: number[];
-};
+export type CriterionCheckRunnerResult = PortalPlaywrightResult;
 
 /** Injectable runner seam (tests stub this; production shells the real router). */
 export type CriterionCheckRunner = (opts: {
@@ -718,8 +706,26 @@ export type CriterionCheckRunner = (opts: {
 /** The normal scorecard test route, also used by restart recovery for a fresh attempt. */
 export async function runCriterionCheckFiles(
   opts: Parameters<CriterionCheckRunner>[0],
-  deps: { runFiles?: typeof runTestFilesCore } = {},
+  deps: { runFiles?: typeof runTestFilesCore; runPlaywright?: typeof runPortalPlaywrightChecks } = {},
 ): Promise<CriterionCheckRunnerResult> {
+  let groups: ReturnType<typeof partitionCriterionTestFiles>;
+  try { groups = partitionCriterionTestFiles(opts.files, opts.root); }
+  catch (error) { return { ok: false, root: opts.root, runId: opts.runId ?? randomUUID(), error: 'route_error', hint: String(error) }; }
+  if (groups.some(group => group.kind === 'portal-playwright')) {
+    const runId = opts.runId ?? randomUUID();
+    const deadline = Date.now() + (opts.timeoutMs ?? 120_000);
+    const runs: CriterionCheckRunnerResult[] = [];
+    for (const group of groups) {
+      const request = { ...opts, root: group.root, files: group.files.map(file => resolve(opts.root, file)), runId,
+        timeoutMs: Math.max(1, deadline - Date.now()) };
+      const result = group.kind === 'portal-playwright'
+        ? await (deps.runPlaywright ?? runPortalPlaywrightChecks)(request)
+        : await runCriterionCheckFiles(request, deps);
+      if (result.error !== undefined) return result;
+      runs.push(result);
+    }
+    return mergeCriterionTestRuns(runs, opts.root, runId);
+  }
   // Only the maintained Papercusp integration route needs its owned PG
   // supervisor. Unit-only checks and unrelated checkouts retain their router.
   const privatePg = opts.files.some((file) => /\.integration\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file))
@@ -770,15 +776,21 @@ export async function loadCriterionCheckCases(args: {
   // from the superproject can store an absolute path, while the ledger records a repo- or
   // workspace-relative one. The candidate rows are already this run's own rows.
   const rows = (await sql`
-    SELECT id::text AS id, file_path
+    SELECT id::text AS id, file_path, framework, execution_details
       FROM harness_shared.test_runs
      WHERE id = ANY(${args.testRunIds.map(String)}::bigint[])`) as unknown as Array<{
     id: string;
     file_path: string | null;
+    framework: string | null;
+    execution_details: unknown;
   }>;
-  const ids = rows
-    .filter((r) => typeof r.file_path === 'string' && sameTestFile(args.file, r.file_path))
-    .map((r) => Number(r.id));
+  const matching = rows.filter((r) => typeof r.file_path === 'string' && sameTestFile(args.file, r.file_path));
+  if (matching.some(row => row.framework === 'playwright')) {
+    if (matching.length !== 1) return null;
+    const details = parseTestRunExecutionDetails(matching[0]!.execution_details);
+    return details ? playwrightRecordedCases(details) : null;
+  }
+  const ids = matching.map((r) => Number(r.id));
   if (ids.length === 0) return null;
   const { byRun, notMigrated } = await loadTestCaseResults(sql, ids);
   if (notMigrated) return null;
@@ -1696,7 +1708,10 @@ export async function evaluateCriterionTestChecks(input: {
         let cases: RecordedTestCase[] | null;
         try {
           if (!loaded.has(file)) {
-            loaded.set(file, await (input.caseLoader ?? loadCriterionCheckCases)({ testRunIds: run.testRunIds ?? [], file }));
+            const identity = reportedTestFileIdentity(file, reportRoot);
+            const cachedCases = run.casesByFile?.[identity];
+            loaded.set(file, cachedCases !== undefined ? cachedCases :
+              await (input.caseLoader ?? loadCriterionCheckCases)({ testRunIds: run.testRunIdsByFile?.[identity] ?? run.testRunIds ?? [], file }));
           }
           cases = loaded.get(file)!;
         } catch (error) {
@@ -1739,14 +1754,17 @@ export async function evaluateCriterionTestChecks(input: {
     const passed = caseJudgment?.passed ?? files.reduce((n, f) => n + (countsFor(f)?.passed ?? 0), 0);
     const failed = caseJudgment?.failed ?? files.reduce((n, f) => n + (countsFor(f)?.failed ?? 0), 0);
     const fileIdentities = new Set(files.map((f) => reportedTestFileIdentity(f, reportRoot)));
+    const criterionRunIds = [...new Set([...fileIdentities].map(file => run.runIdsByFile?.[file]).filter((id): id is string => !!id))];
+    const criterionTestRunIds = run.testRunIdsByFile
+      ? [...new Set([...fileIdentities].flatMap(file => run.testRunIdsByFile?.[file] ?? []))] : run.testRunIds;
     const record: CriterionCheckRun = {
       kind: 'tests',
       files,
       verdict: failed === 0 ? 'pass' : 'fail',
       passed,
       failed,
-      runId: run.runId ?? null,
-      ...(run.testRunIds !== undefined ? { testRunIds: [...run.testRunIds] } : {}),
+      runId: criterionRunIds.length === 1 ? criterionRunIds[0]! : run.runId ?? null,
+      ...(criterionTestRunIds !== undefined ? { testRunIds: [...criterionTestRunIds] } : {}),
       measuredAt: nowIso(),
       ...(caseJudgment !== null ? { matchedCases: caseJudgment.matched } : {}),
       ...(testName !== undefined ? { testName } : {}),

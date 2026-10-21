@@ -40,6 +40,7 @@ import { withGitFetchHeadroom } from './git-fetch-headroom';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
+import { isUnderAnyPath, unpublishedNestedPotCheckouts } from './nested-pot-checkouts';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
@@ -73,6 +74,7 @@ import {
   type FileAttribution,
   type AttributionRosterEntry,
 } from './git-sync-attribution';
+import { attributionScopeLabel, resolveAttributionRepo } from './attribution-repo';
 
 /**
  * Per-call options a git runner must forward to the git child.
@@ -1488,6 +1490,17 @@ export interface GitSyncConfig {
    *  does not extend to submodules, each an independent GitHub repo the bridge never
    *  touches. Non-legacy callers also require owning-hive authorization at each push. */
   pushSubmoduleOrigins?: boolean;
+  /** WI-6554700010018380: working-copy submodules with no pot fork (set by
+   *  `applyIntegrationPushTarget`). Neither they nor anything nested under them is
+   *  committed, merged or pushed: nothing could publish such a commit, and committing it
+   *  locally leaves the superproject pinning an unresolvable gitlink. Edits inside stay
+   *  in the working tree. */
+  unforkedSubmodules?: string[];
+  /** WI-6554700010018602: submodules that are ANOTHER registered pot's checkout with its own
+   *  git-sync (set by git-sync-action via `resolveNestedPotCheckouts`). That pot publishes
+   *  them through its own delivery route, so this tick never commits, merges or pushes
+   *  inside them, and leaves their gitlink unstaged while its HEAD is on no `origin` ref. */
+  nestedPotCheckouts?: string[];
   /** pot-review-integration-mode P-016: a working-copy pot merges the MAIN repository's
    *  branch into its staging each tick (set by `applyIntegrationPushTarget`). Applied to
    *  the SUPERPROJECT only — submodules are the main repositories' own and never absorb. */
@@ -2708,9 +2721,43 @@ export function isPathspecBeyondSymbolicLinkFailure(output: string): boolean {
   return /fatal:\s+pathspec .* is beyond a symbolic link/i.test(output);
 }
 
+/**
+ * WI-6554700010018683: the stable fatal Git emits when a pathspec names a path
+ * INSIDE a submodule (`fatal: Pathspec '<spec>' is in submodule '<sub>'`), from
+ * `check-ignore` and from `add` alike. A superproject `add -A` never stages a
+ * submodule's own files (only its gitlink), so such an exclusion is redundant
+ * there, but Git rejects the whole command for it and the tick stages nothing.
+ * Exported so a Git wording change fails a focused test.
+ */
+export function isPathspecInSubmoduleFailure(output: string): boolean {
+  return /fatal:\s+pathspec .* is in submodule/i.test(output);
+}
+
+/**
+ * The exclusion paths an `add` failure proves redundant because they lie strictly
+ * inside a submodule Git named. Git reports only the FIRST offending pathspec, so
+ * every exclusion under that same submodule is returned at once; a later retry
+ * catches any other submodule. The gitlink path itself stays excluded: that
+ * pathspec is valid and protects a held pointer bump.
+ */
+export function inSubmoduleProtectedExclusions(output: string, excludePaths: readonly string[]): string[] {
+  const submodules = new Set<string>();
+  for (const match of output.matchAll(/fatal:\s+pathspec '.*?' is in submodule '([^']+)'/gi)) {
+    const submodule = match[1].replace(/^\.\/+/, '').replace(/\/+$/, '');
+    if (submodule) submodules.add(submodule);
+  }
+  if (submodules.size === 0) return [];
+  return excludePaths.filter((excludePath) => {
+    const normalized = excludePath.replace(/^\.\/+/, '').replace(/\/+$/, '');
+    return [...submodules].some((submodule) => normalized.startsWith(`${submodule}/`));
+  });
+}
+
 export type ProtectedPathExclusionPreflight = {
   ignoredUntracked: Set<string>;
   beyondSymlink: Set<string>;
+  /** WI-6554700010018683: paths inside a submodule; redundant and fatal as exclusions here. */
+  inSubmodule: Set<string>;
 };
 
 /**
@@ -2749,6 +2796,7 @@ export async function classifyProtectedPathExclusions(
   paths: readonly string[],
 ): Promise<ProtectedPathExclusionPreflight> {
   const beyondSymlink = new Set<string>();
+  const inSubmodule = new Set<string>();
   const { ignored: ignoredUntracked, unresolved: singles } = await checkIgnoreVerbatimBatches(runGit, repoPath, paths);
   // Bound concurrency instead of serializing one git process per remaining path.
   let next = 0;
@@ -2761,12 +2809,15 @@ export async function classifyProtectedPathExclusions(
         if (result.code === 0) ignoredUntracked.add(path);
         else if (result.code === 1) continue;
         else if (isPathspecBeyondSymbolicLinkFailure(`${result.stdout}\n${result.stderr}`)) beyondSymlink.add(path);
+        else if (isPathspecInSubmoduleFailure(`${result.stdout}\n${result.stderr}`)) inSubmodule.add(path);
         else failed = true;
       }
     }),
   );
-  if (failed) return { ignoredUntracked: new Set<string>(), beyondSymlink: new Set<string>() };
-  return { ignoredUntracked, beyondSymlink };
+  if (failed) {
+    return { ignoredUntracked: new Set<string>(), beyondSymlink: new Set<string>(), inSubmodule: new Set<string>() };
+  }
+  return { ignoredUntracked, beyondSymlink, inSubmodule };
 }
 
 /** The `git add`/`git commit` fatal for a held index lock ("Unable to create
@@ -5233,7 +5284,9 @@ export interface AttributedGroupFailure {
  * (the caller falls through to the catch-all) rather than ever touching the shared index.
  */
 /** One repo's attributed phase in one tick, as carried on GitSyncOutcome.attribution
- *  (WI-6554700010018198). `scope` uses the same labels as skippedPaths. */
+ *  (WI-6554700010018198). `scope` is the repo label git_sync_commit_attribution uses
+ *  ('superproject' or the submodule path from the top-level root; WI-6554700010018409), which
+ *  differs from skippedPaths' install-relative label only for a submodule install. */
 export interface AttributionTally {
   scope: string;
   agentGroupCount: number;
@@ -6422,7 +6475,12 @@ async function commitOneRepoWithScratch(
     await o.yieldIfRequested?.('before-superproject-stage');
     const ignoredUntrackedExcludes = protectedPathPreflight.ignoredUntracked;
     const beyondSymlinkExcludes = protectedPathPreflight.beyondSymlink;
-    const omittedPreflightExcludes = new Set([...ignoredUntrackedExcludes, ...beyondSymlinkExcludes]);
+    const inSubmoduleExcludes = protectedPathPreflight.inSubmodule;
+    const omittedPreflightExcludes = new Set([
+      ...ignoredUntrackedExcludes,
+      ...beyondSymlinkExcludes,
+      ...inSubmoduleExcludes,
+    ]);
     let stagingExcludePaths = excludePaths.filter((path) => !omittedPreflightExcludes.has(path));
     if (ignoredUntrackedExcludes.size > 0) {
       o.log(
@@ -6434,6 +6492,13 @@ async function commitOneRepoWithScratch(
       o.log(
         `[git-sync] ${repoPath}: pre-filtering protected path(s) beyond a symbolic link ` +
           `[${[...beyondSymlinkExcludes].join(', ')}] from staging pathspecs — Git cannot traverse the symlink in a pathspec and add -A does not traverse its target`,
+      );
+    }
+    if (inSubmoduleExcludes.size > 0) {
+      o.log(
+        `[git-sync] ${repoPath}: pre-filtering protected path(s) inside a submodule ` +
+          `[${[...inSubmoduleExcludes].join(', ')}] from staging pathspecs — this repo's add -A stages only the gitlink, ` +
+          'and Git rejects the whole add for an in-submodule pathspec (WI-6554700010018683)',
       );
     }
     let committedAny = false;
@@ -6613,6 +6678,23 @@ async function commitOneRepoWithScratch(
         o.log(
           `[git-sync] ${repoPath}: 'git add -A' rejected ignored protected path(s) [${ignored.join(', ')}] — ` +
             'omitting those redundant exclusion pathspecs and retrying without force-adding ignored files',
+        );
+        addRes = await stageGit(buildAddArgs([], omittedIgnoredExcludes), repoPath);
+      }
+      // WI-6554700010018683: an exclusion added after the preflight (a deferred attributed
+      // path, a refused migration) can still name a file inside a submodule. Git names one
+      // submodule per failure, so drop that submodule's exclusions and retry; the bound is
+      // the number of exclusions, since each round removes at least one.
+      for (let round = 0; addRes.code !== 0 && round < stagingExcludePaths.length; round++) {
+        const inSubmodule = inSubmoduleProtectedExclusions(
+          `${addRes.stdout}\n${addRes.stderr}`,
+          stagingExcludePaths,
+        ).filter((path) => !omittedIgnoredExcludes.includes(path));
+        if (inSubmodule.length === 0) break;
+        omittedIgnoredExcludes = [...omittedIgnoredExcludes, ...inSubmodule];
+        o.log(
+          `[git-sync] ${repoPath}: 'git add -A' rejected protected path(s) inside a submodule [${inSubmodule.join(', ')}] — ` +
+            'omitting those redundant exclusion pathspecs and retrying (this repo stages only the gitlink)',
         );
         addRes = await stageGit(buildAddArgs([], omittedIgnoredExcludes), repoPath);
       }
@@ -7464,7 +7546,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
 async function runGitSyncPass(
   slug: string,
   opts: RunGitSyncOpts,
-  onAttribution: (t: AttributionTally) => void,
+  emitAttribution: (t: AttributionTally) => void,
 ): Promise<GitSyncOutcome> {
   /**
    * An action-level stall guard can abort the owning fire while a git child is
@@ -7658,6 +7740,14 @@ async function runGitSyncPass(
   // single-commit behavior. Read ONCE; per-repo maps are derived below (super + each submodule).
   const roster = opts.loadRoster ? await opts.loadRoster() : [];
 
+  // WI-6554700010018409: a tally carries the same repo label as git_sync_commit_attribution.
+  // Scopes here are relative to `repo`, so a submodule install (slug `<top>/<submodule>`)
+  // would report its own root as 'superproject'. Only an attributed phase emits a tally, and
+  // that needs a non-empty roster, so an install without one pays no extra git calls.
+  const installRepo = roster.length > 0 ? await resolveAttributionRepo(repo, runGit) : null;
+  const onAttribution = (t: AttributionTally): void =>
+    emitAttribution({ ...t, scope: attributionScopeLabel(installRepo, t.scope) });
+
   /** One phase's collected results — JSON-serializable so it checkpoints as a step output. */
   interface PhaseCollect {
     dirtyPathCount: number;
@@ -7810,6 +7900,28 @@ async function runGitSyncPass(
             // measures nothing — this stays null, and null never implies an all-clear.
             out.strandedSubmodules = census;
           });
+      const unforked = cfg.unforkedSubmodules ?? [];
+      if (unforked.length) {
+        const kept = subPaths.filter((p) => !unforked.some((u) => p === u || p.startsWith(`${u}/`)));
+        if (kept.length !== subPaths.length) {
+          log(
+            `[git-sync] ${slug}: skipping ${subPaths.length - kept.length} submodule(s) with no pot fork ` +
+              `(${unforked.join(', ')}) — no commit, merge or push inside them (WI-6554700010018380)`,
+          );
+        }
+        subPaths = kept;
+      }
+      const nested = cfg.nestedPotCheckouts ?? [];
+      if (nested.length) {
+        const kept = subPaths.filter((p) => !isUnderAnyPath(p, nested));
+        if (kept.length !== subPaths.length) {
+          log(
+            `[git-sync] ${slug}: skipping ${subPaths.length - kept.length} nested pot checkout(s) ` +
+              `(${nested.join(', ')}) owned by their own pot's git-sync — no commit, merge or push inside them (WI-6554700010018602)`,
+          );
+        }
+        subPaths = kept;
+      }
       out.submodulePaths = [...subPaths];
     }
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
@@ -7914,6 +8026,16 @@ async function runGitSyncPass(
   const superprojectExcludePaths = protectedPaths.filter(
     (path) => !submodulePaths.some((s) => path === s || path.startsWith(`${s}/`)),
   );
+  // WI-6554700010018602: a nested pot checkout's gitlink is staged only once its HEAD is on
+  // an `origin` ref (.gitmodules resolves through origin, never the pot's fork). Until its
+  // own delivery route publishes it, pinning that HEAD would leave this superproject
+  // pointing at a commit nobody can fetch.
+  for (const nestedPath of await unpublishedNestedPotCheckouts(runGit, repo, cfg.nestedPotCheckouts ?? [])) {
+    log(
+      `[git-sync] ${slug}: holding gitlink ${nestedPath} — nested pot checkout HEAD is on no origin ref yet (WI-6554700010018602)`,
+    );
+    superprojectExcludePaths.push(nestedPath);
+  }
   const superprojectProtectedHoldings = protectedHoldings.filter(
     (holding) => !submodulePaths.some((s) => holding.path === s || holding.path.startsWith(`${s}/`)),
   );
@@ -8077,6 +8199,15 @@ async function runGitSyncPass(
       `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
     );
   } else if (!reconcileSuperprojectOrigin) {
+    // WI-6554700010018483: the stale objects/maintenance.lock reclaim otherwise
+    // runs only inside reconcileAndPushOneRepo, which this branch never calls, so a
+    // bridged superproject (the canonical papercusp repo) kept git auto-gc disabled.
+    // Best-effort, exactly like the legacy call: a failed check never fails the sync.
+    try {
+      await clearStaleMaintenanceLock(runGit, repo, log, opts.isGitLockOpen ? { isOpen: opts.isGitLockOpen } : {});
+    } catch (e) {
+      log(`[git-sync] ${repo}: objects/maintenance.lock check failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
     // EI-20232774599730947: a bridged/p2p-only member is truly commit-only at
     // this layer. GitHub ingress + admission and the P2P worktree bridge own
     // remote-to-worktree flow; fetching/merging origin here is both redundant

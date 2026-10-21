@@ -99,6 +99,12 @@ fi
 
 INPUT=$(cat)
 
+# Capture answer provenance locally, before the network mirror can fail. The
+# PostToolUse context reaches Claude before its next continuation and is retained
+# as a native hook attachment in the transcript. This helper is installed with
+# the other cc/*.mjs helpers by install-standalone-mcp.sh.
+DIALOG_CONTEXT=$(node "$(dirname "$0")/dialog-answer-provenance.mjs" <<<"$INPUT" 2>/dev/null) || DIALOG_CONTEXT=''
+
 PY_STATUS=0
 python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || PY_STATUS=$?
 import datetime, json, os, re, sys, time, urllib.request, urllib.parse
@@ -982,6 +988,9 @@ if handback_ending(scan_text):
 
 sys.exit(0)  # a normal, non-question ending — nothing to mirror.
 PYEOF
+if [ -n "$DIALOG_CONTEXT" ]; then
+  printf '%s\n' "$DIALOG_CONTEXT"
+fi
 
 # EI-14208: close the outer fail-open's own blind spot — if the python body
 # itself crashed/exited non-zero for some reason other than its own normal

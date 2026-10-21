@@ -110,6 +110,7 @@ const DEBOUNCE_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DEBOUNCE_MS)
 const RATE_WINDOW_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_RATE_WINDOW_MS) || 60 * 60_000;
 const RATE_THRESHOLD = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_RATE_THRESHOLD) || 3;
 const MAX_RESTARTS_PER_HR = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_MAX_RESTARTS_HR) || 6;
+const RESTART_HISTORY_WINDOW_MS = 3_600_000;
 const UNIT = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_UNIT || 'papercup-mcp-proxy';
 const INTEGRATION_ROOT =
   process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() ||
@@ -295,8 +296,9 @@ let stallOnsets = [];
 let lastRateEscalationAt = 0;
 let handshakeFailingSince = 0;
 let dataFailingSince = 0;
-let lastRestart = 0;
-const restartTimes = []; // epoch ms of recent restarts (rolling 1h window for the circuit breaker)
+let lastRestart = 0; // completion time of the last actual restart
+let restartInFlight = false;
+const restartTimes = []; // epoch ms of actual restarts (rolling 1h window for the circuit breaker)
 
 let logDirEnsured = false;
 const log = (m) => {
@@ -527,6 +529,7 @@ async function maybeActivateMcpProxyHotPathCode() {
   })) return { restartRequested: false, code: 'throttled_or_in_flight' };
   hotPathActivationCheckInFlight = true;
   lastHotPathActivationCheckMs = checkStartedAtMs;
+  let restartReserved = false;
   try {
     const [activeForSec, state] = await Promise.all([mcpProxyActiveForSec(), readMcpProxyHotPathState()]);
     const verdict = evaluateMcpProxyHotPathActivation({
@@ -545,14 +548,19 @@ async function maybeActivateMcpProxyHotPathCode() {
     if (!verdict.activate) return { restartRequested: false, code: verdict.code };
     const reason = `committed mcp-proxy hot-path ${state.latestCommitHash.slice(0, 12)} is newer than the running generation`;
     if (!admitRestart(reason)) return { restartRequested: false, code: 'restart_suppressed' };
+    restartReserved = true;
     const outcome = await requestMcpProxyHotPathRestart(state.latestCommitHash);
+    settleRestartAttempt(outcome);
+    restartReserved = false;
+    const failureDetail = restartFailureDetail(outcome.error);
     log(
       outcome.ok
         ? `committed mcp-proxy hot-path activation via dev:restart: ${outcome.code} (commit ${state.latestCommitHash.slice(0, 12)})`
-        : `committed mcp-proxy hot-path activation REFUSED/FAILED by dev:restart (${outcome.code}) — monitoring continues`,
+        : `committed mcp-proxy hot-path activation REFUSED/FAILED by dev:restart (${outcome.code})${failureDetail} — monitoring continues`,
     );
     return { restartRequested: outcome.restarted === true, code: outcome.code };
   } catch (error) {
+    if (restartReserved) settleRestartAttempt({ restarted: false });
     log(`committed mcp-proxy hot-path activation probe FAILED CLOSED: ${error?.message ?? String(error)}`);
     return { restartRequested: false, code: 'probe_failed' };
   } finally {
@@ -565,6 +573,45 @@ async function maybeActivateMcpProxyHotPathCode() {
 export function shouldRestart(unreachableSinceMs, nowMs, thresholdMs = UNREACHABLE_MS) {
   if (!unreachableSinceMs) return false;
   return nowMs - unreachableSinceMs >= thresholdMs;
+}
+
+/** Pure rolling-hour admission decision. Only recorded successful restarts consume the cap. */
+export function evaluateRestartAdmission({
+  restartTimesMs,
+  lastRestartMs,
+  nowMs,
+  debounceMs,
+  maxRestartsPerHour,
+  inFlight = false,
+  windowMs = RESTART_HISTORY_WINDOW_MS,
+}) {
+  const recentRestartTimesMs = restartTimesMs.filter((atMs) => nowMs - atMs <= windowMs);
+  if (inFlight) return { allowed: false, code: 'restart_in_flight', recentRestartTimesMs };
+
+  const debounceRemainingMs = lastRestartMs > 0 ? debounceMs - (nowMs - lastRestartMs) : 0;
+  if (debounceRemainingMs > 0) {
+    return { allowed: false, code: 'debounce', recentRestartTimesMs, debounceRemainingMs };
+  }
+  if (recentRestartTimesMs.length >= maxRestartsPerHour) {
+    return { allowed: false, code: 'circuit_open', recentRestartTimesMs, debounceRemainingMs: 0 };
+  }
+  return { allowed: true, code: 'admitted', recentRestartTimesMs, debounceRemainingMs: 0 };
+}
+
+/** Update the rolling history only when the operation confirms an actual restart. */
+export function recordRestartOutcome(state, outcome, nowMs, windowMs = RESTART_HISTORY_WINDOW_MS) {
+  const recentRestartTimesMs = state.restartTimesMs.filter((atMs) => nowMs - atMs <= windowMs);
+  const restarted = outcome?.restarted === true;
+  return {
+    lastRestartMs: restarted ? nowMs : state.lastRestartMs,
+    restartTimesMs: restarted ? [...recentRestartTimesMs, nowMs] : recentRestartTimesMs,
+  };
+}
+
+/** Keep ptool diagnostics useful in the durable log without allowing multi-line log injection. */
+export function restartFailureDetail(error) {
+  const detail = String(error ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  return detail ? ` detail=${detail}` : '';
 }
 
 /**
@@ -828,27 +875,60 @@ async function probeDataPlane(port) {
 
 function admitRestart(reason) {
   const now = Date.now();
-  if (now - lastRestart < DEBOUNCE_MS) {
-    log(`SUPPRESS (debounce ${Math.round((DEBOUNCE_MS - (now - lastRestart)) / 1000)}s left): ${reason}`);
+  const decision = evaluateRestartAdmission({
+    restartTimesMs: restartTimes,
+    lastRestartMs: lastRestart,
+    nowMs: now,
+    debounceMs: DEBOUNCE_MS,
+    maxRestartsPerHour: MAX_RESTARTS_PER_HR,
+    inFlight: restartInFlight,
+  });
+  restartTimes.splice(0, restartTimes.length, ...decision.recentRestartTimesMs);
+  if (decision.code === 'restart_in_flight') {
+    log(`SUPPRESS (restart already in flight): ${reason}`);
     return false;
   }
-  while (restartTimes.length && now - restartTimes[0] > 3_600_000) restartTimes.shift();
-  if (restartTimes.length >= MAX_RESTARTS_PER_HR) {
-    log(`CIRCUIT OPEN: ${restartTimes.length} restarts in the last hour >= cap ${MAX_RESTARTS_PER_HR} — NOT restarting (${reason}). Manual attention needed.`);
+  if (decision.code === 'debounce') {
+    log(`SUPPRESS (debounce ${Math.round(decision.debounceRemainingMs / 1000)}s left): ${reason}`);
     return false;
   }
-  lastRestart = now;
-  restartTimes.push(now);
+  if (decision.code === 'circuit_open') {
+    log(`CIRCUIT OPEN: ${decision.recentRestartTimesMs.length} actual restarts in the last hour >= cap ${MAX_RESTARTS_PER_HR} — NOT restarting (${reason}). Manual attention needed.`);
+    return false;
+  }
+  restartInFlight = true;
   return true;
+}
+
+function settleRestartAttempt(outcome) {
+  const next = recordRestartOutcome(
+    { lastRestartMs: lastRestart, restartTimesMs: restartTimes },
+    outcome,
+    Date.now(),
+  );
+  restartTimes.splice(0, restartTimes.length, ...next.restartTimesMs);
+  lastRestart = next.lastRestartMs;
+  restartInFlight = false;
 }
 
 function restart(reason) {
   if (!admitRestart(reason)) return false;
   log(`WEDGED -> restarting ${UNIT}: ${reason}`);
-  execFile('systemctl', ['--user', 'restart', UNIT], (err) =>
-    log(err ? `restart FAILED: ${err.message}` : 'restart issued OK'),
-  );
   unreachableSince = 0;
+  try {
+    execFile('systemctl', ['--user', 'restart', UNIT], (err) => {
+      if (err) {
+        settleRestartAttempt({ restarted: false });
+        log(`restart FAILED: ${err.message}`);
+        return;
+      }
+      settleRestartAttempt({ restarted: true });
+      log('restart issued OK');
+    });
+  } catch (error) {
+    settleRestartAttempt({ restarted: false });
+    log(`restart FAILED: ${error?.message ?? String(error)}`);
+  }
   return true;
 }
 

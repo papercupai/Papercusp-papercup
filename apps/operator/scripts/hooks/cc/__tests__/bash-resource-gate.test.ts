@@ -4377,6 +4377,18 @@ describe('mcp-call inline JSON quoting guard (EI-26073319721581332)', () => {
     expectAllow(runGate(bashCmd(command), CANON_ENV));
   });
 
+  it.each([
+    ['the documented flag order', 'node scripts/mcp-call.mjs improvements:capture --json - --client su-test --port 3170'],
+    ['client before the JSON flag', 'node scripts/mcp-call.mjs improvements:capture --client su-test --port 3170 --json -'],
+    ['the JSON flag after the heredoc redirection', 'node scripts/mcp-call.mjs improvements:capture --client su-test --port 3170 <<\'JSON\' --json -'],
+  ])('allows %s when the JSON body mentions the mcp-call marker', (_label, prefix) => {
+    const body = '{"body":"Recovery evidence mentions node scripts/mcp-call.mjs improvements:capture, but contains no shell quote."}';
+    const command = prefix.includes("<<'JSON'")
+      ? `${prefix}\n${body}\nJSON`
+      : `${prefix} <<'JSON'\n${body}\nJSON`;
+    expectAllow(runGate(bashCmd(command), CANON_ENV));
+  });
+
   it('allows a positional JSON payload without shell-hostile prose', () => {
     const command = `node scripts/mcp-call.mjs loop:checkpoint '{"note":"safe"}' --client su-test`;
     expectAllow(runGate(bashCmd(command), CANON_ENV));

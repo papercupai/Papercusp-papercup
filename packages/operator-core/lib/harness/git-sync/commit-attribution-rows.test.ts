@@ -9,7 +9,8 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runGitLocal } from '../docs/git-runner';
-import { buildCommitAttributionRows, resolveAttributionRepo, SUPERPROJECT_REPO } from './commit-attribution-rows';
+import { buildCommitAttributionRows } from './commit-attribution-rows';
+import { attributionScopeLabel, resolveAttributionRepo, SUPERPROJECT_REPO } from './attribution-repo';
 
 const GIT_ENV = {
   ...process.env,
@@ -86,6 +87,34 @@ describe('resolveAttributionRepo', () => {
 
   it('returns null outside any git repository', async () => {
     expect(await resolveAttributionRepo(base, runGitLocal)).toBeNull();
+  });
+});
+
+// WI-6554700010018409: run-git-sync labels scopes relative to the repo it was pointed at, so
+// a submodule install's root scope read 'superproject'. The tally label must match `repo`.
+describe('attributionScopeLabel', () => {
+  it('leaves a top-level install unchanged', () => {
+    expect(attributionScopeLabel(SUPERPROJECT_REPO, SUPERPROJECT_REPO)).toBe(SUPERPROJECT_REPO);
+    expect(attributionScopeLabel(SUPERPROJECT_REPO, 'libs/mid')).toBe('libs/mid');
+  });
+
+  it("labels a submodule install's root scope with the install's repo", () => {
+    expect(attributionScopeLabel('libs/mid', SUPERPROJECT_REPO)).toBe('libs/mid');
+  });
+
+  it("prefixes a submodule install's nested scopes with the install's repo", () => {
+    expect(attributionScopeLabel('libs/mid', 'inner')).toBe('libs/mid/inner');
+  });
+
+  it('leaves the scope unchanged when the install repo is unresolvable', () => {
+    expect(attributionScopeLabel(null, SUPERPROJECT_REPO)).toBe(SUPERPROJECT_REPO);
+  });
+
+  it('agrees with resolveAttributionRepo for every repo of a real nested checkout', async () => {
+    // Install pointed at the middle submodule: its root and its own submodule.
+    const installRepo = await resolveAttributionRepo(midDir, runGitLocal);
+    expect(attributionScopeLabel(installRepo, SUPERPROJECT_REPO)).toBe(await resolveAttributionRepo(midDir, runGitLocal));
+    expect(attributionScopeLabel(installRepo, 'inner')).toBe(await resolveAttributionRepo(innerDir, runGitLocal));
   });
 });
 

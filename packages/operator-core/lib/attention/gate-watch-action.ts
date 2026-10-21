@@ -90,6 +90,16 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
           (reaped.truncatedByLimit ? ' — TRUNCATED BY LIMIT, more remain' : ''),
       );
     }
+    // event-wait-settlement-2026-10-20 P-005: the recovery and stranded-repair passes.
+    const { recovered, repaired } = reaped;
+    if (recovered.keys > 0 || recovered.failed > 0 || repaired.reopened > 0 || 'failed' in repaired.skipped) {
+      console.log(
+        `[blocker-recheck] missed fires: ${recovered.keys} key(s) → ${recovered.settled} wait(s) settled, ` +
+          `${recovered.failed} failed${recovered.truncatedByLimit ? ' (TRUNCATED BY LIMIT)' : ''}; ` +
+          `stranded blocked: ${repaired.examined} examined → ${repaired.reopened} reopened, ` +
+          `skipped ${JSON.stringify(repaired.skipped)}${repaired.truncatedByLimit ? ' (TRUNCATED BY LIMIT)' : ''}`,
+      );
+    }
   } catch (err) {
     console.warn(`[blocker-default-reaper]   ! sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
   }

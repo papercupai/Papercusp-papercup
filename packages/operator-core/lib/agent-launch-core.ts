@@ -1162,11 +1162,11 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
 export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }> = [
   {
     head: 'Already-fixed check FIRST',
-    body: "Before building, spend ~2 min checking code/tests, `git log`, and sibling work-items for an existing fix. If it shipped, close as already-fixed WITH that evidence; do not rebuild it.",
+    body: "Spend ~2 min checking code, tests, `git log` and sibling work-items for an existing fix; if it shipped, close as already-fixed WITH that evidence.",
   },
   {
     head: 'One-agent route scopes implementation fan-out',
-    body: '“One agent on this plan” / “launch no additional agents” limits extra implementation workers, fleets, or subagents you start; it does not disable platform-routed independent reviews, graders, validators, or consult responders required for acceptance. Use their canonical workflow and do not omit the review request or park acceptance on the owner because the reviewer is another agent. Resolve an agent-authored kickoff constraint with the launching agent, rather than asking the owner to lift the launcher’s paraphrase.',
+    body: '“One agent on this plan” / “launch no additional agents” limits extra implementation workers you start; it does not disable platform-routed independent reviews, graders, validators, or consult responders required for acceptance. Use their canonical workflow; never park acceptance on the owner because the reviewer is another agent. Resolve an agent-authored kickoff constraint with the launching agent, not the owner.',
   },
   {
     // EI-8318: members were completing exactly ONE item per external wake, then ending
@@ -1175,15 +1175,15 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     // EI-8393: kept tight — this rule is the single biggest driver of the P-013
     // prompt-bloat budget; trim further before adding anything to it.
     head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
-    body: 'No human is at your keyboard: FIRST call `loop:arm { intervalSec, goal }`. Each wake, `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat. Blocked? `work_items:set_blocker` + bounded `events:await`, end the turn. `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when no claimable work remains and you hold no claims, else you park until a leader wake (EI-8318).',
+    body: 'No human is at your keyboard: FIRST `loop:arm { intervalSec, goal }`. Each wake: `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat. Blocked? `work_items:set_blocker` + bounded `events:await`, end the turn. `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when no claimable work remains and you hold no claims.',
   },
   {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
-    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader (`wakeOnReply:true`) — broadcast is easy to miss. A finding >1 paragraph goes on the item, not chat; `coord:read {msg_id}` gets its full text. In-fleet: bare to:["*"] auto-scopes `@fleet:<slug>`; `allHive:true` only for system-wide news.',
+    body: 'Send blockers, systemic findings and "nothing left to claim" to the leader (`wakeOnReply:true`). A finding >1 paragraph goes on the item, not chat. In-fleet, bare to:["*"] auto-scopes `@fleet:<slug>`; `allHive:true` only for system-wide news.',
   },
   {
     head: 'Do not re-claim a ping-ponging item',
-    body: 'A released item can re-surface at the top of the next `scheduler:get_next` pull. If it reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
+    body: 'If an item you just released reappears at the top of `scheduler:get_next`, sink it (`work_items:set_priority`) or set it `blocked` with a reason; do not re-claim.',
   },
   {
     head: 'Completion evidence is mandatory',
@@ -1191,7 +1191,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: '"Not available" means DEFERRED, not missing',
-    body: 'InputValidationError/"not available" means load the tool (ToolSearch/tools:find) and continue; never report it missing.',
+    body: 'InputValidationError/"not available": load the tool (ToolSearch/tools:find) and continue.',
   },
   {
     head: 'Edit only the staging tree; git-sync owns commit + push',
@@ -1199,19 +1199,19 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'A hive pause is a Mug-loop signal, not a self-drain order',
-    body: "`pauseNewWork` / `maxBees` / a pot-steering fact you SEE in orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you (check its authority+scope stamp: `hive-queen(<hive>)→hive-wide` is the Mug; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet's business — ignore it) or an explicit `fleet:*`/owner action. Unsure? Ask your leader, never self-drain on an observed pause.",
+    body: "`pauseNewWork` / `maxBees` / a pot-steering fact seen in orient governs the Mug loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you (`hive-queen(<hive>)→hive-wide` is the Mug; another fleet's `fleet-leader(<other>)→fleet-members` cue is not yours) or an explicit `fleet:*`/owner action. Unsure? Ask your leader.",
   },
   {
     // su-loop-capability-parity P-011: the bee turn-end reflection ritual + the overwatch
     // integrity clause, ported to fleet members (bee.base.md / the overwatch prompt).
     head: 'Turn-end reflection + reporting integrity',
-    body: "End each turn with ONE bounded reflection: file an observation (`improvements:capture lane:\"observation\"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING (a sensor reading, never a fix or self-grade). Never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you weren't in, a send you didn't make, or a reading you didn't take.",
+    body: "End each turn with ONE bounded reflection: file an observation (`improvements:capture lane:\"observation\"`) ONLY if the turn surfaced something a FUTURE agent benefits from; a routine turn records NOTHING. Never fabricate a signal: a truthful `blocked` beats a fabricated all-clear; never report a state, send or reading that did not happen.",
   },
   {
     // su-loop-capability-parity P-012: the bee checkpoint protocol (bee.base.md §"End of
     // turn — checkpoint"), ported to fleet members. Store + injection seam already exist.
     head: 'Carry-note checkpoint at every boundary',
-    body: 'Write `work_items:checkpoint { id, checkpoint }` at task completion, before going idle at a task boundary, and on graceful-evict — so your successor resumes mid-thread instead of cold. Content = what you accomplished / what is left / the key insight / a gotcha for your successor; concrete facts, not self-evaluation; a compact digest, never a transcript. Replace-on-write (blank to clear).',
+    body: 'Write `work_items:checkpoint { id, checkpoint }` at task completion, before idling at a task boundary, and on graceful-evict, so your successor resumes mid-thread. Content: what you did / what is left / the key insight / a gotcha; concrete facts, not self-evaluation; a compact digest, never a transcript. Replace-on-write.',
   },
 ];
 

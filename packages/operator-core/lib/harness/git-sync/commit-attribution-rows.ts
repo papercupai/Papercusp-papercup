@@ -12,41 +12,12 @@
  * Pure git reads, no PG: the caller decides which shas are already recorded and persists
  * the result. Never throws on a git failure; a commit it cannot read is skipped.
  */
-import { relative, sep } from 'node:path';
 import type { GitRunner } from '../docs/subject-ref';
 import { parsePapercuspTrailers, type CommitAttributionRow } from '../../edit-attribution';
-
-/** The value `repo` takes for a commit in the top-level repository. */
-export const SUPERPROJECT_REPO = 'superproject';
+import { resolveAttributionRepo } from './attribution-repo';
 
 /** How many commits back from HEAD one recording pass reads. */
 export const ATTRIBUTION_LOG_DEPTH = 50;
-
-/** Nesting bound for the walk up through superprojects (a cycle is impossible; this is a backstop). */
-const MAX_SUPERPROJECT_DEPTH = 8;
-
-/**
- * The `repo` label for commits made in `dir`'s repository: `'superproject'` when that
- * repository is the top level, otherwise its path relative to the top-level superproject
- * (POSIX separators), e.g. `libs/papercusp`. Walks nested submodules to the outermost root
- * so the label matches the scope slug suffix. Returns null when `dir` is not in a git
- * repository.
- */
-export async function resolveAttributionRepo(dir: string, runGit: GitRunner): Promise<string | null> {
-  const topRes = await runGit(['rev-parse', '--show-toplevel'], dir);
-  const repoTop = topRes.code === 0 ? topRes.stdout.trim() : '';
-  if (!repoTop) return null;
-  let outer = repoTop;
-  for (let i = 0; i < MAX_SUPERPROJECT_DEPTH; i++) {
-    const sp = await runGit(['rev-parse', '--show-superproject-working-tree'], outer);
-    const parent = sp.code === 0 ? sp.stdout.trim() : '';
-    if (!parent || parent === outer) break;
-    outer = parent;
-  }
-  if (outer === repoTop) return SUPERPROJECT_REPO;
-  const rel = relative(outer, repoTop).split(sep).join('/');
-  return rel && !rel.startsWith('..') ? rel : SUPERPROJECT_REPO;
-}
 
 export interface BuildCommitAttributionRowsInput {
   workspaceId: string;

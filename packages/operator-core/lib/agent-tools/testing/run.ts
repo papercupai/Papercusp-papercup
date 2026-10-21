@@ -64,6 +64,8 @@ import { z } from 'zod';
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { createRequire } from 'node:module';
 import {
   closeSync,
@@ -434,7 +436,31 @@ export function testingRunTimeoutClampDisclosure(
  */
 export const TESTING_RUN_HANDLER_PHASE_HEADROOM_MS = 20_000;
 
+/**
+ * WI-6554700010018388 — the clamp below is a TRANSPORT property: it exists because the MCP
+ * transport kills a call at ~55s (EI-6073). A caller that runs the handler IN-PROCESS crosses no
+ * transport. The integration suite drives `runTool.handler` directly to check verdict
+ * CLASSIFICATION (name_filter_no_match, all_tests_skipped, node:test distillation, multi-root
+ * reports), and its ~20s vitest cold start flipped those cases to `timeout` whenever box load
+ * stretched it past the 25s transport budget. Such a caller declares its own ceiling for the
+ * duration of one call. The ceiling is held in AsyncLocalStorage, so it is scoped to that call's
+ * async chain: a concurrent MCP-dispatched call in the same process never sees it and keeps the
+ * transport clamp.
+ */
+const inProcessForeground = pinModuleState('@papercusp/operator-core.testing-run.in-process-foreground', () => ({
+  ceilingMs: new AsyncLocalStorage<number>(),
+}));
+
+export function withInProcessTestingRunForegroundCeiling<T>(ceilingMs: number, fn: () => Promise<T>): Promise<T> {
+  if (!Number.isFinite(ceilingMs) || ceilingMs <= 0) {
+    throw new RangeError(`in-process foreground ceiling must be a positive finite ms value, got ${ceilingMs}`);
+  }
+  return inProcessForeground.ceilingMs.run(ceilingMs, fn);
+}
+
 export function clampTestingRunForegroundTimeoutMs(requestedTimeoutMs: number): number {
+  const inProcessCeilingMs = inProcessForeground.ceilingMs.getStore();
+  if (inProcessCeilingMs !== undefined) return Math.min(requestedTimeoutMs, inProcessCeilingMs);
   return Math.min(
     clampForegroundTimeoutMs(requestedTimeoutMs),
     FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS,
@@ -2512,7 +2538,7 @@ export function runWithTestProcessDeadline<T>(opts: {
 }
 
 /** Spawn a bounded test process, capturing its diagnostics. */
-function runTestProcess(
+export function runTestProcess(
   command: string,
   commandArgs: string[],
   args: string[],
@@ -3847,7 +3873,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         root,
         error: 'aborted',
         hint: outcome.hostShutdownDetached
-          ? `the operator host is shutting down; request ${runId} was released while its confined router continues under systemd ownership. Read its eventual exact test ledger row with testing:runs { runGroup: '${runId}', source: 'local', latestPerFile: false }`
+          ? `the operator host is shutting down; request ${runId} was released while its confined router continues under systemd ownership, but only until its scope runtime limit (the original foreground budget). Poll testing:run-status { runId: '${runId}' }: foreground.verdict is running, recorded (read rows with testing:runs { runGroup: '${runId}', source: 'local', latestPerFile: false }) or lost (the scope ended with no ledger row; re-run it)`
           : 'the caller canceled this foreground test run; its router/Vitest process group was terminated',
         routerOutput: outcome.output.slice(-2000),
       };

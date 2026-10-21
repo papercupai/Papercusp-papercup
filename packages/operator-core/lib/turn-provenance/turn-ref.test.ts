@@ -21,6 +21,7 @@ import {
 } from './turn-ref';
 
 const SID = 'bf1881bc-9fd9-4875-bb24-3b40796205db';
+import { dialogAnswerText } from '../transcript-wire';
 
 const userLine = (text: string, ts: string, extra: Record<string, unknown> = {}) =>
   JSON.stringify({ type: 'user', timestamp: ts, message: { role: 'user', content: text }, ...extra });
@@ -106,10 +107,10 @@ describe('classifyRecordedTurn', () => {
     expect(r).toEqual({ verdict: 'agent-injected', origin: 'wake-pump' });
   });
 
-  it('classifies a promoted AskUserQuestion result as owner-dialog, not generic owner-typed', () => {
+  it('does not treat a legacy dialog marker as proof of human authorship', () => {
     expect(
       classifyRecordedTurn(`${OWNER_DIALOG_TURN_MARKER}\nThe user answered: "Ship?"="yes".`),
-    ).toEqual({ verdict: 'owner-dialog', origin: null });
+    ).toEqual({ verdict: 'unknown', origin: 'unverified-dialog' });
   });
 
   it('system-notification banners and compaction continuations are machine-surface', () => {
@@ -332,8 +333,8 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
         },
       }),
     );
-    expect(turns).toEqual([{ ts, text: `${OWNER_DIALOG_TURN_MARKER}\n${answer}` }]);
-    expect(classifyRecordedTurn(turns[0].text)).toEqual({ verdict: 'owner-dialog', origin: null });
+    expect(turns).toEqual([{ ts, text: dialogAnswerText(answer) }]);
+    expect(classifyRecordedTurn(turns[0].text)).toEqual({ verdict: 'unknown', origin: 'unverified-dialog' });
   });
 
   // Regression guard for the same change: an ordinary (non-dialog) tool_result
@@ -424,7 +425,7 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
     const [v] = await verifyTurnRefs('owner-x', refs, { filePath: file, sessionId: SID });
     expect(v.found).toBe(true);
     expect(v.checked).toBe(true);
-    expect(v.verdict).toBe('owner-dialog');
+    expect(v.verdict).toBe('unknown');
     expect(v.snippet).toContain('provision the WorkOS values credentials now');
   });
 

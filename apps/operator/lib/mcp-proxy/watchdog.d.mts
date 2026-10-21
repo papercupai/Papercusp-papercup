@@ -150,6 +150,35 @@ export function evaluateStallRate(
   threshold?: number,
 ): { kept: number[]; count: number; escalate: boolean; windowMs: number; threshold: number };
 
+export type RestartAdmissionCode = 'admitted' | 'restart_in_flight' | 'debounce' | 'circuit_open';
+
+/** Pure admission decision over confirmed restart history. */
+export function evaluateRestartAdmission(input: {
+  restartTimesMs: number[];
+  lastRestartMs: number;
+  nowMs: number;
+  debounceMs: number;
+  maxRestartsPerHour: number;
+  inFlight?: boolean;
+  windowMs?: number;
+}): {
+  allowed: boolean;
+  code: RestartAdmissionCode;
+  recentRestartTimesMs: number[];
+  debounceRemainingMs?: number;
+};
+
+/** Add an outcome to the rolling restart history only when it confirms a restart. */
+export function recordRestartOutcome(
+  state: { lastRestartMs: number; restartTimesMs: number[] },
+  outcome: { restarted?: boolean } | null | undefined,
+  nowMs: number,
+  windowMs?: number,
+): { lastRestartMs: number; restartTimesMs: number[] };
+
+/** Single-line, bounded diagnostic detail for an activation failure. */
+export function restartFailureDetail(error?: unknown): string;
+
 export function classifyProbeResult(result?: {
   networkError?: unknown;
   status?: number;

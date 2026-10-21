@@ -13,7 +13,7 @@ import { papercuspPath } from './pc_home.mjs';
 // twice and P-004 four times (D-006; EI-24053039097767980).
 //
 // What it does, after a successful edit of a file inside a repository:
-//   1. asks the operator `plans:evidence-measuring-paths { harness, paths:[<repo-relative path>] }`
+//   1. asks the operator `plans:evidence-measuring-paths { harness, checkoutRoot, paths:[<repo-relative path>] }`
 //      (harness = the session's PAPERCUSP_HARNESS_SLUG; skipped silently when unset)
 //      which clauses on unshipped plans hold current-revision repo-files proof measuring it;
 //   2. prints an advisory naming those clauses and BARs, their holders and the one
@@ -199,7 +199,7 @@ export async function callTool({ baseUrl, token, owner, name, args, fetchImpl = 
 }
 
 /** Primary operator first; the staging operator carries a newly shipped tool sooner. */
-export async function lookupMeasuringClauses({ urls, token, owner, harness, path, fetchImpl = fetch }) {
+export async function lookupMeasuringClauses({ urls, token, owner, harness, checkoutRoot = null, path, fetchImpl = fetch }) {
   let last = { ok: false, detail: 'no operator url' };
   for (const baseUrl of urls) {
     const r = await callTool({
@@ -207,7 +207,7 @@ export async function lookupMeasuringClauses({ urls, token, owner, harness, path
       token,
       owner,
       name: 'plans:evidence-measuring-paths',
-      args: { harness, paths: [path] },
+      args: { harness, ...(checkoutRoot ? { checkoutRoot } : {}), paths: [path] },
       fetchImpl,
     });
     if (r.ok && Array.isArray(r.data?.clauses)) {
@@ -264,7 +264,7 @@ function clauseLine(c, editor) {
 }
 
 /** The advisory the editor sees. */
-export function formatAdvisory({ path, clauses, totalClauses, editor, holders = [], noticed = [], noticeFailures = [] }) {
+export function formatAdvisory({ path, checkoutRoot = null, clauses, totalClauses, editor, holders = [], noticed = [], noticeFailures = [] }) {
   const shown = clauses.slice(0, MAX_ADVISORY_CLAUSES);
   const bars = clauses.filter((c) => c.bar).length;
   const lines = [
@@ -284,7 +284,8 @@ export function formatAdvisory({ path, clauses, totalClauses, editor, holders = 
     lines.push('Re-measure — one call per clause (for test/mutation/counterexample proof, RE-RUN it first and bind the new run):');
     for (const c of calls) lines.push(`  ${c.remeasure.call.tool} ${JSON.stringify(c.remeasure.call.args)}`);
   }
-  lines.push(`Every clause's exact call: plans:evidence-measuring-paths { paths:['${path}'] }.`);
+  const rootArg = checkoutRoot ? ` checkoutRoot:${JSON.stringify(checkoutRoot)},` : '';
+  lines.push(`Every clause's exact call: plans:evidence-measuring-paths {${rootArg} paths:['${path}'] }.`);
   if (noticed.length) lines.push(`Peer holders told once for this edit burst: ${noticed.map(shortId).join(', ')}.`);
   if (noticeFailures.length) lines.push(`Could not notify: ${noticeFailures.map(shortId).join(', ')} — tell them yourself if the edit stands.`);
   lines.push('Advisory only — nothing is blocked. If you meant to change this code, re-measure (or tell the holder) before anyone relies on the proof.');
@@ -295,16 +296,17 @@ export function formatAdvisory({ path, clauses, totalClauses, editor, holders = 
  * The coord notice one peer holder receives, from the tool's holder summary; kept under
  * the 600-char inbox body cap so the recipient reads all of it.
  */
-export function formatNotice({ editor, path, holder }) {
+export function formatNotice({ editor, checkoutRoot = null, path, holder }) {
   const count = Number(holder?.clauses ?? 0);
   const bars = Number(holder?.bars ?? 0);
   const sample = Array.isArray(holder?.sample) ? holder.sample : [];
   const workItems = Array.isArray(holder?.workItems) ? holder.workItems : [];
   const what = `${count} clause(s)${bars ? ` incl. ${bars} BAR` : ''}: ${sample.join(', ')}${count > sample.length ? ', …' : ''}`;
   const summary = `${shortId(editor)} edited ${path}, measured by your live proof on ${what}`.slice(0, 280);
+  const rootArg = checkoutRoot ? ` checkoutRoot:${JSON.stringify(checkoutRoot)},` : '';
   const text = (
     `${shortId(editor)} edited \`${path}\`. Your repo-files proof on ${what} (${workItems.join(', ')}) measured it, so it is now stale. ` +
-    `If the edit stands, re-measure: plans:evidence-measuring-paths { paths:['${path}'] } returns each clause's plans:bind-spec-evidence call ` +
+    `If the edit stands, re-measure: plans:evidence-measuring-paths {${rootArg} paths:['${path}'] } returns each clause's plans:bind-spec-evidence call ` +
     '(re-run test/mutation proof first). One notice per edit burst.'
   ).slice(0, 590);
   return { summary, text };
@@ -385,7 +387,15 @@ export async function run(payload, { env = process.env, nowMs = Date.now(), fetc
       ({ clauses, totalClauses, holders } = cached);
     } else {
       if (typeof state.breakerAtMs === 'number' && nowMs - state.breakerAtMs < BREAKER_MS) continue;
-      const found = await lookupMeasuringClauses({ urls, token, owner: editor, harness, path: loc.rel, fetchImpl });
+      const found = await lookupMeasuringClauses({
+        urls,
+        token,
+        owner: editor,
+        harness,
+        checkoutRoot: loc.root,
+        path: loc.rel,
+        fetchImpl,
+      });
       if (!found.ok) {
         writeJson(statePath, { ...state, breakerAtMs: nowMs });
         continue;
@@ -404,7 +414,7 @@ export async function run(payload, { env = process.env, nowMs = Date.now(), fetc
     const noticed = [];
     const noticeFailures = [];
     for (const [holder, entry] of burst.notices) {
-      const { summary, text } = formatNotice({ editor, path: loc.rel, holder: entry });
+      const { summary, text } = formatNotice({ editor, checkoutRoot: loc.root, path: loc.rel, holder: entry });
       const sent = await callTool({
         baseUrl: urls[0],
         token,
@@ -425,7 +435,16 @@ export async function run(payload, { env = process.env, nowMs = Date.now(), fetc
     }
     writeJson(statePath, { cache, burst: burst.next });
     if (burst.advisoryDue) {
-      messages.push(formatAdvisory({ path: loc.rel, clauses, totalClauses, editor, holders: holders ?? [], noticed, noticeFailures }));
+      messages.push(formatAdvisory({
+        path: loc.rel,
+        checkoutRoot: loc.root,
+        clauses,
+        totalClauses,
+        editor,
+        holders: holders ?? [],
+        noticed,
+        noticeFailures,
+      }));
     }
   }
   return messages.length ? messages.join('\n\n') : null;

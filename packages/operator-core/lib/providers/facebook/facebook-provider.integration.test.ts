@@ -6,10 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadPlugins } from '@papercusp/plugin-loader';
 import { jsonResponse, type HostFetch, type ProviderAdapter } from '@papercusp/plugin-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import { installPluginFromCupboardCore, InstallPluginError, type InstallPluginManifestReview } from '../../cupboard/install-plugin-core';
 import { getDatatype, upsertDatatype } from '../../datatype-registry-store';
 import { ingestExternalTriggerEvent } from '../../external-triggers/ingestion';
 import { createOwnedExternalTriggerSource, getExternalTriggerSource } from '../../external-triggers/source-store';
 import { descriptorConnectionAdapter } from '../../integrations/connection-lifecycle';
+import { stopDaemonProvider } from '../../integrations/daemon-provider';
 import { createProviderRegistry, providerRegistry } from '../../integrations/provider-registry';
 import { summarizeIntegrationProvider } from '../../integrations/ticket-integrations';
 import { setPersonalVaultEnabled } from '../../personal-vault/store';
@@ -50,18 +52,66 @@ describe('installed Facebook Personal Vault uses the shared host (P-003)', () =>
     expect(await getExternalTriggerSource(sql, WS, modern.id)).toMatchObject({ status: 'connected', credentialRef: 'provider:facebook:modern' });
   });
 
-  it('loads from the install path and derives its OAuth adapter and Integrations card from the descriptor', async () => {
-    await fs.mkdir(join(ROOT, 'plugins'), { recursive: true });
-    await fs.mkdir(join(ROOT, 'empty-global'), { recursive: true });
-    await fs.cp(join(REPO, 'libs/papercusp/plugins/facebook'), join(ROOT, 'plugins/facebook'), { recursive: true });
-    const { loaded, errors } = await loadPlugins({ projectDir: ROOT, globalPluginsDir: join(ROOT, 'empty-global'), harnessSlugs: [] });
+  it('is refused by the Cupboard installer when its daemon declaration is removed (P-034)', async () => {
+    const globalPluginsDir = join(ROOT, 'refused-global');
+    let writes = 0;
+    await expect(installPluginFromCupboardCore({ githubUrl: 'https://github.com/papercusp/plugins', listingRef: 'facebook' }, {
+      cloneRepo: async (_url, dest) => {
+        await fs.cp(join(REPO, 'libs/papercusp/plugins/facebook'), dest, { recursive: true });
+        const file = join(dest, 'papercusp.json');
+        const manifest = JSON.parse(await fs.readFile(file, 'utf8'));
+        delete manifest.runtime;
+        await fs.writeFile(file, JSON.stringify(manifest));
+      },
+      globalPluginsDir: () => globalPluginsDir, tmpDir: () => ROOT,
+      grant: async () => { writes++; }, invalidateHost: () => { writes++; },
+    })).rejects.toMatchObject({ code: 'provider_runtime_not_sandboxed' });
+    expect(await fs.readdir(globalPluginsDir).catch(() => [])).toEqual([]);
+    expect(writes).toBe(0);
+  });
+
+  it('installs from the Cupboard as a sandboxed daemon and derives its OAuth adapter and Integrations card from the descriptor (P-034)', async () => {
+    const projectDir = join(ROOT, 'project');
+    const globalPluginsDir = join(ROOT, 'global-plugins');
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.mkdir(globalPluginsDir, { recursive: true });
+    const absent = await loadPlugins({ projectDir, globalPluginsDir, harnessSlugs: [] });
+    expect(absent.loaded.map((lp) => lp.plugin.name)).not.toContain('facebook');
+    const deps = {
+      cloneRepo: async (_url: string, dest: string) => { await fs.cp(join(REPO, 'libs/papercusp/plugins/facebook'), dest, { recursive: true }); },
+      globalPluginsDir: () => globalPluginsDir, tmpDir: () => ROOT, grant: async () => {}, invalidateHost: () => {},
+    };
+    const input = { githubUrl: 'https://github.com/papercusp/plugins', listingRef: 'facebook', harnessSlug: 'papercusp' };
+    let review: InstallPluginManifestReview | undefined;
+    try { await installPluginFromCupboardCore(input, deps); } catch (error) {
+      expect(error).toBeInstanceOf(InstallPluginError);
+      expect(error).toMatchObject({ code: 'provider_install_consent_required' });
+      review = (error as InstallPluginError).data?.review as InstallPluginManifestReview;
+    }
+    expect(review?.provider).toMatchObject({ id: 'facebook', runtime: 'daemon', datatypes: ['social-post'], capabilities: [],
+      oauthScopes: ['public_profile', 'user_photos', 'user_posts'], egressHosts: ['graph.facebook.com', 'www.facebook.com'] });
+    expect(await fs.readdir(globalPluginsDir)).toEqual([]);
+    const result = await installPluginFromCupboardCore({ ...input, acceptCapabilities: true, expectedReview: review }, deps);
+    expect(result.installedTo).toBe(join(globalPluginsDir, 'facebook'));
+    const { loaded, errors } = await loadPlugins({ projectDir, globalPluginsDir, harnessSlugs: [] });
     expect(errors).toEqual([]);
     const installed = createProviderRegistry();
     const failures: unknown[] = [];
     expect(await registerPluginProviders(loaded, (failure) => failures.push(failure), installed)).toEqual(['facebook']);
     expect(failures).toEqual([]);
     const entry = installed.get('facebook')!;
+    expect(entry.runtime).toBe('daemon');
+    try {
     expect(await entry.adapter!.describe()).toEqual(await adapter.describe());
+    // One page across the daemon boundary: the sandboxed package reaches Graph only through host.fetch.
+    const urls: string[] = [];
+    const hostFetch: HostFetch = async ({ source: sid, request }) => {
+      expect(sid).toBe('owned'); urls.push(request.url);
+      return jsonResponse(200, { id: 'owner', name: 'Owner', about: 'Private profile context' });
+    };
+    const page = await entry.adapter!.syncPage({ source: 'owned', config: {}, cursor: null, mode: 'incremental' }, { fetch: hostFetch });
+    expect(page).toMatchObject({ hasMore: true, records: [expect.objectContaining({ nativeId: 'owner', event: 'profile.synced', datatype: 'social-post' })] });
+    expect(urls.map((url) => new URL(url).pathname)).toEqual(['/v23.0/me']);
     const model = summarizeIntegrationProvider(entry, [], { ref: 'facebook', configured: false, clientId: null,
       hasClientSecret: false, redirectUri: 'https://operator.test/api/oauth/callback', savedAt: null });
     expect(model).toMatchObject({ id: 'facebook', displayName: 'Facebook Personal Vault', requiredConfig: [], capabilities: [] });
@@ -81,7 +131,9 @@ describe('installed Facebook Personal Vault uses the shared host (P-003)', () =>
       global.unregister('facebook');
       if (previous) await global.register(previous);
     }
-  });
+    } finally { expect(await stopDaemonProvider('facebook')).toBe(true); installed.unregisterPlugin('facebook'); }
+    expect(installed.get('facebook')).toBeUndefined();
+  }, 60_000);
 
   it('commits each admitted page, resumes after a throttle, and dedupes replay into the private vault', async () => {
     const sql = org.adminSql;

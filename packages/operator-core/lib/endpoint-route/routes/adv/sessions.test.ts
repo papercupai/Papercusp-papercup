@@ -48,7 +48,10 @@ describe('adv/sessions ensure-codex-home — legacy rows remain repairable', () 
   const src = readFileSync(join(__dirname, 'sessions.ts'), 'utf8');
 
   it('falls back to the exact ADV session row when launch_spec is absent', () => {
-    expect(src).toContain('await getAdvSession(advSessionId)');
+    // The route now measures this read for repair-attempt diagnostics; keep the
+    // guard focused on the exact row lookup rather than the instrumentation
+    // wrapper around it.
+    expect(src).toContain('getAdvSession(advSessionId)');
     expect(src).toContain('fallbackCodexLaunchSpecFromAdvSession(sessionRow, owner)');
   });
 

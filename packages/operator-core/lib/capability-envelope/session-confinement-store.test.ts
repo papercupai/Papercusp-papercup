@@ -108,6 +108,31 @@ describe('exact native launch ceilings', () => {
     } })).toMatchObject({ ok: false });
   });
 
+  // verification-system-improvements-2026-10-10#D-050 (6): the scratch-plan boundary is
+  // validated and persisted like the product-read boundary.
+  it('snapshots a scratch-plan boundary, refuses one without a ceiling, and fails closed on a corrupt stored prefix', async () => {
+    const scratch = { scratchPrefix: 'blind-review-scratch-abc123def456-', reviewedSlug: 'demo-plan-2026-10-11', harness: 'papercusp' };
+    const confinement = { denyTools: [], denyOutside: ['plans:new'], denyPlansOutside: scratch,
+      reason: 'blind scratch plans', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).toMatchObject({ ok: true });
+    scratch.scratchPrefix = 'blind-review-scratch-zzzzzzzzzzzz-';
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyPlansOutside).toEqual({
+      scratchPrefix: 'blind-review-scratch-abc123def456-', reviewedSlug: 'demo-plan-2026-10-11', harness: 'papercusp',
+    });
+    const ctx = { isSuperuser: true, workspaceId: 'papercusp-workspace', uiClientId: IMPLEMENTER_OWNER } as UnifiedToolContext;
+    expect(await checkSessionConfinement({ toolName: 'plans:new', ctx,
+      args: { slug: 'blind-review-scratch-abc123def456-probe', title: 'Probe' } })).toBeNull();
+    expect(await checkSessionConfinement({ toolName: 'plans:new', ctx,
+      args: { slug: 'demo-plan-2026-10-11', title: 'Probe' } })).toMatchObject({ decision: 'deny' });
+    const prefixOnly = { ...confinement, denyPlansOutside: { ...scratch, scratchPrefix: 'plan-' } };
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: prefixOnly })).toMatchObject({ ok: false });
+    const { denyOutside: _omitted, ...noCeiling } = confinement;
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: { ...noCeiling, denyTools: ['work_items:complete'] } }))
+      .toMatchObject({ ok: false });
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: prefixOnly }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER)).rejects.toThrow(/malformed/);
+  });
+
   it('snapshots the exact assignment, refuses retargeting, and rejects malformed stored scope', async () => {
     const boundary = { id: 'F-own', harness: 'bench', checkout: '/private/assignment' };
     const confined = { denyTools: [], denyOutside: ['work_items:get'], denyWorkItemsOutside: boundary, reason: 'assignment', imposedBy: 'host' };

@@ -81,6 +81,8 @@ import { roleLaunchVerdict } from './agent-tools/config/role-launch';
 import type { RoleLaunch } from './fleet/role-launch';
 import { assessWorkScope } from './work-scope-policy';
 import { assessVerificationHealth } from './verification-health';
+import { BUG_INFLOW_STALE_AFTER_MS, shapeBugInflow, type BugInflowRow } from './harness/improvements/bug-inflow';
+import { bugInflowPayload } from './agent-tools/improvements/bug-inflow';
 import {
   assessDirectiveStatus,
   deriveDirectiveStatus,
@@ -95,8 +97,6 @@ import { portfolioAssessmentFor } from './goals/portfolio-throughput';
 import { LspAdmissionController } from './code-intelligence/lsp-admission';
 import { buildLspAdmissionStatePayload } from './agent-tools/state/lsp-admission';
 import type { LspDaemonAnswer } from './code-intelligence/lsp-daemon-protocol';
-import bugInflowTool from './agent-tools/improvements/bug-inflow';
-import { BUG_INFLOW_STALE_AFTER_MS, shapeBugInflow, type BugInflowRow } from './harness/improvements/bug-inflow';
 
 /**
  * The no-real-PG rail's DOCUMENTED opt-out, taken for the same reason the falsifier
@@ -190,9 +190,24 @@ const LSP_ADMISSION_CELLS = BUILTIN_CELLS.filter(
 const VERIFICATION_HEALTH_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'plans:verification-health',
 );
-const BUG_INFLOW_CELLS = BUILTIN_CELLS.filter(
+const WORK_BUG_INFLOW_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'improvements:bug-inflow',
 );
+
+// bug-inflow-one-problem-one-row-2026-10-18 P-007: work.bugInflow's real pure assessor
+// (shapeBugInflow) over stored bug_inflow_daily rows, at a fixed clock so "today" and the
+// newest row's age are exact rather than whatever the wall clock says.
+const BUG_INFLOW_NOW = new Date('2026-10-20T12:00:00.000Z');
+const bugInflowRow = (day: string, computedAgoMs: number): BugInflowRow => ({
+  day,
+  filed_total: 5,
+  filed_by_source: { watchdog: 3, agent: 2 },
+  closed_total: 2,
+  closed_by_status: { done: 2 },
+  computed_at: new Date(BUG_INFLOW_NOW.getTime() - computedAgoMs),
+});
+const BUG_INFLOW = (rows: readonly BugInflowRow[]) => shapeBugInflow(rows, { now: BUG_INFLOW_NOW, windowDays: 7 });
+const BUG_INFLOW_FRESH = [bugInflowRow('2026-10-20', 10 * 60_000), bugInflowRow('2026-10-19', 10 * 60_000)];
 
 // Exercise the actual daemon controller and state lens. A hand-authored code list
 // cannot detect a constant/inverted snapshot or an unavailable read becoming idle.
@@ -353,15 +368,6 @@ async function liveGovernorPayload(): Promise<unknown> {
   return JSON.parse(result.content[0].text);
 }
 
-async function liveBugInflowPayload(): Promise<unknown> {
-  const result = await (
-    bugInflowTool as unknown as {
-      handler: (args: unknown, context: unknown) => Promise<{ content: Array<{ text: string }> }>;
-    }
-  ).handler({}, { workspaceId: 'papercusp-workspace', uiClientId: 'su-p004' });
-  return JSON.parse(result.content[0].text);
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════════
  * THE PERMANENT SYNTHETIC CONTROLS.
  *
@@ -382,19 +388,6 @@ async function liveBugInflowPayload(): Promise<unknown> {
  * ══════════════════════════════════════════════════════════════════════════════ */
 
 type Control = { readonly label: string; readonly expect: string | null };
-
-const BUG_INFLOW_NOW = new Date('2026-10-20T12:00:00Z');
-const BUG_INFLOW_ROW = (over: Partial<BugInflowRow> = {}): BugInflowRow => ({
-  day: '2026-10-20',
-  filed_total: 10,
-  filed_by_source: { watchdog: 10 },
-  closed_total: 7,
-  closed_by_status: { done: 7 },
-  computed_at: BUG_INFLOW_NOW.toISOString(),
-  ...over,
-});
-const BUG_INFLOW = (rows: BugInflowRow[]) =>
-  shapeBugInflow(rows, { now: BUG_INFLOW_NOW, windowDays: 2 }).assessment;
 
 const LADDER = (committedLocal: boolean, onStaging: boolean, inMain: boolean, deployed: boolean) => ({
   committedLocal,
@@ -567,14 +560,6 @@ const RETRIAGE = (over: Partial<RetriageRunReading> | null) =>
   );
 
 const CONTROLS: Record<string, readonly Control[]> = {
-  'work.bugInflow': [
-    { label: 'a fresh stored row for today', expect: BUG_INFLOW([BUG_INFLOW_ROW()]) },
-    { label: 'today has no stored row', expect: BUG_INFLOW([BUG_INFLOW_ROW({ day: '2026-10-19' })]) },
-    { label: 'today exists but the writer is stale', expect: BUG_INFLOW([BUG_INFLOW_ROW({
-      computed_at: new Date(BUG_INFLOW_NOW.getTime() - BUG_INFLOW_STALE_AFTER_MS - 1).toISOString(),
-    })]) },
-    { label: 'the writer has never stored a row', expect: BUG_INFLOW([]) },
-  ],
   'gate.greenCheckpoint.convergence': [
     { label: 'no readable convergence record', expect: CONV(null) },
     {
@@ -1225,6 +1210,20 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: assessVerificationHealth({ breaches: 0, unmeasuredCodes: [] }),
     },
   ],
+  // bug-inflow-one-problem-one-row-2026-10-18 P-007. Both stale reasons get a row: a missing
+  // today and an over-age newest row are separate ways the writer falls behind.
+  'work.bugInflow': [
+    { label: 'today is stored and the newest row is fresh', expect: BUG_INFLOW(BUG_INFLOW_FRESH).assessment },
+    {
+      label: 'stored days exist but today has no row',
+      expect: BUG_INFLOW([bugInflowRow('2026-10-19', 10 * 60_000)]).assessment,
+    },
+    {
+      label: "today's row is older than the staleness bound",
+      expect: BUG_INFLOW([bugInflowRow('2026-10-20', BUG_INFLOW_STALE_AFTER_MS + 60_000)]).assessment,
+    },
+    { label: 'no stored row anywhere in the window', expect: BUG_INFLOW([]).assessment },
+  ],
 };
 
 /**
@@ -1233,7 +1232,6 @@ const CONTROLS: Record<string, readonly Control[]> = {
  * to CONTROLS; the partition test below proves the alignment rather than assuming it.
  */
 const EXPECTED: Record<string, readonly (string | null)[]> = {
-  'work.bugInflow': ['measured', 'stale', 'stale', 'unmeasured'],
   // P-004 truth table. Zero automated attempts is a dispatch fact, not proof that no manual
   // measurement happened. `no-attempts` applies only while the recorded rounds have no trend;
   // once a manual lineage establishes one, the convergence result takes precedence.
@@ -1403,6 +1401,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'settled',
   ],
   'verification.health': ['breached', 'breached', 'unmeasured', 'healthy'],
+  'work.bugInflow': ['measured', 'stale', 'stale', 'unmeasured'],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -1433,7 +1432,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         GATE_OWNERSHIP_CELLS.length +
         LSP_ADMISSION_CELLS.length +
         VERIFICATION_HEALTH_CELLS.length +
-        BUG_INFLOW_CELLS.length,
+        WORK_BUG_INFLOW_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(11);
     expect(GOAL_CELLS).toHaveLength(1);
@@ -1448,7 +1447,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(GATE_OWNERSHIP_CELLS).toHaveLength(1);
     expect(LSP_ADMISSION_CELLS).toHaveLength(3);
     expect(VERIFICATION_HEALTH_CELLS).toHaveLength(1);
-    expect(BUG_INFLOW_CELLS).toHaveLength(1);
+    expect(WORK_BUG_INFLOW_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1557,16 +1556,6 @@ describe('P-004: every declared assessment path exists in a LIVE resolver payloa
         const r = pathExists(payload, path);
         expect(r.exists, `${spec.cell}: declared ${label} "${path}" is ABSENT (missing at "${r.missingAt}").`).toBe(true);
       }
-    },
-    20_000,
-  );
-
-  it.each(BUG_INFLOW_CELLS.map((c) => [c.cell, c] as const))(
-    '%s — assessment + evidence paths arrive from the real improvements:bug-inflow handler',
-    async (_id, spec) => {
-      const payload = await liveBugInflowPayload();
-      expect(missingAssessmentPaths(spec, payload)).toEqual([]);
-      expect(Object.keys(spec.assessment!.codes)).toContain(pathExists(payload, spec.assessment!.path).value);
     },
     20_000,
   );
@@ -2003,12 +1992,10 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
     ],
     [
       'work.bugInflow',
-      'inflow.computedAt',
-      BUG_INFLOW([BUG_INFLOW_ROW()]),
-      BUG_INFLOW([BUG_INFLOW_ROW({
-        computed_at: new Date(BUG_INFLOW_NOW.getTime() - BUG_INFLOW_STALE_AFTER_MS - 1).toISOString(),
-      })]),
-      'a stale writer must not read as a fresh stored measurement',
+      'inflow.days',
+      BUG_INFLOW(BUG_INFLOW_FRESH).assessment,
+      BUG_INFLOW([]).assessment,
+      'a writer that never ran must not read as measured',
     ],
   ];
 
@@ -2319,9 +2306,13 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     ...COVERAGE_CELLS.map((c) => [c.cell, c, liveCoveragePayload] as const),
     ...HOST_MEMORY_CELLS.map((c) => [c.cell, c, liveHostMemoryPayload] as const),
     ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
-    ...BUG_INFLOW_CELLS.map((c) => [c.cell, c, liveBugInflowPayload] as const),
     ...LSP_ADMISSION_CELLS.map((c) => [c.cell, c, async () =>
       c.cell === 'lsp.admission' ? lspPayloads.pressure : lspRuntimePayloads.healthy] as const),
+    // P-007: the payload builder is pure, so the sweep reads the real payload shape
+    // (bugInflowPayload over shapeBugInflow) without a live bug_inflow_daily read.
+    ...WORK_BUG_INFLOW_CELLS.map(
+      (c) => [c.cell, c, async () => bugInflowPayload(BUG_INFLOW(BUG_INFLOW_FRESH), BUG_INFLOW_NOW)] as const,
+    ),
   ];
   const PAYLOADLESS = [
     ...GOAL_CELLS,

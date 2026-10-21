@@ -1206,6 +1206,84 @@ describe('cross-process scratch quota coordination', () => {
     expect([existsSync(firstPath), existsSync(secondPath)].filter(Boolean)).toHaveLength(1);
   }, 15_000);
 
+  it('publishes no quota reservation while another process holds the exclusive data lease', async () => {
+    // WI-6554700010018533: quota recovery and GC measure the tree under the exclusive data lease
+    // and republish the shared ledger from what they see, which counts only their own process's
+    // in-flight writes. A writer must therefore reserve only while holding the data read lease;
+    // otherwise another process's recovery can run between "reserved" and "payload on disk",
+    // drop the reservation, and admit a second writer past quota. Pre-fix, the writer published
+    // its reservation first and took the read lease afterwards.
+    const workspaceId = 'ws-RESERVE-UNDER-DATA-LEASE';
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const runDir = makeRunDir(workspaceId, 'quota', UUID(8700), 0);
+    const seedPath = join(runDir, 'seed.bin');
+    // A settled write leaves a valid shared ledger, so the next reservation needs no refresh
+    // (a refresh would itself wait for the exclusive data lease and hide the ordering).
+    await writeWithScratchQuota({ workspaceId, filePath: seedPath, bytes: 4 }, async () => {
+      await writeFile(seedPath, Buffer.alloc(4));
+    });
+    const ledgerPath = join(
+      dirname(process.env.PAPERCUSP_SCRATCH_ROOT!),
+      'scratch-quota-state',
+      createHash('sha256').update(workspaceRoot).digest('hex') + '.json',
+    );
+    const readLedgerBytes = (): number | null => {
+      try {
+        return Number(JSON.parse(readFileSync(ledgerPath, 'utf8')).bytes);
+      } catch {
+        return null;
+      }
+    };
+    const seededBytes = readLedgerBytes();
+    expect(seededBytes, 'seed write must leave a readable shared ledger').toEqual(expect.any(Number));
+
+    const holderScript = [
+      'const { withFsMutex } = await import(process.env.PC_FS_MUTEX_MODULE);',
+      'await withFsMutex(process.env.PC_MUTEX_NAME, () => new Promise((resolve) => {',
+      "  process.on('message', (message) => { if (message && message.type === 'release') resolve(undefined); });",
+      "  process.send({ type: 'held' });",
+      "}), { intent: { subsystem: 'scratch-quota', operation: 'test-exclusive-hold', workspaceId: process.env.PC_WORKSPACE_ID } });",
+      'process.disconnect();',
+    ].join('\n');
+    const holder = startScratchChild(holderScript, {
+      PC_FS_MUTEX_MODULE: new URL('../../../scripts/lib/fs-mutex.mjs', import.meta.url).href,
+      PC_MUTEX_NAME: 'papercusp-scratch-data-' + createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40),
+      PC_WORKSPACE_ID: workspaceId,
+    });
+    const payloadPath = join(runDir, 'payload.bin');
+    let write: Promise<void> | undefined;
+    let observedBytes = seededBytes;
+    let payloadWrittenWhileHeld = false;
+    try {
+      await holder.waitForMessage('held');
+      write = writeWithScratchQuota({ workspaceId, filePath: payloadPath, bytes: 80 }, async () => {
+        await writeFile(payloadPath, Buffer.alloc(80));
+      });
+      // Asserted below; keep an early rejection from surfacing as unhandled meanwhile.
+      write.catch(() => {});
+      const deadline = Date.now() + 750;
+      while (Date.now() < deadline) {
+        const bytes = readLedgerBytes();
+        if (bytes !== null && bytes !== seededBytes) {
+          observedBytes = bytes;
+          break;
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+      }
+      payloadWrittenWhileHeld = existsSync(payloadPath);
+    } finally {
+      if (holder.child.connected) holder.child.send({ type: 'release' });
+    }
+    expect(payloadWrittenWhileHeld).toBe(false);
+    expect(observedBytes, 'reservation published without the data read lease').toBe(seededBytes);
+
+    await write;
+    const holderResult = await holder.finished;
+    expect(holderResult.code, holderResult.stderr || holderResult.spawnError || undefined).toBe(0);
+    expect(existsSync(payloadPath)).toBe(true);
+    expect(readLedgerBytes()).toBeGreaterThanOrEqual(seededBytes! + 80);
+  }, 15_000);
+
   it('waits for a cross-process writer before retention deletes its run directory', async () => {
     const workspaceId = 'ws-MULTIPROCESS-GC';
     const runDir = makeRunDir(workspaceId, 'quota', UUID(8800), 8, RETENTION_MS + 60_000);
@@ -1248,8 +1326,15 @@ describe('cross-process scratch quota coordination', () => {
     let gc: ReturnType<typeof startScratchChild> | undefined;
     try {
       await writer.waitForMessage('writer-ready');
-      const lockPathEntries = readdirSync(join(sandbox, 'fs-mutex-locks'));
-      expect(lockPathEntries.some((entry) => entry.endsWith('.lock'))).toBe(true);
+      const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+      const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+      const dataReadersRoot = join(
+        sandbox,
+        'fs-mutex-locks',
+        `papercusp-scratch-data-${mutexDigest}.readers`,
+      );
+      const readerEntries = readdirSync(dataReadersRoot);
+      expect(readerEntries.some((entry) => entry.endsWith('.lock'))).toBe(true);
       gc = startScratchChild(gcScript, commonEnv);
       await gc.waitForMessage('gc-started');
       const gcFinishedBeforeWriter = await Promise.race([
@@ -2036,13 +2121,15 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
   });
 
-  it('reports the request trace ID of the process-local scratch mutex holder when filesystem mutexes are disabled', async () => {
+  it('does not hold the process-local quota mutex during payload I/O when filesystem mutexes are disabled', async () => {
     process.env.PAPERCUSP_DISABLE_FS_MUTEX = '1';
     const holderTraceId = '21f43fb8-4354-4f61-8ba7-ec03098d0e22';
     let releaseHolder!: () => void;
     let startedHolder!: () => void;
+    let startedWaiter!: () => void;
     const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
     const holderStarted = new Promise<void>((resolve) => { startedHolder = resolve; });
+    const waiterStarted = new Promise<void>((resolve) => { startedWaiter = resolve; });
     const holder = writeWithScratchQuota({
       workspaceId: 'ws-Q',
       filePath: join(makeRunDir('ws-Q', 'mutex', UUID(40), 16), 'holder.bin'),
@@ -2062,16 +2149,12 @@ describe('deferred scratch quota recovery', () => {
         filePath: join(makeRunDir('ws-Q', 'mutex', UUID(41), 16), 'waiter.bin'),
         bytes: 1,
         onTiming: (row) => timings.push(row),
-      }, async () => {});
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(timings.find((row) => row.progress)?.progress?.mutexWaitOwner).toMatchObject({
-        layer: 'process-local',
-        operation: 'write',
-        requestTraceId: holderTraceId,
-      });
+      }, async () => { startedWaiter(); });
+      await waiterStarted;
+      expect(timings.some((row) => row.progress?.mutexWaitOwner?.requestTraceId === holderTraceId)).toBe(false);
+      await waiter;
       releaseHolder();
       await holder;
-      await waiter;
     } finally {
       releaseHolder();
       vi.useRealTimers();

@@ -47,7 +47,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    'Search workspace prose (escalations, brainstorm notes, older operator turns, and — with scope:["work_item"] — bug/change/task issue titles+bodies) by keyword match (BM25-style). Ranked by relevance. Returns excerpts.',
+    'Search workspace prose by keyword (BM25-style). Use scope:["plan","work_item","decisions"] for planned-work discovery, including draft plan items; the default prose scope excludes plans and work-items. Returns ranked excerpts and unsearched-corpus disclosure.',
   guidance: {
     when: 'User references prose past the chat history budget ("remember when we decided pricing", "the X discussion from last week"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets. Also: BEFORE filing a new bug/change work-item, pass scope:["work_item"] to dedup-check against existing EI-* issues by title/body keyword — cheaper and more scalable than work_items:list + grep past ~500 items.',
     notWhen:
@@ -201,10 +201,10 @@ export default defineTool({
     // an agent read a correct zero from `turns` (the operator-chat corpus) as
     // proof the scope was dead, because the phrase lived in `session_turn`.
     // ./scope-residue derives the unsearched set from SEARCH_SOURCES, so it
-    // cannot fall behind the registry the way a hand-typed name does. Emitted
-    // only on a ZERO — that is the exact moment a caller is about to mistake
-    // their own scoping for an absence, and it costs nothing on a hit.
-    const residue = totalHits === 0 ? scopeResidue(scope) : null;
+    // cannot fall behind the registry the way a hand-typed name does. A search
+    // WITH hits can still miss a queued plan item in an unqueried corpus, so
+    // disclose partial coverage independently of the result count.
+    const residue = scopeResidue(scope);
 
     return {
       content: [{

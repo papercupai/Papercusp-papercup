@@ -2,9 +2,17 @@
 
 type Tx = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
 
+import { isTypeSlug } from '@papercusp/plan-parser';
 import { RUBRIC_TEMPLATE_NAME } from './rubric-template';
 import { parsePlan } from './parser';
 import { evaluateActivationDeclarations, type ActivationDeclarationBlocker } from './plan-declarations';
+import { isFirstPartyTypeId } from '../../plan-types/definitions';
+import { buildTypeRegistrySnapshot, loadTypeRegistry } from '../../plan-types/registry';
+import {
+  findUnregisteredTypes,
+  unregisteredTypesRefusal,
+  type UnregisteredType,
+} from '../../plan-types/resolve-verification';
 
 export const ACTIVATION_PLAN_STATUSES = ['ready', 'active'] as const;
 
@@ -97,13 +105,15 @@ function safeJson(text: string): unknown {
 
 export interface ConversationActivationGateVerdict {
   satisfied: boolean;
-  code?: 'conversation_audit_required' | 'item_provenance_unresolved' | 'plan_declarations_invalid';
+  code?: 'conversation_audit_required' | 'item_provenance_unresolved' | 'plan_declarations_invalid' | 'unregistered_type';
   message?: string;
   auditSeq?: number;
   /** P-003: current items the enforced audit did not resolve. */
   unresolvedItems?: string[];
   /** D-013 #1: declaration sections that are missing or invalid in the CURRENT content. */
   declarationBlockers?: ActivationDeclarationBlocker[];
+  /** plan-item-types-registry-cupboard P-002 (R-6): types the workspace registry cannot resolve. */
+  unregisteredTypes?: UnregisteredType[];
   /** Existing ready/active plan with no audit: activated before this gate could enforce. */
   grandfathered?: boolean;
 }
@@ -176,11 +186,16 @@ export async function evaluateConversationActivationGate(
     // after a gated audit refuses here, and so does a plan whose audit predates the gate
     // (D-004 #1 retrofits by plan status; only active/shipped plans are exempt).
     // EI-26528805324626265: this check used to run only for gated audit rows.
+    // One stored-content read serves both content checks below.
+    const storedContent = await readStoredPlanContent(tx, scope);
     const declarationRefusal = await declarationsRefusal(tx, scope, {
       auditSeq: Number(row.audit_seq),
       gatedAudit: declarationsCheckEnforced(row.activation),
+      storedContent,
     });
     if (declarationRefusal) return declarationRefusal;
+    const typeRefusal = await unregisteredTypesVerdict(tx, scope, { auditSeq: Number(row.audit_seq), storedContent });
+    if (typeRefusal) return typeRefusal;
     return { satisfied: true, auditSeq: Number(row.audit_seq) };
   }
 
@@ -209,6 +224,11 @@ export async function evaluateConversationActivationGate(
       storedContent: planRows[0]?.content ?? '',
     });
     if (declarationRefusal) return declarationRefusal;
+    const typeRefusal = await unregisteredTypesVerdict(tx, scope, {
+      auditSeq: null,
+      storedContent: planRows[0]?.content ?? '',
+    });
+    if (typeRefusal) return typeRefusal;
     const message =
       `Plan '${scope.planSlug}' is already ${storedStatus} with no activation audit, so it is grandfathered ` +
       'instead of being retroactively blocked. Record plans:audit { phase:\'activation\' } on its next material plan edit.';
@@ -220,6 +240,21 @@ export async function evaluateConversationActivationGate(
         code: 'conversation_audit_required',
         message: conversationAuditRequiredMessage(scope.planSlug),
       };
+}
+
+/** The plan's stored body ('' when the row is absent). */
+async function readStoredPlanContent(
+  tx: Tx,
+  scope: { workspaceId: string; harnessSlug: string; planSlug: string },
+): Promise<string> {
+  const rows = await tx<Array<{ content: string }>>`
+    SELECT content
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${scope.workspaceId}
+       AND harness_slug = ${scope.harnessSlug}
+       AND plan_slug = ${scope.planSlug}
+     LIMIT 1`;
+  return rows[0]?.content ?? '';
 }
 
 /**
@@ -234,18 +269,7 @@ async function declarationsRefusal(
   scope: { workspaceId: string; harnessSlug: string; planSlug: string; pendingContent?: string | null },
   audit: { auditSeq: number | null; gatedAudit: boolean; storedContent?: string },
 ): Promise<ConversationActivationGateVerdict | null> {
-  const stored =
-    audit.storedContent ??
-    (
-      await tx<Array<{ content: string }>>`
-        SELECT content
-          FROM harness_shared.harness_plans
-         WHERE workspace_id = ${scope.workspaceId}
-           AND harness_slug = ${scope.harnessSlug}
-           AND plan_slug = ${scope.planSlug}
-         LIMIT 1`
-    )[0]?.content ??
-    '';
+  const stored = audit.storedContent ?? (await readStoredPlanContent(tx, scope));
   const status = stored ? parsePlan(stored, { filePath: `${scope.planSlug}.md` }).frontmatter.status : null;
   const declarations = evaluateActivationDeclarations(scope.pendingContent ?? stored, status);
   if (declarations.ok) return null;
@@ -271,6 +295,56 @@ async function declarationsRefusal(
   };
 }
 
+/**
+ * plan-item-types-registry-cupboard-2026-10-20 P-002 (R-6): a plan cannot start while it
+ * references a plan type (`type:` frontmatter) or an item type (`deliverable:` slug) that
+ * this workspace's registry cannot resolve. The refusal names the Cupboard pack to install.
+ *
+ * Only a draft or ready plan is judged (by its STORED status, like the declaration gate). An
+ * already-active plan whose type later vanishes is not stranded here: the resolver keeps
+ * holding its items to the full module catalog.
+ *
+ * A plan that names only built-in deliverable kinds and no `type:` never reads the registry
+ * tables: built-in kinds always resolve from the first-party catalog. A plan whose slugs are
+ * all first-party (`papercusp/...`) resolves from the catalog too, without a query.
+ *
+ * Hive-scoped definitions: the lifecycle doors do not carry the plan's hive, so this check
+ * resolves workspace-wide rows only. Hive scoping is threaded through when P-005 adds
+ * hive-scoped authoring.
+ */
+async function unregisteredTypesVerdict(
+  tx: Tx,
+  scope: { workspaceId: string; harnessSlug: string; planSlug: string; pendingContent?: string | null },
+  audit: { auditSeq: number | null; storedContent: string },
+): Promise<ConversationActivationGateVerdict | null> {
+  const stored = audit.storedContent;
+  const filePath = `${scope.planSlug}.md`;
+  const storedStatus = stored ? parsePlan(stored, { filePath }).frontmatter.status : null;
+  if (storedStatus && storedStatus !== 'draft' && storedStatus !== 'ready') return null;
+  const body = scope.pendingContent ?? stored;
+  if (!body) return null;
+  const parsed = parsePlan(body, { filePath });
+  const planType = parsed.frontmatter.type ?? null;
+  const items = parsed.items
+    .filter((item) => item.storedStatus !== 'dropped')
+    .map((item) => ({ id: item.id, deliverable: item.deliverable ?? null }));
+  const slugs = [planType, ...items.map((item) => item.deliverable)].filter(isTypeSlug);
+  if (slugs.length === 0) return null;
+  const registry = slugs.every(isFirstPartyTypeId)
+    ? buildTypeRegistrySnapshot()
+    : await loadTypeRegistry(tx as never, { workspaceId: scope.workspaceId });
+  const unregistered = findUnregisteredTypes({ planType, verificationProfile: null }, items, registry);
+  const refusal = unregisteredTypesRefusal(unregistered);
+  if (refusal === null) return null;
+  return {
+    satisfied: false,
+    code: 'unregistered_type',
+    ...(audit.auditSeq === null ? {} : { auditSeq: audit.auditSeq }),
+    unregisteredTypes: unregistered,
+    message: `Plan '${scope.planSlug}': ${refusal}`,
+  };
+}
+
 export type ActivationGateRefusalCode = NonNullable<ConversationActivationGateVerdict['code']>;
 
 /** The non-throwing refusal withPlanLock returns when a lifecycle door fails the
@@ -283,6 +357,7 @@ export interface ActivationGateRefusalValue {
   message: string;
   unresolvedItems?: string[];
   declarationBlockers?: ActivationDeclarationBlocker[];
+  unregisteredTypes?: UnregisteredType[];
 }
 
 export function activationGateRefusalValue(
@@ -295,6 +370,7 @@ export function activationGateRefusalValue(
     message: verdict.message ?? conversationAuditRequiredMessage(planSlug),
     ...(verdict.unresolvedItems?.length ? { unresolvedItems: verdict.unresolvedItems } : {}),
     ...(verdict.declarationBlockers?.length ? { declarationBlockers: verdict.declarationBlockers } : {}),
+    ...(verdict.unregisteredTypes?.length ? { unregisteredTypes: verdict.unregisteredTypes } : {}),
   };
 }
 
@@ -302,6 +378,7 @@ const ACTIVATION_GATE_REFUSAL_CODES: ReadonlySet<string> = new Set<ActivationGat
   'conversation_audit_required',
   'item_provenance_unresolved',
   'plan_declarations_invalid',
+  'unregistered_type',
 ]);
 
 /** Typed guard for the non-throwing refusal returned by withPlanLock. */

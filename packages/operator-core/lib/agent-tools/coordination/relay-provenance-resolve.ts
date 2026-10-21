@@ -37,7 +37,7 @@
 
 import { open } from 'node:fs/promises';
 import { classifyRecordedTurn, findClaudeQueuedCommandTurn, OWNER_DIALOG_TURN_MARKER } from '../../turn-provenance/turn-ref';
-import { blockPayloadText, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../../transcript-wire';
+import { blockPayloadText, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES, dialogAnswerText, claudeDialogProvenanceAttachment } from '../../transcript-wire';
 import type { AgentIdentity } from './identity';
 import { getMessageById } from './messages';
 import { resolveSelfSession } from '../../search/self-session';
@@ -103,7 +103,7 @@ function findClaudeOwnerDialogAnswer(content: readonly unknown[]): string | null
     if (part.type !== 'tool_result') continue;
     const payload = blockPayloadText(part.content).trim();
     if (!CLAUDE_OWNER_DIALOG_RESULT_PREFIXES.some((prefix) => payload.startsWith(prefix))) continue;
-    return `${OWNER_DIALOG_TURN_MARKER}\n${payload}`;
+    return dialogAnswerText(payload);
   }
   return null;
 }
@@ -172,6 +172,7 @@ export function parseHumanTurns(jsonl: string): HumanTurn[] {
         text = findClaudeOwnerDialogAnswer(m.content);
       }
     } else if (o.type === 'attachment') {
+      text = claudeDialogProvenanceAttachment(o);
       // EI-22215681617737293: a prompt the owner typed WHILE A TURN WAS
       // RUNNING is recorded as a top-level `attachment` line (queued, then
       // absorbed mid-turn), never the ordinary `type:'user'` shape above —
@@ -180,7 +181,7 @@ export function parseHumanTurns(jsonl: string): HumanTurn[] {
       // re-deriving it a third time (session-ingest.ts is the second copy,
       // for the recall index) so this verifier and sessions:search agree on
       // which turns exist instead of drifting apart.
-      const queued = findClaudeQueuedCommandTurn(o);
+      const queued = text ? null : findClaudeQueuedCommandTurn(o);
       if (queued) {
         text = queued.text;
         ts = queued.ts || ts;
@@ -229,6 +230,10 @@ function normalize(s: string): string {
  *  scanning `renderRelayQuoteSuffix` should see the owner's actual words,
  *  not the platform's internal tag. */
 function displayQuote(text: string): string {
+  if (text.startsWith('⟦dialog-answer-source:human⟧')) {
+    const answer = text.indexOf('\nAnswer: ');
+    return answer >= 0 ? text.slice(answer + '\nAnswer: '.length) : text.slice(text.indexOf('\n') + 1);
+  }
   return text.startsWith(OWNER_DIALOG_TURN_MARKER)
     ? text.slice(OWNER_DIALOG_TURN_MARKER.length).replace(/^\n/, '')
     : text;

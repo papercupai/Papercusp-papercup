@@ -130,6 +130,20 @@ jobs:
           CI_PG_SUPERUSER_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: node scripts/ci-provision-pg.mjs
 
+      # EI-26479731794435031: affected-test selection is change-triggered, so a
+      # promotion can skip migration drift even after PG provisioning succeeds.
+      # Run the focused operator-core integration against that provisioned DB on
+      # every promotion, with both the live DB and canonical tree explicit.
+      - name: Migration drift integration gate
+        if: ${{ !cancelled() }}
+        env:
+          HARNESS_ADMIN_DATABASE_URL: postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp
+          PAPERCUSP_TEST_PG_ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          PAPERCUSP_SKIP_PG_DISCOVERY: '1'
+          PAPERCUSP_INTEGRATION_ROOT: ${{ github.workspace }}
+          PAPERCUSP_CANONICAL_TREE: ${{ github.workspace }}
+        run: npm --workspace @papercusp/operator-core run test:integration:migration-drift
+
       # Plan-doc lint — fast read-only check against apps/operator/docs/plans/.
       # Fails the build on any error; warnings (e.g. missing ## Now)
       # surface in logs but don't gate. Legacy plans (no frontmatter)

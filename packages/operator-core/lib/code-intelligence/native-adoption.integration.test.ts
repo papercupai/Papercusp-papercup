@@ -295,6 +295,44 @@ describe('P-041 native transcript corpus partition', () => {
     }
   });
 
+  it('carries the activity harness so an absolute native path resolves under its exact registered root', async () => {
+    const sql = db!.adminSql;
+    const owner = 'native-absolute';
+    await sql`INSERT INTO harness_shared.code_intel_pushes
+      (workspace_id, owner_id, turn_id, leg, subject, cited_paths, chars, pushed_at)
+      VALUES (${workspace}, ${owner}, ${owner}, 'first-touch', 'src/foo.ts', ${['src/foo.ts']}::text[], 10, ${at('12')}::timestamptz)`;
+    await sql`INSERT INTO harness_shared.session_turn_journal
+      (workspace_id, owner_id, source_kind, session_id, turn_ts, note, source)
+      VALUES (${workspace}, ${owner}, 'claude', ${owner}, ${at('13')}::timestamptz, 'completion', 'mechanical')`;
+    await sql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+      VALUES ('default', 'claude', ${owner}, 0, ${at('11')}::timestamptz, ${owner}, 'user', 'native request')`;
+    for (const [time, tool, detail] of [
+      [at('11'), 'Read', { file: '/repo/papercusp/src/trigger.ts' }],
+      ['2026-10-02T12:10:00Z', 'mcp__papercusp_su__capability_read', { uri: 'papercusp://scratch/ws/page.spill' }],
+      ['2026-10-02T12:11:00Z', 'Read', { file: '/repo/papercusp/src/foo.ts' }],
+    ] as const) {
+      await sql`INSERT INTO harness_shared.agent_activity
+        (workspace_id, owner_id, session_id, harness_slug, kind, tool_name, phase, status, detail, created_at)
+        VALUES (${workspace}, ${owner}, ${owner}, 'papercusp', 'tool', ${tool}, 'post', 'ok',
+          ${sql.json(detail as never)}, ${time}::timestamptz)`;
+    }
+    const seen: string[][] = [];
+    const resolver = async (slugs: readonly string[], ws: string) => {
+      seen.push([ws, ...slugs]);
+      return new Map(slugs.includes('papercusp') ? [['papercusp', '/repo/papercusp']] : []);
+    };
+    const rows = await readNativePushOutcomes({ workspaceId: workspace, windowStart: START, windowEnd: END }, sql, resolver);
+    const [push] = await sql<{ id: string }[]>`
+      SELECT id::text FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace} AND owner_id = ${owner}`;
+    expect(rows.find(row => row.id === push?.id)).toMatchObject({ windowComplete: true, actedOn: true, grepAfterPush: null });
+    expect(seen.some(([ws, ...slugs]) => ws === workspace && slugs.includes('papercusp'))).toBe(true);
+    // Without a resolvable root the same absolute evidence stays unknown, never negative.
+    const unresolved = await readNativePushOutcomes({ workspaceId: workspace, windowStart: START, windowEnd: END }, sql,
+      async () => new Map());
+    expect(unresolved.find(row => row.id === push?.id)).toMatchObject({ windowComplete: true, actedOn: null });
+  });
+
   it('rejects an intervening default-corpus prompt even when the preceding prompt is tenant-scoped', async () => {
     const sql = db!.adminSql;
     const owner = 'native-intervening';

@@ -152,4 +152,57 @@ describe('routeFrozenRepairLegs', () => {
     expect(out.opened).toEqual([]);
     expect(out.plan.open).toHaveLength(1);
   });
+
+  // WI-6554700010018714: a lint leg has no test_runs row, so its item said "none recorded for
+  // this leg" while the gate's verdict line carried the tail — and the fixer reproduced it
+  // outside the gate env, where it passed. A caller-held tail must reach the item.
+  it('a lint leg routed with a caller-held tail carries it, and only the other entries hit the ledger', async () => {
+    const tail =
+      'lint:condition-rail: exit 1 — AdmissionPersistenceError: password authentication failed | sqlstate=28P01';
+    const deps = fakeDeps([], {
+      readFailureTails: vi.fn(async () => new Map([['a/b.test.ts', 'boom']])),
+    });
+    const out = await routeFrozenRepairLegs(
+      {
+        pipeline: 'papercusp',
+        queue: queue(['lint:condition-rail', 'a/b.test.ts']),
+        failureTails: new Map([['lint:condition-rail', tail]]),
+      },
+      deps,
+    );
+    expect(out.opened).toEqual([key('lint:condition-rail'), key('a/b.test.ts')]);
+    expect(deps.readFailureTails).toHaveBeenCalledWith({
+      candidate: CAND,
+      repairHead: HEAD,
+      entries: ['a/b.test.ts'],
+    });
+    const bodies = new Map(
+      vi.mocked(deps.broadcastOpen).mock.calls.map(([ev]) => [ev.conditionKey, ev.body] as const),
+    );
+    expect(bodies.get(key('lint:condition-rail'))).toContain('sqlstate=28P01');
+    expect(bodies.get(key('lint:condition-rail'))).not.toContain('none recorded for this leg');
+    expect(bodies.get(key('a/b.test.ts'))).toContain('boom');
+  });
+
+  it('a caller-held tail for every new entry skips the ledger read', async () => {
+    const deps = fakeDeps([]);
+    await routeFrozenRepairLegs(
+      { pipeline: 'papercusp', queue: queue(['lint:tsc']), failureTails: new Map([['lint:tsc', 'TS2322']]) },
+      deps,
+    );
+    expect(deps.readFailureTails).not.toHaveBeenCalled();
+    expect(vi.mocked(deps.broadcastOpen).mock.calls[0]![0].body).toContain('TS2322');
+  });
+
+  it('a blank caller-held tail falls back to the ledger', async () => {
+    const deps = fakeDeps([], {
+      readFailureTails: vi.fn(async () => new Map([['lint:tsc', 'from-ledger']])),
+    });
+    await routeFrozenRepairLegs(
+      { pipeline: 'papercusp', queue: queue(['lint:tsc']), failureTails: new Map([['lint:tsc', '   ']]) },
+      deps,
+    );
+    expect(deps.readFailureTails).toHaveBeenCalledWith({ candidate: CAND, repairHead: HEAD, entries: ['lint:tsc'] });
+    expect(vi.mocked(deps.broadcastOpen).mock.calls[0]![0].body).toContain('from-ledger');
+  });
 });

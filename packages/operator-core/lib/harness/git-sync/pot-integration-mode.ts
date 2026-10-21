@@ -240,6 +240,9 @@ export interface IntegrationPushConfig {
   push?: boolean;
   remote?: string;
   pushSubmoduleOrigins?: boolean;
+  /** WI-6554700010018380: submodules with no pot fork. git-sync never commits, merges
+   *  or pushes inside them (see GitSyncConfig.unforkedSubmodules). */
+  unforkedSubmodules?: string[];
   /**
    * P-016: in working-copy mode, the main repository git-sync merges back into
    * the copy's staging each tick (so the next standing PR shows only new work).
@@ -491,6 +494,15 @@ export async function applyIntegrationPushTarget(
       return commitOnly('working_copy_submodule_forks_unreadable');
     }
     const setup = await (deps.setupSubmodules ?? defaultSetupSubmodules)(repoPath, read?.forks ?? {});
+    // WI-6554700010018380: skip unforked submodules on BOTH outcomes, so a commit-only
+    // tick stops adding local commits there that no remote could ever hold.
+    cfg.unforkedSubmodules = setup.ok ? setup.unforked : (setup.unforked ?? []);
+    if (setup.ok && setup.unforked.length) {
+      console.log(
+        `[git-sync] ${slug}: submodule(s) ${setup.unforked.join(', ')} have no fork but a published HEAD — ` +
+          'left untouched; the rest of the working copy pushes',
+      );
+    }
     if (!setup.ok) {
       console.log(
         `[git-sync] ${slug}: ⚠ submodule '${setup.path}' cannot push to a fork — ${setup.message}. ` +

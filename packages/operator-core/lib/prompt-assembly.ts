@@ -999,7 +999,9 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   // moment it hits it — NOT a per-turn reflection pass. Sourced from the one
   // friction-markers module so the base, the su playbook, and the
   // completion-boundary reflect step can't desync.
-  const frictionTripwire = renderFrictionTripwire();
+  // 'su' is not a PROMPT_ROLE, so a typed caller never passes it; compare as a string so this
+  // guard still holds for an untyped caller and still type-checks.
+  const frictionTripwire = (opts.role as string) === 'su' ? '' : renderFrictionTripwire(opts.resolve?.harnessDir);
   if (frictionTripwire) {
     parts.push(frictionTripwire);
     sections.push({ name: 'friction-tripwire', chars: frictionTripwire.length });
@@ -1010,8 +1012,8 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   // inherits, mirroring the spawned-bee base (buildPromptParts). When filing a turn-end observation,
   // check rubrics:list first and file a STRUCTURED observation (rubricRef + per-criterion ratings +
   // mandatory evidence) if an active rubric fits; free-text stays first-class otherwise. Sourced from
-  // the one OBSERVATION_RUBRIC_NUDGE constant (orchestrator) so this base + the spawned-bee base can't desync.
-  const observationRubricNudge = renderObservationRubricNudge();
+  // the identity-owned observation practice loader so this base + the spawned-bee base can't desync.
+  const observationRubricNudge = (opts.role as string) === 'su' ? '' : renderObservationRubricNudge(opts.resolve?.harnessDir);
   if (observationRubricNudge) {
     parts.push(observationRubricNudge);
     sections.push({ name: 'observation-rubric-nudge', chars: observationRubricNudge.length });
@@ -1147,7 +1149,7 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   // (the bee.md / su-playbook pass) generalized to every operator-launched role (operator / oracle /
   // sentinel previously had only the reactive friction-tripwire). Token-light: "routine turn ⇒ record
   // nothing". Injected ONLY here (the bee base + su playbooks carry their own) to avoid double-inject.
-  const turnEndObservation = renderTurnEndObservation();
+  const turnEndObservation = (opts.role as string) === 'su' ? '' : renderTurnEndObservation(opts.resolve?.harnessDir);
   if (turnEndObservation) {
     parts.push(turnEndObservation);
     sections.push({ name: 'turn-end-observation', chars: turnEndObservation.length });

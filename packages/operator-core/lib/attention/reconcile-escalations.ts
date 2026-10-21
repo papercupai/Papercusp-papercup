@@ -602,7 +602,7 @@ function concrete(value: unknown): string | null {
  * the machine link an agent should inspect.
  */
 function linkedConversationIdOf(escalation: EscalationRerouteInput): string | null {
-  return concrete((escalation as Record<string, unknown>)[CONVERSATION_LINK_META_KEY]);
+  return concrete(escalation[CONVERSATION_LINK_META_KEY]);
 }
 
 function isRerouteEligible(

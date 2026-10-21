@@ -51,7 +51,12 @@ vi.mock('../agent-tools/coordination/inbox-wake', async (importOriginal) => ({
 }));
 
 const wi = await import('../work-items');
-const { sweepWorkItemBlockerDefaults, BLOCKER_DEFAULT_REAPER_ACTOR, defaultBlockerReapDeps } = await import('./work-item-blocker-reaper');
+const {
+  sweepWorkItemBlockerDefaults, BLOCKER_DEFAULT_REAPER_ACTOR, defaultBlockerReapDeps,
+  MISSED_FIRE_RECOVERY_ACTOR, STRANDED_BLOCKED_REPAIR_ACTOR,
+} = await import('./work-item-blocker-reaper');
+const { recordKeyFire } = await import('../events/await/store');
+const { buildDurableParkReleaseContract } = await import('../durable-park-release-contract');
 
 const H = 'papercup';
 const WS = 'default';
@@ -306,5 +311,131 @@ describe('sweepWorkItemBlockerDefaults against the real work-items store', () =>
     expect(after.status).toBe('needs-human');
     expect(after.blockers[0]).toMatchObject({ status: 'active' });
     expect(after.blockers[0]?.defaultAppliedAt).toBeUndefined();
+  });
+});
+
+/**
+ * event-wait-settlement-2026-10-20 P-005 (Design 5) — the re-check sweep's recovery pass
+ * (R-9) and stranded-blocked repair (R-10), against the real work-items store, the real
+ * fire latch (recordKeyFire) and the real settlement (settleProvingFire).
+ */
+describe('the re-check sweep repairs missed settlements and stranded items (P-005)', () => {
+  beforeAll(async () => {
+    // reconcileClearedDependencyBlockedState records its restore here; this suite hand-rolls
+    // its schema, so the columns that write names are created to match.
+    await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.audit_log (
+      id text PRIMARY KEY, ts bigint, actor text, action text, subject text, details jsonb, workspace_id text)`;
+  });
+
+  const eventWait = (ref: string, createdAt: string): ExternalBlockerRecord =>
+    ask({ kind: 'event', capability: 'live-dependency', ref, decideBy: undefined, defaultAction: undefined,
+      defaultIfUnanswered: undefined, createdAt, updatedAt: createdAt });
+
+  async function seedBlockedFeature(id: string, blockers: ExternalBlockerRecord[], over: {
+    holder?: string | null; stateChangedAt?: string; payload?: Record<string, unknown>;
+  } = {}): Promise<void> {
+    await db.sql`INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts,
+       state_changed_at, payload)
+      VALUES (${H}, ${id}, 'feature', ${`title ${id}`}, 'blocked', ${over.holder ?? null}, ${WS}, 100, 0,
+        ${over.stateChangedAt ?? '2019-12-31T00:00:00.000Z'}::timestamptz,
+        ${JSON.stringify({ externalBlockers: blockers, ...over.payload })}::text::jsonb)`;
+  }
+
+  it('AUTO-BAR-R-9-P-005: a wait whose proving key fired before settlement ran is settled by the next sweep tick', async () => {
+    h.sendMessage.mockClear();
+    h.wakeRecipients.mockClear();
+    const key = 'release:deployed:p005missed';
+    await seedBlockedFeature('WI-p005-missed', [eventWait(key, '2019-12-31T00:00:00.000Z')], { holder: 'su-p005-holder' });
+    // The crash: the latch is recorded but the emit never reached settleProvingFire.
+    await recordKeyFire({ eventKey: key, firedBy: 'deployer' });
+    expect((await rowOf('WI-p005-missed')).blockers[0]).toMatchObject({ status: 'active' });
+
+    const result = await sweepWorkItemBlockerDefaults();
+
+    expect(result.recovered).toEqual({ keys: 1, settled: 1, failed: 0, truncatedByLimit: false });
+    const after = await rowOf('WI-p005-missed');
+    expect(after.blockers[0]).toMatchObject({ status: 'cleared', clearedBy: MISSED_FIRE_RECOVERY_ACTOR });
+    expect(after.status).toBe('open');
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    expect((h.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[] }])[1].to).toEqual(['su-p005-holder']);
+    // Settled once: the next tick finds nothing to recover.
+    expect((await sweepWorkItemBlockerDefaults()).recovered.keys).toBe(0);
+  });
+
+  it('AUTO-BAR-R-9-P-005: a durable park whose proving trigger fired before settlement ran is released by the next sweep tick', async () => {
+    const key = 'release:deployed:p005park';
+    await db.sql`INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, 'EI-p005-park', 'change', 'parked', 'open', NULL, ${WS}, 100, 0, NULL)`;
+    const releaseContract = await buildDurableParkReleaseContract({ condition: 'the deploy landed', trigger: key }, 'park-owner');
+    await wi.setWorkItemClaimHold('EI-p005-park', true, { harness: H, parkedBy: 'park-owner', releaseContract });
+    await recordKeyFire({ eventKey: key, firedBy: 'deployer' });
+    expect((await rowOf('EI-p005-park')).payload._claimHold).toBe(true);
+
+    const result = await sweepWorkItemBlockerDefaults();
+
+    expect(result.recovered.keys).toBe(1);
+    expect(result.recovered.settled).toBe(1);
+    const after = await rowOf('EI-p005-park');
+    expect(after.payload._claimHold).toBeUndefined();
+    expect(after.payload.claim_hold_release).toBeUndefined();
+  });
+
+  it('settles nothing when the wait was created after the fire, or when the key proves nothing', async () => {
+    const late = 'release:deployed:p005late';
+    await recordKeyFire({ eventKey: late, firedBy: 'deployer' });
+    await seedBlockedFeature('WI-p005-late', [eventWait(late, FUTURE)]);
+    await seedBlockedFeature('WI-p005-broad', [eventWait('git-sync:committed', '2019-12-31T00:00:00.000Z')]);
+    await recordKeyFire({ eventKey: 'git-sync:committed', firedBy: 'git-sync' });
+
+    const result = await sweepWorkItemBlockerDefaults();
+
+    expect(result.recovered.keys).toBe(0);
+    expect((await rowOf('WI-p005-late')).blockers[0]).toMatchObject({ status: 'active' });
+    expect((await rowOf('WI-p005-broad')).blockers[0]).toMatchObject({ status: 'active' });
+  });
+
+  it('AUTO-BAR-R-10-P-005: an item left blocked with every blocker cleared returns to open on the next sweep tick', async () => {
+    h.sendMessage.mockClear();
+    const clearedWait = { ...eventWait('event:done', '2019-12-30T00:00:00.000Z'), status: 'cleared' as const,
+      clearedAt: '2020-01-01T00:00:00.000Z', clearedBy: 'su-someone' };
+    await seedBlockedFeature('WI-p005-stranded', [clearedWait], { holder: 'su-p005-stranded-holder' });
+
+    const result = await sweepWorkItemBlockerDefaults();
+
+    expect(result.repaired).toEqual({ examined: 1, reopened: 1, skipped: {}, truncatedByLimit: false });
+    expect((await rowOf('WI-p005-stranded')).status).toBe('open');
+    const audit = await db.sql<Array<{ actor: string }>>`
+      SELECT actor FROM harness_shared.audit_log WHERE subject = 'WI-p005-stranded' AND action = 'work_items:state:unblocked'`;
+    expect(audit.map((a) => a.actor)).toEqual([STRANDED_BLOCKED_REPAIR_ACTOR]);
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    const opts = (h.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[]; summary: string }])[1];
+    expect(opts.to).toEqual(['su-p005-stranded-holder']);
+    expect(opts.summary).toContain('Returned to open: WI-p005-stranded');
+    expect((await sweepWorkItemBlockerDefaults()).repaired.examined).toBe(0);
+  });
+
+  it('leaves blocked an item re-blocked after its last clear, one with a live dependency, and one durably parked', async () => {
+    const clearedWait = { ...eventWait('event:done', '2019-12-30T00:00:00.000Z'), status: 'cleared' as const,
+      clearedAt: '2020-01-01T00:00:00.000Z', clearedBy: 'su-someone' };
+    await seedBlockedFeature('WI-p005-reblocked', [clearedWait], { stateChangedAt: '2020-02-01T00:00:00.000Z' });
+    await seedBlockedFeature('WI-p005-dependent', [clearedWait]);
+    await db.sql`INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, 'WI-p005-prereq', 'feature', 'prerequisite', 'open', ${WS}, 100, 0, NULL)`;
+    await db.sql`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+      VALUES (${WS}, 'feature', ${`${H}#WI-p005-dependent`}, 'feature', ${`${H}#WI-p005-prereq`}, 'blocks', 'tester')`;
+    await seedBlockedFeature('WI-p005-parked', [clearedWait],
+      { payload: { _claimHold: true, claim_hold_by: 'park-owner', claim_hold_reason: 'waiting on review' } });
+
+    const result = await sweepWorkItemBlockerDefaults();
+
+    expect(result.repaired.reopened).toBe(0);
+    expect(result.repaired.skipped).toEqual({ 'reblocked-after-clear': 1, 'live-dependency': 1, reserved: 1 });
+    for (const id of ['WI-p005-reblocked', 'WI-p005-dependent', 'WI-p005-parked']) {
+      expect((await rowOf(id)).status).toBe('blocked');
+    }
   });
 });

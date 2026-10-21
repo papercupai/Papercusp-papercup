@@ -34,6 +34,22 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('autoloop:write')).toBe(false);
   });
 
+  // EI-26483627873002128: a recruited judge was refused capability:fetch (missing_capability
+  // capability:net) and could not re-observe a live bar. The grant is safe only because judge
+  // resolves to the confined boundary tier (pinned in agent-tools/capability/boundary-profile.test.ts);
+  // this pins the grant itself and that it brings no exec/write surface with it.
+  test('judge can fetch through capability:net without gaining exec, write or git', async () => {
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+    const { default: fetchTool } = await import('../../../agent-tools/capability/fetch.js');
+
+    expect(fetchTool.capability).toBe('capability:net');
+    expect(fetchTool.agentRoles).toContain('judge');
+    expect(caps.has('capability:net')).toBe(true);
+    for (const denied of ['capability:bash', 'capability:fs-write', 'capability:git']) {
+      expect(caps.has(denied)).toBe(false);
+    }
+  });
+
   test.each(['papercup', 'papercup-deep'])('%s can read the public manual without receiving a docs write grant', async (role) => {
     const caps = await loadRoleCapabilities(fakeTx([]), 'ws', role);
     expect(caps.has('docs:read')).toBe(true);

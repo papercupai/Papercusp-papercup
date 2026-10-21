@@ -1722,6 +1722,30 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
     });
   });
 
+  it('binds an exact grading auditor to its private retained endpoint and records the ownership', async () => {
+    const launchAgentModule = await import('./launch-agent');
+    const runtime = { taskId: 'runtime-owned', baseUrl: 'http://127.0.0.1:45187',
+      evaluatorBuild: { sha: 'exact123', version: '1.2.3' }, bundleSha256: 'a'.repeat(64),
+      expiresAtSec: Math.floor(Date.now() / 1000) + 300 };
+    const internalCtx = { ...(ctx as object), [launchAgentModule.INTERNAL_GRADING_AUDIT_RUNTIME]: runtime } as never;
+    const res = await launchAgent.handler({ brief: 'exact audit', headless: true, mcpTarget: 'spawn-host' }, internalCtx);
+    expect(isError(res)).toBe(false);
+    expect(buildConsoleEnvelopeMock.mock.calls[0]?.[0]).toMatchObject({ agentMcpBaseUrl: runtime.baseUrl });
+    expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({ ledgerDetail: { gradingAuditRuntimeBinding: runtime } });
+  });
+
+  it.each(['http://example.com:45187', 'http://127.0.0.1:45187/unrelated', 'http://127.0.0.1:45187?x=1'])(
+    'refuses an invalid internal audit runtime endpoint %s before spawning', async baseUrl => {
+      const launchAgentModule = await import('./launch-agent');
+      const runtime = { taskId: 'runtime-owned', baseUrl, evaluatorBuild: { sha: 'exact123', version: '1.2.3' },
+        bundleSha256: 'a'.repeat(64), expiresAtSec: Math.floor(Date.now() / 1000) + 300 };
+      const res = await launchAgent.handler({ brief: 'exact audit', headless: true, mcpTarget: 'spawn-host' },
+        { ...(ctx as object), [launchAgentModule.INTERNAL_GRADING_AUDIT_RUNTIME]: runtime } as never);
+      expect(isError(res)).toBe(true);
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    },
+  );
+
   it('records an internal grading-audit target on the launched headless task row', async () => {
     const gradingAudit = {
       issueId: 'EI-grade-task',

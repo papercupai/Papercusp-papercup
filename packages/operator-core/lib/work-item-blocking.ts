@@ -116,11 +116,14 @@ export function planDependencyBlockedClear(
 }
 
 /** The settle and unlink paths share this checked restoration. A locked base-row snapshot
- * prevents a delayed event from restoring an item whose assignment or controls have moved. */
+ * prevents a delayed event from restoring an item whose assignment or controls have moved.
+ * The blocker re-check sweep's stranded repair (event-wait-settlement-2026-10-20 P-005)
+ * reuses it for an item left `blocked` after its last external blocker was cleared, passing
+ * its own `actor` so the audit row names who restored the item. */
 export async function reconcileClearedDependencyBlockedState(
   item: WorkItem,
   clearedById: string,
-  opts: { sql?: ReturnType<typeof getOrgPg>['sql']; workspaceId?: string } = {},
+  opts: { sql?: ReturnType<typeof getOrgPg>['sql']; workspaceId?: string; actor?: string } = {},
 ): Promise<DependencyBlockedClearPlan['outcome'] | 'plan-blocked'> {
   if (item.state !== 'blocked' || !item.harness) return 'not-blocked';
   if (item.sourcePlanSlug || (item.payload && typeof item.payload === 'object' && 'plan_item' in item.payload)) {
@@ -170,7 +173,7 @@ export async function reconcileClearedDependencyBlockedState(
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${item.harness} AND feature_id = ${item.id}`;
     await tx`
       INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-      VALUES (${`dependency-clear-${randomUUID()}`}, ${Date.now()}, 'system:dependency-clear', 'work_items:state:unblocked', ${item.id},
+      VALUES (${`dependency-clear-${randomUUID()}`}, ${Date.now()}, ${opts.actor ?? 'system:dependency-clear'}, 'work_items:state:unblocked', ${item.id},
               ${JSON.stringify({ from: 'blocked', to: 'open', clearedById, harness: item.harness })}::text::jsonb,
               ${workspaceId})`;
     return 'cleared';

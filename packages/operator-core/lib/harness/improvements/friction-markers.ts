@@ -34,13 +34,11 @@
  * GENUINE, REPEATABLE improvement — not a one-off, not a self-inflicted slip.
  * Sparseness is itself the quality filter (D-006).
  *
- * DRY across the two prompt bases: the one-line trip-wire STRING is owned by the
- * orchestrator (`FRICTION_TRIPWIRE` in prompt-build.ts) because it is emitted into
- * the SPAWNED-BEE base there, and operator-core depends on @papercusp/orchestrator
- * (not the reverse) — so the brain-side `renderFrictionTripwire()` here re-exports
- * that constant. The two bases therefore can't desync.
+ * DRY across the two prompt bases: the trip-wire section is owned by the
+ * `su.practice` identity document and both bases load it through the same
+ * orchestrator loader. The two bases therefore cannot desync.
  */
-import { FRICTION_TRIPWIRE } from '@papercusp/orchestrator/role-prompt';
+import { loadObservationPractice } from '@papercusp/orchestrator/role-prompt';
 
 /** A single friction marker the trip-wire fires on. */
 export interface FrictionMarker {
@@ -101,12 +99,10 @@ export const FRICTION_QUALITY_BAR =
  * are summarised inline (not the full split) to keep it to a couple of lines;
  * the full split + the reflect step carry the detail.
  *
- * Returns the SAME `FRICTION_TRIPWIRE` constant the spawned-bee base emits (owned
- * by the orchestrator's prompt-build.ts) so the brain base and the bee base are
- * one string, never two that drift.
+ * Returns the identity-owned trip-wire section used by the spawned-bee base.
  */
-export function renderFrictionTripwire(): string {
-  return FRICTION_TRIPWIRE;
+export function renderFrictionTripwire(harnessDir?: string): string {
+  return loadObservationPractice(harnessDir).frictionTripwire;
 }
 
 /**

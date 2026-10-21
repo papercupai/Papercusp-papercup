@@ -138,7 +138,7 @@ describe('headless host-code adoption (WI-6554700010016005)', () => {
     for (const [key, value] of Object.entries(policy)) expect(adopt(before)[key]).toBe(value);
   });
 
-  it.each([
+  it.each<Record<string, string>>([
     {
       PAPERCUSP_CODEX_GATEWAY: '1',
       PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto',

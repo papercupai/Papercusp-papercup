@@ -1653,7 +1653,9 @@ const ensureCodexHome = defineTool({
   method: 'POST',
   path: '/adv/sessions/ensure-codex-home',
   auth: 'loopback',
-  async handler(req) {
+  async handler(req, ctx) {
+    const measure = <T>(phase: string, work: () => T | PromiseLike<T>): Promise<T> =>
+      ctx?.routeDiagnostics ? ctx.routeDiagnostics.measure(phase, work) : Promise.resolve().then(work);
     let body: {
       owner?: unknown;
       advSessionId?: unknown;
@@ -1662,7 +1664,7 @@ const ensureCodexHome = defineTool({
       headless?: unknown;
     } = {};
     try {
-      const text = await req.text();
+      const text = await measure('handler.parse-body', () => req.text());
       if (text.trim()) body = JSON.parse(text);
     } catch { /* validated below */ }
     const owner = typeof body.owner === 'string' ? body.owner.trim() : '';
@@ -1695,9 +1697,10 @@ const ensureCodexHome = defineTool({
         import('../../../capability-envelope/session-confinement-store')
           .then(() => import('../../../capability-envelope/session-confinement-port')),
       ]);
-    const rawRecord = await readSuLaunchSpecByOwner(owner, advSessionId);
+    const rawRecord = await measure('handler.read-launch-spec', () =>
+      readSuLaunchSpecByOwner(owner, advSessionId));
     const persistedRecord = parseSuLaunchSpecRecord(rawRecord);
-    const sessionRow = await getAdvSession(advSessionId);
+    const sessionRow = await measure('handler.read-session-row', () => getAdvSession(advSessionId));
     if (sessionRow?.coordOwnerId && sessionRow.coordOwnerId !== owner) {
       return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'owner-mismatch' }), {
         status: 200,
@@ -1773,7 +1776,7 @@ const ensureCodexHome = defineTool({
       }
       const route = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow.launchArgv, owner));
       const { writeRoleCodexHomeAsync } = await import('../../../role-codex-home');
-      const home = await writeRoleCodexHomeAsync({
+      const home = await measure('handler.write-role-codex-home', () => writeRoleCodexHomeAsync({
         sessionKey: advSessionId, preserveExisting: true, sid: owner,
         recordedSqliteHome: typeof saved.codexSqliteHome === 'string' ? saved.codexSqliteHome : null,
         mcpUrl: spec.mcpUrl, promptText: spec.promptText,
@@ -1782,25 +1785,25 @@ const ensureCodexHome = defineTool({
         codexGatewayAccountId: route.codexGatewayAccountId,
         codexGatewayPriority: sessionRow.role,
         headless: body.headless === true || sessionRow.launchArgv?.includes('--headless') === true, trustDir: spec.cwd,
-      });
+      }));
       const binding = accepted ? {
         kind: 'blueprint-operation-worker', workItemId: accepted.workItemId,
         operationId: accepted.operationId, specificationRevision: accepted.specificationRevision,
         pin: accepted.pin, identity: accepted.identity, requiredTools: accepted.requiredTools,
         ...(accepted.modelPolicy ? { modelPolicy: accepted.modelPolicy, modelSelection: selection } : {}),
       } : null;
-      if (!(await recordSuLaunchSpec(advSessionId, owner, {
+      if (!(await measure('handler.persist-launch-spec', () => recordSuLaunchSpec(advSessionId, owner, {
         ...saved, v: 1, workspaceId: sessionRow.workspaceId, harnessSlug, role: sessionRow.role,
         acceptedOperation: binding, stack: spec.stack,
         codexSqliteHome: home.sqliteHome,
         specificationRevision: spec.specificationRevision, stateRevision: spec.stateRevision,
         specificationArtifact: spec.specificationArtifact,
-      }))) throw new Error('repaired role launch specification receipt was not persisted');
-      await requestSessionIdentityActivation({
+      })))) throw new Error('repaired role launch specification receipt was not persisted');
+      await measure('handler.identity-activation', () => requestSessionIdentityActivation({
         ownerId: owner, workspaceId: sessionRow.workspaceId,
         revision: { specificationRevision: spec.specificationRevision, stateRevision: spec.stateRevision },
         attribution: { actorId: owner, principalId: owner, sessionId: owner }, source: 'restart', restart: true,
-      });
+      }));
       return new Response(JSON.stringify({ ok: true, owner, advSessionId, repaired: true,
         role: sessionRow.role, acceptedOperation: Boolean(accepted) }), { status: 200, headers: JSON_HEADERS });
     }
@@ -1847,8 +1850,10 @@ const ensureCodexHome = defineTool({
     // absence of a hint as a request to switch to the local login.
     const gatewayInputs = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow?.launchArgv, owner));
     const repairGatewayAuto = gatewayInputs.requireGatewayProvider === true || body.requireGatewayProvider === true;
-    const denyAmbientContext = !(await sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId }));
-    const repairCompactionLimit = await compactionLimitForResumeRow({ coordOwnerId: owner, launchArgv: sessionRow?.launchArgv }, repairModel);
+    const denyAmbientContext = !(await measure('handler.session-policy', () =>
+      sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId })));
+    const repairCompactionLimit = await measure('handler.compaction-limit', () =>
+      compactionLimitForResumeRow({ coordOwnerId: owner, launchArgv: sessionRow?.launchArgv }, repairModel));
     const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfigAsync({
       sessionKey: advSessionId,
       recordedSqliteHome: repairRecord.codexSqliteHome,
@@ -1877,16 +1882,17 @@ const ensureCodexHome = defineTool({
     let identityActivation: { identityActivationRefusal: unknown; removedLayerRefs: readonly string[] } | null = null;
     try {
       const { rebuildSuLaunchArtifactFunded } = await import('../../../cupboard/identity-activation-restart');
-      const funded = await rebuildSuLaunchArtifactFunded({
-        ownerId: owner,
-        operatorBaseUrl: new URL(req.url).origin,
-        record: repairRecord,
-        modeSection: composeModePromptSection({
-          autoMode: record.autoMode,
-          drainMode: record.drainMode,
-          loopArmed: record.loopArmed,
-        }),
-      }, { rebuild: rebuildSuLaunchArtifact });
+      const funded = await measure('handler.rebuild-launch-artifact', () =>
+        rebuildSuLaunchArtifactFunded({
+          ownerId: owner,
+          operatorBaseUrl: new URL(req.url).origin,
+          record: repairRecord,
+          modeSection: composeModePromptSection({
+            autoMode: record.autoMode,
+            drainMode: record.drainMode,
+            loopArmed: record.loopArmed,
+          }),
+        }, { rebuild: rebuildSuLaunchArtifact }));
       rebuilt = funded.rebuilt;
       if (funded.identityActivationRefusal) {
         identityActivation = {
@@ -1929,11 +1935,13 @@ const ensureCodexHome = defineTool({
         contextSize: record.contextSize, personaTier: record.personaTier,
         model: repairModel, stack: [], modes: [],
       });
-      const recovered = await ensureConfig(connection.mcpUrl, pinned.promptText);
+      const recovered = await measure('handler.ensure-codex-home-config', () =>
+        ensureConfig(connection.mcpUrl, pinned.promptText));
       // Model selection is independent of instruction activation. Preserve the
       // pinned identity while recording the model this resume actually chose.
       if ((modelChanged || recovered.sqliteHome !== repairRecord.codexSqliteHome) &&
-          !(await recordSuLaunchSpec(advSessionId, owner, { ...repairRecord, codexSqliteHome: recovered.sqliteHome }))) {
+          !(await measure('handler.persist-launch-spec', () =>
+            recordSuLaunchSpec(advSessionId, owner, { ...repairRecord, codexSqliteHome: recovered.sqliteHome })))) {
         throw new Error('repaired Codex model receipt was not persisted');
       }
       return new Response(JSON.stringify({
@@ -1942,7 +1950,8 @@ const ensureCodexHome = defineTool({
         preservedSpecificationRevision: pinned.specificationRevision,
       }), { status: 200, headers: JSON_HEADERS });
     }
-    const r = await ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText);
+    const r = await measure('handler.ensure-codex-home-config', () =>
+      ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText));
     if (r.promptRepaired || modelChanged || r.sqliteHome !== repairRecord.codexSqliteHome) {
       const artifact = rebuilt.artifact;
       const updatedRecord = r.promptRepaired ? {
@@ -1952,13 +1961,14 @@ const ensureCodexHome = defineTool({
         stateRevision: artifact.stateRevision,
         specificationArtifact: artifact.specificationArtifact,
       } : repairRecord;
-      if (!(await recordSuLaunchSpec(advSessionId, owner, { ...updatedRecord, codexSqliteHome: r.sqliteHome }))) {
+      if (!(await measure('handler.persist-launch-spec', () =>
+        recordSuLaunchSpec(advSessionId, owner, { ...updatedRecord, codexSqliteHome: r.sqliteHome })))) {
         throw new Error('repaired Codex launch specification receipt was not persisted');
       }
     }
     if (r.promptRepaired) {
       const artifact = rebuilt.artifact;
-      await requestSessionIdentityActivation({
+      await measure('handler.identity-activation', () => requestSessionIdentityActivation({
         ownerId: owner,
         workspaceId: record.workspaceId,
         revision: {
@@ -1972,7 +1982,7 @@ const ensureCodexHome = defineTool({
         },
         source: 'restart',
         restart: true,
-      });
+      }));
     }
     return new Response(
       JSON.stringify({

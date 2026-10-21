@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "plan": "event-wait-settlement-2026-10-20",
+  "planItem": "P-005",
+  "workItem": "WI-6554700010018157",
+  "clause": "AUTO-BAR-R-10-P-005@3",
+  "behavior": "An item left blocked with every blocker cleared returns to open on the next re-check sweep tick.",
+  "falsifier": "The after-tick dev:pg_query count on the live database still finds an item whose blockers are all cleared, with no other hold, in state blocked.",
+  "runtime": {
+    "sweep": "system:gate-watcher-tick -> sweepWorkItemBlockerDefaults (packages/operator-core/lib/attention/gate-watch-action.ts) on papercusp-bg-host.service",
+    "bgHostBuild": "35322dd5cd (dev:pipeline_position servingRuntimes, method blob: containsChange true)",
+    "p005CommittedIn": "1f5eb062f0 (2026-10-20T21:46:04Z), ancestor of 35322dd5cd; work-item-blocker-reaper.ts blob b46f5fab1cb24b8215da0d3d3357914420275ca8 identical in 35322dd5cd and staging",
+    "lastTickBeforeReading": "2026-10-21T01:40:02.005Z — journal line '[blocker-default-reaper] examined 2 item(s) ...' (logs:read papercusp-bg-host.service); no '[blocker-recheck]' line, which the tick prints only when it recovers a missed fire or reopens an item"
+  },
+  "reading": {
+    "measuredAt": "2026-10-21T01:42:49.120Z",
+    "database": "live papercusp operator database (dev:pg_query, read-only)",
+    "definition": "status='blocked', not observation lane, nature work, payload.externalBlockers a non-empty array with no element status='active' (every blocker cleared). Partitioned by: reblocked_after_clear = state_changed_at > max(clearedAt|updatedAt) (blocked for a reason the blocker history does not record); other_hold = a work_item_deps edge, a durable claim park (_claimHold without a generated blocked lease, or claim_hold_by), needsOwnerAction/needsHuman, origin <> 'local', or source_plan_slug set; the remainder split by whether the last clear predates the last tick.",
+    "result": {
+      "all_cleared_blocked": 19,
+      "reblocked_after_clear": 6,
+      "missing_times": 0,
+      "other_hold": 13,
+      "falsifying_stranded": 0,
+      "cleared_after_last_tick": 0
+    },
+    "partitionCheck": "6 + 13 + 0 + 0 = 19; missing_times 0, so no row fell through a NULL comparison.",
+    "verdict": "pass — no item with every blocker cleared and no other hold remains blocked after the 01:40:02Z tick (falsifier threshold: any falsifying_stranded > 0)."
+  },
+  "positiveControl": {
+    "what": "The live sweep did reopen stranded items once P-005 reached bg-host, so a zero count is not an instrument that cannot see them.",
+    "auditRows": 6,
+    "actor": "system:blocker-stranded-repair (STRANDED_BLOCKED_REPAIR_ACTOR)",
+    "span": "2026-10-20T22:24:55.115Z .. 2026-10-20T22:24:58.617Z",
+    "preDeployBaseline": "2026-10-20 measurement recorded in decideStrandedRepair's doc comment: 20 blocked items with every blocker cleared, 6 of them re-blocked after the clear."
+  },
+  "sql": "WITH c AS (SELECT w.workspace_id, w.feature_id, w.origin, w.source_plan_slug, w.state_changed_at, w.payload, (SELECT max(COALESCE(b->>'clearedAt', b->>'updatedAt')::timestamptz) FROM jsonb_array_elements(w.payload->'externalBlockers') b) AS last_clear FROM harness_shared.work_items w WHERE w.status = 'blocked' AND w.lane IS DISTINCT FROM 'observation' AND COALESCE(w.nature,'work') = 'work' AND jsonb_typeof(w.payload->'externalBlockers') = 'array' AND jsonb_array_length(w.payload->'externalBlockers') > 0 AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(w.payload->'externalBlockers') b WHERE b->>'status' = 'active')), k AS (SELECT c.*, (state_changed_at > last_clear) AS reblocked_after_clear, EXISTS (SELECT 1 FROM harness_shared.work_item_deps d WHERE d.workspace_id = c.workspace_id AND (d.blocked_ref = c.feature_id OR d.blocked_ref LIKE '%#' || c.feature_id)) AS has_dep_edge, ((COALESCE(payload->>'_claimHold','') = 'true' AND COALESCE(payload->>'held_open_reason','') <> 'blocked') OR NULLIF(btrim(COALESCE(payload->>'claim_hold_by','')),'') IS NOT NULL) AS has_park, (payload->>'needsOwnerAction' = 'true' OR payload->>'needsHuman' = 'true') AS owner_reserved, (origin <> 'local') AS non_local, (source_plan_slug IS NOT NULL) AS plan_item FROM c) SELECT count(*) AS all_cleared_blocked, count(*) FILTER (WHERE reblocked_after_clear) AS reblocked_after_clear, count(*) FILTER (WHERE state_changed_at IS NULL OR last_clear IS NULL) AS missing_times, count(*) FILTER (WHERE NOT reblocked_after_clear AND (has_dep_edge OR has_park OR owner_reserved OR non_local OR plan_item)) AS other_hold, count(*) FILTER (WHERE NOT reblocked_after_clear AND NOT (has_dep_edge OR has_park OR owner_reserved OR non_local OR plan_item) AND last_clear < timestamptz '2026-10-21T01:40:02Z') AS falsifying_stranded, count(*) FILTER (WHERE NOT reblocked_after_clear AND NOT (has_dep_edge OR has_park OR owner_reserved OR non_local OR plan_item) AND last_clear >= timestamptz '2026-10-21T01:40:02Z') AS cleared_after_last_tick, now() AS measured_at, (SELECT count(*) FROM harness_shared.audit_log a WHERE a.actor = 'system:blocker-stranded-repair') AS repair_audit_rows FROM k",
+  "treeEvidence": "Integration test 'the re-check sweep repairs missed settlements and stranded items (P-005) > AUTO-BAR-R-10-P-005: an item left blocked with every blocker cleared returns to open on the next sweep tick' passed in clean-file run 21489699 (HEAD 88570f924e), bound to this clause."
+}

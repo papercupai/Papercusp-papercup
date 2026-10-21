@@ -592,6 +592,24 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }
   });
 
+  it('classifies the long git-sync native cleanup refusal as caller control flow', () => {
+    const message =
+      'Background git-sync shell command was rejected because rm -f cleanup was disallowed by command guard before invocation. ' +
+      'No git-sync process started. Retry without destructive cleanup.';
+    expect(classifyToolError('rejected', 'handler_error', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'exec_command',
+      errorCode: 'rejected',
+      status: 'handler_error',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'The git-sync command starts after replacing rm -f cleanup with an allowed cleanup form.',
+        actual: message,
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
     const errorCode = 'resolver_owner_mismatch_or_not_executing';
     const message = 'The bulk-resolve run is stopped and no report was written.';
@@ -1105,6 +1123,34 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     // A failure loading approval data remains structural.
     expect(classifyToolError('handler_error', 'error', 'acceptance BAR approval could not be loaded from the database'))
       .toBe('structural');
+  });
+
+  it('classifies invalid or stale acceptance BAR approval receipts as caller state, including review-wrapper errors', () => {
+    const approvalErrors = [
+      'acceptance_bar_approval_invalid_receipt',
+      'acceptance_bar_approval_stale_or_mismatched: R-10 hash mismatch',
+      'acceptance_bar_approval_unparseable: the approval post must contain JSON',
+      'acceptance_bar_approval_incomplete: the applied amendment changes R-10',
+      'acceptance_bar_approval_ambiguous_preview_pointer',
+      'acceptance_bar_approval_preview_self_reference',
+      'acceptance_bar_approval_preview_unreadable',
+      'acceptance_bar_approval_author_mismatch',
+      'acceptance_bar_preview_unparseable: referenced preview thread-post:42 must contain the approval JSON receipt',
+    ];
+    for (const error of approvalErrors) {
+      expect(classifyToolError('handler_error', 'error', error)).toBe('caller');
+      expect(classifyToolError(
+        'handler_error',
+        'error',
+        `acceptance_bar_amendment_review_preview_invalid: thread-post:1189801 does not carry this preview's approval (${error})`,
+      )).toBe('caller');
+    }
+    // A preview wrapper around an unknown or infrastructure failure remains structural.
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      'acceptance_bar_amendment_review_preview_invalid: thread-post:1189801 does not carry this preview\'s approval (database unavailable)',
+    )).toBe('structural');
   });
 
   it('classifies a missing sandbox desktop lease as caller input, not a structural tool bug', () => {

@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-2 gated installed Claude Code hook parity",
+  "framework": "operational",
+  "command": [
+    "env",
+    "PAPERCUSP_VERIFY_INSTALLED_CC_HOOKS=1",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "node",
+    "scripts/test-files.mjs",
+    "apps/operator/scripts/hooks/cc/__tests__/installed-hooks-parity.test.ts"
+  ],
+  "commandCwd": ".",
+  "exitCode": 0,
+  "startedAt": "2026-10-21T04:32:13.311Z",
+  "finishedAt": "2026-10-21T04:32:25.278Z",
+  "summary": "The explicitly enabled installed-copy parity probe passed all five cases: canonical helper equality, detached loading with the negative control, temporary-file hygiene, fixture drift detection, and byte-for-byte parity between every current source hook and the installed runtime copy.",
+  "plan": "detached-hook-home-resolution-2026-10-18",
+  "workItem": "WI-6554700010017214",
+  "spec": {
+    "specId": "AUTO-BAR-R-2-P-001",
+    "specRevision": 2,
+    "evidencePlane": "tree"
+  },
+  "headAtExecution": "7b6d041c40",
+  "testInvocationId": "cac86b64e6a44585b9cf946655ef7cff",
+  "testFile": "apps/operator/scripts/hooks/cc/__tests__/installed-hooks-parity.test.ts",
+  "runtime": {
+    "installedDir": "~/.papercusp/hooks/cc",
+    "installedFrom": "~/.papercusp/hooks/cc/.installed-from",
+    "installedCopyCompared": "dialog-answer-provenance.mjs",
+    "installedCopySha256": "518ae61823bc29285053629c0c269a679e2c0a38c3865cd45b6172be2d8c7be2"
+  },
+  "assertions": [
+    {
+      "id": "canonical-helper-equality",
+      "passed": true,
+      "evidence": "The packaged pc_home.mjs bytes equal libs/host-platform/src/home.mjs."
+    },
+    {
+      "id": "detached-load-and-negative-control",
+      "passed": true,
+      "evidence": "Six affected hooks import successfully from a detached copy with NODE_OPTIONS cleared; removing pc_home.mjs makes the subprocess fail with ERR_MODULE_NOT_FOUND."
+    },
+    {
+      "id": "source-directory-temporary-file-hygiene",
+      "passed": true,
+      "evidence": "No atomic-edit temporary files are present in the source hook directory."
+    },
+    {
+      "id": "fixture-drift-detection",
+      "passed": true,
+      "evidence": "The parity fixture detects a missing installed hook, accepts equal bytes, and detects changed installed bytes."
+    },
+    {
+      "id": "installed-copy-byte-parity",
+      "passed": true,
+      "evidence": "With PAPERCUSP_VERIFY_INSTALLED_CC_HOOKS=1, every current source hook matches its ~/.papercusp/hooks/cc runtime copy byte-for-byte; zero tests were skipped."
+    }
+  ],
+  "limits": [
+    "This is a local installed-runtime parity witness for the named test file; it does not establish final-release shipment.",
+    "The installer provenance stamp still names the prior multi-hook source commit because its provenance summarizes the full hook set; the compared installed bytes were directly re-synchronized to the current committed source before this run."
+  ]
+}

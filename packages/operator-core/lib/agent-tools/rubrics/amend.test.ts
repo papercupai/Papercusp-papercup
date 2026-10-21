@@ -379,6 +379,42 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     })).rejects.toThrow('unexpected apply failure');
   });
 
+  it('returns acceptance BAR contract validation failures as structured refusals', async () => {
+    const error = new Error(
+      'acceptance_bar_amendment_test_layer_unrecordable: R-6: requiredTestLayers declares manual-provenance, ' +
+      'which the test-run ledger never records (recorded layers: unit, integration, e2e, llm, browser)',
+    );
+    rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(error);
+
+    const dryRunResult = await body({
+      rubricRef: 'acceptance-example',
+      dryRun: true,
+      criteria: [criterion],
+    });
+
+    expect(dryRunResult).toMatchObject({
+      ok: false,
+      dryRun: true,
+      code: 'acceptance_bar_amendment_test_layer_unrecordable',
+      error: error.message,
+      next: expect.stringContaining('unit, integration, e2e, llm, or browser'),
+    });
+
+    rubricsMocks.amendRubric.mockRejectedValueOnce(error);
+    const applyResult = await body({
+      rubricRef: 'acceptance-example',
+      idempotencyKey: 'unrecordable-layer-apply',
+      criteria: [criterion],
+    });
+
+    expect(applyResult).toMatchObject({
+      ok: false,
+      code: 'acceptance_bar_amendment_test_layer_unrecordable',
+      error: error.message,
+      next: expect.stringContaining('unit, integration, e2e, llm, or browser'),
+    });
+  });
+
   it('returns proposeRubric validation failures as structured invalid_args refusals', async () => {
     const error = new Error(
       "invalid_args: proposeRubric: rubric 'acceptance-example' contains off-scale rating instructions — " +

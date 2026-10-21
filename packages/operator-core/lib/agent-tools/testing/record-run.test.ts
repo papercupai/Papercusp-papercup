@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runLocalGit } from '../../scratch-git-clone';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
@@ -22,6 +22,7 @@ import {
   resolveOperationalSourceRoot,
   executePlanTerminalCensus,
   executeGitScratchPlacement,
+  executeSyncBatchCoverageAccounting,
   inspectPlanTerminalCensus,
   verifyOperationalCheckDefinitionAtCommit,
   recoverArchivedMutationFailures,
@@ -454,6 +455,105 @@ describe('canonical plan terminal census', () => {
     expect(persist.mock.calls[1][0].rows[0].execution).toMatchObject({ failed: 1,
       failedCaseTitles: ['plan-terminal-census:unchanged'] });
     expect(persist.mock.calls[1][0].rows[0].outputTail).toContain('Plan changed or became unavailable');
+  });
+});
+
+describe('native sync-batch slot accounting (R-17, WI-6554700010018392)', () => {
+  const DIR = 'docs/evidence/p009-r17-slot-accounting-live-2026-10-20';
+  const LIVE = { routines: 2, min_slots: 288, min_ratio: 0.0454, unaccounted_slots: 0,
+    low_without_current_alarm: 0, accounted: 1 };
+  // Each control is a probe variant that the committed oracle must judge as failing.
+  const CONTROLS = [
+    { ...LIVE, low_without_current_alarm: 2, accounted: 0 },
+    { ...LIVE, low_without_current_alarm: 2, accounted: 0 },
+    { ...LIVE, low_without_current_alarm: 2, accounted: 0 },
+    { ...LIVE, accounted: 0 },
+  ];
+  function fixture(rows: Array<Array<Record<string, unknown>>> = [[LIVE], ...CONTROLS.map(row => [row])]) {
+    const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [77] }));
+    const execution = { sourceRoot: vi.fn(async () => process.cwd()),
+      snapshot: vi.fn(() => ({ commit: 'b'.repeat(40), porcelain: '' })),
+      readRuntime: vi.fn(async (_units: string[], _workspaceId: string) => 'c'.repeat(64)),
+      verifyDefinition: vi.fn(async () => true), persist };
+    const readDefinition = vi.fn(async (path: string) => `SELECT 1 /* ${path} */;`);
+    const query = vi.fn(async (statements: string[]) =>
+      ({ database: 'papercusp', port: 5432, results: statements.map((_, i) => rows[i] ?? []) }));
+    const ctx = { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() };
+    return { persist, execution, readDefinition, query, ctx, deps: { readDefinition, query, execution } };
+  }
+  const recorded = (f: ReturnType<typeof fixture>) => f.persist.mock.calls[0]![0].rows[0]!;
+
+  it('passes a live accounted row only when every control fails, witnessing the database and host units', async () => {
+    const f = fixture();
+    const result = await executeSyncBatchCoverageAccounting(f.ctx, f.deps);
+    expect(result).toMatchObject({ ok: true, status: 'pass', testRunIds: [77], runtimeEnvironmentMeasured: true });
+    expect(f.readDefinition.mock.calls.map(call => call[0])).toEqual(['probe', 'control-noalarm', 'control-stale',
+      'control-terminal', 'control-floor'].map(name => `${DIR}/${name}.sql`));
+    expect(f.query).toHaveBeenNthCalledWith(1, []);
+    expect(f.query.mock.calls[1]![0]).toHaveLength(5);
+    expect(f.execution.readRuntime.mock.calls[0]![0]).toEqual(['postgres:5432', expect.any(String)]);
+    const row = recorded(f);
+    expect(row.filePath).toBe(`${DIR}/probe.sql`);
+    expect(row.execution).toMatchObject({ failed: 0,
+      operational: { command: ['testing:record-run', 'syncBatchCoverageAccounting'] } });
+    expect(row.outputTail).toContain('all four negative controls failed as required');
+  });
+
+  it('fails when a control passes or the live row is not accounted', async () => {
+    const passingControl = fixture([[LIVE], [CONTROLS[0]], [LIVE], [CONTROLS[2]], [CONTROLS[3]]]);
+    expect(await executeSyncBatchCoverageAccounting(passingControl.ctx, passingControl.deps)).toMatchObject({ status: 'fail' });
+    expect(recorded(passingControl).execution).toMatchObject({ failedCaseTitles: ['control-stale:fails'] });
+
+    const unaccounted = fixture([[{ ...LIVE, unaccounted_slots: 3, accounted: 0 }], ...CONTROLS.map(row => [row])]);
+    expect(await executeSyncBatchCoverageAccounting(unaccounted.ctx, unaccounted.deps)).toMatchObject({ status: 'fail' });
+    expect(recorded(unaccounted).execution).toMatchObject({ failedCaseTitles: ['live:every-slot-accounted'] });
+
+    // The probe's own verdict must agree with the oracle's recomputation.
+    const disagrees = fixture([[{ ...LIVE, unaccounted_slots: 3 }], ...CONTROLS.map(row => [row])]);
+    expect(await executeSyncBatchCoverageAccounting(disagrees.ctx, disagrees.deps)).toMatchObject({ status: 'fail' });
+    expect(recorded(disagrees).execution).toMatchObject({
+      failedCaseTitles: ['live:every-slot-accounted', 'live:probe-verdict-agrees'] });
+  });
+
+  it('treats malformed rows as instrument failures, never as a control failing as required', async () => {
+    const { routines: _omitted, ...missingColumn } = LIVE;
+    const f = fixture([[LIVE, LIVE], [missingColumn], [], [{ ...CONTROLS[2], min_ratio: null }], [CONTROLS[3]]]);
+    expect(await executeSyncBatchCoverageAccounting(f.ctx, f.deps)).toMatchObject({ status: 'fail' });
+    expect(recorded(f).execution).toMatchObject({ failedCaseTitles: ['live:row-shape', 'control-noalarm:fails',
+      'control-stale:fails', 'control-terminal:fails'] });
+    expect(recorded(f).outputTail).toContain('expected exactly one row, got 2');
+  });
+
+  it('fails a recording outside the probed workspace or a database that changed during the check', async () => {
+    const foreign = fixture();
+    expect(await executeSyncBatchCoverageAccounting({ ...foreign.ctx, workspaceId: 'other-workspace' }, foreign.deps))
+      .toMatchObject({ status: 'fail' });
+    expect(recorded(foreign).execution).toMatchObject({ failedCaseTitles: ['scope:workspace'] });
+
+    const moved = fixture();
+    moved.query.mockImplementation(async (statements: string[]) => ({ database: 'papercusp',
+      port: statements.length === 0 ? 5432 : 24680, results: statements.map((_, i) => [[LIVE], ...CONTROLS.map(row => [row])][i]!) }));
+    expect(await executeSyncBatchCoverageAccounting(moved.ctx, moved.deps)).toMatchObject({ status: 'fail' });
+    expect(recorded(moved).execution).toMatchObject({ failedCaseTitles: ['scope:database-unchanged'] });
+  });
+
+  it('refuses without a ledger row when the database cannot be identified', async () => {
+    const f = fixture();
+    f.query.mockRejectedValueOnce(new Error('connection refused'));
+    expect(await executeSyncBatchCoverageAccounting(f.ctx, f.deps))
+      .toEqual({ ok: false, error: 'operational_database_unavailable' });
+    expect(f.persist).not.toHaveBeenCalled();
+  });
+
+  it('reads the committed probe and control definitions from the loaded source root by default', async () => {
+    const f = fixture();
+    const repoRoot = fileURLToPath(new URL('../../../../../', import.meta.url));
+    const result = await executeSyncBatchCoverageAccounting(f.ctx, { query: f.query,
+      execution: { ...f.execution, sourceRoot: async () => repoRoot } });
+    expect(result).toMatchObject({ ok: true, status: 'pass' });
+    const statements = f.query.mock.calls[1]![0];
+    expect(statements).toHaveLength(5);
+    for (const text of statements) expect(text).toContain('harness_shared.routines');
   });
 });
 

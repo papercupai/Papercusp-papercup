@@ -663,11 +663,34 @@ describe('compact durable CTRL anchor', () => {
     expect(db.committed()).toBe(true);
   });
 
+  it('restores a failed already-applied launch revision without acknowledging undelivered stack text', async () => {
+    const running = launched('render-retry');
+    const db = transactionalSqlSequence([
+      [{ launch_spec: running.launchSpec }],
+      [{ applied: running.revision, activation_status: 'failed' }],
+      [{ control_generation: 12 }],
+      [{ id: 1 }],
+    ]);
+    await expect(convergeActivationToLaunchRecord('su-x', 'ws-test', 12, running.revision, db.sql)).resolves.toBe(true);
+    expect(db.calls[2]!.statement).toMatch(/activation,status/);
+    expect(db.calls[2]!.statement).not.toMatch(/control_delivered_generation/);
+    expect(db.calls[3]!.statement).toMatch(/session_identity_activation_events/);
+    expect(db.committed()).toBe(true);
+  });
+
   it.each([
     ['the selected record does not run desired', () => [[{ launch_spec: launched('j').launchSpec }]], 1],
     ['the current applied still resolves (not wedged)', () => {
       const running = launched('k');
       return [[{ launch_spec: running.launchSpec }], [{ applied: { ...running.revision, stateRevision: 'older' } }]];
+    }, 2],
+    ['a failed render has not applied the desired state revision', () => {
+      const running = launched('k');
+      return [[{ launch_spec: running.launchSpec }], [{ applied: { ...running.revision, stateRevision: 'older' }, activation_status: 'failed' }]];
+    }, 2],
+    ['the identical revision is already healthy', () => {
+      const running = launched('k');
+      return [[{ launch_spec: running.launchSpec }], [{ applied: running.revision, activation_status: 'applied' }]];
     }, 2],
     ['there is no applied receipt to strand', () => [[{ launch_spec: launched('k').launchSpec }], [{ applied: null }]], 2],
   ])('does not converge when %s', async (_case, results, expectedCalls) => {

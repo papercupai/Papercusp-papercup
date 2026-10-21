@@ -49,7 +49,7 @@ describe('ADV_TABS', () => {
     // portal-parity-adv-tabs-2026-09-05 (D-004) that is EVERY ADV tab, so an
     // embedded deep link to any tab renders that tab — never a collapsed Overview.
     expect([...PORTAL_EMBED_ADV_CONTENT_IDS]).toEqual([...ADV_TAB_IDS]);
-    expect(ADV_TAB_IDS).toHaveLength(20);
+    expect(ADV_TAB_IDS).toHaveLength(21);
     for (const id of ADV_TAB_IDS) {
       expect(portalEmbedAdvTab(id, true)).toBe(id);
       expect(portalEmbedAdvTab(id, false)).toBe(id);
@@ -94,7 +94,9 @@ describe('ADV_TABS', () => {
     expect(visibleAdvTabs(true).map((t) => t.id)).toEqual([
       // 'hud' is workspace-level: the session board is a roster of every session
       // in the workspace, not a per-pot view (owner ask 2026-07-25).
-      'overview', 'hud', 'plans', 'workflows', 'calendar', 'harnesses', 'health', 'frames', 'conversations', 'learning', 'evals',
+      // 'enterprise' is workspace-level and sits right of Overview (added with the
+      // tab in 8db7240ba4, 2026-10-16; WORKSPACE_TAB_IDS + PRIMARY_ADV_TAB_IDS).
+      'overview', 'enterprise', 'hud', 'plans', 'workflows', 'calendar', 'harnesses', 'health', 'frames', 'conversations', 'learning', 'evals',
     ]);
     // A single pot shows the full strip. Strip order: Overview leads (the
     // default landing surface, Brief 23 / overview-dashboard-2026-06-05
@@ -103,7 +105,7 @@ describe('ADV_TABS', () => {
     expect(visibleAdvTabs(false)).toEqual([...ADV_TABS]);
     expect(ADV_TABS.map((t) => t.id)).toEqual([
       // HUD takes the first slot right of Overview (owner ask 2026-07-25).
-      'overview', 'hud', 'brainstorm', 'plans', 'workflows', 'calendar', 'harnesses', 'health', 'frames', 'git', 'stats', 'testing', 'docs', 'history', 'insights',
+      'overview', 'enterprise', 'hud', 'brainstorm', 'plans', 'workflows', 'calendar', 'harnesses', 'health', 'frames', 'git', 'stats', 'testing', 'docs', 'history', 'insights',
       'conversations', 'learning', 'evals', 'settings',
     ]);
   });
@@ -271,7 +273,8 @@ describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', (
     // 'harnesses' because it's URL-serialized).
     expect(PRIMARY_ADV_TAB_IDS.has('harnesses')).toBe(true);
     expect(PRIMARY_ADV_TAB_IDS.has('learning')).toBe(true);
-    expect(PRIMARY_ADV_TAB_IDS.size).toBe(5);
+    expect(PRIMARY_ADV_TAB_IDS.has('enterprise')).toBe(true);
+    expect(PRIMARY_ADV_TAB_IDS.size).toBe(6);
   });
 
   it('Automations sits immediately right of HUD, followed by Work', () => {
@@ -298,7 +301,7 @@ describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', (
 
   it('splits a tab list into primary (strip) and secondary (More menu)', () => {
     const { primary, secondary } = splitPrimarySecondary(ADV_TABS);
-    expect(primary.map((t) => t.id)).toEqual(['overview', 'hud', 'workflows', 'harnesses', 'learning']);
+    expect(primary.map((t) => t.id)).toEqual(['overview', 'enterprise', 'hud', 'workflows', 'harnesses', 'learning']);
     expect(secondary.map((t) => t.id)).toEqual(
       ADV_TABS.map((t) => t.id).filter((id) => !PRIMARY_ADV_TAB_IDS.has(id)),
     );

@@ -111,7 +111,11 @@ export async function prepareCellWakeFold(input: CellWakeFoldInput): Promise<str
       roles: row.role ? [row.role] : [],
       harnessSlug: row.harnessSlug ?? undefined,
     };
-    const env = { workspaceId: input.workspaceId, harnessSlug: row.harnessSlug, role: row.role };
+    // WI-6554700010018677: the WORKSPACE comes from the row too. The delivery's workspace is
+    // the coordination namespace pinned to DEFAULT_COORD_WORKSPACE (WI-3575), not the reader's
+    // tenant, so a tenant-keyed resolver dispatched under it reads an empty store. The row is
+    // stamped with the subscriber's tenant at registration.
+    const env = { workspaceId: row.workspaceId || input.workspaceId, harnessSlug: row.harnessSlug, role: row.role };
 
     const outcome = await withBudget(
       readCell(handle.args.cell, reader, env, handle.args.as).catch(() => 'resolver-failed' as const),

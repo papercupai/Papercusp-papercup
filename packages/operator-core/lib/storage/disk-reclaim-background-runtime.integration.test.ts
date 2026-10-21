@@ -191,6 +191,10 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),
   options.testTimeoutMs);
+it('retains open acceptance evidence through the observed private background runtime',
+  context => runSelection({ reclaimTitles: ['retains old evidence bound to an open acceptance item'],
+    expectedReclaimCases: 1, census: false,
+    observedSources: ['packages/operator-core/lib/storage/retention-pins.ts'] }, context), options.testTimeoutMs);
 it('accounts hardlinks and retained siblings in the observed private background runtime',
   context => runSelection({ reclaimTitles: hardlinkSelected, expectedReclaimCases: hardlinkSelectedCount, census: false }, context),
   options.testTimeoutMs);

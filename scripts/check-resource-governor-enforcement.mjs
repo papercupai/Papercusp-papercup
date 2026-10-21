@@ -483,11 +483,11 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542; fourth under WI-6554700010008629; fifth under WI-6554700010008580; sixth under EI-25822025814936255): disposable isolated Tauri acceptance, with no resident queue or detached worker. The two native bridge/poll execFileSync sites have 60s/90s deadlines. The third runs the exact frozen native test files through test:file, admitted upstream by runGovernedTestProcess. The fourth publishes the kernel-measured native runtime witness in one awaited Node child with a 60s deadline. The fifth runs only a prepared source-snapshot bundle with its recorded SHA-256 checked before execFile, preserving the owned private workspace and discovery directory, a 300s deadline, and 4MiB output bound. The sixth invokes the maintained frozen bundle-host.sh synchronously for unique receipt-attested script inputs before the test runner starts, with a 300s preparation deadline and the same verified private test environment. That recipe retains its dependency-reader mutex and restricted-source checks. verifyVerifierSourceSync checks the archive before and after compilation; profile entries bind the resulting bytes to their source-root paths. Preparation does not consume or widen the native journey's 300s limit. All children are awaited and exit within the enclosing isolated verifier operation; none adds independent managed serving capacity.",
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542; fourth under WI-6554700010008629; fifth under WI-6554700010008580; sixth under EI-25822025814936255): disposable isolated Tauri acceptance, with no resident queue or detached worker. The native ledger preflight is a bounded SELECT-only child, and the two native bridge/poll execFileSync sites have 60s/90s deadlines. The committed native test files run through test:file, admitted upstream by runGovernedTestProcess. The runtime-vintage witness runs in one awaited Node child with a 60s deadline. The prepared source-snapshot bundle has its recorded SHA-256 checked before execFile, preserving the owned private workspace and discovery directory, a 300s deadline, and 4MiB output bound. The optional mutation probe invokes the maintained bounded mutation runner, then rechecks the receipt; the bundle-host preparation is also synchronous, receipt-attested, and bounded to 300s. That recipe retains its dependency-reader mutex and restricted-source checks. verifyVerifierSourceSync checks the archive before and after compilation; profile entries bind the resulting bytes to their source-root paths. Preparation does not consume or widen the native journey's 300s limit. All children are awaited and exit within the enclosing isolated verifier operation; none adds independent managed serving capacity.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       return resourceStartCallCount(source) === 8 &&
-        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 6 &&
+        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 7 &&
         [...code.matchAll(/\bexecFile\s*\(/g)].length === 1 &&
         // Fifth start: the awaited native child, with its owned profile restored.
         source.includes("const env = nativeChildEnvironment(profile);") &&
@@ -502,7 +502,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("profile.tauriPID === Number(env.VERIFY_TAURI_PID)") &&
         source.includes("execFileSync('npm', ['run', 'test:file', '--', ...testFiles],") &&
         source.includes("const testEnv = nativeTestDatabaseEnvironment(profile);") &&
-        source.includes("{ cwd: sourceRoot, stdio: 'inherit', env: { ...testEnv,") &&
+        source.includes("const env = { ...testEnv, PAPERCUSP_TEST_RUN_COMMIT: receipt.sourceCommit,") &&
         source.includes("assert.equal(env.PAPERCUSP_SKIP_PG_DISCOVERY, '1'") &&
         source.includes("PAPERCUSP_TEST_PG_ADMIN_URL: address.toString()") &&
         source.includes("recordedDataDir === dataDir && port === address.port") &&
@@ -1757,35 +1757,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for packages/operator-core/lib/release/dependency-admission-prediction.ts (WI-10004151): its only start is one execFile('bash', [dependency-generation.sh, '--predict-ref', <ref>]) per explicit `release:repair-queue { op:'admit' }` call, made inside that admit and awaited to completion. The --predict-ref mode is read-only against the generation store and the live trees: it fingerprints the ref's dependency inputs, checks for an existing selector or a live-tree match, and otherwise stages ONLY the ref's lockfiles into a scratch root (removed before it returns) for the dependency-lock-equivalence.mjs comparison. It never installs, never copies node_modules, never publishes, and takes no generation lock. The call is bounded by DEPENDENCY_PREDICTION_TIMEOUT_MS (30s, measured 12.6s at load ~90) plus a 4 MiB maxBuffer, after which the prediction degrades to verdict 'unknown' rather than waiting. It holds nothing resident and creates no independent queue. It is the same shape as the repair-head-admission.ts bypass it sits beside: a resident Governor lease here would gate the frozen lineage's own repair door behind the capacity the gate is trying to recover.",
   },
   {
-    path: "apps/operator/bin/release/dependency-lock-equivalence.mjs",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for dependency-lock-equivalence.mjs (WI-10004151): its one child start is a synchronous, read-only git metadata probe used to compare immutable lockfile inputs. execFileSync is awaited, bounded to 64 MiB output, and retains no child, worker or queue after the comparison. The release admission path already owns the parent operation; adding a second local lease would double-count the same frozen repair check.",
-    matchesSource: (source) =>
-      resourceStartCallCount(source) === 1 &&
-      source.includes("const runGit = (root, args) => execFileSync('git', ['-C', root, ...args], {") &&
-      source.includes("maxBuffer: 64 * 1024 * 1024") &&
-      source.includes("stdio: ['ignore', 'pipe', 'pipe']") &&
-      source.includes("export function createGitInputManifestReader(git = runGit)"),
-  },
-  {
-    path: "packages/operator-core/lib/agent-chat-stream.ts",
-    code: "resource-start-outside-admission",
-    disposition: "upstream",
-    reason:
-      "P-016 reviewed upstream disposition for agent-chat-stream.ts: the native child is started only inside the shared runner's injected spawn seam, after reserveHostedAgentSlot has started a durable hosted-agent reservation. Exit/error handlers settle that reservation and the catch path settles failed starts, so the child inherits the parent host admission rather than opening a second root lease.",
-    matchesSource: (source) =>
-      resourceStartCallCount(source) === 1 &&
-      source.includes("const reservation = await reserveHostedAgentSlot(") &&
-      source.includes("randomUUID()") &&
-      source.includes("await reservation?.start();") &&
-      source.includes("const child = opts.spawnProcess ? await opts.spawnProcess(command, args, options) : spawn(command, args, options);") &&
-      source.includes("child.once('exit', release);") &&
-      source.includes("child.once('error', release);") &&
-      source.includes("await reservation?.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));"),
-  },
-  {
     path: "scripts/check-integration-teardown-nullsafe.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -2559,6 +2530,41 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
 ]);
+
+// These reviewed rows belong to the P-014/P-013 inventory prefixes rather than
+// the P-016 release lane. Keep them in the shared bypass registry without
+// inflating P016_DISPOSITION_REGISTRY or its exact lane census.
+const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
+  {
+    path: "apps/operator/bin/release/dependency-lock-equivalence.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-014 reviewed bypass disposition for dependency-lock-equivalence.mjs (WI-10004151): its one child start is a synchronous, read-only git metadata probe used to compare immutable lockfile inputs. execFileSync is awaited, bounded to 64 MiB output, and retains no child, worker or queue after the comparison. The release admission path already owns the parent operation; adding a second local lease would double-count the same frozen repair check.",
+    matchesSource: (source) =>
+      resourceStartCallCount(source) === 1 &&
+      source.includes("const runGit = (root, args) => execFileSync('git', ['-C', root, ...args], {") &&
+      source.includes("maxBuffer: 64 * 1024 * 1024") &&
+      source.includes("stdio: ['ignore', 'pipe', 'pipe']") &&
+      source.includes("export function createGitInputManifestReader(git = runGit)"),
+  },
+  {
+    path: "packages/operator-core/lib/agent-chat-stream.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-013 reviewed upstream disposition for agent-chat-stream.ts: the native child is started only inside the shared runner's injected spawn seam, after reserveHostedAgentSlot has started a durable hosted-agent reservation. Exit/error handlers settle that reservation and the catch path settles failed starts, so the child inherits the parent host admission rather than opening a second root lease.",
+    matchesSource: (source) =>
+      resourceStartCallCount(source) === 1 &&
+      source.includes("const reservation = await reserveHostedAgentSlot(") &&
+      source.includes("randomUUID()") &&
+      source.includes("await reservation?.start();") &&
+      source.includes("const child = opts.spawnProcess ? await opts.spawnProcess(command, args, options) : spawn(command, args, options);") &&
+      source.includes("child.once('exit', release);") &&
+      source.includes("child.once('error', release);") &&
+      source.includes("await reservation?.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));"),
+  },
+]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
     `${path}::${code}`,
@@ -2568,6 +2574,10 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  ...SUPPLEMENTAL_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
+    `${path}::${code}`,
+    { disposition, reason, ...(matchesSource ? { matchesSource } : {}) },
+  ]),
   [
     "packages/operator-core/lib/agent-tools/coordination/inbox-visibility.ts::unbounded-resident-queue",
     {

@@ -28,12 +28,15 @@
  * the budget; beyond that it names the read that returns the measurement.
  */
 import { z } from 'zod';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { resolvePlanScope } from './source';
 import { BAR_CLAUSE_SPEC_PREFIX } from './bind-vetting-advisory';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 
 /** Evidence kinds whose proof is an EXECUTION: re-hashing files does not refresh it. */
 export const EXECUTABLE_EVIDENCE_KINDS: ReadonlySet<string> = new Set(['test', 'mutation', 'counterexample']);
@@ -64,6 +67,8 @@ export interface MeasuringBindingRow {
   created_by: string;
   source_paths: unknown;
   test_paths: unknown;
+  /** Registered checkout that supplied the measurement; null means the plan harness root. */
+  root_harness_slug?: string | null;
   work_item_status: string | null;
   work_item_taken_by: string | null;
 }
@@ -300,6 +305,7 @@ export async function loadMeasuringBindings(input: {
              b.evidence_kind, b.evidence_ref, b.created_by,
              b.details->'currentMeasurement'->'sourcePaths' AS source_paths,
              b.details->'currentMeasurement'->'testPaths' AS test_paths,
+             b.details->'currentMeasurement'->>'rootHarnessSlug' AS root_harness_slug,
              w.status AS work_item_status, w.taken_by AS work_item_taken_by
         FROM harness_shared.spec_evidence_bindings b
         JOIN harness_shared.harness_plans p
@@ -330,6 +336,51 @@ export async function loadMeasuringBindings(input: {
   });
 }
 
+function realpathOrResolve(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolvePath(path);
+  }
+}
+
+/**
+ * Keep edit-time advisories bound to the checkout whose bytes were measured.
+ *
+ * The lookup is normally keyed only by repo-relative path because that is the
+ * binding's identity. A PostToolUse hook can run from a disposable pot clone
+ * with the same relative path, though; in that case path-only matching would
+ * warn holders of proof measured in the canonical checkout. Registered roots
+ * are the only roots that can own proof, so an unregistered clone matches no
+ * row. Symlinked names of one checkout collapse to the same physical root.
+ */
+export function filterBindingsToCheckout(
+  rows: readonly MeasuringBindingRow[],
+  opts: {
+    harnessSlug: string;
+    checkoutRoot: string;
+    registeredRoots: ReadonlyMap<string, string | undefined>;
+  },
+): MeasuringBindingRow[] {
+  const editedRoot = realpathOrResolve(opts.checkoutRoot);
+  return rows.filter((row) => {
+    const rootSlug = row.root_harness_slug?.trim() || opts.harnessSlug;
+    const measuredRoot = opts.registeredRoots.get(rootSlug);
+    return typeof measuredRoot === 'string' && realpathOrResolve(measuredRoot) === editedRoot;
+  });
+}
+
+async function registeredCheckoutRoots(workspaceId: string): Promise<Map<string, string | undefined>> {
+  try {
+    const registry = await loadHarnessRegistry(workspaceId);
+    return new Map(registry.projects.map((project) => [project.slug, resolveHarnessContentPath(registry, project.slug)]));
+  } catch {
+    // A checkout-qualified advisory must fail closed when the registry cannot
+    // establish which registered root supplied the proof.
+    return new Map();
+  }
+}
+
 const argsSchema = z.object({
   harness: harnessArg,
   paths: z
@@ -337,6 +388,14 @@ const argsSchema = z.object({
     .min(1)
     .max(50)
     .describe('Repo-relative paths (superproject-relative for submodule files), as a binding measures them.'),
+  checkoutRoot: z
+    .string()
+    .trim()
+    .min(1)
+    .max(4096)
+    .refine((value) => isAbsolute(value), 'checkoutRoot must be an absolute checkout path')
+    .optional()
+    .describe('Absolute checkout root of the edited file; when present, only proofs measured in this registered root match.'),
   limit: z.number().int().min(1).max(50).optional().describe('Clauses returned (default 12); totalClauses always reports the full count.'),
 });
 
@@ -359,7 +418,14 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const scope = await resolvePlanScope({ harnessSlug: resolveEffectiveHarnessSlug(sctx) });
     const paths = [...new Set(args.paths.map(normalizeRepoRelativePath))];
-    const rows = await loadMeasuringBindings({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, paths });
+    const loadedRows = await loadMeasuringBindings({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, paths });
+    const rows = args.checkoutRoot
+      ? filterBindingsToCheckout(loadedRows, {
+        harnessSlug: scope.harnessSlug,
+        checkoutRoot: args.checkoutRoot,
+        registeredRoots: await registeredCheckoutRoots(scope.workspaceId),
+      })
+      : loadedRows;
     const packed = packMeasuringClauses(rows, { paths, harnessSlug: scope.harnessSlug, limit: args.limit ?? 12 });
     return {
       data: {

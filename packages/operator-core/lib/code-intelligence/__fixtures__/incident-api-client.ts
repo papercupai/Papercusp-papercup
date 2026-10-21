@@ -445,8 +445,12 @@ async function runNativeTaskBriefJourney({ call, workspace, root, owner }: {
   assert.equal(oriented.taskBrief.intent.fingerprint, brief.intent.fingerprint);
   assert.equal((await claims())[0]!.count, 0, 'Intent/orient must not create a work-item claim');
 
+  // The change-kind gate refuses a close with no declared kind. Declare it when
+  // the item is created, as a real agent would, so the close below only has to
+  // carry the logic kind's proof (its passing native test command and result).
   const created = await call('work_items:create', { kind: 'change', title: 'Private native completion source fixture',
     harness: workspace, assign_to: 'self', state: 'wip', payload: { paths },
+    changeKinds: ['logic'], changeKindReason: 'The fixture edits one private source function and proves it with its native test.',
     projection: { pick: ['results[].id', 'results[].ok', 'results[].item.id'] } });
   const id = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
   assert.equal(typeof id, 'string', JSON.stringify(created));

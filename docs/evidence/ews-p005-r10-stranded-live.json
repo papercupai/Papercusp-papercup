@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-005 / R-10 live stranded-blocked reading on the operator database (event-wait-settlement-2026-10-20)",
+  "framework": "operational",
+  "command": [
+    "node",
+    "docs/evidence/ews-p005-r10-stranded-live/run.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T02:35:34.421Z",
+  "finishedAt": "2026-10-21T02:35:35.175Z",
+  "plan": "event-wait-settlement-2026-10-20",
+  "planItem": "P-005",
+  "workItemId": "WI-6554700010018157",
+  "specIds": [
+    "AUTO-BAR-R-10-P-005@3"
+  ],
+  "evidencePlane": "live",
+  "summary": "The R-10 probe (docs/evidence/ews-p005-r10-stranded-live/probe.sql) read the re-check sweep's own population on papercusp-workspace and returned 19|6|13|0|0|0|77|6: 19 blocked item(s) with every blocker cleared = 6 re-blocked after the clear + 13 under another hold + 0 stranded + 0 cleared since the last completed tick + 0 with unknown times; the sweep host routine last started 77s before the reading and the repair path has written 6 audit row(s). The committed oracle judged it PASS. All five negative controls failed on their targeted assertion as required.",
+  "assertions": [
+    {
+      "id": "live:sweep-is-live",
+      "passed": true,
+      "evidence": "gate-watcher-tick last started 77s ago (limit 900s; -1 = routine row missing); row 19|6|13|0|0|0|77|6"
+    },
+    {
+      "id": "live:every-candidate-classified-once",
+      "passed": true,
+      "evidence": "reblocked_after_clear=6 + other_hold=13 + stranded=0 + cleared_since_tick=0 + missing_times=0 = 19; all_cleared_blocked=19; row 19|6|13|0|0|0|77|6"
+    },
+    {
+      "id": "live:no-unknown-times",
+      "passed": true,
+      "evidence": "missing_times=0; row 19|6|13|0|0|0|77|6"
+    },
+    {
+      "id": "live:no-stranded-item",
+      "passed": true,
+      "evidence": "stranded=0 (blocked, every blocker cleared before the last completed tick, no other hold); row 19|6|13|0|0|0|77|6"
+    },
+    {
+      "id": "live:repair-path-observed",
+      "passed": true,
+      "evidence": "repair_audit_rows=6 (audit rows by system:blocker-stranded-repair); row 19|6|13|0|0|0|77|6"
+    },
+    {
+      "id": "control-stranded:fails-on-no-stranded-item",
+      "passed": true,
+      "evidence": "one synthetic local candidate, cleared a day before the tick, no hold keys: the falsifier must fire; row 20|6|13|1|0|0|78|6; oracle passed=false; failing assertions: no-stranded-item"
+    },
+    {
+      "id": "control-null-flags:fails-on-no-stranded-item",
+      "passed": true,
+      "evidence": "a stranded candidate whose origin and hold keys are all absent (NULL): it must still be counted stranded, not dropped from every bucket; row 20|6|13|1|0|0|78|6; oracle passed=false; failing assertions: no-stranded-item"
+    },
+    {
+      "id": "control-missing-time:fails-on-no-unknown-times",
+      "passed": true,
+      "evidence": "a candidate with no state_changed_at: an unclassifiable row must fail rather than pass silently; row 20|6|13|0|0|1|78|6; oracle passed=false; failing assertions: no-unknown-times"
+    },
+    {
+      "id": "control-stale-sweep:fails-on-sweep-is-live",
+      "passed": true,
+      "evidence": "the sweep routine last start moved a day back: a stopped sweep must not read as nothing stranded; row 19|6|13|0|0|0|86478|6; oracle passed=false; failing assertions: sweep-is-live"
+    },
+    {
+      "id": "control-no-repair-path:fails-on-repair-path-observed",
+      "passed": true,
+      "evidence": "the repair actor renamed to one that never wrote: a build without the repair path must fail; row 19|6|13|0|0|0|78|0; oracle passed=false; failing assertions: repair-path-observed"
+    }
+  ],
+  "environment": {
+    "database": "papercusp (native PG :5432)",
+    "workspace": "papercusp-workspace",
+    "reader": "sudo -n -u postgres psql -q -At (BEGIN READ ONLY ... ROLLBACK)",
+    "launchedBy": "su-42565716-6d11-4087-93d3-1b2b0d5ded7b"
+  },
+  "sourceBlobs": {
+    "packages/operator-core/lib/attention/work-item-blocker-reaper.ts": "b46f5fab1cb24b8215da0d3d3357914420275ca8",
+    "packages/operator-core/lib/attention/gate-watch-action.ts": "b68981dc1f7d018a064beeec0bd436e0b2e4ffa2",
+    "scripts/lib/stranded-blocked-live-oracle.mjs": "907413a347821fbf2d0e08243307ced5132adb37"
+  },
+  "artifacts": {
+    "docs/evidence/ews-p005-r10-stranded-live/run.mjs": "sha256:65e24e38cff4572da22efa6322b4771c43027e6b8a7648deaf52f5536fb1367a",
+    "docs/evidence/ews-p005-r10-stranded-live/probe.sql": "sha256:efebab07871d3756fd889ef1e00475e46fcf1b7d6ebe445db96fac36640a6dd7",
+    "docs/evidence/ews-p005-r10-stranded-live/probe.sql#control-stranded": "sha256:9e8a14f9fcbf9d371313dd889b1a2b7cd56ac69c73b843282751461bbdb7f9cd",
+    "docs/evidence/ews-p005-r10-stranded-live/probe.sql#control-null-flags": "sha256:28406935cbdc3c26d6dbd0d6517fc29b81f902181ea3bdc75258e1900ade290d",
+    "docs/evidence/ews-p005-r10-stranded-live/probe.sql#control-missing-time": "sha256:8ddc8d46a9cf5025b3c7e103a3c31a463e1b22761ac2b787e3b3bdc7d3c59e7c",
+    "docs/evidence/ews-p005-r10-stranded-live/probe.sql#control-stale-sweep": "sha256:ef6bb773854363252e5f31920a47f61d679a60a3dec6b3d98520249577cc50a7",
+    "docs/evidence/ews-p005-r10-stranded-live/probe.sql#control-no-repair-path": "sha256:21bbc0edbf0093a5f47ef1dc8137987eb57431f703c62448bb6e6b19dad3d2b3"
+  },
+  "limitations": [
+    "One live reading, not a continuous observation: an item can be stranded and repaired between readings.",
+    "The reading judges the outcome (no item left stranded past a tick), not the sweep code path; the code path is covered by the tree evidence bound to the same clause (work-item-blocker-reaper.integration.test.ts and its mutation run).",
+    "Supersedes docs/evidence/ews-p005-r10-stranded-blocked-live.sql: that query classified with independent FILTERs whose hold flags could be NULL, so a stranded row with no needsOwnerAction key would have counted in no bucket. Its 2026-10-21T01:59Z reading still partitioned exactly (19 = 6 + 13 + 0 + 0), so that reading is unaffected; this probe closes the hole structurally and control-null-flags proves it."
+  ],
+  "instrument": {
+    "path": "scripts/lib/stranded-blocked-live-oracle.mjs",
+    "testPath": "scripts/lib/stranded-blocked-live-oracle.test.ts",
+    "role": "Every pass/fail decision on the probe rows is taken by this committed oracle; run.mjs only executes the SQL and records output."
+  }
+}

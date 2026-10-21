@@ -44,6 +44,38 @@ describe('P-041 recorded follow-through', () => {
     expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'Read', status: 'ok', detail: { file: 'src/other.ts' } }] }).actedOn).toBe(false);
   });
 
+  it('places absolute native paths only under the exact registered root of the activity harness', () => {
+    const repoRoots = new Map([['papercusp', '/repo/papercusp']]);
+    const read = (file: string, harness: string | null = 'papercusp') =>
+      nativePushFollowThrough({ ...input, repoRoots, activities: [{ tool: 'Read', status: 'ok', detail: { file }, harness }] }).actedOn;
+    expect(read('/repo/papercusp/src/foo.ts')).toBe(true);
+    expect(read('/repo/papercusp/src/other.ts')).toBe(false);
+    // Sibling checkout sharing a name prefix, a suffix-only match, and a harness with no root stay unknown.
+    expect(read('/repo/papercusp-release/src/foo.ts')).toBeNull();
+    expect(read('/elsewhere/src/foo.ts')).toBeNull();
+    expect(read('/repo/papercusp/src/foo.ts', 'other-harness')).toBeNull();
+    expect(read('/repo/papercusp/src/foo.ts', null)).toBeNull();
+    expect(read('/repo/papercusp/../papercusp/src/foo.ts')).toBeNull();
+    // Without a root map the historical behaviour holds: absolute stays unknown.
+    expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'Read', status: 'ok', detail: { file: '/repo/papercusp/src/foo.ts' }, harness: 'papercusp' }] }).actedOn).toBeNull();
+  });
+
+  it('reads both papercusp-su MCP spellings and the capability:read file_path key', () => {
+    const repoRoots = new Map([['papercusp', '/repo/papercusp']]);
+    for (const tool of ['mcp__papercusp_su__capability_read', 'mcp__papercusp-su__capability_read']) {
+      expect(nativePushFollowThrough({ ...input, repoRoots, activities: [{ tool, status: 'ok', detail: { file_path: 'src/foo.ts' }, harness: 'papercusp' }] }).actedOn).toBe(true);
+      expect(nativePushFollowThrough({ ...input, repoRoots, activities: [{ tool, status: 'ok', detail: { file_path: '/repo/papercusp/src/other.ts' }, harness: 'papercusp' }] }).actedOn).toBe(false);
+    }
+    expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'mcp__papercusp_su__capability_bash', status: 'ok', detail: { command: 'rg -n "Foo" src' } }] }).grepAfterPush).toBe(true);
+  });
+
+  it('treats a spilled tool-output page as neither a hit nor a gap', () => {
+    const repoRoots = new Map([['papercusp', '/repo/papercusp']]);
+    const scratch = { tool: 'mcp__papercusp_su__capability_read', status: 'ok', detail: { uri: 'papercusp://scratch/ws/x.spill' }, harness: 'papercusp' };
+    expect(nativePushFollowThrough({ ...input, repoRoots, activities: [scratch, { tool: 'Read', status: 'ok', detail: { file: '/repo/papercusp/src/other.ts' }, harness: 'papercusp' }] }).actedOn).toBe(false);
+    expect(nativePushFollowThrough({ ...input, repoRoots, activities: [{ ...scratch, detail: { uri: 'file:///repo/papercusp/src/other.ts' } }] }).actedOn).toBeNull();
+  });
+
   it('never guesses symbol identity from non-grep leg subjects', () => {
     expect(nativePushFollowThrough({ ...input, leg: 'interface' }).grepAfterPush).toBeNull();
   });

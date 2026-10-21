@@ -8,8 +8,9 @@
  * second path matches, so explicit file requests must use test-files.mjs. With
  * no file request, retain the workspace's ordinary full-suite command.
  */
+import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
@@ -19,6 +20,26 @@ const TEST_FILE_RE = /(?:^|[\\/])[^\\/]+\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
 export function isVitestTestFileArg(arg) {
   return typeof arg === 'string' && TEST_FILE_RE.test(arg);
+}
+
+/**
+ * npm runs a workspace script with that workspace as cwd, while test-files.mjs
+ * resolves requested paths from the repository root. Keep the convenient
+ * package-relative spelling (`lib/foo.test.ts`) working when the launcher is
+ * invoked through `npm --workspace`, and preserve paths already rooted at the
+ * repository.
+ */
+function repositoryRelativeFiles(files, repoRoot, cwd) {
+  const workspaceRel = relative(repoRoot, cwd);
+  if (!workspaceRel || workspaceRel === '.' || workspaceRel.startsWith('..')) return files;
+  const workspacePrefix = workspaceRel.split(sep).join('/');
+  return files.map((file) => {
+    if (typeof file !== 'string' || file.startsWith('/') || file.startsWith(`${workspacePrefix}/`)) return file;
+    if (existsSync(resolve(repoRoot, file))) return file;
+    const fromWorkspace = resolve(cwd, file);
+    if (!existsSync(fromWorkspace)) return file;
+    return relative(repoRoot, fromWorkspace).split(sep).join('/');
+  });
 }
 
 /**
@@ -46,6 +67,7 @@ export function workspaceTestInvocation(argv = process.argv.slice(2), repoRoot =
   }
 
   const vitestArgs = args.filter((arg) => !isVitestTestFileArg(arg) && arg !== '--passWithNoTests' && arg !== '--');
+  const routedFiles = repositoryRelativeFiles(files, repoRoot, process.cwd());
   return {
     command: process.execPath,
     // WI-10005802: the router runs under the committed-source loader, so it and every module it
@@ -54,7 +76,7 @@ export function workspaceTestInvocation(argv = process.argv.slice(2), repoRoot =
       '--import',
       resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs'),
       resolve(repoRoot, 'scripts/test-files.mjs'),
-      ...files,
+      ...routedFiles,
       ...(vitestArgs.length ? ['--', ...vitestArgs] : []),
     ],
     cwd: process.cwd(),

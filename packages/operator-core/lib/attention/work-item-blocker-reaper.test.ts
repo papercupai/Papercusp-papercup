@@ -34,7 +34,18 @@ import {
   updateExternalBlockerHistory,
   type ExternalBlockerRecord,
 } from '../external-blockers';
-import { defaultBlockerReapDeps, sweepWorkItemBlockerDefaults, type BlockerReapDeps } from './work-item-blocker-reaper';
+import {
+  backfillUnprovableWaitRecheckDates,
+  decideStrandedRepair,
+  defaultBlockerReapDeps,
+  STRANDED_BLOCKED_REPAIR_ACTOR,
+  sweepWorkItemBlockerDefaults,
+  UNPROVABLE_WAIT_BACKFILL_ACTOR,
+  type BlockerReapDeps,
+  type StrandedBlockedCandidate,
+  type UnprovableWaitBackfillDeps,
+} from './work-item-blocker-reaper';
+import type { ExternalConditionReachability } from '../external-condition-reachability';
 
 const NOW = new Date('2026-10-02T12:00:00.000Z');
 const PAST = '2026-10-01T12:00:00.000Z';
@@ -400,5 +411,264 @@ describe('the re-check sweep follows up every clear (event-wait-settlement-2026-
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('decideStrandedRepair (pure, event-wait-settlement-2026-10-20 P-005)', () => {
+  const cleared = (clearedAt: string, over: Record<string, unknown> = {}) =>
+    ({ ...blocker({ kind: 'event', ref: 'event:x', decideBy: undefined, defaultAction: undefined }),
+      status: 'cleared', clearedAt, ...over });
+
+  it('repairs an item that was already blocked when its last blocker was cleared', () => {
+    expect(decideStrandedRepair({ stateChangedAt: '2026-10-01T00:00:00.000Z',
+      blockers: [cleared('2026-10-01T06:00:00.000Z'), cleared('2026-10-01T09:00:00.000Z')] }))
+      .toEqual({ repair: true, lastClearedAt: '2026-10-01T09:00:00.000Z' });
+  });
+
+  it('leaves an item that was moved into blocked AFTER its last clear', () => {
+    expect(decideStrandedRepair({ stateChangedAt: '2026-10-02T00:00:00.000Z',
+      blockers: [cleared('2026-10-01T09:00:00.000Z')] })).toEqual({ repair: false, why: 'reblocked-after-clear' });
+  });
+
+  it.each([
+    { name: 'an active blocker remains', blockers: [cleared('2026-10-01T09:00:00.000Z'), blocker()], why: 'active-blocker' },
+    { name: 'no blocker at all', blockers: [], why: 'no-blocker' },
+    { name: 'a non-array history', blockers: { status: 'cleared' }, why: 'no-blocker' },
+    { name: 'no parseable clear time', blockers: [cleared('not-a-date', { updatedAt: 'nope' })], why: 'no-clear-time' },
+  ])('leaves it when $name', ({ blockers, why }) => {
+    expect(decideStrandedRepair({ stateChangedAt: '2026-10-01T00:00:00.000Z', blockers })).toEqual({ repair: false, why });
+  });
+
+  it('leaves it when the state-change time is unknown', () => {
+    expect(decideStrandedRepair({ stateChangedAt: null, blockers: [cleared('2026-10-01T09:00:00.000Z')] }))
+      .toEqual({ repair: false, why: 'no-state-time' });
+  });
+
+  it('falls back to updatedAt for a non-active record without clearedAt', () => {
+    expect(decideStrandedRepair({ stateChangedAt: '2026-10-01T00:00:00.000Z',
+      blockers: [cleared(undefined as unknown as string, { status: 'superseded', updatedAt: '2026-10-01T03:00:00.000Z' })] }))
+      .toEqual({ repair: true, lastClearedAt: '2026-10-01T03:00:00.000Z' });
+  });
+});
+
+describe('the re-check sweep recovers missed fires and stranded items (event-wait-settlement-2026-10-20 P-005)', () => {
+  function passDeps() {
+    const fake = fakeDeps({});
+    const settledKeys: string[] = [];
+    const repairedIds: string[] = [];
+    const followUps: unknown[] = [];
+    const stranded: StrandedBlockedCandidate[] = [];
+    fake.deps.listMissedFireKeys = vi.fn(async () => ({ keys: ['release:deployed:abc123', 'work-item:done:WI-1'], truncatedByLimit: false }));
+    fake.deps.settleFiredKey = vi.fn(async (key: string) => { settledKeys.push(key); return 2; });
+    fake.deps.listStrandedBlocked = vi.fn(async () => stranded);
+    fake.deps.repairStranded = vi.fn(async (c: StrandedBlockedCandidate) => { repairedIds.push(c.id); return 'cleared' as const; });
+    fake.deps.followUp = vi.fn(async (items) => { followUps.push(...items); });
+    return { deps: fake.deps, settledKeys, repairedIds, followUps, stranded };
+  }
+  const strandedItem = (id: string, over: Partial<StrandedBlockedCandidate> = {}): StrandedBlockedCandidate => ({
+    id, harness: 'h', family: 'feature', holder: 'su-holder', stateChangedAt: '2026-10-01T00:00:00.000Z',
+    blockers: [{ kind: 'event', ref: 'event:x', status: 'cleared', clearedAt: '2026-10-01T09:00:00.000Z' }], ...over,
+  });
+
+  it('AUTO-BAR-R-9-P-005: settles every key whose fire the emit missed, once per key', async () => {
+    const t = passDeps();
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+    expect(t.settledKeys).toEqual(['release:deployed:abc123', 'work-item:done:WI-1']);
+    expect(out.recovered).toEqual({ keys: 2, settled: 4, failed: 0, truncatedByLimit: false });
+  });
+
+  it('a key that fails to settle is counted and the pass continues', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const t = passDeps();
+      t.deps.settleFiredKey = vi.fn(async (key: string) => {
+        if (key === 'release:deployed:abc123') throw new Error('lock timeout');
+        return 1;
+      });
+      const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+      expect(out.recovered).toEqual({ keys: 2, settled: 1, failed: 1, truncatedByLimit: false });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a dry run lists missed fires and stranded items but settles and repairs nothing', async () => {
+    const t = passDeps();
+    t.stranded.push(strandedItem('WI-stranded'));
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps, dryRun: true });
+    expect(out.recovered.keys).toBe(2);
+    expect(t.settledKeys).toEqual([]);
+    expect(out.repaired).toMatchObject({ examined: 1, reopened: 1 });
+    expect(t.repairedIds).toEqual([]);
+  });
+
+  it('AUTO-BAR-R-10-P-005: reopens a stranded item and tells its holder through the shared follow-up', async () => {
+    const t = passDeps();
+    t.stranded.push(strandedItem('WI-stranded'));
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+    expect(t.repairedIds).toEqual(['WI-stranded']);
+    expect(out.repaired).toEqual({ examined: 1, reopened: 1, skipped: {}, truncatedByLimit: false });
+    expect(t.followUps).toEqual([expect.objectContaining({
+      featureId: 'WI-stranded', status: 'open', holder: 'su-holder', restored: true, activeRemaining: 0,
+      cleared: [], clearedBy: STRANDED_BLOCKED_REPAIR_ACTOR,
+    })]);
+  });
+
+  it('only decides-eligible items reach the restore, and each refusal is counted by its reason', async () => {
+    const t = passDeps();
+    t.stranded.push(
+      strandedItem('WI-reblocked', { stateChangedAt: '2026-10-02T00:00:00.000Z' }),
+      strandedItem('WI-dependency'),
+      strandedItem('WI-ok'),
+    );
+    t.deps.repairStranded = vi.fn(async (c: StrandedBlockedCandidate) => {
+      t.repairedIds.push(c.id);
+      return c.id === 'WI-dependency' ? 'live-dependency' as const : 'cleared' as const;
+    });
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+    expect(t.repairedIds).toEqual(['WI-dependency', 'WI-ok']);
+    expect(out.repaired).toEqual({ examined: 3, reopened: 1,
+      skipped: { 'reblocked-after-clear': 1, 'live-dependency': 1 }, truncatedByLimit: false });
+    expect(t.followUps).toHaveLength(1);
+  });
+
+  it('the production follow-up messages the holder about a repair without inventing a cleared blocker', async () => {
+    const t = passDeps();
+    t.stranded.push(strandedItem('WI-stranded'));
+    t.deps.followUp = defaultBlockerReapDeps.followUp;
+    for (const spy of Object.values(followUp)) spy.mockClear();
+    await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+    expect(followUp.sendMessage).toHaveBeenCalledTimes(1);
+    const opts = (followUp.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[]; summary: string; body: string }])[1];
+    expect(opts.to).toEqual(['su-holder']);
+    expect(opts.summary).toBe('Returned to open: WI-stranded was still blocked with no active blocker');
+    expect(opts.body).toContain(`clearedBy ${STRANDED_BLOCKED_REPAIR_ACTOR}`);
+  });
+
+  it('a pass whose deps are absent is skipped, so a fake sweep stays inert', async () => {
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: fakeDeps({}).deps });
+    expect(out.recovered).toEqual({ keys: 0, settled: 0, failed: 0, truncatedByLimit: false });
+    expect(out.repaired).toEqual({ examined: 0, reopened: 0, skipped: {}, truncatedByLimit: false });
+  });
+});
+
+// event-wait-settlement-2026-10-20 P-006 (D-001 item 1, R-12): existing waits no fire can prove
+// get a re-check date so the sweep escalates each to its holder; none is cleared.
+describe('backfillUnprovableWaitRecheckDates (P-006)', () => {
+  const unprovable = (reason: 'broad' | 'uncatalogued' | 'change-notification'): ExternalConditionReachability => ({
+    verdict: 'unknown', basis: 'unmeasured', authoritative: false, evidence: `refused: ${reason}`,
+    checkedAt: NOW.toISOString(), uncertifiedReason: reason,
+  });
+  const VERDICTS: Record<string, ExternalConditionReachability> = {
+    'coord:inbox-wake:su-a': unprovable('broad'),
+    'git-sync:committed': unprovable('broad'),
+    'waiting on the vendor reply': unprovable('uncatalogued'),
+    'work-item:status:WI-9': unprovable('change-notification'),
+    'release:deployed:abc123def': {
+      verdict: 'reachable', basis: 'live-resolver', authoritative: true, evidence: 'catalogued', checkedAt: NOW.toISOString(),
+    },
+    'flaky:resolver': {
+      verdict: 'unknown', basis: 'unmeasured', authoritative: false, evidence: 'reachability resolver failed: boom',
+      checkedAt: NOW.toISOString(),
+    },
+  };
+  const row = (over: Partial<ExternalBlockerRecord> & { ref: string }) =>
+    blocker({ kind: 'event', capability: 'live-dependency', decideBy: undefined, defaultAction: undefined,
+      defaultIfUnanswered: undefined, ...over });
+
+  function backfillDeps(payloads: Record<string, unknown>, opts: { loseRaceOn?: string } = {}) {
+    const writes: Array<{ id: string; blockers: unknown; expected: unknown }> = [];
+    const classify = vi.fn(async (ref: string) => VERDICTS[ref]!);
+    const deps: UnprovableWaitBackfillDeps = {
+      listUnstampedWaits: async () => Object.keys(payloads).map((id) => ({ id, harness: 'papercusp', payload: payloads[id] })),
+      readPayload: async (id) => ({ payload: payloads[id], family: 'issue', state: 'blocked', holder: 'su-a' }),
+      writeBlockers: async (id, _h, blockers, expected) => {
+        if (id === opts.loseRaceOn) return false;
+        writes.push({ id, blockers, expected });
+        payloads[id] = { externalBlockers: blockers };
+        return true;
+      },
+      classify,
+    };
+    return { deps, writes, classify };
+  }
+
+  it('AUTO-BAR-R-12-P-006: selects broad-key and free-text event/gate rows, sets recheckAt, and clears none', async () => {
+    const mixed = [
+      { ...row({ ref: 'coord:inbox-wake:su-a' }), legacyNote: 'kept' },
+      row({ kind: 'gate', ref: 'waiting on the vendor reply' }),
+      row({ ref: 'release:deployed:abc123def' }),
+      row({ ref: 'git-sync:committed', recheckAt: FUTURE }),
+      row({ kind: 'gate', ref: 'plan-lane:some-plan#P-001' }),
+      row({ kind: 'runtime', ref: 'runtime:probe' }),
+      row({ ref: 'work-item:status:WI-9', status: 'cleared' }),
+    ];
+    const { deps, writes } = backfillDeps({ 'WI-A': { externalBlockers: mixed } });
+
+    const out = await backfillUnprovableWaitRecheckDates({ now: NOW, deps });
+
+    expect(out).toMatchObject({ items: 1, examined: 3, unprovable: 2, stamped: 2, provable: 1, skipped: {} });
+    expect(out.byReason).toEqual({ broad: 1, uncatalogued: 1 });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.expected).toEqual(mixed);
+    const after = writes[0]!.blockers as Array<Record<string, unknown>>;
+    expect(after.map((b) => b.status)).toEqual(mixed.map((b) => b.status));
+    expect(after[0]).toMatchObject({
+      ref: 'coord:inbox-wake:su-a', status: 'active', recheckAt: NOW.toISOString(),
+      recheckSource: UNPROVABLE_WAIT_BACKFILL_ACTOR, legacyNote: 'kept',
+      reachability: expect.objectContaining({ uncertifiedReason: 'broad' }),
+    });
+    expect(after[1]).toMatchObject({ ref: 'waiting on the vendor reply', recheckAt: NOW.toISOString() });
+    expect(after[2]).not.toHaveProperty('recheckAt');
+    expect(after[3]!.recheckAt).toBe(FUTURE);
+    expect(after[4]).not.toHaveProperty('recheckAt');
+    expect(after[5]).not.toHaveProperty('recheckAt');
+    expect(after[6]).not.toHaveProperty('recheckAt');
+  });
+
+  it('the stamped rows fall due for the very next re-check sweep, which escalates them', async () => {
+    const payloads: Record<string, unknown> = { 'WI-A': { externalBlockers: [row({ ref: 'coord:inbox-wake:su-a' })] } };
+    await backfillUnprovableWaitRecheckDates({ now: NOW, deps: backfillDeps(payloads).deps });
+    const stamped = readExternalBlockers(payloads['WI-A'])[0]!;
+    expect(Date.parse(stamped.recheckAt!)).toBeLessThanOrEqual(NOW.getTime());
+    expect(stamped.status).toBe('active');
+  });
+
+  it('is idempotent: a second run finds nothing left to stamp', async () => {
+    const payloads: Record<string, unknown> = { 'WI-A': { externalBlockers: [row({ ref: 'git-sync:committed' })] } };
+    const first = backfillDeps(payloads);
+    expect((await backfillUnprovableWaitRecheckDates({ now: NOW, deps: first.deps })).stamped).toBe(1);
+    const second = backfillDeps(payloads);
+    const out = await backfillUnprovableWaitRecheckDates({ now: NOW, deps: second.deps });
+    expect(out).toMatchObject({ examined: 0, stamped: 0 });
+    expect(second.writes).toHaveLength(0);
+  });
+
+  it('a dry run counts but writes nothing; an unmeasured verdict and a lost race stamp nothing', async () => {
+    const dry = backfillDeps({ 'WI-A': { externalBlockers: [row({ ref: 'coord:inbox-wake:su-a' })] } });
+    expect(await backfillUnprovableWaitRecheckDates({ now: NOW, dryRun: true, deps: dry.deps })).toMatchObject({
+      unprovable: 1, stamped: 0,
+    });
+    expect(dry.writes).toHaveLength(0);
+
+    const flaky = backfillDeps({ 'WI-B': { externalBlockers: [row({ ref: 'flaky:resolver' })] } });
+    expect(await backfillUnprovableWaitRecheckDates({ now: NOW, deps: flaky.deps })).toMatchObject({
+      unprovable: 0, stamped: 0, skipped: { unmeasured: 1 },
+    });
+    expect(flaky.writes).toHaveLength(0);
+
+    const raced = backfillDeps({ 'WI-C': { externalBlockers: [row({ ref: 'git-sync:committed' })] } }, { loseRaceOn: 'WI-C' });
+    expect(await backfillUnprovableWaitRecheckDates({ now: NOW, deps: raced.deps })).toMatchObject({
+      unprovable: 1, stamped: 0, skipped: { 'lost-race': 1 },
+    });
+  });
+
+  it('classifies each distinct ref once per run', async () => {
+    const { deps, classify } = backfillDeps({
+      'WI-A': { externalBlockers: [row({ ref: 'coord:inbox-wake:su-a' })] },
+      'WI-B': { externalBlockers: [row({ ref: 'coord:inbox-wake:su-a' })] },
+    });
+    expect((await backfillUnprovableWaitRecheckDates({ now: NOW, deps })).stamped).toBe(2);
+    expect(classify).toHaveBeenCalledTimes(1);
   });
 });

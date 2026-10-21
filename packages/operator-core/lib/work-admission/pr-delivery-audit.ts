@@ -7,6 +7,7 @@ import type { Sql } from 'postgres';
 import { loadHarnessRegistry, type ProjectEntry } from '../harness-registry';
 import { CompletionSettlementManifestSchema, TERMINAL_COMPLETION_EVIDENCE_KEY } from '../coord-lifecycle/records';
 import { completionHeadBlobMap } from '../agent-tools/work_items/completion-freshness';
+import { scopeSettlementManifestToRepository } from './settlement-scope';
 import { createGitHubPrHost } from '../pr-host/github';
 import type { PrHost } from '../pr-host/types';
 import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
@@ -116,16 +117,16 @@ export async function inspectPrDeliveryRow(
   const evidence = row.payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
   const parsed = CompletionSettlementManifestSchema.safeParse(evidence?.settlementManifest);
   if (!parsed.success) return answer('unknown', 'No valid completion content receipt.');
-  const manifest = parsed.data;
   if (!project?.path || !project.github_remote)
     return answer('unknown', 'The upstream repository is missing.');
-  const entries = manifest.contentIdentity;
-  if (manifest.residualPaths?.length || manifest.repositoryRoot !== project.path
-    || manifest.normalizedPaths.some(path => !entries.some(e => e.path === path))
-    || entries.some(e => (e.repositoryRoot ?? manifest.repositoryRoot) !== project.path
-      || (!e.deletion && !e.workingTreeBlobSha)))
-    return answer('unknown', 'Incomplete or cross-repository completion content receipt.');
   const git = deps.git ?? auditGit;
+  // A fix closed in the superproject is judged in the pot's own (submodule) repository.
+  const manifest = await scopeSettlementManifestToRepository(parsed.data, project.path, git);
+  const entries = manifest?.contentIdentity ?? [];
+  if (!manifest || manifest.residualPaths?.length
+    || manifest.normalizedPaths.some(path => !entries.some(e => e.path === path))
+    || entries.some(e => !e.deletion && !e.workingTreeBlobSha))
+    return answer('unknown', 'Incomplete or cross-repository completion content receipt.');
   // A repository's default branch need not be the standing PR's base, and a
   // direct fix can land on another upstream head. Inspect the actual heads;
   // the fixing pot is required to publish its unreviewed work to its fork.

@@ -110,10 +110,18 @@ export function prepareAutobindInput(
   const fixturePaths = union(fixtureRecipes.map(recipe => recipe.fixturePaths));
   const fixtureGlobs = union(fixtureRecipes.map(recipe => recipe.fixtureGlobs));
   const fixtureRootHarnessSlug = fixtureRecipes.find(recipe => recipe.fixtureRootHarnessSlug)?.fixtureRootHarnessSlug;
+  // A whole-tree census binding keeps its registered tree instrument; dropping it would
+  // leave the new binding unmeasurable (the broad-scan guard refuses it).
+  const treeInstrumentKeys = [...new Set(recipes.flatMap(recipe => recipe.treeInstrumentKey ? [recipe.treeInstrumentKey] : []))];
+  if (treeInstrumentKeys.length > 1) {
+    return refuse('autobind_recipe_incompatible', 'Prior recipes name different tree instruments; automatic binding cannot merge them.');
+  }
+  const treeInstrumentKey = treeInstrumentKeys[0];
   const input: TestRunBindingInput = {
     workItemId: target.workItemId, specId: target.specId, specRevision: target.specRevision, fromTestRun: run.id,
     sourcePaths: union([derived.sourcePaths, ...recipes.map(recipe => recipe.sourcePaths)]),
     ...(sourceGlobs.length ? { sourceGlobs } : {}),
+    ...(treeInstrumentKey ? { treeInstrumentKey } : {}),
     ...(fixturePaths.length ? { fixturePaths } : {}),
     ...(fixtureGlobs.length ? { fixtureGlobs } : {}),
     ...(fixtureRootHarnessSlug ? { fixtureRootHarnessSlug } : {}),
@@ -121,6 +129,7 @@ export function prepareAutobindInput(
   const measurement = repoFilesEvidenceMeasurementSchema.safeParse({
     ...derived, sourcePaths: input.sourcePaths,
     ...(input.sourceGlobs ? { sourceGlobs: input.sourceGlobs } : {}),
+    ...(input.treeInstrumentKey ? { treeInstrumentKey: input.treeInstrumentKey } : {}),
     ...(input.fixturePaths ? { fixturePaths: input.fixturePaths } : {}),
     ...(input.fixtureGlobs ? { fixtureGlobs: input.fixtureGlobs } : {}),
     ...(input.fixtureRootHarnessSlug ? { fixtureRootHarnessSlug: input.fixtureRootHarnessSlug } : {}),

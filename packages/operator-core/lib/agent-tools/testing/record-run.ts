@@ -16,7 +16,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { access, realpath, rm, stat } from 'node:fs/promises';
+import { access, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { createScratchClone, runLocalGit } from '../../scratch-git-clone';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -818,9 +818,7 @@ export async function executePlanTerminalCensus(
     if (!harnessSlug) throw new Error('testing:record-run requires a concrete harness scope');
     return getPlanRow(slug, { workspaceId: ctx.workspaceId ?? undefined, harnessSlug });
   });
-  const unit = process.env.PAPERCUSP_VINTAGE_UNIT?.trim() ||
-    (process.env.PAPERCUSP_DESKTOP === '1' ? 'desktop-sidecar'
-      : `hono-host:${process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? '3070'}`);
+  const unit = serviceRuntimeUnit();
   return executeOperationalRun({ filePath: 'packages/operator-core/lib/agent-tools/testing/record-run.ts',
     name: `Plan terminal census: ${slug}`, framework: 'operational',
     command: ['testing:record-run', 'planTerminalCensus', slug], runtimeUnits: [unit],
@@ -860,9 +858,7 @@ export async function executeGitScratchPlacement(
   const canonical = deps?.realpath ?? realpath;
   const exists = deps?.exists ?? (async (path: string) => access(path).then(() => true, () => false));
   const remove = deps?.remove ?? (async (path: string) => rm(path, { recursive: true, force: true }));
-  const unit = process.env.PAPERCUSP_VINTAGE_UNIT?.trim() ||
-    (process.env.PAPERCUSP_DESKTOP === '1' ? 'desktop-sidecar'
-      : `hono-host:${process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? '3070'}`);
+  const unit = serviceRuntimeUnit();
   return executeOperationalRun({ filePath: 'packages/operator-core/lib/agent-tools/testing/record-run.ts',
     name: 'Native Git scratch default placement and root refusal', framework: 'operational',
     command: ['testing:record-run', 'gitScratchPlacement', ref], runtimeUnits: [unit],
@@ -927,10 +923,124 @@ export async function executeGitScratchPlacement(
   }, ctx, deps?.execution);
 }
 
+/** The serving process's runtime-vintage unit; native checks witness the instrument that ran them. */
+function serviceRuntimeUnit(): string {
+  return process.env.PAPERCUSP_VINTAGE_UNIT?.trim() ||
+    (process.env.PAPERCUSP_DESKTOP === '1' ? 'desktop-sidecar'
+      : `hono-host:${process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? '3070'}`);
+}
+
+/**
+ * Acceptance bar R-17 of green-main-ratchet-convergence-2026-10-17 (#D-036..#D-039): sync-batch
+ * slot accounting. The committed probe and its four negative controls are the check definition;
+ * the committed oracle takes every pass/fail decision on their rows. The probe reads one fixed
+ * workspace, so the recorded run must belong to that workspace.
+ */
+const SYNC_BATCH_COVERAGE_DIR = 'docs/evidence/p009-r17-slot-accounting-live-2026-10-20';
+const SYNC_BATCH_COVERAGE_WORKSPACE = 'papercusp-workspace';
+const SYNC_BATCH_COVERAGE_CONTROLS = [
+  { id: 'control-noalarm', what: 'alarm_open forced false: low coverage without an alarm must fail' },
+  { id: 'control-stale', what: 'alarm freshness window moved into the future: a stale alarm must not count' },
+  { id: 'control-terminal', what: 'only terminal alarm rows match: a closed alarm must not count' },
+  { id: 'control-floor', what: 'slot floor raised above the live 24h count: the probe must stop reporting accounted' },
+] as const;
+
+export interface SyncBatchCoverageSnapshot {
+  database: string;
+  port: number;
+  /** Rows returned by each statement, in the order given. */
+  results: Array<Array<Record<string, unknown>>>;
+}
+
+/** Every statement runs in ONE read-only repeatable-read snapshot, so probe and controls judge the same data. */
+async function querySyncBatchCoverage(statements: string[]): Promise<SyncBatchCoverageSnapshot> {
+  const { sql } = getOrgPg();
+  return sql.begin('isolation level repeatable read, read only', async (tx) => {
+    await tx`SET LOCAL statement_timeout = '15s'`;
+    const [identity] = await tx`SELECT current_database() AS database, inet_server_port() AS port`;
+    const results: SyncBatchCoverageSnapshot['results'] = [];
+    for (const text of statements) results.push([...await tx.unsafe(text)] as Array<Record<string, unknown>>);
+    return { database: String(identity?.database ?? ''), port: Number(identity?.port), results };
+  }) as Promise<SyncBatchCoverageSnapshot>;
+}
+
+/** Execute the R-17 probe and controls against the operator database, then record the measured assertions. */
+export async function executeSyncBatchCoverageAccounting(
+  ctx: RecordContext,
+  deps?: {
+    readDefinition?: (path: string) => Promise<string>;
+    query?: (statements: string[]) => Promise<SyncBatchCoverageSnapshot>;
+    execution?: Parameters<typeof executeOperationalRun>[2];
+  },
+) {
+  const readDefinition = deps?.readDefinition ?? (async (path: string) => {
+    const root = await (deps?.execution?.sourceRoot ?? resolveOperationalSourceRoot)();
+    if (!root) throw new Error('operational source root unavailable');
+    return readFile(join(root, path), 'utf8');
+  });
+  const query = deps?.query ?? querySyncBatchCoverage;
+  // The database unit is witnessed before execution, so identify the server first.
+  let server: SyncBatchCoverageSnapshot;
+  try { server = await query([]); }
+  catch { return { ok: false, error: 'operational_database_unavailable' as const }; }
+  if (!server.database || !Number.isInteger(server.port) || server.port <= 0) {
+    return { ok: false, error: 'operational_database_unavailable' as const };
+  }
+  const files = ['probe', ...SYNC_BATCH_COVERAGE_CONTROLS.map(control => control.id)]
+    .map(name => `${SYNC_BATCH_COVERAGE_DIR}/${name}.sql`);
+  return executeOperationalRun({ filePath: files[0]!,
+    name: 'P-009 / R-17 sync-batch slot accounting (native, operator database)', framework: 'operational',
+    command: ['testing:record-run', 'syncBatchCoverageAccounting'],
+    runtimeUnits: [`postgres:${server.port}`, serviceRuntimeUnit()],
+    run: async () => {
+      const { R17_COLUMNS, judgeR17, parseR17Row } =
+        await import('../../../../../scripts/lib/sync-batch-coverage-accounting-oracle.mjs');
+      const statements = await Promise.all(files.map(readDefinition));
+      const snapshot = await query(statements);
+      const assertions: OperationalEvidenceArtifact['assertions'] = [];
+      const check = (id: string, passed: boolean, evidence: string) =>
+        assertions.push({ id, passed, evidence: evidence.slice(0, 2000) });
+      check('scope:workspace', ctx.workspaceId === SYNC_BATCH_COVERAGE_WORKSPACE,
+        `probe workspace=${SYNC_BATCH_COVERAGE_WORKSPACE}; recording workspace=${ctx.workspaceId ?? 'missing'}`);
+      check('scope:database-unchanged', snapshot.database === server.database && snapshot.port === server.port,
+        `witnessed ${server.database}@${server.port}; executed ${snapshot.database}@${snapshot.port}`);
+      check('definitions:read', statements.every(text => text.trim().length > 0),
+        files.map((file, i) => `${file}=sha256:${createHash('sha256').update(statements[i]!).digest('hex').slice(0, 16)}`).join(' '));
+      // A malformed row is an instrument failure; it never counts as a control failing as required.
+      const judge = (index: number) => {
+        const rows = snapshot.results[index] ?? [];
+        const line = rows.length === 1 ? R17_COLUMNS.map(column => String(rows[0]![column])).join('|') : '';
+        try {
+          if (rows.length !== 1) throw new Error(`expected exactly one row, got ${rows.length}`);
+          return { line, verdict: judgeR17(parseR17Row(line)) };
+        } catch (error) {
+          return { line, error: error instanceof Error ? error.message : String(error) };
+        }
+      };
+      const live = judge(0);
+      if ('error' in live) check('live:row-shape', false, `${files[0]}: ${live.error}`);
+      else for (const assertion of live.verdict!.assertions) {
+        check(`live:${assertion.id}`, assertion.passed, `${assertion.evidence}; row ${live.line}`);
+      }
+      SYNC_BATCH_COVERAGE_CONTROLS.forEach((control, i) => {
+        const result = judge(i + 1);
+        check(`${control.id}:fails`, !('error' in result) && result.verdict!.passed === false,
+          'error' in result ? `${control.what}; malformed row: ${result.error}`
+            : `${control.what}; row ${result.line}; oracle passed=${result.verdict!.passed}; failing assertions: ` +
+              (result.verdict!.assertions.filter(assertion => !assertion.passed).map(assertion => assertion.id).join(',') || 'none'));
+      });
+      const failed = assertions.some(assertion => !assertion.passed);
+      return { exitCode: failed ? 1 : 0, assertions,
+        summary: failed ? 'R-17 slot accounting failed; inspect the recorded assertions.'
+          : `R-17 live probe passed (row ${'error' in live ? '' : live.line}) and all four negative controls failed as required, in one read-only snapshot of ${snapshot.database}@${snapshot.port}.` };
+    },
+  }, ctx, deps?.execution);
+}
+
 export default defineTool({
   name: 'testing:record-run',
   description:
-    'Native checks: planTerminalCensus:{slug} measures canonical terminal state; gitScratchPlacement:{ref} uses an exact empty committed tree to measure production scratch-clone placement/root refusal and cleanup. ' +
+    'Native checks execute and record directly: planTerminalCensus:{slug}, gitScratchPlacement:{ref}, syncBatchCoverageAccounting:{} (see each arg). ' +
     'Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. ' +
     'Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. ' +
     'Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. ' +
@@ -940,7 +1050,7 @@ export default defineTool({
     notWhen:
       'Not for Vitest (use testing:run), temporary logs, or checks that did not run.',
     chaining:
-      'Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence. The planTerminalCensus variant executes directly and returns the same numeric ledger IDs.',
+      'Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence. Native variants execute directly and return the same numeric ledger IDs.',
   },
   capability: 'testing:run',
   requirePrincipal: false,
@@ -963,6 +1073,10 @@ export default defineTool({
     harness: harnessArg,
     gitScratchPlacement: z.object({ ref: z.string().regex(/^[a-f0-9]{40}$/) })
       .describe('Execute the shared production scratch materializer with an exact empty committed tree; measure actual filesystem placement, root refusal and cleanup.'),
+  }), z.object({
+    harness: harnessArg,
+    syncBatchCoverageAccounting: z.object({}).strict()
+      .describe('Execute the committed R-17 sync-batch slot-accounting probe and its four negative controls in one read-only snapshot of the operator database; the committed oracle judges every row.'),
   })]),
   async handler(args, ctx) {
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
@@ -972,6 +1086,9 @@ export default defineTool({
     }
     if ('gitScratchPlacement' in args) {
       return { data: await executeGitScratchPlacement(args.gitScratchPlacement.ref, { ...ctx, harnessSlug }) };
+    }
+    if ('syncBatchCoverageAccounting' in args) {
+      return { data: await executeSyncBatchCoverageAccounting({ ...ctx, harnessSlug }) };
     }
     return { data: await recordOperationalRun({ ...args, harness: harnessSlug }, ctx) };
   },

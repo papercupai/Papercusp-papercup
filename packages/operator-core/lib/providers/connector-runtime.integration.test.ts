@@ -40,6 +40,17 @@ import {
   type ConnectorSyncDeps,
   type ConnectorSyncResult,
 } from './connector-runtime';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+// A sync pass records fallback observations; their timer flush opens the live org-admin pool,
+// which the real-PG rail refuses with a console.warn that fails whichever test is running
+// (WI-6554700010018422, same stub as get-feedback-core.integration.test.ts / WI-6554700010009686).
+// The afterAll guard keeps the stub honest: nothing else in this file may reach the live pool.
+vi.mock('../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
+afterAll(() => { expect(readRealPgRailBlocks().blocked).toBe(0); });
 
 const WS = 'connector-runtime-test';
 const KIND = 'connector-fixture';

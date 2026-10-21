@@ -575,7 +575,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
 
       expect(out.healSent).toEqual(expect.arrayContaining([headedOwner, headlessOwner]));
       expect(mcpReconnectViaPtyMock).toHaveBeenCalledTimes(1);
-      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(headedOwner);
+      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(headedOwner, 'papercusp-su', { force: true });
       expect(injectIntoHostMock).toHaveBeenCalledTimes(1);
       const [sock, message] = injectIntoHostMock.mock.calls[0];
       expect(sock).toBe('/tmp/headless-dark.sock');
@@ -760,7 +760,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
 
       expect(out.darkOwners).toContain(owner);
       expect(out.healSent).toContain(owner);
-      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owner);
+    expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owner, 'papercusp-su', { force: true });
     } finally {
       vi.useRealTimers();
       if (previousProvenanceDir == null) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
@@ -875,7 +875,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       mcpReconnectViaPtyMock.mockClear();
       const after = await checkInteractiveMcpDark(tag, { jitterMaxMs: 0, sharedBudget: budget });
       expect(after.healSent).toContain(owners[2]);
-      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owners[2]);
+      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owners[2], 'papercusp-su', { force: true });
     } finally {
       vi.useRealTimers();
     }

@@ -79,6 +79,7 @@ import {
 } from 'node:fs';
 import net from 'node:net';
 import { createTerminalOutput } from './psu-terminal-output.mjs';
+import { observeClaudeDialogWrites } from './hooks/cc/dialog-answer-provenance.mjs';
 
 /**
  * Serialize atomic discovery-file writes without blocking the PTY host's event
@@ -7062,9 +7063,17 @@ export function decodeControl(payload) {
       // (headed sessions keep their terminal — the owner-mandated alternative
       // to kill+resume). GATED like a turn (never mid-turn, never over a
       // half-typed owner line). `data` = the target server name (default
-      // 'papercusp-su' applied by the handler).
+      // 'papercusp-su' applied by the handler). `force:true` is additive: it
+      // tells the macro to press Reconnect even when the row still says
+      // connected, which is the connected-but-toolless failure mode.
       if (o.mode === 'mcp-reconnect')
-        return { mode: 'mcp-reconnect', data: String(o.data ?? ''), gated: true, ...decodeOwnerIdentity(o) };
+        return {
+          mode: 'mcp-reconnect',
+          data: String(o.data ?? ''),
+          ...(o.force === true ? { force: true } : {}),
+          gated: true,
+          ...decodeOwnerIdentity(o),
+        };
       return {
         mode: 'turn',
         data: String(o.data ?? ''),
@@ -8993,7 +9002,8 @@ export function mcpDialogRowSelected(visible, test) {
  *   1. type `/mcp`, settle, CR (separate keystroke — paste-detector, WI-2930).
  *   2. wait for the dialog to paint (target server name visible).
  *      Already-connected ⇒ close + ok('already-connected') — the benign-misfire
- *      no-op the watchdog relies on.
+ *      no-op the watchdog relies on. `force:true` skips that short circuit and
+ *      presses the existing Reconnect action for connected-but-toolless sessions.
  *   3. arrow-down until the ❯ cursor sits on the target row (re-parse after
  *      every keypress; bounded), then Enter.
  *   4. if a reconnect action row paints, cursor onto it the same way + Enter
@@ -9014,6 +9024,7 @@ export async function runMcpReconnectMacro({
   reconnectBudgetMs = MCP_RECONNECT_MACRO_DEFAULTS.reconnectBudgetMs,
   maxArrows = MCP_RECONNECT_MACRO_DEFAULTS.maxArrows,
   closeWaitMs = MCP_RECONNECT_MACRO_DEFAULTS.closeWaitMs,
+  force = false,
 }) {
   const ESC = '\x1b';
   const DOWN = '\x1b[B';
@@ -9101,7 +9112,7 @@ export async function runMcpReconnectMacro({
     await closeOut();
     return { ok: true, step: 'already-connected', detail: 'target reads connected — nothing to heal' };
   };
-  if (targetRowStatus(frame) === 'connected' || mcpConnectedVerdict(frame, serverName)) {
+  if (!force && (targetRowStatus(frame) === 'connected' || mcpConnectedVerdict(frame, serverName))) {
     return alreadyConnected();
   }
 
@@ -9355,6 +9366,9 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     state(id) {
       return getState(id);
     },
+    supersededReason(id) {
+      return getState(id) === 'superseded' ? entries.get(id)?.reason : undefined;
+    },
     /** True when `id` is retained within the TTL, including refused writes. `id` may be
      *  undefined/empty (a message with no delivery row) — always false then, so
      *  callers can pass it through unconditionally. */
@@ -9362,11 +9376,11 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
       return getState(id) !== null;
     },
     /** Record the early ACK commitment while the detached gated pipeline runs. */
-    markPending(id) {
+    markPending(id, interruptible = false) {
       if (!id) return;
       const current = entries.get(id);
       if (current?.state === 'completed' || current?.state === 'cancelled' || current?.state === 'superseded' || current?.writeStarted) return;
-      entries.set(id, { ...current, state: 'pending', at: now() });
+      entries.set(id, { ...current, state: 'pending', at: now(), interruptible: current?.interruptible || interruptible });
     },
     /** Record the point at which the gated pipeline committed its delivery. */
     markCompleted(id) {
@@ -9376,10 +9390,20 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     },
     /** A written but unconfirmed turn belongs to a child that no longer exists.
      * Preserve its original TTL and suppress repasting without claiming success. */
-    markSuperseded(id) {
+    markSuperseded(id, reason = 'deferred-native-turn-start-superseded') {
       const current = entries.get(id);
       if (current?.state !== 'pending') return;
-      entries.set(id, { ...current, state: 'superseded', writeStarted: true });
+      entries.set(id, { ...current, state: 'superseded', writeStarted: true, reason });
+    },
+    /** Revoke pending work turns immediately, without cancelling lifecycle operations. */
+    interruptPending() {
+      const ids = [];
+      for (const [id, entry] of entries) {
+        if (entry.state !== 'pending' || !entry.interruptible) continue;
+        this.markSuperseded(id, 'deferred-owner-stop');
+        ids.push(id);
+      }
+      return ids;
     },
     /** Request cancellation for exact pending IDs. This is not a receipt: the
      *  gate pipeline must still observe the request at its atomic first-write
@@ -9977,6 +10001,49 @@ export function coldResetModeForAgent(agent, childArgs = null) {
     if (!hasPersona) return 'recycle';
   }
   return 'reset';
+}
+
+// Keep this threshold aligned with psu-launcher's launch-time persona guard.
+// A path that exists but contains a truncated render is just as unusable as a
+// deleted path, and killing the current child before discovering that would
+// turn a recoverable refresh failure into a dead session.
+const MIN_PERSONA_BYTES = 2_000;
+
+/** Extract Claude's persona path from either supported argv spelling. */
+function systemPromptFileFromArgs(args = []) {
+  if (!Array.isArray(args)) return null;
+  for (let i = 0; i < args.length; i++) {
+    const token = String(args[i] ?? '');
+    if (token === '--system-prompt-file') {
+      const value = String(args[i + 1] ?? '').trim();
+      return value || null;
+    }
+    if (token.startsWith('--system-prompt-file=')) {
+      const value = token.slice('--system-prompt-file='.length).trim();
+      return value || null;
+    }
+  }
+  return null;
+}
+
+/** True when a persona render is present and large enough for launch. */
+function usablePersonaFile(path) {
+  if (typeof path !== 'string' || !path.trim()) return false;
+  try {
+    const stat = statSync(path);
+    return stat.isFile() && stat.size >= MIN_PERSONA_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+/** Prefer the live child's GC-protected render, then the original launch path. */
+function fallbackPersonaFile(liveArgs, originalArgs) {
+  for (const argv of [liveArgs, originalArgs]) {
+    const path = systemPromptFileFromArgs(argv);
+    if (usablePersonaFile(path)) return path;
+  }
+  return null;
 }
 
 /** The RESET-CONTEXT settle window (repaint budget after the clear submits).
@@ -10873,6 +10940,10 @@ export function hostThroughPty(o) {
   let lastMachineTurnSubmittedAtMs = 0;
   let ownerComposerGate;
   let ownerStopRequested = false;
+  // Terminal interrupts cancel work already admitted at that boundary. They
+  // must not become an implicit loop:end that vetoes every later wake until
+  // the human happens to press Enter (WI-6554700010018590).
+  let ownerStopGeneration = 0;
   // The first discovery write observes execution before the rest of the host
   // is wired. Initialize its retained state before that synchronous write.
   let nativeExecutionFence = null;
@@ -10914,6 +10985,7 @@ export function hostThroughPty(o) {
     childStartedAtMs = Date.now();
     childOutputBytes = 0;
     lastMachineTurnSubmittedAtMs = 0;
+    ownerStopRequested = false;
     return spawned;
   };
   let child;
@@ -11556,7 +11628,10 @@ export function hostThroughPty(o) {
       ownerId, hostPid: process.pid, childPid: child.pid ?? null,
       childGeneration, receivedAtMs,
       ownerInputPending: Boolean(ownerComposerGate?.hasPending()),
-      ownerStopRequested,
+      // Loop reconciliation must not treat an idle/menu Escape as a standing
+      // owner stop. Execution remains explicitly unknown when no native record
+      // exists; only positive work can retain this per-turn interruption hold.
+      ownerStopRequested: ownerStopRequested && nativeExecutionBlocksInjection(execution),
     };
   }
   // WI-1941: recycle carry-inject retry budget + backoff (per-session tunable,
@@ -12670,7 +12745,13 @@ export function hostThroughPty(o) {
           agent: env.PAPERCUSP_AGENT,
           isResume: isResumeLaunch,
           hasResolver: Boolean(resolveRespawnNativeId),
-          nativeId: initialNativeId,
+          // A resolver can expose a transient startup id for a fresh Codex
+          // child before its first tagged turn. That id is not an adopted
+          // native binding: calling onRespawn here would publish ownership
+          // before the kickoff is accepted (WI-10007305). Keep the resolver
+          // available for the post-submission proof, while only an explicitly
+          // adopted id participates in this pre-submission gate.
+          nativeId: adoptedCarryRespawn?.nativeId ?? null,
         });
         kickoffCarryBinding = (adoptedCarryRespawn || needsInitialBinding) &&
           (adoptedCarryRespawn?.nativeId || resolveRespawnNativeId)
@@ -13273,6 +13354,10 @@ export function hostThroughPty(o) {
   // pipeline is pending and after it commits, so a retry cannot inject a second
   // real turn while an early ACK is still only acceptance.
   const deliveryDedup = makeDeliveryDedup();
+  const interruptScopedCoalesceKey = message => {
+    const key = turnCoalesceKey(message.data, message.routineId, ownerId);
+    return key == null ? null : `${key}:owner-stop:${ownerStopGeneration}`;
+  };
   const nativeStartPending = new Map();
   const nativeStartProof = (pending) => {
     if (pending.child !== child) return { available: false, started: false };
@@ -13661,14 +13746,15 @@ export function hostThroughPty(o) {
   // child).
   const parkIdleMs = parkIdleMsFromEnv(env);
   const parkResumeWaitMs = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_WAIT_MS, 60_000);
+  /** @typedef {{ fromGeneration: number, toGeneration: number }} ParkResumeTransition */
   let parked = false;
   /** @type {Promise<boolean> | null} */
   let parkPromise = null;
-  /** @type {Promise<{ unparked: boolean, reason: string }> | null} */
+  /** @type {Promise<{ unparked: boolean, reason: string, transition?: ParkResumeTransition }> | null} */
   let unparkPromise = null;
   let parkedAtMs = 0;
   let lastUnparkAtMs = 0;
-  /** @type {{ args: string[], nativeId: string } | null} */
+  /** @type {{ args: string[], nativeId: string, parkedGeneration: number } | null} */
   let parkResume = null;
   let deliveriesInFlight = 0;
   let lastParkDeferReason = null;
@@ -13682,7 +13768,7 @@ export function hostThroughPty(o) {
   // resume. A retry timer (backing off from PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS)
   // keeps trying while anything is held; the host ending releases them as
   // undeliverable so the sender's dedup slot clears.
-  /** @type {Array<(outcome: { ok: boolean, reason: string }) => void>} */
+  /** @type {Array<(outcome: { ok: boolean, reason: string, transition?: ParkResumeTransition }) => void>} */
   const heldDeliveryWaiters = [];
   const HELD_DELIVERY_CAP = 64;
   const parkUnparkRetryMs = positiveNumber(env.PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS, 5_000);
@@ -13697,7 +13783,7 @@ export function hostThroughPty(o) {
   // Only PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX consecutive such exits end the
   // session (with `child-unpark-abandoned`), since an agent that cannot be
   // resumed would otherwise retry forever behind a live-looking host.
-  /** @type {{ child: unknown, resume: { args: string[], nativeId: string }, trigger: string } | null} */
+  /** @type {{ child: unknown, resume: { args: string[], nativeId: string, parkedGeneration: number }, trigger: string } | null} */
   let resumeAwaitingPrompt = null;
   let resumedChildExitStreak = 0;
   const parkResumeExitMax = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX, 3);
@@ -13803,8 +13889,9 @@ export function hostThroughPty(o) {
     writeMeta();
   };
   const parkChild = async (verdict) => {
-    const resume = mintResumeForPark();
-    if (!resume) return false;
+    const minted = mintResumeForPark();
+    if (!minted) return false;
+    const resume = { ...minted, parkedGeneration: childGeneration };
     const parkedChild = child;
     const childPid = Number.isInteger(parkedChild?.pid) ? parkedChild.pid : null;
     // `recycling` makes the child-exit handler ignore THIS kill: a park is not
@@ -13991,7 +14078,7 @@ export function hostThroughPty(o) {
   const unparkChild = (trigger) => {
     if (unparkPromise) return unparkPromise;
     if (!parked && !parkPromise) return Promise.resolve({ unparked: false, reason: 'not-parked' });
-    /** @type {Promise<{ unparked: boolean, reason: string }>} */
+    /** @type {Promise<{ unparked: boolean, reason: string, transition?: ParkResumeTransition }>} */
     let attempt;
     // The single-flight slot is cleared by IDENTITY, after the assignment below.
     // A `finally` inside the async body is not enough: a resume that fails
@@ -14032,6 +14119,7 @@ export function hostThroughPty(o) {
           return { unparked: false, reason: 'spawn-failed' };
         }
         cancelUnparkRetry();
+        const transition = { fromGeneration: resume.parkedGeneration, toGeneration: childGeneration };
         child = resumed;
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
@@ -14078,8 +14166,8 @@ export function hostThroughPty(o) {
         // Deliveries held by an earlier failed resume run now, in arrival order
         // (each re-enters the inject mutex). If the resumed child already died,
         // the host is ending and cleanup releases them as undeliverable.
-        if (child === resumed) releaseHeldDeliveries({ ok: true, reason: 'resumed' });
-        return { unparked: true, reason: 'resumed' };
+        if (child === resumed) releaseHeldDeliveries({ ok: true, reason: 'resumed', transition });
+        return { unparked: true, reason: 'resumed', transition };
       } catch (error) {
         // Anything unexpected past the spawn (writeMeta, wiring) must not leave
         // a rejected promise in callers that only branch on `unparked`.
@@ -14118,8 +14206,10 @@ export function hostThroughPty(o) {
   const deliverAfterUnpark = async (mode, run) => {
     deliveriesInFlight++;
     try {
+      let transition;
       if (mode !== 'osc' && parkInProgress()) {
         const resume = await unparkChild(`control:${mode}`);
+        transition = resume.transition;
         if (!resume.unparked && parked) {
           if (resume.reason === 'host-ending' || hostCleanedUp || shuttingDown) {
             return { ok: false, reason: 'host-ending' };
@@ -14132,7 +14222,7 @@ export function hostThroughPty(o) {
             });
             return { ok: false, reason: 'unpark-failed' };
           }
-          /** @type {Promise<{ ok: boolean, reason: string }>} */
+          /** @type {Promise<{ ok: boolean, reason: string, transition?: ParkResumeTransition }>} */
           const released = new Promise((res) => heldDeliveryWaiters.push(res));
           appendHostEvent(ownerId, 'parked-delivery-held', {
             mode,
@@ -14142,9 +14232,10 @@ export function hostThroughPty(o) {
           scheduleUnparkRetry();
           const outcome = await released;
           if (!outcome.ok) return outcome;
+          transition = outcome.transition;
         }
       }
-      return await run();
+      return await run(transition);
     } finally {
       deliveriesInFlight--;
     }
@@ -14209,6 +14300,7 @@ export function hostThroughPty(o) {
       const payload = Buffer.concat(chunks);
       if (!payload.length) return { ok: false, reason: 'empty-payload' };
       const msg = decodeControl(payload);
+      const ownerStopGenerationAtReceive = ownerStopGeneration;
       // EI-153: MISDELIVERY guard — the sender's addressed-recipient assertion
       // (decodeOwnerIdentity) is checked against THIS host's own registered
       // ownerId before anything else runs. This is leg-independent of *why* a
@@ -14453,7 +14545,8 @@ export function hostThroughPty(o) {
       const duplicateState = deliveryDedup.state(msg.deliveryId);
       if (duplicateState) {
         if (duplicateState === 'superseded') {
-          return { ok: false, reason: 'deferred-native-turn-start-superseded' };
+          return { ok: false, reason: deliveryDedup.supersededReason(msg.deliveryId) ??
+            'deferred-native-turn-start-superseded' };
         }
         const pendingStart = nativeStartPending.get(msg.deliveryId);
         if (duplicateState === 'pending' && pendingStart && nativeStartProof(pendingStart).started) {
@@ -14485,7 +14578,7 @@ export function hostThroughPty(o) {
         // already claimed its slot is deliberately not resurrected.
         const pendingLoopKey =
           duplicateState === 'pending' && msg.mode === 'turn' && msg.routineId
-            ? turnCoalesceKey(msg.data, msg.routineId, ownerId)
+            ? interruptScopedCoalesceKey(msg)
             : null;
         const pendingLoopMetadata =
           msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
@@ -14521,6 +14614,16 @@ export function hostThroughPty(o) {
       // resume-headless, a second process on this live session.
       if ((msg.mode === 'turn' || msg.mode === 'reset') && currentChildUnbindable()) {
         return refuseUnbindableDelivery(msg.mode, 'admission');
+      }
+      if (msg.mode === 'turn' && ownerStopRequested) {
+        // Only a fresh delivery can resume the session. Retries of interrupted
+        // work return its retained refusal above; already-queued pipelines keep
+        // their earlier generation and still fail the final pre-write fence.
+        ownerStopRequested = false;
+        appendHostEvent(ownerId, 'owner-stop-cleared', {
+          reason: 'independent-wake', deliveryId: msg.deliveryId ?? null,
+          ownerStopGeneration,
+        });
       }
       // SHUTDOWN (WI-6638) — wind this session down and EXIT, closing its tab.
       //
@@ -14636,7 +14739,7 @@ export function hostThroughPty(o) {
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
-      const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data, msg.routineId, ownerId) : null;
+      const coalesceKey = msg.mode === 'turn' ? interruptScopedCoalesceKey(msg) : null;
         const coalesceMetadata = msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
       const coalescedDeliveryIds = new Set(msg.deliveryId ? [msg.deliveryId] : []);
       const claimCoalesced = () => {
@@ -14657,7 +14760,7 @@ export function hostThroughPty(o) {
         // pending waiter's one write, but it is NOT completed until that parent
         // pipeline commits. If the parent defers or errors, the parent outcome
         // clears this ID too so the durable pump can retry it.
-        if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId);
+        if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId, true);
         return { ok: true, reason: 'coalesced-into-pending-turn' };
       }
       // EI-18679050054551625 (WI-5872 follow-up #2): everything from here down —
@@ -14688,7 +14791,7 @@ export function hostThroughPty(o) {
       // that need detailed evidence record it locally; the detached settlement
       // below also records every refusal uniformly, so an early accepted ACK
       // never leaves a later negative outcome unexplained.
-      const runGatedDelivery = async () => {
+      const runGatedDelivery = async (unparkTransition = null) => {
       // EI-8822: hold the per-host inject mutex across the ENTIRE gated
       // critical section (gate wait → pty write → submit verify) so a wake
       // `turn` and a session:request-compaction `/compact` freed at the SAME
@@ -15133,10 +15236,11 @@ export function hostThroughPty(o) {
           }
           const serverName = String(msg.data ?? '').trim() || 'papercusp-su';
           const tap = makeOutputTap();
-          appendHostEvent(ownerId, 'mcp-reconnect-started', { serverName });
+          appendHostEvent(ownerId, 'mcp-reconnect-started', { serverName, force: msg.force === true });
           try {
             const result = await runMcpReconnectMacro({
               serverName,
+              force: msg.force === true,
               write: (b) => child.write(b),
               readTap: tap.read,
               resetTap: tap.reset,
@@ -15221,8 +15325,18 @@ export function hostThroughPty(o) {
           return { ok: false, reason: preWriteProvenanceRejection };
         }
         if (msg.mode === 'turn') {
-          if (ownerStopRequested) return { ok: false, reason: 'deferred-owner-stop' };
+          if (ownerStopGeneration !== ownerStopGenerationAtReceive) {
+            return { ok: false, reason: 'deferred-owner-stop' };
+          }
           if (reconcileNativeStartPending()) return { ok: false, reason: 'deferred-native-turn-start' };
+          // A wake addressed the parked child before THIS delivery resumed the
+          // same conversation. Bind it to that exact replacement, including a
+          // shared/held resume, without accepting an unrelated host or recycle.
+          if (deliver.requireNativeTurnStart && unparkTransition &&
+            deliver.expectedHostStartedAt === baseMeta.startedAt &&
+            deliver.expectedChildGeneration === unparkTransition.fromGeneration) {
+            deliver = { ...deliver, expectedChildGeneration: unparkTransition.toGeneration };
+          }
           if (deliver.requireNativeTurnStart &&
             (deliver.expectedHostStartedAt !== baseMeta.startedAt || deliver.expectedChildGeneration !== childGeneration)) {
             return { ok: false, reason: 'stale-execution-generation' };
@@ -15346,7 +15460,7 @@ export function hostThroughPty(o) {
               anchor: { fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null } };
             nativeStartPending.set(deliver.deliveryId, pending);
             const proof = await waitForNativeTurnStart({ probe: () => nativeStartProof(pending),
-              isCurrent: () => child === target && !ownerStopRequested,
+              isCurrent: () => child === target && ownerStopGeneration === ownerStopGenerationAtReceive,
               timeoutMs: positiveNumber(env.PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS, 10_000) });
             appendHostEvent(ownerId, proof.started ? 'native-turn-start-confirmed' : 'native-turn-start-unverified', {
               deliveryId: deliver.deliveryId, childGeneration, reason: proof.reason,
@@ -15407,7 +15521,7 @@ export function hostThroughPty(o) {
       // commitment; keep every ID in this coalesced waiter pending until the
       // detached pipeline reaches its write/recycle commitment, or clear the
       // complete set when the attempt is terminally refused.
-      if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId);
+      if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId, msg.mode === 'turn');
       // Fire the gated pipeline and forget it (from the ACK's point of view) —
       // its own try/catch/finally above already handles every expected outcome
       // and durably records it; this outer .catch exists only so a genuinely
@@ -15433,6 +15547,13 @@ export function hostThroughPty(o) {
           }
           if (!coalescedDeliveryIds.size) return;
           for (const deliveryId of coalescedDeliveryIds) {
+            if (deliveryOutcome?.reason === 'deferred-owner-stop') {
+              // Keep the exact refusal as a dedup tombstone. Clearing pending
+              // here let every durable retry ACK acceptance, fail again off-
+              // socket, and eventually claim an inbox-only delivery as success.
+              deliveryDedup.markSuperseded(deliveryId, 'deferred-owner-stop');
+              continue;
+            }
             const rearmOwnsDelivery =
               deliveryId === msg.deliveryId &&
               deliveryOutcome?.reason === 'deferred-busy-gate' &&
@@ -15554,7 +15675,11 @@ export function hostThroughPty(o) {
   // RECYCLE (P-004b) spawns a fresh child and re-wires this bridge to it (node-pty
   // listeners are per-process). onStdin/onResize below read the live `child`
   // closure, so they need no re-wiring.
+  let writeOwnerPtyInput = (data) => child.write(data);
   wireChildData = () => {
+    writeOwnerPtyInput = String(env.PAPERCUSP_AGENT ?? '').toLowerCase() === 'claude'
+      ? observeClaudeDialogWrites(child, ownerId, env, bridgeTty)
+      : (data) => child.write(data);
     // Congestion belongs to the outer terminal, not the child. A recycled or
     // unparked child must inherit it until the same writer emits drain.
     if (terminalOutput.blocked) child.pause?.();
@@ -15950,14 +16075,19 @@ export function hostThroughPty(o) {
         return;
       }
       ownerComposerGate.observe(input);
-      if (text.includes('\x03') || text === '\x1b') ownerStopRequested = true;
-      else if (text.includes('\r') || text.includes('\n')) ownerStopRequested = false;
+      if (text.includes('\x03') || text === '\x1b') {
+        ownerStopRequested = true;
+        ownerStopGeneration++;
+        const interruptedDeliveryIds = deliveryDedup.interruptPending();
+        for (const id of interruptedDeliveryIds) nativeStartPending.delete(id);
+        appendHostEvent(ownerId, 'owner-stop-requested', { ownerStopGeneration, interruptedDeliveryIds });
+      } else if (text.includes('\r') || text.includes('\n')) ownerStopRequested = false;
     }
     if (text.includes('\r') || text.includes('\n')) activeManagedCodexStartupUpdateDialog?.complete();
     try {
       quotaBlockDetector.observeInput(input);
       authBlockDetector.observeInput(input);
-      child.write(input);
+      writeOwnerPtyInput(input);
     } catch {
       /* ignore */
     }
@@ -16500,12 +16630,13 @@ export function hostThroughPty(o) {
           personaRefreshReason = `threw: ${e?.message ?? String(e)}`;
         }
       }
+      const personaRefreshFailed = !personaFile && Boolean(personaRefreshReason);
       // Record a refresh that did not happen, so a persistently-failing one is visible
       // rather than looking exactly like the staleness bug. The two EXPECTED skips
       // (a host with no refresh wired, a backend that has no prompt file to swap) are
       // not events — per-respawn noise for a known condition just buries real ones.
       if (
-        !personaFile &&
+        personaRefreshFailed &&
         personaRefreshReason &&
         personaRefreshReason !== 'not-wired' &&
         !personaRefreshReason.startsWith('unsupported-agent')
@@ -16539,6 +16670,14 @@ export function hostThroughPty(o) {
         }
         recycling = false;
         return settleQuotaRecovery(false, IDENTITY_ACTIVATION_REFUSED_REASON);
+      }
+      // A refresh failure is fail-soft only while there is still a usable render
+      // to inherit. The original launch argv is not necessarily the live child's
+      // argv: a prior successful refresh may have moved the successor to a new
+      // path, while launch-context GC is free to delete the original. Prefer the
+      // live child's GC-protected path, then the original path if it still exists.
+      if (personaRefreshFailed && (!agentHint || agentHint === 'claude')) {
+        personaFile = fallbackPersonaFile(liveChildArgs, args);
       }
       let recycleArgs;
       let nativeId;
@@ -16588,6 +16727,31 @@ export function hostThroughPty(o) {
         recycleArgs = prepareChildArgs(minted.args);
         nativeId = minted.nativeId;
         launchContextPath = minted.launchContextPath ?? null;
+        // Do not stop a healthy predecessor for a successor that will fail at
+        // CLI startup. This is the missing-file half of the fail-soft contract:
+        // when a refresh failed and both inherited candidates were collected,
+        // leave the current child alive so a later retry can render or recover a
+        // usable persona. The same preflight also catches a truncated render.
+        const successorPromptFile = systemPromptFileFromArgs(recycleArgs);
+        if (successorPromptFile && !usablePersonaFile(successorPromptFile)) {
+          appendHostEvent(ownerId, 'respawn-failed', {
+            mode: respawnMode,
+            reason: 'persona-file-missing',
+          });
+          try {
+            if (!recycleChild.personaFileMissingWarned) {
+              recycleChild.personaFileMissingWarned = true;
+              writeTerminalDiagnostic(
+                `psu-pty-host: ${respawnMode} refused for ${ownerId}: successor persona file is ` +
+                `missing or truncated; keeping the current child alive for retry\n`,
+              );
+            }
+          } catch {
+            /* diagnostic only */
+          }
+          recycling = false;
+          return settleQuotaRecovery(false, 'persona-file-missing');
+        }
         // Codex's carry mint adds a visible, non-user-authored lineage marker.
         // Feed that rendered text to the native transcript (AGENTS.md alone is
         // system context and does not solve the owner's missing-history view),

@@ -42,12 +42,14 @@ const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
 const dependencySnapshotSource = src.slice(src.indexOf("snapshot_verifier_pinned_deps() {"), operatorSnapshotIdx);
 const operatorSnapshotCallIdx = src.indexOf("verifier_run_step operator-source-snapshot");
+const normalizeOperatorSourceTestStub = 'normalize_operator_source_root() { OPERATOR_SOURCE_ROOT="$1"; }';
 const lockCensusStartIdx = src.indexOf("verify_operator_source_lock_census() {");
 const lockCensusSource = src.slice(lockCensusStartIdx, operatorSnapshotIdx);
-const operatorSnapshotSource = src.slice(
-  operatorSnapshotIdx,
-  operatorSnapshotCallIdx,
-);
+const operatorSnapshotSource = `${src.slice(operatorSnapshotIdx, operatorSnapshotCallIdx)}\n${normalizeOperatorSourceTestStub}`;
+
+function committedSnapshotSource(end = operatorSnapshotCallIdx) {
+  return `${src.slice(src.indexOf('snapshot_committed_operator_source() {'), end)}\n${normalizeOperatorSourceTestStub}`;
+}
 
 describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown', () => {
   function finishFixture(exitCode: number, options: { copyFails?: boolean; noArtifacts?: boolean; noHarness?: boolean } = {}) {
@@ -72,9 +74,9 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
     const result = spawnSync('bash', ['-c', [
       'set -uo pipefail',
       'WORK="$TEST_WORK"; OPERATOR_SOURCE_ROOT="$TEST_SOURCE"; OPERATOR_SOURCE_WORK="$(dirname "$TEST_SOURCE")"',
-      'VH_RUN_DIR="$TEST_EVIDENCE"; ASSERTION_MODE=1; SIGNAL_EXIT_CODE=0; ISOLATED_PG_PID=""; BRIDGE_PID=""',
+      'VH_RUN_DIR="$TEST_EVIDENCE"; ASSERTION_MODE=1; SIGNAL_EXIT_CODE=0; ISOLATED_PG_PID=""; BRIDGE_PID=""; TAURI_LAUNCH_PROVENANCE=test-provenance; VERIFY_SCOPE_BASE=test-scope',
       'release_verifier_disk_reservations() { :; }; log() { echo "$*" >&2; }',
-      'vh_capture_phase_stop() { :; }; vh_step() { :; }; vh_exit() { echo "verdict:$1"; }',
+      'vh_capture_phase_stop() { :; }; vh_step() { :; }; vh_exit() { echo "verdict:$1"; }; capture_isolated_pg_diagnostics() { :; }; reap_frozen_source_survivors() { :; }',
       'write_stop_script() { printf "#!/bin/sh\\nexit 0\\n" > "$WORK/stop.sh"; chmod +x "$WORK/stop.sh"; }',
       'wait_owned_ports_free() { :; }; fed_release_port_locks() { :; }; display_lock_release() { :; }',
       'cleanup_assertion_script_snapshot() { :; }; cleanup_verifier_source_snapshot() { :; }',
@@ -127,15 +129,53 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
     } finally { rmSync(run.fixture, { recursive: true, force: true }); }
   });
 
-  it('leaves assertion-mode source cleanup to teardown rather than the generated stop script', () => {
+  it('guards boot-only cleanup with the persisted reaper and keeps assertion cleanup in teardown', () => {
     const stop = src.slice(src.indexOf('write_stop_script() {'), src.indexOf('# let the one EXIT trap own cleanup.'));
-    expect(stop).toContain('[ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK"');
+    expect(stop).toContain('if [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then');
+    expect(stop).toContain('source "$WORK/frozen-source-reaper.sh"');
+    expect(stop).toContain('reap_frozen_source_survivors "$OPERATOR_SOURCE_ROOT" "$TAURI_LAUNCH_PROVENANCE"');
+    expect(stop).toContain('rm -rf -- "$OPERATOR_SOURCE_WORK"');
+    expect(stop).toContain('SOURCE_CLEANUP_FAILED=1');
+    expect(stop).toContain('exit 1');
+    const teardown = src.slice(src.indexOf('teardown() {'), src.indexOf('\nverify_assertion_input_integrity()'));
+    expect(teardown).toContain('"$WORK/stop.sh" >/dev/null 2>&1 || stop_rc=$?');
+    expect(teardown).toContain('log "FATAL: generated stop script failed (exit=$stop_rc)"');
+    expect(teardown).toContain('cleanup_operator_source_snapshot || {');
+  });
+
+  it('normalizes the frozen source root in both snapshot routes', () => {
+    const committedStart = src.indexOf('snapshot_committed_operator_source() {');
+    const committedEnd = src.indexOf('verifier_run_step operator-source-snapshot', committedStart);
+    const committed = committedSnapshotSource(committedEnd);
+    expect(operatorSnapshotSource).toContain('normalize_operator_source_root "$snapshot_root"');
+    expect(committed).toContain('normalize_operator_source_root "$snapshot_root"');
+  });
+
+  it('resolves the source root to its physical absolute path', () => {
+    const normalizerStart = src.indexOf('normalize_operator_source_root() {');
+    const normalizerEnd = src.indexOf('\ncleanup_operator_source_snapshot() {', normalizerStart);
+    const normalizer = src.slice(normalizerStart, normalizerEnd);
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-root-normalization-'));
+    const physicalRoot = resolve(fixture, 'physical source');
+    const aliasRoot = resolve(fixture, 'source alias');
+    mkdirSync(physicalRoot);
+    symlinkSync(physicalRoot, aliasRoot);
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        normalizer,
+        'normalize_operator_source_root "$TEST_ROOT"',
+        'printf "%s\\n" "$OPERATOR_SOURCE_ROOT"',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: aliasRoot } });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(physicalRoot);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 });
 
 describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
   it('qualifies committed Git source before dependencies and refuses the archive-only regression', () => {
-    const committed = src.slice(src.indexOf('snapshot_committed_operator_source() {'), operatorSnapshotCallIdx);
+    const committed = committedSnapshotSource();
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-bundle-checkout-contract-'));
     try {
       for (const archiveOnly of [false, true]) {
@@ -187,7 +227,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
     mkdirSync(temp);
     writeFileSync(inputsFile, JSON.stringify(['apps/operator/ui.ts', 'path with,comma.ts']));
     const paths = src.slice(src.indexOf('SCRIPT_DIR="'), src.indexOf('DESKTOP_DIR="$REPO_DIR/papercusp-desktop"'));
-    const committed = src.slice(src.indexOf('snapshot_committed_operator_source() {'), operatorSnapshotCallIdx);
+    const committed = committedSnapshotSource();
     const runner = resolve(scripts, 'verify-tauri-headless.sh');
     // Execute the production startup/re-exec and snapshot functions. Substitute
     // only the exporter and dependency copy: a dirty donor must fail if it is
@@ -229,7 +269,6 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
   });
 
   it('passes file-backed inputs intact alongside mandatory tooling, before receipt verification and dependencies', () => {
-    const start = src.indexOf('snapshot_committed_operator_source() {');
     const end = operatorSnapshotCallIdx;
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-file-input-contract-'));
     const inputsFile = resolve(fixture, 'complete inputs.json');
@@ -244,7 +283,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'node() { printf "%s\\n" "$@" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; }',
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "${!#}"; }',
         dependencySnapshotSource,
-        src.slice(start, end),
+        committedSnapshotSource(end),
         'snapshot_committed_operator_source',
       ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_INPUTS_FILE: inputsFile } });
       expect(result.status, result.stderr).toBe(0);
@@ -260,9 +299,8 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
   });
 
   it("keeps committed preparation independent of live census and verifies before donor mutation", () => {
-    const start = src.indexOf('snapshot_committed_operator_source() {');
     const end = operatorSnapshotCallIdx;
-    const committed = src.slice(start, end);
+    const committed = committedSnapshotSource(end);
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-committed-contract-'));
     try {
       const result = spawnSync('bash', ['-c', [
@@ -298,7 +336,6 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
   });
 
   it.each(['admit', 'capacity-refusal', 'unmeasured', 'empty'])('admits measured committed source before creating or exporting it: %s', mode => {
-    const start = src.indexOf('snapshot_committed_operator_source() {');
     const end = operatorSnapshotCallIdx;
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-size-contract-'));
     try {
@@ -311,7 +348,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'reserve_verifier_disk() { echo "reserve:$1" >> "$WORK/order"; test "$1" = 5242880; test "$TEST_MODE" != capacity-refusal || return 7; }',
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "${!#}"; }',
         dependencySnapshotSource,
-        src.slice(start, end), 'snapshot_committed_operator_source',
+        committedSnapshotSource(end), 'snapshot_committed_operator_source',
       ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_MODE: mode } });
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
       if (mode === 'admit') {
@@ -328,7 +365,6 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
   });
 
   it('rejects stale tested inputs before measuring or reserving snapshot space', () => {
-    const start = src.indexOf('snapshot_committed_operator_source() {');
     const end = operatorSnapshotCallIdx;
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-input-refusal-'));
     try {
@@ -340,7 +376,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'node() { echo "$*" >> "$WORK/order"; [[ "$*" != *verifier-inputs-check* ]]; }',
         'reserve_verifier_disk() { echo "reserve:$1" >> "$WORK/order"; }',
         'cp() { echo mutation-after-refusal >&2; return 99; }',
-        src.slice(start, end),
+        committedSnapshotSource(end),
         'status=0; snapshot_committed_operator_source || status=$?',
         'printf "status=%s\\n" "$status" >> "$WORK/order"',
       ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture } });
@@ -947,7 +983,7 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
       git(['init', '-q']); git(['add', '.gitignore', 'source.txt']);
       git(['-c', 'user.name=Verifier fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']);
       const ref = git(['rev-parse', 'HEAD']);
-      const committed = src.slice(src.indexOf('snapshot_committed_operator_source() {'), operatorSnapshotCallIdx);
+      const committed = committedSnapshotSource();
       // Use the real guarded checkout API at the exporter boundary. Only source
       // measurement and dependency preparation are replaced for this tiny repo.
       const cloneProgram = 'const { createScratchClone } = await import(process.env.TEST_CLONE_MODULE); await createScratchClone({ source: process.env.TEST_SOURCE, ref: process.env.TEST_REF, destination: process.argv[1] });';
@@ -1075,9 +1111,9 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
     expect(src).toContain(
       "snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }",
     );
-    expect(src).toContain(
-      '[ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK"',
-    );
+    expect(src).toContain('if [ -n "${OPERATOR_SOURCE_WORK:-}" ]; then');
+    expect(src).toContain('reap_frozen_source_survivors "$frozen_source_root" "$TAURI_LAUNCH_PROVENANCE"');
+    expect(src).toContain('rm -rf -- "$OPERATOR_SOURCE_WORK"');
   });
 });
 

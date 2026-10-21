@@ -41,6 +41,7 @@ import { lookupWorkItem } from './_lookup';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
 import { hasActiveStrictHumanAsk } from '../../hold-registry';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
+import { admitWaitRef } from '../../wait-ref-admission';
 import { pureWorkItemDependencyReferents, workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
 import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
 import { workItemRefDependencyRefusal } from './work-item-ref-dependency-refusal';
@@ -758,6 +759,29 @@ export default defineTool({
               error: `${stagingFirst.detail} Blocker was not written; use staging/current-build for this work item.`,
               code: stagingFirst.code,
             };
+          }
+          // event-wait-settlement-2026-10-20 P-006 (D-001 item 2; R-11, R-20): a NEW event or
+          // gate wait must name something a fire can prove — every releasing path releases on
+          // fireCertifiesCondition, so any other ref strands the item. Re-asserting a row that is
+          // already active is not a new wait (pre-existing unprovable rows are handled by the
+          // re-check backfill, D-001 item 1), and `clear` never reaches this block.
+          const isEventWait = input.kind === 'event' || input.kind === 'gate';
+          const reassertsActiveRow = activeExternalBlockers(workItem.payload).some(
+            (blocker) => blocker.kind === input.kind && blocker.ref === input.ref,
+          );
+          if (isEventWait && !reassertsActiveRow) {
+            const admission = await trackPhase(ctx.phases, 'set_blocker:admit-wait-ref', () =>
+              admitWaitRef(input.ref as string, { surface: 'blocker' }),
+            );
+            if (!admission.ok) {
+              return {
+                ok: false as const,
+                id: input.id,
+                code: admission.code,
+                error: `work_item '${input.id}' ${input.kind} blocker refused — ${admission.detail} Blocker was not written.`,
+                reachability: admission.reachability,
+              };
+            }
           }
         }
         const strictHumanAsk =

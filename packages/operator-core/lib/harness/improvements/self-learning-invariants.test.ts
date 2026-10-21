@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { FRICTION_TRIPWIRE } from '@papercusp/orchestrator/role-prompt';
+import { loadObservationPractice } from '@papercusp/orchestrator/role-prompt';
 import {
   UNIVERSAL_FRICTION_MARKERS,
   HARNESS_PIPELINE_FRICTION_MARKERS,
@@ -105,9 +105,9 @@ function cand(p: Partial<ImprovementCandidate> & { id: string }): ImprovementCan
 
 describe('P-060.1 — reflection: boundary + friction markers, never a per-turn pass', () => {
   it('the per-turn surface is ONE shared trip-wire string — brain base ≡ bee base (no desync)', () => {
-    // friction-markers re-exports the orchestrator constant; if these ever
+    // Both prompt paths load the same identity-owned section; if these ever
     // diverge, the Queen and the bees are reading different rules.
-    expect(renderFrictionTripwire()).toBe(FRICTION_TRIPWIRE);
+    expect(renderFrictionTripwire()).toBe(loadObservationPractice().frictionTripwire);
   });
 
   it('the trip-wire is NOT a reflection step: it fires on felt friction, and says so', () => {

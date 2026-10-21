@@ -98,10 +98,32 @@ export function recordRouteInvocation(exec: RouteExecution): void {
   const repairAttempt = exec.def.method === 'POST' && exec.def.path === '/adv/sessions/ensure-codex-home'
     ? exec.req.headers.get('x-papercusp-repair-attempt')
     : null;
-  const metadataJson = repairAttempt?.length === 36
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(repairAttempt)
-    ? JSON.stringify({ codexHomeRepairAttemptId: repairAttempt.toLowerCase() })
-    : null;
+  const validRepairAttempt = repairAttempt !== null
+    && repairAttempt.length === 36
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(repairAttempt);
+  let metadataJson: string | null = null;
+  if (validRepairAttempt) {
+    const metadata: Record<string, unknown> = {
+      codexHomeRepairAttemptId: repairAttempt.toLowerCase(),
+    };
+    // Route diagnostics are opt-in at the metadata boundary: only the
+    // launcher's validated repair-attempt correlation may carry them. Keep
+    // the persisted values numeric, finite, and bounded even if a route
+    // supplies a custom diagnostics implementation in a test or host.
+    try {
+      const phaseTimings: Record<string, number> = Object.create(null) as Record<string, number>;
+      const raw = exec.routeDiagnostics?.snapshot() ?? {};
+      for (const [phase, value] of Object.entries(raw).slice(0, 32)) {
+        if (!/^[a-z][a-z0-9._-]{0,63}$/.test(phase)) continue;
+        if (!Number.isFinite(value) || value < 0) continue;
+        phaseTimings[phase] = Math.min(86_400_000, Math.round(value));
+      }
+      if (Object.keys(phaseTimings).length > 0) metadata.routePhaseTimingsMs = phaseTimings;
+    } catch {
+      // Diagnostics are observational and must never affect the route result.
+    }
+    metadataJson = JSON.stringify(metadata);
+  }
 
   // Snapshot everything off `exec` synchronously — `exec` is mutable and
   // the caller's `finally` may clear timers etc. right after this returns.

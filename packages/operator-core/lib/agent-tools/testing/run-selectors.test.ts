@@ -15,6 +15,7 @@ import runTool, {
   resolveDetachedHarnessSlug,
   selectTestFileRoot,
   testEvidenceRecoveryRunId,
+  withInProcessTestingRunForegroundCeiling,
 } from './run';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
@@ -373,6 +374,26 @@ describe('testing:run foreground handler budget', () => {
     expect(maximum).toBe(FOREGROUND_TIMEOUT_CEILING_MS - 20_000);
     expect(maximum).toBe(25_000);
     expect(clampTestingRunForegroundTimeoutMs(10_000)).toBe(10_000);
+  });
+
+  // WI-6554700010018388: an in-process caller crosses no MCP transport, so it may declare its own
+  // ceiling. That ceiling must stay inside the caller's async chain. A concurrent MCP-dispatched
+  // call in the same process keeps the transport clamp.
+  it('lifts the transport budget only inside the in-process caller scope', async () => {
+    const outside = new Promise<number>((resolve) => {
+      setTimeout(() => resolve(clampTestingRunForegroundTimeoutMs(Number.MAX_SAFE_INTEGER)), 5);
+    });
+    const inside = await withInProcessTestingRunForegroundCeiling(90_000, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return clampTestingRunForegroundTimeoutMs(Number.MAX_SAFE_INTEGER);
+    });
+
+    expect(inside).toBe(90_000);
+    expect(await outside).toBe(25_000);
+    expect(clampTestingRunForegroundTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(25_000);
+    await expect(withInProcessTestingRunForegroundCeiling(90_000, async () => clampTestingRunForegroundTimeoutMs(10_000)))
+      .resolves.toBe(10_000);
+    expect(() => withInProcessTestingRunForegroundCeiling(0, async () => 1)).toThrow(RangeError);
   });
 });
 

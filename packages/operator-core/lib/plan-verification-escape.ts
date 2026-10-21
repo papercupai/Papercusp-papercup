@@ -29,8 +29,10 @@ import {
   isVerificationProfile,
   resolveVerification,
   type DeliverableKind,
+  type VerificationPlanInput,
   type VerificationProfile,
 } from './plan-verification-profile';
+import type { VerificationModule } from './plan-types/verification-modules';
 
 /** Plan statuses that mean the plan has been activated (or gone further). */
 export const ACTIVATED_PLAN_STATUSES = ['ready', 'active', 'awaiting-acceptance', 'shipped'] as const;
@@ -46,18 +48,57 @@ export function effectivePlanProfile(stamped: string | null | undefined): Verifi
   return isVerificationProfile(stamped) ? stamped : INFERRED_PLAN_PROFILE;
 }
 
-/** True when a profile change moves from coding to general. */
+/**
+ * Modules `before` requires that `after` no longer does, in `before`'s order. This is THE
+ * lowering test (plan-item-types-registry-cupboard-2026-10-20 P-003, R-8): a change lowers
+ * verification exactly when the resolved module set loses a module. Every route that can
+ * change a resolution (a deliverable swap, a plan `type:` swap, a profile change, and the
+ * registry writes P-005/P-006 add) judges itself with this one function (D-005).
+ */
+export function droppedModules(
+  before: readonly VerificationModule[],
+  after: readonly VerificationModule[],
+): VerificationModule[] {
+  const kept = new Set(after);
+  return before.filter((module) => !kept.has(module));
+}
+
+/** The modules an item that declares no deliverable resolves to under `profile`. */
+function profileDefaultModules(profile: VerificationProfile): readonly VerificationModule[] {
+  return resolveVerification({ verificationProfile: profile }, { deliverable: null }).modules;
+}
+
+/** Modules a profile change drops from an item that relies on the profile's default type. */
+export function profileChangeDroppedModules(
+  from: string | null | undefined,
+  to: VerificationProfile,
+): VerificationModule[] {
+  return droppedModules(profileDefaultModules(effectivePlanProfile(from)), profileDefaultModules(to));
+}
+
+/** True when a profile change drops a module from the profile's default item type. */
 export function isProfileLowering(from: string | null | undefined, to: VerificationProfile): boolean {
-  return effectivePlanProfile(from) === 'coding' && to === 'general';
+  return profileChangeDroppedModules(from, to).length > 0;
 }
 
 export interface DeliverableLowering {
   itemId: string;
-  /** The declared deliverable before the write (null = undeclared, so the profile default applied). */
-  from: DeliverableKind | null;
-  to: DeliverableKind | null;
+  /** The declared item type before the write (null = undeclared, so the plan type's default applied). */
+  from: string | null;
+  to: string | null;
   /** The plan profile the lowering was judged under. */
   profile: VerificationProfile;
+  /** Modules the item's resolved set had before the write and no longer has. */
+  dropped: VerificationModule[];
+}
+
+/** The plan-level inputs a content write is judged under, before and after the write. */
+export interface LoweringPlanContext {
+  profile: VerificationProfile;
+  /** The plan's `type:` slug before the write (null = the profile's first-party plan type). */
+  planTypeBefore?: string | null;
+  /** The plan's `type:` slug after the write (undefined = unchanged). */
+  planTypeAfter?: string | null;
 }
 
 type ItemDeliverable = { id: string; deliverable?: string | null };
@@ -71,29 +112,45 @@ export function declaredDeliverablesChanged(
   return next.some((item) => before.has(item.id) && before.get(item.id) !== declared(item.deliverable));
 }
 
-function declared(value: string | null | undefined): DeliverableKind | null {
-  const r = resolveVerification({ verificationProfile: 'coding' }, { deliverable: value });
-  return r.deliverableSource === 'declared' ? r.deliverable : null;
+/** The item type an item declares (a built-in kind maps to its first-party id), or null. */
+function declared(value: string | null | undefined): string | null {
+  const r = resolveVerification({ verificationProfile: INFERRED_PLAN_PROFILE }, { deliverable: value });
+  return r.deliverableSource === 'declared' ? r.itemType : null;
 }
 
 /**
- * Items present on both sides whose effective deliverable goes from code to non-code under
- * `profile`. A newly added item is not a lowering (it adds scope), and a removed item is not
- * one either (dropping is a status change with its own note).
+ * Items present on both sides whose resolved module set loses a module across the write:
+ * a changed `deliverable:`, a changed plan `type:`, or both. A newly added item is not a
+ * lowering (it adds scope), and a removed item is not one either (dropping is a status
+ * change with its own note). `context` may be a bare profile (no plan-type change).
  */
 export function deliverableLowerings(
   prior: readonly ItemDeliverable[],
   next: readonly ItemDeliverable[],
-  profile: VerificationProfile,
+  context: VerificationProfile | LoweringPlanContext,
 ): DeliverableLowering[] {
+  const ctx: LoweringPlanContext = typeof context === 'string' ? { profile: context } : context;
+  const planTypeBefore = ctx.planTypeBefore ?? null;
+  const planBefore: VerificationPlanInput = { verificationProfile: ctx.profile, planType: planTypeBefore };
+  const planAfter: VerificationPlanInput = {
+    verificationProfile: ctx.profile,
+    planType: ctx.planTypeAfter === undefined ? planTypeBefore : ctx.planTypeAfter,
+  };
   const before = new Map(prior.map((item) => [item.id, item.deliverable ?? null]));
   const lowerings: DeliverableLowering[] = [];
   for (const item of next) {
     if (!before.has(item.id)) continue;
-    const was = resolveVerification({ verificationProfile: profile }, { deliverable: before.get(item.id) });
-    const now = resolveVerification({ verificationProfile: profile }, { deliverable: item.deliverable ?? null });
-    if (was.codeDeliverable && !now.codeDeliverable) {
-      lowerings.push({ itemId: item.id, from: declared(before.get(item.id)), to: declared(item.deliverable), profile });
+    const was = resolveVerification(planBefore, { deliverable: before.get(item.id) });
+    const now = resolveVerification(planAfter, { deliverable: item.deliverable ?? null });
+    const dropped = droppedModules(was.modules, now.modules);
+    if (dropped.length > 0) {
+      lowerings.push({
+        itemId: item.id,
+        from: declared(before.get(item.id)),
+        to: declared(item.deliverable),
+        profile: ctx.profile,
+        dropped,
+      });
     }
   }
   return lowerings;
@@ -101,15 +158,21 @@ export function deliverableLowerings(
 
 const ITEM_ID_RE = (itemId: string) => new RegExp(`(^|[^A-Za-z0-9-])${itemId.replace(/[-]/g, '\\-')}(?![0-9])`);
 
-/** The id of an already-recorded Decision that names the item and its deliverable, or null. */
+/**
+ * The id of an already-recorded Decision that names the item (or one of `alsoNamed`, such as
+ * the new plan-level type on a `type:` swap) and says what changed — its deliverable, its
+ * type or its modules — or null.
+ */
 export function decisionAuthorizingDeliverableLowering(
   decisions: readonly Pick<PlanDecision, 'id' | 'title' | 'body' | 'itemRefs'>[],
   itemId: string,
+  alsoNamed: readonly string[] = [],
 ): string | null {
   for (const decision of decisions) {
     const text = `${decision.title}\n${decision.body}`;
-    const namesItem = decision.itemRefs?.includes(itemId) || ITEM_ID_RE(itemId).test(text);
-    if (namesItem && /\bdeliverable\b/i.test(text)) return decision.id;
+    const namesItem = decision.itemRefs?.includes(itemId) || ITEM_ID_RE(itemId).test(text)
+      || alsoNamed.some((ref) => ref.length > 0 && text.includes(ref));
+    if (namesItem && /\b(deliverable|type|modules?)\b/i.test(text)) return decision.id;
   }
   return null;
 }
@@ -130,7 +193,8 @@ export interface VerificationLoweringRefusal {
   code: VerificationLoweringRefusalCode;
   message: string;
   profile: VerificationProfile;
-  module: 'code';
+  /** The verification modules the change would drop (never empty on a refusal). */
+  modules: VerificationModule[];
   items?: string[];
   /** The next calls that make the lowering acceptable. */
   repair: string;
@@ -152,20 +216,27 @@ export function evaluateDeliverableLowering(input: {
   priorDecisions: readonly Pick<PlanDecision, 'id' | 'title' | 'body' | 'itemRefs'>[];
   priorContentHash: string;
   latestActivationAudit: ActivationAuditAnchor | null;
+  /** Extra ids a Decision may name instead of the item (the new plan-level type on a `type:` swap). */
+  authorizingRefs?: readonly string[];
 }): VerificationLoweringRefusal | null {
   if (!input.activated || input.lowerings.length === 0) return null;
-  const describe = (l: DeliverableLowering) => `${l.itemId} (${l.from ?? 'profile default code'} → ${l.to ?? 'profile default'})`;
-  const unauthorized = input.lowerings.filter((l) => !decisionAuthorizingDeliverableLowering(input.priorDecisions, l.itemId));
+  const describe = (l: DeliverableLowering) =>
+    `${l.itemId} (${l.from ?? 'plan-type default'} → ${l.to ?? 'plan-type default'}; drops ${l.dropped.join(', ')})`;
+  const modulesOf = (ls: readonly DeliverableLowering[]) => [...new Set(ls.flatMap((l) => l.dropped))];
+  const unauthorized = input.lowerings.filter(
+    (l) => !decisionAuthorizingDeliverableLowering(input.priorDecisions, l.itemId, input.authorizingRefs),
+  );
   if (unauthorized.length > 0) {
+    const modules = modulesOf(unauthorized);
     return {
       ok: false,
       code: 'verification_lowering_requires_decision',
       message:
-        `plan '${input.planSlug}' (profile ${input.profile}) is activated, so lowering ${unauthorized.map(describe).join(', ')} ` +
-        `from a code deliverable would drop the code verification module without a recorded Decision. ` +
-        `No recorded Decision names the item and its deliverable. ${SEQUENCE}`,
+        `plan '${input.planSlug}' (profile ${input.profile}) is activated, so the change to ${unauthorized.map(describe).join(', ')} ` +
+        `would drop the ${modules.join(', ')} verification module${modules.length === 1 ? '' : 's'} without a recorded Decision. ` +
+        `No recorded Decision names the item (or the new plan type) and its deliverable or type. ${SEQUENCE}`,
       profile: input.profile,
-      module: 'code',
+      modules,
       items: unauthorized.map((l) => l.itemId),
       repair: SEQUENCE,
     };
@@ -176,11 +247,11 @@ export function evaluateDeliverableLowering(input: {
       ok: false,
       code: 'verification_lowering_requires_fresh_activation_audit',
       message:
-        `plan '${input.planSlug}' (profile ${input.profile}) is activated, and lowering ${input.lowerings.map(describe).join(', ')} ` +
-        `drops the code verification module. ${audit ? `Activation audit #${audit.auditSeq} reviewed an older revision` : 'No activation audit is recorded'}, ` +
+        `plan '${input.planSlug}' (profile ${input.profile}) is activated, and the change to ${input.lowerings.map(describe).join(', ')} ` +
+        `drops verification modules. ${audit ? `Activation audit #${audit.auditSeq} reviewed an older revision` : 'No activation audit is recorded'}, ` +
         `so it has not reviewed the Decision that authorizes this. Re-run plans:audit { phase:'activation' }, then repeat this write.`,
       profile: input.profile,
-      module: 'code',
+      modules: modulesOf(input.lowerings),
       items: input.lowerings.map((l) => l.itemId),
       repair: "plans:audit { phase:'activation' }, then repeat this write.",
     };
@@ -199,21 +270,23 @@ export function evaluateProfileLowering(input: {
   currentContentHash: string;
   latestActivationAudit: ActivationAuditAnchor | null;
 }): VerificationLoweringRefusal | null {
-  if (!input.activated || !isProfileLowering(input.from, input.to)) return null;
+  const modules = profileChangeDroppedModules(input.from, input.to);
+  if (!input.activated || modules.length === 0) return null;
+  const from = effectivePlanProfile(input.from);
   const decision = input.decisionId ? input.decisions.find((d) => d.id === input.decisionId) : undefined;
   if (!decision) {
     return {
       ok: false,
       code: 'verification_lowering_requires_decision',
       message:
-        `plan '${input.planSlug}' is activated, so lowering its verification profile from coding to general drops the ` +
-        `code verification module for every item without its own deliverable. ` +
+        `plan '${input.planSlug}' is activated, so changing its verification profile from ${from} to ${input.to} drops the ` +
+        `${modules.join(', ')} verification module${modules.length === 1 ? '' : 's'} for every item without its own deliverable. ` +
         (input.decisionId
           ? `Decision ${input.decisionId} is not recorded in this plan. `
           : 'Pass decisionId naming the recorded Decision that explains the change. ') +
-        SEQUENCE.replace('name the item and its new deliverable', 'explain why the plan is not code work'),
-      profile: 'coding',
-      module: 'code',
+        SEQUENCE.replace('name the item and its new deliverable', 'explain why the plan no longer needs those checks'),
+      profile: from,
+      modules,
       repair: SEQUENCE,
     };
   }
@@ -223,11 +296,11 @@ export function evaluateProfileLowering(input: {
       ok: false,
       code: 'verification_lowering_requires_fresh_activation_audit',
       message:
-        `plan '${input.planSlug}' is activated, and lowering its verification profile from coding to general drops the code ` +
-        `verification module. ${audit ? `Activation audit #${audit.auditSeq} reviewed an older revision` : 'No activation audit is recorded'}, ` +
+        `plan '${input.planSlug}' is activated, and changing its verification profile from ${from} to ${input.to} drops the ` +
+        `${modules.join(', ')} verification module${modules.length === 1 ? '' : 's'}. ${audit ? `Activation audit #${audit.auditSeq} reviewed an older revision` : 'No activation audit is recorded'}, ` +
         `so it has not reviewed ${decision.id}. Re-run plans:audit { phase:'activation' }, then repeat this call.`,
-      profile: 'coding',
-      module: 'code',
+      profile: from,
+      modules,
       repair: "plans:audit { phase:'activation' }, then repeat this call.",
     };
   }

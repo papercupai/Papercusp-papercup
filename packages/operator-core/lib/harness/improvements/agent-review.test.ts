@@ -19,6 +19,7 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   STRANDED_SWEEP_OWNER,
 } from './agent-review-policy';
+import { AGENT_REVIEW_ROUND_COMMENT_MARKER, agentReviewRoundComment } from './flow-metrics';
 import {
   adoptAgentReviewRevision,
   approvalAcceptance,
@@ -971,6 +972,94 @@ describe('agent-review grading lifecycle', () => {
     );
     expect(accepted).toMatchObject({ applicable: true });
     expect(accepted).not.toHaveProperty('refusal');
+  });
+
+  it.each([
+    ['different', true],
+    ['unknown', true],
+    ['same', false],
+  ] as const)('requires a reason for exact same-reviewer feedback when its prior source is %s', async (priorRevision, shouldRefuse) => {
+    const priorItem = issue({ summary: 'old source body', assignee: 'su-reviewer' });
+    const currentBase = issue({ summary: 'updated source body', assignee: 'su-reviewer' });
+    const currentRevision = acceptanceSourceRevision(currentBase);
+    const previousRevision = priorRevision === 'unknown'
+      ? undefined
+      : priorRevision === 'same' ? currentRevision : acceptanceSourceRevision(priorItem);
+    const previousReview = {
+      status: 'revision-requested' as const,
+      submittedBy: 'su-filer',
+      ledgerIdeaId: 'WI-7',
+      round: 1,
+      ...(previousRevision ? { reviewedSourceRevision: previousRevision } : {}),
+    };
+    const priorFeedback = 'The independent retry path still lacks current evidence.';
+    const priorPost = agentReviewRoundComment(
+      `Agent review round 1: revision requested by su-reviewer (grade 3/5).\n\n${priorFeedback}`,
+      priorItem,
+      previousReview,
+      3,
+      'su-reviewer',
+    );
+    const current = {
+      ...currentBase,
+      payload: {
+        agentReview: {
+          status: 'pending',
+          submittedBy: 'su-filer',
+          ledgerIdeaId: 'WI-7',
+          round: 2,
+          reviewedSourceRevision: currentRevision,
+        },
+      },
+    };
+    const h = harness(current);
+    h.state.posts.push({ body: priorPost, author: 'su-reviewer' });
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: null, feedback: null, gradedBy: null };
+
+    const result = await preflightAgentReviewGrade({
+      ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer', feedback: priorFeedback,
+    }, h.deps);
+    if (shouldRefuse) {
+      expect(result).toMatchObject({
+        applicable: true,
+        refusal: 'agent-review-repeat-feedback-justification-required',
+      });
+      await expect(preflightAgentReviewGrade({
+        ideaId: 'WI-7',
+        grade: 3,
+        gradedBy: 'su-reviewer',
+        feedback: priorFeedback,
+        repeatJustification: 'The new routines evidence does not cover the separate mounted-volume condition.',
+      }, h.deps)).resolves.toMatchObject({ applicable: true, repeatJustificationAccepted: true });
+    } else {
+      expect(result).toMatchObject({ applicable: true });
+      expect(result).not.toHaveProperty('refusal');
+    }
+  });
+
+  it('persists an accepted repeated-feedback justification in the round comment', async () => {
+    const review = (pending.payload as { agentReview: Record<string, unknown> }).agentReview;
+    const boundPending = {
+      ...pending,
+      payload: {
+        agentReview: {
+          ...review,
+          reviewedSourceRevision: acceptanceSourceRevision(pending),
+        },
+      },
+    };
+    const h = harness(boundPending);
+    const feedback = 'The independent retry path still lacks current evidence.';
+    const repeatJustification = 'The new routines evidence does not cover the separate mounted-volume condition.';
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 3, feedback, gradedBy: 'su-reviewer' };
+
+    await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer', repeatJustification }, h.deps);
+
+    const post = h.state.posts[0];
+    expect(post.body).toContain(`Repeat justification: ${repeatJustification}`);
+    const markerAt = post.body.indexOf(AGENT_REVIEW_ROUND_COMMENT_MARKER);
+    const history = JSON.parse(post.body.slice(markerAt + AGENT_REVIEW_ROUND_COMMENT_MARKER.length));
+    expect(history).toMatchObject({ feedback, repeatJustification });
   });
 
   it('returns a 1–3 grade to the filer, wakes them, and never parks it as human/blocked', async () => {

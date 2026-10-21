@@ -5,7 +5,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { useOperatorWorkspaceLocation, type OperatorWorkspaceLocation } from './seam';
-import { cloudTelemetryEventSchema, cloudTelemetryConsentSchema, CLOUD_MONITORING_DISCLOSURE_VERSION, type CloudTelemetryConsent } from '@papercusp/operator-core/lib/telemetry-kinds';
+import { cloudErrorFingerprintInput, cloudTelemetryEventSchema, cloudTelemetryConsentSchema, CLOUD_MONITORING_DISCLOSURE_VERSION, type CloudErrorCode, type CloudTelemetryConsent, type CloudTelemetryEvent } from '@papercusp/operator-core/lib/telemetry-kinds';
+
+export type CloudFeature = Extract<CloudTelemetryEvent, { event: 'cloud_feature_adoption' }>['properties']['feature'];
 
 interface TelemetryConfig {
   enabled: boolean;
@@ -62,16 +64,55 @@ export async function captureBrowserTelemetry(event: string, properties: Record<
   } catch { /* Optional diagnostics cannot interrupt the product. */ }
 }
 
+/** One return observation per mount of a hosted shell. The server witnesses
+ * sign-in; a visit that reuses an existing session is only visible here. */
+function useCloudPortalVisit(location: OperatorWorkspaceLocation) {
+  const recorded = useRef(false);
+  useEffect(() => {
+    if (location !== 'cloud' || recorded.current) return;
+    recorded.current = true;
+    void captureBrowserTelemetry('cloud_portal_session', { action: 'returned' }, 'cloud');
+  }, [location]);
+}
+
+/** Mount once, outside any keyed remount, in a host shell that does not use
+ * PostHogProvider (the portal). Without a location prop it reads the seam. */
+export function CloudPortalVisit({ location }: { location?: OperatorWorkspaceLocation }) {
+  const contextLocation = useOperatorWorkspaceLocation();
+  useCloudPortalVisit(location ?? contextLocation);
+  return null;
+}
+
+/** Records that a hosted user opened one disclosed feature, once per mount.
+ * Local mounts and inactive surfaces send nothing. */
+export function useCloudFeatureAdoption(feature: CloudFeature, options: { location?: OperatorWorkspaceLocation; active?: boolean } = {}) {
+  const contextLocation = useOperatorWorkspaceLocation();
+  const location = options.location ?? contextLocation;
+  const active = options.active ?? true;
+  const recorded = useRef(false);
+  useEffect(() => {
+    if (location !== 'cloud' || !active || recorded.current) return;
+    recorded.current = true;
+    void captureBrowserTelemetry('cloud_feature_adoption', { feature }, 'cloud');
+  }, [location, active, feature]);
+}
+
+/** Hosted error observation: only the reviewed code and a fingerprint of the
+ * code/type pair leave the browser, never the message, stack or component. */
+export async function reportCloudError(code: CloudErrorCode, error: unknown, location: OperatorWorkspaceLocation): Promise<void> {
+  if (location !== 'cloud') return;
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cloudErrorFingerprintInput(code, error)));
+    const fingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    await captureBrowserTelemetry('cloud_error', { code, fingerprint }, 'cloud');
+  } catch { /* Optional analytics cannot interrupt the product. */ }
+}
+
 export function PostHogProvider({ children }: { children: ReactNode }) {
   const workspaceLocation = useOperatorWorkspaceLocation();
-  const portalVisit = useRef(false);
+  useCloudPortalVisit(workspaceLocation);
   useEffect(() => {
-    if (workspaceLocation === 'cloud') {
-      if (!portalVisit.current) { portalVisit.current = true;
-        void captureBrowserTelemetry('cloud_portal_session', { action: 'returned' }, 'cloud'); }
-      return;
-    }
-    if (state.client) return;
+    if (workspaceLocation === 'cloud' || state.client) return;
     let cancelled = false;
     void consentedClient(() => cancelled).catch(() => {});
     return () => { cancelled = true; };

@@ -28,7 +28,21 @@ export interface ExternalConditionReachability {
   /** basis 'fired' only: the fire time as the ledger rendered it, so a caller can order it
    * against its own reference point (a durable park must not credit a pre-park fire). */
   firedAt?: string;
+  /** Set only when `requireSpecificCondition` refused the key: why no fire of it can prove a
+   * condition. Absent on an ordinary 'unmeasured' result (e.g. the resolver failed), so a
+   * write-time admission can tell "unprovable" from "could not measure" (P-006). */
+  uncertifiedReason?: UncertifiedConditionReason;
 }
+
+/**
+ * Why a key cannot certify a condition (event-wait-settlement-2026-10-20 P-006):
+ *  - 'uncatalogued': no catalogue family admits it and no producer declared it (free text,
+ *    a placeholder, or a key nothing emits);
+ *  - 'broad': a catalogued key that names no subject (a global, owner or fleet wake such as
+ *    `coord:inbox-wake:<owner>` or `git-sync:committed`) — it fires for unrelated reasons;
+ *  - 'change-notification': names a subject, but a fire says only that it changed.
+ */
+export type UncertifiedConditionReason = 'uncatalogued' | 'broad' | 'change-notification';
 
 export interface ExternalConditionReachabilityInput {
   firedAt?: string | null;
@@ -225,6 +239,19 @@ export function fireCertifiesCondition(eventKey: string, producerDeclared = fals
   return families.every((entry) => bindsConcreteSubject(entry, key) && entry.fireProves === 'condition');
 }
 
+/** Why {@link fireCertifiesCondition} refuses `eventKey`, or null when it certifies. */
+export function uncertifiedConditionReason(
+  eventKey: string,
+  producerDeclared = false,
+): UncertifiedConditionReason | null {
+  if (fireCertifiesCondition(eventKey, producerDeclared)) return null;
+  const key = concreteEventKey(eventKey);
+  if (!key) return 'uncatalogued';
+  const families = EVENT_CATALOG.filter((entry) => familyAdmitsKey(entry, key));
+  if (families.length === 0) return 'uncatalogued';
+  return families.some((entry) => bindsConcreteSubject(entry, key)) ? 'change-notification' : 'broad';
+}
+
 function concreteEventKey(eventKey: string): string | null {
   const key = eventKey.trim();
   return !key || /[*<>]/.test(key) ? null : key;
@@ -283,10 +310,14 @@ export async function readEventConditionReachability(
     // (tool, path, op, operand), so it binds the condition the way an announcement does.
     const predicateWatchLive = await hasActivePredicateWatch(eventKey, loadPredicateWatch);
     const producerDeclared = Boolean(currentAnnouncement) || predicateWatchLive;
-    if (opts.requireSpecificCondition && !fireCertifiesCondition(eventKey, producerDeclared)) {
+    const uncertified = opts.requireSpecificCondition
+      ? uncertifiedConditionReason(eventKey, producerDeclared)
+      : null;
+    if (uncertified) {
       return {
         ...classifyExternalConditionReachability({ registration: 'unmeasured' }, now.toISOString()),
         evidence: uncertifiedTriggerEvidence(eventKey, producerDeclared),
+        uncertifiedReason: uncertified,
       };
     }
     // Expiry stamps firedAt too, but it is not a successful condition fire.

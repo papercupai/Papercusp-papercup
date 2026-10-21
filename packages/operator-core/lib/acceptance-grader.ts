@@ -36,6 +36,7 @@ import { getBuildInfo } from './build-info';
 import { buildOrderingItems, openBuildItems } from './agent-tools/plans/acceptance-after-build';
 import { recordExpertiseRoutingInvocation } from './endpoint-route/telemetry';
 import { ACCEPTANCE_GRADING_POLICY } from './consult/selection-policies';
+import { ACCEPTANCE_JUDGE_STACK } from './judge-identity-stack';
 
 /**
  * WI-10002156: a REAPED session wears a healthy costume at grader selection.
@@ -1272,6 +1273,13 @@ export function compactSnapshot(input: {
   const { row } = input.plan;
   const rubric = input.rubric as unknown as Record<string, unknown>;
   const criteria = Array.isArray(rubric.criteria) ? rubric.criteria : [];
+  const compactStringList = (value: unknown, max: number): string[] | null => {
+    if (!Array.isArray(value)) return null;
+    const values = value
+      .map((entry) => trim(entry, max))
+      .filter((entry): entry is string => entry !== null);
+    return values.length ? values : null;
+  };
   return {
     frozenAt: new Date().toISOString(),
     plan: {
@@ -1289,7 +1297,24 @@ export function compactSnapshot(input: {
       proposedBy: rubric.proposedBy ?? rubric.createdBy ?? null,
       criteria: criteria.map((raw) => {
         const c = (raw ?? {}) as Record<string, unknown>;
-        return { key: c.key, title: trim(c.title ?? c.label, 120), description: trim(c.description, 260) };
+        const intent = c.intent && typeof c.intent === 'object' && !Array.isArray(c.intent)
+          ? (c.intent as Record<string, unknown>)
+          : null;
+        const intentRequest = trim(intent?.request, 260);
+        const model = trim(c.model, 260) ?? trim(c.bar, 260);
+        return {
+          key: c.key,
+          title: trim(c.title ?? c.label, 120),
+          // `description` is retained for older judges, but seeded acceptance BARs
+          // carry their human request in intent.request instead.
+          description: trim(c.description, 260) ?? intentRequest ?? model,
+          intent: intentRequest ? { request: intentRequest } : null,
+          model,
+          method: trim(c.method, 260),
+          check: c.check ?? null,
+          evidencePlane: c.evidencePlane ?? null,
+          requiredScope: compactStringList(c.requiredScope, 120),
+        };
       }),
     },
     audit: {
@@ -1323,10 +1348,8 @@ export const ACCEPTANCE_SNAPSHOT_CAP_CHARS = 5_800;
  * instead of reporting the gap (EI-21615102901369580).
  */
 const DEGRADED_SNAPSHOT_NOTICE =
-  'TRUNCATED EVIDENCE PACKAGE. Every field named in droppedFields is ABSENT FROM THIS SNAPSHOT. ' +
-  'That absence is a limit of this package, NOT evidence that the underlying record is empty. ' +
-  'Do NOT rate a criterion from that absence. Follow recovery before returning NOT GRADED; if a ' +
-  'canonical read fails or its identity differs from frozenIdentity, name that exact gap and grade the rest.';
+  'TRUNCATED EVIDENCE PACKAGE. Fields in droppedFields are absent because of the cap, not proven empty. ' +
+  'Recover before NOT GRADED; if identity or a canonical read fails, name the exact gap.';
 
 /**
  * Fit the frozen evidence package under the size cap.
@@ -1351,15 +1374,16 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
   const dropped: string[] = [];
   const plan = () => working.plan as Record<string, unknown>;
   const audit = () => working.audit as Record<string, unknown>;
+  const rubric = () => working.rubric as Record<string, unknown>;
+  type SnapshotCriterion = (typeof snapshot.rubric.criteria)[number];
+  const criteria = () => rubric().criteria as SnapshotCriterion[];
   const recovery = {
     frozenIdentity: {
       planVersion: snapshot.plan.version,
       planContentHash: snapshot.plan.contentHash,
       auditSeq: snapshot.audit.auditSeq,
     },
-    rule:
-      'Before NOT GRADED, recover only with these read-only Papercusp tools. Use recovered evidence only ' +
-      'when plans:get still reports frozenIdentity and the completion audit sequence matches.',
+    rule: 'Before NOT GRADED, recover read-only evidence only after frozenIdentity and auditSeq still match.',
     reads: {
       plan: {
         tool: 'plans:get',
@@ -1410,7 +1434,7 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
       },
     },
     {
-      label: 'plan.decisions[].body shortened to 120 chars',
+      label: 'plan.decisions[].body@120',
       apply: () => {
         working.plan = {
           ...plan(),
@@ -1419,23 +1443,196 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
       },
     },
     {
-      label: 'plan.items[].text shortened to 90 chars',
+      label: 'plan.items[].text@90',
       apply: () => {
         working.plan = { ...plan(), items: snapshot.plan.items.map((i) => ({ ...i, text: trim(i.text, 90) })) };
       },
     },
     {
-      label: 'audit.summary shortened to 200 chars',
+      label: 'audit.summary@200',
       apply: () => {
         working.audit = { ...audit(), summary: trim(snapshot.audit.summary, 200) };
       },
     },
     {
-      label: 'rubric.criteria[].description shortened to 120 chars',
+      label: 'rubric.criteria[].description (legacy alias)',
       apply: () => {
         working.rubric = {
-          ...(working.rubric as Record<string, unknown>),
-          criteria: snapshot.rubric.criteria.map((c) => ({ ...c, description: trim(c.description, 120) })),
+          ...rubric(),
+          criteria: criteria().map((c) => {
+            if (!c.intent?.request) return c;
+            const next = { ...c } as Record<string, unknown>;
+            delete next.description;
+            return next;
+          }),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[].description@120',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c) => c.description === undefined ? c : { ...c, description: trim(c.description, 120) }),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[].intent.request/model/method@120',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => index === 0 ? c : ({
+            ...c,
+            intent: c.intent ? { request: trim(c.intent.request, 120) } : null,
+            model: trim(c.model, 120),
+            method: trim(c.method, 120),
+          })),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[].model (duplicate)',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c) => {
+            if (!c.intent?.request) return c;
+            const next = { ...c } as Record<string, unknown>;
+            delete next.model;
+            return next;
+          }),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[].intent.request/method@64',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => index === 0 ? c : ({
+            ...c,
+            intent: c.intent ? { request: trim(c.intent.request, 64) } : null,
+            method: trim(c.method, 64),
+          })),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[].title (duplicate)',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c) => {
+            if (!c.intent?.request) return c;
+            const next = { ...c } as Record<string, unknown>;
+            delete next.title;
+            return next;
+          }),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[].intent.request/method@48',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => index === 0 ? c : ({
+            ...c,
+            intent: c.intent ? { request: trim(c.intent.request, 48) } : null,
+            method: trim(c.method, 48),
+          })),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[].intent.request/method@24',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => index === 0 ? c : ({
+            ...c,
+            intent: c.intent ? { request: trim(c.intent.request, 24) } : null,
+            method: trim(c.method, 24),
+          })),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[1+].intent.request/method@16',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => index === 0 ? c : ({
+            ...c,
+            intent: c.intent ? { request: trim(c.intent.request, 16) } : null,
+            method: trim(c.method, 16),
+          })),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[1+].check.files shortened to basename',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => {
+            if (index === 0 || !c.check || typeof c.check !== 'object' || Array.isArray(c.check)) return c;
+            const check = c.check as Record<string, unknown>;
+            const files = Array.isArray(check.files)
+              ? check.files.map((file) => typeof file === 'string' ? file.split('/').pop() ?? file : file)
+              : check.files;
+            return { ...c, check: { ...check, files } };
+          }),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[1+].check.files omitted',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => {
+            if (index === 0 || !c.check || typeof c.check !== 'object' || Array.isArray(c.check)) return c;
+            const check = c.check as Record<string, unknown>;
+            const nextCheck = { ...check };
+            delete nextCheck.files;
+            return { ...c, check: nextCheck };
+          }),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[1+].requiredScope common entry omitted',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => index === 0
+            ? c
+            : ({ ...c, requiredScope: c.requiredScope?.filter((entry) => entry !== 'resolver') ?? null })),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[1+].evidencePlane omitted when repeated',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => {
+            if (index === 0) return c;
+            const next = { ...c } as Record<string, unknown>;
+            delete next.evidencePlane;
+            return next;
+          }),
+        };
+      },
+    },
+    {
+      label: 'rubric.criteria[1+].requiredScope values omitted',
+      apply: () => {
+        working.rubric = {
+          ...rubric(),
+          criteria: criteria().map((c, index) => index === 0 ? c : ({ ...c, requiredScope: [] })),
         };
       },
     },
@@ -1463,13 +1660,13 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
       },
     },
     {
-      label: 'terminalWork[].terminalOwner/completionRef',
+      label: 'terminalWork[].owner/completionRef',
       apply: () => {
         working.terminalWork = snapshot.terminalWork.map((w) => ({ id: w.id, state: w.state }));
       },
     },
     {
-      label: 'audit.items[].citations — LAST RESORT: the grader can no longer spot-check the audit',
+      label: 'audit.items[].citations — LAST RESORT',
       apply: () => {
         working.audit = {
           ...audit(),
@@ -3233,11 +3430,12 @@ export async function launchAcceptanceGrader(
             useFallback
               ? {
                   role: 'judge',
+                  stack: [...ACCEPTANCE_JUDGE_STACK],
                   agent: ACCEPTANCE_GRADER_FALLBACK.agent,
                   model: ACCEPTANCE_GRADER_FALLBACK.model,
                   effort: ACCEPTANCE_GRADER_FALLBACK.effort,
                 }
-              : { role: 'judge' },
+              : { role: 'judge', stack: [...ACCEPTANCE_JUDGE_STACK] },
           ],
           label,
           idempotencyKey: currentIdempotencyKey,

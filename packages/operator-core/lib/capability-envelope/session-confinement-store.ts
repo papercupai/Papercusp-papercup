@@ -45,7 +45,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isTransportOnlyIdentity, resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
-import { validProductReadBoundary, validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
+import { validProductReadBoundary, validScratchPlanBoundary, validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
 import { setSessionConfinementResolver } from './session-confinement-port';
 
 /** One stored confinement, with the expiry that keeps the table from accumulating dead rows. */
@@ -112,7 +112,9 @@ export async function readSessionConfinement(ownerId: string | null | undefined,
       row.confinement.denyWorkItemsOutside !== undefined &&
         (row.confinement.denyOutside === undefined || !validWorkItemBoundary(row.confinement.denyWorkItemsOutside)) ||
       row.confinement.denyProductReadsOutside !== undefined &&
-        (row.confinement.denyOutside === undefined || !validProductReadBoundary(row.confinement.denyProductReadsOutside)))
+        (row.confinement.denyOutside === undefined || !validProductReadBoundary(row.confinement.denyProductReadsOutside)) ||
+      row.confinement.denyPlansOutside !== undefined &&
+        (row.confinement.denyOutside === undefined || !validScratchPlanBoundary(row.confinement.denyPlansOutside)))
     throw new Error('Stored session confinement is malformed');
   state.cache[ownerId] = row;
   return effectiveConfinement(row);
@@ -218,6 +220,9 @@ export async function declareSessionConfinement(args: {
   if (args.confinement.denyProductReadsOutside !== undefined &&
       !validProductReadBoundary(args.confinement.denyProductReadsOutside))
     return { ok: false, reason: 'confinement requires a valid product read boundary' };
+  if (args.confinement.denyPlansOutside !== undefined &&
+      !validScratchPlanBoundary(args.confinement.denyPlansOutside))
+    return { ok: false, reason: 'confinement requires a valid scratch plan boundary' };
 
   const confinement = { ...args.confinement, denyTools: [...args.confinement.denyTools],
     ...(args.confinement.denyOutside === undefined ? {} : { denyOutside: [...args.confinement.denyOutside] }),
@@ -226,6 +231,7 @@ export async function declareSessionConfinement(args: {
       docsSlugs: [...args.confinement.denyProductReadsOutside.docsSlugs],
       testFiles: [...args.confinement.denyProductReadsOutside.testFiles],
     } }),
+    ...(args.confinement.denyPlansOutside === undefined ? {} : { denyPlansOutside: { ...args.confinement.denyPlansOutside } }),
     ...(args.confinement.denyWorkItemsOutside === undefined ? {} : { denyWorkItemsOutside: { ...args.confinement.denyWorkItemsOutside } }) };
   if (!confinement.reason?.trim() || !confinement.imposedBy?.trim() ||
       confinement.denyTools.some(name => typeof name !== 'string' || !name.trim()) ||
@@ -234,7 +240,9 @@ export async function declareSessionConfinement(args: {
       confinement.denyWorkItemsOutside !== undefined &&
         (confinement.denyOutside === undefined || !validWorkItemBoundary(confinement.denyWorkItemsOutside)) ||
       confinement.denyProductReadsOutside !== undefined &&
-        (confinement.denyOutside === undefined || !validProductReadBoundary(confinement.denyProductReadsOutside)))
+        (confinement.denyOutside === undefined || !validProductReadBoundary(confinement.denyProductReadsOutside)) ||
+      confinement.denyPlansOutside !== undefined &&
+        (confinement.denyOutside === undefined || !validScratchPlanBoundary(confinement.denyPlansOutside)))
     return { ok: false, reason: 'confinement requires valid canonical ceiling names and attribution' };
 
   const ttlSec = args.ttlSec && args.ttlSec > 0 ? args.ttlSec : DEFAULT_TTL_SEC;

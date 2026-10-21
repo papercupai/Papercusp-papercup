@@ -83,6 +83,28 @@ describe('extractTerms', () => {
     expect(terms).not.toContain('either way');
     expect(terms).toContain('green gate');
   });
+
+  it('drops the observed completion/review boilerplate pairs but keeps coined fleet terms', () => {
+    const terms = extractTerms(
+      'root cause current head public release item created files changed current build system wide ' +
+        'remains open revision requested root-cause current-head cold-wake bug-drain',
+    );
+    for (const noise of [
+      'root cause',
+      'current head',
+      'public release',
+      'item created',
+      'files changed',
+      'current build',
+      'system wide',
+      'remains open',
+      'revision requested',
+    ]) {
+      expect(terms, noise).not.toContain(noise);
+    }
+    expect(terms).toContain('cold wake');
+    expect(terms).toContain('bug drain');
+  });
 });
 
 describe('namespace coverage', () => {
@@ -197,6 +219,34 @@ describe('aggregateNeologisms', () => {
     expect(drain?.recentMentions).toBe(1);
     expect(drain?.distinctSpeakers).toBe(1);
     expect(entries.find((e) => e.term === 'wake storm')).toBeDefined();
+  });
+
+  it('backtest guard: observed boilerplate stays out while coined terms pass the fire bars', async () => {
+    const variants = ['alpha', 'beta', 'gamma', 'delta'];
+    const rows = variants.map((variant, i) =>
+      row(
+        `speaker-${i}`,
+        `${variant} root cause current head public release item created files changed current build ` +
+          `system wide remains open revision requested cold-wake bug-drain`,
+        i + 1,
+      ),
+    );
+    const entries = await aggregateNeologisms(rows, [], emptyIndex, AS_OF);
+    const candidates = selectNeologismCandidates(entries, { maxPerTick: Number.MAX_SAFE_INTEGER });
+    for (const noise of [
+      'root cause',
+      'current head',
+      'public release',
+      'item created',
+      'files changed',
+      'current build',
+      'system wide',
+      'remains open',
+      'revision requested',
+    ]) {
+      expect(entries.find((e) => e.term === noise), noise).toBeUndefined();
+    }
+    expect(candidates.map((e) => e.term)).toEqual(expect.arrayContaining(['cold wake', 'bug drain']));
   });
 
   it('matches insight corroboration in both spaced and hyphenated spellings (fire-bar passers only)', async () => {

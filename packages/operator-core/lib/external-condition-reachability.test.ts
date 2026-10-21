@@ -4,6 +4,7 @@ import {
   eventHasSpecificCondition,
   fireCertifiesCondition,
   readEventConditionReachability,
+  uncertifiedConditionReason,
 } from './external-condition-reachability';
 import { EVENT_CATALOG, buildKey, subjectScopeOf, type EventCatalogEntry } from './events/await/catalog';
 import type { ComposedNodeRow } from './events/await/compose-store';
@@ -12,6 +13,52 @@ import type { ComposedNodeRow } from './events/await/compose-store';
 function concreteKeyFor(entry: EventCatalogEntry): string {
   return buildKey(entry.family, Object.fromEntries(entry.params.map((p) => [p.name, `x-${p.name}`])));
 }
+
+// event-wait-settlement-2026-10-20 P-006: the refusal says WHY, so a write-time admission can tell
+// "no fire can prove this" from "could not measure" and word its guidance.
+describe('uncertifiedConditionReason (P-006)', () => {
+  const emptyLedger = async () => ({ announcements: [], waiters: [], deliveries: [], fireLatch: null, composedRoot: null });
+
+  it.each([
+    ['coord:inbox-wake:su-a', 'broad'],
+    ['git-sync:committed', 'broad'],
+    ['work-item:status:WI-9', 'change-notification'],
+    ['waiting on the vendor reply', 'uncatalogued'],
+    ['work-item:done:<id>', 'uncatalogued'],
+  ] as const)('classifies %s as %s', (key, reason) => {
+    expect(uncertifiedConditionReason(key)).toBe(reason);
+  });
+
+  it('is null exactly when fireCertifiesCondition holds, including a producer-declared key', () => {
+    expect(uncertifiedConditionReason('work-item:done:WI-1')).toBeNull();
+    expect(uncertifiedConditionReason('release:deployed:abc123def')).toBeNull();
+    expect(uncertifiedConditionReason('vendor:quote-received:acme')).toBe('uncatalogued');
+    expect(uncertifiedConditionReason('vendor:quote-received:acme', true)).toBeNull();
+    for (const entry of EVENT_CATALOG) {
+      const key = concreteKeyFor(entry);
+      expect(uncertifiedConditionReason(key) === null).toBe(fireCertifiesCondition(key));
+    }
+  });
+
+  it('stamps uncertifiedReason on a requireSpecificCondition refusal, and never on a resolver failure', async () => {
+    const refused = await readEventConditionReachability('git-sync:committed', {
+      inspect: emptyLedger, requireSpecificCondition: true,
+    });
+    expect(refused).toMatchObject({ verdict: 'unknown', basis: 'unmeasured', uncertifiedReason: 'broad' });
+
+    const failed = await readEventConditionReachability('release:deployed:abc123def', {
+      inspect: async () => { throw new Error('pg down'); }, requireSpecificCondition: true,
+    });
+    expect(failed.basis).toBe('unmeasured');
+    expect(failed).not.toHaveProperty('uncertifiedReason');
+
+    const certified = await readEventConditionReachability('release:deployed:abc123def', {
+      inspect: emptyLedger, requireSpecificCondition: true,
+    });
+    expect(certified).toMatchObject({ verdict: 'reachable', basis: 'live-resolver' });
+    expect(certified).not.toHaveProperty('uncertifiedReason');
+  });
+});
 
 describe('fireCertifiesCondition (event-wait-settlement-2026-10-20 P-001)', () => {
   const idFamilies = EVENT_CATALOG.filter((e) => !e.announcedShape && subjectScopeOf(e) === 'id');

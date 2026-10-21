@@ -28,6 +28,7 @@
  * defaults them; requiredScope/requiredTestLayers/evidencePlane/evidenceRuntime only when the
  * block states them, because the seeder fills those from the Bar-to-work map otherwise.
  */
+import { createHash } from 'node:crypto';
 import type { ParsedRequirementBar } from './acceptance-bar-seed';
 
 export type RequirementsDriftField =
@@ -291,4 +292,330 @@ export function rerenderAmendedRequirementBlocks(
     if (!rerendered.includes(row[2]!)) rerendered.push(row[2]!);
   }
   return rerendered.length ? { content: lines.join('\n'), rerendered } : unchanged;
+}
+
+/** Same record header as parseRequirementBars (acceptance-bar-seed.ts). */
+const REQUIREMENT_HEADER = /^\*\*(R-\d+)\s+[—–-]\s+.+?\.\*\*/;
+/** parseRequirementBars ends a record at ANY R-looking bold line, malformed or not. */
+const REQUIREMENT_BOUNDARY = /^\*\*R-\d+\b/;
+
+/** Line bounds [start, end) of a `## <heading>` section body, or null when absent. */
+function sectionLines(lines: readonly string[], heading: RegExp): { start: number; end: number } | null {
+  const start = lines.findIndex((line) => heading.test(line.trim()));
+  if (start < 0) return null;
+  const end = lines.findIndex((line, index) => index > start && /^##\s+\S/.test(line));
+  return { start: start + 1, end: end < 0 ? lines.length : end };
+}
+
+/** Line bounds [start, end) of the `### Bar-to-work map for this plan` table, or null. */
+function barMapLines(lines: readonly string[]): { start: number; end: number } | null {
+  const design = sectionLines(lines, /^##\s+Design\s*$/i);
+  if (!design) return null;
+  for (let index = design.start; index < design.end; index++) {
+    if (!/^###\s+Bar-to-work map for this plan\s*$/i.test(lines[index]!.trim())) continue;
+    let end = index + 1;
+    while (end < design.end && !/^###\s+/.test(lines[end]!)) end++;
+    return { start: index + 1, end };
+  }
+  return null;
+}
+
+/** Same row key rule as parseBarMappings: the first cell, backticks stripped. */
+function mapRowBarKey(line: string): string | null {
+  if (!line.trim().startsWith('|')) return null;
+  const key = (line.split('|').slice(1, -1)[0] ?? '').replace(/`/g, '').trim();
+  return /^R-\d+$/.test(key) ? key : null;
+}
+
+export type RetirementSourceProblemCode = 'retiring_bar_record_duplicate' | 'retiring_bar_map_row_duplicate';
+
+export interface RetirementSourceProblem {
+  code: RetirementSourceProblemCode;
+  barKey: string;
+  detail: string;
+}
+
+export type RetirementSource =
+  | {
+      ok: true;
+      /** The proposed source: the original with every retired record and map row removed. */
+      content: string;
+      /** Retiring BARs whose Requirements record this derivation removed, in BAR order. */
+      retired: string[];
+      /** Retiring BARs whose Bar-to-work map row this derivation removed, in BAR order. */
+      removedMapRows: string[];
+    }
+  | { ok: false; problems: RetirementSourceProblem[] };
+
+/**
+ * EI-24358433996857425 (acceptance-bar-atomic-retirement-2026-10-15 D-002): derive the proposed
+ * plan source for an amendment that RETIRES BARs, before any source validation runs.
+ *
+ * Retiring a BAR means its Requirements record and its Bar-to-work map row stop existing. The
+ * amendment used to validate the ORIGINAL source first, so a retiring BAR whose only mapped
+ * work was dropped tripped `bar_mapping_dropped_only` before the removal could happen: the one
+ * repair for that state was unreachable. Validating the proposed source instead keeps every
+ * survivor check intact (a surviving dropped-only BAR is still refused) while letting the
+ * retirement through.
+ *
+ * Only the retiring BARs' own spans change. A record spans its header line through the line
+ * before the next R-looking bold line or the end of `## Requirements`, which is exactly what
+ * parseRequirementBars treats as that record's body. Every other byte, including plan items
+ * that mapped to the retired BAR, survives unchanged.
+ *
+ * A retiring BAR the source no longer carries is left alone: removing it from the plan first
+ * and then amending the rubric is a supported order, and the proposed source still has to
+ * pass the full parse afterwards, so a stale map row for an absent record stays refused there.
+ * Duplicate records or rows for a retiring BAR are refused: deleting one of two copies would
+ * be a guess about which copy the author meant.
+ */
+export function retireRequirementBarsFromSource(planContent: string, retiringBars: Iterable<string>): RetirementSource {
+  const retiring = new Set([...retiringBars].map((barKey) => barKey.trim()).filter(Boolean));
+  const unchanged = { ok: true as const, content: planContent, retired: [] as string[], removedMapRows: [] as string[] };
+  if (!retiring.size) return unchanged;
+
+  const lines = planContent.split('\n');
+  const remove = new Set<number>();
+  const problems: RetirementSourceProblem[] = [];
+  const retired: string[] = [];
+  const removedMapRows: string[] = [];
+
+  const requirements = sectionLines(lines, /^##\s+Requirements\s*$/i);
+  if (requirements) {
+    const spans = new Map<string, Array<{ start: number; end: number }>>();
+    for (let index = requirements.start; index < requirements.end; index++) {
+      const header = REQUIREMENT_HEADER.exec(lines[index]!);
+      if (!header || !retiring.has(header[1]!)) continue;
+      let end = index + 1;
+      while (end < requirements.end && !REQUIREMENT_BOUNDARY.test(lines[end]!)) end++;
+      spans.set(header[1]!, [...(spans.get(header[1]!) ?? []), { start: index, end }]);
+    }
+    for (const [barKey, found] of spans) {
+      if (found.length > 1) {
+        problems.push({
+          code: 'retiring_bar_record_duplicate',
+          barKey,
+          detail: `${barKey} has ${found.length} Requirements records; retire it only after removing the duplicate`,
+        });
+        continue;
+      }
+      for (let index = found[0]!.start; index < found[0]!.end; index++) remove.add(index);
+      retired.push(barKey);
+    }
+  }
+
+  const map = barMapLines(lines);
+  if (map) {
+    const rows = new Map<string, number[]>();
+    for (let index = map.start; index < map.end; index++) {
+      const barKey = mapRowBarKey(lines[index]!);
+      if (barKey && retiring.has(barKey)) rows.set(barKey, [...(rows.get(barKey) ?? []), index]);
+    }
+    for (const [barKey, found] of rows) {
+      if (found.length > 1) {
+        problems.push({
+          code: 'retiring_bar_map_row_duplicate',
+          barKey,
+          detail: `${barKey} has ${found.length} Bar-to-work map rows; retire it only after removing the duplicate`,
+        });
+        continue;
+      }
+      // A row whose record is absent was not written by this derivation's author; keep it so
+      // the proposed-source parse refuses it exactly as it refused the original source.
+      if (!retired.includes(barKey)) continue;
+      remove.add(found[0]!);
+      removedMapRows.push(barKey);
+    }
+  }
+
+  const byBar = (a: string, b: string) => barNumber(a) - barNumber(b) || a.localeCompare(b);
+  if (problems.length) {
+    return { ok: false, problems: problems.sort((a, b) => byBar(a.barKey, b.barKey)) };
+  }
+  if (!remove.size) return unchanged;
+  return {
+    ok: true,
+    content: lines.filter((_, index) => !remove.has(index)).join('\n'),
+    retired: retired.sort(byBar),
+    removedMapRows: removedMapRows.sort(byBar),
+  };
+}
+
+/**
+ * Fingerprint of the source a BAR amendment derives and reviews: the `## Requirements` body
+ * plus the Bar-to-work map table, and nothing else. Decisions appended between preview and
+ * apply (a leader's disposition, this amendment's own Decision) do not move it; any change to
+ * a record or a map row does.
+ */
+export function acceptanceBarSourceFingerprint(planContent: string): string {
+  const lines = planContent.split('\n');
+  const requirements = sectionLines(lines, /^##\s+Requirements\s*$/i);
+  const map = barMapLines(lines);
+  const slice = (bounds: { start: number; end: number } | null) =>
+    bounds ? lines.slice(bounds.start, bounds.end).join('\n') : '\u0000absent';
+  return createHash('sha256')
+    .update(`requirements\n${slice(requirements)}\n\u0000map\n${slice(map)}`)
+    .digest('hex');
+}
+
+export type BarMappingPlane = 'tree' | 'deployed' | 'live';
+
+/** One side of a Bar-to-work map row: the plan items a BAR discharges through, and its plane. */
+export interface BarMappingSide {
+  planItemIds: string[];
+  evidencePlane: BarMappingPlane;
+}
+
+/**
+ * One explicit prior-to-next move of a BAR's Bar-to-work map row. `prior` is the caller's claim
+ * about the LOCKED source row; a row that differs refuses, so a delta reviewed against one map
+ * cannot rewrite another.
+ */
+export interface BarMappingDeltaEntry {
+  barKey: string;
+  prior: BarMappingSide;
+  next: BarMappingSide;
+}
+
+export type BarMappingDeltaProblemCode =
+  | 'mapping_delta_invalid'
+  | 'mapping_delta_duplicate'
+  | 'mapping_delta_noop'
+  | 'mapping_delta_row_missing'
+  | 'mapping_delta_row_duplicate'
+  | 'mapping_delta_prior_mismatch';
+
+export interface BarMappingDeltaProblem {
+  code: BarMappingDeltaProblemCode;
+  barKey: string;
+  detail: string;
+}
+
+export type BarMappingDeltaSource =
+  | {
+      ok: true;
+      /** The source with every delta row rewritten to its `next` side; every other byte unchanged. */
+      content: string;
+      /** The normalized delta this derivation applied (sorted by BAR, ids sorted). */
+      applied: BarMappingDeltaEntry[];
+    }
+  | { ok: false; problems: BarMappingDeltaProblem[] };
+
+const PLAN_ITEM_ID = /^P-\d{3,}$/;
+const MAPPING_PLANES: readonly BarMappingPlane[] = ['tree', 'deployed', 'live'];
+const sortItemIds = (ids: readonly string[]) =>
+  [...new Set(ids.map((id) => id.trim()))].sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)) || a.localeCompare(b));
+
+/**
+ * Canonical form of a mapping delta: BAR order, de-duplicated and numerically sorted item ids.
+ * Approval receipts, idempotency keys and request hashes compare THIS form, so a reviewer who
+ * lists the same move in another order approves the same delta.
+ */
+export function normalizeBarMappingDelta(delta: readonly BarMappingDeltaEntry[]): BarMappingDeltaEntry[] {
+  return delta
+    .map((entry) => ({
+      barKey: entry.barKey.trim(),
+      prior: { planItemIds: sortItemIds(entry.prior.planItemIds), evidencePlane: entry.prior.evidencePlane },
+      next: { planItemIds: sortItemIds(entry.next.planItemIds), evidencePlane: entry.next.evidencePlane },
+    }))
+    .sort((a, b) => barNumber(a.barKey) - barNumber(b.barKey) || a.barKey.localeCompare(b.barKey));
+}
+
+/** Stable hash of a normalized delta, for idempotency keys and request hashes. */
+export function barMappingDeltaHash(delta: readonly BarMappingDeltaEntry[]): string {
+  return createHash('sha256').update(JSON.stringify(normalizeBarMappingDelta(delta))).digest('hex');
+}
+
+const sameSide = (a: BarMappingSide, b: BarMappingSide) =>
+  a.evidencePlane === b.evidencePlane && a.planItemIds.join(',') === b.planItemIds.join(',');
+
+/**
+ * EI-24358433996857425 Part B (acceptance-bar-atomic-retirement-2026-10-15 R-6/R-8/R-28): rewrite
+ * the Bar-to-work map rows named by an explicit mapping delta, for a BAR whose meaning (hash) is
+ * unchanged but whose discharge work moves.
+ *
+ * Each entry's `prior` must equal its locked row exactly (item-id SET and plane, the same reading
+ * parseBarMappings gives the row); otherwise the delta was derived from another map and refuses.
+ * Only the delta rows change: cells[1] (item ids) and cells[2] (plane) are rewritten, any further
+ * cells are kept. Whether the `next` items exist and are live is left to the full parse that runs
+ * on the result, exactly as for every other proposed source.
+ */
+export function applyBarMappingDelta(planContent: string, delta: readonly BarMappingDeltaEntry[]): BarMappingDeltaSource {
+  const applied = normalizeBarMappingDelta(delta);
+  if (!applied.length) return { ok: true, content: planContent, applied };
+  const problems: BarMappingDeltaProblem[] = [];
+  const seen = new Set<string>();
+  for (const entry of applied) {
+    const sides = [entry.prior, entry.next];
+    if (
+      !/^R-\d+$/.test(entry.barKey) ||
+      sides.some((side) => !side.planItemIds.length || side.planItemIds.some((id) => !PLAN_ITEM_ID.test(id)) ||
+        !MAPPING_PLANES.includes(side.evidencePlane))
+    ) {
+      problems.push({
+        code: 'mapping_delta_invalid',
+        barKey: entry.barKey,
+        detail: `${entry.barKey} delta needs an R-N key and, on both sides, one or more P-NNN ids and a tree|deployed|live plane`,
+      });
+      continue;
+    }
+    if (seen.has(entry.barKey)) {
+      problems.push({ code: 'mapping_delta_duplicate', barKey: entry.barKey, detail: `${entry.barKey} appears twice in the delta` });
+      continue;
+    }
+    seen.add(entry.barKey);
+    if (sameSide(entry.prior, entry.next)) {
+      problems.push({ code: 'mapping_delta_noop', barKey: entry.barKey, detail: `${entry.barKey} delta does not move the mapping` });
+    }
+  }
+
+  const lines = planContent.split('\n');
+  const map = barMapLines(lines);
+  const rows = new Map<string, number[]>();
+  if (map) {
+    for (let index = map.start; index < map.end; index++) {
+      const barKey = mapRowBarKey(lines[index]!);
+      if (barKey && seen.has(barKey)) rows.set(barKey, [...(rows.get(barKey) ?? []), index]);
+    }
+  }
+  for (const entry of applied) {
+    if (!seen.has(entry.barKey) || problems.some((problem) => problem.barKey === entry.barKey)) continue;
+    const found = rows.get(entry.barKey) ?? [];
+    if (found.length !== 1) {
+      problems.push({
+        code: found.length ? 'mapping_delta_row_duplicate' : 'mapping_delta_row_missing',
+        barKey: entry.barKey,
+        detail: found.length
+          ? `${entry.barKey} has ${found.length} Bar-to-work map rows; remove the duplicate before moving it`
+          : `${entry.barKey} has no Bar-to-work map row to move`,
+      });
+      continue;
+    }
+    const cells = lines[found[0]!]!.split('|').slice(1, -1).map((cell) => cell.trim());
+    const plane = (cells[2] ?? '').replace(/`/g, '').trim().toLowerCase() || 'tree';
+    const locked: BarMappingSide = {
+      planItemIds: sortItemIds(cells[1]?.match(/P-\d{3,}/g) ?? []),
+      evidencePlane: plane as BarMappingPlane,
+    };
+    if (!sameSide(locked, entry.prior)) {
+      problems.push({
+        code: 'mapping_delta_prior_mismatch',
+        barKey: entry.barKey,
+        detail: `${entry.barKey} delta prior is ${entry.prior.planItemIds.join(', ')} (${entry.prior.evidencePlane}), ` +
+          `but the locked row is ${locked.planItemIds.join(', ') || '(none)'} (${plane}); re-derive the delta from the current map`,
+      });
+      continue;
+    }
+    const rewritten = [...cells];
+    rewritten[1] = entry.next.planItemIds.join(', ');
+    rewritten[2] = entry.next.evidencePlane;
+    lines[found[0]!] = `| ${rewritten.join(' | ')} |`;
+  }
+  if (problems.length) {
+    return {
+      ok: false,
+      problems: problems.sort((a, b) => barNumber(a.barKey) - barNumber(b.barKey) || a.code.localeCompare(b.code)),
+    };
+  }
+  return { ok: true, content: lines.join('\n'), applied };
 }

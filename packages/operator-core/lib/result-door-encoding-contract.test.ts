@@ -382,6 +382,28 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(next).not.toContain('grep/tail it directly');
   });
 
+  it('carries the long-line caveat on the plaintext branch only (WI-6554700010018572)', () => {
+    // The JSON branch is length-pinned (see the bounded-pointer case above) and already
+    // routes readers to byte pages via response.data. The plaintext branch is where raw
+    // line windows are a real option, so the caveat must survive there.
+    expect(doorOversizedResult().next).not.toContain('long selected lines require byte pages');
+
+    const text = Array.from({ length: 2_000 }, (_, i) => `log line ${i} — ${'payload '.repeat(8)}`).join('\n');
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      { toolName: TOOL, workspaceId: WS, runId: RUN_ID },
+    ) as DoorableResult;
+    const body = JSON.parse(
+      (doored.content.find((c) => (c as { type?: string }).type === 'text') as { text: string }).text,
+    ) as { _projection: { cursor: SpillCursor; next: string } };
+
+    expect(body._projection.cursor.kind).toBe('scratch-page');
+    expect(body._projection.next).toContain(
+      'Plaintext: raw:true+offset/limit lines (long selected lines require byte pages).',
+    );
+  });
+
   it('requires per-page validation and gates JSON parsing on terminal EOF', () => {
     const { next } = doorOversizedResult();
 

@@ -14,6 +14,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { withBoundedTimeout } from '../bounded-timeout';
 import { versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelSourceFile, type SymbolSite } from './contracts';
+import { PACKAGE_NAME_PROOF_DIGEST, packageNameProofSha256, type ProofDigest } from './proof-digest';
 
 export const PUSH_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60_000;
 const REFRESH_MS = 60_000;
@@ -38,11 +39,14 @@ export interface PushSnapshot {
   cursorSites?: ReadonlyMap<string, readonly { symbol: SnapshotSymbol; column: number; spelling: string }[]>;
 }
 
+/** One proof file. `digest` names a narrower pin than its full content (proof-digest.ts). */
+export interface PushProofSource { path: string; sha256: string; digest?: ProofDigest }
+
 export interface SnapshotSymbol {
   id: string; name: string; path: string; line: number; column: number; sha256: string;
   signature: string; aliases: string[];
-  /** Definition, forwarding modules and callers that underpin the snapshot answer. */
-  sources?: { path: string; sha256: string }[];
+  /** Definition, forwarding modules, callers and workspace manifests that underpin the snapshot answer. */
+  sources?: PushProofSource[];
   callers: { path: string; line: number; column: number; sha256: string; spelling: string; workspace?: string | null }[];
 }
 
@@ -65,7 +69,8 @@ function snapshotBuilder() {
       || typeof row.signature !== 'string' || !Array.isArray(row.aliases) || !Array.isArray(row.callers)) return;
     const symbol: SnapshotSymbol = { ...row, signature: row.signature.slice(0, 300),
       sources: Array.isArray(row.sources) && row.sources.length <= 512 && row.sources.every((source: any) =>
-        safeSnapshotPath(source?.path) && /^[a-f0-9]{64}$/i.test(source.sha256 ?? '')) ? row.sources : undefined,
+        safeSnapshotPath(source?.path) && /^[a-f0-9]{64}$/i.test(source.sha256 ?? '')
+        && (source.digest === undefined || source.digest === PACKAGE_NAME_PROOF_DIGEST)) ? row.sources : undefined,
       aliases: row.aliases.filter((name: unknown) => typeof name === 'string' && /^[A-Za-z_$][\w$]*$/.test(name)),
       callers: row.callers.filter((caller: any) => site(caller) && typeof caller.spelling === 'string').slice(0, 500) };
     for (const name of new Set([symbol.name, ...symbol.aliases])) {
@@ -180,10 +185,12 @@ export async function parsePushSnapshotStream(input: AsyncIterable<string>, now 
 
 /** Bounded content checks, never a compiler or a synchronous read on the hook path.
  * A large proof, changed forwarding module or unreadable source suppresses the answer.
+ * A `package-name-v1` source is a workspace manifest pinned only by its `name`; any other
+ * digest fails closed. `observed`, when passed, receives each file's full-content sha256.
  */
 export async function corroboratePushSources(root: string | undefined,
-  sources: readonly { path: string; sha256: string }[], signal: AbortSignal,
-  maxSources = PUSH_PROOF_MAX_SOURCES): Promise<boolean> {
+  sources: readonly PushProofSource[], signal: AbortSignal,
+  maxSources = PUSH_PROOF_MAX_SOURCES, observed?: Map<string, string>): Promise<boolean> {
   if (!root || !sources.length || sources.length > maxSources || signal.aborted) return false;
   let cursor = 0;
   let valid = true;
@@ -195,7 +202,11 @@ export async function corroboratePushSources(root: string | undefined,
         const file = join(root, source.path);
         if ((await stat(file)).size > 2_000_000) { valid = false; break; }
         const bytes = await readFile(file, { signal });
-        valid &&= createHash('sha256').update(bytes).digest('hex') === source.sha256;
+        const full = createHash('sha256').update(bytes).digest('hex');
+        const pinned = source.digest === undefined ? full
+          : source.digest === PACKAGE_NAME_PROOF_DIGEST ? packageNameProofSha256(bytes.toString('utf8')) : null;
+        valid &&= pinned === source.sha256;
+        observed?.set(source.path, full);
       } catch { valid = false; }
     }
   }));
@@ -303,19 +314,24 @@ export async function queryPushSnapshot(query: {
     // was edited, and always for symbols with more than 64 source files. Alias, cursor and
     // callers answers keep the full forwarding + caller proof.
     const declarationOnly = query.op === 'definition' && !cursorPath && symbol.name === query.name;
-    const proofInputs = declarationOnly ? [{ path: symbol.path, sha256: symbol.sha256 }]
+    const proofInputs: PushProofSource[] = declarationOnly ? [{ path: symbol.path, sha256: symbol.sha256 }]
       : [...symbol.sources, { path: symbol.path, sha256: symbol.sha256 },
         ...symbol.callers.map(site => ({ path: site.path, sha256: site.sha256 }))];
-    const sourceMap = new Map<string, string>();
+    const sourceMap = new Map<string, PushProofSource>();
     for (const source of proofInputs) {
-      if (sourceMap.has(source.path) && sourceMap.get(source.path) !== source.sha256) return null;
-      sourceMap.set(source.path, source.sha256);
+      const seen = sourceMap.get(source.path);
+      if (seen && (seen.sha256 !== source.sha256 || seen.digest !== source.digest)) return null;
+      sourceMap.set(source.path, source);
     }
     if (cursorPath && !sourceMap.has(cursorPath)) return null;
-    const proof = [...sourceMap].map(([path, sha256]) => ({ path, sha256 }));
-    if (!await corroboratePushSources(root, proof, signal, QUERY_PROOF_MAX_SOURCES)) return null;
+    const proof = [...sourceMap.values()];
+    // supportingFiles claims a full-source hash, so a manifest pinned only by its name reports
+    // the content it was actually corroborated against, never the narrower name digest.
+    const observed = new Map<string, string>();
+    if (!await corroboratePushSources(root, proof, signal, QUERY_PROOF_MAX_SOURCES, observed)
+      || proof.some(source => !observed.has(source.path))) return null;
     const sources: CodeIntelSourceFile[] = proof.sort((a, b) => a.path.localeCompare(b.path)).map(source => ({
-      path: source.path, contentHash: source.sha256, representation: 'full-source',
+      path: source.path, contentHash: observed.get(source.path)!, representation: 'full-source',
       language: /\.[cm]?jsx?$/.test(source.path) ? 'javascript' : /\.[cm]?tsx?$/.test(source.path) ? 'typescript' : 'json',
     }));
     const repositoryId = `local-root:${createHash('sha256').update(root).digest('hex')}`;

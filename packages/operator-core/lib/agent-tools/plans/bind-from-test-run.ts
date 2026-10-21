@@ -160,6 +160,9 @@ export const testRunBindingSchema = z
       .optional()
       .describe("Override the derived subject files (default: the test file's relative imports plus a valid mutant subject path)."),
     sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
+    treeInstrumentKey: repoFilesEvidenceMeasurementSchema.shape.treeInstrumentKey.describe(
+      'For a whole-tree census test: the registered tree instrument the evaluator re-runs over the committed tree (e.g. provider-specific-census).',
+    ),
     fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths.describe(
       'Supply fixturePaths or fixtureGlobs on the first bind when fixture calibration is needed (including inline fixtures in the test file). The recipe is immutable; fixtures are not derived from source imports.',
     ),
@@ -322,6 +325,7 @@ export interface DerivedTestRunBinding {
     rootHarnessSlug?: string;
     sourcePaths: string[];
     sourceGlobs?: string[];
+    treeInstrumentKey?: z.infer<typeof repoFilesEvidenceMeasurementSchema>['treeInstrumentKey'];
     testPaths: string[];
     runtimeUnits?: string[];
     completedRuntime?: z.infer<typeof repoFilesEvidenceMeasurementSchema>['completedRuntime'];
@@ -987,6 +991,7 @@ export function deriveBindingFromTestRun(
       kind: 'repo-files',
       sourcePaths,
       ...(input.sourceGlobs ? { sourceGlobs: input.sourceGlobs } : {}),
+      ...(input.treeInstrumentKey ? { treeInstrumentKey: input.treeInstrumentKey } : {}),
       testPaths: [testPath],
       ...(input.fixturePaths ? { fixturePaths: input.fixturePaths } : {}),
       ...(input.fixtureGlobs ? { fixtureGlobs: input.fixtureGlobs } : {}),

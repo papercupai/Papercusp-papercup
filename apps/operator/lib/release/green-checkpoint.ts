@@ -576,6 +576,13 @@ export interface FrozenReviewClockOptions {
   frozenCandidateOpenedAtMs?: number;
 }
 
+/** WI-6554700010018556: what one repair-tick leg measurement is asked for. `signal` is the
+ *  post-verdict deadline ({@link REPAIR_TICK_LEGS_DEADLINE_MS}): once it aborts, the
+ *  in-flight leg is killed and the measurement returns `null` (unmeasured). */
+export interface RepairTickLegsOptions extends FrozenReviewClockOptions {
+  signal?: AbortSignal;
+}
+
 /** A source/test sibling whose newest committed half sits beyond the candidate cut. */
 export interface SplitSourceTestPair {
   candidatePath: string;
@@ -960,7 +967,7 @@ export interface CheckpointDeps {
   runRepairTickLegs?(
     ref: string,
     gateIds: string[],
-    opts?: FrozenReviewClockOptions,
+    opts?: RepairTickLegsOptions,
   ): Promise<RepairTickLegs | null>;
   /** P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): heal the `gen:*:check`
    *  members of a repair-round red by running the paired `gen:*` writer INSIDE the frozen
@@ -10577,6 +10584,12 @@ export function sanitizeForkNodeOptions(
  *   {@link GREEN_CHECKPOINT_FORK_HEAP_MB} so the 8 concurrent forks can't each bloat to
  *   128 GiB and ENOMEM the box — the memory-pressure flake that held `main` ~16h.
  */
+/** WI-6554700010018666: the key the governed-admission client reads. It must equal
+ *  GOVERNED_ADMISSION_DATABASE_URL_ENV in operator-core resource-governor/execution.ts
+ *  (pinned by green-checkpoint-governed-admission-env.test.ts). Kept local so the gate
+ *  module does not import the governor runtime. */
+export const GOVERNED_ADMISSION_DATABASE_URL_ENV = "PAPERCUSP_GOVERNED_ADMISSION_DATABASE_URL";
+
 export function buildGreenCheckpointEnv(
   base: string | null,
   source: NodeJS.ProcessEnv = process.env,
@@ -10604,6 +10617,12 @@ export function buildGreenCheckpointEnv(
   // Targeted repair tasks bypass affected-tests, so their Git reads need the same
   // optional-lock policy as the ordinary suite. A killed status must not strand index.lock.
   applyGitOptionalLocksDefault(env);
+  // WI-6554700010018666: the suite stays DSN-free, but its governed admission must persist
+  // to the OPERATOR database the governor reads. Without this the admission client fell
+  // through to the discovery file (the installed Papercusp Server's cluster) and every
+  // affected-test task failed 28P01 before running. Only the admission client reads this key.
+  const governedAdmissionUrl = gateOperatorPgEnv(source).HARNESS_ADMIN_DATABASE_URL;
+  if (governedAdmissionUrl) env[GOVERNED_ADMISSION_DATABASE_URL_ENV] = governedAdmissionUrl;
   // WI-10005212: deleted first so a host-leaked value can never back-date a non-frozen run.
   delete env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS;
   if (frozenCandidateOpenedAtMs !== undefined) {
@@ -17048,6 +17067,11 @@ export async function measureRepairTickLegs(
     /** Injectable for tests so the bounded setup-contention retry below costs no real
      *  wall-clock. Production uses a real timer. */
     sleep?: (ms: number) => Promise<void>;
+    /** WI-6554700010018556: the caller's deadline. Checked before setup, after setup and
+     *  between every script; once aborted the measurement returns `null` — a partial leg set
+     *  must never be reported as the tick's complete failing set. The real `runScript`
+     *  forwards the same signal to its child so the in-flight leg is killed, not abandoned. */
+    signal?: AbortSignal;
   },
   ref: string,
   registry: Record<string, readonly RepairTickRun[]> = NON_TEST_GATE_SCRIPTS,
@@ -17055,6 +17079,15 @@ export async function measureRepairTickLegs(
   const now = io.now ?? Date.now;
   const sleep =
     io.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const measurementStartedAt = now();
+  const abortedUnmeasured = (where: string): null => {
+    io.log(
+      `warn: repair-tick legs aborted ${where} after ${Math.max(0, now() - measurementStartedAt)}ms ` +
+        `at ${ref.slice(0, 12)} — tick stays unmeasured`,
+    );
+    return null;
+  };
+  if (io.signal?.aborted) return abortedUnmeasured("before setup");
   // WI-10002399: ride out a LIVE writer's brief hold on the checkpoint worktree's git
   // locks instead of spending the whole tick on it. Returning null here is honest — an
   // unmeasured tick never manufactures evidence, and that property is preserved on EVERY
@@ -17091,8 +17124,10 @@ export async function measureRepairTickLegs(
     );
     return null;
   }
+  if (io.signal?.aborted) return abortedUnmeasured("after setup");
   const legs: RepairTickLegRecord[] = [];
-  for (const [gateId, runs] of Object.entries(registry)) {
+  const registryEntries = Object.entries(registry);
+  for (const [legIndex, [gateId, runs]] of registryEntries.entries()) {
     const startedAt = now();
     let worst: RepairTickLegRecord["status"] = "pass";
     const tails: string[] = [];
@@ -17131,9 +17166,20 @@ export async function measureRepairTickLegs(
         tails.push(`${label}: package.json unreadable`);
         continue;
       }
+      if (io.signal?.aborted) return abortedUnmeasured(`before ${label}`);
       ranScript = true;
+      // WI-6554700010018556: an entry line per script, so a stall or overrun names the leg
+      // that was running (run fc4e96c0 logged nothing for 58m after setup, then was killed).
+      io.log(
+        `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} started`,
+      );
+      const scriptStartedAt = now();
       try {
         const r = await io.runScript(script, workspace);
+        io.log(
+          `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} exit ${r.code} ` +
+            `in ${Math.max(0, now() - scriptStartedAt)}ms`,
+        );
         // WI-10000288: the same three-outcome contract `runGateAtRef` applies, and it matters
         // MORE here — this is the path that rebuilds `failingSignatures`. A guard registered
         // `notCheckedIsNonGating` exiting EXIT_NOT_CHECKED examined nothing (empty
@@ -17155,6 +17201,12 @@ export async function measureRepairTickLegs(
           verifiedAny = true;
         }
       } catch (e) {
+        // An abort kills the leg mid-run: its rejection is the deadline, not a leg verdict.
+        if (io.signal?.aborted) return abortedUnmeasured(`during ${label}`);
+        io.log(
+          `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} errored ` +
+            `in ${Math.max(0, now() - scriptStartedAt)}ms`,
+        );
         worst = "errored";
         tails.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -17226,7 +17278,9 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
     | "transitionFrozenRepairQueue"
     | "writeFrozenRepairQueue"
     | "checkDiskHeadroom"
+    | "recordPostVerdictStepDeadline"
   >,
+  bounds: { deadlineMs?: number; abortGraceMs?: number } = {},
 ): Promise<T> {
   if (result.reason !== "repair-in-progress") return result;
   // A stale-candidate auto-refire recurses runGreenCheckpoint IN-PROCESS, so a bubbled-up
@@ -17264,12 +17318,59 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
       return result;
     }
   }
+  // WI-6554700010018556: this step runs AFTER the suite verdict is recorded, under the
+  // post-verdict watchdog ceiling. Its legs include every queued `<ws> :: test` signature, each
+  // with a 45m-idle/90m-hard rescue budget, so an unbounded pass outran the 60m ceiling and
+  // the self-watchdog SIGKILLed the whole run — erasing a verdict it had already recorded (run
+  // fc4e96c0, 2026-10-20 22:15→23:15Z). Bound it well inside the ceiling; on the deadline abort
+  // the in-flight leg (killed, not abandoned) and leave the tick honestly UNMEASURED.
+  const deadlineMs = bounds.deadlineMs ?? REPAIR_TICK_LEGS_DEADLINE_MS;
+  const abortGraceMs = bounds.abortGraceMs ?? REPAIR_TICK_LEGS_ABORT_GRACE_MS;
+  const controller = new AbortController();
+  const startedAtMs = Date.now();
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"deadline">((resolve) => {
+    deadlineTimer = setTimeout(() => resolve("deadline"), deadlineMs);
+  });
   try {
-    const measured = await deps.runRepairTickLegs(
+    const measurement = deps.runRepairTickLegs(
       queue.repairHead,
       repairTickGateIds(queue),
-      { frozenCandidateOpenedAtMs: queue.openedAtMs },
+      { frozenCandidateOpenedAtMs: queue.openedAtMs, signal: controller.signal },
     );
+    const outcome = await Promise.race([measurement, deadline]);
+    if (outcome === "deadline") {
+      controller.abort();
+      // Bounded wait for the aborted measurement to unwind, so its killed leg is gone before
+      // routing and exit rather than racing the next tick for the checkpoint tree.
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
+      const unwound = await Promise.race([
+        measurement.then(
+          () => true,
+          () => true,
+        ),
+        new Promise<boolean>((resolve) => {
+          graceTimer = setTimeout(() => resolve(false), abortGraceMs);
+        }),
+      ]);
+      if (graceTimer) clearTimeout(graceTimer);
+      const elapsedMs = Date.now() - startedAtMs;
+      deps.log(
+        `warn: P-009 repair-tick legs deadline-exceeded after ${elapsedMs}ms (deadline ${deadlineMs}ms) — ` +
+          `in-flight leg aborted${unwound ? "" : ` (did not unwind within ${abortGraceMs}ms)`}; ` +
+          `tick stays unmeasured, recorded verdict unaffected`,
+      );
+      if (deps.recordPostVerdictStepDeadline) {
+        const record = deps.recordPostVerdictStepDeadline;
+        await recordPostVerdictDeadline(
+          (info) => record.call(deps, info),
+          { label: "P-009 repair-tick legs", deadlineMs, elapsedMs },
+          deps.log,
+        );
+      }
+      return result;
+    }
+    const measured = outcome;
     if (!measured) return result;
     deps.log(
       `P-009 repair-tick legs at ${measured.head.slice(0, 12)}: ` +
@@ -17285,6 +17386,8 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
       `warn: P-009 repair-tick leg measurement failed: ${e instanceof Error ? e.message : e}`,
     );
     return result;
+  } finally {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
   }
 }
 
@@ -17357,6 +17460,18 @@ export const DERIVED_FREEZE_DISPOSITION_DEADLINE_MS = 30_000;
 /** WI-6554700010009547: ceiling for the frozen-repair leg routing step. It reads the open
  * leg conditions and mints/settles work-items: seconds of DB work, never minutes. */
 export const FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS = 60_000;
+
+/** WI-6554700010018556: ceiling for one awaiting-fixer tick's P-009 repair-tick legs (setupTree
+ * plus every leg). The baseline pass is ~20m (1,170,263ms summed at 19:45Z on 2026-10-20, 14 of
+ * its 32 legs `<ws> :: test`). It must fit inside POST_VERDICT_WATCHDOG_MS together with every
+ * other bounded post-verdict step AND the terminal-finalize budget, or the self-watchdog kills
+ * the run and its recorded verdict reads `error`. That sum is pinned by a test, not by this
+ * comment. */
+export const REPAIR_TICK_LEGS_DEADLINE_MS = 40 * 60_000;
+
+/** WI-6554700010018556: after the legs deadline aborts the in-flight leg, how long to wait for
+ * the measurement to unwind (its child SIGKILLed) before moving on regardless. */
+export const REPAIR_TICK_LEGS_ABORT_GRACE_MS = 10_000;
 
 /**
  * WI-6554700010009547: bound ONE observational post-verdict step. Once a suite verdict
@@ -17903,6 +18018,10 @@ export type CheckpointExec = (
     onOutput?: (stream: "stdout" | "stderr", text: string) => void;
     /** Report that the child produced output so a progress-aware watchdog can reset its idle budget. */
     onProgress?: () => void;
+    /** WI-6554700010018556: abort the child. On abort the child is SIGKILLed (its whole
+     *  process GROUP when `killProcessGroupOnTimeout` is set) and the call rejects. Optional
+     *  so every injected test fake keeps compiling untouched — a fake simply ignores it. */
+    signal?: AbortSignal;
   },
 ) => Promise<CheckpointExecResult>;
 
@@ -23616,6 +23735,7 @@ export function realCheckpointDeps(
         {
           setupTree: (r) => this.setupTree(r),
           resolveHead: () => revParse(cfg.checkpointRoot, "HEAD"),
+          signal: opts?.signal,
           runScript: async (script, workspace) => {
             // Same invocation shape runGateAtRef uses above, so a workspace leg re-runs
             // through the standalone-package path when the workspace has one and through
@@ -23638,6 +23758,11 @@ export function realCheckpointDeps(
               env: scriptEnv,
               allowNonZero: true,
               ...rescueTaskWatchdogOptions(script, scriptEnv),
+              // WI-6554700010018556: the legs deadline aborts the in-flight leg. The group
+              // kill makes that abort reach npm's whole subtree (sh -> node -> workers), not
+              // only the direct npm child, so nothing keeps running in the checkpoint tree.
+              signal: opts?.signal,
+              killProcessGroupOnTimeout: true,
             });
             return {
               code: r.code,
@@ -24362,9 +24487,17 @@ export function runCmd(
     /** Report every stdout/stderr chunk as real child-process progress. The callback is
      *  diagnostic/liveness-only; failures in it must never change the command verdict. */
     onProgress?: () => void;
+    /** WI-6554700010018556: abort the child — SIGKILL it (its whole process GROUP when
+     *  `killProcessGroupOnTimeout` is set, exactly like a timeout kill) and reject. An
+     *  already-aborted signal rejects without spawning anything. */
+    signal?: AbortSignal;
   } = {},
 ): Promise<CheckpointExecResult> {
   return new Promise((resolve, reject) => {
+    if (opts.signal?.aborted) {
+      reject(new Error(`${cmd} ${args.join(" ")} aborted before spawn`));
+      return;
+    }
     let cmdToRun = cmd;
     let argsToRun = args;
     let env = opts.env ?? process.env;
@@ -24524,15 +24657,24 @@ export function runCmd(
         );
       }, opts.hardTimeoutMs);
     }
+    // WI-6554700010018556: an abort is a caller-owned deadline — the same kill + reject as a
+    // timeout, so a bounded post-verdict step can actually STOP the leg it abandons instead of
+    // leaving it running in the checkpoint tree after the run returns.
+    const onAbort = () =>
+      rejectTimeout(`${cmd} ${args.join(" ")} aborted by caller deadline`);
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    const detachAbort = () => opts.signal?.removeEventListener("abort", onAbort);
     child.stdout.on("data", (d) => capture("stdout", d));
     child.stderr.on("data", (d) => capture("stderr", d));
     child.on("error", (e) => {
+      detachAbort();
       if (settled) return;
       settled = true;
       clearTimers();
       reject(e);
     });
     child.on("close", (code, signal) => {
+      detachAbort();
       if (settled) return;
       settled = true;
       clearTimers();

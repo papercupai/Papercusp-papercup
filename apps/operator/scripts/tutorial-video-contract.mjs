@@ -43,7 +43,8 @@ export function vttTimestamp(seconds) {
   return `${String(Math.floor(ms / 3600000)).padStart(2, '0')}:${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`;
 }
 export function webVtt(cues) {
-  return 'WEBVTT\n\n' + cues.map((cue, index) => `${index + 1}\n${vttTimestamp(cue.start)} --> ${vttTimestamp(cue.end)}\n${escapeHtml(cue.text)}\n`).join('\n');
+  // Narration paragraphs must not become blank-line cue delimiters.
+  return 'WEBVTT\n\n' + cues.map((cue, index) => `${index + 1}\n${vttTimestamp(cue.start)} --> ${vttTimestamp(cue.end)}\n${escapeHtml(cue.text.replace(/\s+/g, ' ').trim())}\n`).join('\n');
 }
 
 /**

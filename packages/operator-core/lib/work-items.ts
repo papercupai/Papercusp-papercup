@@ -4328,7 +4328,11 @@ export async function setWorkItemState(
   // whether that prior state was literally 'blocked'. work_items:complete has no
   // `force` arg (WI-4530), so the refusal always points callers at
   // work_items:set_state { force: true } instead.
-  const isUnblockingTransition = wi.state === 'blocked' && state !== 'blocked';
+  // An owner park keeps the item out of the claimable lane just like `blocked`.
+  // Treating blocked -> needs-human as an unblock made the plan-lane guard reject
+  // a valid classification when the linked plan item was already needs-human.
+  const isUnblockingTransition =
+    wi.state === 'blocked' && state !== 'blocked' && state !== 'needs-human';
   const isCompletingTransition = !isSettledWorkItemState(wi.state) && isSettledWorkItemState(state);
   // EI-6554700010011175: a terminal close must not strand an announced event
   // gate that still has live waiters. The announcement is deliberately durable
@@ -5888,6 +5892,10 @@ export async function claimWorkItem(
   let prior: WorkItem | null = null;
   if (issue) {
     prior = issueToWorkItem(issue);
+    // EI-26547411992035448: a named claim must not rewrite the assignee of a
+    // terminal item. Reopen it explicitly through setWorkItemState(force:true)
+    // first; the UPDATE in claimIssue repeats this as the race-safe backstop.
+    if (isSettledWorkItemState(prior.state)) return null;
     // P-007 / D-021: a verification task (payload.verification) is never claimable by
     // its own reporter or implementer. This is the by-id writer every assign path
     // funnels through, so the refusal holds for claim, assign and dispatch alike.
@@ -5948,6 +5956,9 @@ export async function claimWorkItem(
     const wi = await getFeatureWorkItemOnly(id, opts.harness);
     if (!wi) return null;
     prior = wi;
+    // Mirror the issue-family refusal above. Keep the predicate in the SQL UPDATE
+    // too, because a completion can race this read.
+    if (isSettledWorkItemState(prior.state)) return null;
     if (verificationTaskConflict(prior.payload, assignee)) return null;
     const operationClaims = await import('./blueprint/operation-worker-binding');
     const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), assignee);
@@ -6010,6 +6021,11 @@ export async function claimWorkItem(
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
          AND ${selection.where}
+         -- EI-26547411992035448: direct-by-id is not a way to overwrite the
+         -- attribution of terminal work. A deliberate reopen is a separate,
+         -- audited state transition; this predicate is the CAS backstop if the
+         -- row became terminal after the pre-read above.
+         AND lower(btrim(COALESCE(target.status, ''))) <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
          -- The reviewer admission is used by self-selecting pickup after a queue read. It
          -- lifts only the pending-review intake floor; it must retain the durable self-select
          -- park even though ordinary named claims may intentionally bypass that floor.

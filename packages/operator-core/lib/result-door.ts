@@ -82,10 +82,11 @@ import {
  *  it is exactly this value. */
 export const RESULT_DOOR_TOKENS = computeTurnDoors(0).resultEach;
 const RESULT_DOOR_SCRATCH_WRITE_WAIT_MS = 30_000;
-// Result-door writers must not queue behind an unbounded scratch-quota mutex wait.
-// A failed admission still preserves the exact bytes through the existing volatile/
-// durable fallback path, while a successful writer retains the normal quota fence.
-const RESULT_DOOR_SCRATCH_MUTEX_WAIT_MS = 5_000;
+// Keep quota-lock admission inside the same bounded window as the async spill write.
+// The old 5s sub-budget caused a premature fallback while a legitimate quota recovery
+// or fair mutex queue was still inside the result-door's 30s request budget. The outer
+// wait remains the hard ceiling; this only lets the normal durable writer use that budget.
+const RESULT_DOOR_SCRATCH_MUTEX_WAIT_MS = RESULT_DOOR_SCRATCH_WRITE_WAIT_MS;
 const RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS = 5_000;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -951,6 +952,11 @@ function isScorecardsEmitCall(input: { toolName: string; nestedTargetToolName?: 
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'scorecards:emit');
 }
 
+function isReleaseRepairQueueCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'release:repair-queue' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'release:repair-queue');
+}
+
 const WORK_ITEMS_COMPLETE_SPILL_RECOVERY =
   'The work_items:complete write may already have committed before its response spill failed. Do NOT repeat this call. ' +
   'Read each preserved results[].id with work_items:get and inspect the current item state and completionAuthority ' +
@@ -1139,6 +1145,155 @@ function compactScorecardsEmitBody(value: unknown): JsonObject | null {
       recovery: 'full result is in _projection.cursor',
     },
   };
+}
+
+/**
+ * Keep release-fixer reads useful after the result door has already spent its
+ * budget on queue diagnostics. The typed signature is the failure evidence:
+ * preserve its cardinality and a small, self-describing prefix instead of
+ * letting the generic identity walk silently turn fifty entries into six.
+ */
+const RELEASE_REPAIR_QUEUE_SIGNATURE_DISPLAY_CAP = 6;
+const RELEASE_REPAIR_QUEUE_EVIDENCE_DISPLAY_CAP = 6;
+
+const RELEASE_REPAIR_QUEUE_PRESERVE_PATHS = [
+  'repairQueue.phase',
+  'repairQueue.candidate',
+  'repairQueue.repairHead',
+  'repairQueue.decision',
+  'repairQueue.nextAction',
+  'repairQueue.signatureCount',
+  'repairQueue.signatureShownCount',
+  'repairQueue.signatureOmittedCount',
+  'repairQueue.signatureComplete',
+  'repairQueue.signature[].kind',
+  'repairQueue.signature[].id',
+  'repairQueue.signature[].recipe',
+  'repairQueue.signature[].workspace',
+  'repairQueue.signature[].admittedRound',
+  'repairQueue.signature[].measuredHead',
+  'repairQueue.signature[].cases',
+  'repairQueue.signature[].casesCount',
+  'repairQueue.signature[].casesOmittedCount',
+  'repairQueue.signature[].errors',
+  'repairQueue.signature[].errorsCount',
+  'repairQueue.signature[].errorsOmittedCount',
+  'repairQueue._compactProjection',
+] as const;
+
+function compactRepairQueueSignatureEntry(value: unknown): JsonObject | null {
+  const source = recordAt(value);
+  if (!source) return null;
+  const compact: JsonObject = {};
+  copyJsonKeys(source, compact, ['kind', 'id', 'recipe', 'workspace', 'admittedRound', 'measuredHead']);
+  for (const key of ['cases', 'errors'] as const) {
+    const values = source[key];
+    if (!Array.isArray(values)) continue;
+    const shown = values.filter((entry): entry is string => typeof entry === 'string')
+      .slice(0, RELEASE_REPAIR_QUEUE_EVIDENCE_DISPLAY_CAP);
+    compact[key] = shown;
+    compact[`${key}Count`] = values.length;
+    if (values.length > shown.length) compact[`${key}OmittedCount`] = values.length - shown.length;
+  }
+  return Object.keys(compact).length > 0 ? compact : null;
+}
+
+function compactReleaseRepairQueueDiagnostic(value: unknown): JsonObject | null {
+  const source = recordAt(value);
+  if (!source) return null;
+
+  const compact: JsonObject = {};
+  copyJsonKeys(source, compact, [
+    'phase', 'candidate', 'repairHead', 'blockedReason', 'attempts', 'openedAtMs', 'updatedAtMs',
+    'ageMs', 'ageEscalationRung', 'ageEscalationIntervalMs', 'zeroAttemptStalled',
+    'zeroAttemptStallMs', 'fixerSpawnId', 'fixerAlive', 'decision', 'retireAllowed',
+    'retireRefusal', 'nextAction', 'repairLatency', 'dispatchReservation', 'admissionPrecheck',
+    'manifestSummary', 'sameHeadContradicted',
+  ]);
+
+  const sourceSignature = Array.isArray(source.signature)
+    ? source.signature
+    : Array.isArray(source.failingTests)
+      ? source.failingTests.map((id) => ({ id }))
+      : [];
+  const signature = sourceSignature
+    .slice(0, RELEASE_REPAIR_QUEUE_SIGNATURE_DISPLAY_CAP)
+    .map(compactRepairQueueSignatureEntry)
+    .filter((entry): entry is JsonObject => entry !== null);
+  compact.signature = signature;
+  const priorSignatureCount = typeof source.signatureCount === 'number' &&
+    Number.isSafeInteger(source.signatureCount) && source.signatureCount >= sourceSignature.length
+    ? source.signatureCount
+    : sourceSignature.length;
+  compact.signatureCount = priorSignatureCount;
+  compact.signatureShownCount = signature.length;
+  compact.signatureOmittedCount = Math.max(0, priorSignatureCount - signature.length);
+  compact.signatureComplete = signature.length === priorSignatureCount;
+
+  if (Array.isArray(source.failingTests)) {
+    const shownFailingTests = source.failingTests.slice(0, RELEASE_REPAIR_QUEUE_SIGNATURE_DISPLAY_CAP);
+    compact.failingTestsCount = source.failingTests.length;
+    compact.failingTests = shownFailingTests;
+    if (source.failingTests.length > shownFailingTests.length) {
+      compact.failingTestsOmittedCount = source.failingTests.length - shownFailingTests.length;
+    }
+  }
+
+  compact._compactProjection = {
+    kind: 'release:repair-queue',
+    preserves: [
+      'signatureCount',
+      'signatureShownCount',
+      'signatureOmittedCount',
+      'signature[].kind/id/recipe/workspace/admittedRound/measuredHead',
+      'signature[].cases/errors with per-entry counts',
+    ],
+    omits: ['signature entries after the bounded display prefix', 'unselected queue diagnostics'],
+    recovery: 'full result is in _projection.cursor',
+  };
+  return compact;
+}
+
+function compactReleaseRepairQueueBody(value: unknown): JsonObject | null {
+  const source = recordAt(value);
+  const queue = compactReleaseRepairQueueDiagnostic(source?.repairQueue);
+  if (!source || !queue) return null;
+
+  const compact: JsonObject = {};
+  copyJsonKeys(source, compact, [
+    'ok', 'op', 'verdict', 'admitted', 'precheckOperation', 'dryRun', 'judgedSha',
+    'nextAction', 'containment', 'proof', 'admission', 'lineageRef', 'wouldMoveRepairHead',
+    'movedRepairHead', 'persisted', 'auditRecorded', 'note', 'reason', 'detail', 'stray',
+    'retired', 'nextStep', 'alreadyClear', 'refused', 'casMiss', 'current', 'target', 'source',
+    'timings', 'repairQueueRead', 'callerAuthorization', 'completionReceipt', 'inconclusiveTerminal',
+  ]);
+  compact.repairQueue = queue;
+  compact._compactProjection = {
+    kind: 'release:repair-queue',
+    preserves: [...RELEASE_REPAIR_QUEUE_PRESERVE_PATHS],
+    omits: ['unselected queue diagnostics and signature entries after the bounded prefix'],
+    recovery: 'full result is in _projection.cursor',
+  };
+  return compact;
+}
+
+function isReleaseRepairQueueCompactBody(value: unknown): boolean {
+  const source = recordAt(value);
+  const projection = recordAt(source?._compactProjection);
+  const queue = recordAt(source?.repairQueue);
+  const queueProjection = recordAt(queue?._compactProjection);
+  return projection?.kind === 'release:repair-queue' &&
+    queueProjection?.kind === 'release:repair-queue';
+}
+
+function isAlreadyCompactedReleaseRepairQueueResult(
+  result: DoorableResult,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): boolean {
+  if (!isReleaseRepairQueueCall(opts)) return false;
+  const textItems = result.content.filter(isTextItem);
+  const body = classifyProjectionBody(textItems).json?.parsed;
+  return isReleaseRepairQueueCompactBody(body);
 }
 
 function scorecardsEmitReceipt(
@@ -3252,6 +3407,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // downstream caller cannot infer success from a short body. coord:thread
       // is the exception when every marker is one of its documented,
       // field-specific continuations; those flags are the usable response.
+      // A release:repair-queue response may already be a bounded, typed
+      // projection from an inner result door. Re-wrapping that compact body as
+      // a generic partial reference would discard its signature cardinality
+      // and per-entry evidence even though the body already fits this door.
+      if (isAlreadyCompactedReleaseRepairQueueResult(result, opts)) return result;
       const innerTruncationMarkers = detectInnerTruncationMarkers(
         items.filter(isTextItem).map((item) => item.text),
         opts.toolName,
@@ -3635,7 +3795,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // The cursor points to a manifest-bearing scratch file, not the JSON body;
               // offer plaintext line windows and retain the validated byte-page path.
               `Use capability:read cursor.args (byte_offset+byte_limit; no raw). ` +
-              `Plaintext: raw:true+offset/limit lines (long selected lines require byte pages). ` +
+              // The long-line caveat belongs to the plaintext branch only. The JSON
+              // branch already routes the reader to byte pages ("JSON at
+              // response.data[...]": response.data exists only in byte-page mode), and
+              // its pointer is length-pinned by result-door-encoding-contract.test.ts.
+              // Adding these 41 chars to both branches broke that ceiling (WI-6554700010018572).
+              `Plaintext: raw:true+offset/limit lines${parsedJsonBody ? '' : ' (long selected lines require byte pages)'}. ` +
               `file_path-only truncates long lines; Scratch ref, not JSON; ` +
               `response.data canonical base64; runtime codec; decoded.length===byte_length; ` +
               `follow next_cursor; ` +
@@ -3911,6 +4076,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       parsedJsonBody && isScorecardsEmitCall(opts)
         ? compactScorecardsEmitBody(bodyShape.json!.parsed)
         : null;
+    const releaseRepairQueueCompactBody =
+      parsedJsonBody && isReleaseRepairQueueCall(opts)
+        ? compactReleaseRepairQueueBody(bodyShape.json!.parsed)
+        : null;
     // Full fleet indexes can outgrow even the domain emergency shaper. The
     // source body has already been spilled above; retain the atomic numeric
     // contract inline instead of walking early obligation fields until the
@@ -3932,7 +4101,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const leaderBriefFits = leaderBriefPreview !== null &&
       Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') <= structuralTargetChars;
     let projected: JsonObject = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
-      scorecardsEmitCompactBody ?? evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ??
+      releaseRepairQueueCompactBody ?? scorecardsEmitCompactBody ?? evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ??
         (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
@@ -3978,7 +4147,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           : isWorkItemsReleaseCall(opts)
             ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
         : {}),
-      ...(evaluatorCompactBody == null && preservePaths.length > 0 ? { preservePaths } : {}),
+      ...(evaluatorCompactBody == null && preservePaths.length > 0
+        ? { preservePaths: [...(releaseRepairQueueCompactBody ? RELEASE_REPAIR_QUEUE_PRESERVE_PATHS : []), ...preservePaths] }
+        : releaseRepairQueueCompactBody
+          ? { preservePaths: RELEASE_REPAIR_QUEUE_PRESERVE_PATHS }
+          : {}),
       bulkEnvelope: opts.bulkEnvelope,
     });
     if (isScorecardsGetResult(opts) && parsedJsonBody && evaluatorCompactBody == null) {
@@ -4018,6 +4191,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           ...baseResultDoorMeta,
           structural: true,
           ...(leaderBriefFits ? { compactProjection: 'fleet:leader-brief-numeric-core' } : {}),
+          ...(releaseRepairQueueCompactBody != null
+            ? { compactProjection: 'release:repair-queue:signature-evidence' }
+            : {}),
       ...(scorecardsEmitCompactBody != null
             ? { compactProjection: 'scorecards-emit:canonical-ratings' }
             : evaluatorCompactBody != null

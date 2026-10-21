@@ -280,6 +280,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'the same native exec guard refusal is also reported with its PreToolUseCommandRejected code (EI-26010063340730329)',
   },
   {
+    n: 1, errorCode: 'rejected', status: 'handler_error',
+    message: 'Background git-sync shell command was rejected because rm -f cleanup was disallowed by command guard before invocation. No git-sync process started. Retry without destructive cleanup.',
+    expectedClass: 'caller',
+    note: 'EI-22625552452988793 captured the long git-sync wrapper diagnostic for the same native pre-execution cleanup refusal; it must not enter the structural lane',
+  },
+  {
     n: 2, errorCode: 'handler_error', status: 'error',
     message: "capability:bash cwd '" + missingHomeCwdFixture + "' does not exist — the child process cannot start. (Node would report this as a misleading \"spawn /usr/bin/bash ENOENT\".) Pass an existing directory as cwd.",
     expectedClass: 'caller',

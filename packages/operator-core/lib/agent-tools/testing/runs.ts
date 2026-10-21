@@ -39,6 +39,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { parseTestRunExecutionDetails, RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 import { toIso } from '../_pg-timestamp';
+import { getForegroundRunVerdictAsync, type ForegroundRunVerdict } from '../../testing-run-store';
 
 const DEFAULT_LIMIT = 30;
 const OUTPUT_TAIL_CHARS = 800;
@@ -58,6 +59,47 @@ function emptyResultMetadata(
   rowCount: number,
 ): { notRecorded: true; reason: typeof NO_RUNS_RECORDED_REASON } | Record<string, never> {
   return rowCount === 0 ? { notRecorded: true, reason: NO_RUNS_RECORDED_REASON } : {};
+}
+
+/**
+ * An exact-runGroup read that returns zero rows cannot tell "still running" from
+ * "will never report": a foreground testing:run whose confined scope reaches its
+ * RuntimeMaxSec after a host-shutdown handoff ends without writing any row
+ * (WI-6554700010018414). Read that run's task row so the empty result carries an
+ * explicit verdict instead. An unreadable task ledger is reported, never guessed.
+ */
+export async function foregroundRunMetadata(
+  runGroup: string,
+  readVerdict: (runId: string) => Promise<ForegroundRunVerdict | null> = getForegroundRunVerdictAsync,
+): Promise<
+  | { foregroundRun: ForegroundRunVerdict; foregroundRunHint?: string }
+  | { foregroundRunUnavailable: true }
+  | Record<string, never>
+> {
+  let verdict: ForegroundRunVerdict | null;
+  try {
+    verdict = await readVerdict(runGroup);
+  } catch {
+    return { foregroundRunUnavailable: true };
+  }
+  if (!verdict) return {};
+  if (verdict.verdict === 'lost') {
+    return {
+      foregroundRun: verdict,
+      foregroundRunHint:
+        `Foreground run ${runGroup} ended (task ${verdict.taskId}, state ${verdict.taskState}) without ` +
+        'writing any ledger row, so no verdict will ever arrive. NOTHING was measured — re-run the files.',
+    };
+  }
+  if (verdict.verdict === 'running') {
+    return {
+      foregroundRun: verdict,
+      foregroundRunHint:
+        `Foreground run ${runGroup} is still running (task ${verdict.taskId}) and has written no ledger ` +
+        'row yet. Poll testing:run-status { runId } instead of re-running it.',
+    };
+  }
+  return { foregroundRun: verdict };
 }
 
 /** The statuses that constitute a RED row. `error` is red too — the corpus's
@@ -805,6 +847,8 @@ export default defineTool({
     const sourceFilterHint = sourceOmissionHint(omittedBySourceFilter, args.source);
 
     const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+    const foregroundRun = runGroup && rows.length === 0 && testRunIds == null
+      ? await foregroundRunMetadata(runGroup) : {};
     const caseResults = args.cases ? await loadTestCaseResults(sql, rows.map((r) => Number(r.id))) : null;
     const casesFor = (id: number) => {
       if (!caseResults) return {};
@@ -818,6 +862,7 @@ export default defineTool({
         total,
         truncatedByLimit: total > rows.length,
         ...emptyResultMetadata(rows.length + omittedBySourceFilter),
+        ...foregroundRun,
         latestPerFile,
         effectiveSourceFilter,
         omittedBySourceFilter,

@@ -2224,10 +2224,18 @@ a `\du`), the bash form is the right answer — the gate will not fight you on t
   `mcp-call`'s refusal means its process could not connect before sending the
   request; another runtime may reach the endpoint. Probe in the same environment;
   once its `/api/health` answers, retry the original failed Papercup tool call.
-  Re-dial is inconsistent (EI-24755204180385597); no human `/mcp`
-  (EI-24657708696146012). Omit `--port` unless pinning; defaults try configured,
+  Re-dial is inconsistent (EI-24755204180385597); never ask the owner to run
+  `/mcp` (EI-24657708696146012). Omit `--port` unless pinning; defaults try configured,
   canonical, and proxy ports. Flush checkpoints and request compaction via
   `mcp-call.mjs`.
+- **TOOLLESS but "connected"** (papercusp tools vanished; the `/mcp` dialog
+  still reads connected) — **heal it yourself; never ask the owner for
+  `/mcp` → Reconnect.** From native Bash run `node scripts/mcp-reconnect.mjs`,
+  then END YOUR TURN: your own psu host presses Reconnect once you are idle at
+  the prompt, forced even when the dialog reads connected (EI-26532826938565424).
+  If tools are still missing on the next turn, or the script reports no host /
+  a refused ack, request a carry-respawn via
+  `mcp-call.mjs session:request-compaction` (a fresh process re-dials MCP).
 - **IDENTITY** — tools are listed, but calls refuse `Identity capability (unresolved):
   stale-artifact`. ⛔ **`mcp-call.mjs` CANNOT open this one**: server-side preflight
   rejects every client and port (WI-10002028); even `coord:orient` may be refused.
@@ -2240,6 +2248,7 @@ a `\du`), the bash form is the right answer — the gate will not fight you on t
     `desired`: set `applied` and `prepared` to `desired` and
     `status` to `'applied'`, with `WHERE` on that revision. This mitigates; add the
     occurrence to EI-23703586803892464.
+
 Evidence behind the IDENTITY-refusal rule in "Reaching for bash? These reads already have a tool".
 
 **Why `mcp-call.mjs` cannot open the identity class (WI-10002028).** The `stale-artifact`

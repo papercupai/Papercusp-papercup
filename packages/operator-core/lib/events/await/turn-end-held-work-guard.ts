@@ -25,6 +25,13 @@ import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
 import { hasPendingDeliberateWakeDelivery, INBOX_WAKE_KEY_PREFIX, listParkedAwaitsForSubscribers } from './store';
 import {
+  armTurnEndRewake,
+  cancelTurnEndRewake,
+  isTurnEndRewakeKey,
+  turnEndRewakeRefusalLine,
+  type TurnEndRewakeOutcome,
+} from './turn-end-rewake';
+import {
   guaranteesWake,
   readHeldWorkItems,
   readWorkItemAwaitTargets,
@@ -79,6 +86,10 @@ export interface TurnEndHeldWorkDeps {
   listParkedAwaits: (ownerId: string) => Promise<WakeSourceAwait[]>;
   readAwaitTargets: (awaits: WakeSourceAwait[]) => Promise<WorkItemAwaitTargets>;
   hasPendingDeliberateWakeDelivery: (ownerId: string) => Promise<boolean>;
+  /** Arm this session's rewake timer for a refused stop (turn-end-rewake.ts). */
+  armRewake: (input: { ownerId: string; held: readonly HeldWorkItem[] }) => Promise<TurnEndRewakeOutcome>;
+  /** Drop this session's pending rewake timer once a stop is known safe. */
+  cancelRewake: (ownerId: string) => Promise<void>;
 }
 
 const defaultDeps: TurnEndHeldWorkDeps = {
@@ -92,6 +103,8 @@ const defaultDeps: TurnEndHeldWorkDeps = {
     (await listParkedAwaitsForSubscribers([ownerId])).map((a) => ({ ...a, subscriberId: ownerId })),
   readAwaitTargets: (awaits) => readWorkItemAwaitTargets(awaits),
   hasPendingDeliberateWakeDelivery: (ownerId) => hasPendingDeliberateWakeDelivery(ownerId),
+  armRewake: (input) => armTurnEndRewake(input),
+  cancelRewake: (ownerId) => cancelTurnEndRewake({ ownerId }),
 };
 
 /**
@@ -111,19 +124,35 @@ export async function evaluateTurnEndHeldWorkStop(input: {
       .map((row) => row.mode)
       .filter((mode) => modeImpliesAutonomy(mode));
     if (autonomyModes.length === 0) return '';
+    // From here on, a stop KNOWN to be safe drops this session's pending rewake timer: whatever it
+    // was set to catch is gone (the work is released, or a real wake source now exists).
+    const safeStop = async (): Promise<string> => {
+      await deps.cancelRewake(ownerId).catch(() => undefined);
+      return '';
+    };
     const held = await deps.readHeldWorkItems(ownerId, workspaceId);
-    if (held.length === 0) return '';
+    if (held.length === 0) return safeStop();
     const loopActive = await deps.getLoopActive(ownerId);
-    // An unreadable loop status is unknown, and unknown never refuses.
-    if (loopActive !== false) return '';
+    // An unreadable loop status is unknown, and unknown never refuses (nor cancels anything).
+    if (loopActive === null) return '';
+    if (loopActive) return safeStop();
     const [parked, pendingDelivery] = await Promise.all([
       deps.listParkedAwaits(ownerId),
       deps.hasPendingDeliberateWakeDelivery(ownerId),
     ]);
-    if (pendingDelivery) return '';
-    const targets = await deps.readAwaitTargets(parked);
-    const guaranteedWake = parked.some((a) => guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX));
-    return turnEndHeldWorkStopText({ autonomyModes, held, loopActive, guaranteedWake });
+    if (pendingDelivery) return safeStop();
+    // The gate's own rewake timer is a backstop for a stop the gate refused, not a wake source the
+    // agent chose: counting it would silence the refusal on every later stop.
+    const chosen = parked.filter((a) => !isTurnEndRewakeKey(a.eventKey));
+    const targets = await deps.readAwaitTargets(chosen);
+    const guaranteedWake = chosen.some((a) => guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX));
+    if (guaranteedWake) return safeStop();
+    const refusal = turnEndHeldWorkStopText({ autonomyModes, held, loopActive, guaranteedWake });
+    if (!refusal) return '';
+    // The refusal fires once; the adapters drop the next stop. The timer covers an agent that
+    // stops anyway. Arming is best-effort: a failed write never withholds the refusal.
+    const rewake = await deps.armRewake({ ownerId, held }).catch(() => null);
+    return rewake ? `${refusal}\n${turnEndRewakeRefusalLine(rewake)}` : refusal;
   } catch {
     return '';
   }

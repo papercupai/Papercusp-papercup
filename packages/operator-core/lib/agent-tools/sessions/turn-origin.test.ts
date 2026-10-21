@@ -23,7 +23,7 @@ import {
   turnOriginKey,
   unknownTurnOrigin,
 } from './turn-origin';
-import { OWNER_DIALOG_TURN_MARKER } from '../../turn-provenance/turn-ref';
+import { dialogAnswerText } from '../../transcript-wire';
 
 const NONCE = 'b95e490f98516e92';
 const envelope = (origin: string) => `⟦turn-origin:${origin} nonce:${NONCE}⟧`;
@@ -70,7 +70,7 @@ describe('classifyHitTurnOrigin — the false-confirmation cases', () => {
   it('reports a promoted AskUserQuestion answer as affirmative owner-dialog provenance', () => {
     const got = classifyHitTurnOrigin(
       'user',
-      `${OWNER_DIALOG_TURN_MARKER}\nThe user answered: "Which route?"="visible fleet".`,
+      dialogAnswerText('The user answered: "Which route?"="visible fleet".', 'human'),
     );
     expect(got).toEqual({ verdict: 'owner-dialog', origin: null });
   });

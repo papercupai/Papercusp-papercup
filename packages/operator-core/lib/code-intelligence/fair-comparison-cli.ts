@@ -39,7 +39,7 @@ import { createCbmFairArm, createCgcArm, createCodegraphArm, createGitnexusFairA
 import { createLspQueryArm, createNoThirdPartyArm, loadVendoredTypescript } from './fair-comparison-first-party';
 import { acquireArmRunLock } from './fair-comparison-lock';
 import { runArm, scoreRuns, type ArmRun, type FairArmFactory, type PendingSites, type ResourceStage, type ArmResourceSample } from './fair-comparison-run';
-import type { FairCase } from './fair-comparison';
+import type { ArmAnswer, FairCase } from './fair-comparison';
 import { readProcessIdentity } from '../process-identity';
 import { absCgroupDir, readProcessCgroupPath, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { taskIdFromScopeUnit } from '../task-manager/types';
@@ -365,6 +365,82 @@ export async function verifyFairWorkerSource(readSource?:
   }
 }
 
+/** A non-index request to a fresh worker that has not replied by now is over every protocol budget. */
+export const FAIR_WORKER_REQUEST_DEADLINE_MS = 120_000;
+/** How long a worker may stay busy on an overrun request before the repetition fails loudly. */
+export const FAIR_WORKER_DRAIN_CAP_MS = 15 * 60_000;
+
+interface FairWorkerChannelIo {
+  send(line: string, sent: (error?: Error | null) => void): void;
+  isLive(): boolean;
+  deadlineMs(method: string): number;
+  drainCapMs: number;
+  now(): number;
+}
+
+/**
+ * The parent side of the line protocol to one fresh worker. The worker serves one
+ * request at a time, in order. So a query that overruns its deadline still occupies
+ * the worker after the parent stops waiting for it. Two consequences follow:
+ *  - the overrun case is SCORED `timed-out` (an outcome the protocol keeps apart from
+ *    wrong answers), not thrown as an error that discards the arm's whole run; and
+ *  - the next request is not sent until the late reply arrives, so the next case is
+ *    not charged its predecessor's overrun. A worker still busy after `drainCapMs`
+ *    fails the repetition loudly instead of timing out every remaining case.
+ */
+export function createFairWorkerChannel(io: FairWorkerChannelIo) {
+  let sequence = 0;
+  let late: Promise<void> | null = null;
+  const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+  const failAll = (error: Error) => {
+    const waiters = [...pending.values()]; pending.clear();
+    for (const waiter of waiters) waiter.reject(error);
+  };
+  const receive = (line: string) => {
+    if (!line.startsWith('FAIR_WORKER_REPLY=')) return;
+    try {
+      const reply = JSON.parse(line.slice('FAIR_WORKER_REPLY='.length)) as { id: number; result?: unknown; error?: string };
+      const waiter = pending.get(reply.id); pending.delete(reply.id);
+      if (reply.error) waiter?.reject(new Error(reply.error)); else waiter?.resolve(reply.result);
+    } catch (error) { failAll(new Error(String(error))); }
+  };
+  const whenFree = async () => {
+    const waiting = late;
+    if (!waiting) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const freed = await Promise.race([waiting.then(() => true),
+        new Promise<boolean>(done => { timer = setTimeout(() => done(false), io.drainCapMs); })]);
+      if (!freed) throw new Error(`fresh worker still busy ${io.drainCapMs}ms after a request deadline`);
+    } finally { clearTimeout(timer); }
+    if (late === waiting) late = null;
+  };
+  const send = <T>(method: string, kase?: FairCase): Promise<T> => new Promise((done, reject) => {
+    if (!io.isLive()) { reject(new Error('fresh worker is no longer live')); return; }
+    const requestId = ++sequence;
+    const timer = setTimeout(() => {
+      // Keep a sink for the eventual reply: its arrival is what frees the worker.
+      late = new Promise<void>(free => { pending.set(requestId, { resolve: () => free(), reject: () => free() }); });
+      reject(new Error(`fresh worker ${method} deadline`));
+    }, io.deadlineMs(method));
+    pending.set(requestId, { resolve: value => { clearTimeout(timer); done(value as T); }, reject: error => { clearTimeout(timer); reject(error); } });
+    io.send(`${JSON.stringify({ id: requestId, method, kase })}\n`, error => {
+      if (error) { pending.delete(requestId); clearTimeout(timer); reject(error); }
+    });
+  });
+  const rpc = async <T>(method: string, kase?: FairCase): Promise<T> => { await whenFree(); return send<T>(method, kase); };
+  const query = async (kase: FairCase): Promise<ArmAnswer> => {
+    await whenFree();
+    const started = io.now();
+    try { return await send<ArmAnswer>('query', kase); } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (detail !== 'fresh worker query deadline') throw error;
+      return { caseId: kase.id, status: 'timed-out', sites: [], latencyMs: io.now() - started, detail };
+    }
+  };
+  return { receive, failAll, rpc, query };
+}
+
 /** One managed worker per repetition; reuse the existing arm adapters and task metrics. */
 export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, frozenPath: string): Promise<FairArmFactory> {
   await verifyFairWorkerSource();
@@ -435,35 +511,26 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         : new Promise(done => child!.once('close', () => done()));
       if (!launched.confined || !launched.scopeUnit) throw new Error('fresh worker task cgroup unavailable');
       cgroupPath = scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid)), 'test-run', launched.scopeUnit);
-      let sequence = 0, buffer = '';
-      const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+      let buffer = '';
+      const channel = createFairWorkerChannel({
+        send: (line, sent) => { child!.stdin!.write(line, sent); },
+        isLive: () => child!.exitCode === null && child!.signalCode === null && !child!.stdin!.destroyed,
+        deadlineMs: method => method === 'index' ? 4 * 3600_000 : FAIR_WORKER_REQUEST_DEADLINE_MS,
+        drainCapMs: FAIR_WORKER_DRAIN_CAP_MS,
+        now: () => performance.now(),
+      });
       child.stdout!.setEncoding('utf8');
       child.stdout!.on('data', (chunk: string) => {
         buffer += chunk;
         let end: number;
         while ((end = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
-          if (!line.startsWith('FAIR_WORKER_REPLY=')) continue;
-          try {
-            const reply = JSON.parse(line.slice('FAIR_WORKER_REPLY='.length)) as { id: number; result?: unknown; error?: string };
-            const waiter = pending.get(reply.id); pending.delete(reply.id);
-            if (reply.error) waiter?.reject(new Error(reply.error)); else waiter?.resolve(reply.result);
-          } catch (error) { for (const waiter of pending.values()) waiter.reject(new Error(String(error))); pending.clear(); }
+          channel.receive(line);
         }
       });
-      child.once('close', () => { for (const waiter of pending.values()) waiter.reject(new Error('fresh worker exited')); pending.clear(); });
-      child.once('error', error => { for (const waiter of pending.values()) waiter.reject(error); pending.clear(); });
-      const rpc = <T>(method: string, kase?: FairCase): Promise<T> => new Promise((done, reject) => {
-        if (child!.exitCode !== null || child!.signalCode !== null || child!.stdin!.destroyed) {
-          reject(new Error('fresh worker is no longer live')); return;
-        }
-        const requestId = ++sequence;
-        const timer = setTimeout(() => { pending.delete(requestId); reject(new Error(`fresh worker ${method} deadline`)); }, method === 'index' ? 4 * 3600_000 : 120_000);
-        pending.set(requestId, { resolve: value => { clearTimeout(timer); done(value as T); }, reject: error => { clearTimeout(timer); reject(error); } });
-        child!.stdin!.write(`${JSON.stringify({ id: requestId, method, kase })}\n`, error => {
-          if (error) { pending.delete(requestId); clearTimeout(timer); reject(error); }
-        });
-      });
+      child.once('close', () => channel.failAll(new Error('fresh worker exited')));
+      child.once('error', error => channel.failAll(error));
+      const rpc = channel.rpc;
       const close = async () => {
         try { await rpc('close'); } finally {
           child!.stdin!.end();
@@ -480,7 +547,7 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
       return { identity: { taskId: launched.taskId, cgroupPath: confinedPath, treeRoot, home, sourceCommit,
         runtimeVersion: admitted.capabilities.version },
       arm: { capabilities: admitted.capabilities, unavailable: null,
-        index: () => rpc('index'), query: kase => rpc('query', kase), close },
+        index: () => rpc('index'), query: kase => channel.query(kase), close },
       nativeGraphQuery: kase => rpc<Awaited<ReturnType<typeof replayFrozenGraphTask>>>('native-graph', kase),
       async sampleResources(_stage: ResourceStage) {
         const sample = sampleCgroup(absCgroupDir(confinedPath));

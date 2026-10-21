@@ -204,6 +204,18 @@ vi.mock('../../release/checkpoint-memory-admission', async (orig) => ({
     },
 }));
 
+// WI-6554700010018575: the scheduled action reads THIS root's run lock before the memory
+// admission. The default reads the REAL lock directory, which a live gate run on this host
+// holds — host state, not a test input (the same leak WI-2141541 describes above). Stub
+// not-held; a test that needs a held lock sets runLockOverride.value.
+const runLockOverride = vi.hoisted(() => ({
+  value: null as null | { held: boolean; pid?: number; elapsedSec: number | null },
+}));
+vi.mock('../../release-checkpoint-lock', async (orig) => ({
+  ...(await orig<typeof import('../../release-checkpoint-lock')>()),
+  isCheckpointRunLockHeldCheap: () => runLockOverride.value ?? { held: false, elapsedSec: null },
+}));
+
 // per-hive-git-and-release-gate P-010: the handlers now resolve the operator-home slug to
 // route per-hive (green-checkpoint) / guard leg-3 (release-trigger). Make the fixture's
 // `my-harness` BE the operator-home so these tests exercise the home (default) path; other
@@ -1332,6 +1344,7 @@ beforeEach(() => {
   qualificationAdmission.mockReset();
   qualificationAdmission.mockResolvedValue({ status: 'clear' });
   memoryAdmissionOverride.value = null;
+  runLockOverride.value = null;
   readLiveReleaseCertification.mockReset();
   readLiveReleaseCertification.mockImplementation(async (targetSha: string) => ({
     status: 'certified',
@@ -2862,6 +2875,94 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     } finally {
       warn.mockRestore();
     }
+  });
+
+  describe('WI-6554700010018575: a fire against this root\'s own live run is not a memory-budget skip', () => {
+    // Measured 2026-10-20 22:09-23:05Z: 7 papercusp fires were recorded as skipped-memory-budget
+    // while papercusp's own run held one of the 3 counted scopes; each armed the 10-minute requeue.
+    const overBudget = {
+      admit: false,
+      reason: 'over-budget' as const,
+      requestG: 40,
+      committedG: 86,
+      budgetG: 125,
+      scopes: 3,
+      unbounded: 0,
+      detail: 'checkpoint-memory: DEFERRING 40 GiB — 86.0 GiB already committed by 3 live scope(s); 126.0 GiB would exceed the 125 GiB budget',
+    };
+    const liveTransaction = {
+      phase: 'running', attemptId: 'attempt-live', candidate: 'candidate-live', repairHead: 'repair-live',
+      runId: 'run-live', outcome: { kind: 'pending' }, currentPhysicalRunner: { id: 'runner-live', unit: 'unit-live' },
+    };
+    const requeueCalls = () =>
+      fakeSql.unsafe.mock.calls.filter(([query]) => String(query).includes('next_fire_at = now() + make_interval'));
+    const statuses = () =>
+      appendPipelineEvent.mock.calls
+        .map(([event]) => event as { kind?: string; status?: string })
+        .filter((event) => event.kind === 'green_checkpoint')
+        .map((event) => event.status);
+
+    it('records a live join (exempt from the non-verdict count), not skipped-memory-budget, and arms no requeue', async () => {
+      memoryAdmissionOverride.value = overBudget;
+      readStoredQualification.mockResolvedValueOnce({ status: 'present', transaction: liveTransaction });
+      beginStoredQualification.mockResolvedValueOnce({ status: 'idempotent', transaction: liveTransaction });
+      recordStoredQualificationScheduledFire.mockResolvedValueOnce({ status: 'updated', transaction: liveTransaction });
+      probeRunnerLiveness.mockReturnValueOnce('live');
+
+      await getSystemAction('green-checkpoint')!(ctx);
+
+      expect(statuses()).toEqual(['skipped-joined-attempt']);
+      expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'green_checkpoint', status: 'skipped-joined-attempt',
+        detail: expect.objectContaining({ attemptId: 'attempt-live', runnerId: 'runner-live', runnerLiveness: 'live' }),
+      }));
+      // One fire, one liveness probe: the pre-admission measurement is reused for the same runner.
+      expect(probeRunnerLiveness).toHaveBeenCalledTimes(1);
+      expect(requeueCalls()).toHaveLength(0);
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(reserveStoredQualificationRunner).not.toHaveBeenCalled();
+    });
+
+    it('records skipped-locked when the root\'s run lock is live but no attempt is joinable, without a new attempt or a requeue', async () => {
+      memoryAdmissionOverride.value = overBudget;
+      runLockOverride.value = { held: true, pid: 4242, elapsedSec: 5400 };
+      readStoredQualification.mockResolvedValueOnce({
+        status: 'present',
+        transaction: { ...liveTransaction, phase: 'terminal', outcome: { kind: 'verdict', verdict: 'not-green' } },
+      });
+
+      await getSystemAction('green-checkpoint')!(ctx);
+
+      expect(statuses()).toEqual(['skipped-locked']);
+      expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'green_checkpoint', status: 'skipped-locked',
+        detail: expect.objectContaining({ stage: 'pre-admission', holderPid: 4242, holderElapsedSec: 5400, attemptId: 'attempt-live' }),
+      }));
+      expect(beginStoredQualification).not.toHaveBeenCalled();
+      expect(requeueCalls()).toHaveLength(0);
+      expect(spawnMock).not.toHaveBeenCalled();
+    });
+
+    it('still owes the admission when the expected join becomes a launch at the locked classification', async () => {
+      memoryAdmissionOverride.value = overBudget;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        readStoredQualification.mockResolvedValueOnce({ status: 'present', transaction: liveTransaction });
+        const settled = { ...liveTransaction, phase: 'waiting', currentPhysicalRunner: null };
+        beginStoredQualification.mockResolvedValueOnce({ status: 'updated', transaction: settled });
+        recordStoredQualificationScheduledFire.mockResolvedValueOnce({ status: 'updated', transaction: settled });
+        probeRunnerLiveness.mockReturnValueOnce('live');
+
+        await getSystemAction('green-checkpoint')!(ctx);
+
+        expect(statuses()).toEqual(['skipped-memory-budget']);
+        expect(reserveStoredQualificationRunner).not.toHaveBeenCalled();
+        expect(spawnMock).not.toHaveBeenCalled();
+        expect(requeueCalls()).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   it('falls back to a DIRECT spawn when the scope cannot launch (no user bus) — the gate never red-pins on infra', async () => {

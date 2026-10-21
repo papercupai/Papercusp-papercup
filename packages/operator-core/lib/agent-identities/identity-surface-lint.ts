@@ -53,7 +53,7 @@ import {
  */
 export const IDENTITY_SURFACE_HIGH_WATER: Readonly<Record<IdentitySurfaceClass, number>> = Object.freeze({
   'flat-role-prompt': 109,
-  'prompt-constant': 90,
+  'prompt-constant': 87,
   'injection-hook': 28,
   'kernel-splice': 28,
 });

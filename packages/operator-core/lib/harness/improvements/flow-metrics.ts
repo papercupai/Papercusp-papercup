@@ -147,14 +147,17 @@ export interface AgentReviewServiceRow {
   ledger: { ideaId: string; routedRef: string; grade: number | null; gradedBy: string | null } | null;
 }
 
-const REVIEW_HISTORY_MARKER = '\n\nagent-review-round-v1:';
+export const AGENT_REVIEW_ROUND_COMMENT_MARKER = '\n\nagent-review-round-v1:';
 
 /** Extend the existing dated round comment; no second history store or inferred dates. */
 export function agentReviewRoundComment(summary: string, item: {
   id: string; harness: string | null; payload: unknown; createdBy?: string | null; terminalOwner?: string | null;
-}, review: AgentReviewState, grade: number, reviewer: string): string {
-  return summary + REVIEW_HISTORY_MARKER + JSON.stringify({ id: item.id, harness: item.harness,
-    review, grade, reviewer, parties: verificationParties(item) });
+}, review: AgentReviewState, grade: number, reviewer: string,
+extra?: { feedback?: string; repeatJustification?: string }): string {
+  return summary + AGENT_REVIEW_ROUND_COMMENT_MARKER + JSON.stringify({ id: item.id, harness: item.harness,
+    review, grade, reviewer, parties: verificationParties(item),
+    ...(extra?.feedback !== undefined ? { feedback: extra.feedback } : {}),
+    ...(extra?.repeatJustification !== undefined ? { repeatJustification: extra.repeatJustification } : {}) });
 }
 
 export interface AgentReviewHistoryPost {
@@ -173,10 +176,10 @@ export function computeAgentReviewHistory(scope: AgentReviewServiceScope,
     status: AgentReviewState['status']; reviewer: string; parties: VerificationParties } | null>();
   let invalidReceipts = 0;
   for (const post of posts) {
-    const offset = post.body.indexOf(REVIEW_HISTORY_MARKER);
+    const offset = post.body.indexOf(AGENT_REVIEW_ROUND_COMMENT_MARKER);
     if (offset < 0 || post.harnessSlug !== scope.harnessSlug) continue;
     try {
-      const snapshot = JSON.parse(post.body.slice(offset + REVIEW_HISTORY_MARKER.length));
+      const snapshot = JSON.parse(post.body.slice(offset + AGENT_REVIEW_ROUND_COMMENT_MARKER.length));
       const subject = subjects.get(post.id);
       const current = subject && readAgentReviewState(subject.payload);
       const review = readAgentReviewState({ agentReview: snapshot.review });
@@ -343,7 +346,7 @@ export async function readAgentReviewService(scope: AgentReviewServiceScope, opt
            OR (t.parent_kind = 'feature' AND t.parent_ref = wi.harness_slug || '#' || wi.feature_id))
         JOIN harness_shared.coord_thread_posts p ON p.workspace_id = t.workspace_id AND p.thread_id = t.thread_id
        WHERE wi.workspace_id = ${scope.workspaceId} AND wi.harness_slug = ${scope.harnessSlug}
-         AND strpos(p.body, ${REVIEW_HISTORY_MARKER}) > 0
+         AND strpos(p.body, ${AGENT_REVIEW_ROUND_COMMENT_MARKER}) > 0
          AND (${options.itemIds === undefined} OR wi.feature_id = ANY(${[...(options.itemIds ?? [])]}::text[]))`;
     stage = 'service-computation';
     const { pullLedgerRowFromInvocation } = await import('../../agent-tools/scheduler/pull_ledger');

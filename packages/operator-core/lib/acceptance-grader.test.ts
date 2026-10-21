@@ -15,6 +15,9 @@ import {
   readOpenGradingAnswererTerminalFailure,
   hasAcceptanceGraderNativeApiError,
   launchAcceptanceGrader,
+  compactSnapshot,
+  boundedSnapshotJson,
+  ACCEPTANCE_SNAPSHOT_CAP_CHARS,
   isAcceptanceGradingRequestForPlan,
   isInFlightAcceptanceGradingRequest,
   ineligibleGradingHolders,
@@ -32,6 +35,7 @@ import {
   GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
 import { ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE } from './consult/grading-cascade';
+import { ACCEPTANCE_JUDGE_STACK } from './judge-identity-stack';
 import { mockResolvedTyped } from './testing/typed-mock';
 
 describe('pre-publication review brief', () => {
@@ -692,6 +696,74 @@ const baseCtx = {
 const ctx = baseCtx as never;
 const callerCtx = (ownerId: string) => ({ ...baseCtx, uiClientId: ownerId }) as never;
 
+describe('compactSnapshot rubric criteria', () => {
+  it('preserves structured seeded BAR fields and falls back to intent.request for description', () => {
+    const snapshot = compactSnapshot({
+      plan,
+      rubric: {
+        rubricId: 'acceptance-structured',
+        title: 'Structured acceptance',
+        criteria: [{
+          key: 'r-1',
+          title: 'A structured BAR',
+          intent: { request: 'The resolver must preserve every declared profile.' },
+          model: 'Every declared profile is resolved deterministically.',
+          method: 'Run the resolver parity test.',
+          check: { kind: 'tests', files: ['packages/operator-core/lib/profile.test.ts'] },
+          evidencePlane: 'tree',
+          requiredScope: ['resolver', 'profiles'],
+        }],
+      },
+      audit,
+      workItems,
+    } as never);
+
+    expect(snapshot.rubric.criteria[0]).toMatchObject({
+      key: 'r-1',
+      description: 'The resolver must preserve every declared profile.',
+      intent: { request: 'The resolver must preserve every declared profile.' },
+      model: 'Every declared profile is resolved deterministically.',
+      method: 'Run the resolver parity test.',
+      check: { kind: 'tests', files: ['packages/operator-core/lib/profile.test.ts'] },
+      evidencePlane: 'tree',
+      requiredScope: ['resolver', 'profiles'],
+    });
+  });
+
+  it('keeps structured BAR context inside the frozen package cap after progressive trimming', () => {
+    const snapshot = compactSnapshot({
+      plan,
+      rubric: {
+        rubricId: 'acceptance-structured-large',
+        title: 'Structured acceptance',
+        criteria: Array.from({ length: 20 }, (_, index) => ({
+          key: `r-${index + 1}`,
+          title: `Criterion ${index + 1}`,
+          intent: { request: `The resolver must preserve declared profile ${index + 1}.`.repeat(4) },
+          model: `Every declared profile ${index + 1} is resolved deterministically.`.repeat(4),
+          method: `Run the resolver parity test for profile ${index + 1}.`.repeat(4),
+          check: { kind: 'tests', files: [`packages/operator-core/lib/profile-${index + 1}.test.ts`] },
+          evidencePlane: 'tree',
+          requiredScope: ['resolver', `profile-${index + 1}`],
+        })),
+      },
+      audit,
+      workItems,
+    } as never);
+
+    const rendered = boundedSnapshotJson(snapshot);
+    expect(rendered.length).toBeLessThanOrEqual(ACCEPTANCE_SNAPSHOT_CAP_CHARS);
+    const parsed = JSON.parse(rendered);
+    expect(parsed.rubric.criteria[0]).toMatchObject({
+      intent: { request: expect.stringContaining('resolver must preserve') },
+      method: expect.stringContaining('resolver parity test'),
+      check: { kind: 'tests', files: ['packages/operator-core/lib/profile-1.test.ts'] },
+      evidencePlane: 'tree',
+      requiredScope: ['resolver', 'profile-1'],
+    });
+  });
+});
+
 describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
   const SCOPE = { workspaceId: 'papercusp-workspace', planSlug: 'ship-the-thing' };
   const noDecliners = async () => [] as string[];
@@ -1062,7 +1134,7 @@ describe('launchAcceptanceGrader', () => {
     expect(openCascade).not.toHaveBeenCalled();
     expect(launch).toHaveBeenCalledTimes(2);
     for (const [args] of launch.mock.calls) {
-      expect(args).toMatchObject({ ...profile, independent: true, members: [{ role: 'judge', ...profile }] });
+      expect(args).toMatchObject({ ...profile, independent: true, members: [{ role: 'judge', stack: [...ACCEPTANCE_JUDGE_STACK], ...profile }] });
     }
   });
 
@@ -1089,7 +1161,7 @@ describe('launchAcceptanceGrader', () => {
       agent: 'claude',
       count: 1,
       independent: true,
-      members: [{ role: 'judge' }],
+      members: [{ role: 'judge', stack: [...ACCEPTANCE_JUDGE_STACK] }],
       label: first.label,
       idempotencyKey: first.idempotencyKey,
     });
@@ -1144,7 +1216,7 @@ describe('launchAcceptanceGrader', () => {
     expect(lineageRelated).toHaveBeenCalledWith('su-implementer', 'su-independent', { workspaceId: 'ws-test' });
     expect(launch).toHaveBeenCalledTimes(1);
     expect(launch.mock.calls[0]?.[0]).toMatchObject({
-      mcpTarget: 'spawn-host', account: 'auto', independent: true, members: [{ role: 'judge' }],
+      mcpTarget: 'spawn-host', account: 'auto', independent: true, members: [{ role: 'judge', stack: [...ACCEPTANCE_JUDGE_STACK] }],
     });
   });
 

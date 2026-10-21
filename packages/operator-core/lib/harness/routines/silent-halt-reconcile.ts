@@ -55,6 +55,11 @@
  * Neither liveness nor held work alone is enough, and paging on liveness alone is the mistake
  * the counter-design already measured.
  *
+ * A blocker park excuses the stop only when it names its wake (WI-6554700010018551). With no
+ * await left, that wake is the blocker's re-check time, which the blocker reaper services. A park
+ * whose blocker has none is revisited by nothing, so it is a WAKE-ONLY halt: one wake per disarm
+ * epoch asking the holder to name the wake, and never a page or the owner-facing condition.
+ *
  * WHY REUSE getLoopStatuses. `lastRealTurnAt` is a union over the journal and session_turns'
  * assistant turns (loop.ts ~line 2000) and has under-reported twice already (WI-6069 and its
  * follow-up), both times in the direction of a healthy agent reading as dead. This module reads
@@ -102,6 +107,7 @@ import { hasAutonomyPosture } from './loop-dead-man';
 import { getLoopStatuses } from './loop';
 import { readEngineLoopRowsByOwner } from './engine-loop-standdown';
 import { isParkedOnExternalBlocker } from '../../scheduler/claim-spec-store';
+import { activeBlockersWithoutRecheck } from '../../external-blockers';
 import { classifyEndedHolder, type SessionEndClassification } from '../../session-end-classifier';
 import {
   resolveFleetParkResumePath,
@@ -176,6 +182,27 @@ export function silentHaltWakeBody(
         describeParkResumePath(parkPath),
       ]
     : [];
+  if (verdict.wakeOnly) {
+    const unbounded = candidate.unboundedBlockerParkedWorkItemIds ?? [];
+    return [
+      `You are an autonomous session that stopped taking turns while holding ${unbounded.length} ` +
+        `blocked work-item(s) whose blocker names no wake: ${unbounded.join(', ')}.`,
+      `Each blocker has no re-check time, and you hold no await, so nothing will ever wake you about`,
+      `it: the blocker reaper only revisits blockers that carry a re-check time.`,
+      ``,
+      `This wake came from the system-side silent-halt sweep (${SILENT_HALT_WAKE_OWNER}), not from a`,
+      `peer, so there is no one to reply to. It is the ONE wake this disarm epoch gets, and it does not`,
+      `page the human owner.`,
+      ``,
+      `NEXT, in this turn, for each listed item:`,
+      `  1. Re-check the condition its blocker names (work_items:get).`,
+      `  2. Still blocked: name its wake. Re-declare the blocker with work_items:set_blocker`,
+      `     { id, kind, ref } (re-declaring stamps a re-check time; pass recheckAt to choose it), or`,
+      `     events:await { event, timeout_sec, on_timeout:'wake' } on the event it waits for.`,
+      `  3. Cleared: clear the blocker and resume the item. Not continuing it: release it.`,
+      ...park,
+    ].join('\n');
+  }
   return [
     `You are an autonomous session that stopped taking turns while still HOLDING ` +
       `${candidate.heldWorkItems} actionable work-item(s): ${verdict.reason ?? 'no armed loop, no pending await — no wake source'}.`,
@@ -225,9 +252,21 @@ export interface SilentHaltInput {
   heldWorkItems: number;
   /** Held items excluded by D-010/P-010's shared typed-blocker predicate, retained for context. */
   blockerParkedWorkItemIds?: readonly string[];
+  /**
+   * The subset of {@link blockerParkedWorkItemIds} whose blocker names no re-check time
+   * (`activeBlockersWithoutRecheck`). With no pending await, nothing will ever wake the holder
+   * about these, so they excuse the stop only for a wake, never for a page (WI-6554700010018551).
+   */
+  unboundedBlockerParkedWorkItemIds?: readonly string[];
 }
 
 export interface SilentHaltVerdict {
+  /**
+   * Halted, but the only stranded work is blocker-parked with no named wake. The remedy is ONE
+   * wake asking the holder to name it; the sweep never pages the owner or raises the aggregate
+   * condition for it. Absent = false.
+   */
+  wakeOnly?: boolean;
   halted: boolean;
   /** Why it IS a halt — populated only when `halted`. */
   reason: string | null;
@@ -278,13 +317,23 @@ export function evaluateSilentHalt(input: SilentHaltInput): SilentHaltVerdict {
   // session taking no turns will not advance it, so it is stuck whether the agent is recoverable
   // OR abandoned. That is what makes this the one case here that does not depend on a distinction
   // no available signal can make.
-  if (input.heldWorkItems <= 0) {
+  //
+  // A blocker park excuses the stop only when it names its wake (report rpt_24408ef5 item #4,
+  // WI-6554700010018551). Every await is already gone by this point (the pending-await term above),
+  // so the one wake left is the blocker's own re-check time, which the blocker reaper services. A
+  // blocker with none is revisited by nothing, so that hold falls through to the clocks as a
+  // WAKE-ONLY halt: one wake asking the holder to name the wake, never a page.
+  const unboundedParkedIds = input.unboundedBlockerParkedWorkItemIds ?? [];
+  if (input.heldWorkItems <= 0 && unboundedParkedIds.length === 0) {
     const blockerParkedIds = input.blockerParkedWorkItemIds ?? [];
     if (blockerParkedIds.length > 0) {
-      return no(`holds-only-active-external-blockers (parked work items: ${blockerParkedIds.join(', ')})`);
+      return no(
+        `holds-only-active-external-blockers (each names a re-check time; parked work items: ${blockerParkedIds.join(', ')})`,
+      );
     }
     return no('holds-no-work (unguarded-halt-rescue wakes this case; nothing is stranded)');
   }
+  const wakeOnly = input.heldWorkItems <= 0;
 
   // Both clocks must clear the floor. A loop disarmed seconds ago is not yet a halt however old
   // the last turn is, and a turn produced seconds ago is not a halt however long the loop has
@@ -305,17 +354,24 @@ export function evaluateSilentHalt(input: SilentHaltInput): SilentHaltVerdict {
 
   const silentForMs = Math.max(turnAge ?? 0, inactiveFor ?? 0);
   const blockerParkedIds = input.blockerParkedWorkItemIds ?? [];
+  const unboundedNote =
+    unboundedParkedIds.length > 0 ? ` (no re-check time: ${unboundedParkedIds.join(', ')})` : '';
   const blockerParkedNote =
-    blockerParkedIds.length > 0
-      ? `; active external-blocker parks excluded: ${blockerParkedIds.join(', ')}`
+    !wakeOnly && blockerParkedIds.length > 0
+      ? `; active external-blocker parks excluded: ${blockerParkedIds.join(', ')}${unboundedNote}`
       : '';
+  const heldClause = wakeOnly
+    ? `no actionable held work, but ${unboundedParkedIds.length} blocker-parked work item(s) whose ` +
+      `blocker names no wake (no re-check time): ${unboundedParkedIds.join(', ')}; `
+    : `${input.heldWorkItems} actionable held work item(s), but `;
   return {
     halted: true,
+    wakeOnly,
     reason:
       `autonomy posture registered, loop INACTIVE for ` +
       `${inactiveFor != null ? `${Math.round(inactiveFor / 60000)}m` : 'unknown'}, ` +
       `no pending await, heartbeat fresh (${Math.round(input.heartbeatAgeMs / 1000)}s), ` +
-      `${input.heldWorkItems} actionable held work item(s), but ` +
+      heldClause +
       `${turnAge != null ? `no real turn in ${Math.round(turnAge / 60000)}m` : 'no real turn ever recorded'}` +
       blockerParkedNote,
     exemption: null,
@@ -336,6 +392,8 @@ export interface SilentHaltCandidate {
   heldWorkItems: number;
   /** Held rows excluded because they are parked on active typed external blockers. */
   blockerParkedWorkItemIds?: string[];
+  /** The subset of those whose blocker names no re-check time (WI-6554700010018551). */
+  unboundedBlockerParkedWorkItemIds?: string[];
   modes: Array<{ mode: string }>;
   /** Fleet the session belongs to (presence row), for the park-contract framing. */
   fleetSlug?: string | null;
@@ -392,6 +450,11 @@ export interface SilentHaltSweepDeps {
 export interface SilentHaltSweepResult {
   checked: number;
   halted: string[];
+  /**
+   * The subset of `halted` whose only strand is a blocker park that names no wake. They are woken
+   * once per disarm epoch and never paged (WI-6554700010018551).
+   */
+  wakeOnly: string[];
   paged: string[];
   /** Owners the wake-first rung WOKE this tick (P-003) — deliberately NOT paged this tick. */
   woken: string[];
@@ -490,11 +553,22 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
      WHERE w.taken_by = ANY(${ownerIds}::text[])
        AND w.lane IS DISTINCT FROM 'observation'
        AND w.status NOT IN ('done','dropped','passed','deprecated','resolved','closed')`;
-  const heldByOwner = new Map<string, { actionableCount: number; blockerParkedIds: string[] }>();
+  const heldByOwner = new Map<
+    string,
+    { actionableCount: number; blockerParkedIds: string[]; unboundedParkedIds: string[] }
+  >();
   for (const held of heldRows) {
-    const current = heldByOwner.get(held.owner_id) ?? { actionableCount: 0, blockerParkedIds: [] };
+    const current = heldByOwner.get(held.owner_id) ?? {
+      actionableCount: 0,
+      blockerParkedIds: [],
+      unboundedParkedIds: [],
+    };
     if (isParkedOnExternalBlocker({ status: held.status, externalBlockers: held.external_blockers })) {
       current.blockerParkedIds.push(held.work_item_id);
+      // Same parser, same payload shape: a blocker with no re-check time names no wake.
+      if (activeBlockersWithoutRecheck({ externalBlockers: held.external_blockers }).length > 0) {
+        current.unboundedParkedIds.push(held.work_item_id);
+      }
     } else {
       current.actionableCount += 1;
     }
@@ -512,7 +586,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
   );
 
   return rows.map((r) => {
-    const held = heldByOwner.get(r.owner_id) ?? { actionableCount: 0, blockerParkedIds: [] };
+    const held = heldByOwner.get(r.owner_id) ?? { actionableCount: 0, blockerParkedIds: [], unboundedParkedIds: [] };
     return {
       ownerId: r.owner_id,
       workspaceId: r.workspace_id,
@@ -523,6 +597,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
       pendingAwaits: pending.get(r.owner_id) ?? 0,
       heldWorkItems: held.actionableCount,
       blockerParkedWorkItemIds: held.blockerParkedIds.sort(),
+      unboundedBlockerParkedWorkItemIds: held.unboundedParkedIds.sort(),
       modes: (r.modes ?? []).filter(Boolean).map((mode) => ({ mode })),
       fleetSlug: r.fleet_slug ?? null,
     };
@@ -553,6 +628,7 @@ export async function sweepSilentHalts(opts: {
   const result: SilentHaltSweepResult = {
     checked: candidates.length,
     halted: [],
+    wakeOnly: [],
     paged: [],
     woken: [],
     fleetLeaderAlerted: [],
@@ -607,6 +683,7 @@ export async function sweepSilentHalts(opts: {
       intervalSec: c.intervalSec,
       heldWorkItems: c.heldWorkItems,
       blockerParkedWorkItemIds: c.blockerParkedWorkItemIds,
+      unboundedBlockerParkedWorkItemIds: c.unboundedBlockerParkedWorkItemIds,
     });
 
     if (!verdict.halted) {
@@ -614,6 +691,7 @@ export async function sweepSilentHalts(opts: {
       continue;
     }
     result.halted.push(c.ownerId);
+    if (verdict.wakeOnly) result.wakeOnly.push(c.ownerId);
     halted.push({
       candidate: c,
       verdict,
@@ -625,23 +703,30 @@ export async function sweepSilentHalts(opts: {
   }
 
   if (dryRun) return result;
-  if (halted.length === 0) {
+  // A wake-only halt (its one strand is a blocker park that names no wake) gets the wake rung and
+  // nothing else: it never raises or holds open the owner-facing condition, and never pages
+  // (WI-6554700010018551; the owner rejected verification-ceremony pages 2026-09-23).
+  const pageable = halted.filter((h) => !h.verdict.wakeOnly);
+  if (pageable.length === 0) {
     // A missing/failed status read cannot establish recovery of the aggregate.
     if (candidates.every((candidate) => statuses.has(candidate.ownerId))) {
       await resolveCondition(conditionKey).catch(() => {});
     }
-    return result;
+    if (halted.length === 0) return result;
   }
   // Refresh the condition before wake/page dedup or caps; an attempted wake is not recovery.
   const event = {
     category: 'silent-halt-reconcile',
-    summary: `${halted.length} autonomous session(s) silently halted while holding work`,
-    body: halted.map(({ candidate, verdict }) => `${candidate.ownerId}: ${verdict.reason}`).join('\n'),
+    summary: `${pageable.length} autonomous session(s) silently halted while holding work`,
+    body: pageable.map(({ candidate, verdict }) => `${candidate.ownerId}: ${verdict.reason}`).join('\n'),
     conditionKey, oneShot: true,
   };
-  const conditionPublished = deps.broadcast
-    ? await deps.broadcast(event).catch(() => false)
-    : await broadcastSevereEvent(event).catch(() => false);
+  const conditionPublished =
+    pageable.length === 0
+      ? false
+      : deps.broadcast
+        ? await deps.broadcast(event).catch(() => false)
+        : await broadcastSevereEvent(event).catch(() => false);
 
   // ── P-003 wake-first rung (R1/R2) ──────────────────────────────────────────────
   // ONE wake attempt per (owner, disarm epoch) BEFORE any owner page. The dedupe
@@ -774,8 +859,16 @@ export async function sweepSilentHalts(opts: {
   // never woken: the wake would bounce off it, and waking wedged sessions en masse is exactly what
   // D-002 forbids. It is paged at once, with the remedy, instead (D-006 (2)).
   const needsRelaunch = (e: ActuationEntry): boolean => e.host?.kind === 'needs-relaunch';
-  const toWake = rungLive ? entries.filter((e) => e.marker == null && !needsRelaunch(e)) : [];
-  const toPage = rungLive ? entries.filter((e) => e.marker != null || needsRelaunch(e)) : entries;
+  const isWakeOnly = (e: ActuationEntry): boolean => e.verdict.wakeOnly === true;
+  const toWake = rungLive
+    ? entries
+        .filter((e) => e.marker == null && !needsRelaunch(e))
+        // Actionable strands first, so the per-sweep cap never defers them behind wake-only ones.
+        .sort((a, b) => Number(isWakeOnly(a)) - Number(isWakeOnly(b)))
+    : [];
+  const toPage = (rungLive ? entries.filter((e) => e.marker != null || needsRelaunch(e)) : entries).filter(
+    (e) => !isWakeOnly(e),
+  );
 
   // WAKE leg — bounded fan (R2). Overflow is DEFERRED whole: an unwoken candidate has
   // not had its R1 wake yet, so it must not fall through to the page either.

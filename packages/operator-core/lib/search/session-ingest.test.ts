@@ -17,7 +17,7 @@ import {
   textFromContent,
   CLAUDE_OWNER_DIALOG_RESULT_PREFIXES,
 } from './session-ingest';
-import { OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
+import { dialogAnswerText } from '../transcript-wire';
 import { promptOriginHash } from './session-ingest';
 
 describe('short user decisions', () => {
@@ -148,7 +148,7 @@ describe('parseClaudeLine', () => {
       }),
     );
     expect(promoted).toMatchObject({ speaker: 'user' });
-    expect(promoted?.text).toBe(`${OWNER_DIALOG_TURN_MARKER}\n${answer}`);
+    expect(promoted?.text).toBe(dialogAnswerText(answer));
     expect(promoted?.text).toContain('Use the visible fleet');
 
     const ordinary = parseClaudeLine(
@@ -179,7 +179,7 @@ describe('parseClaudeLine', () => {
 
     expect(CLAUDE_OWNER_DIALOG_RESULT_PREFIXES).toContain('Your questions have been answered:');
     expect(promoted).toMatchObject({ speaker: 'user' });
-    expect(promoted?.text).toBe(`${OWNER_DIALOG_TURN_MARKER}\n${answer}`);
+    expect(promoted?.text).toBe(dialogAnswerText(answer));
     expect(promoted?.text).toContain('All three, T3 landed last');
     expect(promoted?.text).toContain('I implement it here');
   });

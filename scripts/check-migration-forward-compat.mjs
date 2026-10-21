@@ -1000,9 +1000,10 @@ function sourceDependencyUnits(source) {
  *
  * @param {string} sqlText
  * @param {Array<{file: string, text: string}>} sourceFiles
+ * @param {{ onParserWork?: (stage: 'comments'|'dependency-units', source: {file: string, text: string}) => void }} [options]
  * @returns {{ columns: string[], references: Array<{column: string, file: string, line: number}>, unresolvedTargets: string[] }}
  */
-export function findDraftColumnReferences(sqlText, sourceFiles = []) {
+export function findDraftColumnReferences(sqlText, sourceFiles = [], { onParserWork } = {}) {
   const columns = addedColumnsFor(sqlText);
   const { tables, unresolved } = alterTargetsFor(sqlText);
   // A file cannot be reading `<table>.<column>` if it never mentions `<table>`. Requiring both
@@ -1031,6 +1032,7 @@ export function findDraftColumnReferences(sqlText, sourceFiles = []) {
       if (tableTokens.length && !tableTokens.some((table) => table.test(source.text))) continue;
       let masks = sourceMasks.get(source);
       if (!masks) {
+        onParserWork?.('comments', source);
         masks = { comments: sourceCommentsMasked(source.text, source.file), code: null };
         sourceMasks.set(source, masks);
       }
@@ -1039,7 +1041,10 @@ export function findDraftColumnReferences(sqlText, sourceFiles = []) {
       if (!matches.length) continue;
       if (tableTokens.length && !tableTokens.some((t) => t.test(masked))) continue;
       if (qualifyingTables.length) {
-        if (!masks.units) masks.units = sourceDependencyUnits(source);
+        if (!masks.units) {
+          onParserWork?.('dependency-units', source);
+          masks.units = sourceDependencyUnits(source);
+        }
         const targets = [...(columnTables.get(column) ?? qualifyingTables)];
         const targetTokens = targets.map((table) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(table)}(?![A-Za-z0-9_$])`, 'i'));
         for (const unit of masks.units) {

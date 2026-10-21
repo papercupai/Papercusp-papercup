@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pruneRunsWithReport, pruneStaleForeign } from '../../../../libs/generic/verification-harness/src/runner';
 import { isLeaseLive, readRetentionLeases } from '../release-cut-reclaim';
-import { createRetentionPin, pinProtectsPath, readRetentionPins, readRetentionPinsAsync, removeRetentionPin } from './retention-pins';
+import { createRetentionPin, pinProtectsPath, readRetentionPins, readRetentionPinsAsync, removeRetentionPin, renewWorkItemEvidencePins, withWorkItemEvidenceRetention } from './retention-pins';
 import { withRetentionPinProtection as withPortablePinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 const roots: string[] = [];
@@ -17,6 +17,79 @@ function fixture() {
 }
 
 describe('agent retention pins in the existing lease store', () => {
+  it('renews one finite pin for an open item receipt and lets it expire when renewal stops', async () => {
+    const f = fixture(); const repository = join(f.root, 'repo'), home = join(f.root, 'home');
+    mkdirSync(join(repository, 'docs/evidence'), { recursive: true });
+    const path = join(home, '.papercusp/evidence/WI-10004735-native'); mkdirSync(path, { recursive: true });
+    const evidence_ref = 'docs/evidence/native.json';
+    writeFileSync(join(repository, evidence_ref), JSON.stringify({ retainedEvidence: {
+      root: '.papercusp/evidence/WI-10004735-native', pathBase: 'Operating account home directory; outside the checkout',
+    } }));
+    const refs = [{ harness_slug: 'fixture', work_item_id: 'WI-10004735', evidence_ref }];
+    const options = { ...f, home, repositories: new Map([['fixture', repository]]) };
+    const preview = await renewWorkItemEvidencePins(refs, { ...options, dryRun: true });
+    expect(pinProtectsPath(path, preview.pins, f.nowMs)).toBe(true);
+    expect(existsSync(f.dir)).toBe(false);
+    const first = await renewWorkItemEvidencePins(refs, options);
+    expect(first.missing).toEqual([]); expect(first.pins).toHaveLength(1);
+    expect(pinProtectsPath(path, first.pins, f.nowMs)).toBe(true);
+    expect(pinProtectsPath(`${path}-unrelated`, first.pins, f.nowMs)).toBe(false);
+    const nowMs = f.nowMs + 48 * 3_600_000;
+    const next = await renewWorkItemEvidencePins(refs, { ...options, nowMs });
+    expect(next.pins[0]!.id).toBe(first.pins[0]!.id);
+    expect(Date.parse(next.pins[0]!.expiresAt)).toBeGreaterThan(Date.parse(first.pins[0]!.expiresAt));
+    expect(readRetentionPins({ ...f, nowMs }).pins).toEqual(next.pins);
+    expect(readdirSync(f.dir).filter(name => name.startsWith('lease-agent-pin-'))).toHaveLength(1);
+    await renewWorkItemEvidencePins([], { ...options, nowMs: nowMs + 24 * 3_600_000 });
+    expect(readRetentionPins({ ...f, nowMs: Date.parse(next.pins[0]!.expiresAt) }).pins).toEqual([]);
+  });
+
+  it('reports missing declared evidence instead of manufacturing an ineffective pin', async () => {
+    const f = fixture(); const repository = join(f.root, 'repo'); mkdirSync(join(repository, 'docs/evidence'), { recursive: true });
+    const ref = { harness_slug: 'fixture', work_item_id: 'WI-missing', evidence_ref: 'docs/evidence/missing.json' };
+    const options = { ...f, home: f.root, repositories: new Map([['fixture', repository]]) };
+    expect((await renewWorkItemEvidencePins([ref], options)).missing).toEqual([
+      { workItemId: ref.work_item_id, evidenceRef: ref.evidence_ref, path: join(repository, ref.evidence_ref) },
+    ]);
+    writeFileSync(join(repository, ref.evidence_ref), JSON.stringify({ retainedEvidence: {
+      root: '.papercusp/evidence/missing', pathBase: 'Operating account home directory',
+    } }));
+    expect((await renewWorkItemEvidencePins([ref], options)).missing[0]!.path).toBe(join(f.root, '.papercusp/evidence/missing'));
+    expect(readRetentionPins(f).pins).toEqual([]);
+  });
+
+  it('pins evidence before accepting a binding and refuses intake after its retained root is gone', async () => {
+    const f = fixture(), repository = join(f.root, 'repo'), home = join(f.root, 'home');
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));
+    const target = join(home, '.papercusp/evidence/native'); mkdirSync(target, { recursive: true });
+    mkdirSync(join(repository, 'docs/evidence'), { recursive: true });
+    const reference = { harness_slug: 'fixture', work_item_id: 'WI-intake', evidence_ref: 'docs/evidence/intake.json' };
+    writeFileSync(join(repository, reference.evidence_ref), JSON.stringify({ retainedEvidence: {
+      root: '.papercusp/evidence/native', pathBase: 'Operating account home directory',
+    } }));
+    const options = { ...f, home, repositories: new Map([['fixture', repository]]) };
+    const accept = vi.fn(async () => {
+      expect(pinProtectsPath(target, readRetentionPins(f).pins, f.nowMs)).toBe(true);
+      return 'accepted';
+    });
+    expect(await withWorkItemEvidenceRetention(reference, options, accept)).toBe('accepted');
+    rmSync(target, { recursive: true });
+    await expect(withWorkItemEvidenceRetention(reference, options, accept)).rejects.toThrow('missing declared evidence');
+    expect(accept).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['ambiguous', 'outside', 'symlink'])('refuses an unsafe %s evidence receipt', async kind => {
+    const f = fixture(); const repository = join(f.root, 'repo'); mkdirSync(join(repository, 'docs/evidence'), { recursive: true });
+    const path = join(repository, 'docs/evidence/unsafe.json');
+    const receipt = { retainedEvidence: { root: kind === 'outside' ? '../../owner-data' : '.papercusp/evidence/run',
+      pathBase: kind === 'ambiguous' ? 'unknown' : 'Operating account home directory' } };
+    if (kind === 'symlink') { writeFileSync(join(f.root, 'outside.json'), JSON.stringify(receipt)); symlinkSync(join(f.root, 'outside.json'), path); }
+    else writeFileSync(path, JSON.stringify(receipt));
+    await expect(renewWorkItemEvidencePins([{ harness_slug: 'fixture', work_item_id: 'WI-unsafe', evidence_ref: 'docs/evidence/unsafe.json' }],
+      { ...f, home: f.root, repositories: new Map([['fixture', repository]]) })).rejects.toThrow();
+    expect(readRetentionPins(f).pins).toEqual([]);
+  });
+
   it('keeps caller-registry descendant pins when a privileged reader resolves the store alias', async () => {
     const f = fixture();
     vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));

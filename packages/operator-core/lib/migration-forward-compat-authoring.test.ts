@@ -407,6 +407,35 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
     expect(result.references).toEqual([]);
   });
 
+  it('skips parser work for files that fail raw relevance before masking', () => {
+    const sql = 'ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;';
+    const parserStages: string[] = [];
+    const result = findDraftColumnReferences(sql, [
+      {
+        file: 'packages/plugin-loader/src/daemon/supervisor.ts',
+        text: 'const lifecycle = "ready";\n',
+      },
+      {
+        file: 'packages/operator-core/lib/unrelated.ts',
+        text: 'const fc_probe_mode = "ready";\n',
+      },
+      {
+        file: 'packages/operator-core/lib/relevant.ts',
+        text: 'const query = sql`SELECT fc_probe_mode FROM harness_shared.fc_probe_backends`;\n',
+      },
+    ], {
+      onParserWork: (stage, source) => parserStages.push(`${stage}:${source.file}`),
+    });
+
+    expect(result.references).toEqual([
+      { column: 'fc_probe_mode', file: 'packages/operator-core/lib/relevant.ts', line: 1 },
+    ]);
+    expect(parserStages).toEqual([
+      'comments:packages/operator-core/lib/relevant.ts',
+      'dependency-units:packages/operator-core/lib/relevant.ts',
+    ]);
+  });
+
   it('still flags a real read of the new column on the altered table', () => {
     // The falsifiability half of the pair above: narrowing by table must not defang the scan.
     const sql = 'ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;';

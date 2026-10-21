@@ -269,6 +269,18 @@ export interface BlockerAutoClearFollowUp {
 }
 
 function describeClear(item: SystemClearedBlockerItem): { summary: string; body: string } {
+  if (item.cleared.length === 0) {
+    // The blocker re-check sweep's stranded repair (event-wait-settlement-2026-10-20 P-005):
+    // nothing was cleared now; every blocker was cleared earlier but the item stayed blocked.
+    return {
+      summary: `Returned to ${item.status ?? 'open'}: ${item.featureId} was still blocked with no active blocker`,
+      body: [
+        `${item.featureId} stayed blocked after every one of its blockers had been cleared, with nothing else ` +
+          `holding it, so the system returned it to ${item.status ?? 'open'} (clearedBy ${item.clearedBy ?? BLOCKER_AUTO_CLEAR_ACTOR}).`,
+        'Its blocker history is kept on the item; read it with work_items:get.',
+      ].join('\n'),
+    };
+  }
   const refs = item.cleared.map((c) => c.ref).join('; ');
   const noun = item.cleared.every((c) => c.kind === 'durable-park') ? 'Park released' : 'Blocker cleared';
   const summary = `${noun} on ${item.featureId}: ${refs} (${item.cleared.map((c) => c.evidence.replace(/^auto-cleared: /, '')).join('; ')})`;

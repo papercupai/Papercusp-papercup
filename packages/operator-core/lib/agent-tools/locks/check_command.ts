@@ -37,6 +37,7 @@ import {
 import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 import { repoHeadSha } from '../../harness/docs/git-runner';
 import { realpathSoft, resolveCapabilityIntegrationRoot } from '../capability/base-dir';
+import { readAppliedIdentityRules, wearsPapercuspEngineer } from '../../agent-identities/sync-hook-rules';
 
 /**
  * The bash→tool substitution verdict (plan bash-to-tool-substitution-2026-07-26,
@@ -63,6 +64,14 @@ async function substitutionVerdict(
   substitutionTier: string | null;
 }> {
   try {
+    // Engineering advisories are worn context, not a host-wide policy.  A
+    // detached/non-engineering identity must receive no bash→tool nudge; an
+    // unreadable identity is treated the same way (fail-open for the command).
+    if (!ownerId) return { substitutions: [], substitutionTier: null };
+    const applied = await readAppliedIdentityRules(ownerId, workspaceId);
+    if (!applied || !wearsPapercuspEngineer(applied)) {
+      return { substitutions: [], substitutionTier: null };
+    }
     const rows = await getSubstitutionRows(workspaceId);
     const matches = matchCommandToSubstitutions(command, rows, { cwd });
 

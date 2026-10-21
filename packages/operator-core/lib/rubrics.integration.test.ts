@@ -2406,6 +2406,66 @@ describe('template_data persistence boundary — the set-template-data door', ()
       .rejects.toThrow(/missing its server-owned barContract/);
   });
 
+  it('restores an orphaned started BAR contract from the pinned revision snapshot (WI-6554700010018395)', async () => {
+    const seeded = await seedBarContract('orphan-restore-subject', { authorMethods: true });
+    const started = await rubrics.getRubric(seeded.rubricSlug);
+    if (!started?.revision || !started.barContract || !started.barSetHash) {
+      throw new Error(`seeded rubric '${seeded.rubricSlug}' did not start a contract`);
+    }
+    const [pinBefore] = await db.adminSql`SELECT acceptance_bar_rubric_revision, acceptance_bar_set_hash
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+      AND plan_slug=${seeded.subject}`;
+    expect(Number(pinBefore!.acceptance_bar_rubric_revision)).toBe(started.revision);
+    expect(pinBefore!.acceptance_bar_set_hash).toBe(started.barSetHash);
+
+    // A healthy contract is not a restore target: the flag is not a general rewrite door.
+    await expect(rubrics.amendRubric({
+      rubricId: seeded.rubricSlug, actorId: 'restorer', reason: 'not orphaned', restoreOrphanedBarContract: true,
+    })).rejects.toThrow(/acceptance_bar_restore_not_orphaned/);
+
+    // What a whole-document propose on a pre-guard build left behind (2026-10-18, :3070
+    // d740fc3802): the next revision with the server-owned contract fields gone.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = (template_data - 'barContract' - 'barSetHash')
+               || jsonb_build_object('criteria', (
+                    SELECT jsonb_agg(c - 'barProvenance') FROM jsonb_array_elements(template_data->'criteria') c)),
+             version = version + 1
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const orphan = await rubrics.getRubric(seeded.rubricSlug);
+    expect(orphan?.barContract).toBeUndefined();
+    expect(orphan?.revision).toBe(started.revision + 1);
+    // Without the opt-in the guard still refuses every write to the orphan, and now names the door.
+    await expect(rubrics.amendRubric({
+      rubricId: seeded.rubricSlug,
+      criterion: { key: started.criteria[0]!.key, field: 'method', mode: 'append', text: 'extra' },
+    })).rejects.toThrow(/restoreOrphanedBarContract/);
+
+    const restored = await rubrics.amendRubric({
+      rubricId: seeded.rubricSlug, actorId: 'restorer', reason: 'restore the pinned contract',
+      restoreOrphanedBarContract: true,
+    });
+    expect(restored?.revision).toBe(started.revision + 2);
+    expect(restored?.barSetHash).toBe(started.barSetHash);
+    expect(restored?.barContract?.adoptionEpoch).toBe(started.barContract.adoptionEpoch);
+    expect(restored?.barContract?.cohort).toBe(started.barContract.cohort);
+    expect(restored?.criteria.map((c) => [c.barKey, c.barHash])).toEqual(
+      started.criteria.map((c) => [c.barKey, c.barHash]),
+    );
+    expect(restored?.criteria.every((c) => c.barProvenance !== undefined)).toBe(true);
+    const [pinAfter] = await db.adminSql`SELECT acceptance_bar_rubric_revision, acceptance_bar_set_hash, content
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+      AND plan_slug=${seeded.subject}`;
+    expect(Number(pinAfter!.acceptance_bar_rubric_revision)).toBe(started.revision + 2);
+    expect(pinAfter!.acceptance_bar_set_hash).toBe(started.barSetHash);
+    expect(String(pinAfter!.content)).toContain(`Restored-Contract-From: rubric revision ${started.revision}`);
+
+    // Restored means restored: a second restore is refused, ordinary amendment works again.
+    await expect(rubrics.amendRubric({
+      rubricId: seeded.rubricSlug, actorId: 'restorer', reason: 'again', restoreOrphanedBarContract: true,
+    })).rejects.toThrow(/acceptance_bar_restore_not_orphaned/);
+  });
+
   it('resolves a legacy current revision after an in-place subject pin advance, still failing closed on grading drift (WI-10006667)', async () => {
     const seeded = await seedBarContract('legacy-subject-pin-advance');
     const current = await rubrics.getRubric(seeded.rubricSlug);
@@ -4866,6 +4926,355 @@ describe('template_data persistence boundary — the set-template-data door', ()
     // nothing holds the lock, so the conflict code is the only possible refusal.
     await expect(rubrics.amendRubric(second)).rejects.toThrow(/acceptance_bar_amendment_revision_conflict/);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision! + 1);
+  });
+
+  // EI-24358433996857425 (acceptance-bar-atomic-retirement-2026-10-15 P-001). An approved
+  // amendment that RETIRES a started BAR whose only mapped work was dropped must reconcile
+  // the plan source inside the same amendment. Pre-fix, the amendment validated the
+  // ORIGINAL source's Bar-to-work map first, so `bar_mapping_dropped_only: R-2` refused
+  // before the removal exemption below it could run: the retirement was unreachable on
+  // preview AND apply. The two CONTROLS are calibration and pass both before and after the
+  // fix: a SURVIVING dropped-only BAR stays refused, and an unapproved removal stays refused.
+  async function seedDroppedOnlyBar(subject: string) {
+    const seeded = await seedBarContract(subject, { authorMethods: true });
+    const workspaceId = activeWorkspaceId();
+    const original = await subjectSource(subject);
+    const dropped = original.replace('- **P-002** `done` second outcome', '- **P-002** `dropped` second outcome');
+    expect(dropped).not.toBe(original);
+    await db.adminSql`UPDATE harness_shared.harness_plans
+       SET content = ${dropped}, content_hash = ${hashPlanContent(dropped)}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${subject}`;
+    await db.adminSql`UPDATE harness_shared.plan_items SET status = 'dropped'
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp'
+       AND plan_slug = ${subject} AND item_id = 'P-002'`;
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(before.criteria.map((criterion) => criterion.barKey)).toEqual(['R-1', 'R-2']);
+    return { ...seeded, before, sourceBefore: dropped };
+  }
+
+  async function subjectSource(subject: string): Promise<string> {
+    const [row] = await db.adminSql<{ content: string }[]>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${subject}`;
+    return row!.content;
+  }
+
+  async function subjectClauses(subject: string) {
+    const { listSpecClauses } = await import('./agent-tools/plans/spec-clauses-store');
+    return listSpecClauses({ harnessSlug: 'papercusp', planSlug: subject });
+  }
+
+  it('retires a started BAR whose only mapped work was dropped, reconciling its Requirements record and map row in the same amendment (EI-24358433996857425)', async () => {
+    const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('dropped-only-retire-subject');
+    const clausesBefore = await subjectClauses(subject);
+    const amendment = {
+      rubricId: rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Retire R-2: the only work that discharged it was dropped.',
+      criteria: before.criteria.filter((criterion) => criterion.barKey !== 'R-2'),
+    };
+
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview!.changedBars).toEqual(['R-2']);
+    // A preview persists nothing: not the rubric, not the source, not a projection.
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+    expect(await subjectClauses(subject)).toEqual(clausesBefore);
+
+    // Unauthorized: an approval from the implementer lineage is refused with no partial write.
+    await expect(
+      rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment, 'amendment-actor') }),
+    ).rejects.toThrow('acceptance_bar_approval_in_implementer_lineage');
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+
+    const after = await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
+    expect(after!.criteria.map((criterion) => criterion.barKey)).toEqual(['R-1']);
+    expect(after!.revision).toBe(before.revision! + 1);
+
+    // The source is reconciled with the retirement: R-2's Requirements record and map row
+    // are gone, everything else (the survivor, the dropped item's history) is preserved.
+    const source = await subjectSource(subject);
+    expect(source).not.toMatch(/\*\*R-2\b/);
+    expect(source).not.toMatch(/^\| R-2 \|/m);
+    expect(source).toMatch(/\*\*R-1 — First outcome\.\*\*/);
+    expect(source).toMatch(/^\| R-1 \| P-001 \| tree \|$/m);
+    expect(source).toContain('- **P-002** `dropped` second outcome');
+
+    // Canonical generated retirement: the dropped pair is superseded with its BAR pin
+    // cleared, and the survivor's projection keeps its BAR.
+    const clauses = await subjectClauses(subject);
+    expect(clauses.find((clause) => clause.specId === 'AUTO-BAR-R-2-P-002')).toMatchObject({
+      lifecycleStatus: 'superseded',
+      sourceBar: null,
+    });
+    expect(clauses.find((clause) => clause.specId === 'AUTO-BAR-R-1-P-001')?.sourceBar).toMatchObject({ barKey: 'R-1' });
+  });
+
+  it('CONTROL: a SURVIVING BAR whose only mapped work was dropped is still refused on preview and apply, with nothing persisted', async () => {
+    const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('dropped-only-survivor-subject');
+    const clausesBefore = await subjectClauses(subject);
+    // A METHOD-only edit needs no approval, so the apply reaches the source mapping check.
+    const amendment = {
+      rubricId: rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Edit R-1 METHOD while R-2 still maps only dropped work.',
+      criterion: { key: before.criteria[0]!.key, field: 'method' as const, mode: 'replace' as const, text: 'Re-run the seeded fixture.' },
+    };
+    await expect(rubrics.previewAcceptanceBarAmendment(amendment)).rejects.toThrow(/bar_mapping_dropped_only: R-2/);
+    await expect(rubrics.amendRubric(amendment)).rejects.toThrow(/bar_mapping_dropped_only: R-2/);
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+    expect(await subjectClauses(subject)).toEqual(clausesBefore);
+  });
+
+  it('CONTROL: removing a started BAR without an outside approval is refused, with nothing persisted', async () => {
+    const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('dropped-only-unapproved-subject');
+    const clausesBefore = await subjectClauses(subject);
+    await expect(rubrics.amendRubric({
+      rubricId: rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Retire R-2 without review.',
+      criteria: before.criteria.filter((criterion) => criterion.barKey !== 'R-2'),
+    })).rejects.toThrow('acceptance_bar_approval_required');
+    expect((await rubrics.getRubric(rubricSlug))!.criteria.map((criterion) => criterion.barKey)).toEqual(['R-1', 'R-2']);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+    expect(await subjectClauses(subject)).toEqual(clausesBefore);
+  });
+
+  // EI-24358433996857425 Part B (acceptance-bar-atomic-retirement-2026-10-15 R-6/R-8/R-28): the
+  // mapping-only case. R-2's MEANING is kept; only the work that discharges it moves off the
+  // dropped item. Every BAR hash is unchanged, so changedBars is [] and the approval, the
+  // idempotency identity and the projection rebinding all have to be carried by the explicit delta.
+  const moveR2 = (next: string[], prior: string[] = ['P-002']) => ({
+    barKey: 'R-2',
+    prior: { planItemIds: prior, evidencePlane: 'tree' as const },
+    next: { planItemIds: next, evidencePlane: 'tree' as const },
+  });
+
+  async function postReceipt(subject: string, receipt: unknown, author = 'outside-reviewer') {
+    const workspaceId = activeWorkspaceId();
+    const thread = `approval-${subject}`;
+    await db.adminSql`INSERT INTO harness_shared.coord_threads (workspace_id,thread_id,parent_kind,parent_ref)
+      VALUES (${workspaceId},${thread},'plan',${subject}) ON CONFLICT DO NOTHING`;
+    const [post] = await db.adminSql`INSERT INTO harness_shared.coord_thread_posts
+      (workspace_id,thread_id,author_id,body) VALUES
+      (${workspaceId},${thread},${author},${JSON.stringify(receipt)}) RETURNING id`;
+    return `thread-post:${post.id}`;
+  }
+
+  it('R-6/R-8: a mapping-only delta previews one atomic derivation, needs outside approval of that delta, and re-projects the moved pair on apply (EI-24358433996857425 Part B)', async () => {
+    const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('mapping-delta-move-subject');
+    const clausesBefore = await subjectClauses(subject);
+    const amendment = {
+      rubricId: rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Move R-2 off the dropped P-002 onto P-001; R-2 meaning is unchanged.',
+      barMappingDelta: [moveR2(['P-001'])],
+    };
+
+    const preview = (await rubrics.previewAcceptanceBarAmendment(amendment))!;
+    expect(preview.changedBars).toEqual([]);
+    expect(preview.approvalRequired).toBe(true);
+    expect(preview.nextBarSetHash).toBe(before.barSetHash);
+    const r2Hash = before.criteria.find((criterion) => criterion.barKey === 'R-2')!.barHash;
+    // The reviewed object names the moved BAR at its unchanged hash, the proposed source, and the delta.
+    expect(preview.approval).toMatchObject({
+      bars: [{ barKey: 'R-2', priorBarHash: r2Hash, nextBarHash: r2Hash }],
+      proposedSourceHash: preview.sourceDerivation.proposedSourceFingerprint,
+      mappingDelta: [moveR2(['P-001'])],
+    });
+    // R-6: the delta is part of the same source derivation as the (empty) retirement set.
+    expect(preview.sourceDerivation).toMatchObject({
+      retired: [],
+      removedMapRows: [],
+      mappingDelta: [{ ...moveR2(['P-001']), retiredProjections: ['AUTO-BAR-R-2-P-002'], addedProjections: ['AUTO-BAR-R-2-P-001'] }],
+    });
+    expect(preview.sourceDerivation.proposedSourceFingerprint)
+      .not.toBe(preview.sourceDerivation.baselineSourceFingerprint);
+    expect(preview.revisionMovement).toEqual({
+      rubric: { from: before.revision, to: before.revision! + 1 },
+      subject: { from: expect.any(Number), to: expect.any(Number) },
+    });
+    // A preview persists nothing.
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+    expect(await subjectClauses(subject)).toEqual(clausesBefore);
+
+    // A map move is never additive: without an approval it is refused, with no write.
+    await expect(rubrics.amendRubric(amendment)).rejects.toThrow('acceptance_bar_approval_required');
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+
+    const after = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+    const rubricAfter = (await rubrics.getRubric(rubricSlug))!;
+    expect(rubricAfter.revision).toBe(before.revision! + 1);
+    expect(rubricAfter.barSetHash).toBe(before.barSetHash);
+    expect(after.criteria.find((criterion) => criterion.barKey === 'R-2')!.barHash).toBe(r2Hash);
+
+    // R-8: apply wrote exactly the reviewed source: the moved row, nothing else of the map.
+    const source = await subjectSource(subject);
+    expect(source).toMatch(/^\| R-2 \| P-001 \| tree \|$/m);
+    expect(source).toMatch(/^\| R-1 \| P-001 \| tree \|$/m);
+    expect(source).toContain('- **P-002** `dropped` second outcome');
+    expect(source).toContain('Mapping delta: R-2 P-002 (tree) → P-001 (tree)');
+    expect(source).toContain(`Approval-Ref: `);
+
+    // The pair moved: the dropped item's projection is superseded and the new pair is bound to R-2.
+    const clauses = await subjectClauses(subject);
+    expect(clauses.find((clause) => clause.specId === 'AUTO-BAR-R-2-P-002')).toMatchObject({
+      lifecycleStatus: 'superseded',
+      sourceBar: null,
+    });
+    expect(clauses.find((clause) => clause.specId === 'AUTO-BAR-R-2-P-001')?.sourceBar).toMatchObject({
+      barKey: 'R-2',
+      barHash: r2Hash,
+    });
+    expect(clauses.find((clause) => clause.specId === 'AUTO-BAR-R-1-P-001')?.sourceBar).toMatchObject({ barKey: 'R-1' });
+  });
+
+  it('R-28: an approval for another map, or one that omits the delta, cannot authorize the move even though changedBars is []', async () => {
+    const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('mapping-delta-approval-subject');
+    const amendment = {
+      rubricId: rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Move R-2 off the dropped P-002 onto P-001.',
+      barMappingDelta: [moveR2(['P-001'])],
+    };
+    // Another map: R-2 onto P-001 AND the dropped P-002. Its own preview is a valid review object.
+    const otherMap = { ...amendment, barMappingDelta: [moveR2(['P-001', 'P-002'])] };
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(otherMap) }))
+      .rejects.toThrow(/acceptance_bar_approval_(source|mapping)_mismatched/);
+
+    // The isolating case: same BARs, same hashes, same proposed source, only the delta missing.
+    // Pre-fix nothing bound the map, so this receipt would have authorized the move.
+    const { mappingDelta: _delta, ...withoutDelta } = (await rubrics.previewAcceptanceBarAmendment(amendment))!.approval;
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postReceipt(subject, withoutDelta) }))
+      .rejects.toThrow('acceptance_bar_approval_mapping_mismatched');
+    // And a receipt that reviewed a different prior for the same row.
+    const correct = (await rubrics.previewAcceptanceBarAmendment(amendment))!.approval;
+    const forged = { ...correct, mappingDelta: [moveR2(['P-001'], ['P-001'])] };
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postReceipt(subject, forged) }))
+      .rejects.toThrow('acceptance_bar_approval_mapping_mismatched');
+
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+  });
+
+  it('R-28: the idempotency identity binds the delta — a replay is a no-op, the same key with another map is a conflict', async () => {
+    const { subject, rubricSlug, before } = await seedDroppedOnlyBar('mapping-delta-replay-subject');
+    const amendment = {
+      rubricId: rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Move R-2 off the dropped P-002 onto P-001.',
+      idempotencyKey: 'mapping-delta-replay-1',
+      barMappingDelta: [moveR2(['P-001'])],
+    };
+    const approvalRef = await postApproval(amendment);
+    await rubrics.amendRubric({ ...amendment, approvalRef });
+    const applied = await subjectSource(subject);
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision! + 1);
+
+    await rubrics.amendRubric({ ...amendment, approvalRef });
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision! + 1);
+    expect(await subjectSource(subject)).toBe(applied);
+
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef, barMappingDelta: [moveR2(['P-001', 'P-002'])] }))
+      .rejects.toThrow('acceptance_bar_amendment_replay_conflict');
+    expect(await subjectSource(subject)).toBe(applied);
+  });
+
+  it('R-6 COUNTER: a delta whose prior is not the locked row, or that targets a BAR this amendment retires, refuses with nothing persisted', async () => {
+    const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('mapping-delta-refusal-subject');
+    const clausesBefore = await subjectClauses(subject);
+    const base = { rubricId: rubricSlug, actorId: 'amendment-actor', reason: 'Refused map move.' };
+    // The caller believes R-2 maps P-001 + P-002; the locked row maps only P-002.
+    const stalePrior = [moveR2(['P-001'], ['P-001', 'P-002'])];
+    await expect(rubrics.previewAcceptanceBarAmendment({ ...base, barMappingDelta: stalePrior }))
+      .rejects.toThrow(/mapping_delta_prior_mismatch: R-2 delta prior is P-001, P-002 \(tree\), but the locked row is P-002 \(tree\)/);
+    await expect(rubrics.amendRubric({ ...base, barMappingDelta: stalePrior }))
+      .rejects.toThrow('mapping_delta_prior_mismatch');
+    await expect(rubrics.previewAcceptanceBarAmendment({
+      ...base,
+      criteria: before.criteria.filter((criterion) => criterion.barKey !== 'R-2'),
+      barMappingDelta: [moveR2(['P-001'])],
+    })).rejects.toThrow('acceptance_bar_amendment_mapping_delta_bar_changed: R-2');
+    await expect(rubrics.previewAcceptanceBarAmendment({
+      ...base,
+      barMappingDelta: [{ ...moveR2(['P-001']), barKey: 'R-9' }],
+    })).rejects.toThrow('acceptance_bar_amendment_mapping_delta_unknown_bar: R-9');
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+    expect(await subjectClauses(subject)).toEqual(clausesBefore);
+  });
+
+  // SPEC-P-003 (acceptance-bar-atomic-retirement-2026-10-15): a refused or rolled-back
+  // amendment leaves the plan source unchanged. Both new source paths are covered: the
+  // retirement of a dropped-only BAR (P-001) and the explicit map move (P-002). Each fault
+  // fires AFTER the subject-source rewrite inside the amendment transaction (rubrics.ts:
+  // 'after-projection', then 'after-rebind'). The subject row's content, content_hash and
+  // version are compared before the outcome is checked, so a fault that is swallowed and
+  // committed fails on the source itself. The unfaulted apply at the end calibrates the
+  // fixture: the same approved input DOES rewrite the source.
+  async function subjectRow(subject: string) {
+    const [row] = await db.adminSql<{ content: string; content_hash: string; version: number | string }[]>`
+      SELECT content, content_hash, version FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${subject}`;
+    return { content: row!.content, contentHash: row!.content_hash, version: Number(row!.version) };
+  }
+
+  it('SPEC-P-003: a refused or rolled-back retirement or map move leaves the plan source, content hash and revision unchanged', async () => {
+    const retire = await seedDroppedOnlyBar('spec-p003-rollback-retire-subject');
+    const move = await seedDroppedOnlyBar('spec-p003-rollback-move-subject');
+    const cases = [
+      {
+        seeded: retire,
+        amendment: {
+          rubricId: retire.rubricSlug,
+          actorId: 'amendment-actor',
+          reason: 'Retire R-2: the only work that discharged it was dropped.',
+          criteria: retire.before.criteria.filter((criterion) => criterion.barKey !== 'R-2'),
+        },
+      },
+      {
+        seeded: move,
+        amendment: {
+          rubricId: move.rubricSlug,
+          actorId: 'amendment-actor',
+          reason: 'Move R-2 off the dropped P-002 onto P-001; R-2 meaning is unchanged.',
+          barMappingDelta: [moveR2(['P-001'])],
+        },
+      },
+    ];
+    const settle = (call: Promise<unknown>) => call.then(() => 'committed', (error: Error) => error.message);
+    for (const { seeded, amendment } of cases) {
+      const rowBefore = await subjectRow(seeded.subject);
+      const clausesBefore = await subjectClauses(seeded.subject);
+      expect(rowBefore.contentHash).toBe(hashPlanContent(rowBefore.content));
+
+      // Refused: no outside approval.
+      const refused = await settle(rubrics.amendRubric(amendment));
+      expect(await subjectRow(seeded.subject)).toEqual(rowBefore);
+      expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision);
+      expect(refused).toMatch(/acceptance_bar_approval_required/);
+
+      // Rolled back: approved, but a fault fires after the source rewrite.
+      const approvalRef = await postApproval(amendment);
+      for (const stage of ['after-projection', 'after-rebind'] as const) {
+        const outcome = await settle(rubrics.amendRubric({ ...amendment, approvalRef, faultInjection: stage }));
+        expect(await subjectRow(seeded.subject)).toEqual(rowBefore);
+        expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision);
+        expect(await subjectClauses(seeded.subject)).toEqual(clausesBefore);
+        expect(outcome).toMatch(new RegExp(`acceptance_bar_amendment_fault_injected:${stage}`));
+      }
+
+      // Calibration: the same approved input, unfaulted, rewrites the source.
+      await rubrics.amendRubric({ ...amendment, approvalRef });
+      const applied = await subjectRow(seeded.subject);
+      expect(applied.version).toBeGreaterThan(rowBefore.version);
+      expect(applied.contentHash).not.toBe(rowBefore.contentHash);
+      expect(applied.contentHash).toBe(hashPlanContent(applied.content));
+      expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision! + 1);
+    }
   });
 
   /** Read the rubric's stored template_data straight off the row, so a resubmission is

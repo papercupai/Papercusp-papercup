@@ -68,6 +68,17 @@ describe('automatic binding preserves calibration inputs', () => {
       .toMatchObject({ ok: false, error: 'autobind_recipe_incompatible' });
   });
 
+  it('carries a census binding\'s tree instrument to the new run and refuses conflicting instruments', () => {
+    const census = { ...prior, measurement: { ...prior.measurement, treeInstrumentKey: 'provider-specific-census' } };
+    const prepared = prepareAutobindInput(target, run(10, 'pass'), derived, [census, { ...prior, id: 2 }]);
+    expect(prepared).toMatchObject({ ok: true, input: { treeInstrumentKey: 'provider-specific-census' } });
+    expect(prepareAutobindInput(target, run(10, 'pass'), derived, [prior]))
+      .toMatchObject({ ok: true, input: expect.not.objectContaining({ treeInstrumentKey: expect.anything() }) });
+    expect(prepareAutobindInput(target, run(10, 'pass'), derived,
+      [census, { ...census, id: 3, measurement: { ...census.measurement, treeInstrumentKey: 'unregistered' } }]))
+      .toMatchObject({ ok: false, error: 'autobind_recipe_unverified' });
+  });
+
   it('accepts an explicitly authored fixture-free recipe without asserting fixture absence', () => {
     const noFixtures = { ...prior, createdBy: 'su-author', measurement: derived };
     const prepared = prepareAutobindInput(target, run(10, 'pass'), derived, [noFixtures]);

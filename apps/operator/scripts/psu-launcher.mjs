@@ -2575,9 +2575,13 @@ export function tagKickoffProvenance(
     const sha256 = createHash("sha256")
       .update(String(text).replace(/\r\n?/g, "\n").trim(), "utf8")
       .digest("hex");
+    const scopedHome =
+      typeof env?.PAPERCUSP_HOME === "string"
+        ? env.PAPERCUSP_HOME.trim()
+        : "";
     const dir =
       env.PAPERCUSP_TURN_PROVENANCE_DIR ||
-      papercuspPath("turn-provenance");
+      (scopedHome ? join(scopedHome, "turn-provenance") : papercuspPath("turn-provenance"));
     mkdirSync(dir, { recursive: true });
     const safe = String(sid)
       .replace(/[^a-zA-Z0-9._-]/g, "_")
@@ -2672,18 +2676,23 @@ export function scriptedOmpSetupEnv(backend, args, env = process.env) {
  */
 export function routeFreshKickoff(backend, res, args, env = process.env) {
   const kickoffOrigin = consumeInternalKickoffOrigin(env);
+  // The bootstrap response is the source of truth for the child environment.
+  // Keep the provenance write on that same envelope: a launcher can be started
+  // under one workspace while bootstrap selects another, and runWrapper exports
+  // the response env to the child hook.
+  const launchEnv = { ...env, ...(res?.envelopeEnv ?? {}) };
+  delete launchEnv.PAPERCUSP_INTERNAL_KICKOFF_ORIGIN;
   const kickoffArgs = kickoffPositionalArgs(res, {
     ...args,
-    kickoffPromptText: resolveKickoffText(args, env),
+    kickoffPromptText: resolveKickoffText(args, launchEnv),
   });
   if (!kickoffArgs.length) {
     return { positionalArgs: [], managedKickoff: null, kickoffSeeded: false };
   }
 
-  const sidForTag =
-    res?.envelopeEnv?.PAPERCUSP_SID || env?.PAPERCUSP_SID || null;
+  const sidForTag = launchEnv.PAPERCUSP_SID || null;
   const tagged = kickoffArgs.map((text) =>
-    tagKickoffProvenance(text, sidForTag, env, Date.now(), kickoffOrigin),
+    tagKickoffProvenance(text, sidForTag, launchEnv, Date.now(), kickoffOrigin),
   );
   return {
     positionalArgs: [],
@@ -16219,7 +16228,11 @@ async function pollArchiveRematerializeStatus(
  */
 export async function ensureResumeTranscriptPresent(
   source,
-  { home = homedir(), rematerialize = tryRematerializeFromArchive } = {},
+  {
+    home = homedir(),
+    rematerialize = tryRematerializeFromArchive,
+    warn = (m) => process.stderr.write(m),
+  } = {},
 ) {
   if (!source || !["claude", "codex", "omp"].includes(source.agent) ||
       (source.agent === "omp" && source.id == null))
@@ -16232,7 +16245,76 @@ export async function ensureResumeTranscriptPresent(
   );
   if (restored?.pending) return restored;
   if (restored?.failed) throw new Error(restored.error);
-  return Boolean(restored) && sessionHasTranscript(source, { home });
+  if (Boolean(restored) && sessionHasTranscript(source, { home })) return true;
+  return rebindToChainPredecessor(source, { home, warn });
+}
+
+/**
+ * WI-6554700010018540 (owner directive #2095): the newest transcript a claude
+ * CHAIN actually wrote, for when the native id the chain is bound to never wrote
+ * one.
+ *
+ * A carry-respawn re-binds the chain to its successor's freshly minted id BEFORE
+ * that child has proven it started (pty-host `respawned` +
+ * `respawn-binding-confirmed` fire at spawn). A successor that dies at startup —
+ * su-807ee9d7 on 2026-10-20: 549ms, "System prompt file not found" — leaves the
+ * chain bound to an id with no transcript on disk and nothing in the archive,
+ * while its predecessor's transcript sits intact in the same isolated config
+ * dir. Refusing there told the owner "nothing to resume" about an agent whose
+ * whole conversation was on disk.
+ *
+ * Scope is deliberately narrow: only the owner's ISOLATED `CLAUDE_CONFIG_DIR`
+ * (every transcript there belongs to this one chain — the shared ~/.claude
+ * holds other sessions' conversations and is never searched), only the
+ * project dir claude itself would resume from (`cwd` slugged as claude does),
+ * only top-level non-empty `<uuid>.jsonl` files (subagent transcripts live in
+ * subdirectories). Pure-ish (reads FS); exported for tests.
+ */
+export function newestClaudeChainTranscript(source, { home = homedir() } = {}) {
+  if (source?.agent !== "claude" || !source.sessionId) return null;
+  const configDir =
+    source.configDir ||
+    (source.coordOwnerId ? sessionClaudeConfigDir(source.coordOwnerId, home) : null);
+  if (!configDir) return null;
+  const projects = join(configDir, "projects");
+  const wanted = source.cwd ? String(source.cwd).replace(/[^a-zA-Z0-9]/g, "-") : null;
+  let best = null;
+  for (const d of safeReaddir(projects)) {
+    if (!d.isDirectory() || (wanted && d.name !== wanted)) continue;
+    const dir = join(projects, d.name);
+    for (const f of safeReaddir(dir)) {
+      if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
+      const id = f.name.slice(0, -".jsonl".length);
+      if (id === source.sessionId || !UUID_RE.test(id)) continue;
+      let st;
+      try {
+        st = statSync(join(dir, f.name));
+      } catch {
+        continue;
+      }
+      if (st.size === 0) continue;
+      if (!best || st.mtimeMs > best.mtimeMs) best = { id, path: join(dir, f.name), mtimeMs: st.mtimeMs };
+    }
+  }
+  return best;
+}
+
+/** Re-point `source.sessionId` at the chain's newest real transcript (see
+ *  newestClaudeChainTranscript) and say so. Mutates `source` — the launch below
+ *  reads `source.sessionId` — and records the unresumable id it replaced in
+ *  `source.reboundFromSessionId`. Returns whether there is now something to resume. */
+function rebindToChainPredecessor(source, { home, warn }) {
+  const predecessor = newestClaudeChainTranscript(source, { home });
+  if (!predecessor) return false;
+  const unresumable = source.sessionId;
+  source.reboundFromSessionId = unresumable;
+  source.sessionId = predecessor.id;
+  warn(
+    `psu: session ${unresumable} never wrote a transcript (its process died at startup) and the ` +
+      `archive has no copy — resuming the conversation it was continuing instead: ${predecessor.id} ` +
+      `(last written ${new Date(predecessor.mtimeMs).toISOString()}).\n`,
+  );
+  return true;
 }
 
 /**

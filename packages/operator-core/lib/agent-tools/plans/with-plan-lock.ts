@@ -43,6 +43,9 @@ import {
   readLatestActivationAuditAnchor,
   type VerificationLoweringRefusal,
 } from '../../plan-verification-escape';
+import { withVerificationResolver } from '../../plan-verification-profile';
+import { loadTypeRegistry } from '../../plan-types/registry';
+import { createRegistryVerificationResolver } from '../../plan-types/resolve-verification';
 import { summarizeForcedPast } from './forced-past-stamp';
 import {
   invalidPlanDependenciesValue,
@@ -779,22 +782,30 @@ export async function withPlanLock<T>(
     // A content write cannot change the profile column, so only a changed `deliverable:`
     // keyword can lower anything; the profile is read (in its own query) only then, which
     // keeps this off the common write path and away from fixtures that predate the column.
+    // plan-item-types-registry-cupboard P-003 (R-8, D-005): lowering is judged on the resolved
+    // module SET, so a plan-level `type:` swap is checked here too, not only a deliverable swap.
     if (newBody !== null && cur) {
       const priorParsed = parsePlan(cur.content, { filePath });
       const nextParsed = parsePlan(newBody, { filePath });
-      const lowerings = declaredDeliverablesChanged(priorParsed.items, nextParsed.items)
-        ? deliverableLowerings(
-            priorParsed.items,
-            nextParsed.items,
-            effectivePlanProfile(
-              (
-                await tx<{ verification_profile: string | null }[]>`
-                  SELECT verification_profile FROM harness_shared.harness_plans
-                   WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}`
-              )[0]?.verification_profile,
-            ),
-          )
-        : [];
+      const planTypeBefore = priorParsed.frontmatter.type ?? null;
+      const planTypeAfter = nextParsed.frontmatter.type ?? null;
+      // Both sides resolve through the WORKSPACE registry, so a swap between two registered
+      // third-party types is judged on their real module sets. The built-in-only default
+      // would fail both safe to the full catalog and see no lowering at all.
+      let lowerings: ReturnType<typeof deliverableLowerings> = [];
+      if (declaredDeliverablesChanged(priorParsed.items, nextParsed.items) || planTypeBefore !== planTypeAfter) {
+        const [profileRow] = await tx<{ verification_profile: string | null }[]>`
+          SELECT verification_profile FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}`;
+        const registry = await loadTypeRegistry(tx as never, { workspaceId });
+        lowerings = withVerificationResolver(createRegistryVerificationResolver(registry), () =>
+          deliverableLowerings(priorParsed.items, nextParsed.items, {
+            profile: effectivePlanProfile(profileRow?.verification_profile),
+            planTypeBefore,
+            planTypeAfter,
+          }),
+        );
+      }
       if (lowerings.length > 0) {
         const profile = lowerings[0]!.profile;
         const audit = await readLatestActivationAuditAnchor(tx as never, { workspaceId, harnessSlug, planSlug: slug });
@@ -806,6 +817,7 @@ export async function withPlanLock<T>(
           priorDecisions: priorParsed.decisions,
           priorContentHash: hashPlanContent(cur.content),
           latestActivationAudit: audit,
+          authorizingRefs: planTypeAfter && planTypeAfter !== planTypeBefore ? [planTypeAfter] : [],
         });
         if (lowering) {
           return {

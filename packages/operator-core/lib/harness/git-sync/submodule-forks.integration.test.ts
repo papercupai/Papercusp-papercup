@@ -180,18 +180,51 @@ describe('working copy WITH submodules (P-014 / D-017, WI-10006416)', () => {
     expect(await hasCommit(t.subUpstream, gitlink)).toBe(false);
   });
 
-  it('a submodule with no recorded fork makes the tick commit-only: nothing is pushed anywhere', async () => {
+  it('a submodule with no fork but a published HEAD is left untouched while the superproject still pushes (WI-6554700010018380)', async () => {
     const t = await makeTopology();
+    const subDir = join(t.work, 'libs/sub');
     const subMain = await git(['rev-parse', 'main'], t.subUpstream);
-    await writeFile(join(t.work, 'libs/sub/fix.txt'), 'agent fix\n');
+    const pin = await git(['rev-parse', 'HEAD'], subDir);
+    await writeFile(join(subDir, 'fix.txt'), 'install-generated file inside the unforked submodule\n');
+    await writeFile(join(t.work, 'app-fix.txt'), 'agent fix in the superproject\n');
+
+    const r = await tick(t, { source: 'absent', forks: {} });
+    expect(r.commitOnly).toBeNull();
+    expect(r.cfg.unforkedSubmodules).toEqual(['libs/sub']);
+    expect(r.outcome.status).not.toBe('error');
+    // The superproject published to its fork, pinning the submodule at its PUBLISHED commit…
+    const published = await git(['rev-parse', WORKING_COPY_INTEGRATION_BRANCH], t.superFork);
+    expect(await git(['show', `${published}:app-fix.txt`], t.superFork)).toBe('agent fix in the superproject');
+    expect(await git(['rev-parse', `${published}:libs/sub`], t.superFork)).toBe(pin);
+    expect(await hasCommit(t.subUpstream, pin)).toBe(true);
+    // …and nothing was committed inside the submodule: its edit is still untracked there.
+    expect(await git(['rev-parse', 'HEAD'], subDir)).toBe(pin);
+    expect(await git(['status', '--porcelain'], subDir)).toBe('?? fix.txt');
+    expect(await git(['rev-parse', 'main'], t.subUpstream)).toBe(subMain);
+    expect(await git(['for-each-ref', 'refs/heads'], t.subFork)).not.toContain('staging');
+  });
+
+  it('a submodule with no fork and UNPUBLISHED commits makes the tick commit-only, and git-sync adds no commit inside it', async () => {
+    const t = await makeTopology();
+    const subDir = join(t.work, 'libs/sub');
+    const subMain = await git(['rev-parse', 'main'], t.subUpstream);
+    await writeFile(join(subDir, 'local.txt'), 'a commit no remote holds\n');
+    await git(['add', '-A'], subDir);
+    await git(['commit', '--no-verify', '-m', 'local-only commit'], subDir);
+    const localHead = await git(['rev-parse', 'HEAD'], subDir);
+    await writeFile(join(subDir, 'fix.txt'), 'agent fix\n');
 
     const r = await tick(t, { source: 'absent', forks: {} });
     expect(r.commitOnly).toBe('working_copy_submodule_fork_missing');
     expect(r.cfg.push).toBe(false);
     expect(r.cfg.pushSubmoduleOrigins).toBe(false);
+    expect(r.cfg.unforkedSubmodules).toEqual(['libs/sub']);
     expect((await testRunGit(['rev-parse', '--verify', 'staging'], t.superFork)).code).not.toBe(0);
     expect(await git(['rev-parse', 'main'], t.subUpstream)).toBe(subMain);
     expect(await git(['for-each-ref', 'refs/heads'], t.subFork)).not.toContain('staging');
+    // The commit-only tick did not grow the unpublishable history inside the submodule.
+    expect(await git(['rev-parse', 'HEAD'], subDir)).toBe(localHead);
+    expect(await git(['status', '--porcelain'], subDir)).toBe('?? fix.txt');
   });
 
   it('an unreadable submodule-fork setting is commit-only too (fail closed)', async () => {

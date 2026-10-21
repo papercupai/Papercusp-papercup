@@ -26,6 +26,7 @@
     "test:lane-pure": "PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs",
     "test:lane-stateful": "PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
+    "test:integration:migration-drift": "PAPERCUSP_TEST_RUN_HARNESS=papercusp vitest run --config vitest.integration.config.ts lib/migration-drift.integration.test.ts",
     "test:pty-host-event-classification": "vitest run lib/scout/pty-host-health-lane.test.ts",
     "test:identity-surfaces": "vitest run lib/agent-identities/identity-surface-lint.test.ts lib/agent-identities/identity-surface-census.test.ts",
     "test:github-workflows": "vitest run lib/github-workflows.test.ts",

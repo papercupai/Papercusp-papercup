@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // vi.mock factories are hoisted above module-scope consts, so the spies must be.
-const { sqlCalls, costFromTokens, sqlShouldThrow } = vi.hoisted(() => ({
+const { sqlCalls, costFromTokens, sqlShouldThrow, sqlRows } = vi.hoisted(() => ({
   // Each tagged-template INSERT pushes { text, values } here.
   sqlCalls: [] as { text: string; values: unknown[] }[],
   costFromTokens: vi.fn((_model: string, _usage: unknown, _options?: unknown): { usd: number; priced: boolean; bound?: 'lower' } => ({
@@ -18,6 +18,8 @@ const { sqlCalls, costFromTokens, sqlShouldThrow } = vi.hoisted(() => ({
   })),
   // Flip true to make getOrgPg().sql throw, exercising the best-effort swallow.
   sqlShouldThrow: { value: false },
+  // Rows every tagged-template query resolves with (summarizeUsage reads them; INSERTs ignore them).
+  sqlRows: { value: [] as unknown[] },
 }));
 
 // PRICE_TABLE_VERSION must be on the mock: a missing export THROWS on read, and the writer's
@@ -43,7 +45,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
     );
     if (sqlShouldThrow.value) throw new Error('pg exploded');
     sqlCalls.push({ text, values });
-    return Promise.resolve([]);
+    return Promise.resolve(sqlRows.value);
   }
   return { ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) };
 });
@@ -52,6 +54,7 @@ import {
   recordUsageSample,
   recordUsageHeaders,
   recordUsageTokens,
+  summarizeUsage,
   type UsageSample,
 } from './agent-usage-telemetry';
 
@@ -108,6 +111,7 @@ function lastInsert(): Record<Col, unknown> {
 beforeEach(() => {
   sqlCalls.length = 0;
   sqlShouldThrow.value = false;
+  sqlRows.value = [];
   costFromTokens.mockReset();
   costFromTokens.mockReturnValue({ usd: 0, priced: false });
 });
@@ -450,5 +454,52 @@ describe('n() finite-guard on persisted INSERT values', () => {
     const row = lastInsert();
     expect(row.input_tokens).toBe(0);
     expect(row.output_tokens).toBe(0);
+  });
+});
+
+// cloud-monitoring-byoc-privacy-2026-10-13 R-4 / D-004: a bucket with no observed
+// rate-limit ceiling is UNKNOWN usage, never 0% (or 100%) — absence is not a measurement.
+describe('summarizeUsage (usagePct honesty)', () => {
+  const bucket = (over: Record<string, unknown>) => ({
+    bucket_key: 'k',
+    provider: 'anthropic',
+    model_class: 'opus',
+    calls: '2',
+    input_tokens: '10',
+    output_tokens: '5',
+    cache_read_tokens: null,
+    cache_creation_tokens: null,
+    cost_usd: 0.5,
+    rl_tokens_limit: null,
+    rl_tokens_remaining: null,
+    rl_reset_at: null,
+    ...over,
+  });
+
+  it('reports usagePct null (not 0) when no ceiling was observed, while still totalling usage', async () => {
+    sqlRows.value = [bucket({ bucket_key: 'subscription' })];
+    const s = await summarizeUsage();
+    expect(s.buckets).toHaveLength(1);
+    expect(s.buckets[0].usagePct).toBeNull();
+    expect(s.buckets[0].rlResetAt).toBeNull();
+    expect(s.calls).toBe(2);
+    expect(s.inputTokens).toBe(10);
+    expect(s.spendUsd).toBe(0.5);
+  });
+
+  it('reports usagePct null for a zero limit or a missing remaining count (no fabricated ratio)', async () => {
+    sqlRows.value = [
+      bucket({ bucket_key: 'zero-limit', rl_tokens_limit: '0', rl_tokens_remaining: '0' }),
+      bucket({ bucket_key: 'no-remaining', rl_tokens_limit: '1000', rl_tokens_remaining: null }),
+    ];
+    const s = await summarizeUsage();
+    expect(s.buckets.map((b) => b.usagePct)).toEqual([null, null]);
+  });
+
+  it('computes usagePct from the observed ceiling when one exists', async () => {
+    sqlRows.value = [bucket({ bucket_key: 'api', rl_tokens_limit: '1000', rl_tokens_remaining: '250', rl_reset_at: '1792540000000' })];
+    const s = await summarizeUsage();
+    expect(s.buckets[0].usagePct).toBe(75);
+    expect(s.buckets[0].rlResetAt).toBe(1792540000000);
   });
 });

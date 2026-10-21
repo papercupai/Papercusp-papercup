@@ -21,6 +21,9 @@
  * why the rate guard is a rolling ceiling rather than a min-interval.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const {
   buildMemoryContextBlockMock,
@@ -146,6 +149,44 @@ it('forwards bounded measured incident attribution without deriving it in the en
   expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', incidentAttribution,
     tool: 'testing:run', toolInput: { files: ['target.test.ts'] }, })).toEqual({ ok: true, text: 'INCIDENT BRIEF' });
   expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ incidentAttribution }), 0);
+});
+
+// WI-6554700010018438: an operator/superuser-scope hook sends harness '' (no
+// PAPERCUSP_HARNESS_SLUG). The push must still get the harness the cwd names,
+// or its snapshot resolves to null and no code-intelligence answer is ever sent.
+describe('code-intel push harness resolution', () => {
+  const withMarkedCwd = async (slug: string, run: (cwd: string) => Promise<void>): Promise<void> => {
+    const dir = mkdtempSync(join(tmpdir(), 'mid-turn-harness-'));
+    mkdirSync(join(dir, '.papercusp'));
+    writeFileSync(join(dir, '.papercusp', 'slug'), `${slug}\n`);
+    vi.stubEnv('PAPERCUSP_HARNESS_SLUG', '');
+    try {
+      await run(dir);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const calls = [{ tool: 'unknown-tool', toolInput: {} }];
+
+  it('passes the harness detected from cwd when the hook sends harness empty', async () => {
+    await withMarkedCwd('fixture-harness', async (cwd) => {
+      await post({ owner: owner(), workspace: 'ws-test', harness: '', cwd, toolCalls: calls });
+      expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: 'fixture-harness' }), 0);
+    });
+  });
+
+  it('keeps a declared harness over the cwd marker', async () => {
+    await withMarkedCwd('fixture-harness', async (cwd) => {
+      await post({ owner: owner(), workspace: 'ws-test', harness: 'papercusp', cwd, toolCalls: calls });
+      expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }), 0);
+    });
+  });
+
+  it('leaves the push harness undefined when neither harness nor cwd is sent', async () => {
+    await post({ owner: owner(), workspace: 'ws-test', harness: '', toolCalls: calls });
+    expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: undefined }), 0);
+  });
 });
 
 it('a code-intelligence failure preserves memory, identity rules and failure hints', async () => {

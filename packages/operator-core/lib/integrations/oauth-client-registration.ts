@@ -13,11 +13,21 @@
  *  - writes one entry (`saveOAuthClientRegistration`), atomically, mode 0600, keeping every other
  *    entry in the file (the legacy GitHub and Facebook loader reads the same file).
  *
+ * A ref with no entry in that file falls back to a host-held installed-app client file,
+ * `~/.config/papercusp/<ref>-oauth-client.json` (`installedAppClientPath`). A first-party
+ * connection that predates its provider package kept its client there, and its stored refresh
+ * tokens only refresh against that client: Google's Desktop client did, and when gmail, calendar
+ * and contacts became the `provider:google` group, every refresh failed with
+ * `provider_google_oauth_provider_not_registered` until this fallback existed (WI-6554700010018599).
+ * The fallback is read-only, so that file stays the one copy of the secret; an entry saved from
+ * the settings page wins over it.
+ *
  * No read path here returns a client secret, and no refusal message carries a submitted value.
  */
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { normalizeProviderInstanceOrigin, type ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { operatorApiBase } from '../operator-api-base';
@@ -160,10 +170,43 @@ function asRegistration(value: unknown): OAuthClientRegistration | null {
   return value as unknown as OAuthClientRegistration;
 }
 
-/** One registration entry, or null when absent, malformed, or the file cannot be read. */
+/** Host-held installed-app client file for a registration ref (see the module header). */
+export function installedAppClientPath(ref: string): string {
+  return join(homedir(), '.config', 'papercusp', `${ref}-oauth-client.json`);
+}
+
+/**
+ * The client in `installedAppClientPath(ref)`: the `{ installed: { client_id, client_secret } }`
+ * export format. Null when the ref is not a plain id, the file is absent, or it lacks either value.
+ */
+async function readInstalledAppClient(ref: string): Promise<OAuthClientRegistration | null> {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(ref)) return null;
+  let raw: string;
+  try {
+    raw = await fs.readFile(installedAppClientPath(ref), 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    const installed = (JSON.parse(raw) as { installed?: { client_id?: unknown; client_secret?: unknown } }).installed;
+    const clientId = installed?.client_id;
+    const clientSecret = installed?.client_secret;
+    if (typeof clientId !== 'string' || !clientId || typeof clientSecret !== 'string' || !clientSecret) return null;
+    return { clientId, clientSecret };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One registration entry: the oauth-apps.json entry, else the host-held installed-app client for
+ * the ref. Null when neither exists, when the entry is malformed, or when oauth-apps.json exists
+ * but cannot be read (an unreadable registry never falls through to another source).
+ */
 export async function readOAuthClientRegistration(ref: string): Promise<OAuthClientRegistration | null> {
   const file = await readRegistrationsFile();
-  return file ? asRegistration(file[ref]) : null;
+  if (!file) return null;
+  return asRegistration(file[ref]) ?? (await readInstalledAppClient(ref));
 }
 
 function statusOf(ref: string, entry: OAuthClientRegistration | null): OAuthClientRegistrationStatus {
@@ -188,7 +231,8 @@ export async function oauthClientRegistrationStatus(ref: string): Promise<OAuthC
 /** Status for several refs from one read of the file (the settings overview). */
 export async function oauthClientRegistrationStatuses(refs: readonly string[]): Promise<Map<string, OAuthClientRegistrationStatus>> {
   const file = (await readRegistrationsFile()) ?? {};
-  return new Map(refs.map((ref) => [ref, statusOf(ref, asRegistration(file[ref]))]));
+  const entries = await Promise.all(refs.map(async (ref) => [ref, asRegistration(file[ref]) ?? (await readInstalledAppClient(ref))] as const));
+  return new Map(entries.map(([ref, entry]) => [ref, statusOf(ref, entry)]));
 }
 
 /** A client ID or secret: one line of printable, non-space characters within a length cap. */

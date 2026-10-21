@@ -4,7 +4,7 @@
   "suRenderParityBaseline": "pending: identity-definitions-own-policy-2026-10-17#P-001 (frozen su render)",
   "counts": {
     "flat-role-prompt": 109,
-    "prompt-constant": 90,
+    "prompt-constant": 87,
     "injection-hook": 55,
     "kernel-splice": 28
   },
@@ -1258,23 +1258,9 @@
     },
     {
       "class": "prompt-constant",
-      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#FRICTION_TRIPWIRE",
-      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
-      "name": "FRICTION_TRIPWIRE",
-      "kind": "second-person"
-    },
-    {
-      "class": "prompt-constant",
       "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#OBSERVATION_CAPTURE_NOTE",
       "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
       "name": "OBSERVATION_CAPTURE_NOTE",
-      "kind": "second-person"
-    },
-    {
-      "class": "prompt-constant",
-      "id": "prompt-constant:libs/papercusp/packages/orchestrator/src/prompt-build.ts#OBSERVATION_RUBRIC_NUDGE",
-      "path": "libs/papercusp/packages/orchestrator/src/prompt-build.ts",
-      "name": "OBSERVATION_RUBRIC_NUDGE",
       "kind": "second-person"
     },
     {
@@ -1801,13 +1787,6 @@
       "path": "packages/operator-core/lib/task-manager/lifecycle-judgement.ts",
       "name": "UNACCOUNTED_GONE_VERIFICATION_GUIDANCE",
       "kind": "prompt-named"
-    },
-    {
-      "class": "prompt-constant",
-      "id": "prompt-constant:packages/operator-core/lib/turn-end-observation-policy.ts#TURN_END_OBSERVATION",
-      "path": "packages/operator-core/lib/turn-end-observation-policy.ts",
-      "name": "TURN_END_OBSERVATION",
-      "kind": "second-person"
     },
     {
       "class": "prompt-constant",

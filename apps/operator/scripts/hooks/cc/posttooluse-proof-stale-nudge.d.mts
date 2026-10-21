@@ -68,11 +68,12 @@ export function callTool({ baseUrl, token, owner, name, args, fetchImpl, timeout
     detail: string;
 }>;
 /** Primary operator first; the staging operator carries a newly shipped tool sooner. */
-export function lookupMeasuringClauses({ urls, token, owner, harness, path, fetchImpl }: {
+export function lookupMeasuringClauses({ urls, token, owner, harness, checkoutRoot, path, fetchImpl }: {
     urls: any;
     token: any;
     owner: any;
     harness: any;
+    checkoutRoot?: null | undefined;
     path: any;
     fetchImpl?: typeof fetch | undefined;
 }): Promise<{
@@ -108,8 +109,9 @@ export function planBurst({ state, holders, editor, path, nowMs, gapMs }: {
     next: {};
 };
 /** The advisory the editor sees. */
-export function formatAdvisory({ path, clauses, totalClauses, editor, holders, noticed, noticeFailures }: {
+export function formatAdvisory({ path, checkoutRoot, clauses, totalClauses, editor, holders, noticed, noticeFailures }: {
     path: any;
+    checkoutRoot?: null | undefined;
     clauses: any;
     totalClauses: any;
     editor: any;
@@ -121,8 +123,9 @@ export function formatAdvisory({ path, clauses, totalClauses, editor, holders, n
  * The coord notice one peer holder receives, from the tool's holder summary; kept under
  * the 600-char inbox body cap so the recipient reads all of it.
  */
-export function formatNotice({ editor, path, holder }: {
+export function formatNotice({ editor, checkoutRoot, path, holder }: {
     editor: any;
+    checkoutRoot?: null | undefined;
     path: any;
     holder: any;
 }): {

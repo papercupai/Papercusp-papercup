@@ -6450,6 +6450,24 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       expect(result.step).toBe('already-connected');
     });
 
+    it('force mode drives Reconnect even when the target row already reads connected', async () => {
+      const tui = makeFakeTui([{ name: 'papercusp-su', status: '✔ connected' }]);
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp-su',
+        write: tui.write,
+        readTap: tui.read,
+        resetTap: tui.reset,
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 500,
+        reconnectBudgetMs: 500,
+        force: true,
+      });
+      expect(result).toEqual({ ok: true, step: 'done', detail: 'connected verdict observed' });
+      expect(tui.escapes()).toBeGreaterThanOrEqual(2);
+    });
+
     it('fail-soft: dialog never paints → Esc out with step open-dialog', async () => {
       const dead = { write: () => {}, read: () => '', reset: () => {} };
       const result = await runMcpReconnectMacro({
@@ -6701,6 +6719,15 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
     it('decodeControl accepts the new mode, gated like a turn', () => {
       const decoded = decodeControl(encodeControl({ mode: 'mcp-reconnect', data: 'papercusp-su' }));
       expect(decoded).toEqual({ mode: 'mcp-reconnect', data: 'papercusp-su', gated: true });
+    });
+
+    it('decodeControl preserves the additive forced-reconnect bit', () => {
+      const decoded = decodeControl(encodeControl({
+        mode: 'mcp-reconnect', data: 'papercusp-su', ownerId: 'su-current', force: true,
+      }));
+      expect(decoded).toEqual({
+        mode: 'mcp-reconnect', data: 'papercusp-su', gated: true, ownerId: 'su-current', force: true,
+      });
     });
   });
 });
