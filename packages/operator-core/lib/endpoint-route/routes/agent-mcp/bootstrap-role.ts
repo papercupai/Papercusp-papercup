@@ -939,7 +939,8 @@ const post = defineTool({
     } catch (error) {
       await markAdvSessionEnded(sessionId!, null, 'reconciler');
       return jsonRes({ status: 'error', code: 'support_native_route_denied',
-        error: error instanceof Error ? error.message : String(error) }, 409);
+        error: error instanceof Error ? error.message : String(error),
+        liftsWhen: 'prepareSupportOperationNativeLaunch accepts the session\'s accepted support operation: its work item and invocation receipt exist, its Codex funding and revision are accepted, tool confinement admits the worker, and the private native gateway binds a port. The error names the failed precondition; re-bootstrap once it holds.' }, 409);
     }
     const result: BootstrapRoleResult = {
       status: 'ok',

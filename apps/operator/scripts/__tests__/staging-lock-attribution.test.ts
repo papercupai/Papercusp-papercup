@@ -346,7 +346,15 @@ describe("staging lock attribution", () => {
       const admission = sync.slice(start, end).replace(
         'STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"', 'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
       );
-      const result = shell('source "$HELPER"\nlog() { printf "%s\\n" "$*"; }\n' + admission + '\nprintf sync-proceeded', {
+      // Admission calls staging_sync_lock_start, the coprocess keeper that owns
+      // fd 9; it is defined above the admission block, so run that block too.
+      const keeperStart = sync.indexOf("# Keep our cleanup receipt separately");
+      const keeperEnd = sync.indexOf("staging_alias_bootstrap() {", keeperStart);
+      expect(keeperStart).toBeGreaterThan(-1);
+      expect(keeperEnd).toBeGreaterThan(keeperStart);
+      const keeper = sync.slice(keeperStart, keeperEnd);
+      expect(keeper).toContain("staging_sync_lock_start() {");
+      const result = shell('source "$HELPER"\nlog() { printf "%s\\n" "$*"; }\n' + keeper + admission + '\nprintf sync-proceeded', {
         HELPER, TEST_LOCK: lock, PATH: binDir + ":" + process.env.PATH,
         INVOCATION_ID: "sync-attempt-42",
       });
@@ -570,10 +578,16 @@ describe("staging lock attribution", () => {
     const attempt = sync.indexOf(
       "state=wait_start lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=exclusive",
     );
-    const open = sync.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"');
+    // The open + non-blocking flock live in the coprocess keeper; the wait_start
+    // record must be written before admission CALLS that keeper.
+    const call = sync.indexOf("if staging_sync_lock_start; then", attempt);
+    const keeperAt = sync.indexOf("staging_sync_lock_start() {");
+    const open = sync.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"', keeperAt);
     const acquire = sync.indexOf("if ! flock -n 9", open);
     expect(attempt).toBeGreaterThan(-1);
-    expect(open).toBeGreaterThan(attempt);
+    expect(call).toBeGreaterThan(attempt);
+    expect(keeperAt).toBeGreaterThan(-1);
+    expect(open).toBeGreaterThan(keeperAt);
     expect(acquire).toBeGreaterThan(open);
     expect(sync).toContain("state=shared_acquired phase=preflight-restart");
     expect(sync).toContain("state=shared_acquired phase=final-restart");

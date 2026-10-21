@@ -71,7 +71,9 @@ describe('sessions:timeline owner — a cursor does not carry it (EI-22069000224
 
   it('the plain missing-owner call gets the same correction, since it is the same question', () => {
     const rendered = refusalFor(timelineTool, {});
-    expect(rendered).toMatch(/pass 'self' for yourself/);
+    expect(rendered).toMatch(/owner is required/);
+    expect(rendered).toMatch(/pass 'self'/);
+    expect(rendered).toMatch(/position only/i);
   });
 
   it('POSITIVE CONTROL: the generic Zod line is no longer what the caller sees', () => {

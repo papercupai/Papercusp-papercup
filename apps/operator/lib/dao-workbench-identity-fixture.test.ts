@@ -208,10 +208,13 @@ describe('native DAO viewport launch contract', () => {
   }, 50_000);
   it('rejects linked clone dependencies before imports or either native boot and names the supported donor override', async () => {
     const fixture = verifier();
-    symlinkSync(join(fixture.dependencyDonor, 'node_modules', 'fixture'), join(fixture.dependencyDonor, 'node_modules', '.astro'));
+    // A real package entry, not a disposable cache: pinned-deps.sh skips its
+    // caches set (.cache/.astro/.vite/...) before the strict link guard, so a
+    // cache-named link would pass preflight and never exercise this refusal.
+    symlinkSync(join(fixture.dependencyDonor, 'node_modules', 'fixture'), join(fixture.dependencyDonor, 'node_modules', 'linked-fixture'));
     const failure = await launch(fixture.env).catch(error => error);
     expect(failure).toMatchObject({ code: 2,
-      stderr: expect.stringContaining('absolute-pinned-dependency-link:node_modules/.astro') });
+      stderr: expect.stringContaining('absolute-pinned-dependency-link:node_modules/linked-fixture') });
     expect(failure).toMatchObject({
       stderr: expect.stringContaining('set PAPERCUSP_REPO_DIR to the canonical dependency donor') });
     expect(existsSync(fixture.imports)).toBe(false);

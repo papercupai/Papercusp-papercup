@@ -1071,7 +1071,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
@@ -1079,10 +1079,27 @@ export async function withFsMutexRead(name, fn, opts = {}) {
 
   const io = opts.io ?? {};
   const writeFileIo = io.writeFile ?? writeFile;
+  const admissionSubphaseTimingsMs =
+    typeof opts.onAcquired === "function" ? {} : undefined;
+  const measureAdmissionSubphase = admissionSubphaseTimingsMs
+    ? async (name, operation) => {
+      const phaseStartedAt = performance.now();
+      try {
+        return await operation();
+      } finally {
+        admissionSubphaseTimingsMs[name] =
+          (admissionSubphaseTimingsMs[name] ?? 0) + Math.max(0, performance.now() - phaseStartedAt);
+      }
+    }
+    : (_name, operation) => operation();
   const rootOptions = {};
   if (opts.lockRootDir !== undefined) rootOptions.lockRootDir = opts.lockRootDir;
   if (opts.io) rootOptions.io = opts.io;
-  const root = await ensureFsMutexLockRoot(undefined, Object.keys(rootOptions).length > 0 ? rootOptions : undefined);
+  if (admissionSubphaseTimingsMs) rootOptions.phaseTimingsMs = admissionSubphaseTimingsMs;
+  const root = await measureAdmissionSubphase(
+    "lock-root.ensure",
+    () => ensureFsMutexLockRoot(undefined, Object.keys(rootOptions).length > 0 ? rootOptions : undefined),
+  );
   const writerDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
   const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
@@ -1169,7 +1186,12 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     // WI-10006385: same admission report as the writer's onAcquired, so a reader that
     // queued behind an install can say how long it waited. Inside the try so a throwing
     // callback still removes the reader marker.
-    if (opts.onAcquired) opts.onAcquired({ waitedMs: Date.now() - startedAt });
+    if (opts.onAcquired) opts.onAcquired({
+      waitedMs: Date.now() - startedAt,
+      ...(admissionSubphaseTimingsMs
+        ? { admissionSubphaseTimingsMs: { ...admissionSubphaseTimingsMs } }
+        : {}),
+    });
     return await fn();
   } finally {
     await rm(readerDir, { recursive: true, force: true });

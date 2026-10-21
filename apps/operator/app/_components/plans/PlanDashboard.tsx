@@ -88,6 +88,9 @@ import {
 } from './plan-dashboard-derive';
 import PlanCleanupEntryButton from './PlanCleanupEntryButton';
 import { PlanAuditButton } from './PlanAuditPane';
+import type { PlanItemTypeView } from '@papercusp/operator-core/lib/plan-types/item-type-view';
+import PlanItemTypeBadge, { PlanTypeBadge } from './PlanItemTypeBadge';
+import PlanItemTypePanel from './PlanItemTypePanel';
 import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
@@ -261,6 +264,22 @@ export default function PlanDashboard({
     queryName: 'planActivity.list',
     args: { planSlug, workspaceId: workspaceId ?? null, limit: 30 },
   });
+
+  // Plan and item types (plan-item-types-registry-cupboard P-007, D-009), resolved at the plan's
+  // pins by the resolver the gates use. ?pdtype=<item id> opens that item's type panel.
+  const typeViewQuery = useSyncQuery<PlanItemTypeView>({
+    queryName: 'plans.itemTypeView',
+    args: { slug: planSlug, harness: harness ?? null },
+  });
+  const typeView = typeViewQuery.data?.[0] ?? null;
+  const typeByItem = useMemo(
+    () => new Map((typeView?.items ?? []).map((item) => [item.itemId, item])),
+    [typeView],
+  );
+  // Literal key (=== PLAN_ITEM_TYPE_PARAM): portal's surface-param isolation scan
+  // reads only string-literal useQueryState keys, and registers `pdtype` for plans.
+  const [openTypeItem, setOpenTypeItem] = useQueryState('pdtype', parseAsString);
+  const openTypeView = openTypeItem ? typeByItem.get(openTypeItem) ?? null : null;
 
   // Open-session chat (?pdsess — deep-linkable, same modal the popup tab uses).
   const [openSessionOwner, setOpenSessionOwner] = useQueryState('pdsess', parseAsString);
@@ -488,6 +507,13 @@ export default function PlanDashboard({
               <h1 className="plan-dash__title" title={title}>
                 {title}
               </h1>
+              {typeView ? (
+                <PlanTypeBadge
+                  planType={typeView.planType}
+                  profile={typeView.profile}
+                  testId="plan-dash-plan-type"
+                />
+              ) : null}
             </div>
             <span
               className="plan-dash__slug"
@@ -818,6 +844,18 @@ export default function PlanDashboard({
                         >
                           {inner}
                         </button>
+                        {typeByItem.get(it.id)?.itemType ? (
+                          <PlanItemTypeBadge
+                            itemType={typeByItem.get(it.id)!.itemType}
+                            revision={typeByItem.get(it.id)!.revision}
+                            builtIn={typeByItem.get(it.id)!.builtIn}
+                            active={openTypeItem === it.id}
+                            onOpen={() =>
+                              void setOpenTypeItem(openTypeItem === it.id ? null : it.id)
+                            }
+                            testId={`plan-dash-item-type-${it.id}`}
+                          />
+                        ) : null}
                         {linked ? (
                           <button
                             type="button"
@@ -847,6 +885,15 @@ export default function PlanDashboard({
                 : "No items in this plan yet."}
             </div>
           )}
+
+          {openTypeView ? (
+            <PlanItemTypePanel
+              planSlug={planSlug}
+              harness={harness}
+              item={openTypeView}
+              onClose={() => void setOpenTypeItem(null)}
+            />
+          ) : null}
         </div>
 
         <div className="plan-dash__rail">

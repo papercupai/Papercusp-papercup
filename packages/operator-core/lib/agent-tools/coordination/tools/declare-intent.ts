@@ -58,6 +58,7 @@ import { detectIntentPivot } from '../../../intent-pivot';
 import { cellTranscriptionHintResolvingCommits } from '../../../git-commit-resolver';
 import { goalRefSchema } from '../../../agent-goal-ref';
 import { clearExplicitInboxWakePark } from '../../../events/await/store';
+import { resolveConcreteHarnessSlug } from '../../_harness-scope';
 
 /**
  * EI-9484 — "coord:declare-intent timing out repeatedly": the watchdog observed
@@ -542,7 +543,7 @@ export default defineTool({
       ? (await withBoundedTimeout(async () => {
         const { getIntentTimeTaskBrief } = await import('../../../code-intelligence/task-brief');
         return getIntentTimeTaskBrief({ owner: identity.ownerId, workspaceId: identity.workspaceId!,
-          harness: args.harness ?? ctx.harnessSlug ?? presence?.potSlug ?? '', intent: args.intent, paths: args.current_files! });
+          harness: resolveConcreteHarnessSlug(args.harness, ctx) ?? presence?.potSlug ?? '', intent: args.intent, paths: args.current_files! });
       }, { timeoutMs: 6_000, fallback: null, label: 'declare-intent:task-brief' })).value
       : null;
     // WI-6554700010018439: the intent leg's delivery is this brief; record it in the push

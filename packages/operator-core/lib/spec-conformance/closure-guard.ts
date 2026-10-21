@@ -17,6 +17,8 @@ export interface ConformanceClosureRefusal {
     'conformance_requirements_missing' | 'conformance_requirement_unmapped' |
     'conformance_drift_alarm_open' | 'conformance_done_when_not_passing' | 'frozen_tests_completion_refused';
   error: string;
+  /** The RefusalContract lift condition: what must become true for this close to pass. */
+  liftsWhen?: string;
   requirements?: string[];
   alarmIds?: string[];
 }
@@ -152,7 +154,9 @@ export async function conformanceClosureAssessment(input: {
   if (input.item && plan.parsed.frontmatter.frozenTests === 'pilot') {
     const { frozenTestsClosureRefusal } = await import('../agent-tools/work_items/frozen-tests-gate');
     const refusal = await frozenTestsClosureRefusal({ item: input.item, scope: input, plan });
-    if (refusal) return result({ code: 'frozen_tests_completion_refused', error: refusal.error }, { applicable: true });
+    if (refusal) return result({ code: 'frozen_tests_completion_refused', error: refusal.error,
+      liftsWhen: 'the plan carries a frozen-tests manifest for this plan and item, and a current passing test run whose source and test fingerprints match the frozen rows covers every frozen test file of this item' },
+    { applicable: true });
   }
   if (input.skipConformance) return result(null);
   const runtime = productionConformanceDeps(input);

@@ -365,7 +365,9 @@ describe('P-012 server-side mixed capability scripts', () => {
       expect(handlerCtx.signal.aborted).toBe(false);
       expect(handlerCtx.codeMode).toBe(true);
       expect(handlerCtx.transportCapExempt).toBe(true);
-      expect(handlerCtx.contextTier).toBeUndefined();
+      // current-caller-dispatch materializes nested handlers at full detail, matching
+      // the tools:invoke door's payloadTier:'full' contract.
+      expect(handlerCtx.contextTier).toBe('full');
     }
   });
 

@@ -4,6 +4,7 @@ import type { Sql } from 'postgres';
 import type { KernelEnforcementRequest, UnifiedToolContext } from '@papercusp/tooldef';
 import type { VmCopyHost, VmCopyRequest } from './vm-copy-authority';
 import { VmCopyRefusal } from './vm-copy-authority';
+import { isAllHarnessSentinel } from '../_harness-scope';
 
 export function canonicalVmCopyHost(input: {
   ctx: UnifiedToolContext;
@@ -15,8 +16,11 @@ export function canonicalVmCopyHost(input: {
   toolCapabilities(toolName: string): readonly string[] | null;
 }): VmCopyHost {
   const scope = input.identity.scope;
+  // The operator-scope '*' sentinel is not a concrete harness, so it can never
+  // authenticate a harness-bound VM-copy identity (fail closed, explicitly).
   if (!input.ctx.principal || input.ctx.principal.workspaceId !== scope.workspaceId ||
-    input.ctx.workspaceId !== scope.workspaceId || input.ctx.harnessSlug !== scope.harnessSlug ||
+    input.ctx.workspaceId !== scope.workspaceId ||
+    isAllHarnessSentinel(input.ctx.harnessSlug) || input.ctx.harnessSlug !== scope.harnessSlug ||
     input.ctx.uiClientId !== scope.ownerId) throw new VmCopyRefusal('vm-copy-authenticated-host-context-mismatch');
   return {
     ...input.identity,

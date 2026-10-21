@@ -121,6 +121,11 @@ describe('psu-pty-host DROPPED receipt ↔ acceptance-grader parser (WI-10004926
     // The template that opens the parenthesised reason. A second copy means a
     // second, unpinned writer of the parsed line.
     expect(src.match(/DROPPED for \$\{ownerId\} \(\$\{/g)?.length).toBe(1);
-    expect(src.match(/process\.stderr\.write\(formatStartupTurnDroppedLine\(/g)?.length).toBe(1);
+    // Written through the non-blocking terminal writer over stderr (where the
+    // grader reads launcher logs), never the suppressible writeHostDiagnostic.
+    expect(src.match(/writeTerminalDiagnostic\(formatStartupTurnDroppedLine\(/g)?.length).toBe(1);
+    expect(src).not.toMatch(/writeHostDiagnostic\(formatStartupTurnDroppedLine\(/);
+    expect(src).toMatch(/const diagnosticOutput = createTerminalOutput\(\{\s*stdout: process\.stderr,/);
+    expect(src).toMatch(/const writeTerminalDiagnostic = \(text\) => diagnosticOutput\.write\(text\);/);
   });
 });

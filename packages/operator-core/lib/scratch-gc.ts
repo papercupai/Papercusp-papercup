@@ -387,6 +387,9 @@ function withScratchWorkspaceDataReadLease<T>(
           waitedMs: Math.max(0, performance.now() - admissionStartedAt),
           localWaitMs: 0,
           fsMutexAdmissionMs: info.waitedMs,
+          ...(info.admissionSubphaseTimingsMs
+            ? { admissionSubphaseTimingsMs: { ...info.admissionSubphaseTimingsMs } }
+            : {}),
         })
       : undefined,
   }).catch((error) => { throw normalizeScratchMutexTimeout(error, mutexTimeoutMs); });

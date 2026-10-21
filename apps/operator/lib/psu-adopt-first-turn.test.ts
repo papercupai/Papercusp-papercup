@@ -55,7 +55,7 @@ describe("EI-23076695727837648: an adopting carry-respawn hands its first turn t
   });
 
   it("records the front-controller outcome before an adopting re-exec can return early", () => {
-    const mainAt = launcherSrc.indexOf("async function main()");
+    const mainAt = launcherSrc.indexOf("export async function main(");
     const startedAt = launcherSrc.indexOf(
       '"host-code-adoption-front-controller-started"',
       mainAt,
@@ -75,10 +75,16 @@ describe("EI-23076695727837648: an adopting carry-respawn hands its first turn t
   });
 
   it("records whether the parent-pid handoff contained first-turn text", () => {
-    const mainAt = launcherSrc.indexOf("async function main()");
-    const readAt = launcherSrc.indexOf("readHostHandoffForParentPid(process.ppid", mainAt);
+    const mainAt = launcherSrc.indexOf("export async function main(");
+    // main() takes the reader and launcher as injectable seams; production must
+    // still default them to the real parent-pid reader and handoff launcher.
+    const seams = launcherSrc.slice(mainAt, launcherSrc.indexOf("} = {}) {", mainAt));
+    expect(seams).toMatch(/readHandoff = readHostHandoffForParentPid,/);
+    expect(seams).toMatch(/launchHandoff = launchHostHandoff,/);
+    const readAt = launcherSrc.indexOf("readHandoff(process.ppid", mainAt);
     const eventAt = launcherSrc.indexOf('"host-code-adoption-handoff-acceptance"', readAt);
-    const launchAt = launcherSrc.indexOf("await launchHostHandoff(hostHandoff)", eventAt);
+    const launchAt = launcherSrc.indexOf("await launchHandoff(hostHandoff)", eventAt);
+    expect(mainAt).toBeGreaterThanOrEqual(0);
     expect(readAt).toBeGreaterThan(mainAt);
     expect(eventAt).toBeGreaterThan(readAt);
     expect(launchAt).toBeGreaterThan(eventAt);
@@ -90,12 +96,17 @@ describe("EI-23076695727837648: an adopting carry-respawn hands its first turn t
     expect(readStage).toMatch(/"host-code-adoption-handoff-rejected"/);
     expect(readStage).toMatch(/rejection\?\.ownerId \|\| adoptionEventOwnerId/);
     // The fallback owner still starts from the env SID, then widens to the
-    // shim's `--owner-id=` (headless fleet shims carry no PAPERCUSP_SID).
+    // shim's `--owner-id=` (headless fleet shims carry no PAPERCUSP_SID). The
+    // handoff is read BEFORE the connection picker (EI-26092443535740405), so
+    // that owner comes from the shim argv with the connection flags stripped.
     const fallbackAt = launcherSrc.lastIndexOf("const adoptionEventOwnerId =", readAt);
     expect(fallbackAt).toBeGreaterThan(mainAt);
     expect(launcherSrc.slice(fallbackAt, readAt)).toMatch(
-      /const adoptionEventOwnerId = adoptionOwnerId \|\| args\.ownerId \|\| null;/,
+      /const adoptionEventOwnerId = adoptionOwnerId \|\|\s*\(adoptionArgv \? parseArgs\(adoptionArgv\)\.ownerId : null\) \|\| null;/,
     );
+    const argvAt = launcherSrc.lastIndexOf("const adoptionArgv =", fallbackAt);
+    expect(argvAt).toBeGreaterThan(mainAt);
+    expect(launcherSrc.slice(argvAt, fallbackAt)).toMatch(/parsePsuConnectionArgs\(rawArgv\)\.forwardedArgv/);
     const stage = launcherSrc.slice(eventAt, launchAt);
     expect(stage).toMatch(/accepted: Boolean\(hostHandoff\)/);
     expect(stage).toMatch(/firstTurnPresent:/);

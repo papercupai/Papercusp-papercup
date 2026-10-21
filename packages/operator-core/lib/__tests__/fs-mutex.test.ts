@@ -460,6 +460,23 @@ describe('withFsMutexRead wait observations', () => {
     }
   });
 
+  it('includes lock-root setup subphases in read acquisition observations', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-root-timing-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    let acquired: { waitedMs: number; admissionSubphaseTimingsMs?: Record<string, number> } | undefined;
+    try {
+      await withFsMutexRead('reader-root-timing', async () => undefined, {
+        onAcquired: (info) => { acquired = info; },
+      });
+      expect(acquired?.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'lock-root.mkdir': expect.any(Number),
+      }));
+      expect(Number.isFinite(acquired?.admissionSubphaseTimingsMs?.['lock-root.mkdir'])).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('removes the reader marker when the onAcquired callback throws', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-acquired-throw-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

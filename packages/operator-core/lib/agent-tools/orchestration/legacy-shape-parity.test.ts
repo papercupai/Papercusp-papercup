@@ -69,6 +69,16 @@ const LEGACY_FIELD_DISPOSITION: Record<string, Record<string, Disposition>> = {
       why:
         'Managed JavaScript kernel open/run/status/close operations are not part of the unified orchestration contract; callers use code:run directly for this process-local surface.',
     },
+    inputs: {
+      kind: 'legacy-door-only',
+      why:
+        'JSON replay state for the code:run sandbox inputs object (store/load across an operator restart). It belongs to the same process-local sandbox surface as `kernel`, so the unified door does not front it.',
+    },
+    work_item_id: {
+      kind: 'legacy-door-only',
+      why:
+        'Default work-item attribution that code:run stamps onto nested capability:bash calls (current-caller-dispatch). It is per-door caller attribution, not orchestration input, so the unified door does not front it.',
+    },
   },
   'recipes:run': {
     id: { kind: 'fronted', unifiedPath: 'recipe.id' },

@@ -2162,6 +2162,25 @@ describe('deferred scratch quota recovery', () => {
     }
   });
 
+  it('forwards read-lease lock-root subphases to scratch write timings', async () => {
+    const workspaceId = 'ws-Q';
+    const runDir = makeRunDir(workspaceId, 'mutex', UUID(73), 0);
+    const filePath = join(runDir, 'read-lease-admission.bin');
+    const timings: ScratchWriteTimings[] = [];
+
+    await writeWithScratchQuota({
+      workspaceId,
+      filePath,
+      bytes: 1,
+      captureSubphaseTimings: true,
+      onTiming: (row) => timings.push(row),
+    }, () => writeFile(filePath, Buffer.from('x')));
+
+    expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
+      'scratch-data-read-admission.lock-root.mkdir': expect.any(Number),
+    }));
+  });
+
   it('reports the request trace ID from a filesystem scratch mutex owner', async () => {
     const workspaceId = 'ws-Q';
     const holderTraceId = '5c881ab6-288d-429b-a2fb-d86d54341588';

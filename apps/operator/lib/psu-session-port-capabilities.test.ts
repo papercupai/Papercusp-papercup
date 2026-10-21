@@ -163,8 +163,14 @@ describe("resume picker filtered by the serving operator's pairs", () => {
 
   it("is wired into the interactive picker (chooseResumeTarget)", () => {
     const source = readFileSync(join(__dirname, "..", "scripts", "psu-launcher.mjs"), "utf8");
-    const body = source.slice(source.indexOf("async function chooseResumeTarget("));
-    expect(body).toContain("await fetchSessionPortCapabilities()");
+    const start = source.indexOf("async function chooseResumeTarget(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = source.slice(start);
+    // The fetch is an injectable seam (psu-resume-cross-backend drives it); the
+    // production default must remain the real operator capability read.
+    const seams = body.slice(0, body.indexOf("} = {}) {"));
+    expect(seams).toMatch(/fetchPortCapabilities = fetchSessionPortCapabilities,/);
+    expect(body).toContain("await fetchPortCapabilities()");
     expect(body).toContain("resumePickerBackendsFor(session, portCapabilities)");
   });
 });
