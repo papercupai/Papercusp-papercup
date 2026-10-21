@@ -393,14 +393,15 @@ Coordinate through locks + coord, not tree isolation.
 **Two operators — `:3070` auto-serves green `main`; `:3170` is where your edits
 run.** `:3070` (`papercup-dev-api`) runs from the **release checkout** pinned
 to green `main` — restarting it does NOT pick up your `staging` edits. The
-staging operator **`:3170` runs from the separate `papercusp-staging` checkout
-pinned to `origin/staging`**, so uncommitted edits and commits that git-sync has
-not pushed yet are invisible there; a restart cannot make an unpublished edit
-appear. Use focused tests or a current-build instance for unpublished work.
-After git-sync publishes the candidate, reload staging with `dev:restart {
-target: 'staging', confirm: true, authorize: true, reason: 'reload staging
-after origin/staging advanced' }`, then probe **`:3170`** and compare its health
-sha with the intended `origin/staging` build. Promotion to `:3070` is automatic
+staging operator **`:3170` serves an isolated generation of the LOCAL committed
+`staging`** (`sync-staging-checkout.sh` resolves `rev-parse staging`, not
+`origin/staging`), so an uncommitted or git-sync-held edit is invisible there; a
+committed-but-unpushed one is not, and a restart cannot make an uncommitted edit
+appear. Use focused tests or a current-build instance for uncommitted work.
+`papercup-staging-sync.timer` advances it every ~5 min; `dev:restart { target:
+'staging', confirm: true, authorize: true, reason: '…' }` only relaunches the
+same generation. Probe **`:3170`** and compare its health sha with the intended
+local `staging` commit. Promotion to `:3070` is automatic
 (green-checkpoint hourly FF → release-trigger ≤15 min scripted deploy with
 auto-rollback); a manual `npx tsx apps/operator/lib/release/deploy-cli.ts
 --execute` deploys immediately. Watch the pipeline at `/admin/git`. Full model: plans

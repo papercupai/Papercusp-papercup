@@ -27,6 +27,7 @@
  * approves it. Enforced server-side by the worker; surfaced here.
  */
 import { publishListingToCupboard } from './publish-listing';
+import { declaredPlanType } from '../plan-types/pins';
 import { buildSelfDescribingPublishExtras } from './self-describing-release';
 import { parseGithubRemote, fetchGithubRepoMeta } from './resolve-repo-coords';
 import { sanitizePlanForTemplate, type PlanTemplateExport } from './plan-template-serialize';
@@ -56,6 +57,9 @@ export interface PublishPlanInput {
   version?: string;
   /** Declare these rubric requirements instead of the derived set. `[]` ⇒ none. */
   requires_rubrics?: RubricRequirement[];
+  /** Declare this plan type requirement instead of the derived one (the plan's `type:` at this
+   *  workspace's current revision). `null` ⇒ declare none. */
+  requires_plan_type?: { id: string; minRevision?: number; maxRevision?: number } | null;
   /** Materialize the sanitized dir and STOP — do not create a listing. */
   exportOnly?: boolean;
 }
@@ -97,9 +101,23 @@ async function defaultPlanContentReader(
  * Publish (or just export) a plan template. Returns a structured result — never
  * throws for an expected failure; the caller maps status+error to its response.
  */
+/** The revision a NEW reference to plan type `id` resolves to in the active workspace, or null. */
+export type PlanTypeRevisionResolver = (id: string) => Promise<number | null>;
+
+const defaultPlanTypeRevision: PlanTypeRevisionResolver = async (id) => {
+  const [{ getOrgPg }, { activeWorkspaceId }, { readRegistryRows, snapshotOf }] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('../workspace-registry'),
+    import('../plan-types/authoring'),
+  ]);
+  const registry = snapshotOf(await readRegistryRows(getOrgPg().sql as never, activeWorkspaceId()));
+  return registry.planType(id)?.definition.revision ?? null;
+};
+
 export async function publishPlanToCupboard(
   input: PublishPlanInput,
   readPlan: PlanContentReader = defaultPlanContentReader,
+  resolvePlanTypeRevision: PlanTypeRevisionResolver = defaultPlanTypeRevision,
 ): Promise<PublishPlanResult> {
   const slug = String(input.slug ?? '').trim();
   if (!slug) return { ok: false, status: 400, error: 'slug required (the plan to publish)' };
@@ -117,6 +135,24 @@ export async function publishPlanToCupboard(
     return { ok: false, status: sanitized.status, error: sanitized.error };
   }
 
+  // requires_plan_type (plan-item-types-registry-cupboard-2026-10-20 P-006, D-008): a plan that
+  // declares a plan type publishes a template requiring that type at the revision this workspace
+  // resolves it to now, so installing the template pulls the type (and its item types) in.
+  let requiresPlanType = input.requires_plan_type ?? undefined;
+  if (input.requires_plan_type === undefined) {
+    const declared = declaredPlanType(row.content);
+    if (declared) {
+      const revision = await resolvePlanTypeRevision(declared);
+      if (revision === null) {
+        return {
+          ok: false,
+          status: 422,
+          error: `plan "${slug}" declares plan type ${declared}, which this workspace cannot resolve; define or install it before publishing`,
+        };
+      }
+      requiresPlanType = { id: declared, minRevision: revision };
+    }
+  }
   const ref = (input.listing_ref ?? sanitized.templateSlug).trim();
   if (!SAFE_REF_RE.test(ref)) {
     return { ok: false, status: 400, error: `invalid plan template ref "${ref}"` };
@@ -190,6 +226,7 @@ export async function publishPlanToCupboard(
     // Omitted entirely when empty: the worker's validator rejects a zero-length
     // array (`array_1_to_200`), so sending `[]` for "declares nothing" would 400.
     ...(sanitized.requiresRubrics.length > 0 ? { requires_rubrics: sanitized.requiresRubrics } : {}),
+    ...(requiresPlanType ? { requires_plan_type: requiresPlanType } : {}),
   });
 
   if (!result.ok) {

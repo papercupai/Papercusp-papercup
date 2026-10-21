@@ -1,4 +1,3 @@
-import { papercuspHome } from '@papercusp/host-platform/home';
 /**
  * `papercusp serve` — headless operator boot (SP1 C1 + C3).
  *
@@ -48,6 +47,7 @@ import "./boot-malloc-arena";
 // silently serves dark defaults even after flags:set wrote a runtime override.
 import "./boot-flag-store";
 
+import { papercuspHome } from '@papercusp/host-platform/home';
 import { fileURLToPath } from "node:url";
 import { resolveOperatorAppRootFromModuleDir } from "@papercusp/operator-core/lib/operator-app-root";
 import { homedir } from "node:os";

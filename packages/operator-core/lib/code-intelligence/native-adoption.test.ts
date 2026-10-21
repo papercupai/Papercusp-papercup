@@ -95,6 +95,27 @@ describe('P-041 recorded follow-through', () => {
     expect(nativePushFollowThrough({ ...suggested, executedTests: ['src/foo.test.ts'] }).actedOn).toBe(true);
     expect(nativePushFollowThrough({ ...suggested, suggestedCall: 'testing:run invalid' }).actedOn).toBeNull();
   });
+
+  it('scores a suggested-test push as not acted on only when the window rules the test out', () => {
+    const other = { tool: 'Read', status: 'ok', detail: { file: 'src/other.ts' } };
+    const suggested = { ...input, leg: 'first-touch', activities: [other],
+      suggestedCall: 'testing:run {"files":["src/foo.test.ts"]}', testRequests: 0 };
+    // Fully observed window: no shell, no test request, no cited read -> a real negative.
+    expect(nativePushFollowThrough(suggested).actedOn).toBe(false);
+    // Not measured, any test request (linked or not), or any shell command -> unknown.
+    expect(nativePushFollowThrough({ ...suggested, testRequests: undefined }).actedOn).toBeNull();
+    expect(nativePushFollowThrough({ ...suggested, testRequests: 1 }).actedOn).toBeNull();
+    for (const tool of ['Bash', 'mcp__papercusp_su__capability_bash', 'exec_command']) {
+      expect(nativePushFollowThrough({ ...suggested,
+        activities: [other, { tool, status: 'ok', detail: { command: 'npm run test:file -- src/foo.test.ts' } }] }).actedOn).toBeNull();
+    }
+    // An unparseable suggestion cannot be ruled out; a cited read or executed test still wins.
+    expect(nativePushFollowThrough({ ...suggested, suggestedCall: 'testing:run invalid' }).actedOn).toBeNull();
+    expect(nativePushFollowThrough({ ...suggested, activities: [{ tool: 'Read', status: 'ok', detail: { file: 'src/foo.ts' } }] }).actedOn).toBe(true);
+    expect(nativePushFollowThrough({ ...suggested, testRequests: 1, executedTests: ['src/foo.test.ts'] }).actedOn).toBe(true);
+    // No telemetry stays unknown even when no test was requested.
+    expect(nativePushFollowThrough({ ...suggested, activities: [] }).actedOn).toBeNull();
+  });
 });
 
 describe('P-041 push-outcome summary', () => {

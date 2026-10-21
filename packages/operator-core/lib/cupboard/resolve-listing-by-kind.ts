@@ -55,6 +55,15 @@ export interface ResolvedListingCoords {
    *  kind), so an install can only place the branch tip UNVERIFIED. Present ⇒ the
    *  installer must fetch exactly this commit and verify the digest (P-002). */
   pin?: { commitSha: string; treeDigest: string; releaseContentHash?: string };
+  /** The Worker's pre-publication review status (`pending` | `approved` | `rejected`), when the
+   *  row carries one. A type pack installs only when it is `approved` (type-pack.ts, R-16). */
+  reviewStatus?: string;
+  /** Type packs (migration 049 / plan-item-types-registry-cupboard-2026-10-20 P-006): the item
+   *  types and plan types the listing declares, and the plan type a plan template requires,
+   *  still JSON-encoded. Parse with `typePackListingFromCoords` / `parseRequiredPlanType`. */
+  providesItemTypes?: string;
+  providesPlanTypes?: string;
+  requiresPlanType?: string;
 }
 
 export type ResolveListingResult = ResolvedListingCoords | { error: string; status: number };
@@ -76,6 +85,13 @@ const num = (v: unknown): number | null => {
 /** Pull the installer-relevant coordinates out of a raw listing row. Null when the
  *  row carries no usable repo URL — a listing we cannot clone is not resolvable,
  *  however well-formed the rest of it is. */
+/** A JSON column as text: the Worker stores TEXT, an in-process row may carry the parsed value. */
+function jsonText(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() ? value : null;
+  if (value && typeof value === 'object') return JSON.stringify(value);
+  return null;
+}
+
 export function coordsFromRow(row: Record<string, unknown>): ResolvedListingCoords | null {
   const githubUrl =
     str(row.github_url) ??
@@ -103,6 +119,10 @@ export function coordsFromRow(row: Record<string, unknown>): ResolvedListingCoor
         }
       : {}),
     ...(str(row.requires_rubrics) ? { requiresRubrics: str(row.requires_rubrics) as string } : {}),
+    ...(str(row.review_status) ? { reviewStatus: str(row.review_status) as string } : {}),
+    ...(jsonText(row.provides_item_types) ? { providesItemTypes: jsonText(row.provides_item_types) as string } : {}),
+    ...(jsonText(row.provides_plan_types) ? { providesPlanTypes: jsonText(row.provides_plan_types) as string } : {}),
+    ...(jsonText(row.requires_plan_type) ? { requiresPlanType: jsonText(row.requires_plan_type) as string } : {}),
     ...(str(row.pricing_model) ?? str(row.price_model)
       ? { priceModel: (str(row.pricing_model) ?? str(row.price_model)) as string } : {}),
     ...(str(row.sku_ref) ? { skuRef: str(row.sku_ref) as string } : {}),

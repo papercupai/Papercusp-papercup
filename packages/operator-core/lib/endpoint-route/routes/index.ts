@@ -394,6 +394,7 @@ import adminCoordInboxReply from './admin/coord-inbox-reply';
 import adminAttentionBulkResolve from './admin/attention-bulk-resolve';
 import adminPlanCleanup from './admin/plan-cleanup';
 import adminPlanAudit from './admin/plan-audit';
+import adminPlanItemTypeFields from './admin/plan-item-type-fields';
 import adminCoordination from './admin/coordination';
 import adminComms from './admin/comms';
 import adminInbox from './admin/inbox';
@@ -930,6 +931,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminAttentionBulkResolve as AnyRoute[]),
   ...flatten(adminPlanCleanup as AnyRoute[]),
   ...flatten(adminPlanAudit as AnyRoute[]),
+  ...flatten(adminPlanItemTypeFields as AnyRoute[]),
   ...flatten(adminCoordination as AnyRoute[]),
   ...flatten(adminComms as AnyRoute[]),
   ...flatten(adminInbox as AnyRoute[]),

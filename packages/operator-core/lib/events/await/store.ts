@@ -1182,7 +1182,7 @@ export async function retireAnnouncement(input: {
     if (retired.length === 0) {
       return { ...base, reason: 'already_settled' as const };
     }
-    const reconciled = await reconcileEventExternalBlockers(tx, String(retired[0].event_key), input.subscriberId);
+    const reconciled = await reconcileCertifiedEventBlockers(tx, String(retired[0].event_key), input.subscriberId, true);
     settled = reconciled?.items ?? [];
     return {
       retired: true,
@@ -3836,9 +3836,30 @@ async function settleWaitsOnFiredKey(
   opts: { firedBy?: string | null; announced: boolean },
 ): Promise<SystemClearedBlockerItem[]> {
   const actor = opts.firedBy ?? undefined;
-  const blockers = await reconcileEventExternalBlockers(tx, eventKey, actor, undefined, { announced: opts.announced });
+  const blockers = await reconcileCertifiedEventBlockers(tx, eventKey, actor, opts.announced);
   const parks = await reconcileEventDurableParks(tx, eventKey, actor, undefined, { announced: opts.announced });
   return [...(blockers?.items ?? []), ...(parks?.items ?? [])];
+}
+
+/**
+ * event-wait-settlement-2026-10-20 D-001 item 3 (owner ruling #2036) and D-008: a fire
+ * settles an event/gate blocker only when it certifies the blocker's condition
+ * ({@link fireCertifiesCondition}), on EVERY settlement path. An announcement makes an
+ * UNCATALOGUED key proof, because its producer declared it. It never makes a catalogued
+ * change notification proof: `work-item:status:<id>` fires on any status change,
+ * announced or not. reconcileEventDurableParks applies the same predicate itself.
+ * reconcileEventExternalBlockers (work-items.ts) cannot import it without loading this
+ * store into every work-items consumer, so every caller here goes through this gate.
+ * Returns null when the fire proves nothing.
+ */
+async function reconcileCertifiedEventBlockers(
+  tx: Parameters<typeof reconcileEventExternalBlockers>[0],
+  eventKey: string,
+  actor: string | undefined,
+  announced: boolean,
+): Promise<Awaited<ReturnType<typeof reconcileEventExternalBlockers>> | null> {
+  if (!fireCertifiesCondition(eventKey, announced)) return null;
+  return reconcileEventExternalBlockers(tx, eventKey, actor, undefined, { announced });
 }
 
 /**

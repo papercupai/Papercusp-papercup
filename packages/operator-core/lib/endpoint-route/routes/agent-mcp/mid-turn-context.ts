@@ -1194,8 +1194,14 @@ const midTurnContext = defineTool({
       // were simply never asked. Same fallback the turn-start sibling uses, on
       // the CLIENT's cwd (loopback hook, so its cwd is the session's).
 
-      const { withMidTurnMemoryAdmission } = await import('../../../memory/mid-turn-admission');
-      const admitted = await withMidTurnMemoryAdmission(async () => {
+      const [{ withIdentityBoundedMemoryAdmission }, { readAppliedIdentityRecall }] = await Promise.all([
+        import('../../../memory/mid-turn-admission'),
+        import('../../../agent-identities/identity-recall'),
+      ]);
+      // P-012 (R-19): mid-turn recall runs under the same identity-declared
+      // bounds as turn start; an unreadable applied identity sheds it.
+      const admitted = await withIdentityBoundedMemoryAdmission(
+        () => readAppliedIdentityRecall(owner, workspaceId), async (identityRecall) => {
         const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { resolveClaimedWorkItemIdForOwner }] =
           await Promise.all([
             import('../../../memory/injection'),
@@ -1242,6 +1248,7 @@ const midTurnContext = defineTool({
             },
             budgetChars: MID_TURN_BUDGET_CHARS,
             heading: 'Possibly relevant (mid-turn)',
+            identityRecall,
           })) ?? ''
         ); } finally { deadline?.close(); }
       });

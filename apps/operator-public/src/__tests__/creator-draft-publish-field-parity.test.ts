@@ -97,6 +97,14 @@ const DRAFTS_DO_NOT_CARRY: Record<string, string> = {
   // publish. A draft has no signed closure, so creator-drafts refuses
   // blueprint_kind 'identity' outright rather than landing one without it.
   identity_surface: 'derived from the signed release closure; drafts refuse blueprint_kind identity',
+  // Type-pack declarations (migration 049 / plan-item-types-registry-cupboard P-006, D-008):
+  // derived from the pack manifest's typePack block, or the plan template's type: frontmatter,
+  // in the repo tree a direct publish pins. A type pack installs only from that content pin, so
+  // a draft (an uploaded artifact with no repo pin) cannot publish one: its columns stay NULL,
+  // and the installer refuses a pack whose manifest carries types its listing does not declare.
+  provides_item_types: 'derived from the pinned repo manifest; type packs install from a content pin a draft lacks',
+  provides_plan_types: 'derived from the pinned repo manifest; type packs install from a content pin a draft lacks',
+  requires_plan_type: 'derived from the template type: frontmatter at direct publish; a draft template requires no plan type',
 };
 
 /**

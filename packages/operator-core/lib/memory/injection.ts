@@ -46,6 +46,12 @@ import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import { alreadySurfacedIds, currentSessionEpoch, stampSurfaced } from './session-epoch-ledger';
 import { hiveScopeKey, potSlugFromScope, resolvePotSlugsForHarnesses } from './hive-scope';
+import {
+  recallsMemoryPool,
+  shareOfBudgetChars,
+  shareOfLimit,
+  type IdentityRecallPolicy,
+} from '../agent-identities/identity-recall';
 import { lexicalQueryText, retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
 import { memoryTierOf } from './two-tier';
 import { jevFunnelEntry, jevMemoryBudgetMs, runJevMemoryGate } from './jev-memory-gate';
@@ -89,6 +95,13 @@ const EPHEMERAL_SLUG_RE =
 export interface MemoryInjectionInput {
   /** Server host trust controls access to the added knowledge corpora. */
   knowledgeSourcesAllowed?: boolean;
+  /**
+   * The wearer's identity-declared recall bounds (agent-identities/identity-recall,
+   * P-012). They only narrow: memory pools outside `memoryScopes` are never
+   * searched, corpora outside `corpora` are never selected, and `budgetShare`
+   * scales the hit ceiling and the char budget. Absent/null ⇒ today's recall.
+   */
+  identityRecall?: IdentityRecallPolicy | null;
   /** Reader authority supplied by a server-owned port, never by prompt text. */
   reportViewer?: import('../report-library').ReportViewer;
   /** Shared with prompt preparation and both recall legs; phases cannot reset it. */
@@ -787,6 +800,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         harnessSlugs: input.harnessSlugs ?? [],
         reportViewer: input.reportViewer,
         knowledgeSourcesAllowed: input.knowledgeSourcesAllowed,
+        ...(input.identityRecall?.corpora ? { corpora: input.identityRecall.corpora } : {}),
         declaredWorkItemId,
         ambientExcludedRefs,
         // ⚠ This value is the caller's coord ownerId (`su-xxxx…`), NOT a native
@@ -1096,7 +1110,8 @@ async function buildBlockInner(
     mark('availableMs', Date.now() - tAvail);
   }
 
-  const totalLimit = input.limit ?? INJECTION_TOTAL_LIMIT;
+  // P-012 (R-9): an identity's budget share narrows the one ceiling every pool shares.
+  const totalLimit = shareOfLimit(input.limit ?? INJECTION_TOTAL_LIMIT, input.identityRecall);
 
   // P-016: exclude ephemeral/benchmark harness scopes from production recall
   // injection so benchmark memories don't pollute the pre-turn prompt.
@@ -1149,9 +1164,12 @@ async function buildBlockInner(
   // when the backend has no legs to report (a single-leg store), which is a
   // shape statement rather than a missing measurement — see RecallStatsInput.legs.
   let legStats: SearchLegStats | null = null;
-  const userScopes = input.userId ? [input.userId] : [];
-  const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
-  const hiveScopes = potSlugs.map(hiveScopeKey);
+  // P-012 (R-17): a pool outside the identity's declared memory scope is never
+  // searched, so none of its rows can reach the block. Undeclared ⇒ every pool.
+  const userScopes = input.userId && recallsMemoryPool(input.identityRecall, 'user') ? [input.userId] : [];
+  const harnessScopes = recallsMemoryPool(input.identityRecall, 'harness')
+    ? harnessSlugs.map((slug) => `harness:${slug}`) : [];
+  const hiveScopes = recallsMemoryPool(input.identityRecall, 'hive') ? potSlugs.map(hiveScopeKey) : [];
   let statsSchedule: Promise<void> | null = null;
   const writeRecallStatsSnapshot = (
     entries: {
@@ -1256,11 +1274,7 @@ async function buildBlockInner(
     // pools are in play — the boost is precisely what made its scores
     // incomparable, so keeping it is incompatible with one ranked block. A
     // user-ONLY injection is a single scope and still keeps it.
-    const scopes = [
-      ...(input.userId ? [input.userId] : []),
-      ...harnessSlugs.map((slug) => `harness:${slug}`),
-      ...potSlugs.map(hiveScopeKey),
-    ];
+    const scopes = [...userScopes, ...harnessScopes, ...hiveScopes];
     // P-007 / D-021: the wearer (the su owner id carried as the session id) may
     // recall its applied exact-version pack rows; fails closed to none.
     const wearer = input.session?.sessionId?.trim() || null;
@@ -1681,7 +1695,10 @@ async function buildBlockInner(
     const isPackHit = (hit: MemoryEntry): boolean =>
       hit.metadata?.source === 'pack' && typeof hit.metadata?.pack_id === 'string';
 
-    const budget = input.budgetChars && input.budgetChars > 0 ? input.budgetChars : injectBudgetChars();
+    const budget = shareOfBudgetChars(
+      input.budgetChars && input.budgetChars > 0 ? input.budgetChars : injectBudgetChars(),
+      input.identityRecall,
+    );
     let spent = 0;
     const lines: string[] = [];
     const surfacedIds: string[] = [];

@@ -70,8 +70,10 @@ const NOW_SECTION_KEY = 'section:now';
 /** Frontmatter keys a template KEEPS. Everything else is run identity (created,
  *  updated, owner, supersedes, superseded_by) or workspace grouping (initiative)
  *  and is dropped. `template` is kept because it names a code-registry schema the
- *  installing workspace has too (e.g. 'rubric'), not a local id. */
-const KEPT_FRONTMATTER_KEYS = new Set(['title', 'slug', 'status', 'template']);
+ *  installing workspace has too (e.g. 'rubric'), not a local id. `type` (the plan type,
+ *  plan-item-types-registry-cupboard-2026-10-20 P-006) is kept for the same reason: the
+ *  listing declares it as `requires_plan_type`, and installing the template installs it. */
+const KEPT_FRONTMATTER_KEYS = new Set(['title', 'slug', 'status', 'template', 'type']);
 
 /** A plan-class acceptance rubric — the ratified, first-party set every plan grades
  *  against (`plan-class-feature-ship`, `-bugfix`, `-migration`, `-investigation`).

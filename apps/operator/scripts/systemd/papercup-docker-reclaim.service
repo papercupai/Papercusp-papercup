@@ -27,4 +27,7 @@ IOSchedulingPriority=7
 TimeoutStartSec=600
 # Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
 # corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+# The snapshot lives under $TMPDIR, so the script cannot find scripts/lib/ by climbing
+# out of its own path: pin the checkout it reads helpers from (WI-10006358).
+Environment=PAPERCUSP_REPO_ROOT=%h/papercupai-workspace/papercusp
 ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/bin/reclaim-docker-disk.sh

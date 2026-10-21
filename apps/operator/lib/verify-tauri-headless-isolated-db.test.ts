@@ -125,12 +125,15 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
       // Match by content, not by which variable happens to come first: the line
       // grew a leading GH_CONFIG_DIR= (isolated gh auth) and may grow more.
       const envLine = src.split('\n').find((line) => line.trim().startsWith('ISOLATED_ENV_LINE="') && line.includes('PAPERCUSP_HOME='));
+      // The env line builds its operator URL through the script's own helper.
+      const devUrlHelper = src.match(/verify_tauri_dev_url\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
       expect(helper).toBeTruthy();
       expect(envLine).toBeTruthy();
+      expect(devUrlHelper).toBeTruthy();
       const probe = join(work, 'probe.cjs');
       writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT,codexHomes:process.env.PAPERCUSP_SU_CODEX_HOMES_DIR,ghConfig:process.env.GH_CONFIG_DIR,operatorBase:process.env.PAPERCUSP_OPERATOR_BASE,operatorUrl:process.env.PAPERCUSP_OPERATOR_URL}));`);
       const script = [
-        'set -eu', helper,
+        'set -eu', helper, 'VERIFY_TAURI_DEV_HOST=127.0.0.1', devUrlHelper,
         'WORK="$1"; ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_HOME="$WORK/home"; ISOLATED_CODEX_HOMES_DIR="$WORK/su-codex-homes"; ISOLATED_GH_CONFIG_DIR="$WORK/gh-config"',
         'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234; DEV_PORT=33799',
         'ISOLATED_WEBVIEW_DATA="$WORK/data"; ISOLATED_WEBVIEW_CACHE="$WORK/cache"; ISOLATED_WEBVIEW_CONFIG="$WORK/config"',
@@ -153,8 +156,8 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
   it('verifies the running sidecar identity and exports it in both assertion and boot-only handoffs', () => {
     expect(src).toContain('grep -Fxq "PAPERCUSP_WORKSPACE_ID=$ISOLATED_WORKSPACE" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_WORKSPACES_ROOT=$ISOLATED_WORKSPACES_ROOT" <<<"$SIDECAR_ENVIRON"');
-    expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_BASE=http://127.0.0.1:$DEV_PORT" <<<"$SIDECAR_ENVIRON"');
-    expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_URL=http://127.0.0.1:$DEV_PORT" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_BASE=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_URL=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_SU_CODEX_HOMES_DIR=$ISOLATED_CODEX_HOMES_DIR" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('export PAPERCUSP_WORKSPACE_ID="$ISOLATED_WORKSPACE"');
     expect(src).toContain('export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"');
@@ -168,7 +171,13 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     const work = mkdtempSync(join(tmpdir(), 'verifier-api-retry-'));
     try {
       const writer = src.match(/cat > "\$WORK\/launch.sh" <<LAUNCH\n[\s\S]*?\nLAUNCH\n/)?.[0];
+      const devUrlHelper = src.match(/verify_tauri_dev_url\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
       expect(writer).toBeTruthy();
+      expect(devUrlHelper).toBeTruthy();
+      // The launcher derives OPERATOR_DEV_URL from the RETRIED DEV_PORT just before
+      // writing launch.sh; reproduce that derivation, not a hand-typed URL.
+      expect(src).toContain('TAURI_DEV_URL="$(verify_tauri_dev_url "$DEV_PORT")"');
+      expect(src).toContain('local OPERATOR_DEV_URL="$TAURI_DEV_URL"');
       const bin = join(work, 'bin'); mkdirSync(bin);
       const npm = join(bin, 'npm');
       const probe = join(work, 'probe.cjs');
@@ -178,6 +187,8 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
       const script = [
         'set -e', 'WORK="$1"; DESKTOP_DIR="$WORK"; DEV_PORT=33801; PTY_PORT=33805; DISPLAY_NUM=91',
         `ISOLATED_ENV_LINE='PAPERCUSP_OPERATOR_BASE="http://127.0.0.1:33800" PAPERCUSP_OPERATOR_URL="http://127.0.0.1:33800"'`,
+        'VERIFY_TAURI_DEV_HOST=127.0.0.1', devUrlHelper,
+        'TAURI_DEV_URL="$(verify_tauri_dev_url "$DEV_PORT")"; OPERATOR_DEV_URL="$TAURI_DEV_URL"',
         'TAURI_CONFIG="{}"; LAUNCH_PREFIX=()', writer, 'bash "$WORK/launch.sh"',
       ].join('\n');
       const result = spawnSync('bash', ['-c', script, 'test', work], {

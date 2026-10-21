@@ -236,6 +236,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // event carries no plan_slug (shouldn't happen for this table, but a
     // defensive `null` costs nothing).
     { name: 'plans.get', scope: planSlugScope },
+    // P-007: the plan's type view re-resolves when its body (types, deliverables) changes.
+    { name: 'plans.itemTypeView', scope: planSlugScope },
     // plans.items stays a full-bust — but NOT for the reason this comment used
     // to give. It claimed "no live useSyncQuery consumer today"; that lapsed
     // (WI-7086). There are now four: usePlanItems() with `{needsHuman:true}` /
@@ -340,6 +342,18 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // dashboard's merged activity feed reads revisions as its EDITS leg. Full-bust:
   // the feed is planSlug-keyed and this trigger carries no plan_slug natural key.
   'harness_shared.plan_revisions': ['plans.revisions', 'planActivity.list'],
+  // plans:get caches latestAudit with the plan_audits table tag. Migration 1549
+  // supplies the raw/federated-write producer; the natural plan key also refreshes
+  // the matching UI read. plans.provenance retains its existing scoped writer push.
+  'harness_shared.plan_audits': [{ name: 'plans.get', scope: planSlugScope }],
+  // plans.itemTypeView (plan-item-types-registry-cupboard-2026-10-20 P-007, D-009) resolves every
+  // plan item through the type registry at the plan's pins, and a completion schema through the
+  // datatype registry (triggers: mig 1548). A pin row carries plan_slug, so a pin write busts
+  // only that plan's view; a type or datatype definition can change any plan's view (full-bust).
+  'harness_shared.plan_type_pins': [{ name: 'plans.itemTypeView', scope: planSlugScope }],
+  'harness_shared.plan_item_type_definitions': ['plans.itemTypeView'],
+  'harness_shared.plan_type_definitions': ['plans.itemTypeView'],
+  'harness_shared.datatype_registry': ['plans.itemTypeView'],
   // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the
   // Runs-tab history+rollup (plans.runHistory, { planSlug }) — a row write busts both.
   'harness_shared.plan_runs': ['plans.runs', 'plans.runHistory'],

@@ -1977,6 +1977,26 @@ function spillRecoveryNote(
  * carried an upstream truncation marker, the bytes are still inspectable but
  * `recoverable` is false because the omitted fields never reached this door.
  */
+/** Preserve measured outcomes without treating a clipped auxiliary field as a
+ * complete result. The existing bounded projector supplies the partial marker
+ * and recovery cursor; it must not replace a useful small JSON status with an
+ * empty-summary reference merely because a log or case title was clipped. */
+function partialOutcomePaths(value: unknown, path = '', depth = 0, paths: string[] = []): string[] {
+  if (depth > 4 || paths.length >= 32 || value == null || typeof value !== 'object') return paths;
+  if (Array.isArray(value)) {
+    for (const row of value.slice(0, 12)) partialOutcomePaths(row, `${path}[]`, depth + 1, paths);
+    return paths;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = path ? `${path}.${key}` : key;
+    if (/^(?:status|state|exitCode|exit_code|passed|failed|skipped|total|count|runId|id|ok)$/.test(key) &&
+      (typeof child === 'string' || typeof child === 'number' || typeof child === 'boolean' || child === null) &&
+      !paths.includes(childPath) && paths.length < 32) paths.push(childPath);
+    if (child && typeof child === 'object') partialOutcomePaths(child, childPath, depth + 1, paths);
+  }
+  return paths;
+}
+
 function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   result: T;
   opts: ResultDoorOpts;
@@ -2487,6 +2507,48 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         originalChars: input.sourceBytes, reason: input.reason,
       } },
     } as T;
+  }
+  // This is still a partial response: retain the exact emitted source behind
+  // the existing reference, and distinguish that from upstream-missing bytes.
+  // Writes retain their specialized receipt/replay rules above and below.
+  if (input.reason === 'under-budget-partial-result' && input.opts.effect === 'read' && reference) {
+    const shape = classifyProjectionBody(input.result.content.filter(isTextItem));
+    const body = shape.json?.parsed;
+    const preservePaths = partialOutcomePaths(body);
+    if (isJsonObject(body) && preservePaths.length > 0) {
+      const projected = projectBoundedPayload({ ...body, _partial: true }, {
+        toolName: input.opts.nestedTargetToolName ?? input.opts.toolName,
+        tier: 'standard',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: input.doorTokens * CHARS_PER_TOKEN_ESTIMATE - input.nonTextBytes,
+        preservePaths,
+        arrayTruncation: 'envelope',
+        recovery: {
+          cursor: {
+            kind: 'scratch-page', tool: 'capability:read',
+            args: { file_path: reference.uri, byte_offset: 0, byte_limit: 3_072 },
+            bodyComplete: false,
+          },
+          next: spillRecoveryNote(input.reason, {
+            toolName: input.opts.toolName, nestedTargetToolName: input.opts.nestedTargetToolName,
+            effect: input.opts.effect, upstreamProjection: Boolean(upstreamProjection?.truncated), innerTruncationMarkers,
+          }),
+        },
+      });
+      return {
+        ...input.result,
+        content: [
+          ...input.result.content.filter((item) => !isTextItem(item)),
+          { type: 'text' as const, text: JSON.stringify(projected) },
+        ],
+        _meta: { ...(input.result._meta ?? {}), resultDoor: {
+          truncated: true, structural: true, reason: input.reason,
+          spillPath, spillUri, originalBytes: input.sourceBytes, innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        } },
+      } as T;
+    }
   }
   const spillDiagnostic = [spillErrorCode, spillErrorSummary].filter(Boolean).join('; ') || 'unknown error';
   const envelope = reference

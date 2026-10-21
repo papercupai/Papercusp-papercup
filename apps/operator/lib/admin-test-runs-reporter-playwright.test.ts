@@ -29,6 +29,10 @@ vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   captureWorktreeSnapshot: mocks.captureWorktreeSnapshot,
   computeWorktreeDirty: mocks.computeWorktreeDirty,
   captureTestSourceSnapshot: mocks.captureTestSourceSnapshot,
+  // The reporter takes its POST-run snapshot through the async reader (onEnd may await);
+  // delegate to the same mock so before/after expectations see both snapshots.
+  captureTestSourceSnapshotAsync: async (...args: unknown[]) =>
+    (mocks.captureTestSourceSnapshot as (...a: unknown[]) => unknown)(...args),
   resolveReporterSourceRoot: mocks.resolveReporterSourceRoot,
 }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
@@ -83,8 +87,12 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
 
       expect(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe(receiptFile);
       expect(mocks.sql).toHaveBeenCalledTimes(1);
+      // TestRunReceiptBase also carries receiptId/attempt/row (replayable receipt identity).
       expect(readFileSync(receiptFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line))).toEqual([
-        { filePath: 'e2e/width.spec.ts', status: 'fail', outcome: 'inserted', id: '20923588' },
+        expect.objectContaining({
+          filePath: 'e2e/width.spec.ts', status: 'fail', outcome: 'inserted', id: '20923588',
+          receiptId: expect.any(String), attempt: expect.any(Number),
+        }),
       ]);
       expect(mocks.sql.mock.calls[0]![0].join('')).toContain('RETURNING id');
     } finally {
@@ -198,8 +206,9 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     expect(values[5]).toContain('[worktree provenance]');
     expect(values.at(-2)).toBe(true);
     const details = parseTestRunExecutionDetails(values.at(-1));
-    expect(details).toMatchObject({ worktreeDirty: true });
-    expect(details).not.toHaveProperty('worktreeDirtyReason');
+    // Since 17899e1100 the cause is ALSO a structured execution-details field (pinned in
+    // operator-core's testing-playwright-reporter.test.ts), not only output prose.
+    expect(details).toMatchObject({ worktreeDirty: true, worktreeDirtyReason: expect.stringContaining(reason) });
   });
 
   it('does not add diagnostics to clean runs', async () => {

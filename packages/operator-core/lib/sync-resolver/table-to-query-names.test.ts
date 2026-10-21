@@ -274,6 +274,8 @@ describe('per-row scoped invalidation (caching-layer-tag-eca P-006)', () => {
       'conversations.agentChatDetail',
       'agentChats.detail',
       'hive.beaconConsent',
+      // plan-item-types-registry-cupboard P-007: scoped by plan_slug on harness_plans and plan_type_pins.
+      'plans.itemTypeView',
     ]);
     for (const [table, targets] of Object.entries(TABLE_TO_QUERY_NAMES)) {
       for (const t of targets) {

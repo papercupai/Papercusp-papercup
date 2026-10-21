@@ -522,7 +522,9 @@ describe('plans:get — cache wiring', () => {
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
   });
 
-  it('a plan_audits write busts the entry so latestAudit cannot stay stale', async () => {
+  // Consumer-tag contract only. Real SQL → NOTIFY → cache refresh is covered by
+  // sync-resolver/__tests__/plan-audits-change-notify.integration.test.ts.
+  it('invalidating the plan_audits tag refetches latestAudit', async () => {
     await run({ slug: 'alpha' });
     expect(M.getLatestPlanAudit).toHaveBeenCalledTimes(1);
     getOperatorCache().invalidateByTags('ws-get', ['plan_audits']);

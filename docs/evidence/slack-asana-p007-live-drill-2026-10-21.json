@@ -7,20 +7,26 @@
   "planItem": "P-007",
   "workItem": "WI-10007668",
   "specs": ["AUTO-BAR-R-7-P-007@4", "SPEC-PILOT-real-repair@1"],
-  "governingDecisions": ["D-013", "D-047", "D-048", "D-049", "D-050", "D-053", "D-054"],
+  "governingDecisions": ["D-013", "D-047", "D-048", "D-049", "D-050", "D-053", "D-054", "D-057", "D-058", "D-059"],
   "command": [
     "Live drill in test pot slack-asana-bug-drill (repo papercupai/slack-asana-bug-drill-20261009, nested checkout apps/slack-asana-bug-drill) driven through the real Slack and Asana providers, the admission rules, and actual agents.",
     ".papercusp/scratch/p007-duplicate-redelivery.mts (REPLAY=1), control (b)",
     "TASKS=1219721194024513 npx tsx .papercusp/scratch/p007-asana-readback.mts (independent read-only Asana GET through the production source-bound host fetch)",
     "node scripts/mcp-call.mjs work_items:list --port 3170 --harness slack-asana-bug-drill with prDeliveryAudit {ruleIds:['8392b127-74c5-4bb8-a8df-bbbc4ab611f6']}",
     "dev:pg_query: SELECT id::text FROM generate_series(1,12) ORDER BY id DESC LIMIT 5 vs ORDER BY <table>.id (independent ground truth for BD011)",
-    "gh pr view 5 --repo papercupai/slack-asana-bug-drill-20261009; git ls-remote origin refs/heads/main"
+    "gh pr view 5 --repo papercupai/slack-asana-bug-drill-20261009; git ls-remote origin refs/heads/main",
+    "TASKS=1219728396748493 FULL=1 npx tsx .papercusp/scratch/p007-asana-readback.mts (BD016; outputs .papercusp/scratch/p007-asana-readback.bd016.json and .bd016.v2.json)",
+    "dev:pg_query: SELECT task_id, launched_by, label FROM harness_shared.task_ledger WHERE detail->>'label' LIKE 'admission-recruit:%EI-26578049744916274%'",
+    "POST http://127.0.0.1:3170/api/harness/slack-asana-bug-drill/prs/6/action {action:'merge'} (product PR viewer merge; pressed twice: test, then merge)",
+    "node -e (Unicode oracle for BD016: U+200B code point class, String.prototype.trim, \\p{Default_Ignorable_Code_Point})",
+    "gh pr view 6 --repo papercupai/slack-asana-bug-drill-20261009 --json state,mergedAt,mergeCommit,headRefOid; git ls-remote origin refs/heads/main",
+    "node scripts/mcp-call.mjs work_items:list --port 3170 --harness slack-asana-bug-drill with prDeliveryAudit {ruleIds:['8392b127-74c5-4bb8-a8df-bbbc4ab611f6']} (re-run 2026-10-21T10:56Z, .papercusp/scratch/r4-8392-audit.bd016.json)"
   ],
   "commandCwd": ".",
   "startedAt": "2026-10-20T13:07:00Z",
-  "finishedAt": "2026-10-21T05:06:09Z",
+  "finishedAt": "2026-10-21T10:56:25Z",
   "exitCode": 0,
-  "summary": "Both bug entry paths ran end to end on the test pot after D-013. The Slack path is BD003: Slack post, trigger, triage plan run, Asana task, admitted work item, seed, regression test, fix, standing PR #3, tested merge, Asana completion and merge sync-back. The direct-Asana path is BD011: a task created directly in Asana and admitted by rule 8392b127, then reproduction, fix with regression test, green drill gate, standing PR #5, tested merge efb7c80, and Asana completion with a merged-fix comment. The R-4 audit for rule 8392b127 passes BD011 through its matching merged standing PR. All four controls passed: a non-bug message, a duplicate delivery, an unreproducible re-report, and a red commit that never became a PR head. BD004 is kept as a recorded delivery failure under D-053. Disclosed gaps are listed under disclosedGaps.",
+  "summary": "Both bug entry paths ran end to end on the test pot after D-013. The Slack path is BD003: Slack post, trigger, triage plan run, Asana task, admitted work item, seed, regression test, fix, standing PR #3, tested merge, Asana completion and merge sync-back. The direct-Asana path is BD011: a task created directly in Asana and admitted by rule 8392b127, then reproduction, fix with regression test, green drill gate, standing PR #5, tested merge efb7c80, and Asana completion with a merged-fix comment. BD016 repeats the direct-Asana path with the D-058 platform recruiter: the admission recruiter launched both the reviewer and the implementer (task_ledger launched_by system:admission-recruiter), with no hand-launched agent. BD016 then ran reproduction, fix with regression tests, green drill gate on 61b47af, standing PR #6, exact tested merge 80628d26, Asana completion, and a merged-fix story. The R-4 audit for rule 8392b127 passes BD011 and BD016 through their matching merged standing PRs. All four controls passed: a non-bug message, a duplicate delivery, an unreproducible re-report, and a red commit that never became a PR head. BD004 is kept as a recorded delivery failure under D-053. Disclosed gaps are listed under disclosedGaps.",
   "assertions": [
     {
       "id": "slack-path-bd003-repaired",
@@ -43,9 +49,29 @@
       "evidence": "The oracle does not depend on the drill code. Run against the operator Postgres at about 2026-10-21T05:06Z with ids 1..12: SELECT id::text ... ORDER BY id DESC LIMIT 5 returns 9,8,7,6,5, because a bare ORDER BY name binds to the text output alias. ORDER BY fixture_quotes.id DESC returns 12,11,10,9,8. The defect exists exactly as reported (quotes #10 and later are missing from the recent list), and the fix's ordering is correct."
     },
     {
+      "id": "direct-asana-path-bd016-repaired",
+      "passed": true,
+      "evidence": "BD016 Asana task 1219728396748493 'BD016: SAVE10 copied from the promo email is rejected as not recognized' was created directly in project 1219381686283984 (no Slack). The defect was latent on upstream main efb7c80, so nothing was planted (D-059). Rule 8392b127 admitted it to slack-asana-bug-drill as EI-26578049744916274 (payload.agentReview.submittedBy admission-rule:8392b127-74c5-4bb8-a8df-bbbc4ab611f6). Agent review round 1 approved 5/5 by su-75c466f2 at 09:14:30Z (thread post 1192873). Implementer su-5ef2d2a5 reproduced it at HEAD with the unfixed source: npm run test:unit gave 9 failed | 25 passed, all 9 being the new invisible-character cases (thread post 1192881, 09:34:03Z). The fix in src/quote.ts adds normalizeCoupon(), which strips \\p{Default_Ignorable_Code_Point} before trim and toUpperCase. Regression tests are in src/quote.test.ts (the reported bytes, leading, internal and trailing invisible characters, an invisible-only box treated as none, and visibly different codes still rejected) and tests/host-smoke.test.ts. CI test_runs 21553894-21553904 on 61b47af all pass (2026-10-21T10:25Z), including src/quote.test.ts 21553899 and tests/host-smoke.test.ts 21553894. The drill green-checkpoint admitted the 10:24:09Z run and is green on 61b47af. Standing PR #6 (https://github.com/papercupai/slack-asana-bug-drill-20261009/pull/6) had head 61b47af. The PR viewer merge action ran the exact-merge suite on 80628d26 (local test_runs 21557052-21557062, all pass, 10:45:15-10:45:28Z), then merged exactly that result at 2026-10-21T10:45:43Z (gh: state MERGED, mergeCommit 80628d26). Upstream main is 80628d267b52ccf2c4e73136a6f0497d4f0c97e1 with parents efb7c80 and 61b47af. 61b47af is not an ancestor of the pre-merge main efb7c80, so the fix reached upstream only through PR #6. payload.standingPr (written 10:49:58Z) has testedSha 61b47af, mergedSha 80628d26, targetSha efb7c80. EI-26578049744916274 is done."
+    },
+    {
+      "id": "bd016-platform-recruited-agents",
+      "passed": true,
+      "evidence": "Both BD016 agents were launched by the platform (D-058; recruiter source committed in 9c1afa65c8, admission rule 8392b127 lifecycle.recruit:true set 08:20:03Z). harness_shared.task_ledger shows task 0mvhw9dzc1itt7tccys, label admission-recruit:review:EI-26578049744916274:r1:1, launched_by system:admission-recruiter, started 09:12:53Z. That reviewer session is su-75c466f2, which approved round 1. It also shows task 0mvhwy3i7155li238h8, label admission-recruit:repair:EI-26578049744916274:a1:1, launched_by system:admission-recruiter, started 09:32:06Z. That implementer session is su-5ef2d2a5, the terminal owner of EI-26578049744916274. The supervising agent did not launch, wake or brief either agent and did not edit drill code."
+    },
+    {
+      "id": "direct-asana-bd016-asana-sync-back",
+      "passed": true,
+      "evidence": "Independent read-only Asana GET at 2026-10-21T10:56:25Z (.papercusp/scratch/p007-asana-readback.bd016.v2.json): task 1219728396748493 completed=true, completed_at 2026-10-21T09:45:15Z. Story 1219729751302804 (09:38:44Z) 'Picked up in Papercusp as EI-26578049744916274; su-5ef2d2a5... is working on it.' Story 1219729760174326 (09:45:05Z) 'Completed in Papercusp (EI-26578049744916274). BD016 fixed...'. Story 1219729760312534 marked_complete at 09:45:15Z. Story 1219731236945932 (10:49:50Z) 'Merged fix for EI-26578049744916274: .../pull/6 Verified the recorded fix in PR head 61b47af... and merge 80628d26...'."
+    },
+    {
+      "id": "bd016-independent-ground-truth",
+      "passed": true,
+      "evidence": "The oracle does not depend on the drill code. Node v25.9.0 at about 2026-10-21T10:51Z decodes the reported bytes 53 41 56 45 31 30 E2 80 8B to code points 53,41,56,45,31,30,200b. trim().toUpperCase() of that string is not 'SAVE10'. U+200B fails /\\s/u, so it is not WhiteSpace and String.prototype.trim keeps it. It matches /\\p{Cf}/u and /\\p{Default_Ignorable_Code_Point}/u, and removing Default_Ignorable code points yields exactly 'SAVE10'. The defect exists exactly as reported, and the fix's normalization is correct for the reported input. Earlier, at 08:00Z, the drill's own calculateQuote on origin/main efb7c80 returned invalid (8000) for 'SAVE10' + U+200B and applied (7200) for 'SAVE10'."
+    },
+    {
       "id": "r4-audit-rule-8392b127",
       "passed": true,
-      "evidence": "work_items:list prDeliveryAudit {ruleIds:['8392b127-74c5-4bb8-a8df-bbbc4ab611f6']} on :3170 at 2026-10-21T05:06:09Z (.papercusp/scratch/r4-8392-audit.json): population 2, checked 2, complete true. EI-26554629962517531 (BD011) verdict pass: 'Fix reached upstream through the matching merged standing PR', prUrl .../pull/5, upstreamSha efb7c80. EI-26514226735300284 (BD004) verdict fail: 'Fix reached upstream without a valid standing PR receipt'. That is the retained direct-staging delivery failure ruled in D-053. The overall verdict is fail only because of that retained row."
+      "evidence": "work_items:list prDeliveryAudit {ruleIds:['8392b127-74c5-4bb8-a8df-bbbc4ab611f6']} on :3170, re-run at 2026-10-21T10:56Z (.papercusp/scratch/r4-8392-audit.bd016.json): population 3, checked 3, pending 0, complete true. EI-26578049744916274 (BD016) passes: 'Fix reached upstream through the matching merged standing PR' (prUrl .../pull/6, upstreamSha and fixSha 80628d26). EI-26554629962517531 (BD011) passes the same way (prUrl .../pull/5, fixSha efb7c80). EI-26514226735300284 (BD004) fails: 'Fix reached upstream without a valid standing PR receipt'. That is the retained direct-staging delivery failure ruled in D-053, and the overall verdict is fail only because of that row. The first run at 05:06:09Z (.papercusp/scratch/r4-8392-audit.json) had population 2, with the same BD011 pass and BD004 fail."
     },
     {
       "id": "control-a-chatter-non-bug",
@@ -79,7 +105,10 @@
     }
   ],
   "disclosedGaps": [
-    "BD011 reviewer was hand-recruited and its implementer was launched by the supervising agent (D-054), as for BD004. Admission, review state, reproduction, fix, gate, PR, merge, and Asana sync-back ran through the product. The supervisor did not edit drill code. Automatic reviewer recruitment for pots with no resident agents is tracked as WI-6554700010018302.",
+    "BD011's reviewer was hand-recruited and its implementer was launched by the supervising agent (D-054), as for BD004. The independent grading audit EI-26571279898181048 failed SPEC-PILOT-real-repair on that point (D-057). BD016 replaces BD011 as the real-repair proof: the platform recruiter launched both of its agents (assertion bd016-platform-recruited-agents). BD011 stays here as an earlier direct-Asana run, not as the real-repair proof.",
+    "The standing PR is designed to be merged by a person ('Merging it is up to you'). The drill pot's pr-poll routine is inactive and has never fired (EI-26585068280376643), so it cannot merge on a GitHub approval. The supervising agent therefore pressed the product's PR viewer merge for PR #6, acting for the owner under directive #2035. It used the same route the viewer's Merge button calls: POST /api/harness/slack-asana-bug-drill/prs/6/action {action:'merge'} on :3170. The product ran the exact-merge suite and merged only the tested result 80628d26. The supervisor did not use gh or git to merge, and did not choose or alter the merged content. BD011's PR #5 merge was pressed by its implementer.",
+    "The BD016 Asana report was written by the supervising agent acting as the drill's support desk (D-059). The defect it reports was already latent on upstream main, so no drill code was planted. Everything after the task existed (admission, recruitment, review, reproduction, fix, gate, PR and sync-back) ran in the product without supervisor input, apart from the merge press disclosed above.",
+    "BD016's regression tests were committed with the fix, so test_runs has no separate red row for them. Two things stand in for one: the implementer's run against the unfixed source (9 failed | 25 passed, thread post 1192881) and the independent Unicode oracle. Also, the implementer's first full npm test at 09:35:55Z failed only in tests/host-smoke.test.ts, because another fixture host was answering on the shared smoke port 4320. That collision is unrelated to the fix and is filed as EI-26581196942853849. The re-run passed.",
     "BD011's regression test was committed with the fix in c1eaee3, so test_runs has no separate red row for it. The independent ground-truth query above and the implementer's reproduction on the live drill host stand in for a red row.",
     "Local test run 21505712 (host-smoke on c1eaee3, 04:42:45Z, fail 1/1) is an environment failure ('Source changed after build. Run npm run build before starting.'): an absolute-path invocation skipped the package pretest build (observation EI-26562834011634779). It is not the BD011 defect. CI run 21498762 on c1eaee3 and local run 21504929 on the merge both pass.",
     "BD004 (EI-26514226735300284) is a retained direct-staging delivery failure (D-053, D-033 class). It does not stand in for the direct-Asana path. BD011 does."

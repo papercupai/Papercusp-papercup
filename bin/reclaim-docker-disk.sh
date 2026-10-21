@@ -126,7 +126,10 @@ container_pin_guard_acquire() {
     log "retention pin admission failed: $label storage root unavailable — skipping store"
     return 1
   }
-  module="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/lib/retention-pins.mjs"
+  # The unit runs a snapshot COPY under $TMPDIR, so a climb out of this script's own
+  # path lands in the snapshot, not the checkout. papercup-docker-reclaim.service pins
+  # PAPERCUSP_REPO_ROOT; the self-located default serves a direct run (WI-10006358).
+  module="${PAPERCUSP_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/lib/retention-pins.mjs"
   coproc CONTAINER_PIN_GUARD {
     exec node --input-type=module -e '
       import { pathToFileURL } from "node:url";

@@ -80,7 +80,8 @@ describe('APPLIED native identity admission', () => {
   const rootPin = { packageKind: 'blueprint' as const, ref: identity.id, revision: identity.version, contentHash: 'root' };
   const dependency = { packageKind: 'rule' as const, ref: 'guard', revision: '1', contentHash: 'dep' };
   const worn = (): AppliedIdentityRules => ({ applied: { specificationRevision: 'applied-spec', stateRevision: 'applied-state' },
-    packagePins: [rootPin, dependency], pins: { rules: [], unreadable: [] }, sync: { rules: [], unreadable: [] }, declaredClassNeeds: null });
+    packagePins: [rootPin, dependency], pins: { rules: [], unreadable: [] }, sync: { rules: [], unreadable: [] }, declaredClassNeeds: null,
+    recall: null });
   const retained = () => ({ schemaVersion: 1 as const, id: identity.id, version: identity.version, contentHash: 'root', artifactContentHash: 'artifact',
     installedAtMs: 1, source: 'test', slots: ['persona'], pins: [rootPin, dependency] });
   const context = { ownerId: 'su-native', workspaceId: request.workspaceId, backend: 'codex' };

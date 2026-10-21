@@ -45,7 +45,7 @@ import {
   markHarnessUnlisted,
   normalizeListingKind,
   parseListingCursor,
-  REVIEW_POLICY_KINDS,
+  publishReviewStatus,
   setHarnessClaim,
   supersedeHarnessListing,
   summarizePublicHarnesses,
@@ -95,6 +95,12 @@ interface PublishBody {
   // FAMILIES the unit REQUIRES; kinds plugin|pack only. Same storage posture.
   requires_events?: unknown;         // expected: Array<{ family, optional? }>
   requires_rubrics?: unknown;        // expected: Array<{ rubricRef, optional? }> (migration 015)
+  // Type packs (migration 049 / plan-item-types-registry-cupboard-2026-10-20 P-006, D-008):
+  // the item types / plan types a plugin|pack manifest carries, and the plan type a plan
+  // template requires. A listing declaring any type lands PENDING review.
+  provides_item_types?: unknown;     // expected: Array<{ id, revision }>
+  provides_plan_types?: unknown;     // expected: Array<{ id, revision }>
+  requires_plan_type?: unknown;      // expected: { id, minRevision?, maxRevision? }
   // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
   // owning Hive's raw-32-byte-base64 Ed25519 pubkey + denormalized title.
   hive_pubkey?: unknown;             // expected: 44-char base64 (32 bytes)
@@ -129,6 +135,9 @@ interface PublishBody {
 
 /** provides_tools caps (migration 006): bounded so a listing can't smuggle a payload. */
 const PROVIDES_TOOLS_MAX_ENTRIES = 200;
+/** Type-pack declaration caps (migration 049): the registry's type-id grammar, bounded count. */
+const TYPE_DECLARATIONS_MAX = 100;
+const TYPE_ID_RE = /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/;
 const PROVIDES_TOOLS_MAX_NAME_LEN = 128;
 
 /**
@@ -309,6 +318,8 @@ function registerListingEndpoints(
       platform: url.searchParams.get('platform') ?? undefined,
       runtime: url.searchParams.get('runtime') ?? undefined,
       permission: url.searchParams.get('permission') ?? undefined,
+      provides_item_type: url.searchParams.get('provides_item_type') ?? undefined,
+      provides_plan_type: url.searchParams.get('provides_plan_type') ?? undefined,
     };
     const [{ results, next_cursor }, { total, kind_facets }] = await Promise.all([
       listPublicHarnessesPage(c.env.DB, filters),
@@ -444,6 +455,66 @@ function registerListingEndpoints(
         return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'non_empty_strings_max_128' }, 400);
       }
       providesToolsJson = JSON.stringify(pt);
+    }
+
+    // provides_item_types / provides_plan_types / requires_plan_type (migration 049 /
+    // plan-item-types-registry-cupboard-2026-10-20 P-006, D-008). Declarations, not payloads:
+    // bounded, grammar-checked and stored as JSON TEXT. The installer resolves a referenced type
+    // to the approved listing that declares it and refuses a manifest carrying undeclared types,
+    // and any declared type sends the publish to review (publishReviewStatus below).
+    let providesItemTypesJson: string | null = null;
+    let providesPlanTypesJson: string | null = null;
+    const declaredTypes = { itemTypes: 0, planTypes: 0 };
+    for (const field of ['provides_item_types', 'provides_plan_types'] as const) {
+      const declared = body[field];
+      if (declared == null) continue;
+      const bad = (reason: string) => c.json({ error: 'invalid_field', field, reason }, 400);
+      if (kind !== 'plugin' && kind !== 'pack') return bad('plugin_or_pack_kind_only');
+      if (!Array.isArray(declared) || declared.length === 0 || declared.length > TYPE_DECLARATIONS_MAX) {
+        return bad('array_1_to_100');
+      }
+      const seen = new Set<string>();
+      const clean: Array<{ id: string; revision: number }> = [];
+      for (const entry of declared) {
+        if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) return bad('entries_must_be_objects');
+        const { id, revision, ...rest } = entry as Record<string, unknown>;
+        if (Object.keys(rest).length > 0) return bad('entries_are_id_and_revision_only');
+        if (typeof id !== 'string' || !TYPE_ID_RE.test(id) || id.startsWith('papercusp/')) return bad('id_namespaced_slug');
+        if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) {
+          return bad('revision_positive_integer');
+        }
+        if (seen.has(id)) return bad('duplicate_id');
+        seen.add(id);
+        clean.push({ id, revision });
+      }
+      if (field === 'provides_item_types') {
+        providesItemTypesJson = JSON.stringify(clean);
+        declaredTypes.itemTypes = clean.length;
+      } else {
+        providesPlanTypesJson = JSON.stringify(clean);
+        declaredTypes.planTypes = clean.length;
+      }
+    }
+    let requiresPlanTypeJson: string | null = null;
+    if (body.requires_plan_type != null) {
+      const bad = (reason: string) => c.json({ error: 'invalid_field', field: 'requires_plan_type', reason }, 400);
+      if (kind !== 'plan') return bad('plan_kind_only');
+      const required = body.requires_plan_type;
+      if (typeof required !== 'object' || Array.isArray(required)) return bad('must_be_object');
+      const { id, minRevision, maxRevision, ...rest } = required as Record<string, unknown>;
+      if (Object.keys(rest).length > 0) return bad('id_and_revision_range_only');
+      if (typeof id !== 'string' || !TYPE_ID_RE.test(id)) return bad('id_namespaced_slug');
+      const isRevision = (v: unknown) => v === undefined || (typeof v === 'number' && Number.isSafeInteger(v) && v >= 1);
+      if (!isRevision(minRevision) || !isRevision(maxRevision)) return bad('revision_positive_integer');
+      if (minRevision === undefined && maxRevision === undefined) return bad('revision_or_range_required');
+      if (minRevision !== undefined && maxRevision !== undefined && (minRevision as number) > (maxRevision as number)) {
+        return bad('min_exceeds_max');
+      }
+      requiresPlanTypeJson = JSON.stringify({
+        id,
+        ...(minRevision !== undefined ? { minRevision } : {}),
+        ...(maxRevision !== undefined ? { maxRevision } : {}),
+      });
     }
 
     // uses_tools (migration 033 / WI-10001747) — the CONSUMER half of the tool
@@ -773,7 +844,11 @@ function registerListingEndpoints(
     // Content pin before dedup: a new default-branch SHA is a new listing
     // version, while an exact SHA remains an idempotent retry (P-004).
     let pin: ContentPin | null = null;
-    if (isSelfDescribingKind(kind)) {
+    // A listing that declares item types or plan types is pinned too (migration 049,
+    // plan-item-types-registry-cupboard-2026-10-20 P-006, D-008): its definitions are
+    // declarative files under <listing_ref>/, and the installer only accepts a type pack
+    // whose content it can verify against this pin.
+    if (isSelfDescribingKind(kind) || declaredTypes.itemTypes + declaredTypes.planTypes > 0) {
       if (typeof repoMeta.default_branch !== 'string' || repoMeta.default_branch === '') {
         return c.json({ error: 'github_repo_unreachable', reason: 'no_default_branch' }, 400);
       }
@@ -827,7 +902,9 @@ function registerListingEndpoints(
     // kinds land PENDING — invisible to public browse until an operator
     // approves. The response carries review_status so the publisher's client
     // can say "pending approval" instead of "live".
-    const review_status = REVIEW_POLICY_KINDS.includes(kind) ? ('pending' as const) : ('approved' as const);
+    // Content-aware since migration 049: a listing that declares item types or plan types
+    // lands pending whatever its kind (plan-item-types-registry-cupboard-2026-10-20 P-006).
+    const review_status = publishReviewStatus(kind, declaredTypes);
 
     // ── Catalog fields (migration 018 / shared-pot-dao-cupboard-v1 P-008) ────
     // Kind-agnostic: every kind can be private, priced, compatibility-scoped,
@@ -1025,6 +1102,9 @@ function registerListingEndpoints(
       provides_events: providesEventsJson,
       requires_events: requiresEventsJson,
       requires_rubrics: requiresRubricsJson,
+      provides_item_types: providesItemTypesJson,
+      provides_plan_types: providesPlanTypesJson,
+      requires_plan_type: requiresPlanTypeJson,
       hive_pubkey: (body.hive_pubkey as string | undefined) ?? null,
       hive_title: (body.hive_title as string | undefined) ?? null,
       // P-018: the blueprint.yaml `kind` for a blueprint listing (the Hives-tab

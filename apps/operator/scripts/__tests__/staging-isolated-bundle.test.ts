@@ -161,7 +161,11 @@ describe("staging systemd drop-ins keep the serving alias and runtime generation
   it("builds and marks an isolated candidate ready before publishing the alias", () => {
     const sync = readFileSync(STAGING_SYNC_SCRIPT, "utf8");
     expect(sync).toContain('STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"');
-    const acquire = sync.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"');
+    // The flock lives in a coprocess keeper (fd 9 never leaks into children); the
+    // workflow drives it by call, so order the CALL SITES, not the keeper's body.
+    expect(sync).toContain('exec 9>"$STAGING_SYNC_LOCK_PATH"');
+    expect(sync).toContain("if flock -s 9; then printf '%s\\n' shared;");
+    const acquire = sync.indexOf("if staging_sync_lock_start; then");
     const prepare = sync.indexOf('prepare_staging_candidate "$target"');
     const build = sync.indexOf(
       'prebuild_staging_host_bundle "$SYNC_ROOT" "$bundle_script"',
@@ -170,7 +174,7 @@ describe("staging systemd drop-ins keep the serving alias and runtime generation
     const publish = sync.indexOf(
       'publish_staging_generation "$STAGING_CANDIDATE_ROOT"',
     );
-    const downgrade = sync.indexOf("flock -s 9");
+    const downgrade = sync.indexOf("if staging_sync_lock_shared; then");
     expect(acquire).toBeGreaterThanOrEqual(0);
     expect(prepare).toBeGreaterThan(acquire);
     expect(sync).toContain(

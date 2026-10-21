@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const SCRIPTS_DIR = join(__dirname, '..');
 const BUNDLE_HOST = join(SCRIPTS_DIR, '..', 'bin', 'bundle-host.sh');
+const BUNDLE_HOST_COMMON = join(SCRIPTS_DIR, '..', 'bin', 'bundle-host-common.sh');
 const DROP_IN = join(SCRIPTS_DIR, 'systemd', 'papercup-bg-host.service.d', '95-bundled-entry.conf');
 const GATEWAY_AUTHORITY_DROP_IN = join(
   SCRIPTS_DIR,
@@ -52,6 +53,7 @@ const SNAPSHOT_LAUNCHER_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/oper
  */
 describe('papercup-bg-host and Linux gateway-authority file contracts', () => {
   const bundleHost = readFileSync(BUNDLE_HOST, 'utf8');
+  const bundleHostCommon = readFileSync(BUNDLE_HOST_COMMON, 'utf8');
   const dropIn = readFileSync(DROP_IN, 'utf8');
   const gatewayAuthorityDropIn = readFileSync(GATEWAY_AUTHORITY_DROP_IN, 'utf8');
   const packagedServerGatewayAuthorityDropIn = readFileSync(PACKAGED_SERVER_GATEWAY_AUTHORITY_DROP_IN, 'utf8');
@@ -90,8 +92,13 @@ describe('papercup-bg-host and Linux gateway-authority file contracts', () => {
   });
 
   it('fails closed when the bundled CLI-entry recurrence guard rejects the graph', () => {
-    const guard = 'if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \\';
+    // The guard runs through bundle_host_run_step (step-timing log); that wrapper must
+    // propagate the checker's exit status, or `if !` silently stops failing closed.
+    const guard =
+      'if ! bundle_host_run_step host-cli-guard "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \\';
     expect(bundleHost).toContain(guard);
+    expect(bundleHostCommon).toContain('"$@" || step_rc=$?');
+    expect(bundleHostCommon).toContain('return "$step_rc"');
     const guardAt = bundleHost.indexOf(guard);
     const exitAt = bundleHost.indexOf('    exit 1\n  fi', guardAt);
     const swapAt = bundleHost.indexOf('  mv -f "$TMPFILE" "$OUTFILE"', guardAt);

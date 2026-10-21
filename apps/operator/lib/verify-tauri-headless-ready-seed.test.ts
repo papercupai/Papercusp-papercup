@@ -106,7 +106,7 @@ describe('EI-20191599988350937 — opt-in ready-app seed for isolated verificati
     expect(readySeedStart).toBeGreaterThan(-1);
     expect(readySeedEnd).toBeGreaterThan(readySeedStart);
     expect(readySeedBlock).toContain(
-      'SEED_URL="http://127.0.0.1:$DEV_PORT/api/desktop/setup-wizard-state"',
+      'SEED_URL="$(verify_tauri_dev_url "$DEV_PORT")/api/desktop/setup-wizard-state"',
     );
     expect(readySeedBlock).toContain('const timeoutMs = 30_000;');
     expect(readySeedBlock).toContain('AbortSignal.timeout(timeoutMs)');

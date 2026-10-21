@@ -3014,8 +3014,12 @@ describe('proving-fire settlement (PG) — event-wait-settlement-2026-10-20 P-00
       .toEqual([[SHA_KEY, 'cleared'], ['runtime:still-live', 'active']]);
   });
 
+  // D-008: the announced path applies fireCertifiesCondition with the producer declared,
+  // so the key is a fleet gate (the shape events:emit { announce:true } returns), which
+  // set_blocker admits. A catalogued broad key such as release:green:<pipeline> is
+  // refused at write time and is pinned below as clearing nothing.
   it('AUTO-BAR-R-7-P-004: a gate-kind blocker on an announced key is cleared when that key fires', async () => {
-    const gateKey = 'release:green:papercusp';
+    const gateKey = 'fleet:ews-p004:release-ready';
     await registerAnnouncement({ subscriberId: 'release-gate', eventKey: gateKey, scopeKind: 'global' });
     await seedBlocked('EI-gate-wait', [gateBlocker(gateKey)]);
 
@@ -3027,6 +3031,19 @@ describe('proving-fire settlement (PG) — event-wait-settlement-2026-10-20 P-00
       kind: 'gate', ref: gateKey, status: 'cleared', clearedBy: 'release-gate',
     })]);
     expect(followUp.calls.map((items) => items.map((i) => i.featureId))).toEqual([['EI-gate-wait']]);
+  });
+
+  it('an announced broad catalogued key (release:green:<pipeline>) clears no blocker: no fire of it proves a condition (D-008)', async () => {
+    const broad = 'release:green:papercusp';
+    await registerAnnouncement({ subscriberId: 'release-gate', eventKey: broad, scopeKind: 'global' });
+    await seedBlocked('EI-green-wait', [gateBlocker(broad)]);
+
+    expect(await stampAnnouncementsFired(broad, { firedBy: 'release-gate' })).toBe(1);
+
+    const row = await rowOf('EI-green-wait');
+    expect(row.status).toBe('blocked');
+    expect(row.payload.externalBlockers[0].status).toBe('active');
+    expect(followUp.calls.flat()).toEqual([]);
   });
 
   // Rubric vetting (conv-mvh091tq, reviewer 2): this is the gate-kind variant of
@@ -3054,6 +3071,42 @@ describe('proving-fire settlement (PG) — event-wait-settlement-2026-10-20 P-00
       expect(row.payload.externalBlockers[0].status).toBe('active');
     }
     expect(followUp.calls).toEqual([]);
+  });
+
+  // D-001 item 3 has no announced carve-out (D-008; amend review conv-mvhydkn6): a
+  // producer declaring work-item:status:<id> does not make a status change the condition.
+  it('AUTO-BAR-R-1-P-004: an announced change-notification fire is not proof either, so its blocker stays active', async () => {
+    const notification = 'work-item:status:WI-p004-announced';
+    await registerAnnouncement({ subscriberId: 'status-producer', eventKey: notification, scopeKind: 'global' });
+    await seedBlocked('EI-announced-status-wait', [eventBlocker(notification)]);
+    await seedBlocked('EI-announced-status-gate', [gateBlocker(notification)]);
+
+    // The announcement itself latches fired; only the blockers stay put.
+    expect(await stampAnnouncementsFired(notification, { firedBy: 'status-producer' })).toBe(1);
+
+    for (const id of ['EI-announced-status-wait', 'EI-announced-status-gate']) {
+      const row = await rowOf(id);
+      expect(row.status).toBe('blocked');
+      expect(row.payload.externalBlockers[0].status).toBe('active');
+    }
+    // The fire path always runs its post-commit follow-up; it must carry no cleared item.
+    expect(followUp.calls.flat()).toEqual([]);
+  });
+
+  it('AUTO-BAR-R-1-P-004: retiring an announced change-notification gate clears no blocker on it', async () => {
+    const notification = 'work-item:status:WI-p004-retired';
+    const announcement = await registerAnnouncement({
+      subscriberId: 'status-producer', eventKey: notification, scopeKind: 'global',
+    });
+    await seedBlocked('EI-retired-status-wait', [eventBlocker(notification)]);
+
+    await expect(retireAnnouncement({ announcementId: announcement.id, subscriberId: 'status-producer' }))
+      .resolves.toMatchObject({ retired: true });
+
+    const row = await rowOf('EI-retired-status-wait');
+    expect(row.status).toBe('blocked');
+    expect(row.payload.externalBlockers[0].status).toBe('active');
+    expect(followUp.calls.flat()).toEqual([]);
   });
 
   it('AUTO-BAR-R-18-P-004: a durable park on an unannounced work-item:done:<id> trigger is released when it fires', async () => {

@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { judgeReviewPredicate } from './cupboard-type-pack-review';
 
 // lib/doc-claims -> lib -> operator-core -> packages -> <repo root>
@@ -54,8 +54,10 @@ describe('the Cupboard review predicate is content-aware (R-16)', () => {
   });
 
   it('the live predicate sends every type-declaring listing to review and keeps tool-only packs approved', async () => {
-    // Worker sources compile only under @cloudflare/workers-types: load through a non-literal specifier.
-    const specifier = '../../../../apps/operator-public/src/' + 'db';
+    // Worker sources compile only under @cloudflare/workers-types: load through a non-literal
+    // specifier. It must be an absolute file URL: Vite resolves a non-literal RELATIVE specifier
+    // against the project root, not this file, and the import fails to find the module.
+    const specifier = pathToFileURL(DB).href;
     const { publishReviewStatus } = (await import(specifier)) as {
       publishReviewStatus: (kind: string, declares: { itemTypes: number; planTypes: number }) => string;
     };

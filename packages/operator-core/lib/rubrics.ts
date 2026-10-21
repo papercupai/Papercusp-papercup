@@ -4397,6 +4397,44 @@ async function evaluateAcceptanceBarApproverEligibility(
   };
 }
 
+/**
+ * The maintained result budget for a malformed-source amendment refusal
+ * (acceptance-bar-atomic-retirement-2026-10-15 R-32). Each problem is named as
+ * `code: barKey: planItemId: detail`, so the caller can find and fix the record.
+ * A source can still carry hundreds of malformed records, and one parser detail can
+ * quote an arbitrarily long line or a whole schema error. So the caller sees at most
+ * `maxProblems` problems, each detail on one line and clipped to `maxDetailChars`,
+ * then a count of the problems not shown. The whole message never exceeds `maxMessageChars`.
+ */
+export const ACCEPTANCE_BAR_AMENDMENT_REFUSAL_BUDGET = Object.freeze({
+  maxProblems: 8,
+  maxDetailChars: 240,
+  maxMessageChars: 2_560,
+});
+
+type AmendmentSourceProblem = { code: string; barKey?: string; planItemId?: string; detail?: string };
+
+function clipRefusalText(text: string, max: number): string {
+  const oneLine = text.replace(/\s*\n\s*/g, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}
+
+/** The bounded, actionable refusal text for a malformed amendment source; see the budget above. */
+export function amendmentSourceRefusal(prefix: string, problems: readonly AmendmentSourceProblem[]): string {
+  const budget = ACCEPTANCE_BAR_AMENDMENT_REFUSAL_BUDGET;
+  const shown = problems.slice(0, budget.maxProblems).map((problem) =>
+    [
+      problem.code,
+      problem.barKey,
+      problem.planItemId,
+      problem.detail === undefined ? undefined : clipRefusalText(problem.detail, budget.maxDetailChars),
+    ].filter(Boolean).join(': '),
+  );
+  const omitted = problems.length - shown.length;
+  const message = `${prefix}:${shown.join('; ')}${omitted > 0 ? `; +${omitted} more problem(s) not shown` : ''}`;
+  return message.length > budget.maxMessageChars ? `${message.slice(0, budget.maxMessageChars - 1)}…` : message;
+}
+
 function amendmentFaultStage(input: AmendRubricInput): AmendRubricInput['faultInjection'] | undefined {
   return (
     input.faultInjection ?? (process.env.PAPERCUSP_ACCEPTANCE_BAR_AMENDMENT_FAULT as AmendRubricInput['faultInjection'])
@@ -5241,17 +5279,11 @@ async function amendAcceptanceBarRubric(
       const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
       const requirements = parseRequirementBars(proposedSource);
       if (!requirements.ok) {
-        throw new Error(
-          `acceptance_bar_amendment_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
-        );
+        throw new Error(amendmentSourceRefusal('acceptance_bar_amendment_requirements_invalid', requirements.problems));
       }
       const sourceMappings = parseBarMappings(proposedSource, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!sourceMappings.ok) {
-        throw new Error(
-          `acceptance_bar_amendment_mapping_invalid:${sourceMappings.problems.map((problem) =>
-            [problem.code, problem.barKey, problem.planItemId, problem.detail].filter(Boolean).join(': '),
-          ).join('; ')}`,
-        );
+        throw new Error(amendmentSourceRefusal('acceptance_bar_amendment_mapping_invalid', sourceMappings.problems));
       }
       // Rendering follows every represented field, while proof invalidation follows BAR meaning.
       // A method-only edit needs both plan locks whenever an explicit requirement block changes.
@@ -5289,11 +5321,7 @@ async function amendAcceptanceBarRubric(
       });
       const desiredMappings = parseBarMappings(requirementsRerender.content, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!desiredMappings.ok) {
-        throw new Error(
-          `acceptance_bar_amendment_mapping_invalid:${desiredMappings.problems.map((problem) =>
-            [problem.code, problem.barKey, problem.planItemId, problem.detail].filter(Boolean).join(': '),
-          ).join('; ')}`,
-        );
+        throw new Error(amendmentSourceRefusal('acceptance_bar_amendment_mapping_invalid', desiredMappings.problems));
       }
       const desiredMappingByBar = new Map(desiredMappings.mappings.map((mapping) => [mapping.barKey, mapping]));
       const itemIds = [

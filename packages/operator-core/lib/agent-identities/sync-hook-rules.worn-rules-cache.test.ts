@@ -37,6 +37,7 @@ vi.mock('../capability-envelope/identity-grants-port', () => ({
 
 import { evaluateToolGuard, readAppliedIdentityRules, readAppliedWornRules, type WornSyncRules } from './sync-hook-rules';
 import { evaluateKernelSafetyRails, KERNEL_IDENTITY_ID, KERNEL_INPUT_BOUND_RULE_ID, KERNEL_SAFETY_RAILS } from './kernel-safety-rails';
+import { readAppliedIdentityRecall } from './identity-recall';
 
 const ruleArtifact = {
   inputs: [{
@@ -107,6 +108,31 @@ describe('readAppliedWornRules', () => {
     now.mockReturnValue(1_000_000 + 30_001);
     expect((await readAppliedWornRules('owner-unreadable', 'ws'))?.rules).toHaveLength(1);
     expect(readGateSelectedLaunchSpecMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+/*
+ * identity-system-everything-migration-2026-10-18 P-012 (R-19): the recall bounds
+ * both recall ports run under are read from the APPLIED artifact, the same receipt
+ * the worn guards read.
+ */
+describe('readAppliedIdentityRecall', () => {
+  it("returns the applied artifact's declared bounds", async () => {
+    applied('owner-recall');
+    appliedIdentityArtifactMock.mockReturnValue({ ...ruleArtifact,
+      configuration: { recall: { budgetShare: 0.25, memoryScopes: ['hive'], corpora: ['doc'] } } });
+    expect(await readAppliedIdentityRecall('owner-recall', 'ws'))
+      .toEqual({ budgetShare: 0.25, memoryScopes: ['hive'], corpora: ['doc'] });
+  });
+  it('is null when nothing is applied, or the applied identity declares no bounds', async () => {
+    expect(await readAppliedIdentityRecall('owner-recall-none', 'ws')).toBeNull();
+    applied('owner-recall-undeclared');
+    expect(await readAppliedIdentityRecall('owner-recall-undeclared', 'ws')).toBeNull();
+  });
+  it('throws when an identity is applied but its artifact cannot be read', async () => {
+    applied('owner-recall-unreadable');
+    appliedIdentityArtifactMock.mockReturnValue(null);
+    await expect(readAppliedIdentityRecall('owner-recall-unreadable', 'ws')).rejects.toThrow('unreadable');
   });
 });
 

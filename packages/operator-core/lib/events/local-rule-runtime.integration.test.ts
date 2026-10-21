@@ -53,7 +53,7 @@ describe('enabled local runtime', () => {
     const dispatch = vi.fn(async () => ({ ok: true }));
     const result = await executeIdentityReaction(payload, { sql: db.adminSql,
       readWearer: async () => ({ ownerId: 'author', workspaceId, role: 'su', harnessSlug: 'demo', revisionTag: 'live',
-        rules: { applied: { specificationRevision: 'live', stateRevision: 'live' }, packagePins: [], pins: { rules: [], unreadable: [] }, sync: { rules: [], unreadable: [] }, declaredClassNeeds: null } }),
+        rules: { applied: { specificationRevision: 'live', stateRevision: 'live' }, packagePins: [], pins: { rules: [], unreadable: [] }, sync: { rules: [], unreadable: [] }, declaredClassNeeds: null, recall: null } }),
       resolvePot: async () => 'demo', readCeiling: async () => ({ potSlug: 'demo', ceilings: [], protectedAdditions: [] }),
       resolveFire: async () => ({ status: 'resolved', target, tool: 'tasks:create', providerPackage: 'demo', providerVersion: '1.0.0', providerKind: 'tool' }),
       isRegisteredTool: () => true, dispatch });

@@ -201,6 +201,32 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
       'SELECT id::text AS id, plan_slug AS "planSlug", armed, pack_installation_id::text AS "packInstallationId" FROM harness_shared.trigger_bindings',
     reason: `harness_shared.trigger_bindings.id ${UUID_REASON}.`,
   },
+  {
+    file: 'packages/operator-core/lib/data-governance/hosted-customer-deletion-store.ts',
+    contains: 'SELECT id::text AS id, status, identity_provider, external_organization_id',
+    reason: `papercusp_auth.organizations.id ${UUID_REASON}, so the FOR UPDATE lock order is the same either way.`,
+  },
+  {
+    file: 'packages/operator-core/lib/data-governance/organization-backup-sealing.ts',
+    contains: 'SELECT id::text AS id FROM harness_shared.data_source_legal_holds',
+    reason: `harness_shared.data_source_legal_holds.id ${UUID_REASON}.`,
+  },
+  {
+    file: 'packages/operator-core/lib/data-governance/organization-data-receipts.ts',
+    contains: 'SELECT id::text AS id FROM harness_shared.customer_workspaces',
+    reason:
+      'harness_shared.customer_workspaces.id is already a text column: the ::text cast is a no-op, so the alias sorts exactly like the column.',
+  },
+  {
+    file: 'packages/operator-core/lib/data-governance/siem-export-org-audit.ts',
+    contains: 'SELECT id::text AS id, organization_id::text AS organization_id, workspace_id::text AS workspace_id',
+    reason: `papercusp_auth.organization_audit_events.id ${UUID_REASON}, matching the (recorded_at, id) uuid keyset predicate.`,
+  },
+  {
+    file: 'packages/operator-core/lib/providers/connector-source-health.ts',
+    contains: 'SELECT id::text AS id, kind, status, provider_account_id',
+    reason: `harness_shared.data_sources.id ${UUID_REASON}.`,
+  },
 ];
 
 /**

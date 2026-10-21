@@ -83,7 +83,7 @@ describe('installed rules are inert until selected by a wearer', () => {
     const pins = wornRulePins(artifact);
     const wearer: IdentityWearer = { ownerId: 'wearer', workspaceId: 'ws', role: 'operator', harnessSlug: 'demo', revisionTag: 'a'.repeat(16),
       rules: { applied: { specificationRevision: 'a'.repeat(64), stateRevision: 'state' }, packagePins: artifact.inputs,
-        pins, sync: wornSyncRules(artifact), declaredClassNeeds: null } };
+        pins, sync: wornSyncRules(artifact), declaredClassNeeds: null, recall: null } };
     const target = { classId: 'demo.tasks', classVersion: '1.0.0', classRef: 'demo.tasks@1.0.0', verb: 'create' };
     const dispatch = vi.fn(async () => ({ ok: true }));
     const sql = vi.fn(async (parts: TemplateStringsArray) => parts.join('?').includes('WITH ins AS')

@@ -501,6 +501,11 @@ export function nativePushFollowThrough(input: {
   activities: readonly NativePushActivity[]; executedTests: readonly string[];
   /** harness slug → absolute registered repo root; absent → absolute paths stay unknown. */
   repoRoots?: ReadonlyMap<string, string>;
+  /**
+   * testing:run invocations by the owner inside the window, linked to a test run or not. Absent
+   * means not measured, so a push carrying a suggested test can never score as not-acted-on.
+   */
+  testRequests?: number;
 }): Pick<NativePushOutcomeRow, 'actedOn' | 'grepAfterPush'> {
   const relativePath = isRepoRelativePath;
   const cited = new Set(input.citedPaths.filter(relativePath));
@@ -509,6 +514,8 @@ export function nativePushFollowThrough(input: {
   let grepObserved = false;
   let grepUnknown = false;
   let telemetry = false;
+  // A shell command can run a suggested test without leaving a linked test-run record.
+  let shellSeen = false;
   for (const activity of input.activities) {
     if (activity.status !== 'ok') continue;
     telemetry = true;
@@ -528,6 +535,7 @@ export function nativePushFollowThrough(input: {
       else if (detail.pattern === input.subject) grepObserved = true;
       else if (!/^[A-Za-z_$][\w$]*$/.test(detail.pattern)) grepUnknown = true;
     } else if (SHELL_ACTIVITY_TOOLS.includes(tool) || tool === 'exec_command') {
+      shellSeen = true;
       if (typeof command !== 'string' || command.length >= 500) { grepUnknown = true; continue; }
       for (const segment of command.split(/\n|;|&&|\|\||\|/).map(part => part.trim())) {
         if (!SEARCH_COMMAND.test(segment)) continue;
@@ -547,9 +555,14 @@ export function nativePushFollowThrough(input: {
     } catch { /* Unsupported suggestions are not execution evidence. */ }
   }
   const testObserved = suggested.some(file => input.executedTests.includes(file));
+  // A suggested test rules out a negative unless the window shows it was not run: no shell
+  // command, and no testing:run request at all, linked or not. Otherwise the leg's rate could
+  // only ever count positives.
+  const suggestionExcluded = !input.suggestedCall
+    || (suggested.length > 0 && !shellSeen && input.testRequests === 0);
   return {
     actedOn: fileObserved || testObserved ? true
-      : telemetry && cited.size > 0 && !fileUnknown && !input.suggestedCall ? false : null,
+      : telemetry && cited.size > 0 && !fileUnknown && suggestionExcluded ? false : null,
     grepAfterPush: input.leg !== 'grep' || !telemetry || !/^[A-Za-z_$][\w$]*$/.test(input.subject) ? null
       : grepObserved ? true : grepUnknown ? null : false,
   };
@@ -592,7 +605,7 @@ export async function readNativePushOutcomes(
   const rows = await sql<Array<{
     id: string; workspace_id: string; leg: string; subject: string; pushed_at: string | Date;
     cited_paths: string[]; suggested_call: string | null; window_count: number;
-    activities: NativePushActivity[]; executed_tests: string[];
+    activities: NativePushActivity[]; executed_tests: string[]; test_requests: number;
   }>>`
     WITH pushes AS MATERIALIZED (
       SELECT * FROM harness_shared.code_intel_pushes
@@ -650,7 +663,11 @@ export async function readNativePushOutcomes(
           AND r.run_group_id = t.metadata_json->'testingRun'->>'runId'
           AND r.started_at >= t.invoked_at AND r.finished_at <= c.ended_at
           AND r.status IN ('pass', 'fail')
-        WHERE c.id = p.id), '{}'::text[]) AS executed_tests
+        WHERE c.id = p.id), '{}'::text[]) AS executed_tests,
+      (SELECT count(*)::int FROM candidates c JOIN harness_shared.tool_invocations t
+          ON t.workspace_id = p.workspace_id AND t.coord_owner_id = p.owner_id AND t.tool_name = 'testing:run'
+          AND t.invoked_at > p.pushed_at AND t.invoked_at <= c.ended_at
+        WHERE c.id = p.id) AS test_requests
     FROM pushes p ORDER BY p.pushed_at, p.id
   `;
   const harnesses = new Set<string>();
@@ -661,7 +678,7 @@ export async function readNativePushOutcomes(
     windowComplete: row.window_count === 1,
     ...(row.window_count === 1 ? nativePushFollowThrough({
       leg: row.leg, subject: row.subject, citedPaths: row.cited_paths, suggestedCall: row.suggested_call,
-      activities: row.activities, executedTests: row.executed_tests, repoRoots,
+      activities: row.activities, executedTests: row.executed_tests, testRequests: row.test_requests, repoRoots,
     }) : { actedOn: null, grepAfterPush: null }),
   }));
 }

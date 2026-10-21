@@ -30,7 +30,7 @@ import {
   advisorySessionKey,
 } from './code-run-batch-nudge';
 
-const cap = { sessionKey: 's1', toolName: 'work_items:get', canCodeRun: true };
+const cap = { sessionKey: 's1', toolName: 'work_items:get', args: {}, canCodeRun: true };
 
 beforeEach(() => _resetBatchNudgeState());
 
@@ -66,14 +66,15 @@ describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
     expect(hit?.suggestedScript).toContain(".catch((e) => ({ error: String(e) }))");
   });
 
-  it('surfaces the FELT round-trip cost — the running count + the word round-trip', () => {
+  it('describes timing-only evidence without claiming a measured model-turn count', () => {
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
       t += 1000;
       hit = maybeBatchNudge({ ...cap, now: t });
     }
-    expect(hit?.text).toContain(`${BATCH_NUDGE_THRESHOLD}×`); // "3×"
+    expect(hit?.text).toContain('Timing alone cannot identify model turns');
+    expect(hit?.text).not.toContain('× observed turns');
     expect(hit?.text).toMatch(/round-trip/);
   });
 
@@ -96,8 +97,8 @@ describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
     // serial for-loop that could not correctly express a mechanically-chained (result-dependent)
     // call anyway — a static prefilled `inputs` list is incompatible with true runtime chaining
     // either way. It now states the real boundary directly instead.
-    expect(hit?.text).toMatch(/args must come from one of these results/);
-    expect(hit?.text).toMatch(/read its result and DECIDE/); // the real cutoff is judgment (shared TRAILER)
+    expect(hit?.text).toContain('read-then-decide steps separate');
+    expect(hit?.text).toContain('already grouped calls need no change');
   });
 
   it('embeds a runnable list-then-fold (Promise.all) skeleton over the EXACT repeated tool', () => {
@@ -152,7 +153,7 @@ describe('maybeBatchNudge — fan-out trigger (the ~70% the old nudge missed)', 
     let t = 0;
     for (const toolName of fanTools) {
       t += 1000;
-      const r = maybeBatchNudge({ sessionKey: 'fz-isolate', toolName, canCodeRun: true, now: t });
+      const r = maybeBatchNudge({ sessionKey: 'fz-isolate', toolName, args: {}, canCodeRun: true, now: t });
       if (r && !firstFire) firstFire = r;
     }
     const script = firstFire?.suggestedScript ?? '';
@@ -177,7 +178,7 @@ describe('maybeBatchNudge — fan-out trigger (the ~70% the old nudge missed)', 
     let t = 0;
     for (const toolName of fanTools) {
       t += 1000;
-      const r = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+      const r = maybeBatchNudge({ sessionKey: 'fz', toolName, args: {}, canCodeRun: true, now: t });
       if (r && !firstFire) firstFire = r; // the fire carries the tools seen UP TO the threshold
     }
     expect(firstFire?.text).toContain('Promise.all');
@@ -196,7 +197,7 @@ describe('maybeBatchNudge — fan-out trigger (the ~70% the old nudge missed)', 
       const r = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
       if (r && !firstFire) firstFire = r;
     }
-    expect(firstFire?.text).toContain(`${FANOUT_DISTINCT_THRESHOLD} different tools`);
+    expect(firstFire?.text).toContain('Timing alone cannot identify model turns');
     expect(firstFire?.text).toMatch(/round-trip/);
   });
 
@@ -369,9 +370,8 @@ describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
     hit = maybeBatchNudge({ ...cap, sessionKey: 'turn-mix', now: TURN_GAP_MS + 100 }); // a new turn
     expect(hit?.kind).toBe('same-tool');
     // The felt-cost figure is the TURN count (2), never the raw call count (3).
-    expect(hit?.text).toContain('2');
     expect(hit?.text).not.toMatch(/\b3 separate round-trips\b/);
-    expect(hit?.text).toContain('2 separate round-trips');
+    expect(hit?.text).toContain('Timing alone cannot identify model turns');
   });
 
   it('does NOT count sequential calls in one explicit functions.exec request group as separate turns', () => {
@@ -404,7 +404,7 @@ describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
       now: 10,
     });
     expect(second?.kind).toBe('same-tool');
-    expect(second?.text).toContain('2 separate round-trips');
+    expect(second?.text).toContain('2× observed turns');
   });
 
   // EI-23762928303536326 — the reported symptom, end to end. A single parallel block whose
@@ -546,8 +546,8 @@ describe('maybeBatchNudge — backoff (re-fires, NOT one-shot)', () => {
   });
 });
 
-describe('maybeBatchNudge — escalation (the text gets firmer as nudges repeat)', () => {
-  it('first fire is neutral; later fires carry progressively firmer banners', () => {
+describe('maybeBatchNudge — bounded repeat reminders', () => {
+  it('later fires stay short and do not escalate the prose', () => {
     const texts: string[] = [];
     let t = 0;
     for (let i = 0; i < 20; i++) {
@@ -557,13 +557,15 @@ describe('maybeBatchNudge — escalation (the text gets firmer as nudges repeat)
     }
     expect(texts).toHaveLength(3); // fires at indices 1, 5, 13 (see backoff test)
     expect(texts[0]).not.toMatch(/reminder this session/); // 1st = the original neutral message
-    expect(texts[1]).toContain('2nd reminder this session'); // 2nd = firmer
-    expect(texts[2]).toContain('3rd reminder this session'); // 3rd = stronger / directive
+    for (const text of texts.slice(1)) {
+      expect(text.length).toBeLessThanOrEqual(250);
+      expect(text).not.toMatch(/reminder this session/);
+    }
   });
 
   // WI-6554700010008923 (oversized-tool-results-reduction-2026-10-12#P-008): the explanation is
   // taught once. Every repeat used to re-send the full ~1.2 KB hint, explanation included.
-  it('a repeat fire keeps the prefilled skeleton but drops the explanation the first fire taught', () => {
+  it('a repeat fire retains the decision boundary and drops the argument replay', () => {
     const fires: Array<{ text: string; suggestedScript?: string }> = [];
     let t = 0;
     for (let i = 0; i < 20; i++) {
@@ -573,21 +575,13 @@ describe('maybeBatchNudge — escalation (the text gets firmer as nudges repeat)
     }
     expect(fires.length).toBeGreaterThanOrEqual(2);
     const [first, second] = fires;
-    // First fire: the full teaching text.
-    expect(first.text).toMatch(/read its result and DECIDE/);
-    expect(first.text).toMatch(/args must come from one of these results/);
-    // Repeat: still actionable — the skeleton, prefilled from THIS burst, is carried verbatim.
-    expect(second.suggestedScript).toBeTruthy();
-    expect(second.text).toContain(second.suggestedScript as string);
-    expect(second.text).toContain('extend this list');
-    expect(second.text).toMatch(/separate round-trips/);
-    // ...but the prose already read this session is gone.
-    expect(second.text).not.toMatch(/read its result and DECIDE/);
-    expect(second.text).not.toMatch(/args must come from one of these results/);
-    expect(second.text).not.toMatch(/re-reading your whole context/);
-    const proseOf = (f: { text: string; suggestedScript?: string }) =>
-      f.text.length - (f.suggestedScript?.length ?? 0);
-    expect(proseOf(second)).toBeLessThan(proseOf(first) / 2);
+    expect(first.suggestedScript).toBeTruthy();
+    expect(first.text).toContain('read-then-decide steps separate');
+    expect(second.suggestedScript).toBeUndefined();
+    expect(second.text).not.toContain('WI-');
+    expect(second.text).toContain('read-then-decide steps separate');
+    expect(second.text).toContain('already grouped calls need no change');
+    expect(second.text.length).toBeLessThan(first.text.length / 2);
   });
 });
 
@@ -1005,7 +999,7 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
     expect(hit?.text).toContain(hit?.suggestedScript ?? '');
   });
 
-  it('prefills the fan-out skeleton with each tool\'s last args; empty args keep the placeholder', () => {
+  it('prefills the fan-out skeleton with each tool\'s complete args, including an empty object', () => {
     let firstFire: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     const calls = [
@@ -1021,7 +1015,7 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
     expect(firstFire?.kind).toBe('fanout');
     expect(firstFire?.text).toContain('tools.plans.get({"slug":"alpha-plan"})');
     expect(firstFire?.text).toContain('tools.docs.search({"q":"beta-topic"})');
-    expect(firstFire?.text).toContain('tools.coord.presence(/* args */)');
+    expect(firstFire?.text).toContain('tools.coord.presence({})');
     expect(firstFire?.suggestedScript).toContain('tools.plans.get({"slug":"alpha-plan"})');
     expect(firstFire?.suggestedScript).toContain('tools.docs.search({"q":"beta-topic"})');
     expect(firstFire?.text).toContain(firstFire?.suggestedScript ?? '');
@@ -1044,7 +1038,31 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
     expect(hit?.text).toContain("\\${x}");
   });
 
-  it('truncates an oversize args literal with a fill-in marker', () => {
+  it('P008 G2 emits an executable example that preserves literal argument bytes', async () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    const text = 'literal `tick`, ${x}, newline\n and apostrophe \' end';
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      hit = maybeBatchNudge({ sessionKey: 'valid-example', toolName: 'docs:add', args: { text }, canCodeRun: true, now: i * 1000 });
+    }
+    expect(hit?.suggestedScript).toBeTruthy();
+    const call = new Function(`return (${hit!.suggestedScript!.slice('code:run '.length)})`)() as { script: string };
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const received: unknown[] = [];
+    await new AsyncFunction('tools', call.script)({ docs: { add: async (args: unknown) => { received.push(args); return { ok: true }; } } });
+    expect(received).toEqual(Array.from({ length: BATCH_NUDGE_THRESHOLD }, () => ({ text })));
+  });
+
+  it('P008 G2 does not invent arguments when the observed call supplied none', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      hit = maybeBatchNudge({ ...cap, args: undefined, now: i * 1000 });
+    }
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.suggestedScript).toBeUndefined();
+    expect(hit?.text).toContain('complete arguments');
+  });
+
+  it('P008 G2 omits an example rather than cutting an argument literal into invalid JavaScript', () => {
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     const big = 'x'.repeat(500);
@@ -1052,7 +1070,29 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
       t += 1000;
       hit = maybeBatchNudge({ sessionKey: 'pf4', toolName: 'docs:add', args: { text: big }, canCodeRun: true, now: t });
     }
-    expect(hit?.text).toContain('…truncated — fill in the rest');
+    expect(hit?.suggestedScript).toBeUndefined();
+    expect(hit?.text).not.toContain(big.slice(0, 50));
+    expect(hit?.text).not.toContain('truncated');
+    expect(hit?.text).toContain('complete arguments');
+    expect(hit?.text.length).toBeLessThanOrEqual(1_000);
+  });
+
+  it('P008 G2 bounds repeated hints without replaying arguments or asserting timing groups are model turns', () => {
+    const fires: NonNullable<ReturnType<typeof maybeBatchNudge>>[] = [];
+    for (let i = 0; i < 20; i++) {
+      const hit = maybeBatchNudge({ ...cap, sessionKey: 'blind45-repeat', args: { id: `WI-secret-history-${i}` }, now: i * 1000 });
+      if (hit) fires.push(hit);
+    }
+    expect(fires.length).toBeGreaterThanOrEqual(2);
+    expect(fires[0].text).toContain('Timing alone cannot identify model turns');
+    for (const hit of fires.slice(1)) {
+      expect(hit.text.length).toBeLessThanOrEqual(250);
+      expect(hit.text).not.toContain('WI-secret-history');
+      expect(hit.text).not.toContain('separate turns');
+      expect(hit.suggestedScript).toBeUndefined();
+      expect(hit.text).toContain('already grouped');
+      expect(hit.text).toContain('recovery');
+    }
   });
 
   it('reports the effective tool on every result (plain calls too)', () => {
@@ -1112,7 +1152,8 @@ describe('maybeListFanoutPreempt — fires on the LIST, before the per-row round
     expect(hit?.text).toContain('Promise.all');
     // 8 rows ⇒ the felt cost is stated as 8 round-trips NOT YET paid.
     expect(hit?.text).toContain('8 rows');
-    expect(hit?.text).toContain('you have not paid');
+    expect(hit?.text).toContain('independent per-row reads');
+    expect(hit!.text.length).toBeLessThanOrEqual(1_000);
   });
 
   it('binds the skeleton to the identifier the rows ACTUALLY carry (slug, not id)', () => {
@@ -1141,6 +1182,15 @@ describe('maybeListFanoutPreempt — fires on the LIST, before the per-row round
   it('owns its own conditionality — a wrong fire costs one line, not the agent’s trust', () => {
     const hit = maybeListFanoutPreempt({ ...listCall, payload: () => rows(9), now: 1000 });
     expect(hit?.text).toContain('If you were only reading the list, ignore this');
+  });
+
+  it('P008 G2 bounds a predictive hint with long identifiers without cutting literals', () => {
+    const ids = Array.from({ length: 8 }, (_, i) => ({ id: `record-${i}-` + 'x'.repeat(100) }));
+    const hit = maybeListFanoutPreempt({ ...listCall, payload: () => ids, now: 1000 });
+    expect(hit?.kind).toBe('preempt');
+    expect(hit!.text.length).toBeLessThanOrEqual(1_000);
+    expect(hit?.text).not.toContain('const ids');
+    expect(hit?.text).toContain('complete identifiers');
   });
 });
 
@@ -1357,7 +1407,7 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
       // never fire and every assertion below would be vacuous. (Undefined duration keeps the
       // original 1000ms spacing exactly, so the no-timing control is unchanged.)
       t += (durationMs ?? 0) + 1000;
-      hit = maybeBatchNudge({ sessionKey: 's-budget', toolName: tool, canCodeRun: true, now: t, durationMs });
+      hit = maybeBatchNudge({ sessionKey: 's-budget', toolName: tool, args: {}, canCodeRun: true, now: t, durationMs });
     }
     return hit;
   };
@@ -1418,6 +1468,7 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
       const r = maybeBatchNudge({
         sessionKey: 's-budget-8call',
         toolName: 'dev:pipeline_position',
+        args: {},
         canCodeRun: true,
         now: t,
         durationMs: perCall,
@@ -1467,7 +1518,7 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
       // inference gap. A 1.2s spacing with 15s calls would be a parallel block, which clusterTurns'
       // in-flight guard folds into one turn — no fan-out trigger, and nothing here would be tested.
       t += 15_000 + TURN_GAP_MS * 3;
-      hit = maybeBatchNudge({ sessionKey: 's-fan', toolName: tool, canCodeRun: true, now: t, durationMs: 15_000 });
+      hit = maybeBatchNudge({ sessionKey: 's-fan', toolName: tool, args: {}, canCodeRun: true, now: t, durationMs: 15_000 });
     }
     expect(hit?.kind).toBe('fanout');
     expect(hit?.suggestedScript).toContain('Promise.all');

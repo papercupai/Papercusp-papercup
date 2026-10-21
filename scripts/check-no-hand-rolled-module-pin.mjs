@@ -40,7 +40,11 @@
  *    that is not pinning anything.
  *  - Tagging a non-`globalThis` shared object (`console[Symbol.for(...)]` in
  *    log-events.ts) — a different pattern with a different fix.
- *  - Test files, which may legitimately probe the realm store.
+ *  - Test files, which may legitimately probe the realm store — including
+ *    test-support fixtures under a `test/fixtures/` or `__fixtures__/`
+ *    directory (e.g. a spawned worker that exposes a control handle on
+ *    `globalThis` for its parent test). Those are harness channels, not
+ *    shared-lib singletons, and never load into a product process.
  *  - `libs/generic/module-singleton` itself, which IS the mechanism.
  *
  * ## The allowlist
@@ -61,6 +65,14 @@ import { isInForeignHive } from './lib/foreign-hive-submodules.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const ROOTS = ['libs', 'packages', 'apps'];
+
+/**
+ * Test-support fixtures (see the header): a file under a `test/fixtures/` or
+ * `__fixtures__/` directory. Exported so the guard's test can pin the scope.
+ */
+export function isTestFixture(path) {
+  return /(^|\/)test\/fixtures\/|(^|\/)__fixtures__\//.test(path.replace(/\\/g, '/'));
+}
 
 /** Directories never worth walking. */
 const SKIP_DIR = new Set([
@@ -120,7 +132,7 @@ function* walk(dir) {
       continue;
     }
     if (st.isDirectory()) yield* walk(full);
-    else if (/\.(ts|tsx|mts|cts)$/.test(name) && !/\.(test|spec)\.[cm]?tsx?$/.test(name)) {
+    else if (/\.(ts|tsx|mts|cts)$/.test(name) && !/\.(test|spec)\.[cm]?tsx?$/.test(name) && !isTestFixture(full)) {
       yield full;
     }
   }

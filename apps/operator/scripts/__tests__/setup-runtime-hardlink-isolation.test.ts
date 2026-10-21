@@ -98,7 +98,9 @@ function runWithFailedMirrorCopy(f: Fixture, script: string, destinationName: st
   const cp = join(bin, 'cp');
   writeFileSync(
     cp,
-    `#!/bin/sh\nlast=\nfor arg do last="$arg"; done\ncase "$last" in *${destinationName}*) exit 42;; esac\nexec /bin/cp "$@"\n`,
+    // mirror_copy_unlinked stages at the package root (`.mirror-tree.tmp.*`), so the
+    // copy's DESTINATION never names the asset — fail on its SOURCE (penultimate arg).
+    `#!/bin/sh\nprev=\nlast=\nfor arg do prev="$last"; last="$arg"; done\ncase "$prev" in *${destinationName}) exit 42;; esac\nexec /bin/cp "$@"\n`,
     { mode: 0o755 },
   );
   return spawnSync('bash', [join(f.app, 'scripts', script)], {
@@ -196,6 +198,7 @@ describe('setup-*-runtime.sh never writes through a hard-linked destination (WI-
     expect(result.status).not.toBe(0);
     expect(readFileSync(destination, 'utf8')).toBe(OLD);
     expect(readdirSync(dirname(destination)).filter((name) => name.includes('.tmp.'))).toEqual([]);
+    expect(readdirSync(f.app).filter((name) => name.startsWith('.mirror-tree.tmp.'))).toEqual([]);
   });
 
   it('setup-monaco-runtime.sh: the version stamp outside the re-copied mirror', () => {

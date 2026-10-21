@@ -448,7 +448,7 @@ export async function readDiskHeadroomSoakEvidence(
        WHERE workspace_id = $4 AND data->>'conditionKey' = 'alarm:disk-space'
          AND (data->>'host' = $1 OR data->>'host' IS NULL)
          AND created_at BETWEEN $5::timestamptz AND $6::timestamptz
-       ORDER BY created_at, id LIMIT 20001
+       ORDER BY created_at, attention_notifications.id LIMIT 20001
     )
     SELECT COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.at, c.path, c.id) FROM censuses c), '[]'::jsonb) AS censuses,
            COALESCE((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.at, a.id) FROM alarms a), '[]'::jsonb) AS alarms`,

@@ -207,6 +207,12 @@ export function buildInstallPluginDeps(): InstallPluginCoreDeps {
     tmpDir: tmpdir,
     grant: (args) => grantCapabilities({ ...args, grantedBy: 'user', reason: 'cupboard install-consent' }),
     invalidateHost: invalidatePluginHost,
+    // Type packs (plan-item-types-registry-cupboard-2026-10-20 P-006, D-008): the registry write
+    // half of a pack whose manifest carries item types or plan types.
+    installTypePack: async (args) => {
+      const { installTypePackForPlugin } = await import('./type-pack-io');
+      return installTypePackForPlugin(args);
+    },
     // P-012 (D-013): a trigger pack installed into a harness materializes as its
     // plans and DISARMED bindings in the active workspace.
     materializeTriggerPack: async (args) => {

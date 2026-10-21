@@ -144,6 +144,11 @@ describe("call-site containment (the wiring cannot silently drift)", () => {
   });
 
   it("the early-preflight short-circuit keeps the historical pin (no resolver work on a run that will not judge)", () => {
-    expect(src).toContain("earlyPreflightFailure\n    ? lastReady");
+    // The short-circuit keys on `suiteSkipped`: an early preflight red skips the suite
+    // UNLESS round one still measures it, and only a skipped suite keeps the raw pin.
+    expect(src).toContain(
+      "const suiteSkipped = earlyPreflightFailure !== null && !roundOneMeasuresSuite;",
+    );
+    expect(src).toContain("const suiteSelectionBase: string | null = suiteSkipped\n    ? lastReady");
   });
 });

@@ -3785,6 +3785,38 @@ describe('applyResultDoor', () => {
       expect(readSpill('ws-1', 'coord:orient', RUN_ID)).toContain('small already-projected result');
     });
 
+    it.each([false, true])('P008 G1 retains a small measured status when only auxiliary text is partial (nested=%s)', (nested) => {
+      const body = {
+        ok: true,
+        snapshot: { runId: 'run-partial-log', status: 'fail', exitCode: 1,
+          passed: 7, failed: 1, output: 'already clipped ' + 'x'.repeat(3_000), textTruncated: true },
+      };
+      const result = { content: [{ type: 'text' as const, text: JSON.stringify(body) }] };
+      const doored = applyResultDoor(result, {
+        toolName: nested ? 'tools:invoke' : 'testing:run-status',
+        ...(nested ? { nestedTargetToolName: 'testing:run-status' } : {}),
+        effect: 'read', workspaceId: 'ws-1', runId: RUN_ID,
+      });
+      const inline = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(inline.snapshot).toMatchObject({ runId: 'run-partial-log', status: 'fail', exitCode: 1, passed: 7, failed: 1 });
+      expect(inline._partial).toBe(true);
+      expect(inline._projection.cursor).toMatchObject({ tool: 'capability:read', bodyComplete: false });
+      expect(inline._projection.next).toContain('testing:run-status');
+      expect(inline._projection.next).toContain('cannot recover');
+      expect(Buffer.byteLength(JSON.stringify(inline))).toBeLessThanOrEqual(BUDGET_CHARS);
+      expect(readSpill('ws-1', nested ? 'tools:invoke' : 'testing:run-status', RUN_ID)).toContain('already clipped');
+    });
+
+    it('P008 G1 retains a count and record identities without requiring a status field', () => {
+      const body = { count: 2, results: [{ id: 'case-a', title: 'clipped', textTruncated: true }, { id: 'case-b' }] };
+      const doored = applyResultDoor({ content: [{ type: 'text' as const, text: JSON.stringify(body) }] }, {
+        toolName: 'testing:runs', effect: 'read', workspaceId: 'ws-1', runId: RUN_ID,
+      });
+      const inline = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(inline).toMatchObject({ count: 2, results: [{ id: 'case-a' }, { id: 'case-b' }], _partial: true });
+      expect(inline._projection.cursor).toMatchObject({ tool: 'capability:read', bodyComplete: false });
+    });
+
     it('uses the nested target in recovery advice for an under-budget tools:invoke result', () => {
       const result = {
         content: [{ type: 'text' as const, text: 'small nested partial result' }],

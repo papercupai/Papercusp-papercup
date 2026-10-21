@@ -38,6 +38,7 @@ import '../../plan-types/pin';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { hashPlanContent } from '../content-hash';
 import { setupPlanPgFixture, cleanupPlans, registerHarnessProject, type PlanPgFixture } from './_pg-tool-fixture';
+import { installTypePack } from '../../../cupboard/type-pack';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const HARNESS = `zzz-itescape-${RUN}`;
@@ -391,6 +392,59 @@ describe('R-8: moving an activated plan pin to a smaller revision', () => {
       } else {
         expect(res.payload?.ok, brief({ payload: res.payload, error: res.d.error })).toBe(true);
         expect(Number(pin!.revision)).toBe(2);
+      }
+    });
+  }
+});
+
+describe('R-8: a same-id Cupboard pack install of a smaller revision (P-006, D-005)', () => {
+  // A type pack ships revision 2 of an item type that an unpinned activated plan resolves at
+  // revision 1 with the code module. Revision 2 drops it, so installing the pack would lower the
+  // plan through the 'install' registry route, which runs the same shrink check as a define.
+  for (const row of ['nodecision', 'staleaudit', 'allowed'] as const) {
+    it(`${row}: ${EXPECTED[row] ?? 'allowed'}`, async () => {
+      const id = `${NS}/inst-${row}`;
+      await insertDefinition('plan_item_type_definitions', itemTypeDef(id, 1, ['generic-core', 'code']));
+      await rowPlan('install', row, id, {
+        title: `Install ${id} revision 2 from a Cupboard pack`,
+        body: `The pack ships ${id} revision 2, so P-001 resolves to revision 2 and its type no longer needs the code module.`,
+      });
+      const listingId = `${NS}-pack-${row}`;
+      const result = await installTypePack(
+        admin,
+        {
+          listing: {
+            listingId,
+            reviewStatus: 'approved',
+            pin: { commitSha: 'c'.repeat(40), treeDigest: 'd'.repeat(64) },
+            providesItemTypes: [{ id, revision: 2 }],
+            providesPlanTypes: [],
+          },
+          manifest: { name: listingId, version: '1.0.0', typePack: { itemTypes: [itemTypeDef(id, 2, ['generic-core'])] } },
+        },
+        { workspaceId: WS, installedBy: 'item-type-escape-test' },
+        {
+          findProviders: async () => [],
+          fetchPack: async () => { throw new Error('no dependency pack in this test'); },
+          provisionRubric: async () => {},
+        },
+      );
+      const revisions = await admin<{ revision: number }[]>`
+        SELECT revision FROM harness_shared.plan_item_type_definitions
+         WHERE workspace_id = ${WS} AND type_id = ${id} ORDER BY revision`;
+      const [receipt] = await admin<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM harness_shared.type_pack_installations
+         WHERE workspace_id = ${WS} AND listing_id = ${listingId}`;
+      if (EXPECTED[row]) {
+        expect(result.ok, brief(result)).toBe(false);
+        expect(!result.ok && result.code).toBe('type_pack_definition_refused');
+        expect(!result.ok && result.cause?.code).toBe(EXPECTED[row]);
+        expect(revisions.map((r) => Number(r.revision))).toEqual([1]);
+        expect(receipt!.n).toBe(0);
+      } else {
+        expect(result.ok, brief(result)).toBe(true);
+        expect(revisions.map((r) => Number(r.revision))).toEqual([1, 2]);
+        expect(receipt!.n).toBe(1);
       }
     });
   }

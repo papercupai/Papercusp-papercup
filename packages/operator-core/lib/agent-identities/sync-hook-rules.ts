@@ -51,6 +51,7 @@ import {
   type ProduceContextInput,
 } from './turn-start-package-sink';
 import { evaluateKernelSafetyRails } from './kernel-safety-rails';
+import { identityRecallPolicy, type IdentityRecallPolicy } from './identity-recall';
 
 /** The adapter ships `tool_input` unclamped up to this bound and flags anything beyond. */
 export const SYNC_HOOK_GUARD_INPUT_MAX_BYTES = 64 * 1024;
@@ -473,6 +474,8 @@ export interface AppliedIdentityRules {
    * requires ∪ optional); null when it declares no grants at all.
    */
   readonly declaredClassNeeds: readonly string[] | null;
+  /** Identity-declared recall bounds (P-012); null when it declares none. */
+  readonly recall: IdentityRecallPolicy | null;
 }
 
 /**
@@ -541,6 +544,7 @@ export async function appliedIdentityRulesAt(
     pins,
     sync: syncView(pins),
     declaredClassNeeds: grants ? [...new Set([...(grants.requires ?? []), ...(grants.optional ?? [])])].sort() : null,
+    recall: identityRecallPolicy(artifact.configuration),
   };
   rememberWornRules(cacheKey, { rules });
   return rules;

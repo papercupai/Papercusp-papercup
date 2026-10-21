@@ -92,6 +92,7 @@ export type AuthoringRefusalCode =
   | 'definition_invalid'
   | 'first_party_namespace_reserved'
   | 'revision_out_of_order'
+  | 'revision_conflict'
   | 'reference_unresolved'
   | 'type_revision_not_found'
   | 'type_revision_already_retired'
@@ -160,11 +161,25 @@ export interface DefineResult {
   contentHash: string;
   /** The definition exactly as stored; plan-types:get returns this. */
   definition: unknown;
+  /** A pack re-install found this exact revision already stored with the same content (no write). */
+  unchanged?: true;
+}
+
+/**
+ * A definition written by a Cupboard type-pack install (P-006, D-008) rather than by
+ * plan-types:define. The row records the providing listing (origin 'pack'), and the shared shrink
+ * check runs as the 'install' route, so a same-id install is held to the same rule as a define.
+ * A pack carries its own revision numbers: a later revision may skip numbers, the same revision
+ * with the same content is an idempotent re-install, and the same revision with different content
+ * is refused because a stored revision never changes.
+ */
+export interface PackDefineSource {
+  listingId: string;
 }
 
 export async function defineTypeDefinition(
   sql: Sql,
-  input: { workspaceId: string; kind: TypeKind; definition: unknown; createdBy: string },
+  input: { workspaceId: string; kind: TypeKind; definition: unknown; createdBy: string; pack?: PackDefineSource },
 ): Promise<DefineResult | AuthoringRefusal | RegistryWriteRefusal> {
   const parsed = input.kind === 'plan-type'
     ? parsePlanTypeDefinition(input.definition)
@@ -178,7 +193,37 @@ export async function defineTypeDefinition(
   const rows = await readRegistryRows(sql, input.workspaceId);
   const sameId = rowsOf(rows, input.kind).filter((row) => row.type_id === definition.id && row.hive_slug === null);
   const expected = sameId.reduce((max, row) => Math.max(max, Number(row.revision)), 0) + 1;
-  if (definition.revision !== expected) {
+  if (input.pack) {
+    const existing = sameId.find((row) => Number(row.revision) === definition.revision);
+    if (existing) {
+      const storedHash = definitionContentHash(existing.definition);
+      if (storedHash === definitionContentHash(input.definition)) {
+        return {
+          ok: true,
+          kind: input.kind,
+          typeId: definition.id,
+          revision: definition.revision,
+          contentHash: storedHash,
+          definition: existing.definition,
+          unchanged: true,
+        };
+      }
+      return refuse(
+        'revision_conflict',
+        `${definition.id} revision ${definition.revision} is already stored with different content. ` +
+          'A stored revision never changes; publish the pack with the next revision.',
+        { expectedRevision: expected },
+      );
+    }
+    if (definition.revision < expected) {
+      return refuse(
+        'revision_out_of_order',
+        `${definition.id} revision ${definition.revision} is older than the stored revision ${expected - 1}. ` +
+          'A pack install never adds a revision below the newest stored one.',
+        { expectedRevision: expected },
+      );
+    }
+  } else if (definition.revision !== expected) {
     return refuse(
       'revision_out_of_order',
       `${definition.id} must be defined at revision ${expected}, not ${definition.revision}. ` +
@@ -212,7 +257,7 @@ export async function defineTypeDefinition(
   }
   const lowering = await checkRegistryWriteLowering(sql, {
     workspaceId: input.workspaceId,
-    route: 'define',
+    route: input.pack ? 'install' : 'define',
     typeId: definition.id,
     before,
     after,
@@ -220,9 +265,10 @@ export async function defineTypeDefinition(
   if (lowering) return lowering;
   await sql`
     INSERT INTO harness_shared.${sql(TYPE_TABLES[input.kind])}
-      (workspace_id, hive_slug, type_id, revision, definition, origin, created_by)
+      (workspace_id, hive_slug, type_id, revision, definition, origin, source_listing_id, created_by)
     VALUES (${input.workspaceId}, NULL, ${definition.id}, ${definition.revision},
-            ${sql.json(input.definition as never)}, 'workspace', ${input.createdBy})`;
+            ${sql.json(input.definition as never)}, ${input.pack ? 'pack' : 'workspace'},
+            ${input.pack?.listingId ?? null}, ${input.createdBy})`;
   const [stored] = await sql<{ definition: unknown }[]>`
     SELECT definition FROM harness_shared.${sql(TYPE_TABLES[input.kind])}
      WHERE workspace_id = ${input.workspaceId} AND hive_slug IS NULL

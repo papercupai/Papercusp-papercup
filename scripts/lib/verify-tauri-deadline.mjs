@@ -33,8 +33,16 @@ try {
       // smaller caller estimate must not erase a known long-running journey
       // and admit a parent clock which will kill it after native preparation.
       const root = process.env.PAPERCUSP_REPO_DIR ?? fileURLToPath(new URL('../..', import.meta.url));
-      const profile = JSON.parse(readFileSync(resolve(root,
-        process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE), 'utf8'));
+      // This budget pass runs BEFORE verify-tauri-assertion-env.mjs, so it is the
+      // first reader of the profile: report the same refusal that check does, not
+      // a raw ENOENT/SyntaxError whose subject the caller has to guess.
+      let profile;
+      try {
+        profile = JSON.parse(readFileSync(resolve(root,
+          process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE), 'utf8'));
+      } catch (error) {
+        throw new Error(`live profile could not be read: ${error.message}`);
+      }
       if (profile.assertionEstimateMs !== undefined) {
         if (!Number.isSafeInteger(profile.assertionEstimateMs) || profile.assertionEstimateMs <= 0)
           throw new Error('Invalid live-profile assertionEstimateMs');

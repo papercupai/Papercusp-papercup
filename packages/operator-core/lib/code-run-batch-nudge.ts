@@ -510,8 +510,8 @@ function facadeCall(toolName: string, argExpr: string): string {
   return `tools.call(${JSON.stringify(toolName)}, ${argExpr})`;
 }
 
-/** Bounded, template-literal-safe literal of a call's args for skeleton prefill (P-003). Returns
- *  undefined for empty/unrenderable args so skeletons fall back to a fill-in placeholder. */
+/** Complete JSON arguments for skeleton prefill. codeRunCall escapes the whole
+ * script for its outer template literal, including JSON's own backslash escapes. */
 function renderArgs(args: unknown): string | undefined {
   if (args == null) return undefined;
   let json: string;
@@ -520,11 +520,11 @@ function renderArgs(args: unknown): string | undefined {
   } catch {
     return undefined;
   }
-  if (json === '' || json === '{}' || json === 'null') return undefined;
-  // Keep the skeleton pasteable into a code:run template literal: escape backticks + ${.
-  json = json.replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+  if (json === '' || json === 'null') return undefined;
   if (json.length > ARGS_RENDER_MAX) {
-    json = `${json.slice(0, ARGS_RENDER_MAX)} /* …truncated — fill in the rest */`;
+    // A sliced object literal is neither JSON nor an executable example. Do
+    // not advertise a replay when the complete arguments cannot be shown.
+    return undefined;
   }
   return json;
 }
@@ -761,14 +761,9 @@ function assessFoldBudget(kind: BatchNudgeKind, recent: readonly RecentCall[], t
  *  budget fold that displays an explicit budget teaches that the arg is always required. */
 function codeRunCall(scriptBody: string, timeoutSec?: number): string {
   const args = timeoutSec ? `timeoutSec: ${timeoutSec}, script: ` : 'script: ';
-  return `code:run { ${args}\`\n${scriptBody}\` }`;
+  const escapedBody = scriptBody.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+  return `code:run { ${args}\`\n${escapedBody}\` }`;
 }
-
-/** Shown on the FIRST fire only. A repeat fire omits it (see {@link maybeBatchNudge}): the caller
- *  already read it this session, and every repeat paid for it again (WI-6554700010008923). */
-const TRAILER =
-  `Only the script's return re-enters context, so return what you'll need next. Keep a call separate ` +
-  `ONLY when you must read its result and DECIDE before the next. Reusable scripts: recipes:search { query }.`;
 
 /** How many calls must pass before the NEXT nudge may fire, given how many have already fired this
  *  session. Exponential backoff (4 → 8 → 16 → 32 → 64, capped) so ignoring a nudge once does not
@@ -777,18 +772,6 @@ function cooldownCalls(nudgesAlreadyFired: number): number {
   const BASE = 4;
   const CAP = 64;
   return Math.min(BASE * 2 ** Math.max(0, nudgesAlreadyFired - 1), CAP);
-}
-
-/** Escalation banner prepended to a nudge based on how many have ALREADY fired this session (code-run
- *  -adoption directive 2026-06-29). The cooldown makes repeats rarer; this makes the ones that DO fire
- *  progressively firmer — a caller still firing calls one at a time after several reminders needs a
- *  stronger push, not the same neutral tip. `n` is the post-increment nudgeCount (1 = first fire), so
- *  level 1 stays the original neutral message and only persistent wasters see the louder banners. */
-function escalationPrefix(n: number): string {
-  if (n <= 1) return '';
-  if (n === 2) return '(2nd reminder this session) ';
-  if (n === 3) return '⚠️ 3rd reminder this session — bundle the rest of this burst into one code:run. ';
-  return `🚨 ${n}× reminded this session — default to code:run for these calls now. `;
 }
 
 export type BatchNudgeKind = 'same-tool' | 'fanout' | 'pipeline' | 'preempt';
@@ -938,7 +921,6 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
       distinctOrder.push(c.tool);
     }
   }
-  const totalRecent = st.recent.length;
 
   // P-012: the trigger + the "N round-trips" cost text are keyed on INFERENCE TURNS, not raw
   // calls — several calls dispatched from ONE turn (parallel tool_use) cost a single round-trip,
@@ -983,61 +965,36 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   st.nudgeCount += 1;
   st.callsSinceNudge = 0;
 
-  const windowS = Math.round(NUDGE_WINDOW_MS / 1000);
-  const banner = escalationPrefix(st.nudgeCount);
-  const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
-  // Named only when the measured burst forced it, so the reason the arg is there travels with it.
-  // WI-2142449: same-tool and fanout fold as Promise.all (max — the slowest branch), pipeline folds
-  // sequentially (sum) — the wording must match, or "measured together" reads as a sum when the
-  // skeleton it describes waits for only the slowest one.
-  const measuredAs = kind === 'pipeline' ? 'These calls measured' : 'The SLOWEST of these calls measured';
-  const budgetNote = foldTimeoutSec
-    ? `\n${measuredAs} ~${Math.round((budget.projectedMs ?? 0) / 1000)}s, past code:run's ` +
-      `${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s default script budget — the skeleton carries the timeoutSec that fits. ` +
-      `Adding more calls to it may not fit: split them across two code:run calls rather than raising it further ` +
-      `(${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is the foreground ceiling).`
-    : '';
-  // WI-6554700010008923 (oversized-tool-results-reduction-2026-10-12#P-008): the explanation is
-  // taught ONCE. A repeat fire keeps what the caller acts on — the banner, the count, the prefilled
-  // skeleton and any budget/activation note — and drops the why-prose and TRAILER it already read
-  // this session. Measured 2026-10-12: the full same-tool hint ran ~1.2 KB and repeated verbatim on
-  // every fire, so the second and later fires paid the explanation again for no new information.
   const repeat = st.nudgeCount > 1;
-  const tail = `${repeat ? '' : `\n${TRAILER}`}${budgetNote}${activate}`;
+  // Repeat reminders must not replay the argument history. This is advice,
+  // not evidence that timing clusters were distinct model turns or that a
+  // recovery/decision chain was independent.
+  if (repeat) return {
+    text: 'Batch independent reads in one native tool turn or code:run. Keep recovery, continuation and read-then-decide steps separate; already grouped calls need no change.',
+    kind, tool: toolName,
+  };
+  const relevant = kind === 'same-tool' ? st.recent.filter((c) => c.tool === toolName) : st.recent;
+  const exactTurns = relevant.every((c) => c.turnId !== undefined);
+  const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
+  const boundedHint = (suggestedScript: string): BatchNudgeResult => {
+    const prefix = `${kind === 'pipeline' ? 'CHAINED ' : ''}${toolName}: `;
+    const lead = prefix + (exactTurns
+      ? `${kind === 'same-tool' ? sameToolTurns : distinctTurnsInWindow}× observed turns; batch only independent reads to save round-trips. `
+      : 'Timing alone cannot identify model turns. If these reads are independent, group them to save round-trips. ');
+    const note = 'Keep recovery, continuation and read-then-decide steps separate; already grouped calls need no change.';
+    const completeArgs = relevant.every((c) => c.argsRender !== undefined);
+    const budgetNote = foldTimeoutSec ? ` The example raises the script budget to ${foldTimeoutSec}s.` : '';
+    const text = `${lead}${note}${budgetNote}\n${suggestedScript}${activate}`;
+    if (!completeArgs || text.length > 1_000) return { text: `${lead}${note} Supply complete arguments when composing a batch.${activate}`, kind, tool: toolName };
+    return { text, suggestedScript, kind, tool: toolName };
+  };
   if (kind === 'same-tool') {
-    const burst = totalRecent > sameToolTurns ? ` (${totalRecent} tool calls total this burst)` : '';
-    const suggestedScript = sameToolSkeleton(toolName, st.recent, foldTimeoutSec);
-    const lead = repeat
-      ? `${banner}"${toolName}" from ${sameToolTurns}× separate turns in ~${windowS}s = ${sameToolTurns} separate ` +
-        `round-trips. Fold them into ONE code:run (\`inputs\` prefilled — extend this list):\n`
-      : `${banner}you've called "${toolName}" from ${sameToolTurns}× separate turns in the last ~${windowS}s${burst} — ` +
-        `that's ${sameToolTurns} separate round-trips, each re-reading your whole context. Each call carried its own ` +
-        `known args, so these are independent by construction — fold them into ONE code:run, \`inputs\` prefilled ` +
-        `from this burst (extend it instead of firing another solo call). If a NEXT call's args must come from one ` +
-        `of these results, sequence just that one separately:\n`;
-    return { text: `${lead}${suggestedScript}${tail}`, suggestedScript, kind, tool: toolName };
+    return boundedHint(sameToolSkeleton(toolName, st.recent, foldTimeoutSec));
   }
-  const cost =
-    `${totalRecent} tool calls across ${seen.size} different tools in ${distinctTurnsInWindow} separate turns ` +
-    `in the last ~${windowS}s — ~${distinctTurnsInWindow} round-trips`;
   if (kind === 'pipeline') {
-    const suggestedScript = pipelineSkeleton(st.recent, foldTimeoutSec);
-    const lead = repeat
-      ? `${banner}${cost}. This CHAINED pipeline fits in ONE code:run (args prefilled):\n`
-      : `${banner}you've made ${cost}, each re-reading your whole context. These calls thread the SAME object ` +
-        `through different verbs — a CHAINED pipeline, and dependence does NOT mean one-call-per-turn: a script ` +
-        `threads one result into the next (and can branch on it). Sequence the chain INSIDE one code:run ` +
-        `(args prefilled):\n`;
-    return { text: `${lead}${suggestedScript}${tail}`, suggestedScript, kind, tool: toolName };
+    return boundedHint(pipelineSkeleton(st.recent, foldTimeoutSec));
   }
-  // fan-out
-  const suggestedScript = fanoutSkeleton(distinctOrder, st.recent, foldTimeoutSec);
-  const lead = repeat
-    ? `${banner}${cost}. Collapse them into ONE code:run (args prefilled):\n`
-    : `${banner}you've made ${cost}, each re-reading your whole context. Collapse the burst into ONE code:run — ` +
-      `Promise.all when the calls are independent, sequential awaits when one feeds the next (args prefilled ` +
-      `from your last calls):\n`;
-  return { text: `${lead}${suggestedScript}${tail}`, suggestedScript, kind, tool: toolName };
+  return boundedHint(fanoutSkeleton(distinctOrder, st.recent, foldTimeoutSec));
 }
 
 /** A subsumed re-fetch within this window after a successful coord:orient → the soft dedup nudge.
@@ -1223,12 +1180,10 @@ function preemptSkeleton(key: string, values: string[]): string {
   const shown = values.slice(0, MAX_PREEMPT_IDS);
   const elided = values.length > shown.length ? `,\n    /* …and ${values.length - shown.length} more */` : '';
   const plural = `${key}s`;
-  return (
-    'code:run { script: `\n' +
+  return codeRunCall(
     `  const ${plural} = [\n    ${shown.map((v) => JSON.stringify(v)).join(', ')}${elided}\n  ];\n` +
     `  const out = await Promise.all(${plural}.map((${key}) => tools.call('<the per-row verb>', { ${key} })));\n` +
-    '  return out; // only what you return re-enters context — project it down to what you need\n' +
-    '` }'
+    '  return out; // project the return to what you need\n'
   );
 }
 
@@ -1315,13 +1270,10 @@ export function maybeListFanoutPreempt(input: ListFanoutPreemptInput): BatchNudg
   state.preemptCount += 1;
 
   const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
-  const text =
-    `"${toolName}" just returned ${best.rowCount} rows. If your next move is a call PER ROW, that is ` +
-    `${best.rowCount} more round-trips — each one re-reading your whole context — and you have not paid ` +
-    `any of them yet. Fan them out inside ONE code:run instead; the \`${best.key}\` values are already ` +
-    `extracted from this result, so this is a paste, not a transcription:\n` +
-    `${preemptSkeleton(best.key, best.values)}\n` +
-    `If you were only reading the list, ignore this. ${TRAILER}${activate}`;
+  const lead = `"${toolName}" returned ${best.rowCount} rows. For independent per-row reads, group them to save round-trips. `;
+  const note = 'If you were only reading the list, ignore this. Keep read-then-decide steps separate; already grouped calls need no change.';
+  const candidate = `${lead}\n${preemptSkeleton(best.key, best.values)}\n${note}${activate}`;
+  const text = candidate.length <= 1_000 ? candidate : `${lead}${note} Use the complete identifiers from the result.${activate}`;
   return { text, kind: 'preempt', tool: toolName };
 }
 

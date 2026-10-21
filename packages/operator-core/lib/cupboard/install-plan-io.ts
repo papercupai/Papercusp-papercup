@@ -31,8 +31,21 @@ import {
   InstallPlanError,
   type InstallPlanCoreResult,
 } from './install-plan-core';
+import type postgres from 'postgres';
 import { cupboardGitDeps } from './install-io';
-import type { ContentPinRef } from './install-self-describing-core';
+import type { ContentPinRef, InstallSelfDescribingDeps } from './install-self-describing-core';
+import { readRegistryRows, snapshotOf } from '../plan-types/authoring';
+import type { TypeReference } from '../plan-types/definitions';
+import {
+  applyTypePackInstall,
+  describeTypeReference,
+  parseRequiredPlanType,
+  planRequiredPlanType,
+  type TypePackApplyDeps,
+  type TypePackInstallResult,
+  type TypePackPlan,
+  type TypePackPlanDeps,
+} from './type-pack';
 import { resolveListingByKind } from './resolve-listing-by-kind';
 import { parseRequiredRubrics, type RubricRequirement } from './types';
 import {
@@ -71,6 +84,35 @@ export interface InstallPlanOutcome extends InstallPlanCoreResult {
   seeded: boolean;
   /** Why the seed did not happen: 'exists' (no-clobber) | 'skipped' | an error string. */
   seedSkipped?: string;
+  /** The plan type the listing requires and how it resolved (P-006, R-17); absent when it requires none. */
+  planType?: {
+    required: TypeReference;
+    resolvedBy: 'registry' | 'listing';
+    /** Receipts of the packs this install pulled in (the plan type's pack and its item-type packs). */
+    installed: TypePackInstallResult['receipts'];
+  };
+}
+
+/** Where the plan-type install writes and how it reaches the Cupboard (P-006, D-008). */
+export interface PlanTypeInstallContext {
+  sql: postgres.Sql;
+  workspaceId: string;
+  installedBy: string;
+  deps: TypePackPlanDeps & TypePackApplyDeps;
+}
+
+async function defaultPlanTypeContext(): Promise<PlanTypeInstallContext> {
+  const [{ getOrgPg }, { activeWorkspaceId }, io] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('../workspace-registry'),
+    import('./type-pack-io'),
+  ]);
+  return {
+    sql: getOrgPg().sql as unknown as postgres.Sql,
+    workspaceId: activeWorkspaceId(),
+    installedBy: 'cupboard-install-plan',
+    deps: { ...io.cupboardTypePackDeps(), provisionRubric: io.provisionPackRubric },
+  };
 }
 
 export type InstallPlanFromCupboardResult =
@@ -128,6 +170,12 @@ export async function installPlanFromCupboard(
     rubricDeps?: RubricRequirementDeps;
     seedPlanTemplate?: PlanTemplateSeeder;
     installRubric?: (listing: { listingId?: string; githubUrl: string; ref: string }) => Promise<boolean>;
+    /** Resolve the listing by id (default: the Cupboard detail endpoint). */
+    resolveListing?: typeof resolveListingByKind;
+    /** Git for the template's content (default: the real self-describing git deps). */
+    gitDeps?: InstallSelfDescribingDeps;
+    /** The plan-type install path (default: the active workspace and the Cupboard). */
+    planTypes?: PlanTypeInstallContext;
   } = {},
 ): Promise<InstallPlanFromCupboardResult> {
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
@@ -137,10 +185,17 @@ export async function installPlanFromCupboard(
   // exactly that commit and refuses content-address-mismatch. Only a listing carries
   // one; a direct githubUrl install is an unverified tip clone by construction.
   let pin: ContentPinRef | undefined;
+  let requiredPlanType: TypeReference | null = null;
 
   if (input.listingId) {
-    const resolved = await resolveListingByKind(String(input.listingId), 'plan');
+    const resolved = await (deps.resolveListing ?? resolveListingByKind)(String(input.listingId), 'plan');
     if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
+    if (resolved.requiresPlanType) {
+      requiredPlanType = parseRequiredPlanType(resolved.requiresPlanType);
+      if (!requiredPlanType) {
+        return { ok: false, status: 422, error: `plan listing ${input.listingId} declares an unreadable requires_plan_type`, detail: 'requires_plan_type_invalid' };
+      }
+    }
     if (!githubUrl) githubUrl = resolved.githubUrl;
     if (!listingRef) listingRef = resolved.ref;
     pin = resolved.pin;
@@ -179,11 +234,32 @@ export async function installPlanFromCupboard(
   }
 
   // ── 2. Place the dir. ─────────────────────────────────────────────────────────
+  // R-17 (plan-item-types-registry-cupboard-2026-10-20 P-006, D-008): the plan type the template
+  // requires is planned now, write-free, so a pending or unresolvable pack anywhere in its closure
+  // refuses the WHOLE install before the template lands or any registry row is written.
+  let planTypeContext: PlanTypeInstallContext | undefined;
+  let planTypePlan: TypePackPlan | null = null;
+  let planTypeResolvedBy: 'registry' | 'listing' | undefined;
+  if (requiredPlanType) {
+    planTypeContext = deps.planTypes ?? (await defaultPlanTypeContext());
+    const registry = snapshotOf(await readRegistryRows(planTypeContext.sql, planTypeContext.workspaceId));
+    const planned = await planRequiredPlanType(requiredPlanType, registry, planTypeContext.deps);
+    if (!planned.ok) {
+      return {
+        ok: false,
+        status: 422,
+        error: `plan template requires plan type ${describeTypeReference(requiredPlanType)}: ${planned.message}`,
+        detail: planned.code,
+      };
+    }
+    planTypeResolvedBy = planned.resolvedBy;
+    if (planned.resolvedBy === 'listing') planTypePlan = planned.plan;
+  }
   let result: InstallPlanCoreResult;
   try {
     result = await installPlanFromCupboardCore(
       { githubUrl, listingRef, pin },
-      cupboardGitDeps(),
+      deps.gitDeps ?? cupboardGitDeps(),
     );
   } catch (e) {
     if (e instanceof InstallPlanError) return { ok: false, status: e.status, error: e.message };
@@ -196,10 +272,30 @@ export async function installPlanFromCupboard(
   }
 
   // ── 3. Seed the plan TEMPLATE row (no-clobber). ───────────────────────────────
+  let planType: InstallPlanOutcome['planType'];
+  if (requiredPlanType && planTypeContext && planTypeResolvedBy) {
+    let installed: TypePackInstallResult['receipts'] = [];
+    if (planTypePlan) {
+      const applied = await applyTypePackInstall(planTypeContext.sql, planTypePlan, {
+        workspaceId: planTypeContext.workspaceId,
+        installedBy: planTypeContext.installedBy,
+      }, planTypeContext.deps);
+      if (!applied.ok) {
+        return {
+          ok: false,
+          status: 422,
+          error: `plan template requires plan type ${describeTypeReference(requiredPlanType)}: ${applied.message}`,
+          detail: applied.code,
+        };
+      }
+      installed = applied.receipts;
+    }
+    planType = { required: requiredPlanType, resolvedBy: planTypeResolvedBy, installed };
+  }
   if (input.skipSeed === true) {
     return {
       ok: true,
-      result: { ...result, rubrics: verdict, coInstalled, seeded: false, seedSkipped: 'skipped' },
+      result: { ...result, rubrics: verdict, coInstalled, ...(planType ? { planType } : {}), seeded: false, seedSkipped: 'skipped' },
     };
   }
   const seeder = deps.seedPlanTemplate ?? defaultPlanTemplateSeeder;
@@ -215,6 +311,7 @@ export async function installPlanFromCupboard(
         ...result,
         rubrics: verdict,
         coInstalled,
+        ...(planType ? { planType } : {}),
         seeded: seed.seeded,
         ...(seed.reason ? { seedSkipped: seed.reason } : {}),
       },
@@ -229,6 +326,7 @@ export async function installPlanFromCupboard(
         ...result,
         rubrics: verdict,
         coInstalled,
+        ...(planType ? { planType } : {}),
         seeded: false,
         seedSkipped: e instanceof Error ? e.message.slice(0, 300) : String(e),
       },

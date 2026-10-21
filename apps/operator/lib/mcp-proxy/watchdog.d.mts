@@ -171,7 +171,7 @@ export function evaluateRestartAdmission(input: {
 /** Add an outcome to the rolling restart history only when it confirms a restart. */
 export function recordRestartOutcome(
   state: { lastRestartMs: number; restartTimesMs: number[] },
-  outcome: { restarted?: boolean } | null | undefined,
+  outcome: { ok?: boolean; restarted?: boolean } | null | undefined,
   nowMs: number,
   windowMs?: number,
 ): { lastRestartMs: number; restartTimesMs: number[] };

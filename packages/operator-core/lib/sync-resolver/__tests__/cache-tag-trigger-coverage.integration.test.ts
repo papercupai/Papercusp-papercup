@@ -236,6 +236,7 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
       '1365-unify-work-item-dep-change-notify',
       '1366-mapped-report-occurrence-change-notify',
       '1406-pr-review-reports-change-notify',
+      '1549-plan-audits-change-notify',
     ]) {
       const migration = readFileSync(resolve(SQL_DIR, `${name}.sql`), 'utf8');
       await sql.unsafe(migration);
@@ -247,11 +248,11 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
       JOIN pg_proc p ON p.oid = t.tgfoid
       JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'harness_shared'
-        AND c.relname IN ('work_item_deps', 'report_library', 'work_item_occurrences', 'pr_review_reports')
+        AND c.relname IN ('work_item_deps', 'report_library', 'work_item_occurrences', 'pr_review_reports', 'plan_audits')
         AND p.proname IN ('emit_change_notify', 'emit_work_item_dep_change_notify')
         AND NOT t.tgisinternal AND t.tgenabled <> 'D'
       GROUP BY c.relname ORDER BY c.relname`;
-    expect(rows).toEqual(['pr_review_reports', 'report_library', 'work_item_deps', 'work_item_occurrences']
+    expect(rows).toEqual(['plan_audits', 'pr_review_reports', 'report_library', 'work_item_deps', 'work_item_occurrences']
       .map((table_name) => ({ table_name, producers: 1 })));
   });
 

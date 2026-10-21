@@ -253,6 +253,56 @@ describe('P-041 historical push outcomes (real ledgers)', () => {
   });
 });
 
+describe('P-041 suggested-test negatives (real ledgers)', () => {
+  const workspace = `${WS}-suggested-negative`;
+  const at = (time: string) => `2026-10-02T${time}:00Z`;
+
+  it('scores a suggested-test push not acted on only when the window shows no test request and no shell', async () => {
+    const sql = db!.adminSql;
+    const owners = ['suggest-none', 'suggest-request', 'suggest-shell', 'suggest-foreign-request'];
+    for (const owner of owners) {
+      await sql`INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+        VALUES ('default', 'codex', ${owner}, 0, ${at('11:00')}::timestamptz, ${owner}, 'user', 'native request')`;
+      await sql`INSERT INTO harness_shared.code_intel_pushes
+        (workspace_id, owner_id, turn_id, leg, subject, cited_paths, suggested_call, chars, pushed_at)
+        VALUES (${workspace}, ${owner}, ${owner}, 'first-touch', 'src/foo.ts', ${['src/foo.ts']}::text[],
+          'testing:run {"files":["src/foo.test.ts"]}', 10, ${at('12:00')}::timestamptz)`;
+      await sql`INSERT INTO harness_shared.session_turn_journal
+        (workspace_id, owner_id, source_kind, session_id, turn_ts, note, source)
+        VALUES (${workspace}, ${owner}, 'codex', ${owner}, ${at('13:00')}::timestamptz, 'completion', 'mechanical')`;
+      const acts: Array<[string, string, Record<string, unknown>]> = [
+        [at('11:30'), 'Read', { file: 'src/trigger.ts' }],
+        [at('12:10'), 'Read', { file: 'src/other.ts' }],
+      ];
+      if (owner === 'suggest-shell') acts.push([at('12:20'), 'Bash', { command: 'npm run test:file -- src/foo.test.ts' }]);
+      for (const [time, tool, detail] of acts) {
+        await sql`INSERT INTO harness_shared.agent_activity
+          (workspace_id, owner_id, session_id, kind, tool_name, phase, status, detail, created_at)
+          VALUES (${workspace}, ${owner}, ${owner}, 'tool', ${tool}, 'post', 'ok', ${sql.json(detail as never)}, ${time}::timestamptz)`;
+      }
+      if (owner === 'suggest-request' || owner === 'suggest-foreign-request') {
+        // A request with no linked run: still evidence the test may have run, unless it is another workspace's.
+        await sql`INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status,
+           coord_owner_id, invoked_at, metadata_json)
+          VALUES (${owner === 'suggest-foreign-request' ? OTHER_WS : workspace}, 'papercusp', 'papercusp', 'testing:run',
+            'operator', ${owner}, 'w', 'ok', ${owner}, ${at('12:30')}::timestamptz, ${sql.json({})})`;
+      }
+    }
+    const rows = await readNativePushOutcomes({ workspaceId: workspace, windowStart: START, windowEnd: END }, sql);
+    const pushes = await sql<{ id: string; owner_id: string }[]>`
+      SELECT id::text, owner_id FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}`;
+    const outcome = (owner: string) => rows.find(row => row.id === pushes.find(push => push.owner_id === owner)?.id);
+    expect(outcome('suggest-none')).toMatchObject({ windowComplete: true, actedOn: false });
+    expect(outcome('suggest-foreign-request')).toMatchObject({ windowComplete: true, actedOn: false });
+    expect(outcome('suggest-request')).toMatchObject({ windowComplete: true, actedOn: null });
+    expect(outcome('suggest-shell')).toMatchObject({ windowComplete: true, actedOn: null });
+    const summary = summarizeNativePushOutcomes({ window: { workspaceId: workspace, windowStart: START, windowEnd: END }, rows });
+    expect(summary.byLeg['first-touch']?.actedOn).toEqual({ measured: 2, positive: 0, rate: 0 });
+  });
+});
+
 describe('P-041 native transcript corpus partition', () => {
   const workspace = `${WS}-native-corpus`;
   const at = (hour: string) => `2026-10-02T${hour}:00:00Z`;

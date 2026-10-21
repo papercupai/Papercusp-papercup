@@ -123,6 +123,7 @@ function wearer(over: Partial<IdentityWearer> & {
       pins: { rules: [{ identityId: 'ops-identity', pinRef, rule }], unreadable: [] },
       sync: { rules: [], unreadable: [] },
       declaredClassNeeds,
+      recall: null,
     },
     ...rest,
   };

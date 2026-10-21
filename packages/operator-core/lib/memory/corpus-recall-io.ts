@@ -228,6 +228,11 @@ export function corpusRerankTimeoutMs(): number {
 export interface CorpusRecallInput {
   /** Public hosts may only use their existing permitted memory path. */
   knowledgeSourcesAllowed?: boolean;
+  /**
+   * The wearer identity's declared corpora (P-012, R-18): a source not named here
+   * is never searched. Absent ⇒ every source this host allows.
+   */
+  corpora?: readonly string[];
   /** Server-resolved reader. Omitted on agent ports: use their author identity and bound pot. */
   reportViewer?: ReportViewer;
   /** Parent prompt lifetime, shared with memory retrieval and preparation. */
@@ -647,6 +652,19 @@ export async function recallCorpusContext(input: CorpusRecallInput): Promise<Cor
   } finally { deadline.close(); }
 }
 
+/**
+ * The corpus sources a recall may search: host trust removes the knowledge
+ * corpora (plan/doc/report) from public hosts, and the wearer identity's declared
+ * `corpora` (P-012, R-18) removes every source it did not name. Both only narrow.
+ */
+export function corpusSourceNamesFor(
+  input: Pick<CorpusRecallInput, 'knowledgeSourcesAllowed' | 'corpora'>,
+): Array<(typeof CORPUS_SOURCE_NAMES)[number]> {
+  return CORPUS_SOURCE_NAMES.filter((name) =>
+    (input.knowledgeSourcesAllowed !== false || !['plan', 'doc', 'report'].includes(name))
+      && (!input.corpora || input.corpora.includes(name)));
+}
+
 async function recallCorpusContextInner(
   input: CorpusRecallInput,
   remainingMs: () => number,
@@ -669,10 +687,8 @@ async function recallCorpusContextInner(
   const maxItems = input.maxItems ?? CORPUS_MAX_ITEMS;
   const gradedMaxTerms = input.gradedMaxTerms ?? CORPUS_GRADED_QUERY_MAX_TERMS;
   const audience = { harnessSlugs: input.harnessSlugs, automatic: true, excludedRefs: input.ambientExcludedRefs };
-  const sources = SEARCH_SOURCES.filter((s) =>
-    (CORPUS_SOURCE_NAMES as readonly string[]).includes(s.name)
-      && (input.knowledgeSourcesAllowed !== false || !['plan','doc','report'].includes(s.name)),
-  ).map(s => s.name === 'plan' ? createPlanSearchSource(audience)
+  const selected = new Set<string>(corpusSourceNamesFor(input));
+  const sources = SEARCH_SOURCES.filter((s) => selected.has(s.name)).map(s => s.name === 'plan' ? createPlanSearchSource(audience)
     : s.name === 'doc' ? createDocSearchSource(audience)
     : s.name === 'report' ? createReportSearchSource(input.reportViewer ?? {
       ownerId: input.excludeOwnerId, potSlug: input.harnessSlugs?.length === 1 ? input.harnessSlugs[0] : null,

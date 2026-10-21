@@ -6,16 +6,69 @@
  * local-state objects (worker realms) against one shared fake resource store;
  * a one-Map test in the endpoint module cannot prove the cross-worker bound.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   guardMidTurnMemoryAdmission,
   MID_TURN_MEMORY_HEARTBEAT_INTERVAL_MS,
   MID_TURN_MEMORY_MAX_HOLDERS,
+  withIdentityBoundedMemoryAdmission,
   type MidTurnAdmissionLocalState,
+  type MidTurnAdmissionOutcome,
   type MidTurnAdmissionStore,
 } from './mid-turn-admission';
 import { MemoryTimeoutError, runWithTrackedMemoryTimeouts, withMemoryTimeout } from './op-deadline';
 import { coalesceEmbedFn } from '../../../../libs/generic/memory/src/embed-coalesce';
+import * as recallStats from './recall-stats';
+import * as corpusRecallIo from './corpus-recall-io';
+import { buildMemoryContextBlock } from './injection';
+import { _resetForTests as resetSurfacedForTests } from './bump-last-surfaced';
+import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
+import type { IdentityRecallPolicy } from '../agent-identities/identity-recall';
+
+// The R-19 block below drives the real recall builder; these fakes stand in for
+// its storage and settings exactly as the turn-start launch test does
+// (agent-identities/selected-knowledge-launch.test.ts). The admission tests above
+// inject their own store and never reach them.
+const memory = vi.hoisted(() => ({
+  /** Recallable rows, in relevance order; the fake honours scope and the shared limit like the hybrid backend. */
+  recallRows: [] as Array<{ id: string; text: string; scope: string }>,
+  searches: [] as Array<{ scopes: string[]; limit: number | undefined }>,
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: async () => [] }),
+}));
+vi.mock('./hive-scope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./hive-scope')>()),
+  resolvePotSlugsForHarnesses: vi.fn(async () => ['sales']),
+}));
+vi.mock('./backend', () => ({
+  getMemoryBackend: () => ({
+    name: 'fake',
+    available: async () => ({ ok: true }),
+    list: async () => [],
+    search: async (_query: string, opts: { scope: string | readonly string[]; limit?: number }) => {
+      const scopes = typeof opts.scope === 'string' ? [opts.scope] : [...opts.scope];
+      memory.searches.push({ scopes, limit: opts.limit });
+      const hits = memory.recallRows.filter((row) => scopes.includes(row.scope));
+      return opts.limit ? hits.slice(0, opts.limit) : hits;
+    },
+  }),
+}));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
+vi.mock('./jev-settings', () => ({
+  JEV_MEMORY_TIMEOUT_MS: 800,
+  getJevMode: vi.fn(async () => 'off'),
+  resolveJevMemoryInjection: vi.fn(async () => ({ mode: 'off', keyPresent: false, effective: 'off' })),
+  ensureJevDecisionClient: vi.fn(),
+}));
+// Coverage unknown ⇒ the corpus gate fails open, exactly as with no coverage surface.
+vi.mock('../search/coverage-gate', () => ({
+  loadCoverageSnapshotCached: vi.fn(async () => new Map()),
+  assessSearchCoverage: vi.fn(() => {
+    throw new Error('coverage not stubbed');
+  }),
+}));
 
 const deferred = <T = void>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -269,5 +322,80 @@ describe('mid-turn host admission — independent worker realms', () => {
       guardMidTurnMemoryAdmission({ ownerId: 'worker-a', state: workerState(), store }, run),
     ).resolves.toEqual({ admitted: false, reason: 'admission_unavailable' });
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * identity-system-everything-migration-2026-10-18 P-012 (R-19): mid-turn recall
+ * runs under the wearer identity's declared bounds, through the seam and the
+ * builder the mid-turn route composes (endpoint-route/routes/agent-mcp/mid-turn-context.ts).
+ */
+describe('identity-bounded optional recall (R-19)', () => {
+  const NOTES = ['amber', 'birch', 'cedar', 'delta', 'ember', 'fjord', 'grove', 'haven'];
+  const POOLS = [['user', 'user-1'], ['harness', 'harness:harness-a'], ['hive', 'hive:sales']] as const;
+  let corpusInputs: corpusRecallIo.CorpusRecallInput[] = [];
+
+  beforeEach(() => {
+    setSessionConfinementResolver(() => null);
+    vi.spyOn(recallStats, 'recordRecallStats').mockImplementation(async () => {});
+    corpusInputs = [];
+    vi.spyOn(corpusRecallIo, 'recallCorpusContext').mockImplementation(async (input) => {
+      corpusInputs.push(input);
+      return { outcome: 'disabled', rerank: 'nothing-to-reorder', legs: null, retrievalDepth: 0,
+        hits: [], lines: [], drops: [], block: null } as unknown as corpusRecallIo.CorpusRecallResult;
+    });
+    resetSurfacedForTests();
+    memory.searches = [];
+    memory.recallRows = NOTES.flatMap((note, i) => POOLS.map(([pool, scope]) => ({
+      id: `${pool}-${i}`, text: `Recall ${pool} note ${i} ${note}`, scope,
+    })));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setSessionConfinementResolver(undefined);
+  });
+
+  const admitted = async <U>(run: () => Promise<U>): Promise<MidTurnAdmissionOutcome<U>> =>
+    ({ admitted: true, value: await run() });
+  const recallMidTurn = (identityRecall: IdentityRecallPolicy | null) => buildMemoryContextBlock({
+    userId: 'user-1', workspaceId: 'workspace-a', harnessSlugs: ['harness-a'],
+    queryContext: { userText: 'which recall note applies here', lexicalText: 'which recall note applies here' },
+    budgetChars: 1500, heading: 'Possibly relevant (mid-turn)', identityRecall,
+  });
+  const recalledPools = (block: string | null): string[] =>
+    [...(block ?? '').matchAll(/Recall (user|harness|hive) note \d/g)].map((match) => match[1]!);
+
+  it('sheds the recall, before any admission is spent, when the applied identity cannot be read', async () => {
+    let admissions = 0;
+    const admit = <U>(work: () => Promise<U>): Promise<MidTurnAdmissionOutcome<U>> => {
+      admissions += 1;
+      return admitted(work);
+    };
+    const run = vi.fn(async () => 'memory');
+    await expect(withIdentityBoundedMemoryAdmission(async () => {
+      throw new Error('applied identity artifact unreadable');
+    }, run, admit)).resolves.toEqual({ admitted: false, reason: 'identity_unreadable' });
+    expect(admissions).toBe(0);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a declared share, scope and corpus bound the mid-turn recall; no declaration recalls as before', async () => {
+    const open = await withIdentityBoundedMemoryAdmission(async () => null, recallMidTurn, admitted);
+    const openSearch = memory.searches.at(-1)!;
+    expect(openSearch.scopes).toEqual(['user-1', 'harness:harness-a', 'hive:sales']);
+    expect(open.admitted && recalledPools(open.value)).toEqual(expect.arrayContaining(['user', 'harness', 'hive']));
+
+    memory.searches = [];
+    const bounds: IdentityRecallPolicy = { budgetShare: 0.25, memoryScopes: ['hive'], corpora: ['doc'] };
+    const scoped = await withIdentityBoundedMemoryAdmission(async () => bounds, recallMidTurn, admitted);
+    expect(memory.searches.length).toBeGreaterThan(0);
+    for (const search of memory.searches) expect(search.scopes).toEqual(['hive:sales']);
+    expect(memory.searches.at(-1)!.limit).toBe(Math.max(1, Math.floor(openSearch.limit! * 0.25)));
+    expect(openSearch.limit!).toBeGreaterThan(memory.searches.at(-1)!.limit!);
+    expect(scoped.admitted).toBe(true);
+    const pools = scoped.admitted ? recalledPools(scoped.value) : [];
+    expect(pools.length).toBeGreaterThan(0);
+    expect(pools.every((pool) => pool === 'hive')).toBe(true);
+    expect(corpusInputs.at(-1)?.corpora).toEqual(['doc']);
   });
 });

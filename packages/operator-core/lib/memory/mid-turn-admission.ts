@@ -40,6 +40,7 @@ import {
   releaseSharedResourceAtomic,
 } from '../agent-tools/locks/su-lock-store';
 import { runWithTrackedMemoryTimeouts, type TrackedMemoryWork } from './op-deadline';
+import type { IdentityRecallPolicy } from '../agent-identities/identity-recall';
 
 // The resource id predates initialize coverage. Keep it stable so an upgrade
 // cannot temporarily create two independent host budgets under old/new names.
@@ -329,4 +330,28 @@ export function withOptionalMemoryAdmission<T>(run: () => Promise<T>): Promise<M
 /** Compatibility name for the original mid-turn caller. */
 export function withMidTurnMemoryAdmission<T>(run: () => Promise<T>): Promise<MidTurnAdmissionOutcome<T>> {
   return withOptionalMemoryAdmission(run);
+}
+
+/**
+ * identity-system-everything-migration P-012 (R-9 / R-19): optional recall under
+ * the wearer identity's declared recall bounds, shared by the turn-start and
+ * mid-turn ports so neither can recall past what the identity declared.
+ *
+ * The bounds are read BEFORE any admission is spent. An identity that is applied
+ * but whose artifact cannot be read sheds the recall (`identity_unreadable`)
+ * instead of recalling past bounds nobody could see; `null` (no identity, or no
+ * declaration) runs exactly the unbounded recall of before.
+ */
+export async function withIdentityBoundedMemoryAdmission<T>(
+  readBounds: () => Promise<IdentityRecallPolicy | null>,
+  run: (bounds: IdentityRecallPolicy | null) => Promise<T>,
+  admit: <U>(run: () => Promise<U>) => Promise<MidTurnAdmissionOutcome<U>> = withOptionalMemoryAdmission,
+): Promise<MidTurnAdmissionOutcome<T>> {
+  let bounds: IdentityRecallPolicy | null;
+  try {
+    bounds = await readBounds();
+  } catch {
+    return { admitted: false, reason: 'identity_unreadable' };
+  }
+  return admit(() => run(bounds));
 }

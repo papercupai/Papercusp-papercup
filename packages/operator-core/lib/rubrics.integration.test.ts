@@ -5064,6 +5064,160 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(await amendmentStateVector(seeded)).toEqual(stateBefore);
   });
 
+  // acceptance-bar-atomic-retirement-2026-10-15 R-27 / R-32: the malformed-source populations
+  // at the production amendment boundary. Every case seeds the two-BAR contract, corrupts
+  // the stored subject source, and resubmits the unchanged criteria (an apply input that
+  // needs no approval, so preview AND apply both reach the proposed-source validation).
+  const R2_RECORD = '**R-2 — Second outcome.** The second outcome holds.';
+  const R2_MAP_ROW = '| R-2 | P-002 | tree |';
+
+  async function seedMalformedSource(subject: string, malform: (source: string) => string) {
+    const seeded = await seedBarContract(subject);
+    const original = await subjectSource(seeded.subject);
+    const malformed = malform(original);
+    expect(malformed).not.toBe(original);
+    await db.adminSql`UPDATE harness_shared.harness_plans
+       SET content = ${malformed}, content_hash = ${hashPlanContent(malformed)}
+     WHERE workspace_id = ${seeded.workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${seeded.subject}`;
+    const input = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'malformed-source-actor',
+      reason: 'Resubmit the unchanged criteria over a malformed source.',
+      criteria: (await rubrics.getRubric(seeded.rubricSlug))!.criteria,
+    };
+    return { seeded, input };
+  }
+
+  /** Send `input` through preview, then apply. Each must REFUSE (a resolved call is reported
+   *  as `accepted`, which fails every refusal pattern) and leave the complete durable state
+   *  vector unchanged. Returns both refusal messages. */
+  async function refusalsAtBoundary(malformedSource: Awaited<ReturnType<typeof seedMalformedSource>>) {
+    const { seeded, input } = malformedSource;
+    const stateBefore = await amendmentStateVector(seeded);
+    expect(stateBefore.pointers.length).toBeGreaterThan(0);
+    const settle = (call: Promise<unknown>) => call.then(() => 'accepted', (error: Error) => error.message);
+    const preview = await settle(rubrics.previewAcceptanceBarAmendment(input));
+    expect(await amendmentStateVector(seeded)).toEqual(stateBefore);
+    const apply = await settle(rubrics.amendRubric(input));
+    expect(await amendmentStateVector(seeded)).toEqual(stateBefore);
+    return { preview, apply };
+  }
+
+  /** An actionable domain result: one line, inside the maintained budget, no parser stack. */
+  function expectActionableRefusal(message: string) {
+    expect(message).not.toContain('\n');
+    expect(message).not.toMatch(/\bat [\w.<>$]+ \((?:file:|node:|\/)|node:internal|ZodError/);
+    expect(message.length).toBeLessThanOrEqual(rubrics.ACCEPTANCE_BAR_AMENDMENT_REFUSAL_BUDGET.maxMessageChars);
+  }
+
+  it.each([
+    {
+      population: 'a Requirements record line that is not `**R-N — Title.** outcome`',
+      malform: (source: string) => source.replace(R2_RECORD, '**R-2 Second outcome** The second outcome holds.'),
+      refusal: /^acceptance_bar_amendment_requirements_invalid:bar_requirement_parse_failed: malformed requirement record: \*\*R-2 Second outcome\*\*/,
+    },
+    {
+      population: 'a titled Requirements record with no outcome statement',
+      malform: (source: string) => source.replace(R2_RECORD, '**R-2 — Second outcome.**'),
+      refusal: /^acceptance_bar_amendment_requirements_invalid:bar_requirement_parse_failed: R-2: R-2 has a title but no outcome statement$/,
+    },
+    {
+      population: 'a Requirements record whose requirement block is not JSON',
+      malform: (source: string) => source.replace(R2_RECORD, '**R-2 — Second outcome.**\n\n```requirement\n{not json}\n```'),
+      refusal: /^acceptance_bar_amendment_requirements_invalid:bar_requirement_parse_failed: R-2: R-2: .*JSON/,
+    },
+    {
+      population: 'a Requirements record whose requirement block fails the requirement schema',
+      malform: (source: string) =>
+        source.replace(R2_RECORD, '**R-2 — Second outcome.**\n\n```requirement\n{"acceptance":{"condition":7}}\n```'),
+      refusal: /^acceptance_bar_amendment_requirements_invalid:bar_requirement_parse_failed: R-2: R-2: \S/,
+    },
+    {
+      population: 'a duplicated Requirements record',
+      malform: (source: string) =>
+        source.replace(R2_RECORD, `${R2_RECORD}\n\n**R-2 — Second outcome, again.** A second record for the same key.`),
+      refusal: /^acceptance_bar_amendment_requirements_invalid:bar_key_duplicate: R-2: duplicate requirement key R-2$/,
+    },
+    {
+      population: 'a Bar-to-work map row whose item cell is not P-NNN ids',
+      malform: (source: string) => source.replace(R2_MAP_ROW, '| R-2 | the second item | tree |'),
+      refusal: /^acceptance_bar_amendment_mapping_invalid:bar_mapping_invalid: R-2: R-2 mapping must contain only one or more P-NNN ids/,
+    },
+    {
+      population: 'a Bar-to-work map row with an unknown evidence plane',
+      malform: (source: string) => source.replace(R2_MAP_ROW, '| R-2 | P-002 | orbit |'),
+      refusal: /^acceptance_bar_amendment_mapping_invalid:bar_evidence_plane_invalid: R-2: R-2 evidence plane must be tree, deployed, or live/,
+    },
+    {
+      population: 'a duplicated Bar-to-work map row',
+      malform: (source: string) => source.replace(R2_MAP_ROW, `${R2_MAP_ROW}\n${R2_MAP_ROW}`),
+      refusal: /^acceptance_bar_amendment_mapping_invalid:bar_mapping_duplicate: R-2: Bar-to-work map has duplicate row R-2$/,
+    },
+  ])('R-27: preview and apply refuse $population with the parser domain code, the offending key and no write', async ({ malform, refusal }) => {
+    const subject = `malformed-boundary-${Math.random().toString(36).slice(2, 10)}-subject`;
+    const { preview, apply } = await refusalsAtBoundary(await seedMalformedSource(subject, malform));
+    expect(preview).toMatch(refusal);
+    expect(apply).toBe(preview);
+    expectActionableRefusal(preview);
+  });
+
+  // R-32: oversized malformed input. Before the budget, a map refusal echoed every offending
+  // cell in full (one 5 KB title cell per row) and a Requirements refusal listed one bare code
+  // per malformed record. The maintained bound is ACCEPTANCE_BAR_AMENDMENT_REFUSAL_BUDGET
+  // (rubrics.ts): at most maxProblems problems, each detail clipped to maxDetailChars, a
+  // count of the rest, and never more than maxMessageChars in total.
+  const OVERSIZED_CELL = 'x'.repeat(5_000);
+  const OVERSIZED_ROWS = 300;
+  it.each([
+    {
+      population: 'Requirements source with 300 malformed 5 KB record lines',
+      malform: (source: string) => source.replace(R2_RECORD, [
+        R2_RECORD,
+        ...Array.from({ length: OVERSIZED_ROWS }, (_, index) => `**R-${index + 10} ${OVERSIZED_CELL}**`),
+      ].join('\n\n')),
+      // The parser itself quotes at most 160 characters of a malformed record line.
+      firstProblem: /^bar_requirement_parse_failed: malformed requirement record: \*\*R-10 x+$/,
+      prefix: 'acceptance_bar_amendment_requirements_invalid',
+    },
+    {
+      population: 'Bar-to-work map with 300 malformed 5 KB title cells',
+      malform: (source: string) => source.replace(R2_MAP_ROW, [
+        R2_MAP_ROW,
+        ...Array.from({ length: OVERSIZED_ROWS }, (_, index) => `| R-${index + 10} — ${OVERSIZED_CELL} | P-001 | tree |`),
+      ].join('\n')),
+      firstProblem: /^bar_mapping_invalid: R-10: Bar-to-work map first cell must be the bare R-10 key, not its title \(received "R-10 — x+…$/,
+      prefix: 'acceptance_bar_amendment_mapping_invalid',
+    },
+  ])('R-32: an oversized malformed $population is refused at the boundary inside the maintained result budget', async ({ malform, firstProblem, prefix }) => {
+    const budget = rubrics.ACCEPTANCE_BAR_AMENDMENT_REFUSAL_BUDGET;
+    const subject = `malformed-oversized-${Math.random().toString(36).slice(2, 10)}-subject`;
+    const { preview, apply } = await refusalsAtBoundary(await seedMalformedSource(subject, malform));
+    expect(apply).toBe(preview);
+    expect(preview.startsWith(`${prefix}:`)).toBe(true);
+    expectActionableRefusal(preview);
+
+    const parts = preview.slice(prefix.length + 1).split('; ');
+    const tail = parts.pop()!;
+    const measurement = {
+      chars: preview.length,
+      bytes: Buffer.byteLength(preview, 'utf8'),
+      shownProblems: parts.length,
+      omittedProblems: Number(/^\+(\d+) more problem\(s\) not shown$/.exec(tail)?.[1] ?? Number.NaN),
+      longestShownProblem: Math.max(...parts.map((part) => part.length)),
+      budget,
+    };
+    console.info(`R-32 boundary result measurement ${JSON.stringify(measurement)}`);
+    expect(measurement.shownProblems).toBe(budget.maxProblems);
+    expect(measurement.omittedProblems).toBe(OVERSIZED_ROWS - budget.maxProblems);
+    expect(measurement.chars).toBeLessThanOrEqual(budget.maxMessageChars);
+    expect(measurement.bytes).toBeLessThanOrEqual(budget.maxMessageChars + 2 * (budget.maxProblems + 1));
+    expect(parts[0]).toMatch(firstProblem);
+    for (const part of parts) {
+      const detail = part.split(': ').slice(1).join(': ');
+      expect(detail.length).toBeLessThanOrEqual(budget.maxDetailChars + 'R-NNN: '.length);
+    }
+  });
+
   it('retires a started BAR whose only mapped work was dropped, reconciling its Requirements record and map row in the same amendment (EI-24358433996857425)', async () => {
     const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('dropped-only-retire-subject');
     const clausesBefore = await subjectClauses(subject);
@@ -5626,6 +5780,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
     for (const { seeded, amendment, expectWritten } of cases) {
       const rowBefore = await subjectRow(seeded.subject);
       const clausesBefore = await subjectClauses(seeded.subject);
+      // R-13: every durable member the amendment can touch, not only the subject row: both
+      // plan rows (template data, adoption pins), clause pointers and immutable history,
+      // proof bindings, work-binding edges and plan revision history.
+      const vectorBefore = await amendmentStateVector(seeded);
       expect(rowBefore.contentHash).toBe(hashPlanContent(rowBefore.content));
 
       // Refused: no outside approval.
@@ -5633,20 +5791,26 @@ describe('template_data persistence boundary — the set-template-data door', ()
       expect(await subjectRow(seeded.subject)).toEqual(rowBefore);
       expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision);
       expect(await subjectClauses(seeded.subject)).toEqual(clausesBefore);
+      expect(await amendmentStateVector(seeded)).toEqual(vectorBefore);
       expect(refused).toMatch(/acceptance_bar_approval_required/);
 
-      // Rolled back: approved, but a fault fires after the source rewrite.
+      // Rolled back: approved, but a fault fires at each existing fault point of the apply
+      // path in order (rubrics.ts injectAmendmentFault): after the decision is composed,
+      // after the rubric row is written, after the clause projection, after the rebind.
       const approvalRef = await postApproval(amendment);
-      for (const stage of ['after-projection', 'after-rebind'] as const) {
+      for (const stage of ['after-decision', 'after-rubric', 'after-projection', 'after-rebind'] as const) {
         const outcome = await settle(rubrics.amendRubric({ ...amendment, approvalRef, faultInjection: stage }));
         expect(await subjectRow(seeded.subject)).toEqual(rowBefore);
         expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision);
         expect(await subjectClauses(seeded.subject)).toEqual(clausesBefore);
+        expect(await amendmentStateVector(seeded)).toEqual(vectorBefore);
         expect(outcome).toMatch(new RegExp(`acceptance_bar_amendment_fault_injected:${stage}`));
       }
 
-      // Calibration: the same approved input, unfaulted, rewrites the source.
+      // Calibration: the same approved input, unfaulted, rewrites the source, and the state
+      // vector observes the write, so the equality checks above cannot pass vacuously.
       await rubrics.amendRubric({ ...amendment, approvalRef });
+      expect(await amendmentStateVector(seeded)).not.toEqual(vectorBefore);
       const applied = await subjectRow(seeded.subject);
       expect(applied.version).toBeGreaterThan(rowBefore.version);
       expect(applied.contentHash).not.toBe(rowBefore.contentHash);

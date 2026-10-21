@@ -4617,6 +4617,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [await enrichPlanDetail(plan)];
     },
   },
+  /**
+   * The Plans pane's type view of one plan (plan-item-types-registry-cupboard-2026-10-20 P-007,
+   * D-009): per item its resolved item type, revision, module set and completion schema, read at
+   * the plan's pinned revisions through the resolver the gates use. Args `{ slug, harness? }`;
+   * returns `[view]`, or `[]` for an unknown plan.
+   */
+  'plans.itemTypeView': {
+    backingTables: [
+      'harness_shared.harness_plans',
+      'harness_shared.plan_type_pins',
+      'harness_shared.plan_item_type_definitions',
+      'harness_shared.plan_type_definitions',
+      'harness_shared.datatype_registry',
+    ] as const,
+    resolve: async (args) => {
+      const input = (args ?? {}) as { slug?: unknown; harness?: unknown };
+      if (typeof input.slug !== 'string' || input.slug === '') return [];
+      const { readPlanItemTypeView } = await import('../plan-types/item-type-view');
+      const view = await readPlanItemTypeView({
+        planSlug: input.slug,
+        ...(typeof input.harness === 'string' && input.harness !== '' ? { harnessSlug: input.harness } : {}),
+      });
+      return view ? [view] : [];
+    },
+  },
 
   'plans.revisions': {
     resolve: async (args) => {

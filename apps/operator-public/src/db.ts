@@ -198,6 +198,21 @@ export const REVIEW_POLICY_KINDS: readonly ListingKind[] = [
   'event',
 ];
 
+/**
+ * The review status a publish lands in (pre-publication review, knowledge-packs D-007). Content-aware
+ * since plan-item-types-registry-cupboard-2026-10-20 P-006 (D-008): a REVIEW_POLICY_KINDS kind always
+ * lands pending, and so does ANY listing that declares an item type or a plan type. A type definition
+ * decides which checks every plan item of that type is held to, so it actuates even inside an
+ * otherwise tool-only `pack`. A pack that declares no types keeps today's per-kind policy.
+ */
+export function publishReviewStatus(
+  kind: ListingKind,
+  declares: { itemTypes: number; planTypes: number },
+): 'pending' | 'approved' {
+  if (REVIEW_POLICY_KINDS.includes(kind)) return 'pending';
+  return declares.itemTypes + declares.planTypes > 0 ? 'pending' : 'approved';
+}
+
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
 /**
@@ -298,6 +313,13 @@ export interface NewHarnessInput {
   /** Rubric axis (migration 015 / D-001): JSON array of REQUIRED rubrics
    *  ({ rubricRef, optional? }); primarily `plan`, kind-agnostic. Omit ⇒ none. */
   requires_rubrics?: string | null;
+  /** Type packs (migration 049 / plan-item-types-registry-cupboard-2026-10-20 P-006): JSON
+   *  [{ id, revision }] of item types / plan types the manifest carries; plugin|pack only. */
+  provides_item_types?: string | null;
+  provides_plan_types?: string | null;
+  /** Type packs (migration 049): JSON { id, minRevision?, maxRevision? } of the plan type a
+   *  plan template requires; plan only. */
+  requires_plan_type?: string | null;
   /** Repo→Hive binding (migration 007): owning Hive's raw-32-byte-base64 Ed25519 pubkey. */
   hive_pubkey?: string | null;
   /** Denormalized Hive display title (directory announce stays authoritative). */
@@ -386,6 +408,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
           provides_tools, uses_tools, provides_events, requires_events, requires_rubrics,
+          provides_item_types, provides_plan_types, requires_plan_type,
           hive_pubkey, hive_title, blueprint_kind,
           review_status,
           delivery_type, latest_json_url, release_repo, icon_url, platforms,
@@ -399,7 +422,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           verified_by,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -423,6 +446,9 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.provides_events ?? null,
       h.requires_events ?? null,
       h.requires_rubrics ?? null,
+      h.provides_item_types ?? null,
+      h.provides_plan_types ?? null,
+      h.requires_plan_type ?? null,
       h.hive_pubkey ?? null,
       h.hive_title ?? null,
       h.blueprint_kind ?? null,
@@ -794,6 +820,10 @@ export interface CatalogFilterOpts {
   runtime?: string;
   /** Match one entry of `required_permissions`. */
   permission?: string;
+  /** Match a listing that declares this item type in `provides_item_types` (migration 049). */
+  provides_item_type?: string;
+  /** Match a listing that declares this plan type in `provides_plan_types` (migration 049). */
+  provides_plan_type?: string;
   /** Include yanked/revoked releases (default: excluded from browse). */
   include_withdrawn?: boolean;
 }
@@ -970,6 +1000,18 @@ function appendCatalogPredicate(
         ` AND EXISTS (SELECT 1 FROM json_each(${prefix}required_permissions) WHERE json_each.value = ?))`,
     );
     binds.push(opts.permission);
+  }
+  // Type packs (migration 049): the installer's provider lookup for one declared type id.
+  for (const [column, id] of [
+    ['provides_item_types', opts.provides_item_type],
+    ['provides_plan_types', opts.provides_plan_type],
+  ] as const) {
+    if (!id) continue;
+    where.push(
+      `(${prefix}${column} IS NOT NULL AND json_valid(${prefix}${column})` +
+        ` AND EXISTS (SELECT 1 FROM json_each(${prefix}${column}) WHERE json_extract(json_each.value, '$.id') = ?))`,
+    );
+    binds.push(id);
   }
   // The fail-closed visibility scope. Keep this LAST so the widening bind is the
   // final catalog bind in every query shape.

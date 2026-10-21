@@ -96,6 +96,13 @@ export interface CupboardListingInput {
    * has the rubric (its BUNDLED first-party set often does) is the resolver's answer.
    */
   requires_rubrics?: RubricRequirement[];
+  /** Type packs (worker migration 049 / plan-item-types-registry-cupboard-2026-10-20 P-006): the
+   *  item types and plan types a plugin|pack manifest carries. Any declaration sends the publish
+   *  to operator review, and the installer refuses a manifest whose types differ from these. */
+  provides_item_types?: Array<{ id: string; revision: number }>;
+  provides_plan_types?: Array<{ id: string; revision: number }>;
+  /** Type packs (migration 049): the plan type a plan template requires; kind plan only. */
+  requires_plan_type?: { id: string; minRevision?: number; maxRevision?: number };
   /**
    * App distribution (worker migration 014 / cupboard-app-distribution-2026-07-14
    * P-003, D-001). Kind `app` only — the worker 400s these on any other kind.

@@ -28,6 +28,7 @@ import {
   type RepoCoords,
 } from './resolve-repo-coords';
 import { assertPluginManifestPublishable, pluginListingRef, PublishManifestError } from './publish-manifest-check';
+import { typePackDeclarations, inspectTypePack } from './type-pack';
 
 export interface PublishInstalledUnitInput {
   /** The installed unit's manifest name (used as listing_ref unless overridden). */
@@ -135,6 +136,19 @@ export async function publishInstalledUnitToCupboard(
     }
   }
 
+  // Type packs (plan-item-types-registry-cupboard-2026-10-20 P-006, D-008): the item types and plan
+  // types the manifest carries are declared on the listing. NOT overridable: the declaration sends
+  // the publish to operator review, and the installer refuses a manifest whose types differ from it.
+  // A malformed typePack is LOUD here, like a malformed event declaration.
+  const typePackBlock = installed ? (installed as { typePack?: unknown }).typePack : undefined;
+  let typeDeclarations: ReturnType<typeof typePackDeclarations> = null;
+  if (typePackBlock !== undefined) {
+    const inspected = inspectTypePack(typePackBlock);
+    if (!inspected.ok) {
+      return { ok: false, status: 422, error: 'invalid manifest typePack', detail: inspected.issues ?? [inspected.message] };
+    }
+    typeDeclarations = typePackDeclarations(typePackBlock);
+  }
   // Publish-time installability gate (EI-387 / P-005): a kind=plugin listing must
   // point at a repo the STANDARD install path can resolve — a papercusp.json with
   // {name, version} where the installer looks. Scoped to plugin per P-005.
@@ -167,6 +181,8 @@ export async function publishInstalledUnitToCupboard(
     ...(providesTools.length > 0 ? { provides_tools: providesTools } : {}),
     ...(providesEvents.length > 0 ? { provides_events: providesEvents } : {}),
     ...(requiresEvents.length > 0 ? { requires_events: requiresEvents } : {}),
+    ...(typeDeclarations && typeDeclarations.itemTypes.length > 0 ? { provides_item_types: typeDeclarations.itemTypes } : {}),
+    ...(typeDeclarations && typeDeclarations.planTypes.length > 0 ? { provides_plan_types: typeDeclarations.planTypes } : {}),
   });
 
   if (!result.ok) {

@@ -28,6 +28,7 @@ import { canonicalTreeDigest, GIT_OBJECT_ID_RE, HEX_SHA256_RE,
 import { fetchVerifiedReleaseFiles, packSelfDescribingDir, packSelfDescribingArchive,
   unpackSelfDescribingArchive, type SelfDescribingArchiveFile } from './self-describing-release';
 import type { ResolvedListingCoords } from './resolve-listing-by-kind';
+import { inspectTypePack, typePackListingFromCoords, type TypePackInstallResult, type TypePackListing, type TypePackRefusal } from './type-pack';
 import type { InstalledPluginProvenance } from './types';
 export type { InstalledPluginProvenance } from './types';
 
@@ -122,6 +123,8 @@ export interface InstallPluginCoreResult {
    * disarmed binding ids, and unmet source/input requirements.
    */
   triggerPackInstallation?: TriggerPackInstallation;
+  /** The type-pack install (P-006, D-008): one receipt per pack, dependency packs first. */
+  typePackInstallation?: TypePackInstallResult;
   /** Integration provider the owner consented to (registered on host discovery). */
   provider?: InstalledProviderReceipt;
   /** Stable install-review material derived before any destination write. */
@@ -300,6 +303,17 @@ export interface InstallPluginCoreDeps {
    * absent, a trigger pack installs as manifest data only. Refusals carry a
    * stable `code` and happen before any write.
    */
+  /**
+   * Install the manifest's declarative `typePack` (plan-item-types-registry-cupboard-2026-10-20
+   * P-006, D-008): plan the pack and every pack it depends on, then write definitions, co-installed
+   * rubrics and datatypes and receipts in one transaction. Returns a refusal instead of writing on
+   * any failed gate. Required for a manifest that carries a typePack: without it the install refuses
+   * rather than silently dropping the types.
+   */
+  installTypePack?: (args: {
+    manifest: InstalledPluginManifest & { typePack: unknown };
+    listing: TypePackListing;
+  }) => Promise<TypePackInstallResult | TypePackRefusal>;
   materializeTriggerPack?: (args: {
     manifest: InstalledPluginManifest & { triggerPack: PluginTriggerPack };
     pluginDir: string;
@@ -781,6 +795,40 @@ export async function installPluginFromCupboardCore(
       );
     }
 
+    // Type-pack install (P-006, D-008): a pack carrying item types or plan types installs only from
+    // its Cupboard listing (the review status and content pin live there), and only on a host that can
+    // write the registry. The manifest block is validated write-free first; the install itself plans
+    // every dependency pack and writes in one transaction, so a refusal leaves no rows and, because it
+    // runs before the bytes are placed, no files.
+    let typePackInstallation: TypePackInstallResult | undefined;
+    const typePackBlock = (manifest as { typePack?: unknown }).typePack;
+    if (typePackBlock !== undefined) {
+      const inspected = inspectTypePack(typePackBlock);
+      if (!inspected.ok) throw new InstallPluginError(inspected.message, 422, inspected.code, { issues: inspected.issues ?? [] });
+      const typeListing = listing ? typePackListingFromCoords(listing) : null;
+      if (!typeListing) {
+        throw new InstallPluginError(
+          'a pack carrying item types or plan types installs only from its Cupboard listing, which records its review status and content pin',
+          422,
+          'type_pack_listing_required',
+        );
+      }
+      if (!deps.installTypePack) {
+        throw new InstallPluginError('this host cannot install item types or plan types', 503, 'type_pack_installer_unavailable');
+      }
+      const outcome = await deps.installTypePack({
+        manifest: manifest as InstalledPluginManifest & { typePack: unknown },
+        listing: typeListing,
+      });
+      if (!outcome.ok) {
+        throw new InstallPluginError(outcome.message, 422, outcome.code, {
+          ...(outcome.listingId ? { listingId: outcome.listingId } : {}),
+          ...(outcome.issues ? { issues: outcome.issues } : {}),
+          ...(outcome.cause ? { cause: outcome.cause } : {}),
+        });
+      }
+      typePackInstallation = outcome;
+    }
     // Trigger-pack materialization (P-012, D-013 §6): with a target harness the
     // pack becomes its plans and DISARMED bindings. Every refusal happens in the
     // materializer's write-free preflight, so it runs before the bytes are
@@ -849,6 +897,7 @@ export async function installPluginFromCupboardCore(
       provenance,
       ...(triggerPack ? { triggerPack } : {}),
       ...(triggerPackInstallation ? { triggerPackInstallation } : {}),
+      ...(typePackInstallation ? { typePackInstallation } : {}),
       ...(provider ? { provider } : {}),
       ...(installableDependencies ? { installableDependencies } : {}),
     };

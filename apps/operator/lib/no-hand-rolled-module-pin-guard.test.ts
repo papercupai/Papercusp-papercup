@@ -56,7 +56,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import { findPins, scanTree } from '../../../scripts/check-no-hand-rolled-module-pin.mjs';
+import { findPins, scanTree, isTestFixture } from '../../../scripts/check-no-hand-rolled-module-pin.mjs';
 
 /** The shape the guard exists to catch — a real pin, as written in this repo. */
 const HAND_ROLLED_PIN = `
@@ -227,6 +227,24 @@ describe('no-hand-rolled-module-pin — the STRING-key form (the 2026-08-04 blin
     expect(
       hits.map((h: { key: string; form: string }) => `${h.form}:${h.key}`).sort(),
     ).toEqual(['string:__papercuspCostCache', 'symbol:papercusp.harnessAliveCache']);
+  });
+});
+
+describe('no-hand-rolled-module-pin — test-fixture scope', () => {
+  it('excludes test-support fixtures and nothing else', () => {
+    // A spawned test worker that exposes a control handle on globalThis is a
+    // harness channel, not a shared-lib singleton (WI-6554700010019084).
+    expect(isTestFixture('packages/operator-core/test/fixtures/seed-restore-observer-worker.mts')).toBe(true);
+    expect(isTestFixture('/abs/root/libs/x/src/__fixtures__/worker.ts')).toBe(true);
+    // Product code — including a path that merely mentions "fixture" — stays in scope.
+    expect(isTestFixture('packages/operator-core/lib/process-monotonic-clock.ts')).toBe(false);
+    expect(isTestFixture('packages/operator-core/lib/dao-workbench-identity-fixture.ts')).toBe(false);
+    expect(isTestFixture('packages/operator-core/lib/test-fixtures-registry.ts')).toBe(false);
+  });
+
+  it('the scan never reports a pin from a test fixture', () => {
+    const { everyPin } = scanTree();
+    expect(everyPin.filter((p: { rel: string }) => isTestFixture(p.rel))).toEqual([]);
   });
 });
 

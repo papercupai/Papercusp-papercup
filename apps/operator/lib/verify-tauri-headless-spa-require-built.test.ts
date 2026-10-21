@@ -376,8 +376,10 @@ describe('WI-10004972 — verify-tauri-headless.sh wiring', () => {
   it('runs the gate and the note inside the freeze branch, BEFORE quiescence and the copy', () => {
     const branch = src.indexOf('if [ -f "$SHARED_SPA_DIST/index.html" ]; then');
     const source = src.indexOf('. "$REPO_DIR/scripts/lib/spa-require-built.sh"');
-    const gateCall = src.indexOf('spa_require_built_gate "$SHARED_SPA_DIST" "$REPO_DIR" "$VERIFY_TAURI_REQUIRE_BUILT"');
-    const note = src.indexOf('spa_require_built_note "$SHARED_SPA_DIST" "$REPO_DIR"');
+    // The gate judges the SPA's SOURCE root (the operator source snapshot when one is
+    // pinned), not necessarily the checkout the script runs from.
+    const gateCall = src.indexOf('spa_require_built_gate "$SHARED_SPA_DIST" "$SPA_SOURCE_ROOT" "$VERIFY_TAURI_REQUIRE_BUILT"');
+    const note = src.indexOf('spa_require_built_note "$SHARED_SPA_DIST" "$SPA_SOURCE_ROOT"');
     const quiesce = src.indexOf('QUIESCE_STABLE_SEC="${PAPERCUSP_SPA_QUIESCE_STABLE_SEC');
     const copy = src.indexOf('cp -a "$SHARED_SPA_DIST/."');
     for (const i of [branch, source, gateCall, note, quiesce, copy]) expect(i).toBeGreaterThan(-1);

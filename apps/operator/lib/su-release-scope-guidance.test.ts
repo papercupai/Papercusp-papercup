@@ -28,10 +28,10 @@ describe('SU harness reader scope guidance', () => {
       expect(genericTools).not.toContain('harness:get');
       expect(genericTools).not.toContain('harness:status');
       expect(prompt).toMatch(
-        /Important exception:\s+`harness:get` takes its own `slug` and `harness:status` takes `slug`\/`slugs`;\s+do\s+\*\*not\*\* add a top-level `harness` field/,
+        /Important exception:\s+`harness:get`\s+takes\s+(?:its\s+own\s+)?`slug`\s+and\s+`harness:status`\s+takes\s+`slug`\/`slugs`;\s+do\s+\*\*not\*\*\s+add\s+a\s+top-level\s+`harness`\s+field/,
       );
       expect(prompt).toMatch(
-        /Both accept an optional `workspace` argument for unscoped superuser calls that need a workspace transaction/,
+        /Both\s+(?:accept|take)\s+an\s+optional\s+`workspace`(?:\s+argument)?\s+for\s+unscoped\s+superuser\s+calls/,
       );
     });
   }
@@ -105,9 +105,14 @@ describe('SU two-port staging checkout guidance', () => {
     ];
 
     for (const source of sources) {
-      expect(source).toContain('separate `papercusp-staging` checkout');
-      expect(source).toContain('pinned to `origin/staging`');
-      expect(source).toMatch(/uncommitted\s+edit/);
+      // Code truth (sync-staging-checkout.sh: BRANCH defaults to `staging`, resolved with
+      // `rev-parse` in the integration root): :3170 serves the LOCAL committed staging,
+      // so a committed-but-unpushed edit IS visible — never claim it is pinned to origin.
+      expect(source).toMatch(/isolated\s+generation\s+of\s+the\s+(?:canonical\s+tree's\s+)?LOCAL\s+committed\s+`staging`/);
+      expect(source).toMatch(/resolves\s+`rev-parse\s+staging`,\s+not\s+`origin\/staging`/);
+      expect(source).toMatch(/uncommitted\s+or\s+git-sync-held\s+edit\s+is\s+invisible/);
+      expect(source).toMatch(/committed-but-unpushed\s+one\s+is\s+not/);
+      expect(source).not.toMatch(/pinned\s+to\s+`origin\/staging`/);
       expect(source).toContain('dev:restart');
       expect(source).not.toContain(':3170 serves the working tree at current HEAD');
       expect(source).not.toContain('systemctl --user restart\npapercup-staging-api.service');

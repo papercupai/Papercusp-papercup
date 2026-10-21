@@ -515,12 +515,14 @@ const turnStartMemory = defineTool({
           const [
             { buildMemoryContextBlock },
             { getMemoryBlockBoundedResult },
-            { withOptionalMemoryAdmission },
+            { withIdentityBoundedMemoryAdmission },
+            { readAppliedIdentityRecall, identityRecallCacheSuffix },
             recallInput,
           ] = await Promise.all([
             import('../../../memory/injection'),
             import('../../../memory/injection-block-cache'),
             import('../../../memory/mid-turn-admission'),
+            import('../../../agent-identities/identity-recall'),
             recallInputPromise,
           ]);
           if (!recallInput) return '';
@@ -545,8 +547,12 @@ const turnStartMemory = defineTool({
           // seam as well: the bounded response may return while uncancellable
           // provider work is still settling, and the guard retains its lease
           // until that raw work actually exits.
-          const admitted = await withOptionalMemoryAdmission(() =>
-            getMemoryBlockBoundedResult(workspaceId, `turn-start:${owner}`, async (deadline, { callerWaiting }) => {
+          // P-012 (R-9/R-17/R-18): recall under the wearer identity's declared
+          // bounds. The cache key carries them, so a block built under one
+          // identity's bounds is never served under another's; an undeclared
+          // identity keeps the existing key and recall.
+          const admitted = await withIdentityBoundedMemoryAdmission(() => readAppliedIdentityRecall(owner, workspaceId), (identityRecall) =>
+            getMemoryBlockBoundedResult(workspaceId, `turn-start:${owner}${identityRecallCacheSuffix(identityRecall)}`, async (deadline, { callerWaiting }) => {
               // P-044 (F-L): resolve the agent's ACTION signals only when this
               // turn actually builds/revalidates memory. A stale cache hit must
               // return immediately rather than paying these lookups inline.
@@ -596,6 +602,7 @@ const turnStartMemory = defineTool({
                   ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
                 },
                 budgetChars: TURN_START_BUDGET_CHARS,
+                identityRecall,
                 heading: 'Relevant memory (turn-start delta)',
                 // WI-10004485: this build is bounded by the 2 s deadline and
                 // its cosine gate almost never closes (0.4% of recalls), so
