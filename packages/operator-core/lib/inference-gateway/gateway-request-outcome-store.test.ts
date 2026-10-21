@@ -54,7 +54,7 @@ function timeline(input: {
 }
 
 describe('gateway request outcome store', () => {
-  it('retains the exact provider response and its serving account over a stale routing observation', () => {
+  it('uses provider identity when present and the final attempt for failed outcomes when absent', () => {
     const value = timeline({ requestId: 1, startedAt: BASE, outcome: 'ok', finalStatus: 200 });
     value.cache.servingAccountId = 'prior-attempt-account';
     value.attemptAccountIds = ['attempt-account-a', 'attempt-account-b'];
@@ -65,6 +65,8 @@ describe('gateway request outcome store', () => {
       attemptAccountIds: ['attempt-account-a', 'attempt-account-b'],
     });
     value.providerIdentity = null;
+    value.outcome = 'upstream-error';
+    value.finalStatus = 502;
     expect(gatewayRequestOutcomeRecord('process', value, workspaceId)).toMatchObject({
       providerResponseId: null,
       selectedAccountId: 'attempt-account-b',
