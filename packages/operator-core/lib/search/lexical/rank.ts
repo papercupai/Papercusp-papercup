@@ -87,6 +87,20 @@ export interface LexicalLegRequest {
 }
 
 /**
+ * Legacy lexical ranking for text materialized into a query rather than read from a registered
+ * corpus table. Sealed documents are one such case: their persistent BM25 index contains no
+ * plaintext, so the decrypted candidates must be ranked with the legacy websearch semantics.
+ * Keep that score and match construction behind the same seam as the indexed corpus legs.
+ */
+export function materializedTextLexicalLeg(sql: Sql, documentText: SqlFragment, query: string): LexicalLeg {
+  const vector = sql`to_tsvector('english', ${documentText})`;
+  const tsquery = sql`websearch_to_tsquery('english', ${query})`;
+  const score = sql`ts_rank_cd(${vector}, ${tsquery})`;
+  const match = sql`${vector} @@ ${tsquery}`;
+  return { engine: 'legacy', score, match, order: sql`${score} DESC` };
+}
+
+/**
  * Whether `query` uses `websearch_to_tsquery` operator syntax: a double quote (phrase), the
  * word `or` between terms, or a `-` that starts a term (negation).
  */

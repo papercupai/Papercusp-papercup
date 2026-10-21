@@ -30,6 +30,7 @@
 import type { Sql } from 'postgres';
 import { organizationKeyCustodyState, organizationKeyService, type OrganizationKeyCustodyState } from './organization-key-registry';
 import { blindToken, OrganizationKeyUnavailableError, type BlindIndexKey, type OrganizationKeyService } from './organization-keys';
+import { materializedTextLexicalLeg } from '../search/lexical/rank';
 
 export const SEALED_DOCUMENT_FORMAT = 1;
 
@@ -172,12 +173,12 @@ export async function rankSealedDocuments(
   docs: readonly (DocumentPlaintext & { id: string })[],
 ): Promise<Map<string, number>> {
   if (docs.length === 0) return new Map();
+  const leg = materializedTextLexicalLeg(sql, sql`u.title || ' ' || u.text`, query);
   const rows = await sql<{ id: string; rank: number | string }[]>`
-    SELECT u.id, ts_rank_cd(to_tsvector('english', u.title || ' ' || u.text), q.q) AS rank
+    SELECT u.id, ${leg.score} AS rank
       FROM unnest(${docs.map((d) => d.id)}::text[], ${docs.map((d) => d.title)}::text[], ${docs.map((d) => d.text)}::text[])
-             AS u(id, title, text),
-           (SELECT websearch_to_tsquery('english', ${query}) AS q) q
-     WHERE to_tsvector('english', u.title || ' ' || u.text) @@ q.q`;
+             AS u(id, title, text)
+     WHERE ${leg.match}`;
   return new Map(rows.map((r) => [r.id, Number(r.rank)]));
 }
 

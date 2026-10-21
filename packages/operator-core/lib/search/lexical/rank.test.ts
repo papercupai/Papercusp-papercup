@@ -10,6 +10,7 @@ import {
   fuseByPosition,
   bm25LegIfAvailable,
   lexicalLeg,
+  materializedTextLexicalLeg,
   mergeExactAndBm25,
   measureWarmBm25QueryLatencies,
   resetBm25Availability,
@@ -134,6 +135,20 @@ describe('BM25 availability cache', () => {
       availabilityLoader: async (read) => await read(cacheMiss.sql),
     });
     expect(cacheMiss.queries.some((query) => query.includes('FROM pg_index'))).toBe(true);
+  });
+});
+
+describe('materializedTextLexicalLeg', () => {
+  it('builds the sealed-document legacy score and exact websearch match through the lexical seam', () => {
+    const { sql, queries } = catalogSql();
+    const documentText = sql`u.title || ' ' || u.text`;
+    const leg = materializedTextLexicalLeg(sql, documentText, 'quarter "board meeting" -draft');
+
+    expect(leg.engine).toBe('legacy');
+    expect(queries.some((query) => query.includes("to_tsvector('english'"))).toBe(true);
+    expect(queries.some((query) => query.includes("websearch_to_tsquery('english'"))).toBe(true);
+    expect(queries.some((query) => query.includes('ts_rank_cd('))).toBe(true);
+    expect(queries.some((query) => query.includes('@@'))).toBe(true);
   });
 });
 

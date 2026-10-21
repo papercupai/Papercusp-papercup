@@ -1042,6 +1042,8 @@ describe('frozen D075 native workload detector', () => {
     ['missing round probe', (x: any) => { x.probe.shift(); }, 'unknown'],
     ['sparse task population', (x: any) => { x.rows.splice(x.rows.findIndex((r: any) => r.kind === 'wake'), 1); }, 'unknown'],
     ['counter reset', (x: any) => { x.rows.find((r: any) => r.kind === 'arm-end').host.pswpin = 0; }, 'unknown'],
+    ['missing arm config', (x: any) => { x.rows[0].arms = []; }, 'fail'],
+    ['unrelated extra phase', (x: any) => { x.rows.push({ ...x.rows.find((r: any) => r.kind === 'wake'), phase: 'single' }); }, 'unknown'],
   ])('rejects %s', (_name, mutate, status) => {
     const input = fixture(); mutate(input);
     expect(detect(input).status).toBe(status);

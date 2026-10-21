@@ -1249,10 +1249,13 @@ def evaluate_native_workload(rows, probe):
     if len(arms) != 1 or len(terminal) != 1:
         gaps.append("one-complete-arm-required")
     arm = arms[0].get("arm") if len(arms) == 1 else None
-    if arm is None or (config and config.get("arms", [{}])[0].get("name") != arm):
+    specs = config.get("arms", [])
+    if arm is None or len(specs) != 1 or specs[0].get("name") != arm:
         gaps.append("arm-identity")
     if any(r.get("arm") != arm for r in rows if r.get("kind") in ("wake", "phase", "arm-end")):
         gaps.append("mixed-arm-evidence")
+    if any(r.get("phase") not in ("active-1", "active-5", "active-10", "storm") for r in rows if r.get("kind") == "wake"):
+        gaps.append("unexpected-wake-phase")
     assigned = arms[0].get("agents", {}) if len(arms) == 1 else {}
     if len(assigned) != 50 or (arms and arms[0].get("assignedAgents") != 50):
         gaps.append("assigned-agent-census")
