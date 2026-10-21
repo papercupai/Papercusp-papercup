@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-009 / R-19 live dependency-graph resolver timing against the pane deadline (event-wait-settlement-2026-10-20)",
+  "framework": "operational",
+  "command": [
+    "node",
+    "docs/evidence/ews-p009-r19-latency-live/run.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T08:28:32.265Z",
+  "finishedAt": "2026-10-21T08:28:44.985Z",
+  "plan": "event-wait-settlement-2026-10-20",
+  "planItem": "P-009",
+  "workItemId": "WI-6554700010018160",
+  "specIds": [
+    "AUTO-BAR-R-19-P-009@3"
+  ],
+  "evidencePlane": "live",
+  "summary": "The R-19 probe (docs/evidence/ews-p009-r19-latency-live/time.mts) timed the dependency-graph resolvers 5 times on the papercusp harness against papercusp@5432. Before the wait leg (depEdges alone) the slowest run took 232.9 ms; with it (depEdges and depWaits concurrently, as the pane loads them) 387.9 ms; depWaits alone 411.1 ms. The deadline is 10000 ms (RESOLVER_READ_TIMEOUT_MS). The committed oracle judged it PASS. 6 of 6 negative controls failed on exactly their targeted assertion.",
+  "assertions": [
+    {
+      "id": "live:min-runs",
+      "passed": true,
+      "evidence": "runs=5 (minimum 5)"
+    },
+    {
+      "id": "live:operator-db",
+      "passed": true,
+      "evidence": "the probe read papercusp@5432; the operator connection string (papercup-dev-api.service) names papercusp@5432"
+    },
+    {
+      "id": "live:graph-non-empty",
+      "passed": true,
+      "evidence": "depEdges rows per run: 2656,2656,2656,2656,2656"
+    },
+    {
+      "id": "live:wait-leg-ran",
+      "passed": true,
+      "evidence": "depWaits rows per run: 1450,1450,1450,1450,1450; depWaits alone ms per run: 411.1,347.9,310.2,328.8,290.8"
+    },
+    {
+      "id": "live:before-recorded",
+      "passed": true,
+      "evidence": "depEdges alone ms per run (the pane's load before the wait leg): 166,192.9,232.9,218.7,186.7"
+    },
+    {
+      "id": "live:within-deadline",
+      "passed": true,
+      "evidence": "max depEdges alone 232.9 ms, max depEdges+depWaits 387.9 ms, max depWaits alone 411.1 ms; deadline 10000 ms (RESOLVER_READ_TIMEOUT_MS)"
+    },
+    {
+      "id": "control:C1-run-at-deadline",
+      "passed": true,
+      "evidence": "the control corrupts one property of the real measurement and must fail exactly within-deadline; the oracle failed within-deadline"
+    },
+    {
+      "id": "control:C2-other-database",
+      "passed": true,
+      "evidence": "the control corrupts one property of the real measurement and must fail exactly operator-db; the oracle failed operator-db"
+    },
+    {
+      "id": "control:C3-too-few-runs",
+      "passed": true,
+      "evidence": "the control corrupts one property of the real measurement and must fail exactly min-runs; the oracle failed min-runs"
+    },
+    {
+      "id": "control:C4-empty-graph",
+      "passed": true,
+      "evidence": "the control corrupts one property of the real measurement and must fail exactly graph-non-empty; the oracle failed graph-non-empty"
+    },
+    {
+      "id": "control:C5-wait-leg-returned-nothing",
+      "passed": true,
+      "evidence": "the control corrupts one property of the real measurement and must fail exactly wait-leg-ran; the oracle failed wait-leg-ran"
+    },
+    {
+      "id": "control:C6-before-not-timed",
+      "passed": true,
+      "evidence": "the control corrupts one property of the real measurement and must fail exactly before-recorded; the oracle failed before-recorded"
+    }
+  ],
+  "environment": {
+    "database": "papercusp@5432 (the dev operator's HARNESS_ADMIN_DATABASE_URL)",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "reader": "docs/evidence/ews-p009-r19-latency-live/time.mts through npx tsx, in-process resolver calls",
+    "commit": "f219b26fa68ec3e2d62f081168448f0320a6676d",
+    "measuredAt": "2026-10-21T08:28:44.107Z"
+  },
+  "measurement": {
+    "deadlineMs": 10000,
+    "deadlineSource": "RESOLVER_READ_TIMEOUT_MS in packages/operator-core/lib/sync-resolver/read-deadline.ts, read by the probe",
+    "beforeAfter": {
+      "beforeMaxMs": 232.9,
+      "beforeMeans": "workItems.depEdges alone: what the Work-tab dependency graph pane loaded before the wait leg",
+      "afterMaxMs": 387.9,
+      "afterMeans": "workItems.depEdges and workItems.depWaits concurrently: what the pane loads now",
+      "waitsAloneMaxMs": 411.1
+    },
+    "runs": [
+      {
+        "run": 1,
+        "edgesMs": 166,
+        "edgesPlusWaitsMs": 387.9,
+        "waitsAloneMs": 411.1,
+        "edges": 2656,
+        "edgesConcurrent": 2656,
+        "waits": 1450,
+        "legs": {
+          "bound": 112,
+          "holder": 600,
+          "blocker": 738,
+          "truncated": [
+            "session-await"
+          ]
+        },
+        "payloadBytes": 984070
+      },
+      {
+        "run": 2,
+        "edgesMs": 192.9,
+        "edgesPlusWaitsMs": 298.7,
+        "waitsAloneMs": 347.9,
+        "edges": 2656,
+        "edgesConcurrent": 2656,
+        "waits": 1450,
+        "legs": {
+          "bound": 112,
+          "holder": 600,
+          "blocker": 738,
+          "truncated": [
+            "session-await"
+          ]
+        },
+        "payloadBytes": 984070
+      },
+      {
+        "run": 3,
+        "edgesMs": 232.9,
+        "edgesPlusWaitsMs": 338.2,
+        "waitsAloneMs": 310.2,
+        "edges": 2656,
+        "edgesConcurrent": 2656,
+        "waits": 1450,
+        "legs": {
+          "bound": 112,
+          "holder": 600,
+          "blocker": 738,
+          "truncated": [
+            "session-await"
+          ]
+        },
+        "payloadBytes": 984070
+      },
+      {
+        "run": 4,
+        "edgesMs": 218.7,
+        "edgesPlusWaitsMs": 313.3,
+        "waitsAloneMs": 328.8,
+        "edges": 2656,
+        "edgesConcurrent": 2656,
+        "waits": 1450,
+        "legs": {
+          "bound": 112,
+          "holder": 600,
+          "blocker": 738,
+          "truncated": [
+            "session-await"
+          ]
+        },
+        "payloadBytes": 984070
+      },
+      {
+        "run": 5,
+        "edgesMs": 186.7,
+        "edgesPlusWaitsMs": 296.2,
+        "waitsAloneMs": 290.8,
+        "edges": 2656,
+        "edgesConcurrent": 2656,
+        "waits": 1450,
+        "legs": {
+          "bound": 112,
+          "holder": 600,
+          "blocker": 738,
+          "truncated": [
+            "session-await"
+          ]
+        },
+        "payloadBytes": 984070
+      }
+    ],
+    "verdict": {
+      "ok": true,
+      "failedIds": [],
+      "maxEdgesMs": 232.9,
+      "maxEdgesPlusWaitsMs": 387.9,
+      "maxWaitsAloneMs": 411.1
+    }
+  },
+  "sourceBlobs": {
+    "packages/operator-core/lib/sync-resolver/dependency-graph-edges.ts": "bc01ec59278322b9564528c63105b35e0f9a6ec0",
+    "packages/operator-core/lib/sync-resolver/read-deadline.ts": "06493c925719c40e4bbea6602ed5b20a2b79a49b",
+    "scripts/lib/dependency-graph-wait-latency-live-oracle.mjs": "257d0fa7d1c3dbe0898e12e7948e6dcf92789aa4"
+  },
+  "sourcesDirty": {
+    "packages/operator-core/lib/sync-resolver/dependency-graph-edges.ts": false,
+    "packages/operator-core/lib/sync-resolver/read-deadline.ts": false,
+    "scripts/lib/dependency-graph-wait-latency-live-oracle.mjs": true
+  },
+  "artifacts": {
+    "docs/evidence/ews-p009-r19-latency-live/run.mjs": "sha256:978d6963eed82dd07bc2a49a275380e829713e20a5ce59fbbf5e4fb536b66710",
+    "docs/evidence/ews-p009-r19-latency-live/time.mts": "sha256:dc3ebfb33c17f2d1f81481a832143558c86e9636d9515ef8ceddb8a77e25c1c0"
+  },
+  "instrument": {
+    "path": "scripts/lib/dependency-graph-wait-latency-live-oracle.mjs",
+    "testPath": "scripts/lib/dependency-graph-wait-latency-live-oracle.test.ts",
+    "role": "Every pass/fail decision on the measurement is taken by this committed oracle; run.mjs only runs the probe, applies the controls and records output. The oracle test also pins the bar deadline to RESOLVER_READ_TIMEOUT_MS."
+  },
+  "limitations": [
+    "Timed in-process against the live operator database with the tree's resolver source. This is the resolver the bar names; the HTTP round trip and the webview render are not part of the timing.",
+    "Wall-clock times on a shared dev box under live fleet load vary between runs; the receipt records the observed maxima over the runs, not an upper bound.",
+    "The bound on the wait leg query count is the integration test bound to the same clause (dependency-graph-edges.integration.test.ts), not this receipt."
+  ]
+}

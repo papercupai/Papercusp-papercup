@@ -1145,6 +1145,8 @@ export const CompletionRecordSchema = z.object({
    * missing. Optional: a single-kind close may rely on the root testsRun/testResult fields.
    */
   kindEvidence: kindEvidenceArg().optional(),
+  /** plan-item-types-registry-cupboard P-004 (R-10): checked against the linked item type's completion schema. */
+  typeFields: z.record(z.string(), z.unknown()).optional().describe("Fields the linked plan item's item type declares"),
   /** Required on successful bug/capability-gap closes; persisted with terminal evidence. */
   rootCauseVerification: RootCauseVerificationSchema.optional().meta({
     'x-papercusp-call-constraint':

@@ -99,8 +99,10 @@ describe('complete.ts WIRES the change-kind close gate (change-kind-declared-pro
   });
 
   it('R-6: a warn verdict lands the close and returns the warning on the result', () => {
+    // P-004 (R-4) widened this: a 'propose' verdict (reasonless narrowing / UI-looking files without
+    // 'ui') also lands — as completionAuthority 'proposed' — and returns its warning the same way.
     expect(source).toMatch(
-      /const changeKindWarning =\s*\n\s*changeKindGate\.applicable && changeKindGate\.outcome === 'warn' \? changeKindGate\.warning : undefined;/,
+      /const changeKindWarning =\s*\n\s*changeKindGate\.applicable && \(changeKindGate\.outcome === 'warn' \|\| changeKindGate\.outcome === 'propose'\)\s*\n\s*\? changeKindGate\.warning\s*\n\s*: undefined;/,
     );
     expect(source).toMatch(/\.\.\.\(changeKindWarning && closeLanded && !stateError \? \{ changeKindWarning \} : \{\}\)/);
   });

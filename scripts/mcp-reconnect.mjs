@@ -16,6 +16,7 @@ import {
 } from 'node:fs';
 import net from 'node:net';
 import { papercuspPtyPath } from '../libs/host-platform/src/home.mjs';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 export const DEFAULT_SERVER_NAME = 'papercusp-su';
 export const DEFAULT_ACK_TIMEOUT_MS = 5_000;
@@ -175,7 +176,9 @@ function printUsage() {
   );
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Bundle- and symlink-safe entry check (lint:no-hand-rolled-cli-entry): the raw
+// `file://${argv[1]}` comparison misses a symlinked or relative invocation path.
+if (isCliEntry(import.meta.url)) {
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
     printUsage();
     process.exitCode = 0;

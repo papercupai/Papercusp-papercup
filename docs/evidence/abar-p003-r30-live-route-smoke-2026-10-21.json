@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-003 / R-30 live tool-path smoke: rubrics:amend dry-run preview on the selected operator-api current-build route (acceptance-bar-atomic-retirement-2026-10-15)",
+  "framework": "operational",
+  "command": [
+    "dev:pipeline_position { path: 'packages/operator-core/lib/rubrics.ts', testClass: 'operator-api' }",
+    "node scripts/mcp-call.mjs rubrics:amend --json-file .papercusp/scratch/cm-vet/r30-smoke-args.json --client su-1622829b-5b04-4074-a03a-90f8eb5e24ca --port 3170",
+    "dev:pg_query: SELECT id, tool_name, invoked_at, serving_host, serving_build_sha, status FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND id=42368102"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T08:27:30.000Z",
+  "finishedAt": "2026-10-21T08:29:10.000Z",
+  "plan": "acceptance-bar-atomic-retirement-2026-10-15",
+  "planItem": "P-003",
+  "workItemId": "WI-6554700010018643",
+  "specIds": ["AUTO-BAR-R-30-P-003@3"],
+  "evidencePlane": "live",
+  "instrument": { "none": true, "reason": "Manual BAR (check.instrumentKey none). The observation is a route receipt plus one recorded tool invocation, read back from the invocation ledger; no committed probe program was used." },
+  "selectedRoute": {
+    "id": "operator-api",
+    "runtime": "staging-operator",
+    "route": "http://127.0.0.1:3170 after dev:pipeline_position containment check",
+    "readiness": "ready",
+    "isolation": "Separate port, process and checkout; database and workspace are not isolated."
+  },
+  "servingRuntimes": [
+    { "runtime": "staging-operator", "role": "owner", "buildSha": "f219b26fa6", "buildShaSource": "health", "containsChange": true },
+    { "runtime": "release-operator", "role": "owner", "buildSha": "d740fc3802", "buildShaSource": "health", "containsChange": false },
+    { "runtime": "bg-host", "role": "shared", "buildSha": "0c68f95949", "containsChange": true },
+    { "runtime": "gateway", "role": "shared", "buildSha": "9320948fc4", "containsChange": false }
+  ],
+  "smokeRun": {
+    "tool": "rubrics:amend",
+    "args": {
+      "rubricRef": "acceptance-acceptance-bar-atomic-retirement-2026-10-15",
+      "dryRun": true,
+      "criterion": { "key": "r-30", "field": "method", "mode": "append", "text": "Synthetic smoke preview only (R-30 evidence run); never applied." }
+    },
+    "toolInvocation": {
+      "id": 42368102,
+      "invokedAt": "2026-10-21T08:28:23.765Z",
+      "servingHost": "port-3170",
+      "servingBuildSha": "f219b26fa6",
+      "status": "ok"
+    },
+    "result": {
+      "ok": true,
+      "dryRun": true,
+      "rubricRevision": 4,
+      "subjectPlanRevision": 30,
+      "changes": [{ "barKey": "R-30", "kinds": ["method-only"], "fields": ["method"] }],
+      "revisionMovement": { "rubric": { "from": 4, "to": 5 }, "subject": { "from": 30, "to": 31 } },
+      "note": "revisionMovement is the projected movement IF applied; this run was a preview and applied nothing."
+    },
+    "postRunReadback": "rubrics:get on :3070 reported the backing rubric plan row at revision 4 after the preview, so the preview wrote no rubric revision."
+  },
+  "summary": "dev:pipeline_position selected the operator-api current-build route (staging-operator :3170, readiness ready) and reported the loaded runtime identities; staging-operator f219b26fa6 contains packages/operator-core/lib/rubrics.ts. A rubrics:amend dry-run preview on that route returned ok, and its tool_invocations row 42368102 records serving_host port-3170 and serving_build_sha f219b26fa6, matching the selected route's runtime. The preview applied nothing (rubric stays at revision 4).",
+  "assertions": [
+    { "id": "route:selected", "passed": true, "evidence": "currentBuildTestRoute.id=operator-api runtime=staging-operator route=:3170 readiness=ready" },
+    { "id": "runtime:contains-change", "passed": true, "evidence": "servingRuntimes staging-operator buildSha f219b26fa6 containsChange=true for packages/operator-core/lib/rubrics.ts" },
+    { "id": "invocation:route-identity", "passed": true, "evidence": "tool_invocations 42368102 serving_host=port-3170 (the selected route's port)" },
+    { "id": "invocation:runtime-identity", "passed": true, "evidence": "tool_invocations 42368102 serving_build_sha=f219b26fa6 equals the selected runtime buildSha" },
+    { "id": "smoke:ok", "passed": true, "evidence": "rubrics:amend result ok:true dryRun:true; tool_invocations status=ok" },
+    { "id": "smoke:non-mutating", "passed": true, "evidence": "result.dryRun=true; rubric backing row still at revision 4 after the run" }
+  ]
+}

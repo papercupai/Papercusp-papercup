@@ -39,7 +39,9 @@ const SHELL_HARNESSES: ShellHarness[] = [
     file: 'scripts/verify-tauri-headless.sh',
     name: 'verify-tauri-headless',
     phases: ['prepare', 'boot', 'assert'],
-    entry: 'vh_begin',
+    // Since 77a4afdfc8 (2026-10-16) phases open through verifier_begin_phase, which emits the
+    // native controller's VH_BEGIN marker and then calls `vh_begin "$1"` itself.
+    entry: 'verifier_begin_phase',
   },
   {
     file: 'papercusp-desktop/bin/release-local.sh',
@@ -183,8 +185,11 @@ describe('the DAO HR native delegate adopts the contract', () => {
     const native = vi.fn(async () => {
       if (fails) throw new Error('DAO HR native assertion refused');
     });
-    const processFixture: { argv: string[]; exitCode?: number } = {
+    // `env` is required: since 376951c831 the footer reads process.env.PAPERCUSP_DAO_HR_NATIVE_MUTATION
+    // (its mutation-probe hook); a fixture without it throws before runNativeE2e is ever called.
+    const processFixture: { argv: string[]; env: Record<string, string | undefined>; exitCode?: number } = {
       argv: ['node', 'driver.mts', '--only=native'],
+      env: {},
     };
     let measured: HarnessRunResult | undefined;
     await runInNewContext('(async () => {\n' + footer + '\n})()', {

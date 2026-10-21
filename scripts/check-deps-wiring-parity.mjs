@@ -978,6 +978,31 @@ const FETCH_IMPL_TEST_PASSTHROUGH =
   'benign: fetchImpl is a test pass-through (source-host-fetch.ts:61) with the real default `deps.fetchImpl ?? fetch` (host-fetch.ts:97); ' +
   'push delivery and socket ingress inject no fetch, so they take the production path.';
 
+/**
+ * 2026-10-21 (WI-6554700010018875, gate WI-10006055) — 23 sites / 15 keys that accrued while
+ * main was held ~19 days with this guard red on every candidate. Each omitted seam selects a
+ * REAL production default, so none is the silent `if (deps.x)` skip this guard exists for:
+ *   - AlarmAttentionDeps (alarm-attention.ts): `resolve` → :92 `deps.resolve ?? defaultResolve`;
+ *     `recentlyEscalated` → :115 `?? defaultRecentlyEscalated(…)`; `notify` → :142-146
+ *     `if (deps.notify) … else notifyAttention(input)`. degradation/rail-migration-cases.ts is a
+ *     vitest-executed case harness (P-017 manifest-to-test binding) that injects only the
+ *     condition-rail seams it asserts on — a FIXTURE omitting a seam is
+ *     lint:optional-seam-strands' subject, not this guard's.
+ *   - AcceptanceRubricVettingDeps.readCurrentCritique → acceptance-rubric-vetting.ts:328
+ *     `deps.readCurrentCritique ?? readCurrentAcceptanceRubricCritique`.
+ *   - GatewayServiceOptions (inference-gateway/launch.ts): `log` → :726 `?? console.log`;
+ *     `resolveLocalBackends` → :741 `?? (async () => [])`; `fetchImpl` → :1101 passthrough,
+ *     injected only by the scenario/load harnesses.
+ *   - ManagedSpawnOptions (task-manager/managed-spawn.ts): `spawnFn` → :246 `?? spawn`;
+ *     `stage` is optional `opts.stage?.(…)` timing telemetry.
+ *   - McpProxyOptions (mcp-proxy/proxy.ts): `log` → :6611 `?? console.log`; `resolveTarget` /
+ *     `resolveTargets` are alternative target modes (resolveTargetCandidates), and the bench
+ *     script uses the static targetPort mode.
+ */
+const DEFAULTED_SEAM_HELD_MAIN =
+  'WI-6554700010018875 adjudicated: the omitted seam has a real production default (?? / else-branch / optional telemetry); ' +
+  'injecting it is the test/harness path, omitting it the production one.';
+
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
@@ -1084,7 +1109,6 @@ const FAIL_BASELINE = new Map([
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/add-decision.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/add-item.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/edit.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/new.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/ratify-decision.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-content-chunk.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-content.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
@@ -1145,6 +1169,23 @@ const FAIL_BASELINE = new Map([
   ['SourceHostFetchOptions|packages/operator-core/lib/data-sources/live-search-adapter.ts|reconnectRequired', LIVE_SEARCH_RECONNECT_DEFAULT_REFUSAL],
   ['SourceHostFetchOptions|packages/operator-core/lib/providers/connector-push.ts|fetchImpl', FETCH_IMPL_TEST_PASSTHROUGH],
   ['SourceHostFetchOptions|packages/operator-core/lib/providers/provider-socket-ingress.ts|fetchImpl', FETCH_IMPL_TEST_PASSTHROUGH],
+  // 2026-10-21 — defaulted seams that accrued while main was held (see DEFAULTED_SEAM_HELD_MAIN).
+  ['AcceptanceRubricVettingDeps|packages/operator-core/lib/agent-tools/rubrics/get.ts|readCurrentCritique', DEFAULTED_SEAM_HELD_MAIN],
+  ['AcceptanceRubricVettingDeps|packages/operator-core/lib/agent-tools/scorecards/emit.ts|readCurrentCritique', DEFAULTED_SEAM_HELD_MAIN],
+  ['AlarmAttentionDeps|packages/operator-core/lib/agent-governor-observer.ts|resolve', DEFAULTED_SEAM_HELD_MAIN],
+  ['AlarmAttentionDeps|packages/operator-core/lib/degradation/rail-migration-cases.ts|notify,recentlyEscalated', DEFAULTED_SEAM_HELD_MAIN],
+  ['AlarmAttentionDeps|packages/operator-core/lib/poll-suspect-alarm.ts|resolve', DEFAULTED_SEAM_HELD_MAIN],
+  ['AlarmAttentionDeps|packages/operator-core/lib/storage/disk-space-alarm.ts|resolve', DEFAULTED_SEAM_HELD_MAIN],
+  ['AlarmAttentionDeps|packages/operator-core/lib/storage/replication-slot-alarm.ts|resolve', DEFAULTED_SEAM_HELD_MAIN],
+  ['AlarmAttentionDeps|packages/operator-core/lib/storage/storage-growth-alarm.ts|resolve', DEFAULTED_SEAM_HELD_MAIN],
+  ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/load-test.ts|fetchImpl', DEFAULTED_SEAM_HELD_MAIN],
+  ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/sidecar-main.ts|fetchImpl', DEFAULTED_SEAM_HELD_MAIN],
+  ['GatewayServiceOptions|packages/operator-core/test/blueprint-account-route-http-scenario.ts|log,resolveLocalBackends', DEFAULTED_SEAM_HELD_MAIN],
+  ['ManagedSpawnOptions|packages/operator-core/lib/storage/disk-reclaim.ts|spawnFn,stage', DEFAULTED_SEAM_HELD_MAIN],
+  ['ManagedSpawnOptions|packages/operator-core/lib/storage/disk-reclaim.ts|spawnFn', DEFAULTED_SEAM_HELD_MAIN],
+  ['McpProxyOptions|apps/operator/bin/host-bootstrap.ts|log', DEFAULTED_SEAM_HELD_MAIN],
+  ['McpProxyOptions|apps/operator/bin/mcp-proxy.ts|log', DEFAULTED_SEAM_HELD_MAIN],
+  ['McpProxyOptions|scripts/bench-work-item-continuations.ts|resolveTarget,resolveTargets', DEFAULTED_SEAM_HELD_MAIN],
 ]);
 
 /**

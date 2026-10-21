@@ -821,6 +821,9 @@ describe('buildDepSubgraph — event waits (P-009)', () => {
     expect(byId.get('A')?.depth).toBe(1);
     expect(byId.get('B')?.depth).toBe(0);
     expect(byId.get(eventNodeId('work-item:done:B'))?.depth).toBe(0);
+    // OUT's only incoming edge is a wait. A has a `blocks` edge too, so it cannot tell a
+    // depth pass that counts waits from one that does not; OUT can (it would read 1).
+    expect(byId.get('OUT')?.depth).toBe(0);
     expect(byId.get('OUT')).toMatchObject({ title: 'outside the window', kind: 'bug', state: 'blocked', hydrated: true });
     expect(g.findings.flatMap((f) => f.nodes)).not.toContain(eventNodeId('work-item:done:B'));
 

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-004 / R-31 independently assigned acceptance verdict distinguishing the positive control from each negative control (acceptance-bar-atomic-retirement-2026-10-15)",
+  "framework": "operational",
+  "command": [
+    "work_items:get { id: 'WI-6554700010018644', harness: 'papercusp', detail: true, threadLimit: 30 }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-21T08:31:00.000Z",
+  "finishedAt": "2026-10-21T08:31:05.000Z",
+  "plan": "acceptance-bar-atomic-retirement-2026-10-15",
+  "planItem": "P-004",
+  "workItemId": "WI-6554700010018644",
+  "specIds": ["AUTO-BAR-R-31-P-004@3"],
+  "evidencePlane": "live",
+  "instrument": { "none": true, "reason": "Manual BAR (check.instrumentKey none): it records a person's judgment, not a test result. The record is read from the work-item thread." },
+  "verdictRecord": {
+    "workItem": "WI-6554700010018644",
+    "state": "done",
+    "evidencePackagePost": "thread-post:1192731 (implementer su-1622829b; lists the POSITIVE control and the negative controls for an independent reviewer; the implementer explicitly declines to accept)",
+    "independentReviewers": [
+      { "agent": "su-9213b07f", "verdict": "ACCEPT", "post": "thread-post:1192751" },
+      { "agent": "su-f65dd3bd", "verdict": "ACCEPT", "post": "thread-post:1192763" }
+    ],
+    "routing": "consult conv-mvhn5c3f (reviewers outside the implementer lineage)",
+    "caveatOwnership": "non-blocking caveats b/c -> WI-6554700010018824, d -> WI-6554700010018783, e -> WI-6554700010018754"
+  },
+  "summary": "WI-6554700010018644 (P-004) is closed done. Its thread carries the implementer's evidence package (post 1192731) naming the positive control and the negative controls, and two reviewers outside the implementer lineage (su-9213b07f, su-f65dd3bd) returned ACCEPT. The grader should read posts 1192731, 1192751 and 1192763 and judge whether each verdict names the authorized positive control and each negative control and distinguishes them.",
+  "assertions": [
+    { "id": "verdict:item-closed", "passed": true, "evidence": "WI-6554700010018644 state=done" },
+    { "id": "verdict:independent", "passed": true, "evidence": "ACCEPT verdicts by su-9213b07f and su-f65dd3bd; the implementer su-1622829b did not accept (post 1192731 states it cannot)" },
+    { "id": "verdict:controls-named", "passed": true, "evidence": "post 1192731 lists a POSITIVE control (authorized change applies) and negative controls; grader confirms each reviewer distinguishes them" }
+  ]
+}
