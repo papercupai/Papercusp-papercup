@@ -37,7 +37,13 @@ import {
   type VerificationResolver,
 } from '../plan-verification-profile';
 import { builtinItemTypeId, builtinKindOf, builtinPlanTypeId } from './builtin-catalog';
-import { FLOOR_MODULE, normalizeModules, type PlanTypeDefinition, type TypeReference } from './definitions';
+import {
+  FLOOR_MODULE,
+  normalizeModules,
+  type ItemTypeDefinition,
+  type PlanTypeDefinition,
+  type TypeReference,
+} from './definitions';
 import { buildTypeRegistrySnapshot, type RegisteredDefinition, type TypeRegistrySnapshot } from './registry';
 import { VERIFICATION_MODULES, type VerificationModule } from './verification-modules';
 
@@ -96,12 +102,104 @@ export function heldToPlanType(
   };
 }
 
+/** A pinned revision: what a plan resolved at activation (P-005, harness_shared.plan_type_pins). */
+export interface TypePin {
+  revision: number;
+  contentHash: string;
+}
+
+/** A plan's pins, by type id. */
+export interface PlanTypePins {
+  itemTypes: ReadonlyMap<string, TypePin>;
+  planTypes: ReadonlyMap<string, TypePin>;
+}
+
+export type TypeKind = 'item-type' | 'plan-type';
+
+/** One type a resolution touched: what the pin writer records for it. */
+export interface ResolvedTypeRef {
+  kind: TypeKind;
+  id: string;
+  revision: number;
+  contentHash: string;
+}
+
+export interface RegistryResolverOptions {
+  /** The plan's pins. A pinned id resolves exactly its pinned revision, retired or not. */
+  pins?: PlanTypePins | null;
+  /** Called for the plan type and every item type a resolution used, parents included. */
+  onResolved?: (ref: ResolvedTypeRef) => void;
+}
+
+/** How deep an `extends` chain may go before it is treated as unresolvable. */
+export const MAX_EXTENDS_DEPTH = 8;
+
+type Lookup<T> = RegisteredDefinition<T> | null;
+
+/**
+ * A pinned id resolves exactly its pinned revision, and only while that revision's content
+ * still matches the pin; anything else is unresolvable, which fails safe. An unpinned id
+ * resolves the highest non-retired revision in range.
+ */
+function lookupPinned<T>(
+  id: string,
+  range: TypeReference,
+  pin: TypePin | undefined,
+  latest: (id: string, range: TypeReference) => Lookup<T>,
+  exact: (id: string, revision: number) => Lookup<T>,
+): Lookup<T> {
+  if (!pin) return latest(id, range);
+  const found = exact(id, pin.revision);
+  return found && found.contentHash === pin.contentHash ? found : null;
+}
+
 export function createRegistryVerificationResolver(
   registry: TypeRegistrySnapshot = buildTypeRegistrySnapshot(),
+  options: RegistryResolverOptions = {},
 ): VerificationResolver {
+  const pins = options.pins ?? null;
+  const record = (kind: TypeKind, found: RegisteredDefinition<{ id: string; revision: number }>) =>
+    options.onResolved?.({ kind, id: found.definition.id, revision: found.definition.revision, contentHash: found.contentHash });
+
+  /**
+   * An item type's effective module set: its own modules plus its parent's effective set
+   * (`extends`), so a child can never drop what its parent requires. Null when the type, or
+   * any parent, cannot be resolved, or the chain cycles or runs deeper than MAX_EXTENDS_DEPTH.
+   */
+  const itemTypeModules = (
+    ref: TypeReference,
+    seen: ReadonlySet<string> = new Set(),
+  ): { found: RegisteredDefinition<ItemTypeDefinition>; modules: VerificationModule[] } | null => {
+    if (seen.has(ref.id) || seen.size >= MAX_EXTENDS_DEPTH) return null;
+    const found = lookupPinned(
+      ref.id,
+      ref,
+      pins?.itemTypes.get(ref.id),
+      (id, range) => registry.itemType(id, range),
+      (id, revision) => registry.itemTypeAt(id, revision),
+    );
+    if (!found) return null;
+    let modules = [...found.definition.modules];
+    const parentRef = found.definition.extends;
+    if (parentRef) {
+      const parent = itemTypeModules(parentRef, new Set([...seen, ref.id]));
+      if (!parent) return null;
+      modules = normalizeModules([...modules, ...parent.modules]);
+    }
+    record('item-type', found);
+    return { found, modules };
+  };
+
   return (plan, item): VerificationResolution => {
     const planTypeId = planTypeIdFor(plan);
-    const planType = registry.planType(planTypeId);
+    const planType = lookupPinned(
+      planTypeId,
+      { id: planTypeId },
+      pins?.planTypes.get(planTypeId),
+      (id, range) => registry.planType(id, range),
+      (id, revision) => registry.planTypeAt(id, revision),
+    );
+    if (planType) record('plan-type', planType);
     const declaredProfile = isVerificationProfile(plan.verificationProfile) ? plan.verificationProfile : null;
     // A resolved plan type's base IS the profile it replaces; otherwise the declared profile.
     const profile = planType?.definition.base ?? declaredProfile ?? INFERRED_PLAN_PROFILE;
@@ -136,11 +234,11 @@ export function createRegistryVerificationResolver(
       itemType = null;
       modules = normalizeModules(domainModules);
     } else {
-      const resolved = registry.itemType(reference.id, reference);
-      itemType = resolved?.definition.id ?? reference.id;
+      const resolved = itemTypeModules(reference);
+      itemType = resolved?.found.definition.id ?? reference.id;
       deliverable = builtinKindOf(itemType);
       modules = resolved
-        ? normalizeModules([...resolved.definition.modules, ...domainModules])
+        ? normalizeModules([...resolved.modules, ...domainModules])
         : [...STRICTEST_MODULES];
     }
     modules = holdToFloor(modules);

@@ -318,6 +318,43 @@
   stroke-dasharray: 3 3;
 }
 
+/* event-wait-settlement-2026-10-20 P-009 — an EVENT node is a key some wait is parked on,
+ * not a work item, so it gets the accent hue rather than the card fill. When EVERY wait on
+ * it is stale (each waiter's session has ended, or its await expired) it turns to the warn
+ * hue and dashes: nobody is keeping that wait alive. Placed before the planmark rule, which
+ * must stay last of the descendant-`rect` rules (see its note). */
+.pc-depgraph__node--event rect {
+  fill: color-mix(in oklab, var(--accent, #38bdf8), transparent 90%);
+  stroke: var(--accent, #38bdf8);
+  stroke-opacity: 0.7;
+}
+.pc-depgraph__node--event-stale rect {
+  fill: color-mix(in oklab, var(--warn, #fbbf24), transparent 90%);
+  stroke: var(--warn, #fbbf24);
+  stroke-dasharray: 3 3;
+}
+
+/* Wait edges (event → item): dotted, in the event node's hue, so a wait never reads as a
+ * `blocks` edge between two items. */
+.pc-depgraph__edge--wait {
+  stroke: var(--accent, #38bdf8);
+  stroke-opacity: 0.6;
+  stroke-dasharray: 1 3;
+}
+.pc-depgraph__edge--wait-stale {
+  stroke: var(--warn, #fbbf24);
+  stroke-opacity: 0.6;
+  stroke-dasharray: 1 3;
+}
+.pc-depgraph__arrowhead--wait {
+  fill: var(--accent, #38bdf8);
+  fill-opacity: 0.75;
+}
+.pc-depgraph__arrowhead--wait-stale {
+  fill: var(--warn, #fbbf24);
+  fill-opacity: 0.75;
+}
+
 /* P-012 — plan provenance (`source_plan_slug`), drawn as a left edge-marker.
  *
  * ⚠ SPECIFICITY IS LOAD-BEARING HERE, not incidental. The marker is a <rect> INSIDE

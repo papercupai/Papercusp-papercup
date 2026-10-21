@@ -304,8 +304,8 @@ describe('search:fulltext — scope normalization', () => {
   it('no scope → the 4 default sources, in canonical order', async () => {
     const tool = (await import('./fulltext')).default;
     const res = await tool.handler({ query: 'pricing decision' } as never, CTX() as never);
-    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
-    expect(ftCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'plan']);
+    expect(ftCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'plan']);
   });
 
   // EI-6984: 'work_item' (and the session/coord corpora,
@@ -334,7 +334,7 @@ describe('search:fulltext — scope normalization', () => {
   it('scope:["work_item"] is accepted and echoed (the EI-6984 fix) — not silently dropped', async () => {
     const tool = (await import('./fulltext')).default;
     const res = await tool.handler({ query: 'x', scope: ['work_item'] } as never, CTX() as never);
-    expect(payloadOf(res as never).scope).toEqual(['work_item']);
+    expect(payloadOf(res as never).scope).toEqual(['work_item', 'plan']);
   });
 
   // GAP 12 — scope edge: `!args.scope?.length` (an empty array, distinct from
@@ -344,8 +344,8 @@ describe('search:fulltext — scope normalization', () => {
   it('scope:[] (empty array) → the 4 defaults reach the engine (not zero sources)', async () => {
     const tool = (await import('./fulltext')).default;
     const res = await tool.handler({ query: 'x', scope: [] } as never, CTX() as never);
-    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
-    expect(ftCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'plan']);
+    expect(ftCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'plan']);
   });
 
   // GAP 12 — a scope naming only sources that don't exist in SEARCH_SOURCES →
@@ -453,7 +453,7 @@ describe('search:semantic — mode + scope defaulting', () => {
   it('no scope → 4 default sources reach the engine', async () => {
     const tool = (await import('./semantic')).default;
     await tool.handler({ query: 'x' } as never, CTX() as never);
-    expect(hybridCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+    expect(hybridCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'plan']);
   });
 
   // GAP 12 — semantic.ts shares the same `scope?.includes('all') || !scope?.length`
@@ -461,8 +461,8 @@ describe('search:semantic — mode + scope defaulting', () => {
   it('scope:[] (empty array) → the 4 defaults reach the engine', async () => {
     const tool = (await import('./semantic')).default;
     const res = await tool.handler({ query: 'x', scope: [] } as never, CTX() as never);
-    expect(hybridCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
-    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+    expect(hybridCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'plan']);
+    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'plan']);
   });
 
   // GAP 12 — a scope matching no source → zero sources → results:[], no throw.
@@ -804,9 +804,9 @@ describe('search:fulltext — scope residue', () => {
     expect(p.scope_residue.caveat).toMatch(/NOT AN ABSENCE CLAIM/);
   });
 
-  it('discloses unsearched plan items even when work-items and decisions have hits', async () => {
+  it('includes draft plan results alongside work-items and decisions', async () => {
     ftResult = {
-      results: [{ source: 'turns', source_id: 't1', excerpt: 'e', highlight: 'h', score: 0.5 }],
+      results: [{ source: 'plan', source_id: 'draft-plan', excerpt: 'P-005 duplicates', highlight: 'h', score: 0.5, meta: { status: 'draft' } }],
       totalHits: 1,
     };
     const tool = (await import('./fulltext')).default;
@@ -814,9 +814,9 @@ describe('search:fulltext — scope residue', () => {
     const p = payloadOf(res as never);
     expect(p.total_hits).toBe(1);
     expect(p.results).toHaveLength(1);
-    expect(p.scope_residue.searched).toEqual(['decisions', 'work_item']);
-    expect(p.scope_residue.not_searched.find((row: { scope: string }) => row.scope === 'plan').holds)
-      .toMatch(/P-NNN.*draft.*unstarted/i);
+    expect(p.results[0].plan_status).toBe('draft');
+    expect(p.scope_residue.searched).toEqual(['decisions', 'work_item', 'plan']);
+    expect(p.scope_residue.not_searched.some((row: { scope: string }) => row.scope === 'plan')).toBe(false);
     expect(p.scope_residue.caveat).toMatch(/NOT AN ABSENCE CLAIM/);
     expect(p.scope_residue.caveat).not.toMatch(/THIS ZERO/);
   });
@@ -841,9 +841,9 @@ describe('search:semantic — scope residue', () => {
       .toContain('session_turn');
   });
 
-  it('keeps plan-item exclusions visible alongside positive semantic matches', async () => {
+  it('includes a visible draft label on semantic plan results', async () => {
     hybridResult = {
-      results: [{ source: 'turns', source_id: 't1', excerpt: 'e', highlight: 'h', score: 0.5 }],
+      results: [{ source: 'plan', source_id: 'draft-plan', excerpt: 'P-005 duplicates', highlight: 'h', score: 0.5, meta: { status: 'draft' } }],
       totalHits: 1,
       embedderAvailable: true,
     };
@@ -851,7 +851,7 @@ describe('search:semantic — scope residue', () => {
     const res = await tool.handler({ query: 'duplicates', scope: ['work_item', 'decisions'] } as never, CTX() as never);
     const p = payloadOf(res as never);
     expect(p.total_hits).toBe(1);
-    expect(p.scope_residue.not_searched.find((row: { scope: string }) => row.scope === 'plan').holds)
-      .toMatch(/P-NNN.*draft.*unstarted/i);
+    expect(p.results[0].plan_status).toBe('draft');
+    expect(p.scope_residue.not_searched.some((row: { scope: string }) => row.scope === 'plan')).toBe(false);
   });
 });

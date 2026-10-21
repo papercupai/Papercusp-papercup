@@ -220,52 +220,14 @@ export function buildInstallPluginDeps(): InstallPluginCoreDeps {
         createdBy: 'cupboard-install',
       });
     },
+    // The one reading of a unit's declared dependencies, shared with the plugin
+    // listing routes (unit-dependencies.ts; WI-6554700010018318).
     validateDependencies: async (deps) => {
-      const { validateBlueprintDependencies, resolveEventProvider } = await import('@papercusp/blueprint-distribution');
-      const { derivePackCatalog, depHostSetsFromCatalog } = await import('./pack-catalog');
-      const catalog = await derivePackCatalog({});
-      const verdict = validateBlueprintDependencies(deps, depHostSetsFromCatalog(catalog));
-
-      // The EVENT axis (D-003 / P-007). `validateBlueprintDependencies` covers
-      // tools/packs/plugins/blueprints/datatypes — deliberately NOT events,
-      // which are a UNIT-level axis, not a blueprint one. So resolve them here,
-      // against the SAME derived catalog, and fold the result into the verdict.
-      const missingEvents: string[] = [];
-      const installableEvents: Array<{ family: string; optional?: boolean }> = [];
-      const eventMessages: string[] = [];
-      for (const dep of deps.events ?? []) {
-        if (!dep?.family) continue;
-        const r = resolveEventProvider(dep.family, catalog.view);
-        if (r.status === 'available') continue;
-        if (r.status === 'installable') {
-          installableEvents.push({ family: dep.family, ...(dep.optional ? { optional: true } : {}) });
-          continue;
-        }
-        // Unknown. A REQUIRED family is as hard as a missing tool; an OPTIONAL
-        // one is listen-if-present and must never block the install.
-        if (dep.optional) continue;
-        missingEvents.push(dep.family);
-        eventMessages.push(`needs event family "${dep.family}" — nothing on this host provides it`);
-      }
-
-      const merged = {
-        ...verdict,
-        ok: verdict.ok && missingEvents.length === 0,
-        missing: { ...verdict.missing, events: missingEvents },
-        installable: { ...verdict.installable, events: installableEvents },
-        messages: [...verdict.messages, ...eventMessages],
-      };
-
-      // Cupboard-unreachable softening (mirrors the tool axis): a transient
-      // outage can't disprove a listing, so don't hard-fail pack/plugin/event
-      // deps it might have provided — but a missing TOOL still fails, because
-      // the in-process catalog is authoritative for those. A missing EVENT is
-      // NOT authoritative that way (a Cupboard unit we couldn't see may declare
-      // it), so it softens with packs/plugins rather than failing with tools.
-      if (!catalog.cupboardReachable && merged.missing.tools.length === 0) {
-        return { ...merged, ok: true };
-      }
-      return merged;
+      const [{ derivePackCatalog }, { validateUnitDependencies }] = await Promise.all([
+        import('./pack-catalog'),
+        import('./unit-dependencies'),
+      ]);
+      return validateUnitDependencies(deps, await derivePackCatalog({}));
     },
   };
 }

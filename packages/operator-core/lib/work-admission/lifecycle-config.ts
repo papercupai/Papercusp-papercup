@@ -40,6 +40,14 @@ export interface AdmissionLifecycle {
   reopen: boolean;
   /** How the admitted work's fixes reach the subject repository ({@link AdmissionDelivery}). */
   delivery: AdmissionDelivery;
+  /**
+   * Recruit the agents that move this rule's admitted work forward (repair-recruiter.ts,
+   * WI-6554700010018302): an independent reviewer for a pending agent-review round, then an
+   * implementer for a reviewed bug nobody has claimed. OFF by default — it launches agents on its
+   * own, which is a fleet-autonomy escalation, so a pot opts in per rule. With it off, the same
+   * pass only raises a condition work-item when admitted work has been stranded for hours.
+   */
+  recruit: boolean;
 }
 
 export const DEFAULT_ADMISSION_LIFECYCLE: Readonly<AdmissionLifecycle> = Object.freeze({
@@ -50,9 +58,10 @@ export const DEFAULT_ADMISSION_LIFECYCLE: Readonly<AdmissionLifecycle> = Object.
   externalClose: true,
   reopen: true,
   delivery: 'direct',
+  recruit: false,
 });
 
-const SWITCHES = ['claim', 'hold', 'complete', 'externalClose', 'reopen'] as const;
+const SWITCHES = ['claim', 'hold', 'complete', 'externalClose', 'reopen', 'recruit'] as const;
 
 /**
  * Validates a lifecycle setting supplied by a caller and returns it with defaults filled in.

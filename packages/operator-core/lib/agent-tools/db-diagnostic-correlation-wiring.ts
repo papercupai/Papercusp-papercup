@@ -29,6 +29,7 @@ type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-ho
   'work-item-detail-import' | 'work-item-detail-enrichment' | 'work-item-detail-row' |
   'work-item-detail-dimensions' | 'work-item-detail-reporter' | 'work-item-detail-presentation' |
   'work-item-dependencies-import' | 'work-item-dependencies-sql' |
+  'work-item-dependency-waits-import' | 'work-item-dependency-waits-sql' |
   'scorecards-get-evidence-read' | 'scorecards-get-rubric-read';
 interface NamedQueryStageTiming {
   stage: NamedQueryStage;

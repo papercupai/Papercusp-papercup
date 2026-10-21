@@ -43,6 +43,13 @@ vi.mock('../../acceptance-grader', async (original) => ({
   ...await original<typeof import('../../acceptance-grader')>(),
   launchAcceptanceGrader: preflightMocks.launch, resolveAcceptanceGrader: preflightMocks.resolveGrader,
 }));
+// plan-item-types-registry-cupboard P-005: the ship gate runs under the plan's pinned type
+// revisions, which reads the registry from the database. This suite mocks the gate itself,
+// so the pinned scope is a pass-through here; revision-pinning.integration.test.ts covers it.
+vi.mock('../../plan-types/pins', async (original) => ({
+  ...await original<typeof import('../../plan-types/pins')>(),
+  withPinnedPlanTypes: <T>(_scope: unknown, fn: () => Promise<T>) => fn(),
+}));
 
 describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
   const body = (status: string) => `---\nstatus: ${status}\n---\n# Plan\n`;

@@ -116,20 +116,23 @@ describe('work_items:search bounded result projection', () => {
     expect(result.data.items[0]).toMatchObject({ id: 'EI-1', title: 'A useful title' });
   });
 
-  it('warns that an empty healthy ledger search does not cover draft plan items', async () => {
+  it('includes draft plan items directly and preserves their label when compacted', async () => {
     mockResolvedOnceTyped(searchMock, {
-      items: [], legs: emptyLegs(),
+      items: [], discovery: [{ id: 'papercusp:optional-evaluations#P-005', kind: 'plan_item', family: 'plan',
+        harness: 'papercusp', title: 'Duplicate mechanism discovery', summary: 'Optional evaluations',
+        state: 'todo', severity: null, planStatus: 'draft', planSlug: 'optional-evaluations', planItemId: 'P-005' }],
+      legs: emptyLegs(),
       applied: { minScore: null, recency: false, policyRegistered: false },
     });
     const result = await search.handler({ query: 'duplicate discovery' } as never, {} as never) as {
-      data: { count: number; retryable: boolean; plan_scope_hint: string };
+      data: { count: number; retryable: boolean; items: Array<Record<string, unknown>> };
     };
-    expect(result.data).toMatchObject({ count: 0, retryable: false });
-    expect(result.data.plan_scope_hint).toMatch(/P-NNN.*draft.*unstarted.*NOT searched/);
-    expect(result.data.plan_scope_hint).toContain('plans:search');
-    expect(result.data.plan_scope_hint).toMatch(/omit scope.*items and decisions/);
+    expect(searchMock).toHaveBeenLastCalledWith('duplicate discovery', expect.objectContaining({ includeDraftPlans: true }));
+    expect(result.data).toMatchObject({ count: 1, retryable: false });
+    expect(result.data.items[0]).toMatchObject({ kind: 'plan_item', planStatus: 'draft', planItemId: 'P-005', state: 'todo' });
+    expect(result.data).not.toHaveProperty('plan_scope_hint');
     const shaped = shapeWorkItemsSearch(result.data, 'trimmed') as typeof result.data;
-    expect(shaped.plan_scope_hint).toBe(result.data.plan_scope_hint);
+    expect(shaped.items[0]).toMatchObject({ planStatus: 'draft', planItemId: 'P-005' });
   });
 
   it('marks degraded searches retryable instead of presenting count zero as verified empty', async () => {

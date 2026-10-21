@@ -644,6 +644,61 @@ describe('applyResultDoor', () => {
     )).toBe(true);
   });
 
+  it.each([
+    { toolName: 'work_items:get' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'work_items:get' },
+  ])('reconciles requested-ID receipts through $toolName after a narrow caller pick', (route) => {
+    const source = {
+      results: [{ id: 'WI-found', workItem: { title: 'Found', summary: 'omit me' } }],
+      receipt: [{ id: 'WI-found', delivered: true }, { id: 'WI-dropped', delivered: true }],
+      read: { schemaVersion: 'work-items-get-read-v1', requested: 2, receiptComplete: true },
+    };
+    const parsed = parseProjection({ pick: ['results[].workItem.title'] });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const picked = applyResultProjection(
+      { content: [{ type: 'text' as const, text: JSON.stringify(source) }] },
+      parsed.spec, { toolName: route.toolName },
+    );
+    const out = applyResultDoor(picked, { ...route, workspaceId: 'ws-1', runId: RUN_ID });
+    const body = JSON.parse((out.content[0] as { text: string }).text);
+    expect(body.results).toEqual([{ id: 'WI-found', workItem: { title: 'Found' } }]);
+    expect(body.receipt).toEqual([
+      { id: 'WI-found', delivered: true },
+      { id: 'WI-dropped', delivered: false, reason: 'projection' },
+    ]);
+    expect(body.read).toMatchObject({ requested: 2, receiptComplete: true });
+  });
+
+  it.each([
+    { toolName: 'work_items:get' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'work_items:get' },
+  ])('discloses bounded manifest loss and never marks a dropped row delivered through $toolName', (route) => {
+    const ids = Array.from({ length: 100 }, (_, i) => `WI-receipt-${i}`);
+    const source = {
+      results: ids.map((id) => ({ id, workItem: { title: 'T'.repeat(500) } })),
+      receipt: ids.map((id) => ({ id, delivered: true })),
+      read: { schemaVersion: 'work-items-get-read-v1', requested: ids.length, receiptComplete: true },
+    };
+    const out = applyResultDoor(
+      { content: [{ type: 'text' as const, text: JSON.stringify(source) }] },
+      { ...route, workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(out) as unknown as {
+      results: Array<{ id: string }>;
+      receipt: Array<{ id: string; delivered: boolean; reason?: string }>;
+      read: { requested: number; receiptComplete: boolean; receiptOmitted?: number };
+    };
+    const visible = new Set((body.results ?? []).map((row) => row.id));
+    expect(body.receipt.length).toBeGreaterThan(0);
+    expect(body.read.requested).toBe(ids.length);
+    expect(body.read.receiptComplete).toBe(body.receipt.length === ids.length);
+    if (!body.read.receiptComplete) expect(body.read.receiptOmitted).toBe(ids.length - body.receipt.length);
+    for (const entry of body.receipt) {
+      expect(entry.delivered).toBe(visible.has(entry.id));
+      if (!entry.delivered) expect(entry.reason).toBe('projection');
+    }
+  });
+
   it('work_items:get preserves row reread handles ahead of get-shape counts through the result door', () => {
     const ids = Array.from({ length: 100 }, (_, i) => `WI-${String(i + 1).padStart(5, '0')}`);
     const source = {

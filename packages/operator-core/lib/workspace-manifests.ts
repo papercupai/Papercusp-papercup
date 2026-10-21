@@ -28,7 +28,23 @@ export interface WorkspaceManifest {
 const NPM_DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'] as const;
 const CARGO_DEPENDENCY_TABLES = ['dependencies', 'dev-dependencies', 'build-dependencies'] as const;
 
-const execFileAsync = promisify(execFile);
+// Lazily promisified + memoized, never at module scope (lint:no-eager-execfile-promisify,
+// EI-10161): a narrow node:child_process mock reaching this module transitively must not
+// crash the importing test file at module-eval time (promisify(undefined)).
+type ExecFileAsync = (
+  file: string,
+  args: string[],
+  options: { cwd: string; maxBuffer: number; timeout: number },
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedExecFileAsync: ExecFileAsync | null = null;
+function execFileAsync(
+  file: string,
+  args: string[],
+  options: { cwd: string; maxBuffer: number; timeout: number },
+): Promise<{ stdout: string; stderr: string }> {
+  cachedExecFileAsync ??= promisify(execFile) as unknown as ExecFileAsync;
+  return cachedExecFileAsync(file, args, options);
+}
 
 function toPosix(value: string): string {
   return value.split(path.sep).join('/');

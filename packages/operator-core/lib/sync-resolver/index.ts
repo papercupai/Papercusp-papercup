@@ -3349,6 +3349,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // workItems.depWaits — the WAIT half of the dependency graph pane
+  // (event-wait-settlement-2026-10-20 P-009, D-003): session events:await rows bound to an
+  // item, its holder's other non-inbox-wake awaits, and the item's own active event/gate
+  // blockers, each with the subscriber's liveness verdict and the key's certification. A
+  // SIBLING of depEdges rather than more rows on it, so depEdges keeps its "every row is a
+  // blocks edge" contract. Invalidated by the work_items bridge (blockers, claims, status) and
+  // the event_awaits bridge (non-inbox-wake await writes — trigger from migration 1546).
+  'workItems.depWaits': {
+    backingTables: ['harness_shared.event_awaits', 'harness_shared.work_items'],
+    argsSchema: z.object({ harnessSlug: z.string().min(1) }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const [{ getOrgPg }, { activeWorkspaceId }, { resolveDependencyGraphWaits }] = await traceNamedQueryStage('work-item-dependency-waits-import', () => Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('./dependency-graph-edges'),
+      ]));
+      return await traceNamedQueryStage('work-item-dependency-waits-sql', () => resolveDependencyGraphWaits(getOrgPg().sql, {
+        workspaceId: activeWorkspaceId(),
+        harnessSlug,
+      }));
+    },
+  },
+
   // workItems.stats — the tiny kind × state COUNT aggregate for dashboard/stat
   // tiles (WI-5517, owner ask 2026-07-19: "how many items, how many are bugs vs
   // other"). One GROUP BY over the unified base table instead of shipping the

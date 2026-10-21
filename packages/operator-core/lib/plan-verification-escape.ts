@@ -409,9 +409,25 @@ export async function readCloseDeliverablesAreNonCode(input: {
   planItemIds: readonly string[];
 }): Promise<boolean> {
   if (input.planItemIds.length === 0) return false;
-  const rows = await readLinkedDeliverableRows(input);
-  // Every requested item must be present: a missing row is an unknown deliverable, not non-code.
-  return rows.length === new Set(input.planItemIds).size && linkedDeliverablesAreNonCode(rows);
+  // plan-item-types-registry-cupboard P-005 (R-14): judged under the plan's pinned revisions.
+  return withPinnedPlanTypes(input, async () => {
+    const rows = await readLinkedDeliverableRows(input);
+    // Every requested item must be present: a missing row is an unknown deliverable, not non-code.
+    return rows.length === new Set(input.planItemIds).size && linkedDeliverablesAreNonCode(rows);
+  });
+}
+
+/**
+ * Run a one-plan gate under that plan's pinned type revisions and declared plan type
+ * (plan-item-types-registry-cupboard P-005, R-14). Imported lazily: the registry modules and
+ * this one import each other.
+ */
+async function withPinnedPlanTypes<T>(
+  scope: { workspaceId?: string; harnessSlug?: string; planSlug: string },
+  fn: () => Promise<T>,
+): Promise<T> {
+  const pins = await import('./plan-types/pins');
+  return pins.withPinnedPlanTypes(scope, fn);
 }
 
 /** The key {@link readClauseCodeDeliverables} and its callers share for one (plan, item) pair. */
@@ -456,12 +472,25 @@ export async function readClauseCodeDeliverables(input: {
            SELECT s, t FROM unnest(${slugs}::text[], ${itemIds}::text[]) AS pair(s, t)
          )`,
   );
+  // plan-item-types-registry-cupboard P-005 (R-14): each plan's rows are judged under that
+  // plan's pinned revisions, so the clauses of several plans never share one plan's pins.
+  type ClauseRow = (typeof rows)[number];
+  const rowsByPlan = new Map<string, ClauseRow[]>();
   for (const row of rows) {
-    const resolved = resolveVerification(
-      { verificationProfile: effectivePlanProfile(row.verification_profile) },
-      { deliverable: row.deliverable },
-    );
-    result.set(clauseDeliverableKey(row.plan_slug, row.item_id), resolved.codeDeliverable);
+    const planRows = rowsByPlan.get(row.plan_slug);
+    if (planRows) planRows.push(row);
+    else rowsByPlan.set(row.plan_slug, [row]);
+  }
+  for (const [planSlug, planRows] of rowsByPlan) {
+    await withPinnedPlanTypes({ ...scope, planSlug }, async () => {
+      for (const row of planRows) {
+        const resolved = resolveVerification(
+          { verificationProfile: effectivePlanProfile(row.verification_profile) },
+          { deliverable: row.deliverable },
+        );
+        result.set(clauseDeliverableKey(row.plan_slug, row.item_id), resolved.codeDeliverable);
+      }
+    });
   }
   return result;
 }
@@ -480,17 +509,19 @@ export async function readNonCodeDeliverableCloseEvidence(input: {
   workItemKind: string | null | undefined;
 }): Promise<{ itemId: string; evidence: NonCodeDeliverableCodeEvidence } | null> {
   if (input.planItemIds.length === 0) return null;
-  const rows = await readLinkedDeliverableRows(input);
-  for (const row of rows) {
-    const evidence = nonCodeDeliverableCodeEvidence({
-      profile: row.verification_profile,
-      deliverable: row.deliverable,
-      filesChanged: input.filesChanged,
-      workItemKind: input.workItemKind,
-    });
-    if (evidence) return { itemId: row.item_id, evidence };
-  }
-  return null;
+  return withPinnedPlanTypes(input, async () => {
+    const rows = await readLinkedDeliverableRows(input);
+    for (const row of rows) {
+      const evidence = nonCodeDeliverableCodeEvidence({
+        profile: row.verification_profile,
+        deliverable: row.deliverable,
+        filesChanged: input.filesChanged,
+        workItemKind: input.workItemKind,
+      });
+      if (evidence) return { itemId: row.item_id, evidence };
+    }
+    return null;
+  });
 }
 
 /** Work-item states that count as a successful close (the plan reflects them as `done`). */
@@ -556,20 +587,23 @@ export async function readNonCodeDeliverableShipEvidence(input: {
         JOIN harness_shared.harness_plans p
           ON p.workspace_id = i.workspace_id AND p.harness_slug = i.harness_slug AND p.plan_slug = i.plan_slug
        ORDER BY l.item_id, l.feature_id`;
-  const hits: NonCodeDeliverableShipHit[] = [];
-  for (const row of rows) {
-    const filesChanged = Array.isArray(row.files_changed)
-      ? row.files_changed.filter((entry): entry is string => typeof entry === 'string')
-      : [];
-    const evidence = nonCodeDeliverableCodeEvidence({
-      profile: row.verification_profile,
-      deliverable: row.deliverable,
-      filesChanged,
-      workItemKind: row.item_kind,
-    });
-    if (evidence) hits.push({ itemId: row.item_id, workItemId: row.work_item_id, evidence });
-  }
-  return hits;
+  // plan-item-types-registry-cupboard P-005 (R-14): judged under the plan's pinned revisions.
+  return withPinnedPlanTypes(input, async () => {
+    const hits: NonCodeDeliverableShipHit[] = [];
+    for (const row of rows) {
+      const filesChanged = Array.isArray(row.files_changed)
+        ? row.files_changed.filter((entry): entry is string => typeof entry === 'string')
+        : [];
+      const evidence = nonCodeDeliverableCodeEvidence({
+        profile: row.verification_profile,
+        deliverable: row.deliverable,
+        filesChanged,
+        workItemKind: row.item_kind,
+      });
+      if (evidence) hits.push({ itemId: row.item_id, workItemId: row.work_item_id, evidence });
+    }
+    return hits;
+  });
 }
 
 type Query = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;

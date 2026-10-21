@@ -1521,3 +1521,43 @@ describe('work_items:get { operationalBrief } — work-item brief (real PG)', ()
     expect((got.results as Record<string, unknown>[])[0]!.operationalBrief).toBeUndefined();
   });
 });
+
+// event-wait-settlement-2026-10-20 SPEC-P-007: the item-level clause, end to end through the
+// real work_items:set_state tool (not a bare SQL write). Whichever path performs the clear —
+// the work-item:done completion fire (P-007) or the set_state tool reaction — the observable
+// outcome the clause names is the same: the dependent's blocker clears and it returns to open.
+describe('work_items:set_state done clears a blocker naming the finished item (SPEC-P-007, real PG)', () => {
+  it('SPEC-P-007: a blocker naming a work item clears when set_state moves that item to done', async () => {
+    const upstream = await createOne({ kind: 'feature', title: 'p007 upstream', severity: 'critical', harness: 'papercup' });
+    const upId = (upstream.workItem as Record<string, unknown>).id as string;
+    const blocked = await createOne({ kind: 'feature', title: 'p007 blocked dependant', severity: 'critical', harness: 'papercup' });
+    const blockedId = (blocked.workItem as Record<string, unknown>).id as string;
+    const at = new Date().toISOString();
+    const blocker = {
+      kind: 'runtime', capability: 'live-dependency', capabilitySource: 'explicit', ref: `work-item:${upId}`,
+      summary: `waits on ${upId}`, status: 'active', createdAt: at, createdBy: 'su-p007-holder', updatedAt: at,
+    };
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET status = 'blocked',
+             payload = jsonb_set(coalesce(payload, '{}'::jsonb), '{externalBlockers}', ${db.sql.json([blocker] as never)})
+       WHERE workspace_id = 'default' AND feature_id = ${blockedId}`;
+    const readBlocked = async () => {
+      const [row] = await db.sql<Array<{ status: string; blockers: Array<Record<string, unknown>> }>>`
+        SELECT status, payload->'externalBlockers' AS blockers
+          FROM harness_shared.work_items WHERE workspace_id = 'default' AND feature_id = ${blockedId}`;
+      return row!;
+    };
+    // Precondition: the dependant really is blocked on the upstream before the close.
+    expect(await readBlocked()).toMatchObject({ status: 'blocked', blockers: [expect.objectContaining({ status: 'active' })] });
+
+    const done = await setStateOne({ id: upId, state: 'done', harness: 'papercup', completionRef: 'test: SPEC-P-007 upstream done' });
+    expect((done.workItem as Record<string, unknown>)?.state, `set_state refused: ${JSON.stringify(done)}`).toBe('done');
+
+    await vi.waitFor(async () => {
+      const after = await readBlocked();
+      expect(after.blockers).toEqual([expect.objectContaining({ ref: `work-item:${upId}`, status: 'cleared' })]);
+      expect(after.status).toBe('open');
+    }, { timeout: 15_000, interval: 100 });
+  });
+});

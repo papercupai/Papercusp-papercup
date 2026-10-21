@@ -29,6 +29,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { createPlanSearchSource } from './agent-tools/search/knowledge-sources';
 import { observeFallback } from './degradation/fallback-observations';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
@@ -2534,6 +2535,8 @@ const WORK_ITEM_SEARCH_SURFACES = ['harness_shared.work_items.embedding'] as con
 /** What a work-item search reports — the matches AND how they were ranked. */
 export interface WorkItemSearchResult {
   items: WorkItem[];
+  /** Ranked discovery references, including draft P-NNNs when requested. */
+  discovery?: Array<WorkItem | DraftPlanSearchMatch>;
   /**
    * P-020: which ranking legs actually ran and what each contributed to
    * fusion. Surfaced rather than discarded on purpose — a `work_items:search`
@@ -2575,6 +2578,20 @@ export interface WorkItemSearchResult {
   };
 }
 
+export interface DraftPlanSearchMatch {
+  id: string;
+  kind: 'plan_item';
+  family: 'plan';
+  harness: string | null;
+  title: string;
+  summary: string;
+  state: string;
+  severity: null;
+  planStatus: 'draft';
+  planSlug: string;
+  planItemId: string;
+}
+
 /** Cross-kind hybrid search over both kind-tables (parity with issues:search).
  *
  * P-016: runs on `@papercusp/search`'s `runHybridSearch` rather than the
@@ -2611,6 +2628,8 @@ export async function searchWorkItems(
   query: string,
   opts: {
     harness?: string;
+    /** Include draft P-NNN references in discovery using the same ranking. */
+    includeDraftPlans?: boolean;
     kind?: WorkItemKind;
     /**
      * Restrict to ONE family without also pinning an exact `kind`.
@@ -2709,15 +2728,17 @@ export async function searchWorkItems(
   const sources: SearchSource[] = [
     ...(wantIssue ? [issueSearchSource(filters, embeddingSelection)] : []),
     ...(wantFeature ? [featureSearchSource(filters, embeddingSelection)] : []),
+    ...(opts.includeDraftPlans && !opts.kind && !opts.family && naturesAdmitWork(opts.natures)
+      ? [createPlanSearchSource({ draftItems: true })] : []),
   ];
   const { sql } = getOrgPg();
   const { results, legs, applied } = await runHybridSearch(sources, {
     sql,
     query,
-    // Each source resolves its own workspace + harness scoping (the two
-    // families do not share one), so the engine's are non-filtering here.
-    workspaceId: '',
-    scopeFilter: null,
+    // Work-item families retain their own scopes; the plan source consumes
+    // this workspace/harness fence before ranking draft items.
+    workspaceId: activeWorkspaceId(),
+    scopeFilter: opts.harness ?? null,
     limit,
     mode: 'hybrid',
     embedder,
@@ -2743,6 +2764,18 @@ export async function searchWorkItems(
   const byId = new Map<string, WorkItem>();
   for (const w of [...issueRows, ...featureRows]) byId.set(w.id, w);
   const items = results.map((r) => byId.get(r.source_id)).filter((w): w is WorkItem => w !== undefined);
+  const discovery = opts.includeDraftPlans ? results.flatMap((r): Array<WorkItem | DraftPlanSearchMatch> => {
+    if (r.source !== 'plan') {
+      const item = byId.get(r.source_id);
+      return item ? [item] : [];
+    }
+    const meta = r.meta;
+    if (!meta || typeof meta.planSlug !== 'string' || typeof meta.itemId !== 'string'
+      || typeof meta.itemStatus !== 'string') throw new Error('Draft plan result is missing its item identity');
+    return [{ id: r.source_id, kind: 'plan_item', family: 'plan', harness: r.scope ?? null,
+      title: r.excerpt, summary: String(meta.planTitle ?? meta.planSlug), state: meta.itemStatus,
+      severity: null, planStatus: 'draft', planSlug: meta.planSlug, planItemId: meta.itemId }];
+  }) : undefined;
 
   // WI-9393 / D-018. DELIBERATELY after the search and in its own try/catch: coverage is
   // a diagnostic ABOUT the ranking, so it must never be able to cost a caller a result.
@@ -2771,6 +2804,7 @@ export async function searchWorkItems(
     items,
     legs,
     applied,
+    ...(discovery ? { discovery } : {}),
     ...(coverage ? { coverage } : {}),
     ...(retry ? { retry } : {}),
   };

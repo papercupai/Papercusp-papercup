@@ -46,6 +46,7 @@ import {
 import { withVerificationResolver } from '../../plan-verification-profile';
 import { loadTypeRegistry } from '../../plan-types/registry';
 import { createRegistryVerificationResolver } from '../../plan-types/resolve-verification';
+import { declaredPlanType, loadPlanPins, pinPlanTypes } from '../../plan-types/pins';
 import { summarizeForcedPast } from './forced-past-stamp';
 import {
   invalidPlanDependenciesValue,
@@ -797,8 +798,14 @@ export async function withPlanLock<T>(
         const [profileRow] = await tx<{ verification_profile: string | null }[]>`
           SELECT verification_profile FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}`;
-        const registry = await loadTypeRegistry(tx as never, { workspaceId });
-        lowerings = withVerificationResolver(createRegistryVerificationResolver(registry), () =>
+        // P-005 (R-14, D-006): both sides resolve under the plan's pins, so a type the plan
+        // pinned is judged at the revision it activated with; a type it has no pin for (a
+        // swap target) resolves to the latest admitted revision and is pinned by the write.
+        const [registry, pins] = await Promise.all([
+          loadTypeRegistry(tx as never, { workspaceId }),
+          loadPlanPins(tx as never, { workspaceId, harnessSlug, planSlug: slug }),
+        ]);
+        lowerings = withVerificationResolver(createRegistryVerificationResolver(registry, { pins }), () =>
           deliverableLowerings(priorParsed.items, nextParsed.items, {
             profile: effectivePlanProfile(profileRow?.verification_profile),
             planTypeBefore,
@@ -1180,6 +1187,41 @@ export async function withPlanLock<T>(
         { workspaceId, harnessSlug, planSlug: slug },
         noteToWrite,
       );
+    }
+
+    // plan-item-types-registry-cupboard P-005 (R-14, D-006): an activated plan pins every type
+    // it resolves, in this transaction, so a later revision or a retire never re-grades it.
+    // Only a write that can change what the plan resolves pins: entering activation, a
+    // plan-level `type:` change or a changed `deliverable:`. Pins are insert-if-absent, so a
+    // type the plan already pins keeps its revision; only plan-types:pin moves a pin.
+    if (newBody !== null) {
+      const afterStatus = deriveIndexFromContent(newBody).status;
+      if (isPlanActivated(afterStatus, false)) {
+        const nextParsed = parsePlan(newBody, { filePath });
+        const priorParsed = cur ? parsePlan(cur.content, { filePath }) : null;
+        const planTypeAfter = declaredPlanType(newBody);
+        const mayResolveNewTypes =
+          !priorParsed ||
+          !isPlanActivated(cur?.status ?? null, false) ||
+          declaredPlanType(cur?.content) !== planTypeAfter ||
+          declaredDeliverablesChanged(priorParsed.items, nextParsed.items);
+        if (mayResolveNewTypes) {
+          const [profileRow] = await tx<{ verification_profile: string | null }[]>`
+            SELECT verification_profile FROM harness_shared.harness_plans
+             WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}`;
+          await pinPlanTypes(
+            tx as never,
+            { workspaceId, harnessSlug, planSlug: slug },
+            {
+              verificationProfile: profileRow?.verification_profile ?? null,
+              planType: planTypeAfter,
+              deliverables: nextParsed.items.map((item) => item.deliverable ?? null),
+            },
+            authenticatedActorId ?? 'system:plan-write',
+            `plan write (${opts.intent}) resolved types with no pin`,
+          );
+        }
+      }
     }
 
     if (newBody !== null && cur?.acceptance_bar_rubric_slug &&

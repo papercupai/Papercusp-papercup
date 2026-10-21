@@ -5407,6 +5407,34 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(await subjectSource(subject)).toBe(sourceBefore);
   });
 
+  // SPEC-P-004 (acceptance-bar-atomic-retirement-2026-10-15): the clause's own falsifier probe.
+  // Obtain an approval for ONE mapping change, apply a DIFFERENT mapping change under that same
+  // approval reference, then read the result, the rubric revision, the plan source and its
+  // clauses. The final apply of the approved map under the same reference calibrates the
+  // fixture: the approval itself is valid, so the refusal is caused by the map difference alone.
+  it('SPEC-P-004: an amendment whose declared mapping change differs from the change its approval reviewed is refused without writing', async () => {
+    const { subject, rubricSlug, before, sourceBefore } = await seedDroppedOnlyBar('mapping-delta-spec-p004-subject');
+    const clausesBefore = await subjectClauses(subject);
+    const reviewed = {
+      rubricId: rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Move R-2 off the dropped P-002 onto P-001.',
+      barMappingDelta: [moveR2(['P-001'])],
+    };
+    const approvalRef = await postApproval(reviewed);
+
+    const different = { ...reviewed, barMappingDelta: [moveR2(['P-001', 'P-002'])], approvalRef };
+    await expect(rubrics.amendRubric(different)).rejects.toThrow(/acceptance_bar_approval_(source|mapping)_mismatched/);
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
+    expect(await subjectSource(subject)).toBe(sourceBefore);
+    expect(await subjectClauses(subject)).toEqual(clausesBefore);
+
+    // Calibration: the same approval reference DOES authorize the map it reviewed.
+    await rubrics.amendRubric({ ...reviewed, approvalRef });
+    expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision! + 1);
+    expect(await subjectSource(subject)).toMatch(/^\| R-2 \| P-001 \| tree \|$/m);
+  });
+
   it('R-28: the idempotency identity binds the delta — a replay is a no-op, the same key with another map is a conflict', async () => {
     const { subject, rubricSlug, before } = await seedDroppedOnlyBar('mapping-delta-replay-subject');
     const amendment = {
@@ -5481,6 +5509,11 @@ describe('template_data persistence boundary — the set-template-data door', ()
           reason: 'Retire R-2: the only work that discharged it was dropped.',
           criteria: retire.before.criteria.filter((criterion) => criterion.barKey !== 'R-2'),
         },
+        // What the calibration apply must have written: R-2 gone from the rubric and the map.
+        expectWritten: (content: string, barKeys: (string | undefined)[]) => {
+          expect(barKeys).toEqual(['R-1']);
+          expect(content).not.toMatch(/^\| R-2 \|/m);
+        },
       },
       {
         seeded: move,
@@ -5490,10 +5523,16 @@ describe('template_data persistence boundary — the set-template-data door', ()
           reason: 'Move R-2 off the dropped P-002 onto P-001; R-2 meaning is unchanged.',
           barMappingDelta: [moveR2(['P-001'])],
         },
+        // What the calibration apply must have written: R-2 kept, its map row moved to P-001.
+        expectWritten: (content: string, barKeys: (string | undefined)[]) => {
+          expect(barKeys).toEqual(['R-1', 'R-2']);
+          expect(content).toMatch(/^\| R-2 \| P-001 \| tree \|$/m);
+          expect(content).not.toMatch(/^\| R-2 \| P-002 \|/m);
+        },
       },
     ];
     const settle = (call: Promise<unknown>) => call.then(() => 'committed', (error: Error) => error.message);
-    for (const { seeded, amendment } of cases) {
+    for (const { seeded, amendment, expectWritten } of cases) {
       const rowBefore = await subjectRow(seeded.subject);
       const clausesBefore = await subjectClauses(seeded.subject);
       expect(rowBefore.contentHash).toBe(hashPlanContent(rowBefore.content));
@@ -5502,6 +5541,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
       const refused = await settle(rubrics.amendRubric(amendment));
       expect(await subjectRow(seeded.subject)).toEqual(rowBefore);
       expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision);
+      expect(await subjectClauses(seeded.subject)).toEqual(clausesBefore);
       expect(refused).toMatch(/acceptance_bar_approval_required/);
 
       // Rolled back: approved, but a fault fires after the source rewrite.
@@ -5520,7 +5560,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
       expect(applied.version).toBeGreaterThan(rowBefore.version);
       expect(applied.contentHash).not.toBe(rowBefore.contentHash);
       expect(applied.contentHash).toBe(hashPlanContent(applied.content));
-      expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision! + 1);
+      const rubricApplied = (await rubrics.getRubric(seeded.rubricSlug))!;
+      expect(rubricApplied.revision).toBe(seeded.before.revision! + 1);
+      expectWritten(applied.content, rubricApplied.criteria.map((criterion) => criterion.barKey));
     }
   });
 

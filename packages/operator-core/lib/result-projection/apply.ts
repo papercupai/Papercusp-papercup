@@ -802,6 +802,20 @@ function writeOutcomePickPaths(body: unknown): string[] {
 
 // ── the stage ─────────────────────────────────────────────────────────────────
 
+/** Keep the source manifest and correlation handles ahead of optional fields.
+ * The later result door can reconcile a reduced manifest, but cannot recover
+ * one that a caller's pick already removed. Match the versioned source contract
+ * as well as the tool name so unrelated tools with a `receipt` stay unchanged. */
+function workItemsGetReceiptPickPaths(body: unknown, toolName?: string): string[] {
+  if (toolName !== 'work_items:get' && toolName !== 'tools:invoke') return [];
+  if (!isPlainObject(body) || !Array.isArray(body.receipt) || !isPlainObject(body.read) ||
+      body.read.schemaVersion !== 'work-items-get-read-v1') return [];
+  return [
+    'receipt', 'results[].id', 'read.schemaVersion', 'read.requested',
+    'read.receiptComplete', 'read.receiptOmitted',
+  ].filter((path) => applyPick(body, [path]).unmatched.length === 0);
+}
+
 export interface ApplyProjectionOpts {
   /** Canonical tool name — names the tool in the in-band footer. */
   toolName?: string;
@@ -1044,10 +1058,13 @@ export function applyResultProjection<T extends ProjectableResult>(
           opts.effect === 'write'
             ? writeOutcomePickPaths(json.parsed).filter((path) => !spec.pick!.includes(path))
             : [];
-        const pickPaths = [...spec.pick, ...implicitWritePaths];
+        const implicitReceiptPaths = workItemsGetReceiptPickPaths(json.parsed, opts.toolName)
+          .filter((path) => !spec.pick!.includes(path));
+        const implicitPaths = [...implicitWritePaths, ...implicitReceiptPaths];
+        const pickPaths = [...spec.pick, ...implicitPaths];
         let pickRun = applyPick(json.parsed, pickPaths);
         let effectivePick = spec.pick;
-        let requestedUnmatched = pickRun.unmatched.filter((path) => !implicitWritePaths.includes(path));
+        let requestedUnmatched = pickRun.unmatched.filter((path) => !implicitPaths.includes(path));
         // EI-20720054720826414 (array root) + WI-10002073 (keyed-envelope root):
         // the root a pick path must address is NOT uniform across tools and no
         // schema announces it, so a path correct for one tool silently matches
@@ -1066,8 +1083,8 @@ export function applyResultProjection<T extends ProjectableResult>(
           );
           if (repairs.size > 0) {
             effectivePick = effectivePick.map((p) => repairs.get(p) ?? p);
-            pickRun = applyPick(json.parsed, [...effectivePick, ...implicitWritePaths]);
-            requestedUnmatched = pickRun.unmatched.filter((path) => !implicitWritePaths.includes(path));
+            pickRun = applyPick(json.parsed, [...effectivePick, ...implicitPaths]);
+            requestedUnmatched = pickRun.unmatched.filter((path) => !implicitPaths.includes(path));
             // Non-degrading: the caller's intended selection was recovered and
             // is exactly what the body below contains — but say so, so the
             // corrected spelling is learned rather than silently absorbed.
@@ -1141,6 +1158,9 @@ export function applyResultProjection<T extends ProjectableResult>(
               false,
             );
           }
+          if (implicitReceiptPaths.length > 0 && !spec.pipe?.length) {
+            note('requested-ID receipt retained with row IDs and completeness qualifiers.', false);
+          }
           working = JSON.stringify(picked, null, 2);
         }
       }
@@ -1155,6 +1175,11 @@ export function applyResultProjection<T extends ProjectableResult>(
     }
     const linesOut = current.length;
     const projectedText = current.join('\n') + (trailingNewline && current.length > 0 ? '\n' : '');
+    if (spec.pipe?.length && projectedText !== working &&
+        workItemsGetReceiptPickPaths(json?.parsed, opts.toolName).length > 0) {
+      note('Line operators reduced a requested-ID receipt: per-ID delivery is unverified in this text view. ' +
+        'Use a JSON pick without pipe to retain the manifest and completeness qualifiers.');
+    }
 
     // Decided BEFORE the footer is rendered: a note appended afterwards would
     // live only in _meta, and the in-band footer is the copy the agent actually

@@ -158,9 +158,10 @@ describe('planLifecycleWrites', () => {
 });
 
 describe('admission lifecycle switches', () => {
-  it('fills defaults: every reaction on, completion moves the source to done (owner #1417)', () => {
+  it('fills defaults: every reaction on, completion moves the source to done (owner #1417); agent recruiting is opt-in', () => {
     expect(parseAdmissionLifecycle({})).toEqual({
       claim: true, hold: true, complete: true, completeCategory: 'done', externalClose: true, reopen: true, delivery: 'direct',
+      recruit: false,
     });
     expect(parseAdmissionLifecycle({ claim: false, completeCategory: 'in-review' })).toMatchObject({ claim: false, completeCategory: 'in-review' });
     expect(parseAdmissionLifecycle({ delivery: 'pr' })).toMatchObject({ delivery: 'pr', claim: true });

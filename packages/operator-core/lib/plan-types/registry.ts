@@ -4,10 +4,13 @@
  * Resolution order for one id:
  * 1. A first-party id (`papercusp/...`) resolves only from the built-in catalog. Migration
  *    1541 refuses a registry row in that namespace; a row that somehow exists is ignored.
- * 2. Any other id resolves from the workspace's registry rows: not retired, and either
- *    workspace-wide (hive_slug NULL) or scoped to the requested hive. Among the rows whose
+ * 2. Any other id resolves from the workspace's registry rows: either workspace-wide
+ *    (hive_slug NULL) or scoped to the requested hive. Among the non-retired rows whose
  *    revision satisfies the reference's range the highest revision wins. At equal revision
  *    a hive-scoped row beats a workspace-wide one.
+ * 3. A plan PINNED to a revision (P-005, plan_type_pins) resolves exactly that revision with
+ *    `itemTypeAt` / `planTypeAt`, retired or not: retiring a revision stops new references to
+ *    it, never the plans already graded by it.
  *
  * A row whose definition fails schema validation is never resolvable. It is listed in
  * `invalidRows`, so an unreadable definition is reported rather than silently treated as a
@@ -19,6 +22,7 @@
  */
 import type postgres from 'postgres';
 import { BUILTIN_CATALOG, type TypeCatalog } from './builtin-catalog';
+import { definitionContentHash } from './content-hash';
 import {
   isFirstPartyTypeId,
   parseItemTypeDefinition,
@@ -37,6 +41,13 @@ export interface RegisteredDefinition<T> {
   /** Null for a built-in or a workspace-wide row. */
   hiveSlug: string | null;
   sourceListingId: string | null;
+  /**
+   * A retired revision never resolves for a new reference, but still resolves, by exact
+   * revision, for a plan pinned to it (P-005, R-12/R-14).
+   */
+  retired: boolean;
+  /** SHA-256 of the stored definition's canonical JSON (`content-hash.ts`); what a pin records. */
+  contentHash: string;
 }
 
 /** One row of either registry table, as read from Postgres. */
@@ -60,15 +71,30 @@ export interface InvalidDefinitionRow {
 export type RevisionRange = Pick<TypeReference, 'minRevision' | 'maxRevision'>;
 
 export interface TypeRegistrySnapshot {
+  /** The highest non-retired revision in range: what a NEW reference resolves to. */
   itemType(id: string, range?: RevisionRange): RegisteredDefinition<ItemTypeDefinition> | null;
   planType(id: string, range?: RevisionRange): RegisteredDefinition<PlanTypeDefinition> | null;
+  /** Exactly one revision, retired or not: what a PINNED reference resolves to. */
+  itemTypeAt(id: string, revision: number): RegisteredDefinition<ItemTypeDefinition> | null;
+  planTypeAt(id: string, revision: number): RegisteredDefinition<PlanTypeDefinition> | null;
+  /** Every stored revision of one id, retired included, in ascending revision order. */
+  itemTypeRevisions(id: string): RegisteredDefinition<ItemTypeDefinition>[];
+  planTypeRevisions(id: string): RegisteredDefinition<PlanTypeDefinition>[];
+  /** Ids with at least one non-retired revision. */
   itemTypeIds(): string[];
   planTypeIds(): string[];
   invalidRows: readonly InvalidDefinitionRow[];
 }
 
-interface Candidate<T extends { id: string; revision: number }> extends RegisteredDefinition<T> {
-  revision: number;
+type Candidate<T extends { id: string; revision: number }> = RegisteredDefinition<T>;
+
+/** Hive-scoped beats workspace-wide at equal revision. */
+function prefer<T extends { id: string; revision: number }>(candidate: Candidate<T>, best: Candidate<T> | null): boolean {
+  if (!best) return true;
+  if (candidate.definition.revision !== best.definition.revision) {
+    return candidate.definition.revision > best.definition.revision;
+  }
+  return candidate.hiveSlug !== null && best.hiveSlug === null;
 }
 
 function pick<T extends { id: string; revision: number }>(
@@ -77,18 +103,33 @@ function pick<T extends { id: string; revision: number }>(
 ): RegisteredDefinition<T> | null {
   let best: Candidate<T> | null = null;
   for (const candidate of candidates ?? []) {
-    if (!referenceAdmits({ id: candidate.definition.id, ...range }, candidate.revision)) continue;
-    if (
-      !best
-      || candidate.revision > best.revision
-      || (candidate.revision === best.revision && candidate.hiveSlug !== null && best.hiveSlug === null)
-    ) {
-      best = candidate;
-    }
+    if (candidate.retired) continue;
+    if (!referenceAdmits({ id: candidate.definition.id, ...range }, candidate.definition.revision)) continue;
+    if (prefer(candidate, best)) best = candidate;
   }
-  if (!best) return null;
-  const { revision: _revision, ...registered } = best;
-  return registered;
+  return best;
+}
+
+function pickExact<T extends { id: string; revision: number }>(
+  candidates: readonly Candidate<T>[] | undefined,
+  revision: number,
+): RegisteredDefinition<T> | null {
+  let best: Candidate<T> | null = null;
+  for (const candidate of candidates ?? []) {
+    if (candidate.definition.revision !== revision) continue;
+    if (prefer(candidate, best)) best = candidate;
+  }
+  return best;
+}
+
+function revisionsOf<T extends { id: string; revision: number }>(
+  candidates: readonly Candidate<T>[] | undefined,
+): RegisteredDefinition<T>[] {
+  return [...(candidates ?? [])].sort((a, b) => a.definition.revision - b.definition.revision);
+}
+
+function liveIds<T extends { id: string; revision: number }>(byId: Map<string, Candidate<T>[]>): string[] {
+  return [...byId].filter(([, list]) => list.some((candidate) => !candidate.retired)).map(([id]) => id).sort();
 }
 
 function index<T extends { id: string; revision: number }>(
@@ -106,10 +147,16 @@ function index<T extends { id: string; revision: number }>(
     byId.set(candidate.definition.id, list);
   };
   for (const definition of builtins) {
-    add({ definition, origin: 'builtin', hiveSlug: null, sourceListingId: null, revision: definition.revision });
+    add({
+      definition,
+      origin: 'builtin',
+      hiveSlug: null,
+      sourceListingId: null,
+      retired: false,
+      contentHash: definitionContentHash(definition),
+    });
   }
   for (const row of rows) {
-    if (row.retired_at) continue;
     if (isFirstPartyTypeId(row.type_id)) continue;
     if (row.hive_slug !== null && row.hive_slug !== hiveSlug) continue;
     const parsed = parse(row.definition);
@@ -127,7 +174,9 @@ function index<T extends { id: string; revision: number }>(
       origin: row.origin,
       hiveSlug: row.hive_slug,
       sourceListingId: row.source_listing_id,
-      revision: row.revision,
+      retired: row.retired_at !== null && row.retired_at !== undefined,
+      // Over the row AS STORED, not the parsed form: that is what define wrote and get returns.
+      contentHash: definitionContentHash(row.definition),
     });
   }
   return byId;
@@ -151,8 +200,12 @@ export function buildTypeRegistrySnapshot(input: {
   return {
     itemType: (id, range = {}) => pick(itemTypes.get(id), range),
     planType: (id, range = {}) => pick(planTypes.get(id), range),
-    itemTypeIds: () => [...itemTypes.keys()].sort(),
-    planTypeIds: () => [...planTypes.keys()].sort(),
+    itemTypeAt: (id, revision) => pickExact(itemTypes.get(id), revision),
+    planTypeAt: (id, revision) => pickExact(planTypes.get(id), revision),
+    itemTypeRevisions: (id) => revisionsOf(itemTypes.get(id)),
+    planTypeRevisions: (id) => revisionsOf(planTypes.get(id)),
+    itemTypeIds: () => liveIds(itemTypes),
+    planTypeIds: () => liveIds(planTypes),
     invalidRows,
   };
 }

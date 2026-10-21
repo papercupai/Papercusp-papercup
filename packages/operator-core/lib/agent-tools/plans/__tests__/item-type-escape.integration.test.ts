@@ -5,11 +5,17 @@
  * After activation, a write that makes an item's RESOLVED MODULE SET lose a module is a
  * lowering, whatever the type is called. It needs a Decision that is already recorded plus an
  * activation audit covering it (plan-verification-profiles-2026-10-17#D-004/#D-008). This file
- * covers the two routes that exist before P-005/P-006, each in three rows:
+ * covers each route in three rows (no Decision; a Decision with a stale audit; a Decision and a
+ * fresh audit):
  *   - an item `deliverable:` swap between two REGISTERED third-party item types;
- *   - a plan-level `type:` swap between two registered plan types whose default item types differ.
- * P-005 (retire, define with extends, pin edit) and P-006 (same-id pack install) add their rows
- * here when those writes exist.
+ *   - a plan-level `type:` swap between two registered plan types whose default item types differ;
+ *   - P-005's registry writes (D-005/D-006), on an activated plan that has NO pins, as a plan
+ *     activated by a build that did not pin yet: retiring the revision it resolves, defining a
+ *     smaller revision of a parent it reaches through `extends`, and moving its pin.
+ * P-006 (same-id pack install) adds its rows here.
+ *
+ * Registry-write rows each use their own type ids: the shrink check judges every activated plan
+ * that resolves the type, so a refused row's plan would otherwise refuse the next row too.
  *
  * The types are workspace registry rows, so the write path must resolve through the workspace
  * registry: under the built-in-only default both sides of these swaps fail safe to the full
@@ -26,6 +32,9 @@ import '../new';
 import '../set-content';
 import '../add-item';
 import '../add-decision';
+import '../../plan-types/define';
+import '../../plan-types/retire';
+import '../../plan-types/pin';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { hashPlanContent } from '../content-hash';
 import { setupPlanPgFixture, cleanupPlans, registerHarnessProject, type PlanPgFixture } from './_pg-tool-fixture';
@@ -161,7 +170,11 @@ async function insertDefinition(table: 'plan_item_type_definitions' | 'plan_type
   await admin`
     INSERT INTO harness_shared.${admin(table)}
       (workspace_id, hive_slug, type_id, revision, definition, origin)
-    VALUES (${WS}, NULL, ${def.id}, 1, ${admin.json(def as never)}, 'workspace')`;
+    VALUES (${WS}, NULL, ${def.id}, ${Number(def.revision ?? 1)}, ${admin.json(def as never)}, 'workspace')`;
+}
+
+function itemTypeDef(id: string, revision: number, modules: string[], extra: Record<string, unknown> = {}) {
+  return { schemaVersion: 1, id, revision, title: id, modules, ...extra };
 }
 
 function planType(id: string, defaultItemType: string) {
@@ -268,4 +281,117 @@ describe('R-8: a plan-level type swap between registered plan types', () => {
     expect(res.payload?.ok, brief({ payload: res.payload, error: res.d.error })).toBe(true);
     expect(await planContent(slug)).toMatch(new RegExp(`^type: ${MEMO_PLAN}$`, 'm'));
   });
+});
+
+type Row = 'nodecision' | 'staleaudit' | 'allowed';
+
+/** An activated plan with no pins whose P-001 declares `deliverable`, prepared for one row. */
+async function rowPlan(route: string, row: Row, deliverable: string, decision: { title: string; body: string }): Promise<string> {
+  const slug = `zzz-itescape-${route}-${row}-2026-10-21`;
+  await makePlan(slug, deliverable);
+  await auditActivation(slug);
+  if (row !== 'nodecision') await addDecision(slug, decision.title, decision.body);
+  if (row === 'allowed') await auditActivation(slug);
+  const [pins] = await admin<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM harness_shared.plan_type_pins
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
+  expect(pins!.n, 'the plan must be unpinned, as one activated by a build that did not pin').toBe(0);
+  return slug;
+}
+
+const EXPECTED: Record<Row, string | null> = {
+  nodecision: 'verification_lowering_requires_decision',
+  staleaudit: 'verification_lowering_requires_fresh_activation_audit',
+  allowed: null,
+};
+
+async function retiredAt(id: string, revision: number): Promise<Date | null> {
+  const [row] = await admin<{ retired_at: Date | null }[]>`
+    SELECT retired_at FROM harness_shared.plan_item_type_definitions
+     WHERE workspace_id = ${WS} AND type_id = ${id} AND revision = ${revision}`;
+  return row?.retired_at ?? null;
+}
+
+describe('R-8: retiring the revision an unpinned activated plan resolves', () => {
+  // Revision 2 adds the code module; retiring it falls back to revision 1, which drops it.
+  for (const row of ['nodecision', 'staleaudit', 'allowed'] as const) {
+    it(`${row}: ${EXPECTED[row] ?? 'allowed'}`, async () => {
+      const id = `${NS}/ret-${row}`;
+      await insertDefinition('plan_item_type_definitions', itemTypeDef(id, 1, ['generic-core']));
+      await insertDefinition('plan_item_type_definitions', itemTypeDef(id, 2, ['generic-core', 'code']));
+      await rowPlan('retire', row, id, {
+        title: `Retire ${id} revision 2`,
+        body: `${id} revision 2 is retired, so P-001 falls back to revision 1 and its type no longer needs the code module.`,
+      });
+      const res = await call('plan-types:retire', { kind: 'item-type', typeId: id, revision: 2, reason: 'escape test' });
+      if (EXPECTED[row]) {
+        expectRefused(res, EXPECTED[row]!);
+        expect(await retiredAt(id, 2)).toBeNull();
+      } else {
+        expect(res.payload?.ok, brief({ payload: res.payload, error: res.d.error })).toBe(true);
+        expect(await retiredAt(id, 2)).not.toBeNull();
+      }
+    });
+  }
+});
+
+describe('R-8: defining a smaller revision of a parent reached through extends', () => {
+  // The child adds nothing itself; its code module comes from the parent's revision 1.
+  for (const row of ['nodecision', 'staleaudit', 'allowed'] as const) {
+    it(`${row}: ${EXPECTED[row] ?? 'allowed'}`, async () => {
+      const parent = `${NS}/par-${row}`;
+      const child = `${NS}/kid-${row}`;
+      await insertDefinition('plan_item_type_definitions', itemTypeDef(parent, 1, ['generic-core', 'code']));
+      await insertDefinition('plan_item_type_definitions', itemTypeDef(child, 1, ['generic-core'], { extends: { id: parent } }));
+      await rowPlan('extends', row, child, {
+        title: `New revision of ${parent}`,
+        body: `${parent} revision 2 drops the code module, so the type of P-001 (${child}) no longer requires code.`,
+      });
+      const res = await call('plan-types:define', {
+        kind: 'item-type',
+        definition: itemTypeDef(parent, 2, ['generic-core']),
+      });
+      const [stored] = await admin<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM harness_shared.plan_item_type_definitions
+         WHERE workspace_id = ${WS} AND type_id = ${parent} AND revision = 2`;
+      if (EXPECTED[row]) {
+        expectRefused(res, EXPECTED[row]!);
+        expect(stored!.n).toBe(0);
+      } else {
+        expect(res.payload?.ok, brief({ payload: res.payload, error: res.d.error })).toBe(true);
+        expect(stored!.n).toBe(1);
+      }
+    });
+  }
+});
+
+describe('R-8: moving an activated plan pin to a smaller revision', () => {
+  for (const row of ['nodecision', 'staleaudit', 'allowed'] as const) {
+    it(`${row}: ${EXPECTED[row] ?? 'allowed'}`, async () => {
+      const id = `${NS}/pin-${row}`;
+      await insertDefinition('plan_item_type_definitions', itemTypeDef(id, 1, ['generic-core', 'code']));
+      const slug = await rowPlan('pin', row, id, {
+        title: `Re-pin ${id}`,
+        body: `P-001 moves to ${id} revision 2, whose type no longer requires the code module.`,
+      });
+      // Pinning to the revision the plan resolves today changes nothing, so it needs no Decision.
+      const hold = await call('plan-types:pin', { slug, kind: 'item-type', typeId: id, revision: 1, reason: 'hold' });
+      expect(hold.payload?.ok, brief({ payload: hold.payload, error: hold.d.error })).toBe(true);
+      // A smaller revision is inert for the pinned plan, so defining it is allowed.
+      const defined = await call('plan-types:define', { kind: 'item-type', definition: itemTypeDef(id, 2, ['generic-core']) });
+      expect(defined.payload?.ok, brief({ payload: defined.payload, error: defined.d.error })).toBe(true);
+      // The pin writes above leave the plan body alone, so the audit freshness rowPlan set holds.
+      const res = await call('plan-types:pin', { slug, kind: 'item-type', typeId: id, revision: 2, reason: 'escape test' });
+      const [pin] = await admin<{ revision: number }[]>`
+        SELECT revision FROM harness_shared.plan_type_pins
+         WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug} AND type_id = ${id}`;
+      if (EXPECTED[row]) {
+        expectRefused(res, EXPECTED[row]!);
+        expect(Number(pin!.revision)).toBe(1);
+      } else {
+        expect(res.payload?.ok, brief({ payload: res.payload, error: res.d.error })).toBe(true);
+        expect(Number(pin!.revision)).toBe(2);
+      }
+    });
+  }
 });

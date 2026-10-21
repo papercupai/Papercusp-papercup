@@ -3,7 +3,23 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import type { CompletionSettlementManifest } from '../coord-lifecycle/records';
 
-const exec = promisify(execFile);
+// Lazily promisified + memoized, never at module scope (lint:no-eager-execfile-promisify,
+// EI-10161): a narrow node:child_process mock reaching this module transitively must not
+// crash the importing test file at module-eval time (promisify(undefined)).
+type ExecGit = (
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedExec: ExecGit | null = null;
+function exec(
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number },
+): Promise<{ stdout: string; stderr: string }> {
+  cachedExec ??= promisify(execFile) as unknown as ExecGit;
+  return cachedExec(file, args, options);
+}
 
 export type SettlementScopeGit = (root: string, args: string[]) => Promise<{ code: number; stdout: string }>;
 

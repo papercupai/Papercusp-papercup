@@ -16,6 +16,7 @@
     "@toon-format/toon": "^2.3.1"
   },
   "devDependencies": {
+    "@papercusp/test-config": "*",
     "fast-check": "^3.23.1",
     "vitest": "^4.1.4"
   }

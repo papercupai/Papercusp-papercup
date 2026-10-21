@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 981,
+  "count": 986,
   "tools": [
     {
       "name": "ablation:report",
@@ -21646,6 +21646,373 @@
       }
     },
     {
+      "name": "plan-types:define",
+      "http": {
+        "path": "/api/agent-tools/plan-types/define",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Define a revision of an item type or plan type. Validates the schema, the verification-module catalog and the generic-core floor; references must resolve; refuses a revision that would drop checks from an activated, unpinned plan.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A plan item or plan needs a type the built-in catalog does not have, or an existing type needs a new rule (define the next revision).",
+        "notWhen": "Editing a stored revision: revisions are immutable. Ids under papercusp/ are built-in only.",
+        "chaining": "plan-types:list / plan-types:get to see what exists → this → declare it in a plan (deliverable: / type:)."
+      }
+    },
+    {
+      "name": "plan-types:get",
+      "http": {
+        "path": "/api/agent-tools/plan-types/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read one item-type or plan-type definition as stored, with its content hash, origin, retirement and the list of its revisions.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Before declaring or extending a type, or to see exactly which rule a pinned plan is held to.",
+        "notWhen": "Browsing what exists: plan-types:list."
+      }
+    },
+    {
+      "name": "plan-types:list",
+      "http": {
+        "path": "/api/agent-tools/plan-types/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List item types and plan types (built-in and workspace-defined): one entry per id at its current revision, or every revision with includeRetired.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Choosing a deliverable: or type: for a plan, or checking whether a type id is taken.",
+        "notWhen": "Reading one definition in full: plan-types:get."
+      }
+    },
+    {
+      "name": "plan-types:pin",
+      "http": {
+        "path": "/api/agent-tools/plan-types/pin",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Pin a plan to a revision of an item type or plan type. A pin that drops verification modules needs a recorded Decision and a fresh activation audit.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "An activated plan should adopt a newer type revision, or be held to its current one before the type changes.",
+        "notWhen": "New plans: they pin what they resolve when they activate.",
+        "chaining": "Lowering: plans:add-decision → plans:audit { phase:'activation' } → this."
+      }
+    },
+    {
+      "name": "plan-types:retire",
+      "http": {
+        "path": "/api/agent-tools/plan-types/retire",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retire one revision of an item type or plan type. New references stop resolving it; plans pinned to it keep it. Refused when it would drop checks from an activated, unpinned plan.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A revision is wrong or superseded and new plans must stop using it.",
+        "notWhen": "Changing what an existing plan is held to: plan-types:pin."
+      }
+    },
+    {
       "name": "plan_items:adopt_name",
       "http": {
         "path": "/api/agent-tools/plan_items/adopt_name",
@@ -31285,7 +31652,7 @@
           "POST"
         ]
       },
-      "description": "Search workspace prose by keyword (BM25-style). Use scope:[\"plan\",\"work_item\",\"decisions\"] for planned-work discovery, including draft plan items; the default prose scope excludes plans and work-items. Returns ranked excerpts and unsearched-corpus disclosure.",
+      "description": "Search workspace prose by keyword (BM25-style). Plans, including drafts, are included by default and alongside work_item searches. Plan results expose plan_status. Returns ranked excerpts and unsearched-corpus disclosure.",
       "capabilities": [
         "search:read"
       ],
@@ -31358,7 +31725,7 @@
       "guidance": {
         "when": "User asks about a concept by paraphrase rather than the exact keyword used in the recorded text. Examples: \"when did we talk about authentication strategy\" (could match \"login flow\", \"auth approach\", \"JWT decision\"). Prefer mode=hybrid for best recall.",
         "notWhen": "When the user knows the exact keyword they want. `search:fulltext` is faster + cheaper there (no embedding API call). For structured queries (tasks/goals/projects rows by title), use `search:query`.",
-        "chaining": "For planned-work discovery include scope:[\"plan\",\"work_item\",\"decisions\"]; defaults exclude plans/work-items. Read scope_residue before any absence claim. Fetch plan hits with plans:get."
+        "chaining": "Plans, including drafts, are included by default and alongside work_item searches; plan_status labels their state. Fetch plan hits with plans:get."
       }
     },
     {
@@ -36498,7 +36865,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).",
-        "chaining": "Before claiming no planned work covers a topic, also run plans:search {query,harness} with scope omitted (includes items and decisions). Draft/unstarted P-NNN items are not work-items. Then work_items:get for detail or work_items:create after dedup."
+        "chaining": "Results include draft plan items labeled planStatus:draft. Read those with plans:get {slug:planSlug}; read execution work with work_items:get {id}. Explicit kind/nature filters retain their requested scope."
       }
     },
     {

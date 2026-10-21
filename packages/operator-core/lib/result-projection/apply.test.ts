@@ -76,6 +76,55 @@ describe('EI-25185987580518406 coordination send receipts', () => {
   });
 });
 
+describe('EI-26026769968837603 requested-ID completeness', () => {
+  const payload = {
+    results: [
+      { id: 'WI-found', ok: true, workItem: { title: 'Found', summary: 'verbose' } },
+      { id: 'WI-absent', ok: false, availability: 'absent' },
+    ],
+    read: { schemaVersion: 'work-items-get-read-v1', requested: 3, receiptComplete: true },
+    receipt: [
+      { id: 'WI-found', delivered: true },
+      { id: 'WI-absent', delivered: true },
+      { id: 'WI-dropped', delivered: false, reason: 'projection' },
+    ],
+  };
+
+  it.each(['work_items:get', 'tools:invoke'])('retains the manifest and row IDs through a narrow %s pick', (toolName) => {
+    const out = applyResultProjection(
+      textResult(JSON.stringify(payload)),
+      spec({ pick: ['results[].workItem.title'] }),
+      { toolName },
+    );
+    const body = JSON.parse(bodyText(out));
+    expect(body.receipt).toEqual(payload.receipt);
+    expect(body.read).toEqual(payload.read);
+    expect(body.results.map((r: { id: string }) => r.id)).toEqual(['WI-found', 'WI-absent']);
+    expect(body.results[0].workItem).toEqual({ title: 'Found' });
+    expect(footerOf(out)).toContain('requested-ID receipt retained');
+  });
+
+  it('does not treat retained receipt fields as a successful match for an invalid pick', () => {
+    const out = applyResultProjection(textResult(JSON.stringify(payload)), spec({ pick: ['missing'] }), { toolName: 'work_items:get' });
+    expect(footerOf(out)).toContain('matched NOTHING');
+    expect(JSON.parse(bodyText(out))).toEqual(payload);
+  });
+
+  it('keeps ordinary receipt-shaped tool payloads subject to the requested pick', () => {
+    const out = applyResultProjection(textResult(JSON.stringify(payload)), spec({ pick: ['results[].workItem.title'] }), { toolName: 'other:get' });
+    expect(JSON.parse(bodyText(out))).not.toHaveProperty('receipt');
+  });
+
+  it('does not claim receipt retention after line operators reduce it to fragments', () => {
+    const out = applyResultProjection(textResult(JSON.stringify(payload)),
+      spec({ pick: ['results[].workItem.title'], pipe: [{ op: 'grep', pattern: 'Found' }] }),
+      { toolName: 'work_items:get' });
+    expect(footerOf(out)).toContain('per-ID delivery is unverified');
+    expect(footerOf(out)).not.toContain('requested-ID receipt retained');
+    expect(bodyText(out)).toContain('Found');
+  });
+});
+
 describe('projection materialization format', () => {
   it('keeps implicit TOON for line projections but uses JSON for structured picks', () => {
     const context = { requestedFormat: undefined } as UnifiedToolContext;

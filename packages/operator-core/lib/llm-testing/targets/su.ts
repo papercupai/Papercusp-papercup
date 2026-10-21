@@ -33,7 +33,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -59,6 +59,7 @@ import { buildCatalog, type BuiltCatalog } from './su-catalog';
 import { projectCatalogToCompactTier, buildShippingSeedCatalog } from './su-compact-catalog';
 import {
   callCodexResponsesTurn,
+  catalogToResponsesTools,
   isCodexResponsesModel,
   messagesToResponsesInput,
   type ResponsesInputItem,
@@ -451,9 +452,12 @@ const SU_CONFIG_DELTA_KEYS = new Set([
   'excludeTools',
   'toolDefinitionTier',
   'catalogSource',
+  'fullDefinitionsAfterUse',
 ]);
 
 export interface SuConfigDelta {
+  /** D-058 candidate only; explicit and off for every historical variant. */
+  fullDefinitionsAfterUse?: boolean;
   sutModel?: string;
   systemPromptText?: string;
   excludeTools?: string[];
@@ -510,6 +514,16 @@ export function parseSuConfigDelta(delta: Record<string, unknown> | undefined): 
       );
     }
     out.catalogSource = delta.catalogSource;
+  }
+  if (delta.fullDefinitionsAfterUse !== undefined) {
+    if (typeof delta.fullDefinitionsAfterUse !== 'boolean') {
+      throw new Error('su target: fullDefinitionsAfterUse must be a boolean');
+    }
+    if (delta.fullDefinitionsAfterUse &&
+        (out.toolDefinitionTier !== 'compact' || out.catalogSource !== 'shipping-seed')) {
+      throw new Error('su target: fullDefinitionsAfterUse requires compact shipping-seed definitions');
+    }
+    out.fullDefinitionsAfterUse = delta.fullDefinitionsAfterUse;
   }
   if (delta.sutModel !== undefined) {
     if (typeof delta.sutModel !== 'string' || !delta.sutModel.trim()) {
@@ -629,6 +643,9 @@ export class SuTarget implements ChatTarget {
       runId: opts.runId,
       // Drop any excludeTools from the catalog offered to the SUT (the availability A/B seam).
       catalog: filterCatalog(tiered, delta.excludeTools),
+      ...(delta.fullDefinitionsAfterUse ? {
+        fullCatalog: filterCatalog((await buildShippingSeedCatalog('full')).catalog, delta.excludeTools),
+      } : {}),
       loadSystemPrompt: delta.systemPromptText !== undefined
         ? () => delta.systemPromptText!
         : modes
@@ -647,6 +664,8 @@ export class SuTarget implements ChatTarget {
 interface SessionState {
   runId: string;
   catalog: BuiltCatalog;
+  /** Original FULL definitions from the same authorized/name-filtered seed. */
+  fullCatalog?: BuiltCatalog;
   loadSystemPrompt: () => string | Promise<string>;
   override?: ToolDispatchOverride;
   /** Variant prompt overlay (P-001) — appended as an uncached system block. */
@@ -663,6 +682,32 @@ class SuSession implements ChatSession {
   private readonly state: SessionState;
   private readonly deltaViews = new Map<string, DeltaViewState>();
   private sawCompactionSummary = false;
+  private readonly usedTools = new Set<string>();
+
+  /** Both provider loops consume this exact snapshot before each request.
+   * rawSseTape is already persisted losslessly as transcript_raw_zstd.
+   */
+  private requestCatalog(result: TurnResult, provider: 'anthropic' | 'codex', responseIndex: number): BuiltCatalog {
+    const full = new Map(this.state.fullCatalog?.tools.map(tool => [tool.name, tool]));
+    const catalog: BuiltCatalog = {
+      ...this.state.catalog,
+      tools: this.state.catalog.tools.map(tool => this.usedTools.has(
+        this.state.catalog.canonicalBySanitized.get(tool.name) ?? tool.name,
+      ) ? full.get(tool.name) ?? tool : tool),
+    };
+    const definitions = provider === 'codex' ? catalogToResponsesTools(catalog) : catalog.tools;
+    const serialized = JSON.stringify(definitions);
+    result.rawSseTape.push(sse('tool_definition_manifest', {
+      schemaVersion: 'su-tool-definitions-v1', provider, responseIndex,
+      fullDefinitionsAfterUse: Boolean(this.state.fullCatalog),
+      usedCanonicalNames: [...this.usedTools].sort(),
+      canonicalBySanitized: [...catalog.canonicalBySanitized.entries()],
+      definitions: JSON.parse(serialized),
+      sha256: createHash('sha256').update(serialized).digest('hex'),
+      bytes: Buffer.byteLength(serialized),
+    }));
+    return catalog;
+  }
 
   constructor(state: SessionState) {
     this.state = state;
@@ -739,7 +784,6 @@ class SuSession implements ChatSession {
     // Max OAuth rate-limit bucket — see CLAUDE_CODE_IDENTIFIER / buildSuSystemBlocks).
     // Built via the exported helper so the framing invariant is regression-tested.
     const system = buildSuSystemBlocks(await this.state.loadSystemPrompt(), cache, this.state.promptOverlay);
-    const tools = this.state.catalog.tools;
 
     const sawCompactionSummary = input.messages.some((m) => (
       typeof m.content === 'string' && m.content.includes(COMPACTION_SUMMARY_MARKER)
@@ -773,6 +817,7 @@ class SuSession implements ChatSession {
       // final answer. Bound the turn by its existing deadline, not by an
       // arbitrary round count that silently returns "done" mid-conversation.
       for (let iter = 0; !ctrl.signal.aborted && performance.now() < deadline; iter++) {
+        const tools = this.requestCatalog(result, 'anthropic', iter).tools;
         let resp: AnthropicResponse;
         try {
           resp = await callWithRetry(makeClient, {
@@ -881,7 +926,7 @@ class SuSession implements ChatSession {
             model,
             instructions,
             input: replay,
-            catalog: this.state.catalog,
+            catalog: this.requestCatalog(result, 'codex', iter),
             maxOutputTokens: 4096,
             signal: ctrl.signal,
             fetchImpl: this.state.codexFetch,
@@ -954,6 +999,7 @@ class SuSession implements ChatSession {
     name: string,
     input: unknown,
   ): Promise<{ text: string; isError: boolean }> {
+    this.usedTools.add(name);
     const direct = await this.resolveScenarioOverride(name, input);
     if (direct) return direct;
 
@@ -977,6 +1023,7 @@ class SuSession implements ChatSession {
           isError: true,
         };
       }
+      this.usedTools.add(nestedName);
       const nested = await this.resolveScenarioOverride(nestedName, nestedInput);
       if (nested) return nested;
       return {

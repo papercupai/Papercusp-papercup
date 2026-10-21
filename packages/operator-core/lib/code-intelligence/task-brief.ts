@@ -364,13 +364,29 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
   const payload = ref.workItem?.payload as { paths?: unknown } | null;
   if (ref.workItem?.id ? !Array.isArray(payload?.paths) || payload.paths.length === 0 : !ref.intent || !ref.paths?.length) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const phase: { current: TaskBriefPhase } = { current: 'setup' };
+  // Each phase transition is timed so a deadline fallback says how the window
+  // was spent, not only where it ended (WI-6554700010018774: a claim-path
+  // safe-pack timeout that a standalone re-run could not reproduce).
+  const started = Date.now();
+  const spent: Array<[TaskBriefPhase, number]> = [];
+  let current: TaskBriefPhase = 'setup', enteredAt = started;
+  const phase = {
+    get current() { return current; },
+    set current(next: TaskBriefPhase) {
+      const at = Date.now();
+      spent.push([current, at - enteredAt]);
+      current = next; enteredAt = at;
+    },
+  };
+  const phaseTimings = () => [...spent, [current, Date.now() - enteredAt] as [TaskBriefPhase, number]]
+    .map(([name, ms]) => `${name} ${ms}ms`).join(', ');
   try {
     return { taskBrief: await Promise.race([buildTaskBrief(ref, deps, phase), new Promise<TaskBrief>(resolve => {
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
         graph: { status: 'unknown', consumers: [], relationships: [] },
-        exclusions: [`Task brief exceeded its bounded read deadline during ${phase.current}.`],
+        exclusions: [`Task brief exceeded its bounded read deadline during ${phase.current}`
+          + ` (elapsed ${Date.now() - started}ms; ${phaseTimings()}).`],
         recover: ref.workItem?.id ? { tool: 'work_items:get', args: { id: ref.workItem.id } }
           : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
             ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);

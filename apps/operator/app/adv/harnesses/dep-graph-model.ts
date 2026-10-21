@@ -90,9 +90,53 @@ export interface DepGraphEdgeInput {
   blockedPlanBlockedBy?: string[];
 }
 
+/**
+ * A wait as `workItems.depWaits` returns it (event-wait-settlement-2026-10-20 P-009 — see
+ * `resolveDependencyGraphWaits` in sync-resolver/dependency-graph-edges.ts). Structural
+ * subset; the item fields hydrate an item outside the list's window, exactly as edge
+ * endpoints do (WI-36045).
+ */
+export interface DepGraphWaitInput {
+  itemId: string;
+  itemKind?: string | null;
+  itemTitle?: string | null;
+  itemStatus?: string | null;
+  itemPlanSlug?: string | null;
+  /** 'session-await' = an events:await registration; 'item-blocker' = the item's own blocker. */
+  waitKind: 'session-await' | 'item-blocker';
+  eventKey: string;
+  blockerKind?: 'event' | 'gate' | null;
+  /** The await's bound_to names this item (vs. one of its holder's other awaits). */
+  bound?: boolean;
+  subscriberId?: string | null;
+  subscriberIsHolder?: boolean;
+  since?: string | null;
+  /** 'proving' or why one fire cannot prove the condition. */
+  certification?: string | null;
+  /** The liveness oracle's verdict for the subscriber; null = not measured. */
+  subscriberState?: string | null;
+  stale?: boolean;
+  staleReason?: string | null;
+  /** The resolver leg that produced this row hit its cap. */
+  legTruncated?: boolean;
+}
+
+/** The two wait edge kinds. Both are drawn event → item. */
+export type DepGraphWaitEdgeKind = 'item-waits-on-event' | 'session-awaits-event';
+
+/** The node id an event key is drawn as. Prefixed so it can never collide with an item id. */
+export function eventNodeId(eventKey: string): string {
+  return `event:${eventKey}`;
+}
+
 export interface DepGraphNode extends DepGraphItem {
   /** Longest blocker-chain length above this node. 0 = nothing blocks it. */
   depth: number;
+  /**
+   * Set only on an EVENT node (kind 'event'): the key some wait in the graph is parked on.
+   * `stale` when EVERY wait on it is stale — a key a live agent still waits on is not dead.
+   */
+  event?: { key: string; certification: string | null; stale: boolean; waitCount: number };
   /** True when this node's ref could not be resolved to a real row — a placeholder. */
   dangling?: boolean;
   /**
@@ -115,6 +159,22 @@ export interface DepGraphEdge {
   satisfied: boolean;
   /** The blocker ref resolved to no row: a finding, not a tidy edge (INV-13). */
   dangling: boolean;
+  /**
+   * Set only on a WAIT edge (event node → item). Wait edges take no part in depth or the
+   * integrity findings: those describe the `blocks` graph, and an event is not a work item.
+   */
+  wait?: {
+    kind: DepGraphWaitEdgeKind;
+    subscriberId: string | null;
+    subscriberIsHolder: boolean;
+    bound: boolean;
+    blockerKind: 'event' | 'gate' | null;
+    certification: string | null;
+    subscriberState: string | null;
+    stale: boolean;
+    staleReason: string | null;
+    since: string | null;
+  };
 }
 
 export interface DepSubgraph {
@@ -138,6 +198,12 @@ export interface DepSubgraph {
   filteredEdgeCount: number;
   /** Nodes drawn from edge-carried fields because they fell outside the list's window. */
   hydratedNodeCount: number;
+  /** Wait edges returned (P-009). */
+  waitCount: number;
+  /** Of those, the ones whose subscriber session ended or whose await expired (R-16). */
+  staleWaitCount: number;
+  /** A resolver leg hit its cap: more waits exist than the graph was given. */
+  waitsTruncated: boolean;
   findings: DependencyPolicyFinding[];
   topologyRisk: { readyWidth: number; criticalPathDepth: number; maxFanIn: number; maxFanOut: number };
 }
@@ -401,6 +467,15 @@ export function buildDepSubgraph(opts: {
    * any caller whose edges hydrate endpoints must pass this.
    */
   filteredIds?: ReadonlySet<string>;
+  /**
+   * Event waits on items (P-009, `workItems.depWaits`). Each becomes an EVENT node (one per
+   * key, shared by every wait on it) and a wait edge event → item. They join the scoping
+   * (an item whose only story is a wait is still in the picture) and the budget, but never
+   * the depth or integrity computations, which describe the `blocks` graph alone.
+   * Filters apply as they do to edges: a wait whose item did not survive is dropped and
+   * counted in `filteredEdgeCount`. In health mode only STALE waits remain.
+   */
+  waits?: readonly DepGraphWaitInput[];
 }): DepSubgraph {
   const budget = opts.budget ?? DEP_GRAPH_NODE_BUDGET;
   const byId = new Map(opts.items.map((i) => [i.id, i]));
@@ -478,6 +553,57 @@ export function buildDepSubgraph(opts: {
     });
   }
 
+  // Waits (P-009). Built AFTER the `blocks` edges so their item hydration never pre-empts an
+  // edge's richer endpoint fields, and kept in their own list so depth and integrity below
+  // still see the `blocks` graph only.
+  const allWaitEdges: DepGraphEdge[] = [];
+  const eventNodes = new Map<string, NonNullable<DepGraphNode['event']>>();
+  const seenWaitIds = new Set<string>();
+  for (const w of opts.waits ?? []) {
+    if (opts.filterActive && !survivors.has(w.itemId)) {
+      filteredEdgeCount++;
+      continue;
+    }
+    hydrate(w.itemId, w.itemKind, w.itemTitle, w.itemStatus, w.itemPlanSlug);
+    const source = eventNodeId(w.eventKey);
+    const kind: DepGraphWaitEdgeKind = w.waitKind === 'item-blocker' ? 'item-waits-on-event' : 'session-awaits-event';
+    const id = `wait:${kind}:${w.subscriberId ?? w.blockerKind ?? 'item'}:${source}->${w.itemId}`;
+    if (seenWaitIds.has(id)) continue;
+    seenWaitIds.add(id);
+    const stale = Boolean(w.stale);
+    const prior = eventNodes.get(source);
+    eventNodes.set(source, {
+      key: w.eventKey,
+      certification: prior?.certification ?? w.certification ?? null,
+      stale: (prior?.stale ?? true) && stale,
+      waitCount: (prior?.waitCount ?? 0) + 1,
+    });
+    allWaitEdges.push({
+      id,
+      source,
+      target: w.itemId,
+      satisfied: false,
+      dangling: false,
+      wait: {
+        kind,
+        subscriberId: w.subscriberId ?? null,
+        subscriberIsHolder: Boolean(w.subscriberIsHolder),
+        bound: Boolean(w.bound),
+        blockerKind: w.blockerKind ?? null,
+        certification: w.certification ?? null,
+        subscriberState: w.subscriberState ?? null,
+        stale,
+        staleReason: w.staleReason ?? null,
+        since: w.since ?? null,
+      },
+    });
+  }
+  const eventNode = (id: string, depth: number): DepGraphNode | undefined => {
+    const event = eventNodes.get(id);
+    if (!event) return undefined;
+    return { id, kind: 'event', title: event.key, state: event.stale ? 'stale' : 'waiting', depth, event };
+  };
+
   const allIds = new Set<string>();
   for (const e of allEdges) { allIds.add(e.source); allIds.add(e.target); }
   const allDepths = computeDepths(allIds, allEdges);
@@ -491,17 +617,21 @@ export function buildDepSubgraph(opts: {
   const rawEdges = opts.healthOnly
     ? allEdges.filter((e) => e.dangling || e.satisfied || findingEdgeIds.has(e.id))
     : allEdges;
+  // Health mode keeps the waits nobody is keeping alive — the wait analogue of an edge that
+  // gates nothing.
+  const waitEdges = opts.healthOnly ? allWaitEdges.filter((e) => e.wait?.stale) : allWaitEdges;
+  const scopingEdges = waitEdges.length > 0 ? [...rawEdges, ...waitEdges] : rawEdges;
 
   // Which nodes are in scope, before the budget.
   let scopeIds: Set<string>;
   if (
     opts.selectedId &&
-    (itemFor(opts.selectedId) !== undefined || danglingRefs.has(opts.selectedId))
+    (itemFor(opts.selectedId) !== undefined || danglingRefs.has(opts.selectedId) || eventNodes.has(opts.selectedId))
   ) {
-    scopeIds = connectedComponent(opts.selectedId, rawEdges);
+    scopeIds = connectedComponent(opts.selectedId, scopingEdges);
   } else {
     scopeIds = new Set<string>();
-    for (const e of rawEdges) {
+    for (const e of scopingEdges) {
       scopeIds.add(e.source);
       scopeIds.add(e.target);
     }
@@ -510,6 +640,8 @@ export function buildDepSubgraph(opts: {
   const depths = computeDepths(scopeIds, rawEdges);
 
   let nodes: DepGraphNode[] = [...scopeIds].map((id) => {
+    const event = eventNode(id, depths.get(id) ?? 0);
+    if (event) return event;
     const item = byId.get(id);
     if (item) return { ...item, depth: depths.get(id) ?? 0 };
     // Outside the list's window but a REAL row — its fields came off the edge (WI-36045).
@@ -538,7 +670,8 @@ export function buildDepSubgraph(opts: {
   }
 
   const kept = new Set(nodes.map((n) => n.id));
-  const edges = rawEdges.filter((e) => kept.has(e.source) && kept.has(e.target));
+  const edges = scopingEdges.filter((e) => kept.has(e.source) && kept.has(e.target));
+  const keptWaits = edges.filter((e) => e.wait);
 
   // Stable order so React Flow keys and the a11y tree do not churn between renders.
   nodes.sort((a, b) => a.depth - b.depth || a.id.localeCompare(b.id));
@@ -554,6 +687,9 @@ export function buildDepSubgraph(opts: {
     // Counted over the nodes actually RETURNED, not over the hydration map: a node the budget
     // elided is reported by `hiddenCount`, and counting it here too would double-report it.
     hydratedNodeCount: nodes.reduce((n, node) => n + (node.hydrated ? 1 : 0), 0),
+    waitCount: keptWaits.length,
+    staleWaitCount: keptWaits.filter((e) => e.wait?.stale).length,
+    waitsTruncated: (opts.waits ?? []).some((w) => w.legTruncated),
     findings: completeIntegrity.findings.filter((row) => row.nodes.some((id) => kept.has(id))),
     topologyRisk: completeIntegrity.topologyRisk,
   };

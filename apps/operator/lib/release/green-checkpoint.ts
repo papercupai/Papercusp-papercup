@@ -22252,7 +22252,7 @@ export function realCheckpointDeps(
     async ensureMigrationsCurrent(input) {
       if (!(await candidateCarriesPapercuspMigrations(input.sqlDir))) {
         console.log(
-          `[green-checkpoint] migration preflight not applicable: candidate ${input.candidate.slice(0, 12)} ` +
+          `${orchestratorStdoutTag()} migration preflight not applicable: candidate ${input.candidate.slice(0, 12)} ` +
             `carries no libs/papercusp, so this harness owns no Papercusp migrations`,
         );
         return null;

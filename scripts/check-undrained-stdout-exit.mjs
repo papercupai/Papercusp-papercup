@@ -100,9 +100,13 @@ const BASELINE = new Set([]);
 
 const SCAN_DIRS = ['scripts', 'apps', 'packages', 'libs'];
 
-/** Vendored, generated, or build output — never our source to fix. */
+/** Vendored, generated, or build output — never our source to fix.
+ * `dist-*` covers the suffixed bundle dirs (dist-host, dist-sidecar,
+ * dist-host-native-fixture-*): all gitignored, never in the gate's clean checkout,
+ * so scanning them made a shared-tree run red on files the gate can never see
+ * (WI-6554700010018888). No tracked file lives under a `dist-*` dir. */
 const EXCLUDE_RE =
-  /(^|\/)(node_modules|dist|build|out|\.next|target|coverage|\.git|__snapshots__|__fixtures__)(\/|$)|(^|\/)apps\/operator\/public\//;
+  /(^|\/)(node_modules|dist(?:-[^/]+)?|build|out|\.next|target|coverage|\.git|__snapshots__|__fixtures__)(\/|$)|(^|\/)apps\/operator\/public\//;
 
 const SOURCE_RE = /\.(?:[cm]?jsx?|[cm]?tsx?)$/;
 

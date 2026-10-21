@@ -220,7 +220,11 @@ describe('P012 bounded scoped task briefs', () => {
       const result = await pending;
       expect(result?.taskBrief.status).toBe('unknown');
       expect(result?.taskBrief.files).toEqual([]);
-      expect(result?.taskBrief.exclusions).toEqual(['Task brief exceeded its bounded read deadline during safe-pack.']);
+      // The phase in flight AND how the window was spent (WI-6554700010018774):
+      // every phase entered is listed in order with its elapsed time.
+      expect(result?.taskBrief.exclusions).toHaveLength(1);
+      expect(result?.taskBrief.exclusions[0]).toMatch(
+        /^Task brief exceeded its bounded read deadline during safe-pack \(elapsed \d+ms; setup \d+ms, repository-root \d+ms, scope-read \d+ms, safe-pack \d+ms\)\.$/);
     } finally { vi.useRealTimers(); }
   }, 10_000);
   it('shares the capture window with compilation and rejects evidence from a file omitted by the safe packer', async () => {

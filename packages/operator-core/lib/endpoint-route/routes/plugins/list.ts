@@ -3,6 +3,10 @@
  * by manifest name. Used by the marketplace + admin "what's installed"
  * views.
  *
+ * Each plugin carries `refs`: its dependency, own-tool and own-event names
+ * resolved against the live pack catalog (plugin-manifest-refs.ts,
+ * WI-6554700010018318); `refResolution` says whether that resolution ran.
+ *
  * Relocated from app/api/_hono/plugins.ts (endpoint-hono-elimination
  * -2026-05-21 A3).
  */
@@ -14,6 +18,7 @@ import {
   GLOBAL_PLUGINS_DIR,
   type ListedPluginManifest,
 } from '../../../plugin-catalog';
+import { attachManifestRefs, startManifestRefCatalog } from '../../../plugin-manifest-refs';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
@@ -21,6 +26,7 @@ export default defineTool({
   path: '/plugins',
   auth: 'public',
   async handler() {
+    const catalog = startManifestRefCatalog();
     const sources: Array<{ dir: string; source: 'project' | 'harness' | 'global' }> = [];
     if (existsSync(HARNESSES_DIR())) {
       const harnessDirs = await fs.readdir(HARNESSES_DIR(), { withFileTypes: true }).catch(() => []);
@@ -40,6 +46,6 @@ export default defineTool({
         items.push(p);
       }
     }
-    return Response.json({ plugins: items });
+    return Response.json(await attachManifestRefs(items, catalog));
   },
 });

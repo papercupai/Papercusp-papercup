@@ -1122,6 +1122,16 @@ export function writeCodexLockHooks(
   // PAPERCUSP_SID is baked for the same reason as every hook above: codex hands
   // hook commands a minimal env, and the script exits 0 silently without it. Its
   // stdout is always empty, so it can never be read as a Stop `decision`.
+  //
+  // WI-6554700010018765: PAPERCUSP_JOURNAL_SYNC=1 makes the POST finish INSIDE the
+  // hook, like every other codex reporting hook (lifecycle Stop/SessionEnd use
+  // PAPERCUSP_ACTIVITY_SYNC=1). codex-rs (hooks/src/engine/command_runner.rs,
+  // rust-v0.163.0) runs each hook in its own session and kills that process group
+  // whenever a run does not complete. The script's detached `( report & )` child
+  // stays in that group, so an un-awaited POST died with it: only 3-5% of codex su
+  // sessions ever journaled a turn end. The POST is bounded by the script's
+  // HTTP_TIMEOUT (5s) and fails open, so a slow operator delays the turn end by at
+  // most that.
   const turnJournal = join(dir, CODEX_TURN_JOURNAL_HOOK);
   if (opts.activitySid && existsSync(turnJournal)) {
     stop.push({
@@ -1129,7 +1139,7 @@ export function writeCodexLockHooks(
       hooks: [
         {
           type: 'command',
-          command: `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} PAPERCUSP_AGENT=codex ${turnJournal}`,
+          command: `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} PAPERCUSP_AGENT=codex PAPERCUSP_JOURNAL_SYNC=1 ${turnJournal}`,
         },
       ],
     });
@@ -1329,17 +1339,22 @@ function repairSuCodexHomeIdentityImpl(
       const parsed = JSON.parse(hooksText) as {
         hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
       };
-      return [
-        ['Stop', CODEX_TURN_JOURNAL_HOOK],
-        ['UserPromptSubmit', 'userpromptsubmit-provenance.sh'],
-      ].every(([event, script]) =>
+      // WI-6554700010018765: a journal entry written before the POST was made
+      // synchronous lacks PAPERCUSP_JOURNAL_SYNC=1; Codex kills the hook's process
+      // group on a dropped run, so that home must be rewritten on resume too.
+      const turnHooks: Array<[event: string, script: string, marker: string | null]> = [
+        ['Stop', CODEX_TURN_JOURNAL_HOOK, 'PAPERCUSP_JOURNAL_SYNC=1'],
+        ['UserPromptSubmit', 'userpromptsubmit-provenance.sh', null],
+      ];
+      return turnHooks.every(([event, script, marker]) =>
         !existsSync(papercuspPath('hooks', 'cc', script)) ||
         parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
             (hook) =>
               hook.command?.includes(script) &&
               hook.command.includes(`PAPERCUSP_SID='${sid}'`) &&
-              hook.command.includes('PAPERCUSP_AGENT=codex'),
+              hook.command.includes('PAPERCUSP_AGENT=codex') &&
+              (marker === null || hook.command.includes(marker)),
           ),
         ) === true,
       );

@@ -36,6 +36,7 @@ import {
   packerFacade,
   parseSelectedFiles,
   readGitProvenance,
+  provenanceStatusPathspec,
   REPOMIX_FORBIDDEN_FLAGS,
   REPOMIX_PINNED_VERSION,
   REPOMIX_VENDOR_DIR,
@@ -582,6 +583,33 @@ describe('provenance states what the pack actually is', () => {
       dirty: null,
       baseCommit: null,
     });
+  });
+
+  it('scopes the provenance status to literal include paths and keeps the whole tree for globs (WI-6554700010018774)', async () => {
+    // A whole-tree status on the shared checkout cost 470-890ms of the claim-time
+    // brief's 6s window; the packed files are all a pack's reproducibility needs.
+    expect(provenanceStatusPathspec(['a.ts', 'lib/b'])).toEqual(['a.ts', 'lib/b']);
+    for (const include of [undefined, [], ['packages/**/*.ts'], ['a.ts', 'src/?.ts'], [':(glob)a'], ['--all'], ['']]) {
+      expect(provenanceStatusPathspec(include)).toBeNull();
+    }
+    const statuses: string[][] = [];
+    const exec: ExecFn = async (bin, argv) => {
+      if (bin === 'git' && argv[0] === 'status') statuses.push([...argv]);
+      return { stdout: argv[0] === 'status' ? (argv.includes('--') ? '' : ' M elsewhere.ts\n') : 'abc1234def' };
+    };
+    // The scoped answer is about the packed files: an unrelated dirty file no longer marks the pack dirty.
+    await expect(readGitProvenance('/repo', undefined, exec, ['a.ts'])).resolves.toMatchObject({ dirty: false });
+    await expect(readGitProvenance('/repo', undefined, exec, ['packages/**/*.ts'])).resolves.toMatchObject({ dirty: true });
+    expect(statuses).toEqual([['status', '--porcelain', '--', 'a.ts'], ['status', '--porcelain']]);
+
+    const base = stubEffects();
+    const gitCalls: string[][] = [];
+    const effects: PackerEffects = { ...base, exec: async (bin, argv, opts) => {
+      if (bin === 'git') gitCalls.push([...argv]);
+      return base.exec!(bin, argv, opts);
+    } };
+    await packerFacade('pack', { ...BASE, include: ['a.ts'] }, effects);
+    expect(gitCalls).toContainEqual(['status', '--porcelain', '--', 'a.ts']);
   });
 
   it('the pack body never comes back inline — only a bounded preview plus a path', async () => {

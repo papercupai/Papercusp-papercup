@@ -1475,6 +1475,12 @@ import './plans/pause';
 import './plans/set-priority';
 // plan-verification-profiles P-005: decision-gated change of a plan's verification profile.
 import './plans/set-verification-profile';
+// plan-item-types-registry-cupboard P-005: author item-type / plan-type definitions and plan pins.
+import './plan-types/define';
+import './plan-types/get';
+import './plan-types/list';
+import './plan-types/retire';
+import './plan-types/pin';
 import './plans/set-archived';
 import './plans/launch';
 import './plans/resume';

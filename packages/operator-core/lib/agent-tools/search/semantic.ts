@@ -39,7 +39,7 @@ import {
 } from '../../search/coverage-gate';
 import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
-import { scopeArg, DEFAULT_SCOPE } from './scope';
+import { scopeArg, resolveSearchScope } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { createStageAttempt, traceStageAwait, withStageAttempt } from '../../sync/hyperbee/stage-stall-log';
 
@@ -64,7 +64,7 @@ export default defineTool({
     notWhen:
       'When the user knows the exact keyword they want. `search:fulltext` is faster + cheaper there (no embedding API call). For structured queries (tasks/goals/projects rows by title), use `search:query`.',
     chaining:
-      'For planned-work discovery include scope:["plan","work_item","decisions"]; defaults exclude plans/work-items. Read scope_residue before any absence claim. Fetch plan hits with plans:get.',
+      'Plans, including drafts, are included by default and alongside work_item searches; plan_status labels their state. Fetch plan hits with plans:get.',
     seeAlso: [
       'search:fulltext (faster + cheaper keyword recall)',
       'search:query (structured rows by title)',
@@ -84,14 +84,8 @@ export default defineTool({
   async handler(args, ctx) {
     const limit = args.limit ?? 5;
     const mode = args.mode ?? 'hybrid';
-    // Historic no-scope default stays the 4 original surfaces; an EXPLICIT
-    // scope:['all'] expands to every registered source (EI-6984 precedent).
-    const scope =
-      args.scope?.includes('all')
-        ? SEARCH_SOURCES.map((s) => s.name)
-        : !args.scope?.length
-          ? DEFAULT_SCOPE
-          : args.scope;
+    // Share planned-work inclusion with fulltext and work-item discovery.
+    const scope = resolveSearchScope(args.scope);
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name))
       .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx))
         : s.name === 'plan' ? createPlanSearchSource({ harnessSlugs: ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : [] })
@@ -302,9 +296,10 @@ export default defineTool({
           ...(residue ? { scope_residue: residue } : {}),
           // Map @papercusp/search's generic `scope` hit field back to the
           // operator's domain `harness_slug` for the agent-facing output.
-          results: reranked.map(({ scope: hitScope, ...rest }) =>
-            hitScope ? { ...rest, harness_slug: hitScope } : rest,
-          ),
+          results: reranked.map(({ scope: hitScope, ...rest }) => ({ ...rest,
+            ...(hitScope ? { harness_slug: hitScope } : {}),
+            ...(rest.source === 'plan' ? { plan_status: rest.meta?.status } : {}),
+          })),
         }),
       }],
     };

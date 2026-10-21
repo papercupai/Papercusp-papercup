@@ -61,7 +61,24 @@ import {
   DEP_GRAPH_NODE_BUDGET,
   type DepGraphEdge,
   type DepGraphNode,
+  type DepGraphWaitInput,
 } from './dep-graph-model';
+
+/** Edge classes, each with its own arrowhead marker (see the ARROWHEADS note in the canvas). */
+const EDGE_VARIANTS = ['default', 'satisfied', 'dangling', 'wait', 'wait-stale'] as const;
+type EdgeVariant = (typeof EDGE_VARIANTS)[number];
+function edgeVariant(e: DepGraphEdge): EdgeVariant {
+  if (e.wait) return e.wait.stale ? 'wait-stale' : 'wait';
+  return e.dangling ? 'dangling' : e.satisfied ? 'satisfied' : 'default';
+}
+
+/** The two short lines an EVENT node shows: what it is, and whether one fire proves it. */
+function eventNodeLabel(n: DepGraphNode): string {
+  const ev = n.event;
+  if (!ev) return n.id;
+  const proof = ev.certification === 'proving' ? 'proving key' : `${ev.certification ?? 'unknown'} key`;
+  return `event · ${ev.waitCount} wait${ev.waitCount === 1 ? '' : 's'} · ${proof}`;
+}
 
 /** One row of `workItems.depEdges` (see lib/sync-resolver/dependency-graph-edges.ts). */
 interface DepEdgeRow {
@@ -176,7 +193,7 @@ function DepGraphLegend() {
    * `context-stroke` marker. An arrowhead that silently fails to render in the KEY would
    * be self-defeating. Same classes either way, so the swatch still cannot drift.
    */
-  const edge = (variant: 'default' | 'satisfied' | 'dangling') => (
+  const edge = (variant: EdgeVariant) => (
     <LegendSwatch>
       <path
         d="M 1 6 L 17 6"
@@ -201,6 +218,22 @@ function DepGraphLegend() {
       <li>
         {edge('dangling')}
         <span>broken — blocker resolves to no item</span>
+      </li>
+      <li>
+        {edge('wait')}
+        <span>waits on an event (an agent&rsquo;s await, or the item&rsquo;s own event blocker)</span>
+      </li>
+      <li>
+        {edge('wait-stale')}
+        <span>stale wait — its agent&rsquo;s session ended, or the await expired</span>
+      </li>
+      <li>
+        <LegendSwatch>
+          <g className="pc-depgraph__node pc-depgraph__node--event">
+            <rect x={1} y={1} width={24} height={10} rx={5} />
+          </g>
+        </LegendSwatch>
+        <span>event being waited on (dashed when every wait on it is stale)</span>
       </li>
       {/*
         ⚠ The node marks are wrapped in a <g class="pc-depgraph__node"> with the <rect> as
@@ -336,12 +369,22 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     args: { harnessSlug: slug },
     enabled: Boolean(slug),
   });
+  // event-wait-settlement-2026-10-20 P-009 (D-003): event waits on items. Deliberately NOT a
+  // gate on drawing the graph — the `blocks` picture renders as soon as it is ready, and the
+  // waits join when they arrive. A failure here is reported beside the graph, not instead of it.
+  const waitsQuery = useSyncQuery<DepGraphWaitInput>({
+    queryName: 'workItems.depWaits',
+    args: { harnessSlug: slug },
+    enabled: Boolean(slug),
+  });
 
   // `loading ? null : data` — NOT `data ?? null`. A defined-but-EMPTY array is a real answer
   // ("no dependencies") and must not be confused with "not loaded yet"; conflating them is a
   // bug this codebase has already shipped once.
   const items = itemsQuery.loading ? null : itemsQuery.data;
   const edgeRows = edgesQuery.loading ? null : edgesQuery.data;
+  const waitRows = waitsQuery.loading ? null : waitsQuery.data;
+  const waitsError = waitsQuery.error?.message ?? null;
   const error = itemsQuery.error?.message ?? summaryQuery.error?.message ?? edgesQuery.error?.message ?? null;
 
   // FULL FILTER PARITY with the list pane (P-010 / D-003 req 4). The columns come
@@ -412,8 +455,10 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
       add(e.blockedId, e.blockedKind, e.blockedTitle, e.blockedStatus, e.blockedPlanSlug);
       add(e.blockerId, e.blockerKind, e.blockerTitle, e.blockerStatus, e.blockerPlanSlug);
     }
+    // P-009: a wait's item is drawn from the wait row too, so it must be filterable the same way.
+    for (const w of waitRows ?? []) add(w.itemId, w.itemKind, w.itemTitle, w.itemStatus, w.itemPlanSlug);
     return extra.size === 0 ? items : [...items, ...extra.values()];
-  }, [items, edgeRows, listIds]);
+  }, [items, edgeRows, waitRows, listIds]);
 
   const summary = summaryQuery.data?.[0] ?? null;
   const pairedFetching = Boolean(itemsQuery.fetching || summaryQuery.fetching);
@@ -489,6 +534,8 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
         planSlug: i.planSlug,
       })),
       edges: edgeRows,
+      // P-009: event waits join when they arrive; the `blocks` graph never waits on them.
+      waits: waitRows ?? [],
       selectedId: selectedId || null,
       healthOnly,
       // WI-36045: the model must not guess why `items` is a subset of the corpus. Only the
@@ -498,7 +545,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
       // build a filterable row for an edge-carried endpoint (see `filterCorpus` above).
       filteredIds,
     });
-  }, [visibleItems, edgeRows, selectedId, healthOnly, cf.hasActive, filteredIds]);
+  }, [visibleItems, edgeRows, waitRows, selectedId, healthOnly, cf.hasActive, filteredIds]);
 
   // FOCUS (P-006). Hover is render-only, transient, and not user-meaningful state, so it
   // is the documented `useState` case rather than nuqs — unlike `sel`, nobody wants to
@@ -839,6 +886,24 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
           deepest chain: {maxDepth} blocker{maxDepth === 1 ? '' : 's'}
         </span>
       )}
+      {graph.waitCount > 0 && (
+        // P-009: the waits drawn, and how many nobody is keeping alive (R-16).
+        <span className="pc-advpanel__chip" role="status">
+          {graph.waitCount} event wait{graph.waitCount === 1 ? '' : 's'}
+          {graph.staleWaitCount > 0 ? ` · ${graph.staleWaitCount} stale` : ''}
+        </span>
+      )}
+      {graph.waitsTruncated && (
+        // Absence is reported, never silent: a resolver leg hit its cap.
+        <span className="pc-advpanel__chip pc-depgraph__chip--warn" role="status">
+          more event waits exist than are drawn — select an item to narrow
+        </span>
+      )}
+      {waitsError && (
+        <span className="pc-advpanel__chip pc-depgraph__chip--warn" role="status">
+          event waits unavailable: {waitsError}
+        </span>
+      )}
       {graph.hydratedNodeCount > 0 && (
         // Not a warning: these are real rows, drawn from the same work_items rows the list
         // reads, that simply fall outside its recency window. Stated so a reader is never
@@ -1071,9 +1136,11 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
               aria-current={n.id === selectedId}
               onClick={() => void setSelectedId(n.id)}
             >
-              {n.dangling
-                ? `Unresolved blocker ${n.title}`
-                : `${n.id} — ${n.title} (depth ${n.depth}, ${n.state})`}
+              {n.event
+                ? `Event ${n.event.key} — ${eventNodeLabel(n)}${n.event.stale ? ', every wait on it is stale' : ''}`
+                : n.dangling
+                  ? `Unresolved blocker ${n.title}`
+                  : `${n.id} — ${n.title} (depth ${n.depth}, ${n.state})`}
             </button>
           </li>
         ))}
@@ -1115,7 +1182,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
               collide — a duplicate id would make one pane's arrows adopt the other's colour.
             */}
             <defs>
-              {(['default', 'satisfied', 'dangling'] as const).map((variant) => (
+              {EDGE_VARIANTS.map((variant) => (
                 <marker
                   key={variant}
                   id={`pc-dg-arrow-${variant}-${uid}`}
@@ -1153,7 +1220,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                 const x2 = b.x - 2;
                 const y2 = b.y + NODE_H / 2;
                 const mid = (x1 + x2) / 2;
-                const variant = e.dangling ? 'dangling' : e.satisfied ? 'satisfied' : 'default';
+                const variant = edgeVariant(e);
                 // P-006: emphasis by CONTRAST, never weight (D-001). The focused edges
                 // keep their hairline stroke and gain opacity; the rest recede.
                 const focusClass = !focus
@@ -1185,6 +1252,8 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                   data-node-id={n.id}
                   transform={`translate(${n.x}, ${n.y})`}
                   className={`pc-depgraph__node${n.dangling ? ' pc-depgraph__node--dangling' : ''}${
+                    n.event ? ` pc-depgraph__node--event${n.event.stale ? ' pc-depgraph__node--event-stale' : ''}` : ''
+                  }${
                     n.planSlug ? ' pc-depgraph__node--plan' : ''
                   }${n.id === selectedId ? ' pc-depgraph__node--selected' : ''}${
                     // P-006 — a node is emphasised when it is the focus or a neighbour of
@@ -1205,11 +1274,13 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                       action elements — it is the standard accessible name for an SVG group,
                       and the planmark already uses it the same way. */}
                   <title>
-                    {n.dangling
-                      ? `${n.id} — unresolved blocker`
-                      : `${n.id} — ${n.title} (${n.state}, depth ${n.depth})`}
+                    {n.event
+                      ? `${n.event.key} — ${eventNodeLabel(n)}${n.event.stale ? ' — every wait on it is stale' : ''}`
+                      : n.dangling
+                        ? `${n.id} — unresolved blocker`
+                        : `${n.id} — ${n.title} (${n.state}, depth ${n.depth})`}
                   </title>
-                  <rect width={NODE_W} height={NODE_H} rx={6} />
+                  <rect width={NODE_W} height={NODE_H} rx={n.event ? NODE_H / 2 : 6} />
                   {/* P-012: plan provenance as a left edge-marker rather than a fill or
                       border change. Fill is already spoken for by state and the border by
                       selection/dangling, so distinguishing plan items by either would
@@ -1232,7 +1303,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                       legible at this size. Dangling nodes get none: a placeholder for a row
                       that does not exist has no state to report, and inventing one would be
                       asserting data we do not have. */}
-                  {!n.dangling && (
+                  {!n.dangling && !n.event && (
                     <circle
                       className={`pc-depgraph__node-state pc-depgraph__node-state--${stateBucket(n.state)}`}
                       cx={NODE_W - 11}
@@ -1245,7 +1316,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                       muted label above it. It was the other way round, which is part of why
                       the pane read as a grid of ids. */}
                   <text x={10} y={17} className="pc-depgraph__node-id">
-                    {n.id}
+                    {n.event ? eventNodeLabel(n) : n.id}
                   </text>
                   <text x={10} y={34} className="pc-depgraph__node-title">
                     {n.title.length > TITLE_CHARS ? `${n.title.slice(0, TITLE_CHARS - 1)}…` : n.title}

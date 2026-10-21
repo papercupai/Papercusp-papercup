@@ -96,10 +96,11 @@ export default defineTool({
             externalClose: z.boolean().optional(),
             reopen: z.boolean().optional(),
             delivery: z.enum(ADMISSION_DELIVERIES).optional(),
+            recruit: z.boolean().optional(),
           })
           .strict()
           .optional()
-          .describe("Write-back/reaction switches; all on by default, completion moves the source to done. delivery:'pr' = fixes only via the target pot's fork PR; refused unless that pot is in review mode with a fork."),
+          .describe("Write-back/reaction switches; on by default except recruit, completion moves the source to done. delivery:'pr' = fixes only via the target pot's fork PR; refused unless that pot is in review mode with a fork. recruit:true = the platform launches an independent reviewer, then an implementer, for this rule's admitted bugs."),
       })
       .optional()
       .describe("rules-set: match is { field:{ eq|in|contains|after: value } }, all fields must match. after requires an ISO timestamp with timezone, e.g. createdAt:{after:<activation timestamp>}, so historical imports remain data."),

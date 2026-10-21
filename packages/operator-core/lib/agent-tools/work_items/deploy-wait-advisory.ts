@@ -7,16 +7,18 @@
  * filing itself says so, at the moment the deferral is written. Advisory only: the item is
  * still created, and a false positive costs one ignorable line.
  *
- * The classification is the staging-first guard's (`nonFinalDeployWaitClauses`), so a
- * filing, a blocker and a plan activation all agree on what a non-final deploy wait is.
+ * The classification is the staging-first guard's: every strong non-final deploy wait the
+ * blocker and plan-activation guards refuse, plus the softer "accept/verify once … :3070 /
+ * deployed" deferrals those guards deliberately ignore (`deployDeferralAdvisoryClauses`,
+ * WI-6554700010018881 — the census phrasing that live proof S5 found the strong rule missed).
  */
-import { nonFinalDeployWaitClauses } from '../plans/staging-first-activation-guard';
+import { deployDeferralAdvisoryClauses } from '../plans/staging-first-activation-guard';
 
 const MAX_QUOTED_CLAUSE_CHARS = 160;
 
 /** The advisory text for a new item's title + summary, or null when it defers nothing. */
 export function deployWaitAdvisory(title: string, summary?: string | null): string | null {
-  const clauses = nonFinalDeployWaitClauses([title, summary ?? ''].filter(Boolean).join('\n'));
+  const clauses = deployDeferralAdvisoryClauses([title, summary ?? ''].filter(Boolean).join('\n'));
   if (clauses.length === 0) return null;
   const first = clauses[0]!;
   const quoted = first.length > MAX_QUOTED_CLAUSE_CHARS ? `${first.slice(0, MAX_QUOTED_CLAUSE_CHARS)}…` : first;

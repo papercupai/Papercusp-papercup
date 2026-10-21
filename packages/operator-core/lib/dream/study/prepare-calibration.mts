@@ -6,6 +6,7 @@ import { mapDreamRun } from "../../dream/dream-run-store.ts";
 import { STUDY_BLOCKS } from "./accounting.mts";
 import { buildCalibrationBundle, calibrationStudyScope, calibrationKeyPublication } from "./calibration.mts";
 import { freezeImmutableArtifacts } from "./freeze-artifacts.mts";
+import { writeStdoutSync } from "../../../../../scripts/lib/write-stdout-sync.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workspaceId = "papercusp-workspace";
@@ -28,7 +29,9 @@ if (custodyFile) {
   const bytes = calibrationKeyPublication(raw, reports[0].report);
   const file = prefix + 'calibration-key-public-v2.json';
   const frozen = await freezeImmutableArtifacts([{ path: resolve(here, file), bytes, label: file }]);
-  console.log(JSON.stringify({ ...frozen, file, publication: JSON.parse(bytes).publication,
+  // Synchronous write: process.exit(0) below would truncate an async pipe write
+  // (lint:no-undrained-stdout-exit); ESM top level has no `return` to end naturally.
+  writeStdoutSync(JSON.stringify({ ...frozen, file, publication: JSON.parse(bytes).publication,
     providerCalls: 0, ledgerWrites: 0, originalKeyChanged: false }));
   process.exit(0);
 }

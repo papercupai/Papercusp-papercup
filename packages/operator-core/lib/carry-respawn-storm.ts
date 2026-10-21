@@ -18,7 +18,9 @@
  *
  * Evidence source — `harness_shared.tool_invocations`, the ledger every MCP call
  * already writes (indexed on `(coord_owner_id, invoked_at DESC)`):
- *   - a QUEUED cut  = a `session:request-compaction` row with status 'ok';
+ *   - a QUEUED cut  = a `session:request-compaction` row with status 'ok',
+ *                     unless the host positively records failure/retirement
+ *                     before any successor spawn for that request;
  *   - a REAL TURN   = any OTHER row with `call_origin = 'agent'` (hook-origin
  *                     rows such as activity:report fire without a model turn,
  *                     and in-process sub-calls are 'unknown', so neither counts);
@@ -35,6 +37,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { openEscalation } from './agent-tools/coordination/escalations';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import type { ColdBootDrillHostEvent } from './cold-boot-drill-live';
 
 export const REQUEST_COMPACTION_TOOL = 'session:request-compaction';
 /** The refusal code this breaker returns (and later reads back as the latch). */
@@ -77,6 +80,36 @@ const NO_STORM: RespawnStormVerdict = {
   lastRealTurnAt: null,
 };
 
+/** A queue acknowledgement is not a cut. Reuse the host's lifecycle ledger to
+ * exclude requests that failed or were superseded before a successor started.
+ * Missing evidence preserves the legacy guard; a spawned successor still counts
+ * even when its first continuation later fails. Each next accepted request
+ * bounds the previous attempt, so one failure cannot erase several requests. */
+function requestsWithoutCuts(
+  rows: readonly StormLedgerRow[],
+  hostEvents: readonly ColdBootDrillHostEvent[],
+  nowMs: number,
+): Set<number> {
+  const requests = rows.filter((row) => row.toolName === REQUEST_COMPACTION_TOOL && row.status === 'ok')
+    .map((row) => row.invokedAtMs).sort((a, b) => a - b);
+  const events = hostEvents.map((event) => ({ event, at: Date.parse(event.ts ?? '') }))
+    .filter(({ at }) => Number.isFinite(at) && at <= nowMs);
+  const excluded = new Set<number>();
+  for (let i = 0; i < requests.length; i += 1) {
+    const start = requests[i]!;
+    const end = requests[i + 1] ?? Infinity;
+    const attempt = events.filter(({ at }) => at >= start && at < end);
+    const spawned = attempt.some(({ event }) =>
+      (event.kind === 'respawned' && event.mode === 'carry-respawn') ||
+      event.kind === 'respawn-carry-delivered' || event.kind === 'carry-drill-respawned');
+    const failed = attempt.some(({ event }) =>
+      (event.kind === 'respawn-failed' && event.mode === 'carry-respawn') ||
+      event.kind === 'respawn-carry-dropped');
+    if (failed && !spawned) excluded.add(start);
+  }
+  return excluded;
+}
+
 /**
  * Pure classifier over one owner's recent ledger rows (any order).
  * Walks newest→oldest until the first real turn; everything before that is the
@@ -85,17 +118,22 @@ const NO_STORM: RespawnStormVerdict = {
 export function classifyRespawnStorm(
   rows: readonly StormLedgerRow[],
   nowMs: number,
-  opts: { minCuts?: number; windowMs?: number } = {},
+  opts: { minCuts?: number; windowMs?: number; hostEvents?: readonly ColdBootDrillHostEvent[] } = {},
 ): RespawnStormVerdict {
   const minCuts = Math.max(2, opts.minCuts ?? RESPAWN_STORM_MIN_CUTS);
   const windowMs = opts.windowMs ?? RESPAWN_STORM_WINDOW_MS;
   const sorted = [...rows].sort((a, b) => b.invokedAtMs - a.invokedAtMs);
+  const excluded = requestsWithoutCuts(rows, opts.hostEvents ?? [], nowMs);
   const cuts: number[] = [];
+  let excludedSinceRealTurn = 0;
   let latched = false;
   let lastRealTurnAtMs: number | null = null;
   for (const row of sorted) {
     if (row.toolName === REQUEST_COMPACTION_TOOL) {
-      if (row.status === 'ok') cuts.push(row.invokedAtMs);
+      if (row.status === 'ok') {
+        if (excluded.has(row.invokedAtMs)) excludedSinceRealTurn += 1;
+        else cuts.push(row.invokedAtMs);
+      }
       else if (row.errorCode === RESPAWN_STORM_ERROR) latched = true;
       continue;
     }
@@ -105,6 +143,8 @@ export function classifyRespawnStorm(
     }
   }
   const priorNeeded = minCuts - 1;
+  // A refusal based on requests the host disproves must not perpetuate itself.
+  if (excludedSinceRealTurn > 0 && cuts.length < priorNeeded) latched = false;
   const dense = cuts.length >= priorNeeded && nowMs - cuts[priorNeeded - 1]! <= windowMs;
   const storm = dense || latched;
   return {
@@ -155,13 +195,17 @@ export async function detectRespawnStorm(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const sql = opts.sql ?? getOrgPg().sql;
-    const read = readLedger(ownerId, sql, opts.lookbackMs ?? RESPAWN_STORM_LOOKBACK_MS);
+    const read = Promise.all([
+      readLedger(ownerId, sql, opts.lookbackMs ?? RESPAWN_STORM_LOOKBACK_MS),
+      import('./cold-boot-drill-live').then(({ readOwnerHostEvents }) => readOwnerHostEvents(ownerId)),
+    ]);
     const timeout = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), opts.timeoutMs ?? RESPAWN_STORM_READ_TIMEOUT_MS);
     });
-    const rows = await Promise.race([read, timeout]);
-    if (!rows) return NO_STORM;
-    return classifyRespawnStorm(rows, opts.nowMs ?? Date.now());
+    const evidence = await Promise.race([read, timeout]);
+    if (!evidence) return NO_STORM;
+    const [rows, hostEvents] = evidence;
+    return classifyRespawnStorm(rows, opts.nowMs ?? Date.now(), { hostEvents });
   } catch {
     return NO_STORM;
   } finally {

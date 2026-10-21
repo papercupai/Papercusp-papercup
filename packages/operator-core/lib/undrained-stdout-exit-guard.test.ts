@@ -29,13 +29,15 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error — .mjs guard script with no type declarations; the pure detector is
 // exported precisely so this test can drive it without spawning a process per case.
-import { findOffendersInSource } from '../../../scripts/check-undrained-stdout-exit.mjs';
+import { findOffendersInSource, walk } from '../../../scripts/check-undrained-stdout-exit.mjs';
 import { runGuardScript } from './testing-guard-script';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -219,6 +221,33 @@ describe('the widening did NOT retire the rule (negative controls)', () => {
     // regex opened a phantom string that blanked the rest of the file, so real
     // offenders after it became INVISIBLE. Asserts the detector still sees past it.
     expect(flagged('const re = /^["\'`]([^"\'`]+)["\'`]$/;\nconsole.log(JSON.stringify(x));\nprocess.exit(0);\n')).toBe(1);
+  });
+});
+
+describe('the walk skips gitignored bundle output (WI-6554700010018888)', () => {
+  // A shared-tree run used to go red on `apps/operator/dist-host*/` bundles: gitignored,
+  // absent from the gate's clean checkout, so the shared-tree verdict and the gate's
+  // verdict disagreed. `dist-*` must be skipped like `dist`; a source dir that merely
+  // STARTS with "dist" must still be scanned, or the exclusion has eaten real code.
+  it('skips dist and dist-* directories but still walks a dist-prefixed source dir', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'undrained-walk-'));
+    try {
+      const files: Record<string, string> = {
+        'dist/a.mjs': '',
+        'dist-host/b.mjs': '',
+        'dist-host-native-fixture-debug-123/c.mjs': '',
+        'distribution/d.mjs': '',
+        'src/e.mjs': '',
+      };
+      for (const rel of Object.keys(files)) {
+        mkdirSync(path.join(root, path.dirname(rel)), { recursive: true });
+        writeFileSync(path.join(root, rel), files[rel]);
+      }
+      const walked = (walk(root) as string[]).map((f) => path.relative(root, f)).sort();
+      expect(walked).toEqual(['distribution/d.mjs', 'src/e.mjs']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -44,11 +44,18 @@ export interface ProviderSandboxProbe {
   works: boolean;
   /** Why the profile could not be established (bwrap's own stderr when it ran). */
   detail?: string;
+  /**
+   * The probe never reached an exit status (timeout, signal, spawn error), so
+   * it says nothing about the profile: not cached, and not a refusal.
+   */
+  transient?: true;
 }
 
+/** Default budget for one probe run of bwrap. Load-dependent: ~150ms median here, multi-second tails. */
+const PROVIDER_PROBE_TIMEOUT_MS = 5_000;
 const _providerProbeCache = new Map<string, ProviderSandboxProbe>();
 const _providerProbesInFlight = new Map<string, Promise<ProviderSandboxProbe>>();
-type ProviderSandboxInput = { bwrapBinary?: string; pluginDir: string; runtimeDirs?: string[] };
+type ProviderSandboxInput = { bwrapBinary?: string; pluginDir: string; runtimeDirs?: string[]; timeoutMs?: number };
 /**
  * Probe the EXACT provider profile (including `--unshare-net`) rather than a
  * generic bwrap call: a host can run plain bwrap yet refuse a network
@@ -80,14 +87,18 @@ export async function probeProviderSandbox(input: ProviderSandboxInput): Promise
         bwrapBinary: binary,
         cmd: ['/usr/bin/true'],
       });
-      await execFileAsync(binary, argv, { timeout: 5_000, env: {}, encoding: 'utf8' });
+      await execFileAsync(binary, argv, { timeout: input.timeoutMs ?? PROVIDER_PROBE_TIMEOUT_MS, env: {}, encoding: 'utf8' });
       result = { works: true };
     } catch (err) {
       // A numeric exit status proves the profile ran. Spawn errors, signals and
       // timeouts are transient evidence and must remain retryable.
       if (!(err instanceof Error) || !('code' in err) || typeof err.code !== 'number'
         || ('signal' in err && err.signal)) {
-        return { works: false, detail: `probe did not finish (${err instanceof Error ? err.message : String(err)}); not cached` };
+        return {
+          works: false,
+          transient: true,
+          detail: `probe did not finish (${err instanceof Error ? err.message : String(err)}); not cached`,
+        };
       }
       const stderr = 'stderr' in err ? String(err.stderr).trim() : '';
       result = { works: false, detail: stderr || `${binary} exited ${err.code}` };
@@ -152,7 +163,8 @@ export interface StartDaemonOptions {
   /**
    * `provider` runs the fixed D-006 provider profile (no network namespace of
    * its own, read-only plugin dir, scrubbed env) and FAILS CLOSED: if that
-   * profile cannot be established the daemon is never spawned. `plugin`
+   * profile cannot be established the daemon command never runs (a probe that
+   * ran and failed refuses up front; otherwise bwrap itself refuses). `plugin`
    * (default) keeps the legacy profile and its unsandboxed fallback.
    * readPaths/writePaths/shareNet are ignored in `provider` mode.
    */
@@ -161,6 +173,8 @@ export interface StartDaemonOptions {
   runtimeDirs?: string[];
   /** bwrap binary for the provider profile. Default /usr/bin/bwrap. */
   bwrapBinary?: string;
+  /** Budget for the provider-sandbox probe. Default {@link PROVIDER_PROBE_TIMEOUT_MS}. */
+  sandboxProbeTimeoutMs?: number;
   /** Daemon→host request handlers, re-attached on every (re)spawn. */
   requestHandlers?: Record<string, JsonRpcRequestHandler>;
 }
@@ -223,11 +237,24 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
     let binary: string;
     let argv: string[];
     if (providerMode) {
-      const probe = await probeProviderSandbox({ bwrapBinary: opts.bwrapBinary, pluginDir: opts.cwd, runtimeDirs: opts.runtimeDirs });
-      if (!probe.works) {
+      const probe = await probeProviderSandbox({
+        bwrapBinary: opts.bwrapBinary,
+        pluginDir: opts.cwd,
+        runtimeDirs: opts.runtimeDirs,
+        timeoutMs: opts.sandboxProbeTimeoutMs,
+      });
+      if (!probe.works && !probe.transient) {
         throw new DaemonSandboxUnavailableError(
           `provider daemon ${opts.pluginName} refused: the provider sandbox (bwrap with --unshare-net) could not be established for ${opts.cwd}: ${probe.detail ?? 'unknown reason'}`,
         );
+      }
+      if (probe.transient) {
+        // An inconclusive probe is not a refusal (WI-6554700010018251: a timed-out
+        // probe on a loaded host used to leave the provider unregistered). Spawn
+        // through bwrap anyway: bwrap refuses to run the command without the
+        // profile, so the daemon still never runs unsandboxed, and a real failure
+        // surfaces as the daemon's exit.
+        opts.onLog?.(`[supervisor] ${opts.pluginName}: provider sandbox probe inconclusive (${probe.detail}); spawning through bwrap`);
       }
       const built = buildProviderBwrapArgs({
         pluginDir: opts.cwd,
@@ -263,7 +290,13 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
       env: providerMode ? { PATH: '/usr/bin:/bin' } : { PATH: process.env.PATH ?? '/usr/bin:/bin' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    child.on('error', (e: Error) => opts.onLog?.(`[supervisor] ${opts.pluginName}: spawn error: ${e.message}`));
+    const spawned = child;
+    child.on('error', (e: Error) => {
+      opts.onLog?.(`[supervisor] ${opts.pluginName}: spawn error: ${e.message}`);
+      // A process that never started emits no 'exit': fail pending calls now
+      // instead of leaving them to their timeouts.
+      if (spawned.pid === undefined) bridge?.shutdown(new Error(`daemon spawn error: ${e.message}`));
+    });
 
     if (!child.stdin || !child.stdout || !child.stderr) {
       throw new Error('child stdio pipes missing — spawn failed');

@@ -237,6 +237,26 @@ async function defaultAfterSourceSynced(sql: postgres.Sql, source: ConnectorSour
         `refused by the delivery audit — ${JSON.stringify({ failed: result.failed.slice(0, 5), refused: refused.slice(0, 5) })}`,
     );
   }
+  // WI-6554700010018302: recruit the reviewer/implementer an admitted bug is waiting on (rules
+  // with lifecycle.recruit) and raise an owner for stranded work. Never fails the sync.
+  try {
+    const { runAdmissionRecruiter, defaultAdmissionRecruiterDeps } = await import('../work-admission/repair-recruiter');
+    const recruit = await runAdmissionRecruiter(
+      { workspaceId: source.workspaceId, dataSourceId: source.id },
+      defaultAdmissionRecruiterDeps,
+    );
+    if (recruit.launched.length || recruit.escalated.some((e) => e.created) || recruit.failed.length) {
+      console.log(
+        `[admission-recruiter] source ${source.id}: ${JSON.stringify({
+          launched: recruit.launched,
+          escalated: recruit.escalated.filter((e) => e.created),
+          failed: recruit.failed.slice(0, 5),
+        })}`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[admission-recruiter] source ${source.id}: pass failed — ${err instanceof Error ? err.message : String(err)}`);
+  }
   return result;
 }
 

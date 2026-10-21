@@ -21,7 +21,7 @@ import { resolveViewer } from '../reports/_shared';
 import { scopeResidue } from './scope-residue';
 import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
-import { scopeArg, DEFAULT_SCOPE } from './scope';
+import { scopeArg, resolveSearchScope } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { promotionSourceSchema, reversePromotions } from '../../promotion-lineage';
 import {
@@ -47,7 +47,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    'Search workspace prose by keyword (BM25-style). Use scope:["plan","work_item","decisions"] for planned-work discovery, including draft plan items; the default prose scope excludes plans and work-items. Returns ranked excerpts and unsearched-corpus disclosure.',
+    'Search workspace prose by keyword (BM25-style). Plans, including drafts, are included by default and alongside work_item searches. Plan results expose plan_status. Returns ranked excerpts and unsearched-corpus disclosure.',
   guidance: {
     when: 'User references prose past the chat history budget ("remember when we decided pricing", "the X discussion from last week"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets. Also: BEFORE filing a new bug/change work-item, pass scope:["work_item"] to dedup-check against existing EI-* issues by title/body keyword — cheaper and more scalable than work_items:list + grep past ~500 items.',
     notWhen:
@@ -107,16 +107,9 @@ export default defineTool({
       }
     };
     const limit = args.limit ?? 5;
-    // EI-6984: 'work_item' (and now the session/coord corpora) are opt-in only,
-    // kept OUT of the historic no-scope default (unscoped callers keep the same
-    // 4-source result shape they've always gotten) — but an EXPLICIT
-    // scope:['all'] means "every source", so it expands to all seven.
-    const scope =
-      args.scope?.includes('all')
-        ? SEARCH_SOURCES.map((s) => s.name)
-        : !args.scope?.length
-          ? DEFAULT_SCOPE
-          : args.scope;
+    // Planned work participates by default and alongside work-item discovery.
+    // Explicit all expands to the complete registered source set.
+    const scope = resolveSearchScope(args.scope);
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name))
       .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx))
         : s.name === 'plan' ? createPlanSearchSource({ harnessSlugs: ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : [] })
@@ -183,6 +176,7 @@ export default defineTool({
       excerpt: r.excerpt,
       highlight: r.highlight,
       rank: r.score,
+      ...(r.source === 'plan' ? { plan_status: r.meta?.status } : {}),
     }));
 
     // EI-18685793913963409: a ZERO/low hit count on the historic default scope

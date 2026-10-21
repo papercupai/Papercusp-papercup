@@ -135,10 +135,18 @@ export async function checkPlanStartable(
   // this door: promotion and rubrics:propose share 'pre-start' and deliberately permit
   // METHOD-empty BARs (propose is how a METHOD gets added), and fleet top-ups/run-now/
   // scheduled doors act on plans that are already executing.
-  const readLifecycle = () => readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start', {
-    harnessSlug: row.harnessSlug,
-    requireCompleteContractBeforeProof: door === 'start',
-  });
+  // plan-item-types-registry-cupboard P-005 (R-14): the start door judges the plan under the
+  // type revisions it pinned at activation and its declared plan type.
+  const readLifecycle = async () => {
+    const { withPinnedPlanTypes } = await import('../../plan-types/pins');
+    return withPinnedPlanTypes(
+      { workspaceId: row.workspaceId, harnessSlug: row.harnessSlug, planSlug: slug },
+      () => readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start', {
+        harnessSlug: row.harnessSlug,
+        requireCompleteContractBeforeProof: door === 'start',
+      }),
+    );
+  };
   let lifecycle = await readLifecycle();
   // EI-22752422043395332: a BAR-neutral plan write that predates the pin synchronizer
   // strands the rubric's subjectPlanRevision, and nothing re-triggers it. Catch it up

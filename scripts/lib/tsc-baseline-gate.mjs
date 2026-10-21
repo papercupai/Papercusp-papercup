@@ -26,6 +26,7 @@ import { pathToFileURL } from 'node:url';
 import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
 import { isRootWorkspace, rootWorkspacePatterns } from './submodule-installs.mjs';
+import { writeStdoutSync } from './write-stdout-sync.mjs';
 import {
   baselineWithinScope,
   diagnosticFilesDependingOnChangedTypes,
@@ -3438,7 +3439,9 @@ export async function runTscBaselineGate({
     const { plans, uncheckable } = planCrossLegChecks({ gates, files: explicitFiles });
     if (plans.length > 0) {
       const crossLeg = await runCrossLegChecks({ root, plans });
-      for (const line of formatCrossLegReport({ ...crossLeg, uncheckable })) console.log(line);
+      // writeStdoutSync, not console.log: the red branch exits immediately, and an async pipe
+      // write would be truncated by process.exit() (lint:no-undrained-stdout-exit).
+      for (const line of formatCrossLegReport({ ...crossLeg, uncheckable })) writeStdoutSync(line);
       if (crossLeg.red.length > 0) {
         autoRouted = true;
         process.exit(1);

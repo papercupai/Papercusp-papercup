@@ -20,10 +20,19 @@
  * Run:
  *   npm run test:file -- packages/operator-core/lib/sync-resolver/dependency-graph-edges.integration.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
-import { resolveDependencyGraphEdges, DEP_EDGES_MAX_LIMIT } from './dependency-graph-edges';
+import { EVENT_AWAITS_MIN_DDL, HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import {
+  resolveDependencyGraphEdges,
+  resolveDependencyGraphWaits,
+  DEP_EDGES_MAX_LIMIT,
+  DEP_WAITS_LIMITS,
+  DEP_WAITS_PER_HOLDER,
+} from './dependency-graph-edges';
 
 const WS = 'papercusp-workspace';
 const H = 'papercup';
@@ -36,6 +45,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('dependency-graph-edges');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await db.sql.unsafe(EVENT_AWAITS_MIN_DDL).simple();
 }, 180_000);
 
 afterAll(async () => {
@@ -319,4 +329,233 @@ describe('resolveDependencyGraphEdges — endpoint lookup stays indexed at produ
     expect(got).toHaveLength(1000);
     expect(got[0]).toMatchObject({ blockedId: 'PERF-000001', blockerId: 'PERF-010001' });
   }, 60_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// The WAIT leg (event-wait-settlement-2026-10-20 P-009, D-003). Await rows live in the
+// COORDINATION workspace ('default') while items live in the tenant workspace — measured on
+// papercusp 2026-10-21: all 1,728 active awaits carry workspace_id 'default'. The fixture keeps
+// that split, so a resolver joining on one workspace would return nothing here.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+describe('resolveDependencyGraphWaits — event waits on items', () => {
+  beforeEach(async () => {
+    await db.sql`TRUNCATE harness_shared.event_awaits`;
+  });
+
+  async function heldItem(
+    id: string,
+    holder: string | null,
+    opts: { status?: string; harness?: string; blockers?: unknown[] } = {},
+  ): Promise<void> {
+    const payload = opts.blockers ? { externalBlockers: opts.blockers } : {};
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by, created_ts, updated_ts, payload)
+      VALUES (${opts.harness ?? H}, ${id}, ${`item ${id}`}, ${opts.status ?? 'blocked'}, 'bug', ${WS},
+              ${holder}, 0, 0, ${db.sql.json(payload as never)})`;
+  }
+
+  async function awaitRow(
+    subscriber: string,
+    eventKey: string,
+    opts: { bound?: { kind: string; ref: string }; policy?: string; note?: string; expiresInSec?: number; firedAt?: boolean } = {},
+  ): Promise<void> {
+    await db.sql`
+      INSERT INTO harness_shared.event_awaits
+        (workspace_id, subscriber_id, event_key, policy, note, bound_to, expires_ts, fired_at, once)
+      VALUES (${COORD}, ${subscriber}, ${eventKey}, ${opts.policy ?? 'wake'}, ${opts.note ?? null},
+              ${opts.bound ? db.sql.json(opts.bound) : null},
+              ${opts.expiresInSec == null ? null : new Date(Date.now() + opts.expiresInSec * 1000)},
+              ${opts.firedAt ? new Date() : null},
+              ${!eventKey.startsWith('coord:inbox-wake:')})`;
+  }
+
+  const blocker = (kind: string, ref: string, status: 'active' | 'cleared' = 'active') => ({
+    kind, ref, status, summary: `waiting on ${ref}`, createdAt: '2026-10-21T00:00:00.000Z', createdBy: 'su-holder', updatedAt: '2026-10-21T00:00:00.000Z',
+  });
+
+  const states = (m: Record<string, SessionState | null>) => ({
+    resolveSessionStates: async (ids: readonly string[]) =>
+      new Map(ids.filter((id) => id in m).map((id) => [id, m[id] ?? null])),
+  });
+
+  const waits = (deps = states({})) => resolveDependencyGraphWaits(db.sql, { workspaceId: WS, harnessSlug: H }, deps);
+
+  it('AUTO-BAR-R-15-P-009: returns the holder\'s await bound to an in-harness item, and its other non-inbox awaits, but never inbox-wake plumbing or announcements', async () => {
+    await heldItem('WI-1', 'su-holder');
+    await heldItem('WI-OTHER', 'su-holder', { harness: 'some-other-harness' });
+    await awaitRow('su-holder', 'work-item:done:WI-2', { bound: { kind: 'work-item-blocked', ref: 'WI-1' } });
+    await awaitRow('su-holder', 'release:deployed:abc123def'); // unbound: one of the holder's other waits
+    await awaitRow('su-holder', 'coord:inbox-wake:su-holder'); // plumbing — excluded
+    await awaitRow('su-holder', 'fleet:alpha:schema-ready', { policy: 'announce' }); // a declaration, not a wait
+    await awaitRow('su-holder', 'work-item:done:WI-9', { bound: { kind: 'work-item-blocked', ref: 'WI-OTHER' } }); // other harness
+    await awaitRow('su-holder', 'work-item:done:WI-7', { bound: { kind: 'work-item-blocked', ref: 'WI-1' }, firedAt: true }); // already fired
+
+    const got = await waits(states({ 'su-holder': 'live' }));
+    const onItem = got.filter((w) => w.itemId === 'WI-1');
+    expect(onItem.map((w) => [w.eventKey, w.bound]).sort()).toEqual([
+      ['release:deployed:abc123def', false],
+      ['work-item:done:WI-2', true],
+      // The holder's await bound to an item in ANOTHER harness is still one of the holder's
+      // other waits — it explains why this held item is not moving — just not bound to it.
+      ['work-item:done:WI-9', false],
+    ]);
+    expect(onItem.find((w) => w.bound)).toMatchObject({
+      waitKind: 'session-await',
+      subscriberId: 'su-holder',
+      subscriberIsHolder: true,
+      boundKind: 'work-item-blocked',
+      holderId: 'su-holder',
+      certification: 'proving',
+      subscriberState: 'live',
+      stale: false,
+    });
+    expect(got.some((w) => w.eventKey.startsWith('coord:inbox-wake:'))).toBe(false);
+    expect(got.some((w) => w.eventKey === 'fleet:alpha:schema-ready')).toBe(false);
+    expect(got.some((w) => w.itemId === 'WI-OTHER')).toBe(false);
+    // A contender parked on the claim is a wait on the item too, marked as not the holder.
+    await awaitRow('su-contender', 'claim:released:WI-1', { bound: { kind: 'work-item-claim', ref: 'WI-1' } });
+    const again = await waits(states({}));
+    expect(again.find((w) => w.subscriberId === 'su-contender')).toMatchObject({ itemId: 'WI-1', bound: true, subscriberIsHolder: false });
+  });
+
+  it('AUTO-BAR-R-16-P-009: marks a wait stale when the oracle says its subscriber session ended, or the await expired; not measured is not stale', async () => {
+    await heldItem('WI-1', 'su-dead');
+    await heldItem('WI-2', 'su-unknown');
+    await heldItem('WI-3', 'su-live');
+    await awaitRow('su-dead', 'work-item:done:WI-10', { bound: { kind: 'work-item-blocked', ref: 'WI-1' } });
+    await awaitRow('su-unknown', 'work-item:done:WI-11', { bound: { kind: 'work-item-blocked', ref: 'WI-2' } });
+    await awaitRow('su-live', 'work-item:done:WI-12', { bound: { kind: 'work-item-blocked', ref: 'WI-3' }, expiresInSec: -60 });
+
+    const got = await waits(states({ 'su-dead': 'ended', 'su-live': 'live' }));
+    const by = (item: string) => got.find((w) => w.itemId === item && w.bound);
+    expect(by('WI-1')).toMatchObject({ subscriberState: 'ended', stale: true, staleReason: 'subscriber-ended' });
+    expect(by('WI-2')).toMatchObject({ subscriberState: null, stale: false, staleReason: null });
+    expect(by('WI-3')).toMatchObject({ subscriberState: 'live', stale: true, staleReason: 'await-expired' });
+
+    // A liveness failure degrades to not measured, never to a thrown pane.
+    const failed = await resolveDependencyGraphWaits(db.sql, { workspaceId: WS, harnessSlug: H }, {
+      resolveSessionStates: async () => { throw new Error('oracle down'); },
+    });
+    expect(failed.every((w) => w.subscriberState === null)).toBe(true);
+  });
+
+  it('AUTO-BAR-R-17-P-009: returns an item\'s own active event and gate blockers, not cleared, runtime, or terminal-item ones', async () => {
+    await heldItem('WI-1', null, {
+      blockers: [
+        blocker('event', 'release:deployed:abc123def'),
+        blocker('gate', 'fleet:alpha:schema-ready'),
+        blocker('event', 'work-item:done:WI-5', 'cleared'),
+        blocker('runtime', 'pc-heavy queue'),
+      ],
+    });
+    await heldItem('WI-DONE', null, { status: 'done', blockers: [blocker('event', 'release:deployed:ffff')] });
+    await awaitRow('su-leader', 'fleet:alpha:schema-ready', { policy: 'announce' });
+
+    const got = (await waits()).filter((w) => w.waitKind === 'item-blocker');
+    expect(got.map((w) => [w.itemId, w.blockerKind, w.eventKey]).sort()).toEqual([
+      ['WI-1', 'event', 'release:deployed:abc123def'],
+      ['WI-1', 'gate', 'fleet:alpha:schema-ready'],
+    ]);
+    const gate = got.find((w) => w.blockerKind === 'gate');
+    // An announced key is producer-declared, so one fire of it proves the condition.
+    expect(gate).toMatchObject({ announced: true, certification: 'proving', subscriberId: null, stale: false });
+    expect(got.find((w) => w.blockerKind === 'event')).toMatchObject({ announced: false, since: '2026-10-21T00:00:00.000Z' });
+  });
+
+  it('AUTO-BAR-R-19-P-009: answers in at most four SQL statements and one liveness batch, inside a tight statement timeout at volume', async () => {
+    // The production indexes the three legs are written against (event_awaits: 000-baseline /
+    // later migrations; work_items: hfc_taken_by_idx and migration 1539's GIN). The fixture DDL
+    // omits them, and without them the holder leg's per-item LATERAL degrades to a nested
+    // seq scan — which is exactly what this statement timeout exists to catch.
+    await db.sql.unsafe(`
+      CREATE INDEX IF NOT EXISTS idx_event_awaits_subscriber ON harness_shared.event_awaits (subscriber_id)
+        WHERE fired_at IS NULL AND cancelled_at IS NULL;
+      CREATE INDEX IF NOT EXISTS event_awaits_bound_to_active ON harness_shared.event_awaits
+        ((bound_to ->> 'kind'), (bound_to ->> 'ref')) WHERE bound_to IS NOT NULL AND cancelled_at IS NULL;
+      CREATE INDEX IF NOT EXISTS hfc_taken_by_idx ON harness_shared.work_items (workspace_id, taken_by)
+        WHERE taken_by IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS work_items_external_blockers_gin_idx ON harness_shared.work_items
+        USING gin ((payload -> 'externalBlockers') jsonb_path_ops) WHERE (payload -> 'externalBlockers') IS NOT NULL;
+    `).simple();
+    // Volume: 3,000 held items across 300 holders, each holder with 5 unbound awaits; 600 items
+    // with an active event blocker; 300 bound awaits.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by, created_ts, updated_ts, payload)
+      SELECT ${H}, 'VOL-' || g, 'volume ' || g, 'blocked', 'bug', ${WS}, 'su-' || (g % 300), 0, g,
+             CASE WHEN g <= 600
+               THEN jsonb_build_object('externalBlockers', jsonb_build_array(jsonb_build_object(
+                 'kind', 'event', 'ref', 'work-item:done:X-' || g, 'status', 'active', 'summary', 's',
+                 'createdAt', '2026-10-21T00:00:00.000Z', 'createdBy', 'su', 'updatedAt', '2026-10-21T00:00:00.000Z')))
+               ELSE '{}'::jsonb END
+        FROM generate_series(1, 3000) AS g`;
+    await db.sql`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, policy, once)
+      SELECT ${COORD}, 'su-' || (g % 300), 'work-item:done:Y-' || g, 'wake', true
+        FROM generate_series(1, 1500) AS g`;
+    await db.sql`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, policy, once, bound_to)
+      SELECT ${COORD}, 'su-' || (g % 300), 'work-item:unblocked:VOL-' || g, 'wake', true,
+             jsonb_build_object('kind', 'work-item-blocked', 'ref', 'VOL-' || g)
+        FROM generate_series(1, 300) AS g`;
+    await db.sql`ANALYZE harness_shared.work_items`;
+    await db.sql`ANALYZE harness_shared.event_awaits`;
+
+    let statements = 0;
+    let livenessBatches = 0;
+    const got = await db.sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = '750ms'`);
+      const counted = new Proxy(tx, {
+        apply(target, thisArg, args) {
+          statements++;
+          return Reflect.apply(target as never, thisArg, args);
+        },
+      });
+      return resolveDependencyGraphWaits(counted as unknown as typeof db.sql, { workspaceId: WS, harnessSlug: H }, {
+        resolveSessionStates: async (ids) => {
+          livenessBatches++;
+          return new Map(ids.map((id) => [id, 'live' as const]));
+        },
+      });
+    });
+
+    expect(statements).toBeLessThanOrEqual(4);
+    expect(livenessBatches).toBe(1);
+    expect(got.filter((w) => w.waitKind === 'item-blocker')).toHaveLength(600);
+    expect(got.filter((w) => w.bound)).toHaveLength(300);
+    // The holder leg is capped per holder AND overall, and says so when it truncates.
+    const holderRows = got.filter((w) => w.waitKind === 'session-await' && !w.bound);
+    const perItem = new Map<string, number>();
+    for (const w of holderRows) perItem.set(w.itemId, (perItem.get(w.itemId) ?? 0) + 1);
+    expect(Math.max(...perItem.values())).toBeLessThanOrEqual(DEP_WAITS_PER_HOLDER);
+    expect(holderRows.length).toBe(DEP_WAITS_LIMITS.holder);
+    expect(holderRows.every((w) => w.legTruncated)).toBe(true);
+  }, 60_000);
+
+  it('SPEC-P-009: migration 1546 notifies sync_invalidate for a non-inbox await write and stays silent for inbox-wake re-arms', async () => {
+    const migration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1546-event-awaits-change-notify.sql', import.meta.url));
+    await db.sql.unsafe(readFileSync(migration, 'utf8')).simple();
+
+    const got: Array<{ name: string; args: { op: string } }> = [];
+    const listener = await db.sql.listen('sync_invalidate', (payload) => {
+      const parsed = JSON.parse(payload) as { name: string; args: { op: string } };
+      if (parsed.name === 'harness_shared.event_awaits.changed') got.push(parsed);
+    });
+    try {
+      await awaitRow('su-a', 'coord:inbox-wake:su-a');
+      await db.sql`UPDATE harness_shared.event_awaits SET note = 're-armed' WHERE event_key = 'coord:inbox-wake:su-a'`;
+      await db.sql`DELETE FROM harness_shared.event_awaits WHERE event_key = 'coord:inbox-wake:su-a'`;
+      await awaitRow('su-a', 'work-item:done:WI-1', { bound: { kind: 'work-item-blocked', ref: 'WI-2' } });
+      await db.sql`UPDATE harness_shared.event_awaits SET fired_at = now() WHERE event_key = 'work-item:done:WI-1'`;
+      await db.sql`DELETE FROM harness_shared.event_awaits WHERE event_key = 'work-item:done:WI-1'`;
+
+      const deadline = Date.now() + 5000;
+      while (got.length < 3 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 200)); // room for any stray inbox-wake notice to arrive
+      expect(got.map((n) => n.args.op)).toEqual(['INSERT', 'UPDATE', 'DELETE']);
+    } finally {
+      await listener.unlisten();
+    }
+  });
 });

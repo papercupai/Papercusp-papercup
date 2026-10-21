@@ -14,7 +14,23 @@ export const NATIVE_BOOTSTRAP_TIMEOUT_MS = 5 * 60_000
   + Object.values(NATIVE_VERIFIER_PHASE_BUDGETS).reduce((sum, value) => sum + value, 0)
   + NATIVE_BOOTSTRAP_TEARDOWN_MS;
 
-const execNativeFile = promisify(execFile);
+// Lazily promisified + memoized, never at module scope (lint:no-eager-execfile-promisify,
+// EI-10161): a narrow node:child_process mock reaching this module transitively must not
+// crash the importing test file at module-eval time (promisify(undefined)).
+type ExecNativeFile = (
+  command: string,
+  args: string[],
+  options: ExecFileOptionsWithStringEncoding,
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedExecNativeFile: ExecNativeFile | null = null;
+function execNativeFile(
+  command: string,
+  args: string[],
+  options: ExecFileOptionsWithStringEncoding,
+): Promise<{ stdout: string; stderr: string }> {
+  cachedExecNativeFile ??= promisify(execFile) as unknown as ExecNativeFile;
+  return cachedExecNativeFile(command, args, options);
+}
 
 /** Each calibrated leg gets independent app rows; the test chain is reverted too. */
 export function nativeJourneyScope(env: NodeJS.ProcessEnv) {

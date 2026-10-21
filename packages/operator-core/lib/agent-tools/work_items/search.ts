@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { DATATYPE_NATURES } from '../../datatype-registry-store';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { searchWorkItems, type WorkItem, type WorkItemKind } from '../../work-items';
+import { searchWorkItems, type DraftPlanSearchMatch, type WorkItem, type WorkItemKind } from '../../work-items';
 
 /**
  * A search result is a deduplication hint, not a work-item detail read. Returning
@@ -28,6 +28,9 @@ export interface WorkItemSearchMatch {
   summary: string;
   state: string;
   severity: string | null;
+  planStatus?: 'draft';
+  planSlug?: string;
+  planItemId?: string;
   title_truncated?: true;
   title_full_chars?: number;
   summary_truncated?: true;
@@ -40,7 +43,7 @@ function clipSearchText(value: string, maxChars: number): { value: string; trunc
 }
 
 /** Project one hydrated WorkItem to the compact, machine-readable search row. */
-export function projectWorkItemSearchMatch(item: WorkItem): WorkItemSearchMatch {
+export function projectWorkItemSearchMatch(item: WorkItem | DraftPlanSearchMatch): WorkItemSearchMatch {
   const title = clipSearchText(item.title, SEARCH_TITLE_CHARS);
   const summary = clipSearchText(item.summary ?? '', SEARCH_SUMMARY_CHARS);
   return {
@@ -52,6 +55,7 @@ export function projectWorkItemSearchMatch(item: WorkItem): WorkItemSearchMatch 
     summary: summary.value,
     state: item.state,
     severity: item.severity,
+    ...('planStatus' in item ? { planStatus: item.planStatus, planSlug: item.planSlug, planItemId: item.planItemId } : {}),
     ...(title.truncated ? { title_truncated: true, title_full_chars: title.fullChars } : {}),
     ...(summary.truncated ? { summary_truncated: true, summary_full_chars: summary.fullChars } : {}),
   };
@@ -111,7 +115,7 @@ export default defineTool({
   description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. The required free-text argument is `query` — `q` is not an alias. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding "no duplicate exists": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.',
   guidance: {
     when: 'You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).',
-    chaining: 'Before claiming no planned work covers a topic, also run plans:search {query,harness} with scope omitted (includes items and decisions). Draft/unstarted P-NNN items are not work-items. Then work_items:get for detail or work_items:create after dedup.',
+    chaining: 'Results include draft plan items labeled planStatus:draft. Read those with plans:get {slug:planSlug}; read execution work with work_items:get {id}. Explicit kind/nature filters retain their requested scope.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
@@ -165,8 +169,9 @@ export default defineTool({
       ),
   }),
   async handler(args) {
-    const { items, legs, retry } = await searchWorkItems(args.query, {
+    const { items, discovery, legs, retry } = await searchWorkItems(args.query, {
       harness: args.harness,
+      includeDraftPlans: true,
       kind: args.kind as WorkItemKind | undefined,
       limit: args.limit,
       semantic: args.semantic,
@@ -181,9 +186,8 @@ export default defineTool({
     return {
       data: {
         ok: true,
-        count: items.length,
-        items: items.map(projectWorkItemSearchMatch),
-        plan_scope_hint: 'Plan items (P-NNN), including draft and unstarted plans, were NOT searched. Before claiming no plan covers this work, also run plans:search with the same query and harness; omit scope to include items and decisions.',
+        count: (discovery ?? items).length,
+        items: (discovery ?? items).map(projectWorkItemSearchMatch),
         legs,
         // A degraded search is fail-open for availability, but it is not a
         // sound dedup answer. Give callers a machine-readable receipt so a

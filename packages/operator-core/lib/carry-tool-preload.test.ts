@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSessionSurfaces, filterListingsByAllowlist, getSessionSurface, restoreSessionTools, sessionToolSurfaceKey } from './endpoint-route/routes/transport/tool-allowlist';
+import { compactInputSchema, summaryGuidanceDescription } from '@papercusp/tooldef';
+import { __resetSessionSurfaces, activateSessionTools, applyCompactTier, filterListingsByAllowlist, getSessionSurface, getSessionUsedTools, restoreSessionTools, sessionToolSurfaceKey } from './endpoint-route/routes/transport/tool-allowlist';
 
 const sql = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -19,6 +20,8 @@ describe('predecessor tool preload (R-12)', () => {
     expect(getSessionSurface(input.sessionKey, seed)?.has('facts:list')).toBe(false);
     expect(getSessionSurface(otherKey, seed)?.has('plans:get')).toBe(false);
     expect(getSessionSurface(otherKey, seed)?.has('facts:list')).toBe(true);
+    expect([...getSessionUsedTools(input.sessionKey)!]).toEqual(['plans:get']);
+    expect([...getSessionUsedTools(otherKey)!]).toEqual(['facts:list']);
     expect(sessionToolSurfaceKey(null, 'workspace-a')).toBeNull();
   });
   it('advertises every previously called tool on the first restarted list without discovery, including beyond the orient cap', async () => {
@@ -77,5 +80,49 @@ describe('predecessor tool preload (R-12)', () => {
     await expect(restoreSessionTools({ ...input, readUsedTools })).rejects.toThrow('ledger unavailable');
     await restoreSessionTools({ ...input, readUsedTools });
     expect(getSessionSurface(input.sessionKey, seed)?.has('plans:get')).toBe(true);
+  });
+});
+
+describe('D-058 candidate detail promotion (not enabled on the host)', () => {
+  const listings = ['plans:get', 'work_items:list'].map(name => ({
+    name, description: 'Complete original definition. More detailed guidance for continued use.',
+    inputSchema: { type: 'object', properties: { scope: { type: 'string', description: 'Full scope guidance' } } },
+  }));
+  const compact = new Set(listings.map(tool => tool.name));
+  const project = () => applyCompactTier(listings, compact, compactInputSchema,
+    summaryGuidanceDescription, getSessionUsedTools(input.sessionKey));
+
+  it('keeps discovered but unused definitions compact and promotes only actual invoked names', async () => {
+    getSessionSurface(input.sessionKey, seed);
+    activateSessionTools(input.sessionKey, [...compact]);
+    expect(getSessionUsedTools(input.sessionKey)?.size).toBe(0);
+    expect(project()[0]?.inputSchema).not.toEqual(listings[0]?.inputSchema);
+    await restoreSessionTools({ ...input, readUsedTools: async () => ['plans:get'] });
+    const delivered = project();
+    expect(delivered[0]).toBe(listings[0]);
+    expect(delivered[1]?.inputSchema).not.toEqual(listings[1]?.inputSchema);
+    expect(delivered.map(tool => tool.name)).toEqual(listings.map(tool => tool.name));
+    expect([...compact]).toEqual(listings.map(tool => tool.name));
+  });
+
+  it('reconstructs full detail after a memory reset without inventing retired or unauthorized definitions', async () => {
+    const readUsedTools = async () => ['plans:get', 'retired:tool', 'denied:tool'];
+    await restoreSessionTools({ ...input, readUsedTools });
+    __resetSessionSurfaces();
+    expect(getSessionUsedTools(input.sessionKey)).toBeNull();
+    await restoreSessionTools({ ...input, readUsedTools });
+    expect(project()[0]).toBe(listings[0]);
+    expect(project().map(tool => tool.name)).toEqual(['plans:get', 'work_items:list']);
+  });
+
+  it('does not turn a failed history read into used-tool detail and remains retryable', async () => {
+    const readUsedTools = vi.fn().mockRejectedValueOnce(new Error('ledger unavailable'))
+      .mockResolvedValue(['plans:get']);
+    await expect(restoreSessionTools({ ...input, readUsedTools })).rejects.toThrow('ledger unavailable');
+    expect(getSessionUsedTools(input.sessionKey)?.size).toBe(0);
+    expect(project()[0]?.inputSchema).not.toEqual(listings[0]?.inputSchema);
+    await restoreSessionTools({ ...input, readUsedTools });
+    expect(project()[0]).toBe(listings[0]);
+    expect(getSessionUsedTools(null)).toBeNull();
   });
 });

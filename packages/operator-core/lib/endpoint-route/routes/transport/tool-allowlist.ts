@@ -150,10 +150,11 @@ export function applyCompactTier<
   compact: Set<string> | null,
   compactSchema: (s: unknown) => unknown,
   summariseDescription: (d: string | undefined) => string,
+  usedTools?: ReadonlySet<string> | null,
 ): T[] {
   if (!compact || compact.size === 0) return [...listings];
   return listings.map((t) =>
-    compact.has(t.name)
+    compact.has(t.name) && !usedTools?.has(t.name)
       ? ({
           ...t,
           description: summariseDescription(t.description),
@@ -186,6 +187,8 @@ export function applyCompactTier<
 interface SessionSurface {
   /** The live advertised set: seed ∪ everything activated so far. */
   tools: Set<string>;
+  /** Actual invocation history, separate from seed and discovery activation. */
+  used: Set<string>;
   /** Last touch (ms) — recency for the TTL sweep. */
   touched: number;
   /** Coalesce concurrent lists; each later list refreshes newly used tools. */
@@ -327,13 +330,21 @@ export function getSessionSurface(
   sweepSessionSurfaces(nowMs);
   let e = sessionSurfaces.get(sessionKey);
   if (!e) {
-    e = { tools: new Set(seed), touched: nowMs };
+    e = { tools: new Set(seed), used: new Set(), touched: nowMs };
     sessionSurfaces.set(sessionKey, e);
   } else {
     for (const t of seed) e.tools.add(t); // seed is the floor — re-add defensively
     e.touched = nowMs;
   }
   return e.tools;
+}
+
+/** Candidate detail promotion reads actual use, never mere discovery (D-058).
+ * The transport does not consume this until its explicit contract review.
+ * Callers must still filter the current authorized catalog before projection.
+ */
+export function getSessionUsedTools(sessionKey: string | null | undefined): ReadonlySet<string> | null {
+  return sessionKey ? sessionSurfaces.get(sessionKey)?.used ?? null : null;
 }
 
 /** Restore the stable owner's used tools from the existing invocation ledger.
@@ -362,7 +373,10 @@ export async function restoreSessionTools(input: {
       return rows.map((row) => row.tool_name);
     });
     entry.restored = read(input.ownerId, input.workspaceId).then((names) => {
-      for (const name of names) if (name) entry.tools.add(name);
+      for (const name of names) if (name) {
+        entry.tools.add(name);
+        entry.used.add(name);
+      }
       // A successor may reuse this operator and stable session key after its
       // predecessor used more nested tools. Never cache a settled ledger read.
       entry.restored = undefined;

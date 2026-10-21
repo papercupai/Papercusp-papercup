@@ -5162,7 +5162,7 @@ async function completeOne(
   } catch {
     /* fail-open: an evidence-detector fault must never lose the completion record */
   }
-  const completionAuthority =
+  const completionAuthorityBeforeChangeKind =
     committedContentIdentityMissing || terminalCriteriaUnmet || unretainedLiveUiPaths.length > 0
       ? 'proposed'
       : authorityWithFindings;
@@ -5233,7 +5233,18 @@ async function completeOne(
   const changeKindProofError =
     changeKindGate.applicable && changeKindGate.outcome === 'refuse' ? changeKindGate.error : undefined;
   const changeKindWarning =
-    changeKindGate.applicable && changeKindGate.outcome === 'warn' ? changeKindGate.warning : undefined;
+    changeKindGate.applicable && (changeKindGate.outcome === 'warn' || changeKindGate.outcome === 'propose')
+      ? changeKindGate.warning
+      : undefined;
+  // change-kind-declared-proof-2026-10-15 R-4: a narrowed declaration, or UI-looking files without
+  // 'ui', with no `changeKindReason` lands 'proposed' — recorded, out of burn-down, still owned.
+  const completionAuthority =
+    changeKindGate.applicable && changeKindGate.outcome === 'propose' ? 'proposed' : completionAuthorityBeforeChangeKind;
+  // R-4: a reasoned mismatch stores its reason in the declaration history (the handler records it).
+  const changeKindMismatchReason =
+    changeKindGate.applicable && changeKindGate.outcome === 'pass' && changeKindGate.mismatchFiles?.length && it.changeKindReason
+      ? { kinds: changeKindGate.kinds, reason: it.changeKindReason }
+      : undefined;
   // EI-23241378625604548: validateOnly must use the same read-only settlement verdict as
   // the real close. Returning above this point exposed only the contract requirements and
   // skipped the findings that can downgrade an otherwise complete evidence record (for
@@ -6151,6 +6162,7 @@ async function completeOne(
       : {}),
     // D-003: a pre-cutover claim closed without a declaration lands, with this warning.
     ...(changeKindWarning && closeLanded && !stateError ? { changeKindWarning } : {}),
+    ...(changeKindMismatchReason && closeLanded && !stateError ? { changeKindMismatchReason } : {}),
     ...(nulBytesStripped
       ? {
           nulBytesStrippedWarning: `completion for ${it.id} contained one or more raw NUL bytes (invisible in most editors/terminals — renders as nothing or a plain space) — they were silently removed before recording, because Postgres cannot store a NUL in a text/jsonb column ("unsupported Unicode escape sequence") and an unremoved one would have failed the state write while leaving the completion recorded (EI-18764241942332131). If the NUL was meaningful (e.g. you were quoting a literal NUL byte as evidence), describe it in prose instead (e.g. "a raw NUL / 0x00 byte") rather than embedding the literal character.`,
@@ -6309,7 +6321,7 @@ const workItemsCompleteTool = defineTool({
     when: 'Pass `completion`, terminal `state`, required `assumptions`. Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (auto-hoisted); read `results[].workItem.payload.out` from `work_items:get` (`payloadTier:"full"`). Universal claims require `completion.verification.coverage`: partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `["none"]` means zero). Keep deferred/coordNotes at completion level, not inside verification. Put `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Keep `verification.tests`, `verification.typecheck`, `verification.diff` out of `completion.verification`. Removals: `filesDeleted`; dupes: `completion.duplicateOf`.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize; never non-work/human-audience rows.',
     chaining:
-      'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
+      'work_items:claim { changeKinds } → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
     seeAlso: [
       COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
       'For linked-plan closes, the spec-conformance-closure row in completionContract reports mapped and declared R-* keys; validateOnly:true previews it with the other completion requirements.',
@@ -6653,6 +6665,13 @@ const workItemsCompleteTool = defineTool({
         ];
     const env = await runBulk(list, (it) => completeOne(it, completionIdent, ctx), { keyOf: (it) => ({ id: it.id }) });
     const declared = declaredChangeKindsById(list);
+    // R-4: a reasoned mismatch close (UI-looking files, no 'ui', a `changeKindReason` but no new
+    // `changeKinds`) records its reason against the kinds it closed under, so the history keeps it.
+    for (const r of env.results as Array<{ id?: unknown; changeKindMismatchReason?: { kinds: readonly string[]; reason: string } }>) {
+      if (typeof r.id === 'string' && r.changeKindMismatchReason && !declared.has(r.id)) {
+        declared.set(r.id, { kinds: r.changeKindMismatchReason.kinds, reason: r.changeKindMismatchReason.reason });
+      }
+    }
     const declaredEnv = declared.size
       ? {
           ...env,

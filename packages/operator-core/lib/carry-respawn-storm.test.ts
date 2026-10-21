@@ -7,6 +7,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const openEscalation = vi.hoisted(() => vi.fn());
+const readOwnerHostEvents = vi.hoisted(() => vi.fn(async (): Promise<Array<{
+  ts: string; kind: string; mode?: string;
+}>> => []));
+vi.mock('./cold-boot-drill-live', () => ({ readOwnerHostEvents }));
 vi.mock('./agent-tools/coordination/escalations', () => ({
   openEscalation: (...a: unknown[]) => openEscalation(...a),
 }));
@@ -51,6 +55,55 @@ const STORM_PREFIX: StormLedgerRow[] = [
 ];
 
 describe('classifyRespawnStorm', () => {
+  const host = (hms: string, kind: string, reason?: string, mode = 'carry-respawn') => ({
+    ts: new Date(at(hms)).toISOString(), kind, mode, reason,
+  });
+
+  it('does not turn failed route provisioning into a respawn storm or retain its false latch', () => {
+    const rows = [...STORM_PREFIX, cut('00:16:04', 'refused', RESPAWN_STORM_ERROR)];
+    const hostEvents = [
+      host('00:14:42', 'respawn-failed', 'codex-route-unavailable'),
+      host('00:15:23', 'respawn-failed', 'codex-route-unavailable'),
+    ];
+    expect(classifyRespawnStorm(rows, at('00:16:30'), { hostEvents })).toMatchObject({
+      storm: false, reason: null, cutsSinceRealTurn: 0, cutTimes: [],
+    });
+  });
+
+  it('excludes a superseded request but preserves a successor whose continuation later fails', () => {
+    const hostEvents = [
+      host('00:14:42', 'respawn-carry-dropped', 'superseded'),
+      host('00:15:23', 'respawned'),
+      host('00:15:30', 'respawn-carry-dropped', 'turn-start-unverified'),
+    ];
+    expect(classifyRespawnStorm(STORM_PREFIX, at('00:16:04'), { hostEvents })).toMatchObject({
+      storm: false, cutsSinceRealTurn: 1, cutTimes: ['2026-09-23T00:15:19.000Z'],
+    });
+  });
+
+  it('still breaks a real storm even when both successors drop their first continuation', () => {
+    const hostEvents = [
+      host('00:14:39', 'respawned'),
+      host('00:14:42', 'respawn-carry-dropped', 'turn-start-unverified'),
+      host('00:15:20', 'respawned'),
+      host('00:15:23', 'respawn-failed', 'spawn-failed'),
+    ];
+    expect(classifyRespawnStorm(STORM_PREFIX, at('00:16:04'), { hostEvents })).toMatchObject({
+      storm: true, reason: 'dense-cuts', cutsSinceRealTurn: 2,
+    });
+  });
+
+  it('requires an in-window carry failure and does not borrow unrelated lifecycle events', () => {
+    const hostEvents = [
+      host('00:14:37', 'respawn-failed', 'codex-route-unavailable'),
+      host('00:14:42', 'respawn-failed', 'quota-recovery-failed', 'quota-recovery'),
+      host('00:16:10', 'respawn-failed', 'codex-route-unavailable'),
+    ];
+    expect(classifyRespawnStorm(STORM_PREFIX, at('00:16:04'), { hostEvents })).toMatchObject({
+      storm: true, cutsSinceRealTurn: 2,
+    });
+  });
+
   it('replays su-cfa16b20: the 2nd cut is allowed, the 3rd (00:16:04) is refused as a dense storm', () => {
     const second = classifyRespawnStorm(STORM_PREFIX.slice(0, 6), at('00:15:19'));
     expect(second.storm).toBe(false);
@@ -130,6 +183,17 @@ describe('detectRespawnStorm (ledger read)', () => {
     expect(verdict).toMatchObject({ storm: true, reason: 'dense-cuts' });
     expect(seen[0]).toContain('su-cfa16b20');
     expect(seen[0]).toContain(REQUEST_COMPACTION_TOOL);
+  });
+
+  it('reconciles the invocation ledger with the same owner host log before refusing', async () => {
+    readOwnerHostEvents.mockResolvedValueOnce([
+      { ts: new Date(at('00:14:42')).toISOString(), kind: 'respawn-failed', mode: 'carry-respawn' },
+      { ts: new Date(at('00:15:23')).toISOString(), kind: 'respawn-failed', mode: 'carry-respawn' },
+    ]);
+    const sql = (() => Promise.resolve(STORM_PREFIX.map(dbRow))) as never;
+    await expect(detectRespawnStorm('su-failed-carry', { sql, nowMs: at('00:16:04') }))
+      .resolves.toMatchObject({ storm: false, cutsSinceRealTurn: 0 });
+    expect(readOwnerHostEvents).toHaveBeenCalledWith('su-failed-carry');
   });
 
   it('fails OPEN when the ledger read throws', async () => {

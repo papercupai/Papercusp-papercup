@@ -2662,6 +2662,7 @@ export async function checkCompactionCompliance(
                OR (ti.call_origin = 'hook' AND ti.tool_name = ANY(${hookTools}))
                OR (ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'
                    AND ti.args_json->>'phase' = ANY(${hookPhases})
+                   AND ti.args_json ? 'session_id'
                    AND ti.args_json->>'session_id' = active_session.session_id)
              )
            ORDER BY ti.invoked_at DESC

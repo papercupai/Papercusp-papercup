@@ -62,6 +62,14 @@ export interface DerivedPackCatalog {
   builtinTools: ReadonlySet<string>;
   /** False if the Cupboard fetch failed — callers soften missing-dep verdicts. */
   cupboardReachable: boolean;
+  /**
+   * Names of the units the warmed plugin host has LOADED. `null` when no host
+   * was read (`warmHost:false`, or no host in this context), so "not loaded"
+   * and "not checked" stay distinguishable (WI-6554700010018318).
+   */
+  loadedUnits?: ReadonlySet<string> | null;
+  /** unit name → MCP tool names the live projected registry holds for it. */
+  registeredToolsByUnit?: ReadonlyMap<string, readonly string[]>;
 }
 
 /** Minimal manifest surface the assembler reads (matches `PluginManifest`). */
@@ -190,6 +198,8 @@ export interface PackCatalogInputs {
    * Omitted ⇒ no builtin event floor (every existing caller keeps its behavior).
    */
   builtinEvents?: ReadonlyMap<string, string>;
+  /** Names of the units the plugin host loaded; `null`/omitted ⇒ no host was read. */
+  loadedUnitNames?: readonly string[] | null;
 }
 
 /** Pure assembly of the pack catalog from injected registry snapshots. */
@@ -247,7 +257,14 @@ export function assemblePackCatalog(inputs: PackCatalogInputs): DerivedPackCatal
   }
 
   const view = buildPackCatalogView(packs, builtinTools, inputs.builtinEvents ?? new Map());
-  return { view, packs: view.packs, builtinTools, cupboardReachable: inputs.cupboardReachable };
+  return {
+    view,
+    packs: view.packs,
+    builtinTools,
+    cupboardReachable: inputs.cupboardReachable,
+    loadedUnits: inputs.loadedUnitNames ? new Set(inputs.loadedUnitNames) : null,
+    registeredToolsByUnit: registeredByUnit,
+  };
 }
 
 /**
@@ -347,10 +364,12 @@ export async function derivePackCatalog(
   // kind/version/description. Without it a bundled pack mis-attributes as a
   // registry-only `kind: 'plugin'` fallback with null metadata.
   const hostUnits: InstalledUnitInput[] = [];
+  let hostRead = false;
   if (opts.warmHost !== false) {
     try {
       const { getPluginHost } = await import('../plugin-host-runtime');
       const host = await getPluginHost();
+      hostRead = true;
       for (const lp of host.loaded) {
         const p = lp.plugin as InstalledUnitInput & { kind?: string };
         hostUnits.push({
@@ -387,6 +406,7 @@ export async function derivePackCatalog(
     cupboardUnits: cupboard.units,
     cupboardReachable: cupboard.reachable,
     builtinEvents: builtinEventFamilies(),
+    loadedUnitNames: hostRead ? hostUnits.map((u) => u.name) : null,
   });
 }
 

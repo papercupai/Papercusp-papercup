@@ -602,6 +602,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // or a rename changes what an edge MEANS even though work_item_deps itself
     // did not change. Bridged here as well as on work_item_deps for that reason.
     'workItems.depEdges',
+    // event-wait-settlement P-009: the wait leg reads an item's own event/gate blockers and
+    // its holder (taken_by) off this table — set_blocker, a claim change or a terminal flip
+    // all move what the graph's wait nodes show.
+    'workItems.depWaits',
     // P-006: the single-item on-demand detail read — bridged wherever byHarness is
     // so an open Detail pane live-refreshes on the same writes (state, blockers,
     // spine, plan-link) that move the list row.
@@ -644,6 +648,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // reaches this table through syncWorkItemDepEdges / the mirror path, so one
   // coarse entry covers them all.
   'harness_shared.work_item_deps': ['workItems.depEdges'],
+  // event-wait-settlement-2026-10-20 P-009 — the FIRST bridge this table has had. Its notify
+  // trigger (migration 1546) fires only for NON-inbox-wake rows: every live agent re-arms its
+  // standing coord:inbox-wake await each turn, and none of those rows is a wait the graph shows.
+  'harness_shared.event_awaits': ['workItems.depWaits'],
   // P-011 — the first-class spec-clause substrate behind workItems.behaviorContract.
   // REVISING a clause is precisely the event an open contract panel must not miss: without
   // these bridges the panel would keep asserting coverage at a superseded revision, which

@@ -12,8 +12,10 @@ import {
   computeDepths,
   isBlockerSatisfied,
   DEP_GRAPH_NODE_BUDGET,
+  eventNodeId,
   type DepGraphItem,
   type DepGraphEdgeInput,
+  type DepGraphWaitInput,
 } from './dep-graph-model';
 
 const item = (id: string, over: Partial<DepGraphItem> = {}): DepGraphItem => ({
@@ -706,5 +708,136 @@ describe('buildDepSubgraph — window vs filter: WHY an endpoint is missing deci
       expect(ghost).toBeDefined();
       expect(ghost?.planSlug ?? null).toBeNull();
     });
+  });
+});
+
+// event-wait-settlement-2026-10-20 P-009 (D-003, owner directive #2038): event waits on items
+// appear in the graph as EVENT nodes. The rows mirror `workItems.depWaits`
+// (resolveDependencyGraphWaits).
+describe('buildDepSubgraph — event waits (P-009)', () => {
+  const sessionWait = (itemId: string, eventKey: string, over: Partial<DepGraphWaitInput> = {}): DepGraphWaitInput => ({
+    itemId,
+    waitKind: 'session-await',
+    eventKey,
+    bound: true,
+    subscriberId: 'su-holder',
+    subscriberIsHolder: true,
+    certification: 'proving',
+    subscriberState: 'live',
+    stale: false,
+    staleReason: null,
+    ...over,
+  });
+  const blockerWait = (itemId: string, eventKey: string, over: Partial<DepGraphWaitInput> = {}): DepGraphWaitInput => ({
+    itemId,
+    waitKind: 'item-blocker',
+    eventKey,
+    blockerKind: 'event',
+    certification: 'proving',
+    ...over,
+  });
+  const waitEdgesInto = (g: ReturnType<typeof buildDepSubgraph>, itemId: string) =>
+    g.edges.filter((e) => e.wait && e.target === itemId);
+
+  it('AUTO-BAR-R-15-P-009: draws the holder-bound session await on an item as an event node with a session-awaits-event edge', () => {
+    const g = buildDepSubgraph({
+      items: [item('WI-1')],
+      edges: [],
+      waits: [sessionWait('WI-1', 'work-item:done:WI-2')],
+    });
+
+    const node = g.nodes.find((n) => n.id === eventNodeId('work-item:done:WI-2'));
+    expect(node).toMatchObject({ kind: 'event', state: 'waiting', event: { key: 'work-item:done:WI-2', stale: false, waitCount: 1 } });
+    expect(waitEdgesInto(g, 'WI-1')).toEqual([
+      expect.objectContaining({
+        source: eventNodeId('work-item:done:WI-2'),
+        target: 'WI-1',
+        wait: expect.objectContaining({ kind: 'session-awaits-event', subscriberId: 'su-holder', subscriberIsHolder: true, bound: true }),
+      }),
+    ]);
+    expect(g.waitCount).toBe(1);
+    // An item whose only dependency story is a wait is still in the picture.
+    expect(g.nodes.map((n) => n.id)).toContain('WI-1');
+  });
+
+  it('AUTO-BAR-R-16-P-009: marks a session wait stale when its subscriber session has ended, and the event node stale only when every wait on it is', () => {
+    const g = buildDepSubgraph({
+      items: [item('WI-1'), item('WI-3')],
+      edges: [],
+      waits: [
+        sessionWait('WI-1', 'claim:released:WI-1', { subscriberId: 'su-dead', subscriberIsHolder: false, subscriberState: 'ended', stale: true, staleReason: 'subscriber-ended' }),
+        sessionWait('WI-3', 'release:green:papercusp', { subscriberId: 'su-dead', subscriberState: 'ended', stale: true, staleReason: 'subscriber-ended' }),
+        sessionWait('WI-3', 'release:green:papercusp', { subscriberId: 'su-live', subscriberState: 'live' }),
+      ],
+    });
+
+    const dead = waitEdgesInto(g, 'WI-1');
+    expect(dead).toHaveLength(1);
+    expect(dead[0]!.wait).toMatchObject({ stale: true, staleReason: 'subscriber-ended', subscriberState: 'ended' });
+    expect(g.nodes.find((n) => n.id === eventNodeId('claim:released:WI-1'))).toMatchObject({ state: 'stale', event: { stale: true } });
+    // A key a LIVE agent still waits on is not dead, even though a dead agent waits on it too.
+    expect(g.nodes.find((n) => n.id === eventNodeId('release:green:papercusp'))).toMatchObject({ state: 'waiting', event: { stale: false, waitCount: 2 } });
+    expect(g.staleWaitCount).toBe(2);
+    // Health mode keeps only the stale waits.
+    const health = buildDepSubgraph({ items: [item('WI-1'), item('WI-3')], edges: [], waits: [
+      sessionWait('WI-1', 'claim:released:WI-1', { stale: true, staleReason: 'subscriber-ended' }),
+      sessionWait('WI-3', 'release:green:papercusp'),
+    ], healthOnly: true });
+    expect(health.edges.map((e) => e.target)).toEqual(['WI-1']);
+  });
+
+  it('AUTO-BAR-R-17-P-009: draws an item\'s own active event and gate blockers as event nodes with item-waits-on-event edges', () => {
+    const g = buildDepSubgraph({
+      items: [item('WI-1')],
+      edges: [],
+      waits: [
+        blockerWait('WI-1', 'release:deployed:abc123def'),
+        blockerWait('WI-1', 'fleet:alpha:schema-ready', { blockerKind: 'gate', certification: 'proving' }),
+      ],
+    });
+
+    const edges = waitEdgesInto(g, 'WI-1');
+    expect(edges.map((e) => e.source).sort()).toEqual([
+      eventNodeId('fleet:alpha:schema-ready'),
+      eventNodeId('release:deployed:abc123def'),
+    ]);
+    for (const e of edges) expect(e.wait).toMatchObject({ kind: 'item-waits-on-event', subscriberId: null });
+    expect(edges.find((e) => e.source === eventNodeId('fleet:alpha:schema-ready'))?.wait?.blockerKind).toBe('gate');
+    expect(g.nodes.filter((n) => n.kind === 'event')).toHaveLength(2);
+  });
+
+  it('SPEC-P-009: keeps waits out of depth and integrity findings, hydrates an out-of-window item, and honours filters', () => {
+    const g = buildDepSubgraph({
+      items: [item('A'), item('B')],
+      edges: [edge('A', 'B')],
+      waits: [
+        sessionWait('A', 'work-item:done:B'),
+        // An item outside the list's window: drawn from the wait row's fields, not dropped.
+        blockerWait('OUT', 'release:deployed:abc', { itemTitle: 'outside the window', itemKind: 'bug', itemStatus: 'blocked' }),
+      ],
+    });
+    const byId = new Map(g.nodes.map((n) => [n.id, n]));
+    // Depth is the `blocks` chain only: the event node above A does not deepen it.
+    expect(byId.get('A')?.depth).toBe(1);
+    expect(byId.get('B')?.depth).toBe(0);
+    expect(byId.get(eventNodeId('work-item:done:B'))?.depth).toBe(0);
+    expect(byId.get('OUT')).toMatchObject({ title: 'outside the window', kind: 'bug', state: 'blocked', hydrated: true });
+    expect(g.findings.flatMap((f) => f.nodes)).not.toContain(eventNodeId('work-item:done:B'));
+
+    // A filter that drops the item drops its waits — counted, never silent.
+    const filtered = buildDepSubgraph({
+      items: [item('A'), item('B')],
+      edges: [edge('A', 'B')],
+      waits: [sessionWait('A', 'k:1'), blockerWait('OUT', 'k:2')],
+      filterActive: true,
+      filteredIds: new Set(['A', 'B']),
+    });
+    expect(filtered.nodes.map((n) => n.id)).not.toContain('OUT');
+    expect(filtered.filteredEdgeCount).toBe(1);
+    // A truncated resolver leg is reported.
+    expect(buildDepSubgraph({ items: [], edges: [], waits: [blockerWait('X', 'k', { legTruncated: true })] }).waitsTruncated).toBe(true);
+    // Selecting the event node scopes to the items waiting on it.
+    const sel = buildDepSubgraph({ items: [item('A'), item('B'), item('C')], edges: [edge('A', 'B')], waits: [sessionWait('C', 'k:9')], selectedId: eventNodeId('k:9') });
+    expect(sel.nodes.map((n) => n.id).sort()).toEqual(['C', eventNodeId('k:9')].sort());
   });
 });

@@ -13,6 +13,8 @@ export interface KnowledgeAudience {
   harnessSlugs?: readonly string[];
   automatic?: boolean;
   excludedRefs?: ReadonlySet<string>;
+  /** Work discovery: return structured items from current draft plans. */
+  draftItems?: boolean;
 }
 
 type SectionRow = {
@@ -64,13 +66,31 @@ function listing(rows: SectionRow[], source: 'plan' | 'doc', ranker: string): Li
 export function createPlanSearchSource(audience: KnowledgeAudience = {}): SearchSource {
   const filter = (p: SearchSourceParams) => p.sql`
     p.workspace_id = ${p.workspaceId} AND p.template_slug IS NULL
+    ${audience.draftItems ? p.sql`AND p.status = 'draft' AND p.archived = false AND p.superseded_by IS NULL` : p.sql``}
     AND (${p.scopeFilter}::text IS NULL OR p.harness_slug = ${p.scopeFilter})
     AND (${audience.harnessSlugs?.length ? [...audience.harnessSlugs] : null}::text[] IS NULL
       OR p.harness_slug = ANY(${audience.harnessSlugs?.length ? [...audience.harnessSlugs] : null}::text[]))
     AND NOT (('plan:' || p.harness_slug || ':' || p.plan_slug) = ANY(${[...(audience.excludedRefs ?? [])]}::text[]))
     ${audience.automatic ? p.sql`AND p.archived = false AND p.status IS DISTINCT FROM 'superseded'
       AND p.superseded_by IS NULL` : p.sql``}`;
-  const map = (rows: Array<Record<string, unknown>>, ranker: string) => listing(rows.map(r => {
+  const map = (rows: Array<Record<string, unknown>>, ranker: string): Listing => {
+    if (audience.draftItems) return rows.flatMap(r => {
+      const harness = String(r.harness_slug), slug = String(r.plan_slug);
+      const items: unknown[] = Array.isArray(r.items) ? r.items : [];
+      return items.flatMap(entry => {
+        if (!entry || typeof entry !== 'object') return [];
+        const item = entry as Record<string, unknown>;
+        if (typeof item.id !== 'string' || typeof item.text !== 'string' || typeof item.status !== 'string') return [];
+        return [{ key: `plan:${harness}:${slug}#${item.id}`, score: Number(r.rank), row: {
+          source: 'plan', source_id: `${harness}:${slug}#${item.id}`, scope: harness,
+          excerpt: item.text, highlight: item.text, score: Number(r.rank), rankers: [ranker],
+          meta: { title: item.text, planTitle: String(r.title ?? slug), status: 'draft', planSlug: slug,
+            itemId: item.id, itemStatus: item.status,
+            path: `/admin/plans?plan=${encodeURIComponent(slug)}&harness=${encodeURIComponent(harness)}` },
+        } }];
+      });
+    });
+    return listing(rows.map(r => {
     const harness = String(r.harness_slug), slug = String(r.plan_slug);
     const matched = sectionExcerpt(String(r.content ?? ''), String(r.highlight ?? ''));
     const content = r.match_content == null ? matched.content : String(r.match_content);
@@ -82,7 +102,8 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
       section, status: r.archived || r.superseded_by || r.status === 'superseded' ? 'historical' : String(r.status),
       updated_at: r.updated_at as string | Date,
       path: `/admin/plans?plan=${encodeURIComponent(slug)}&harness=${encodeURIComponent(harness)}` };
-  }), 'plan', ranker);
+    }), 'plan', ranker);
+  };
   return boundedSource({
     name: 'plan',
     async lexical(p) {
@@ -93,6 +114,19 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
           match: p.sql`p._search @@ plainto_tsquery('english', ${p.query})`,
         },
       });
+      if (audience.draftItems) {
+        // Reuse the plan index for candidates and the structured item text
+        // for relevance, so matching P-NNNs compete in the existing ranker.
+        const text = p.sql`to_tsvector('english', item->>'text')`;
+        const query = p.sql`plainto_tsquery('english', ${p.query})`;
+        const rows = await p.sql`SELECT p.plan_slug, p.harness_slug, p.title,
+            jsonb_build_array(item) AS items, ts_rank_cd(${text}, ${query})::float8 AS rank
+          FROM harness_shared.harness_plans p
+          CROSS JOIN LATERAL jsonb_array_elements(p.items) item
+          WHERE ${filter(p)} AND ${leg.match} AND ${text} @@ ${query}
+          ORDER BY rank DESC, p.plan_slug, item->>'id' LIMIT ${p.limit}`;
+        return map(rows as Array<Record<string, unknown>>, 'lexical');
+      }
       const rows = await p.sql`SELECT p.workspace_id, p.plan_slug, p.harness_slug, p.title, p.status, p.archived, p.superseded_by, p.updated_at, p.content,
         (${leg.score})::float8 AS rank,
         ts_headline('english', p.content, ${headlineTsQuery(p.sql, leg.engine, p.query)},
@@ -137,6 +171,7 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
         spaceFilter: cols => space(cols.profileColumn, cols.modeColumn) });
       const rows = await p.sql`WITH best AS (${best})
         SELECT p.plan_slug, p.harness_slug, p.title, p.status, p.archived, p.superseded_by, p.updated_at,
+          ${audience.draftItems ? p.sql`p.items` : p.sql`NULL::jsonb`} AS items,
           1 - b.distance AS rank, coalesce(c.content, left(p.content, 1500)) AS match_content,
           CASE WHEN c.chunk_idx IS NULL THEN NULL
             ELSE left(p.content, ${planWindowMidpoint(0)} + c.chunk_idx * ${planWindowMidpoint(1) - planWindowMidpoint(0)}) END AS section_prefix

@@ -358,6 +358,43 @@ export function nonFinalDeployWaitClauses(text: string): string[] {
   );
 }
 
+// Advisory-only temporal deferral of the work to the release plane: "accept once the fix is
+// deployed to :3070", "re-check after the :3070 deploy lands", "verify once :3070 serves it".
+// The activation and blocker guards REFUSE on a match, so they stay on the strong-gate rule
+// above; only the filing-time advisory (work_items/deploy-wait-advisory.ts), where a false
+// positive costs one ignorable line, reads these too (WI-6554700010018881).
+const SOFT_DEFERRAL_RE = /\b(?:once|after|when)\b([^;,.!?]{0,80})/gi;
+const SOFT_RELEASE_OBJECT_RE =
+  /(?::3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|s)?\b(?!(?:\s+|-)model\b)|\b(?:on|to|into|reaches|in|hits)\s+main\b|\bmain\s+(?:is\s+)?(?:deployed|green|promoted|carries|ships|serves|updated)\b)/i;
+
+function softDeployedDeferralClauses(text: string): string[] {
+  return neutralizePlanIdentifiers(text)
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map((clause) => clause.trim())
+    .filter(
+      (clause) =>
+        [...clause.matchAll(SOFT_DEFERRAL_RE)].some((match) => SOFT_RELEASE_OBJECT_RE.test(match[1]!)) &&
+        !NEGATED_OR_META_GATE_RE.test(clause),
+    );
+}
+
+/**
+ * The clauses a filing-time advisory should quote: every strong non-final deploy wait
+ * (`nonFinalDeployWaitClauses`) plus softer "once/after/when <release plane>" deferrals,
+ * with the same final-lifecycle, deployed-only-exception and staging-only exclusions.
+ * Never use this for a guard that refuses — it is deliberately wider than the gate.
+ */
+export function deployDeferralAdvisoryClauses(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed || isFinalLifecycleText(trimmed)) return [];
+  if (hasNarrowDeployedMainException(neutralizePlanIdentifiers(trimmed))) return [];
+  const strong = strongDeployedGateClauses(trimmed);
+  const soft = softDeployedDeferralClauses(trimmed).filter((clause) => !strong.includes(clause));
+  return [...strong, ...soft].filter(
+    (clause) => !(EXPLICIT_STAGING_ENV_RE.test(clause) && !MAIN_RELEASE_BLOCKER_RE.test(clause)),
+  );
+}
+
 /**
  * Activation-time guard for plans that accidentally serialize ordinary implementation
  * behind the release plane. It is deliberately plan-local and conservative: only strong

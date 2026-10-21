@@ -3,6 +3,9 @@
  * named harness (project-scoped + all harness-bundled + global), deduped
  * by manifest name.
  *
+ * Each plugin carries `refs` resolved against the live pack catalog for this
+ * harness (plugin-manifest-refs.ts, WI-6554700010018318).
+ *
  * Relocated from app/api/_hono/plugins.ts (endpoint-hono-elimination
  * -2026-05-21 A3).
  */
@@ -15,6 +18,7 @@ import {
   GLOBAL_PLUGINS_DIR,
   type ListedPluginManifest,
 } from '../../../plugin-catalog';
+import { attachManifestRefs, startManifestRefCatalog } from '../../../plugin-manifest-refs';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
@@ -26,6 +30,7 @@ export default defineTool({
     if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(slug)) {
       return Response.json({ error: 'invalid slug' }, { status: 400 });
     }
+    const catalog = startManifestRefCatalog({ harnessSlug: slug });
     const projectPath = await resolveProjectPath(slug);
     const sources: Array<{ name: string; dir: string; source: 'project' | 'harness' | 'global' }> = [];
     if (projectPath) {
@@ -55,7 +60,7 @@ export default defineTool({
 
     return Response.json({
       project: { slug, path: projectPath },
-      plugins: items,
+      ...(await attachManifestRefs(items, catalog)),
     });
   },
 });

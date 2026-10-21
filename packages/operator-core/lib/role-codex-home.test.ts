@@ -2185,7 +2185,9 @@ describe('writeSuCodexHome', () => {
     expect(bootstrap).toMatch(/await writeSuCodexHomeAsync\s*\(/);
     expect(wakeExecutor).toMatch(/await ensureSuCodexHomeConfigAsync\s*\(/);
     expect(advSessions).toMatch(/ensureConfig\s*=\s*\([^)]*\)\s*=>\s*ensureSuCodexHomeConfigAsync\s*\(/);
-    expect(advSessions.match(/await ensureConfig\s*\(/g) ?? []).toHaveLength(2);
+    // Both resume paths await the async config, directly or through the handler's
+    // `await measure('<label>', () => ensureConfig(...))` timing wrapper.
+    expect(advSessions.match(/await (?:measure\(\s*'[^']+',\s*\(\)\s*=>\s*)?ensureConfig\s*\(/g) ?? []).toHaveLength(2);
   });
 });
 
@@ -2436,13 +2438,51 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
     expect(readFileSync(hooksPath, 'utf8')).toBe(repairedText);
   });
 
+  // WI-6554700010018765: a home enrolled before the POST became synchronous carries the
+  // journal entry WITHOUT PAPERCUSP_JOURNAL_SYNC=1. It must not read as current.
+  it('a resumed home with the pre-sync journal command is repaired once, then left byte-identical', async () => {
+    await installFakeHooks();
+    await installRealJournalHook();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const home = writeSuCodexHome({
+      sessionKey: 'journal-sync-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-journal-sync-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    const current = readFileSync(hooksPath, 'utf8');
+    expect(current).toContain('PAPERCUSP_JOURNAL_SYNC=1');
+    writeFileSync(hooksPath, current.split('PAPERCUSP_JOURNAL_SYNC=1 ').join(''));
+    expect(readFileSync(hooksPath, 'utf8')).not.toContain('PAPERCUSP_JOURNAL_SYNC=1');
+
+    const resume = () =>
+      ensureSuCodexHomeConfig({
+        sessionKey: 'journal-sync-upgrade',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        sid: 'su-journal-sync-upgrade',
+      });
+    expect(resume()).toMatchObject({ identityRepaired: true });
+    const repairedText = readFileSync(hooksPath, 'utf8');
+    const entries = journalEntries(JSON.parse(repairedText));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].hooks[0].command).toContain('PAPERCUSP_JOURNAL_SYNC=1');
+
+    expect(resume()).toMatchObject({ identityRepaired: false });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repairedText);
+  });
+
+  // WI-6554700010018765: the composed command itself carries PAPERCUSP_JOURNAL_SYNC=1,
+  // so the POST completes before the hook exits. codex kills a hook's process group
+  // when the run does not complete, and a detached POST child dies with it. The env
+  // below never sets the flag, so every case fails if the command stops carrying it.
   it.each([
-    { delivery: 'synchronous success', synchronous: true, outcome: 'success' },
-    { delivery: 'detached success', synchronous: false, outcome: 'success' },
-    { delivery: 'detached blocked response', synchronous: false, outcome: 'blocked' },
-    { delivery: 'detached HTTP failure', synchronous: false, outcome: 'failure' },
-    { delivery: 'detached connection refusal', synchronous: false, outcome: 'refused' },
-  ])('end to end: the composed Stop command preserves a codex turn with $delivery', async ({ synchronous, outcome }) => {
+    { delivery: 'success', outcome: 'success' },
+    { delivery: 'a held response', outcome: 'blocked' },
+    { delivery: 'an HTTP failure', outcome: 'failure' },
+    { delivery: 'a connection refusal', outcome: 'refused' },
+    { delivery: 'a response that never arrives', outcome: 'hung' },
+  ])('end to end: the composed Stop command preserves a codex turn with $delivery', async ({ outcome }) => {
     await installRealJournalHook();
     writeFileSync(join(fakeHome, '.papercusp', 'superuser-token'), 'test-token\n');
     const { writeSuCodexHome } = await loadMod();
@@ -2465,7 +2505,7 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
           res.statusCode = outcome === 'failure' ? 503 : 200;
           res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [] } }));
         };
-        if (outcome === 'blocked') releaseResponse = reply;
+        if (outcome === 'blocked' || outcome === 'hung') releaseResponse = reply;
         else reply();
       });
     });
@@ -2494,8 +2534,8 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
     };
     delete env.PAPERCUSP_SID;
     delete env.PAPERCUSP_AGENT;
-    if (synchronous) env.PAPERCUSP_JOURNAL_SYNC = '1';
-    else delete env.PAPERCUSP_JOURNAL_SYNC;
+    // The synchronous POST must come from the COMMAND, never the inherited env.
+    delete env.PAPERCUSP_JOURNAL_SYNC;
     const transcript = join(fixtures, 'rollout.jsonl');
     writeFileSync(transcript, '{}\n');
     // The codex-cli 0.160 `stop.command.input` shape (required fields).
@@ -2510,6 +2550,7 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
       permission_mode: 'default',
       last_assistant_message: null,
     };
+    const spawnedAt = Date.now();
     const child = spawn('bash', ['-c', 'exec -a node bash "$0"', launcher], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let closed: { code: number | null; stdout: string; stderr: string } | undefined;
     const completion = new Promise<NonNullable<typeof closed>>((done, fail) => {
@@ -2526,24 +2567,31 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
     });
     try {
       if (outcome === 'blocked') {
-        await vi.waitFor(() => expect(bodies).toHaveLength(1), { timeout: 3_000 });
-        // The request actually reached the server, but its response stays held.
-        // A synchronous POST or an inherited output pipe cannot satisfy this.
-        await vi.waitFor(() => expect(closed).toBeDefined(), { timeout: 2_000 });
-        expect(responseReleased).toBe(false);
+        await vi.waitFor(() => expect(bodies).toHaveLength(1), { timeout: 5_000 });
+        // The request reached the server and its response is held. A synchronous
+        // hook is still waiting on it; a detached POST would already have let it exit.
+        await new Promise((done) => setTimeout(done, 1_000));
+        expect(closed, 'hook exited before its journal POST was answered').toBeUndefined();
         releaseResponse!();
       }
       const result = await completion;
+      const elapsedMs = Date.now() - spawnedAt;
       expect(result.code).toBe(0);
       // Codex parses Stop stdout as a decision; the journal must never emit one.
       expect(result.stdout).toBe('');
       expect(result.stderr).toBe('');
+      if (outcome === 'hung') {
+        // Fail-open and bounded: the script's HTTP_TIMEOUT (5s) ends the wait, so a
+        // stalled operator delays a codex turn end by seconds, never indefinitely.
+        expect(responseReleased).toBe(false);
+        expect(elapsedMs).toBeGreaterThanOrEqual(4_500);
+        expect(elapsedMs).toBeLessThan(15_000);
+      }
       if (outcome === 'refused') {
         expect(bodies).toHaveLength(0);
         return;
       }
-      // Detached success/error delivery may arrive after the hook has exited.
-      await vi.waitFor(() => expect(bodies).toHaveLength(1), { timeout: 3_000 });
+      // The POST finished INSIDE the hook: it is recorded by the time the hook exits.
       expect(bodies).toHaveLength(1);
       const rpc = JSON.parse(bodies[0]);
       expect(rpc.params.name).toBe('journal:record-turn');
@@ -2563,7 +2611,8 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
         await new Promise<void>((done) => server.close(() => done()));
       }
     }
-  });
+    // 'hung' waits out the script's 5s HTTP_TIMEOUT on purpose.
+  }, 20_000);
 });
 
 describe('makeCodingAssistantCodexHome (pui-chat-first-ux P-016)', () => {

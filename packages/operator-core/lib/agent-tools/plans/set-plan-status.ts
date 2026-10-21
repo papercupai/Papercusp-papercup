@@ -794,7 +794,10 @@ export default defineTool({
           // EI-22181490624100467 — this is the ONE caller that asks for the citation
           // deployment probe. It is a rare write, unlike the sync resolver and the
           // grading sweep which call this same gate on hot/periodic paths.
-          const gate = await evaluatePlanAcceptanceGate(slug, {
+          // plan-item-types-registry-cupboard P-005 (R-14): the ship gate judges the plan
+          // under the type revisions it pinned at activation and its declared plan type.
+          const { withPinnedPlanTypes } = await import('../../plan-types/pins');
+          const gate = await withPinnedPlanTypes({ ...subjectScope, planSlug: slug }, () => evaluatePlanAcceptanceGate(slug, {
             harnessSlug: subjectScope.harnessSlug,
             probeCitationDeployment: true,
             // P-001 (plan-verification-friction-reduction-2026-10-11): report EVERY
@@ -809,7 +812,7 @@ export default defineTool({
               const { readGradingAuditDispatchSuppression } = await import('../../grading-integrity');
               return readGradingAuditDispatchSuppression(subjectScope.workspaceId, { targetOwnerId });
             },
-          });
+          }));
           citationDeployment = gate.citationDeployment;
           if (args.pendingDeliveryBarKeys && gate.satisfied) {
             return { ok: false as const, slug, error: 'acceptance_pending_delivery',

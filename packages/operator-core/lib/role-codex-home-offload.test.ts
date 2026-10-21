@@ -77,8 +77,12 @@ describe('Codex-home worker materialization', () => {
   it('keeps both production role-home callers on the async worker API', () => {
     const bootstrapRole = readFileSync(join(REPO_ROOT, 'packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts'), 'utf8');
     const advSessions = readFileSync(join(REPO_ROOT, 'packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts'), 'utf8');
-    expect(bootstrapRole).toMatch(/await writeRoleCodexHomeAsync\s*\(/);
-    expect(advSessions).toMatch(/await writeRoleCodexHomeAsync\s*\(/);
+    // A caller may await the worker API directly or through a timing wrapper
+    // (`await measure('<span>', () => writeRoleCodexHomeAsync(...))`, added to
+    // adv/sessions.ts by fdcd798b9c). Either way the awaited value is the async call.
+    const awaitedAsyncWrite = /await\s+(?:measure\(\s*(['"`])[^'"`]+\1\s*,\s*\(\)\s*=>\s*)?writeRoleCodexHomeAsync\s*\(/;
+    expect(bootstrapRole).toMatch(awaitedAsyncWrite);
+    expect(advSessions).toMatch(awaitedAsyncWrite);
     expect(bootstrapRole).not.toMatch(/\bwriteRoleCodexHome\s*\(/);
     expect(advSessions).not.toMatch(/\bwriteRoleCodexHome\s*\(/);
   });

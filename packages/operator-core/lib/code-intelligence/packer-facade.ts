@@ -507,9 +507,10 @@ export interface PackProvenance {
   /** HEAD at pack time. Null when the root is not a git checkout. */
   readonly commit: string | null;
   /**
-   * True when the working tree differs from `commit`. A dirty pack is NOT
-   * reproducible from the commit alone, and a consumer citing it as "the code
-   * at <sha>" would be wrong — so this is stated, never inferred.
+   * True when the working tree differs from `commit` — over the packed include
+   * paths when they are literal (see provenanceStatusPathspec), else the whole
+   * tree. A dirty pack is NOT reproducible from the commit alone, and a consumer
+   * citing it as "the code at <sha>" would be wrong — so this is stated, never inferred.
    */
   readonly dirty: boolean | null;
   readonly baseRef: string | null;
@@ -944,11 +945,26 @@ function refusal(engine: PackerEngine, query: string, error: string, startedAt: 
   };
 }
 
+/**
+ * Literal include paths become a `git status` pathspec, so `dirty` describes the
+ * PACKED files — the only ones a pack's reproducibility depends on. Measured on
+ * the shared tree 2026-10-21: a whole-tree status took 470-890ms, a two-path
+ * status 37-66ms, inside the claim-time task brief's 6s window
+ * (WI-6554700010018774). Glob, magic (`:`) or option-like (`-`) entries keep the
+ * whole-tree answer, because git's pathspec matching differs from the packer's.
+ */
+export function provenanceStatusPathspec(include: readonly string[] | undefined): string[] | null {
+  if (!include?.length) return null;
+  return include.every(entry => entry.length > 0 && !/[*?[\]{}!\\]/.test(entry) && !/^[-:]/.test(entry))
+    ? [...include] : null;
+}
+
 /** Resolve git facts for the provenance stamp. Never throws — absence is reported as null. */
 export async function readGitProvenance(
   rootPath: string,
   baseRef: string | undefined,
   exec: ExecFn,
+  include?: readonly string[],
 ): Promise<{ commit: string | null; dirty: boolean | null; baseCommit: string | null }> {
   const git = async (argv: string[]): Promise<string | null> => {
     try {
@@ -959,7 +975,9 @@ export async function readGitProvenance(
     }
   };
   const commit = await git(['rev-parse', 'HEAD']);
-  const status = commit === null ? null : await git(['status', '--porcelain']);
+  const pathspec = provenanceStatusPathspec(include);
+  const status = commit === null ? null
+    : await git(pathspec ? ['status', '--porcelain', '--', ...pathspec] : ['status', '--porcelain']);
   const baseCommit = baseRef ? await git(['rev-parse', baseRef]) : null;
   return { commit, dirty: status === null ? null : status.length > 0, baseCommit };
 }
@@ -1023,7 +1041,7 @@ export async function packerFacade(
   const template = args.template ?? 'none';
   const document = templateHeader(template) + body;
   const selected = parseSelectedFiles(body, format);
-  const git = await readGitProvenance(args.rootPath, args.baseRef, effects.exec);
+  const git = await readGitProvenance(args.rootPath, args.baseRef, effects.exec, args.include);
 
   const provenance: PackProvenance = {
     engine,
