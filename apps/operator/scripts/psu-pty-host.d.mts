@@ -466,9 +466,11 @@ export function composerEchoMarkerHeadLoss(marker: any, visible: any, { minNonce
  * Any non-whitespace loss (a dropped head or middle byte) does not match. Pure and
  * exported for tests. */
 export function composerEchoMarkerWhitespaceLoss(marker: any, visible: any): number | null;
-/** A carry requested in THIS turn may use its exact native completion as a
- * safe boundary even while the terminal keeps repainting. Never scan other
- * sessions or accept an older turn's completion. Missing/partial proof falls
+/** A carry requested in THIS turn may use its exact native completion or a
+ * settled interruption as a safe boundary even while the terminal repaints.
+ * PreCompact continue:false aborts the turn, so waiting for task_complete
+ * strands the queued carry. Unresolved tools still block the boundary. Never
+ * scan other sessions or accept an older turn. Missing/partial proof falls
  * back to the existing output gate. */
 export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAtMs }: {
     agent: any;
@@ -705,15 +707,17 @@ export function firstKickoffTurnStartedBeforeRetry(nativeTurnActivity: any): boo
  * to the existing output-silence gate rather than releasing an inject.
  *
  * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
- *   receivedAtMs?: number, home?: string, nowMs?: number}} options
+ *   receivedAtMs?: number, home?: string, nowMs?: number,
+ *   allowAborted?: boolean}} options
  */
-export function nativeTurnCompletedInTranscript({ agent, env, transcriptPath, receivedAtMs, home, nowMs, }: {
+export function nativeTurnCompletedInTranscript({ agent, env, transcriptPath, receivedAtMs, home, nowMs, allowAborted, }: {
     agent?: string;
     env?: EnvironmentMap;
     transcriptPath?: string | null;
     receivedAtMs?: number;
     home?: string;
     nowMs?: number;
+    allowAborted?: boolean;
 }): boolean;
 /** Normalized execution evidence, independent of provider error wording.
  * Tool calls remain active until their matching result; PTY repaint is not progress.

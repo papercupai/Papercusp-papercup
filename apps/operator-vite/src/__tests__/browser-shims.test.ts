@@ -27,6 +27,7 @@ import { join, resolve } from 'node:path';
 // collects twice and can register 0 tests under a shared-fork lane (gate red
 // 761d0a85ac, WI-212675) — guarded tree-wide by no-test-file-imports.test.ts.
 import { aliasMatches, parseShimAliases, valueImports } from './browser-shim-aliases';
+import nodeModule, { builtinModules, createRequire, isBuiltin } from '../shims/node-module-browser';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
 const VITE_CONFIG = resolve(__dirname, '../../vite.config.ts');
@@ -107,6 +108,28 @@ describe('browser shims export what the SPA links against (EI-10539)', () => {
         `\`vite build\` would fail with MISSING_EXPORT *after* emptying dist/, destroying ` +
         `the running bundle (EI-10539):\n${missing.join('\n')}`,
     ).toEqual([]);
+  });
+});
+
+// Literal imports also expose this dependency to related-test selection; the
+// dynamic scan above protects every shim's exports but cannot supply that edge.
+describe('node:module browser API', () => {
+  it('provides an immutable iterable for module-scope builtin lookups', () => {
+    expect(new Set(builtinModules)).toEqual(new Set());
+    expect(Object.isFrozen(builtinModules)).toBe(true);
+    expect(nodeModule.builtinModules).toBe(builtinModules);
+  });
+
+  it('allows require construction and cache inspection but rejects server-only calls', () => {
+    const require = createRequire(import.meta.url);
+    expect(Object.keys(require.cache)).toEqual([]);
+    expect(Object.keys(require.extensions)).toEqual([]);
+    expect(require.main).toBeUndefined();
+    expect(() => require('node:fs')).toThrow('unavailable in the browser bundle');
+    expect(() => require.resolve('node:fs')).toThrow('unavailable in the browser bundle');
+    expect(() => isBuiltin('node:fs')).toThrow('unavailable in the browser bundle');
+    expect(nodeModule.createRequire).toBe(createRequire);
+    expect(nodeModule.isBuiltin).toBe(isBuiltin);
   });
 });
 

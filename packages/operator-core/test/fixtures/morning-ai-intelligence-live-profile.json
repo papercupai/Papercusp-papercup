@@ -1,0 +1,16 @@
+{
+  "origin": "http://127.0.0.1:3170",
+  "runtimeUnits": ["hono-host:3170"],
+  "dailyEdition": {
+    "reportId": "rpt_3df026bb-8684-48f0-9850-72f6144b44c6",
+    "editionDate": "2026-10-21",
+    "sourceCount": 20,
+    "bodySha256": "c51a3b3beb04685331aac134aac8b861eb0388b4fa21fcea2537bccb61232958",
+    "primarySource": "https://platform.claude.com/docs/en/release-notes/overview.md",
+    "coverageText": [
+      "lastweekin.ai DNS failure",
+      "OpenAI changelog exceeded the fetch download ceiling on retry",
+      "multiple large pages were returned via spill/truncation and were not fully inspected"
+    ]
+  }
+}

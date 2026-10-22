@@ -428,8 +428,13 @@ const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
 
 /** Reuse this ingest tick for late gateway evidence too, even when native files
  * are unchanged. Update at most 500 exact matches with a bounded query deadline;
- * unmatched recent rows must not starve older requests that have exact evidence. */
-export async function reconcileTranscriptAccounts(sql: Sql, workspaceId: string): Promise<number> {
+ * unmatched recent rows must not starve older requests that have exact evidence.
+ * A consumer catch-up keeps this join inside the same native-session population
+ * as transcript ingestion; unrelated account backlog must not block completion. */
+export async function reconcileTranscriptAccounts(
+  sql: Sql, workspaceId: string, sessionIds?: readonly string[],
+): Promise<number> {
+  if (sessionIds?.length === 0) return 0;
   return sql.begin(async (tx) => {
     await tx`SET LOCAL statement_timeout = '5s'`;
     const rows = await tx<Array<{ id: string }>>`
@@ -437,6 +442,7 @@ export async function reconcileTranscriptAccounts(sql: Sql, workspaceId: string)
       SELECT id, session_id, provider, usage_provenance FROM harness_shared.agent_usage_samples
        WHERE workspace_id = ${workspaceId} AND source = 'interactive' AND account_id IS NULL
          AND usage_provenance->>'providerResponseId' IS NOT NULL
+         AND ${sessionIds === undefined ? sql`true` : sql`session_id IN ${sql([...sessionIds])}`}
     ), matched AS (
       SELECT s.id, min(g.selected_account_id) AS account_id, min(g.request_id) AS request_id
         FROM pending s JOIN harness_shared.gateway_request_outcomes g
@@ -940,7 +946,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
     }
   }
   try {
-    result.attributedAccounts = await reconcileTranscriptAccounts(sql, ws);
+    result.attributedAccounts = await reconcileTranscriptAccounts(sql, ws, opts.sessionIds);
   } catch (error) {
     result.errors.push({ file: 'gateway-account-attribution', error: error instanceof Error ? error.message : String(error) });
   }

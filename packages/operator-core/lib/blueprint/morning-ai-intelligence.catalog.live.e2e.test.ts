@@ -2,6 +2,7 @@
  * records execution-time runtime witnesses from the live-profile selectors.
  * Source navigation and the historical Research tab remain separate claims. */
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +14,7 @@ import { prepareRuntimeReader } from '../../vitest.e2e.config';
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
+const selectedProfile = profilePath ? JSON.parse(readFileSync(resolve(root, profilePath), 'utf8')) : undefined;
 
 describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-only catalog', () => {
   let origin: string;
@@ -30,14 +32,21 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
     expect(witness?.units).toEqual(['hono-host:3170']);
   });
 
-  async function read(script: string) {
+  async function read(script: string, missingReportExpected = false) {
     const { stdout } = await execute('ptool', ['code:run', '--url', origin,
       '--harness', 'papercusp', '--raw', '--json', JSON.stringify({ script })],
     { cwd: root, timeout: 45_000, maxBuffer: 256_000 });
     const result = JSON.parse(stdout);
     expect(result.ok, JSON.stringify(result)).toBe(true);
-    expect(result.partial).not.toBe(true);
-    expect(result.childFailures ?? []).toEqual([]);
+    if (missingReportExpected) {
+      expect(result.partial).toBe(true);
+      expect(result.childFailures).toHaveLength(1);
+      expect(result.childFailures[0]).toMatchObject({ tool: 'reports:get', kind: 'semantic',
+        result: { ok: false, counts: { ok: 0, failed: 1 }, results: [{ ok: false, error: 'not_found' }] } });
+    } else {
+      expect(result.partial).not.toBe(true);
+      expect(result.childFailures ?? []).toEqual([]);
+    }
     expect(result.summary).toBeDefined();
     return result.summary;
   }
@@ -79,4 +88,57 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
         'WI-2874', 'reports-library-2026-09-15'],
       unresolved: true, navigationScope: true, reused: true });
   }, 60_000);
+
+  describe.skipIf(!selectedProfile?.dailyEdition)('the selected persisted daily edition', () => {
+    const edition = selectedProfile?.dailyEdition;
+
+    async function readEdition() {
+      return read(`
+        const result = await tools.reports.get({ id: ${JSON.stringify(edition?.reportId)} });
+        const row = result.results?.find(entry => entry.id === ${JSON.stringify(edition?.reportId)});
+        if (!row?.ok || !row.report) throw new Error('Selected daily edition unavailable');
+        const report = row.report;
+        return { title: report.title, body: report.body_md, path: report.path,
+          visibility: report.visibility };
+      `);
+    }
+
+    it('reads the exact dated worker report, its citation and its disclosed partial coverage', async () => {
+      const report = await readEdition();
+      expect(report.title).toBe(`Papercusp AI Brief — ${edition.editionDate}`);
+      expect(report.path).toBe(`/reports?sel=${edition.reportId}`);
+      expect(report.visibility).toBe('workspace');
+      expect(createHash('sha256').update(report.body).digest('hex')).toBe(edition.bodySha256);
+      expect(report.body).toContain(edition.primarySource);
+      expect(report.body).toContain(`Source count: ${edition.sourceCount} unique attempted`);
+      expect(report.body).toContain('this edition is **partial**');
+      for (const gap of edition.coverageText) expect(report.body).toContain(gap);
+    }, 60_000);
+
+    it('retains opportunities with existing fit, confidence, limits and a next action', async () => {
+      const report = await readEdition();
+      const section = report.body.match(/## Papercusp opportunities\n([\s\S]*?)(?=\n## |$)/)?.[1];
+      expect(section, 'The actual saved edition must contain the required section').toBeDefined();
+      const opportunities = section!.split(/\n(?=\d+\. )/).filter(value => value.trim());
+      expect(opportunities.length).toBeGreaterThan(0);
+      for (const opportunity of opportunities) {
+        expect(opportunity).toContain('Fit:');
+        expect(opportunity).toContain('**Confidence:**');
+        expect(opportunity).toContain('**Next action:**');
+      }
+      expect(section).toContain('current adapter seams were not inspected');
+      expect(section).toContain('low for broader fleet frequency');
+    }, 60_000);
+
+    it('returns not_found for an absent report instead of reusing the selected edition', async () => {
+      const missingId = `${edition.reportId}-not-published`;
+      const observed = await read(`
+        const result = await tools.reports.get({ id: ${JSON.stringify(missingId)} });
+        const row = result.results?.find(entry => entry.id === ${JSON.stringify(missingId)});
+        if (!row) throw new Error('Missing report result unavailable');
+        return { ok: row.ok, error: row.error, hasReport: 'report' in row };
+      `, true);
+      expect(observed).toEqual({ ok: false, error: 'not_found', hasReport: false });
+    }, 60_000);
+  });
 });

@@ -80,6 +80,9 @@ describe('managed Codex PreCompact bridge', () => {
 
     expect(decision.continue).toBe(false);
     expect(decision.systemMessage).toContain('QUEUED');
+    expect(decision.systemMessage).toContain('Codex has ended this turn');
+    expect(decision.systemMessage).toContain('no continue message is needed');
+    expect(decision.systemMessage).not.toContain('Finish the atomic step');
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(capturedUrl).toBe(ENV.PAPERCUSP_MCP_URL);
     expect(capturedRequest?.headers).not.toHaveProperty('Authorization');

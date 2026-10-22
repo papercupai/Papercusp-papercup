@@ -1302,13 +1302,15 @@ function scanNativeTranscriptMarker({
   return null;
 }
 
-/** A carry requested in THIS turn may use its exact native completion as a
- * safe boundary even while the terminal keeps repainting. Never scan other
- * sessions or accept an older turn's completion. Missing/partial proof falls
+/** A carry requested in THIS turn may use its exact native completion or a
+ * settled interruption as a safe boundary even while the terminal repaints.
+ * PreCompact continue:false aborts the turn, so waiting for task_complete
+ * strands the queued carry. Unresolved tools still block the boundary. Never
+ * scan other sessions or accept an older turn. Missing/partial proof falls
  * back to the existing output gate. */
 export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAtMs }) {
   if (agent !== 'codex') return false;
-  return nativeTurnCompletedInTranscript({ agent, env, transcriptPath, receivedAtMs });
+  return nativeTurnCompletedInTranscript({ agent, env, transcriptPath, receivedAtMs, allowAborted: true });
 }
 
 /**
@@ -1900,7 +1902,8 @@ export function firstKickoffTurnStartedBeforeRetry(nativeTurnActivity) {
  * to the existing output-silence gate rather than releasing an inject.
  *
  * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
- *   receivedAtMs?: number, home?: string, nowMs?: number}} options
+ *   receivedAtMs?: number, home?: string, nowMs?: number,
+ *   allowAborted?: boolean}} options
  */
 export function nativeTurnCompletedInTranscript({
   agent,
@@ -1909,18 +1912,42 @@ export function nativeTurnCompletedInTranscript({
   receivedAtMs,
   home = homedir(),
   nowMs = Date.now(),
+  allowAborted = false,
 }) {
   if (!Number.isFinite(receivedAtMs)) return false;
   const rows = readIsolatedNativeTranscriptRows({ agent, env, transcriptPath, home });
   if (!rows) return false;
   const classify = TURN_ROW_CLASSIFIERS[/** @type {string} */ (agent)];
   let completed = false;
+  let interrupted = false;
+  let startedTurnId = null;
   for (const row of rows) {
+    if (allowAborted && agent === 'codex' && row?.type === 'event_msg') {
+      if (row.payload?.type === 'task_started') startedTurnId = row.payload.turn_id;
+      if (row.payload?.type === 'turn_aborted') {
+        const at = Date.parse(row.timestamp);
+        // Require the matching start inside the bounded window: otherwise an
+        // unseen earlier tool call could make an apparent zero unsafe. This
+        // accepts starts before the carry request, but never stale aborts.
+        completed = Number.isFinite(at) && at >= receivedAtMs && at <= nowMs
+          && typeof startedTurnId === 'string' && startedTurnId.length > 0
+          && row.payload.turn_id === startedTurnId;
+        interrupted = true;
+        continue;
+      }
+    }
     const verdict = classify(row, { receivedAtMs: /** @type {number} */ (receivedAtMs), nowMs });
-    if (verdict === 'turn-completed') completed = true;
+    if (verdict === 'turn-completed') {
+      completed = true;
+      interrupted = false;
+    }
     else if (verdict === 'turn-started') completed = false;
   }
-  return completed;
+  // Include tool calls before the request's time fence. An interrupted model
+  // does not cancel external effects; their matching result must arrive first.
+  return completed && (!interrupted || !nativeExecutionBlocksInjection(
+    nativeExecutionFromRows(rows, { agent: /** @type {string} */ (agent), nowMs }),
+  ));
 }
 
 /** @typedef {{code: string, retryable: boolean, retryAfterMs: number|null, atMs: number}} NativeExecutionFailure */
@@ -13858,7 +13885,7 @@ export function hostThroughPty(o) {
     // "newest", which would let another thread's completion certify this one.
     if (msg?.mode === 'carry-respawn') {
       return {
-        boundary: () => nativeTurnCompletedInTranscript({
+        boundary: () => (agent === 'codex' ? codexCarryTurnCompleted : nativeTurnCompletedInTranscript)({
           agent,
           env,
           transcriptPath: msg?.sourceTranscriptPath,

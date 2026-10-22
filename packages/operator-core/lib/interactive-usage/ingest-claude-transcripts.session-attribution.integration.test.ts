@@ -57,6 +57,42 @@ beforeEach(async () => {
 });
 
 describe('ingestInteractiveUsage — session_id attribution (P3)', () => {
+  it('keeps bounded native catch-up account reconciliation inside the selected sessions', async () => {
+    const selected = '55555555-aaaa-4555-8555-555555555555';
+    const unrelated = '66666666-aaaa-4666-8666-666666666666';
+    for (const [index, session] of [selected, unrelated].entries()) {
+      const response = `resp-scoped-${index}`;
+      await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, ts, bucket_key, provider, model_class, source, session_id, usage_provenance, usage_event_key)
+        VALUES (${WS}, 1, 'openai:gpt', 'openai', 'gpt', 'interactive', ${session},
+          ${sql.json({ providerResponseId: response, sessionOwnerId: 'scoped-owner', turnId: 'scoped-turn' })}, ${response})`;
+      await sql`INSERT INTO harness_shared.gateway_request_outcomes
+        (request_id, workspace_id, gateway_process_instance_id, request_ordinal, owner_id, provider, protocol,
+         transport, selected_account_id, outcome_class, final_status, request_timestamp_ms, finalized_at_ms,
+         attempts, failovers, native_session_id, native_thread_id, native_turn_id, recorded_at_ms,
+         retention_expires_at_ms, provider_response_id)
+        VALUES (${`scoped-request-${index}`}, ${WS}, '00000000-0000-4000-8000-000000000001', ${index + 1},
+          'scoped-owner', 'codex', 'openai-responses', 'oauth-http', 'scoped-account', 'ok', 200,
+          1, 2, 1, 0, ${session}, ${session}, 'scoped-turn', 2, 3, ${response})`;
+    }
+    const result = await ingestInteractiveUsage({ adapters: [], sessionIds: [selected] });
+    expect(result.errors).toEqual([]);
+    expect(result.attributedAccounts).toBe(1);
+    const rows = await sql<Array<{ session_id: string; account_id: string | null }>>`
+      SELECT session_id, account_id FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${WS} ORDER BY session_id`;
+    expect(rows).toEqual([
+      { session_id: selected, account_id: 'scoped-account' },
+      { session_id: unrelated, account_id: null },
+    ]);
+    // An explicitly empty population never widens to the workspace. The
+    // periodic unscoped sweep still owns late evidence for the other session.
+    const empty = await ingestInteractiveUsage({ adapters: [], sessionIds: [] });
+    expect(empty.errors).toEqual([]);
+    expect(empty.attributedAccounts).toBe(0);
+    expect(await reconcileTranscriptAccounts(sql, WS)).toBe(1);
+  });
+
   it('attributes late exact gateway evidence while preserving ambiguous and mismatched accounts as unknown', async () => {
     const session = '44444444-aaaa-4444-8444-444444444444';
     for (const response of ['resp-a', 'resp-b', 'resp-ambiguous', 'resp-wrong-owner', 'resp-wrong-turn', 'resp-cancelled']) {

@@ -146,7 +146,7 @@ export function preCompactDecision(parsed) {
       stopReason,
       systemMessage:
         'Managed carry-respawn is QUEUED, not yet completed. Native compaction was stopped. ' +
-        'Finish the atomic step, flush current work-item/loop state, then let the turn go quiet so the managed host can cut and resume this logical session.',
+        'Codex has ended this turn. The managed host will resume this logical session once the interrupted turn and any running tools have settled; no continue message is needed.',
     };
   }
   const error = inner.error ?? inner.reason ??
