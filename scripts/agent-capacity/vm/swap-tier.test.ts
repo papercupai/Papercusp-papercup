@@ -27,7 +27,7 @@ function py(module: string, expr: string, input: unknown): any {
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
 describe('operator readiness across cold lifecycle', () => {
-  function healthScenario(valid: boolean) {
+  function healthScenario(valid: boolean, reportedSha: unknown = 'a'.repeat(40), expectedSha = 'a'.repeat(40)) {
     const code = [
       'import importlib.util,json,socketserver,threading,subprocess,sys',
       `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
@@ -42,9 +42,9 @@ describe('operator readiness across cold lifecycle', () => {
       ' threading.Thread(target=server.serve_forever,daemon=True).start();return server.server_address[1]',
       'def http(body):return b"HTTP/1.0 200 OK\\r\\nContent-Length: "+str(len(body)).encode()+b"\\r\\n\\r\\n"+body',
       'ports=[serve(b"SSH-2.0-OpenSSH_9.6\\r\\n"),serve(http(b"<html>SPA</html>")),serve(http(b"[]")),serve(http(b\'{"ok":1,"service":"papercusp-operator","sha":"candidate"}\')),serve(http(b\'{"ok":true,"service":"other","sha":"candidate"}\')),serve(http(b\'{"ok":true,"service":"papercusp-operator","sha":"wrong"}\'))]',
-      ...(valid ? ['ports.append(serve(http(b\'{"ok":true,"service":"papercusp-operator","sha":"candidate"}\')))'] : []),
-      'out=m.wait_for_operator_health(ports,timeout=.15,interval=.01,expected_sha="candidate")',
-      `r=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"wait-health",*sum((["--port",str(p)] for p in ports),[]),"--timeout",".15","--expected-sha","candidate"],capture_output=True,text=True)`,
+      ...(valid ? [`ports.append(serve(http(${JSON.stringify(JSON.stringify({ ok: true, service: 'papercusp-operator', sha: reportedSha }))}.encode())))`] : []),
+      `out=m.wait_for_operator_health(ports,timeout=.15,interval=.01,expected_sha=${JSON.stringify(expectedSha)})`,
+      `r=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"wait-health",*sum((["--port",str(p)] for p in ports),[]),"--timeout",".15","--expected-sha",${JSON.stringify(expectedSha)}],capture_output=True,text=True)`,
       'print(json.dumps({"result":out,"cli":json.loads(r.stdout),"exitCode":r.returncode,"expectedPort":ports[-1]}))',
       'for server in servers:server.server_close()',
     ].join('\n');
@@ -62,6 +62,20 @@ describe('operator readiness across cold lifecycle', () => {
 
   it('times out without accepting HTTP availability or another artifact', () => {
     const out = healthScenario(false);
+    expect(out.result.ready).toBe(false);
+    expect(out.cli.ready).toBe(false);
+    expect(out.exitCode).toBe(1);
+  });
+
+  it.each([7, 10, 40])('accepts a packaged %i-character source SHA against its full admitted commit', length => {
+    const out = healthScenario(true, ` ${'a'.repeat(length).toUpperCase()} `);
+    expect(out.result).toMatchObject({ ready: true, port: out.expectedPort });
+    expect(out.cli.ready).toBe(true);
+    expect(out.exitCode).toBe(0);
+  });
+
+  it.each([null, 42, 'a'.repeat(6), 'b'.repeat(10), 'a'.repeat(41), 'aaaaaaz'])('rejects malformed or foreign packaged source SHA %s', sha => {
+    const out = healthScenario(true, sha);
     expect(out.result.ready).toBe(false);
     expect(out.cli.ready).toBe(false);
     expect(out.exitCode).toBe(1);
@@ -1088,6 +1102,11 @@ describe('frozen D075 native workload detector', () => {
   it('composes complete observations while retaining independent review authority', () => {
     expect(qualify(qualificationFixture())).toMatchObject({ status: 'pass', qualification: 'independent-review-required', gaps: [], failures: [] });
   });
+  it.each([7, 10, 40])('composes abbreviated %i-character packaged source SHA with the exact full candidate and artifact', length => {
+    const input = qualificationFixture();
+    for (const operation of input.evidence.lifecycle) operation.health.sha = ` ${input.expectedSha.slice(0, length).toUpperCase()} `;
+    expect(qualify(input)).toMatchObject({ status: 'pass', qualification: 'independent-review-required', gaps: [], failures: [] });
+  });
   it.each([
     ['foreign candidate', (x: any) => { x.expectedSha = 'e'.repeat(40); }],
     ['foreign artifact', (x: any) => { x.expectedArtifact = 'e'.repeat(64); }],
@@ -1111,6 +1130,10 @@ describe('frozen D075 native workload detector', () => {
     ['missing lifecycle operation', (x: any) => { x.evidence.lifecycle.pop(); }],
     ['duplicate lifecycle operation', (x: any) => { x.evidence.lifecycle[1] = x.evidence.lifecycle[0]; }],
     ['readiness from another candidate', (x: any) => { x.evidence.lifecycle[0].health.sha = 'e'.repeat(40); }],
+    ['foreign abbreviated source SHA', (x: any) => { x.evidence.lifecycle[0].health.sha = 'e'.repeat(10); }],
+    ['insufficient abbreviated source SHA', (x: any) => { x.evidence.lifecycle[0].health.sha = 'a'.repeat(6); }],
+    ['overlong source SHA', (x: any) => { x.evidence.lifecycle[0].health.sha = 'a'.repeat(41); }],
+    ['nonhex source SHA', (x: any) => { x.evidence.lifecycle[0].health.sha = 'aaaaaaz'; }],
     ['HTML availability', (x: any) => { x.evidence.lifecycle[0].health = '<html>SPA</html>'; }],
     ['reversed clock', (x: any) => { x.evidence.lifecycle[0].readyAt = 999; }],
     ['changed acknowledged data', (x: any) => { x.evidence.lifecycle[0].witnessAfter.manifestSha256 = 'e'.repeat(64); }],

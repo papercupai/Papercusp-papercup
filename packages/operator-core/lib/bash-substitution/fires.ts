@@ -102,19 +102,6 @@ export const COMPLIANCE_SETTLE_MS = 60_000;
 export const COMPLIANCE_ABANDON_MS = 60 * 60_000;
 
 /**
- * Coerce a timestamptz returned by the pooled postgres client to epoch ms.
- *
- * The canonical org pool uses `prepare: false`, so PostgreSQL timestamp columns
- * arrive as wire-format strings there; the direct testcontainer client returns
- * `Date` objects. Comparing the string directly with a `Date` makes JavaScript
- * coerce the string to `NaN`, so the abandonment branch silently never runs.
- */
-function timestampMs(value: Date | string): number | null {
-  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : null;
-}
-
-/**
  * Record that these registry rows claimed an atom, and bump their hot counters.
  *
  * BEST EFFORT BY CONTRACT. The caller is `locks:check_command`, whose whole
@@ -251,22 +238,72 @@ export async function resolveFireCompliance(opts: {
   const abandonedBefore = new Date(now.getTime() - COMPLIANCE_ABANDON_MS);
   const limit = opts.limit ?? 500;
 
-  let pending: Array<{
-    id: string;
-    session_id: string | null;
-    tool_name: string;
-    fired_at: Date | string;
-  }>;
   try {
-    pending = (await sql`
-      SELECT id, session_id, tool_name, fired_at
-        FROM harness_shared.bash_tool_substitution_fires
-       WHERE workspace_id = ${opts.workspaceId}
-         AND resolved_at IS NULL
-         AND fired_at < ${settledBefore}
-       ORDER BY fired_at
-       LIMIT ${limit}
-    `) as typeof pending;
+    // This runs on the 30s routines tick. Keep the batch bounded, but do the
+    // per-fire lookup and resolution as one database round trip: awaiting a
+    // SELECT and UPDATE for every row made a 104-fire batch take 163s even
+    // though the indexed lateral lookup for the same rows executes in <60ms.
+    // SKIP LOCKED lets overlapping ticks split the bounded batch without
+    // waiting on, or double-processing, one another's rows.
+    const summaries = (await sql`
+      WITH pending_fires AS MATERIALIZED (
+        SELECT id, session_id, tool_name, fired_at
+          FROM harness_shared.bash_tool_substitution_fires
+         WHERE workspace_id = ${opts.workspaceId}
+           AND resolved_at IS NULL
+           AND fired_at < ${settledBefore}
+         ORDER BY fired_at
+         LIMIT ${limit}
+         FOR UPDATE SKIP LOCKED
+      ),
+      evaluated_fires AS MATERIALIZED (
+        SELECT pending.id,
+               pending.tool_name,
+               pending.fired_at,
+               next_invocation.id AS next_invocation_id,
+               next_invocation.tool_name AS next_tool_name
+          FROM pending_fires AS pending
+          LEFT JOIN LATERAL (
+            SELECT invocation.id, invocation.tool_name
+              FROM harness_shared.tool_invocations AS invocation
+             WHERE pending.session_id IS NOT NULL
+               AND invocation.coord_owner_id = pending.session_id
+               AND invocation.invoked_at > pending.fired_at
+               AND invocation.tool_name <> ${GATE_TOOL_NAME}
+               AND invocation.call_origin IS DISTINCT FROM ${HOOK_CALL_ORIGIN}
+             ORDER BY invocation.invoked_at
+             LIMIT 1
+          ) AS next_invocation ON TRUE
+      ),
+      resolved_fires AS (
+        UPDATE harness_shared.bash_tool_substitution_fires AS fire
+           SET complied = CASE
+                 WHEN evaluated.next_invocation_id IS NOT NULL
+                   THEN evaluated.next_tool_name = evaluated.tool_name
+                 ELSE fire.complied
+               END,
+               resolved_at = now()
+          FROM evaluated_fires AS evaluated
+         WHERE fire.id = evaluated.id
+           AND fire.resolved_at IS NULL
+           AND (
+             evaluated.next_invocation_id IS NOT NULL
+             OR evaluated.fired_at < ${abandonedBefore}
+           )
+        RETURNING evaluated.next_invocation_id IS NOT NULL AS has_follow_up
+      )
+      SELECT (SELECT count(*) FROM pending_fires)::int AS examined,
+             count(*) FILTER (WHERE has_follow_up)::int AS measured,
+             count(*) FILTER (WHERE NOT has_follow_up)::int AS no_follow_up
+        FROM resolved_fires
+    `) as Array<{ examined: number | string; measured: number | string; no_follow_up: number | string }>;
+
+    const summary = summaries[0];
+    return {
+      examined: Number(summary?.examined ?? 0),
+      measured: Number(summary?.measured ?? 0),
+      noFollowUp: Number(summary?.no_follow_up ?? 0),
+    };
   } catch (e) {
     // Schema not migrated yet — quietly a no-op, not an alarm. Any OTHER error
     // still propagates to the caller, which is the point: swallowing everything
@@ -274,51 +311,4 @@ export async function resolveFireCompliance(opts: {
     if (isMissingTelemetrySchema(e)) return { examined: 0, measured: 0, noFollowUp: 0 };
     throw e;
   }
-
-  let measured = 0;
-  let noFollowUp = 0;
-
-  for (const fire of pending) {
-    // A fire with no session id can never be resolved — there is nobody whose
-    // next call to inspect. Close it as "no evidence" rather than leaving it to
-    // be re-scanned forever.
-    const next = fire.session_id
-      ? ((await sql`
-          SELECT tool_name
-            FROM harness_shared.tool_invocations
-           WHERE coord_owner_id = ${fire.session_id}
-             AND invoked_at > ${fire.fired_at}
-             AND tool_name <> ${GATE_TOOL_NAME}
-             AND call_origin IS DISTINCT FROM ${HOOK_CALL_ORIGIN}
-           ORDER BY invoked_at
-           LIMIT 1
-        `) as Array<{ tool_name: string }>)
-      : [];
-
-    if (next.length > 0) {
-      const complied = next[0].tool_name === fire.tool_name;
-      await sql`
-        UPDATE harness_shared.bash_tool_substitution_fires
-           SET complied = ${complied}, resolved_at = now()
-         WHERE id = ${fire.id}
-      `;
-      measured += 1;
-      continue;
-    }
-
-    // No subsequent call yet. Before the abandonment window that is simply "too
-    // early to tell" and the fire is left alone; after it, the session is gone
-    // and the honest record is resolved-with-no-verdict.
-    const firedAtMs = timestampMs(fire.fired_at);
-    if (firedAtMs !== null && firedAtMs < abandonedBefore.getTime()) {
-      await sql`
-        UPDATE harness_shared.bash_tool_substitution_fires
-           SET resolved_at = now()
-         WHERE id = ${fire.id}
-      `;
-      noFollowUp += 1;
-    }
-  }
-
-  return { examined: pending.length, measured, noFollowUp };
 }

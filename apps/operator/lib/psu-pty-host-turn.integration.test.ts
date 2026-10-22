@@ -394,7 +394,8 @@ it.each(['gate-wait', 're-arm'] as const)(
     const root = mkdtempSync(join(tmpdir(), 'pty-carry-boundary-'));
     const sessions = join(root, 'sessions', '2026', '10', '03');
     mkdirSync(sessions, { recursive: true });
-    const transcript = join(sessions, 'rollout-carry-boundary.jsonl');
+    const nativeId = '11111111-1111-4111-8111-111111111111';
+    const transcript = join(sessions, `rollout-${nativeId}.jsonl`);
     const ownerId = uniqueOwner(`CARRY-${deliveryPhase}`);
     const sock = socketPathFor(ownerId);
     const log = eventLogPathForOwner(ownerId);
@@ -423,6 +424,7 @@ it.each(['gate-wait', 're-arm'] as const)(
       // Queue a real carry without launching a model process. This oracle is
       // the wake's PTY bytes, independent of subsequent carry argv creation.
       mintCarryRespawnArgs: () => { throw new Error('fixture carry argv unavailable'); },
+      resolveRespawnNativeId: () => nativeId,
     });
     const events = () => existsSync(log) ? readFileSync(log, 'utf8') : '';
     try {
@@ -443,6 +445,8 @@ it.each(['gate-wait', 're-arm'] as const)(
       }
       expect(await injectIntoHostWithConfirmation(sock, {
         mode: 'carry-respawn', ownerId, data: 'fixture carry', deliveryId: `carry-${deliveryPhase}`,
+        sourceTranscriptPath: transcript,
+        systemPromptAddendum: 'fixture saved context',
       })).toMatchObject({ ok: true, reason: 'accepted' });
       writeFileSync(transcript, JSON.stringify({
         timestamp: new Date().toISOString(), type: 'event_msg',
@@ -484,7 +488,8 @@ it('re-armed wake uses its verified native boundary without a second busy-gate w
   const root = mkdtempSync(join(tmpdir(), 'pty-rearm-boundary-'));
   const sessions = join(root, 'sessions', '2026', '09', '24');
   mkdirSync(sessions, { recursive: true });
-  const transcript = join(sessions, 'rollout-rearm.jsonl');
+  const nativeId = '22222222-2222-4222-8222-222222222222';
+  const transcript = join(sessions, `rollout-${nativeId}.jsonl`);
   const ownerId = uniqueOwner('REARM-BOUNDARY');
   const sock = socketPathFor(ownerId);
   const log = eventLogPathForOwner(ownerId);
@@ -517,6 +522,7 @@ it('re-armed wake uses its verified native boundary without a second busy-gate w
     ownerId,
     io,
     bridgeTty: false,
+    resolveRespawnNativeId: () => nativeId,
     onExit: () => {},
   });
   try {
@@ -751,6 +757,8 @@ it(
   'refreshes a pending Codex carry-respawn from a same-delivery retry before the re-arm commits (EI-24915900486106554)',
   async () => {
     const root = mkdtempSync(join(tmpdir(), 'codex-carry-retry-refresh-'));
+    const freshNativeId = '33333333-3333-4333-8333-333333333333';
+    const freshNativeFile = join(root, 'sessions', `rollout-${freshNativeId}.jsonl`);
     const ownerId = uniqueOwner('CARRY-RETRY-REFRESH');
     const sock = socketPathFor(ownerId);
     const eventLog = eventLogPathForOwner(ownerId);
@@ -771,11 +779,14 @@ it(
       'setTimeout(()=>process.exit(0),8000);',
     ].join('');
     const freshCode = [
+      "const fs=require('node:fs'),path=require('node:path');",
       "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
-      "process.stdout.write('FRESH-BOOT\\n');",
+      "process.stdout.write('FRESH-BOOT\\n\\x1b[6nmodel: GPT-6.1-Sol xhigh\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
       "let line='';process.stdin.on('data',data=>{for(const c of data){",
       "if(c==='\\u0004'){process.exit(0);return;}",
-      "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+      "if(c==='\\r'){if(line){const timestamp=new Date().toISOString();fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});",
+      "fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');",
+      "process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
       'setTimeout(()=>process.exit(0),5000);',
     ].join('');
     const mintedAddenda: string[] = [];
@@ -786,6 +797,7 @@ it(
       env: hermeticEnv({
         PAPERCUSP_AGENT: 'codex',
         CODEX_HOME: root,
+        NATIVE_FILE: freshNativeFile,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
         PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '150',
         PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1500',
@@ -801,8 +813,10 @@ it(
       bridgeTty: false,
       mintCarryRespawnArgs: (_args, options) => {
         mintedAddenda.push(options.systemPromptAddendum);
-        return { args: ['-e', freshCode], nativeId: null };
+        return { args: ['-e', freshCode], nativeId: freshNativeId };
       },
+      resolveRespawnNativeId: () => freshNativeId,
+      onRespawn: async () => true,
       onExit: () => {},
     });
 
@@ -841,7 +855,13 @@ it(
       const respawnDeadline = Date.now() + 5000;
       while (mintedAddenda.length === 0 && Date.now() < respawnDeadline) await sleep(20);
       expect(mintedAddenda).toEqual([freshAddendum]);
-      expect(await waitForOutput(captured, `ECHO:${freshText}`, 3000)).toBe(true);
+      await vi.waitFor(() => {
+        const row = JSON.parse(readFileSync(freshNativeFile, 'utf8').trim());
+        const delivered = row.payload.content[0].text;
+        expect(delivered).toContain(freshText);
+        expect(delivered).not.toContain(staleText);
+        expect(leadingTurnOriginMarker(delivered)).toMatch(/^⟦turn-origin:host-control nonce:/);
+      }, { timeout: 3000 });
       expect(captured()).not.toContain(`ECHO:${staleText}`);
     } finally {
       if (existsSync(sock)) await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
@@ -2237,7 +2257,8 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       const ownerId = uniqueOwner(`CODEX-WARM-${state}`);
       const sock = socketPathFor(ownerId);
       const eventLog = eventLogPathForOwner(ownerId);
-      const transcript = join(root, 'sessions', '2026', '09', '12', 'rollout-current.jsonl');
+      const nativeId = '44444444-4444-4444-8444-444444444444';
+      const transcript = join(root, 'sessions', '2026', '09', '12', `rollout-${nativeId}.jsonl`);
       mkdirSync(join(root, 'sessions', '2026', '09', '12'), { recursive: true });
       const writeTurnRow = (type: 'task_complete' | 'task_started') => writeFileSync(transcript, JSON.stringify({
         type: 'event_msg', timestamp: new Date().toISOString(),
@@ -2272,6 +2293,7 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
         ownerId,
         io,
         bridgeTty: false,
+        resolveRespawnNativeId: () => nativeId,
         onExit: () => {},
       });
       try {
@@ -2715,7 +2737,8 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_IDLE_MS: '60',
-          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          // Force the cap-expiry branch without relying on repaint scheduling.
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '600',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',

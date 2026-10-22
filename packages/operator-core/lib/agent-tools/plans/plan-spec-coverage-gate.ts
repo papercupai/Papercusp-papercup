@@ -46,6 +46,15 @@ import { listSpecEvidence, type SpecEvidenceKind } from './spec-evidence-store';
 import { SPEC_TEST_ADEQUACY_RUBRIC_REF } from './spec-test-adequacy';
 import { enforcementEligibility } from './spec-enforcement-eligibility';
 import { listPlanStatuses, type PlanStatusReader } from './plan-status-read';
+import type { AcceptanceBarLifecycleVerdict } from '../../acceptance-bar-lifecycle-evaluator';
+
+interface PlanSpecCoverageInput {
+  harnessSlug?: string;
+  planSlug: string;
+  /** Internal lifecycle receipt, never an arbitrary list of clauses to skip. */
+  pendingDeliveryReview?: Pick<AcceptanceBarLifecycleVerdict,
+    'phase' | 'applicable' | 'satisfied' | 'pendingDeliverySpecClauses'>;
+}
 
 /** Lifecycle states carrying an enforceable promise (D-012), mirrored from the resolver. */
 /**
@@ -136,6 +145,8 @@ export interface SpecCoverageStaleness {
 
 export interface PlanSpecCoverageAggregate {
   planSlug: string;
+  /** Review-only deferrals; coverage still reports these clauses as unproven/stale. */
+  pendingDeliverySpecIds?: string[];
   /** Every CURRENT clause, partitioned by the lifecycle role it plays (D-012). */
   clauses: {
     total: number;
@@ -386,7 +397,7 @@ function adequacySubjectRef(planSlug: string, specId: string, revision: number):
  * for a work item.
  */
 export async function computePlanSpecCoverage(
-  input: { harnessSlug?: string; planSlug: string },
+  input: PlanSpecCoverageInput,
   deps: PlanSpecCoverageDeps = {},
 ): Promise<PlanSpecCoverageAggregate> {
   const listClauses = deps.listClauses ?? listSpecClauses;
@@ -395,6 +406,13 @@ export async function computePlanSpecCoverage(
 
   const clauses = await listClauses({ harnessSlug: input.harnessSlug, planSlug: input.planSlug });
   const enforceable = clauses.filter((clause) => isEnforceableSpecLifecycle(clause.lifecycleStatus));
+  const review = input.pendingDeliveryReview;
+  const pendingDeliverySpecIds = review?.phase === 'pre-grading' && review.applicable && review.satisfied
+    ? enforceable.filter((clause) => review.pendingDeliverySpecClauses?.some((pin) =>
+      pin.planSlug === input.planSlug && pin.planSlug === clause.planSlug && pin.specId === clause.specId
+      && pin.specRevision === clause.revision && pin.specContentHash === clause.contentHash))
+      .map((clause) => clause.specId)
+    : [];
 
   // Genuinely single-plan: this is a census of ONE plan's own coverage, unlike the
   // work-item completion gate, whose contract spans namespaces.
@@ -517,6 +535,7 @@ export async function computePlanSpecCoverage(
 
   return {
     planSlug: input.planSlug,
+    ...(pendingDeliverySpecIds.length ? { pendingDeliverySpecIds } : {}),
     clauses: {
       total: clauses.length,
       enforceable: enforceable.length,
@@ -562,7 +581,7 @@ export async function computePlanSpecCoverage(
  * alongside it, and the degradation is reported rather than silent.
  */
 export async function evaluatePlanSpecCoverageGate(
-  input: { harnessSlug?: string; planSlug: string },
+  input: PlanSpecCoverageInput,
   deps: PlanSpecCoverageDeps = {},
 ): Promise<PlanSpecCoverageGateVerdict> {
   let aggregate: PlanSpecCoverageAggregate;
@@ -586,6 +605,10 @@ export async function evaluatePlanSpecCoverageGate(
   }
 
   const reports: string[] = [];
+  const pending = new Set(aggregate.pendingDeliverySpecIds ?? []);
+  const staleProofClauses = aggregate.coverage.staleProofClauses.filter((clause) => !pending.has(clause.specId));
+  const unprovenSpecIds = aggregate.coverage.unprovenSpecIds.filter((specId) => !pending.has(specId));
+  if (pending.size) reports.push(`pending-delivery-review:${[...pending].join(',')}`);
   if (aggregate.coverage.unproven > 0) {
     reports.push(`${aggregate.coverage.unproven}-enforceable-clause(s)-with-no-evidence`);
   }
@@ -660,14 +683,14 @@ export async function evaluatePlanSpecCoverageGate(
       ? ({ enforcing: false, reason: 'unreadable-plan-status' } as const)
       : enforcementEligibility({ status: planStatus, clauseCount: aggregate.clauses.total });
 
-  if (aggregate.coverage.staleProof > 0 && eligibility.enforcing) {
-    const listed = aggregate.coverage.staleProofClauses
+  if (staleProofClauses.length > 0 && eligibility.enforcing) {
+    const listed = staleProofClauses
       .slice(0, 5)
       .map((c) => `${c.specId} (proof at r${c.provenRevisions.join('/r')}, clause now r${c.currentRevision})`)
       .join('; ');
     const more =
-      aggregate.coverage.staleProofClauses.length > 5
-        ? ` (+${aggregate.coverage.staleProofClauses.length - 5} more)`
+      staleProofClauses.length > 5
+        ? ` (+${staleProofClauses.length - 5} more)`
         : '';
     return {
       satisfied: false,
@@ -676,10 +699,10 @@ export async function evaluatePlanSpecCoverageGate(
       planSlug: input.planSlug,
       aggregate,
       code: 'spec_proof_stale',
-      wouldBlock: [`${aggregate.coverage.staleProof}-clause(s)-proven-only-at-a-superseded-revision`],
+      wouldBlock: [`${staleProofClauses.length}-clause(s)-proven-only-at-a-superseded-revision`],
       reports,
       message:
-        `plan '${input.planSlug}' cannot be marked shipped: ${aggregate.coverage.staleProof} spec clause(s) were ` +
+        `plan '${input.planSlug}' cannot be marked shipped: ${staleProofClauses.length} spec clause(s) were ` +
         `REVISED after their evidence was recorded, so their only proof is against a promise that no longer ` +
         `applies — ${listed}${more}. Re-prove each at its current revision: run the covering test, then ` +
         `plans:set-spec-evidence { slug:'${input.planSlug}', specId:'<spec>', specRevision:<current>, ... }. ` +
@@ -698,11 +721,11 @@ export async function evaluatePlanSpecCoverageGate(
   //
   // It is ordered AFTER the stale-proof leg so the more specific diagnosis wins: a clause
   // whose evidence merely went stale gets told to re-prove it, not that it has none.
-  if (aggregate.coverage.unproven > 0 && eligibility.enforcing) {
-    const listed = aggregate.coverage.unprovenSpecIds.slice(0, 5).join(', ');
+  if (unprovenSpecIds.length > 0 && eligibility.enforcing) {
+    const listed = unprovenSpecIds.slice(0, 5).join(', ');
     const more =
-      aggregate.coverage.unprovenSpecIds.length > 5
-        ? ` (+${aggregate.coverage.unprovenSpecIds.length - 5} more)`
+      unprovenSpecIds.length > 5
+        ? ` (+${unprovenSpecIds.length - 5} more)`
         : '';
     return {
       satisfied: false,
@@ -711,10 +734,10 @@ export async function evaluatePlanSpecCoverageGate(
       planSlug: input.planSlug,
       aggregate,
       code: 'spec_clause_unproven',
-      wouldBlock: [`${aggregate.coverage.unproven}-enforceable-clause(s)-with-no-evidence`],
+      wouldBlock: [`${unprovenSpecIds.length}-enforceable-clause(s)-with-no-evidence`],
       reports,
       message:
-        `plan '${input.planSlug}' cannot be marked shipped: ${aggregate.coverage.unproven} enforceable spec ` +
+        `plan '${input.planSlug}' cannot be marked shipped: ${unprovenSpecIds.length} enforceable spec ` +
         `clause(s) have NO evidence bound at any revision — ${listed}${more}. A clause with no evidence is an ` +
         `unproven promise, not a passing one. Run the covering test for each, then bind it with ` +
         `plans:bind-spec-evidence { slug:'${input.planSlug}', specId:'<spec>', specRevision:<current>, ... }. ` +

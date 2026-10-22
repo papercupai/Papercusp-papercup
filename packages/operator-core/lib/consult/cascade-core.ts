@@ -490,7 +490,7 @@ async function stampAnsweringOwner(
   answeringOwnerId: string | null | undefined,
 ): Promise<void> {
   if (!answeringOwnerId) return;
-  await sql`
+  const stamped = await sql<{ answering_owner_id: string | null }[]>`
     UPDATE harness_shared.consult_state
        SET routing = jsonb_set(
              routing,
@@ -504,7 +504,11 @@ async function stampAnsweringOwner(
            )
      WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
        AND routing #>> ARRAY['selection', 'selected', ${String(cursor)}, 'ownerId'] IS NOT NULL
+    RETURNING routing #>> ARRAY['selection', 'selected', ${String(cursor)}, 'answeringOwnerId'] AS answering_owner_id
   `;
+  if (stamped[0]?.answering_owner_id !== answeringOwnerId) {
+    throw new Error('consult-cascade-answering-owner-stamp-not-persisted');
+  }
 }
 
 export async function advanceCascade(

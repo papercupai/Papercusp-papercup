@@ -89,6 +89,12 @@ vi.mock('./goals/plan-closure-observations', async (orig) => ({
 vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
 }));
+// The closed-item evidence reader owns its DB integration tests. This verdict
+// suite must not open its SQL connection when a fixture names a harness.
+vi.mock('./plan-verification-escape', async (orig) => ({
+  ...(await orig<typeof import('./plan-verification-escape')>()),
+  readNonCodeDeliverableShipEvidence: vi.fn(async () => []),
+}));
 // P-008's independent-verification door issues its own SQL against the real schema;
 // this suite's getOrgPg mock answers the gate's queries only. The door has its own
 // integration suite (plan-acceptance-gate-independent-evidence.integration.test.ts).
@@ -711,18 +717,33 @@ describe('evaluatePlanAcceptanceGate', () => {
     });
 
     it('threads explicit pending delivery only to pre-grading and retains the strict ship refusal', async () => {
+      mockFlag.mockImplementation(async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE
+        || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE);
       mockRubric.mockResolvedValue(acceptanceRubric());
       mockScorecards.mockResolvedValue([]);
-      mockBarLifecycle.mockImplementation(async (_slug, phase, options) => verdict(phase,
+      const pendingDeliverySpecClauses = [{ planSlug: 'some-plan-2026-08-11', specId: 'MANUAL-DELIVERY',
+        specRevision: 3, specContentHash: 'manual-delivery-3' }];
+      mockBarLifecycle.mockImplementation(async (_slug, phase, options) => ({ ...verdict(phase,
         phase === 'ship' ? ['bar_snapshot_grading_missing', 'bar_snapshot_evidence_plane_unmet']
-          : options?.pendingDeliveryBarKeys?.includes('R-15') ? [] : ['bar_snapshot_evidence_plane_unmet']));
-      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { pendingDeliveryBarKeys: ['R-15'] }))
+          : options?.pendingDeliveryBarKeys?.includes('R-15') ? [] : ['bar_snapshot_evidence_plane_unmet']),
+        ...(phase === 'pre-grading' && options?.pendingDeliveryBarKeys?.includes('R-15')
+          ? { pendingDeliverySpecClauses } : {}),
+      }));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', {
+        pendingDeliveryBarKeys: ['R-15'], gradingRecruitment: true,
+      }))
         .toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
       expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', {
         expectedApplicable: true, pendingDeliveryBarKeys: ['R-15'],
       });
       const shipOptions = mockBarLifecycle.mock.calls.find((call) => call[1] === 'ship')?.[2];
       expect(shipOptions).not.toHaveProperty('pendingDeliveryBarKeys');
+      expect(mockSpecCoverage).toHaveBeenLastCalledWith(expect.objectContaining({
+        pendingDeliveryReview: expect.objectContaining({ phase: 'pre-grading', satisfied: true,
+          pendingDeliverySpecClauses }),
+      }));
+      await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { pendingDeliveryBarKeys: ['R-15'] });
+      expect(mockSpecCoverage.mock.lastCall?.[0]).not.toHaveProperty('pendingDeliveryReview');
       // Once grading is present, the same missing public proof still blocks shipment.
       mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, ['bar_snapshot_evidence_plane_unmet']));
       expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { pendingDeliveryBarKeys: ['R-15'] }))

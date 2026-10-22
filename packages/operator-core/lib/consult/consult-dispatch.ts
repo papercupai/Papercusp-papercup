@@ -328,6 +328,7 @@ export type DispatchSkipReason =
   | 'launch-exited'
   | 'first-turn-rejected'
   | 'first-turn-provider-error'
+  | 'answering-owner-stamp-failed'
   | 'consult-closed';
 
 export interface ConsultDispatchAttempt {
@@ -1713,17 +1714,18 @@ async function launchAnsweringSession(
   const codexHome = target.agent === 'codex' && operation !== 'brief'
     ? codexHomeForSessionKey(target.advSessionId) : null;
   // A fork can run its first turn before spawnHeadless returns: it starts the
-  // child, then waits for boot/kickoff receipts. Publish the new identity before
-  // crossing that boundary so consult:reply already recognizes the child.
-  // Keep the post-receipt write below as a retry if this best-effort stamp fails.
-  let answeringOwnerStamped = false;
+  // child, then waits for boot/kickoff receipts. Persist the participant before
+  // crossing that boundary. If the reservation fails, do not launch a child
+  // whose consult:reply would be refused as not_a_participant.
   if (!(await d.isConsultOpen(ctx.workspaceId, opts.conversationId))) return consultClosed();
   if (opts.onAnsweringOwner) {
     try {
       await opts.onAnsweringOwner(answeringOwnerId);
-      answeringOwnerStamped = true;
     } catch {
-      /* retry after the kickoff receipt */
+      return failed(
+        'answering-owner-stamp-failed',
+        'could not persist the answering identity before spawn; no session was launched',
+      );
     }
   }
   // The answer-owner stamp is async too. Close can win while it is writing, so
@@ -1833,15 +1835,6 @@ async function launchAnsweringSession(
   }
   // The first-turn wait below is bounded from this instant (WI-10004645).
   const kickoffSeenAtMs = d.nowMs();
-
-  // Retry a failed pre-spawn stamp before the bounded verification wait.
-  if (!answeringOwnerStamped) {
-    try {
-      await opts.onAnsweringOwner?.(answeringOwnerId);
-    } catch {
-      /* the caller's post-dispatch stamp is the backstop */
-    }
-  }
 
   // Race host registration against a durable child-death observation, so the
   // result cannot report a booting session for a process that already died.

@@ -2104,12 +2104,71 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     expect(spawnImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('falls back once to setsid when named-scope admission fails after the harmless preflight', async () => {
+    const makeChild = (pid: number) => Object.assign(new EventEmitter(), {
+      pid, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const scopeChild = makeChild(4351);
+    const payloadChild = makeChild(4352);
+    const env = {
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus',
+      PAPERCUSP_TEST_SECRET: 'scope-diagnostic-must-not-leak',
+    };
+    const probeScopeSupportImpl = vi.fn(async () => ({ ok: true }));
+    const spawnImpl = vi.fn().mockReturnValueOnce(scopeChild).mockReturnValueOnce(payloadChild);
+    const progress: string[] = [];
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      env, systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+      probeScopeSupportImpl, spawnImpl, stopScopeImpl: () => ({ tasks: 0 }),
+      onProgress: (line: string) => progress.push(line),
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, env, { inherited: true }),
+    });
+
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
+    scopeChild.stderr.write('Failed to start transient scope unit: Transport endpoint is not connected\n');
+    scopeChild.emit('close', 1, null);
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(2));
+    payloadChild.stdout.write('Tests  1 passed (1)\n');
+    payloadChild.emit('close', 0, null);
+
+    const result = await pending;
+    expect(result).toMatchObject({
+      status: 0,
+      timedOut: false,
+      error: null,
+      scopeFallback: {
+        from: 'systemd-run',
+        to: 'setsid',
+        reason: 'scope-admission-failed-before-payload',
+        failureCode: 'TEST_SCOPE_LAUNCH_FAILED',
+        probePassed: true,
+        failedScope: {
+          launcher: '/usr/bin/systemd-run',
+          probePassed: true,
+          scopeUnit: expect.any(String),
+        },
+      },
+    });
+    expect(probeScopeSupportImpl).toHaveBeenCalledTimes(1);
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
+    const firstArgs = (spawnImpl.mock.calls[0] as unknown[])[1] as string[];
+    expect(firstArgs.some(arg => arg.startsWith('--unit=papercusp-test-'))).toBe(true);
+    expect(spawnImpl).toHaveBeenNthCalledWith(
+      2,
+      '/usr/bin/setsid',
+      ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+      expect.objectContaining({ env: expect.objectContaining({ ...env, PAPERCUSP_TEST_STARTUP_TRACE: '1' }) }),
+    );
+    const fallbackProgress = progress.find(line => line.includes('TEST_FILE_SCOPE_FALLBACK'));
+    expect(fallbackProgress).toContain('Transport endpoint is not connected');
+    expect(fallbackProgress).not.toContain(env.PAPERCUSP_TEST_SECRET);
+  });
+
   it.each([
-    ['unadmitted scope', '', '', true, true],
-    ['assertion verdict', 'Tests  1 failed (1)\n', '', true, false],
-    ['admitted scope payload', '', 'Running scope as unit: papercusp-test-fixture.scope\n', true, false],
-    ['process-group payload', '', '', false, false],
-  ])('qualifies post-preflight scope output for %s without replaying the payload (EI-25878128777441671)', async (_label, stdout, prefix, supported, launchFailed) => {
+    ['assertion verdict', 'Tests  1 failed (1)\n', '', true],
+    ['admitted scope payload', '', 'Running scope as unit: papercusp-test-fixture.scope\n', true],
+    ['process-group payload', '', '', false],
+  ])('does not retry ambiguous or post-handoff output for %s', async (_label, stdout, prefix, supported) => {
     const child = Object.assign(new EventEmitter(), {
       pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
     });
@@ -2130,32 +2189,9 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     child.emit('close', 1, null);
     const result = await pending;
     expect(result).toMatchObject({
-      status: 1, timedOut: false,
-      error: launchFailed ? expect.objectContaining({ code: 'TEST_SCOPE_LAUNCH_FAILED' }) : null,
+      status: 1, timedOut: false, error: null,
       stderr: expect.stringContaining('Transport endpoint is not connected'),
     });
-    if (launchFailed) {
-      const error = result.error as Error & { scopeLaunchEvidence?: Record<string, unknown> };
-      const evidence = error.scopeLaunchEvidence;
-      const spawnArgs = (spawnImpl.mock.calls[0] as unknown[])[1] as string[];
-      expect(evidence).toMatchObject({
-        launcher: '/usr/bin/systemd-run',
-        scopeUnit: spawnArgs[3]?.slice('--unit='.length),
-        probePassed: true,
-        systemdArgs: spawnArgs.slice(0, 6),
-        payloadArgumentCount: 3,
-        busEnvironment: {
-          xdgRuntimeDirSet: false,
-          runtimeSystemdPrivateSocketExists: false,
-          runtimeBusSocketExists: false,
-          dbusSessionAddressSet: true,
-          dbusAddressTransport: 'unix',
-          dbusSessionUnixSocketExists: expect.any(Boolean),
-        },
-      });
-      expect(error.message).toContain(`scopeEvidence=${JSON.stringify(evidence)}`);
-      expect(error.message).not.toContain(env.PAPERCUSP_TEST_SECRET);
-    }
     expect(spawnImpl).toHaveBeenCalledTimes(1);
   });
 

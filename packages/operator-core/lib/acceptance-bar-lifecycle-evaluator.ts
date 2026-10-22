@@ -73,6 +73,10 @@ export interface AcceptanceBarLifecycleVerdict {
   contractGapsBlocking?: boolean;
   /** Named manual delivery BARs reviewed as unknown; never a ship waiver. */
   pendingDeliveryBarKeys?: string[];
+  /** Exact mapped meanings validated by that successful pre-grading selection. */
+  pendingDeliverySpecClauses?: Array<{
+    planSlug: string; specId: string; specRevision: number; specContentHash: string;
+  }>;
 }
 
 export interface AcceptanceBarLifecycleOptions {
@@ -568,6 +572,12 @@ export function evaluateAcceptanceBarLifecycle(
         : attributedMessage(snapshot, phaseLabel, blockingBars, contractCodes, nextRepair),
     ...(contractGaps !== undefined ? { contractGaps, contractGapsBlocking } : {}),
     ...(pending.size > 0 ? { pendingDeliveryBarKeys: [...pending] } : {}),
+    ...(pending.size > 0 && codes.length === 0 ? {
+      pendingDeliverySpecClauses: snapshot.bars.filter((bar) => pending.has(bar.barKey))
+        .flatMap((bar) => bar.mappings.map((mapping) => ({ planSlug: snapshot.planSlug,
+          specId: mapping.specId, specRevision: mapping.specRevision,
+          specContentHash: mapping.specContentHash }))),
+    } : {}),
   };
 }
 

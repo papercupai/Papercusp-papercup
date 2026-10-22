@@ -12517,6 +12517,31 @@ async function applyFrozenRepairBoundedLife(
 }
 
 /**
+ * Assess a captured carry without consuming it. Preflight can use the selected candidate
+ * for dependency preparation; the caller retains the pending identity for a later CAS.
+ * Authority reads and writes deliberately stay outside this helper.
+ */
+export async function planCheckpointCarryAtCut(
+  input: {
+    pending: FrozenRepairPendingCarry;
+    candidate: string;
+    stagingTip: string;
+  },
+  blobAt: NonNullable<CheckpointDeps["frozenRepairBlobAt"]>,
+  now: () => number = Date.now,
+): Promise<{ candidate: string; record: FrozenRepairCarryRecord }> {
+  const { pending, candidate, stagingTip } = input;
+  const initial = await assessFrozenRepairCarryAtCut({ pending, candidate, stagingTip, blobAt });
+  const judged = initial.advanceToTip
+    ? await assessFrozenRepairCarryAtCut({ pending, candidate: stagingTip, stagingTip, blobAt })
+    : initial;
+  return {
+    candidate: judged.candidate,
+    record: buildFrozenRepairCarryRecord({ pending, initial, judged, nowMs: now() }),
+  };
+}
+
+/**
  * P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): at a FRESH cut (no live queue, no pinned
  * candidate), carry the fixes of the last retired frozen queue into the candidate. Every admitted
  * path is checked by content against the candidate (see frozen-repair-carry.ts); if any is
@@ -12557,11 +12582,11 @@ async function applyFrozenRepairCarryAtCut(
     const blobAt =
       deps.frozenRepairBlobAt ??
       ((sha: string, path: string) => gitBlobAt(cfg.integrationRoot, sha, path));
-    const initial = await assessFrozenRepairCarryAtCut({ pending, candidate, stagingTip, blobAt });
-    const judged = initial.advanceToTip
-      ? await assessFrozenRepairCarryAtCut({ pending, candidate: stagingTip, stagingTip, blobAt })
-      : initial;
-    const record = buildFrozenRepairCarryRecord({ pending, initial, judged, nowMs: Date.now() });
+    const proposal = await planCheckpointCarryAtCut(
+      { pending, candidate, stagingTip },
+      blobAt,
+    );
+    const { record } = proposal;
     deps.log(frozenRepairCarrySummary(record));
     let consumed = false;
     try {
@@ -12575,7 +12600,7 @@ async function applyFrozenRepairCarryAtCut(
           `the next fresh cut assesses the newer carry`,
       );
     }
-    return judged.candidate;
+    return proposal.candidate;
   } catch (e) {
     deps.log(`warn: P-010 carry assessment failed; judging ${candidate.slice(0, 8)} and keeping the carry: ${errorText(e)}`);
     return candidate;

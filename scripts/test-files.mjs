@@ -3067,12 +3067,11 @@ export function runCapturedTestProcess(command, args, options = {}) {
       emitProgress('finished', status, signal, true);
       const capturedStdout = Buffer.concat(stdout).toString('utf8');
       const capturedStderr = Buffer.concat(stderr).toString('utf8');
-      // EI-25878128777441671: the harmless preflight may succeed while this
-      // subsequent scope admission fails. Keep an exact, diagnostic-only
-      // systemd rejection on the existing launch-error path, rather than
-      // releasing its demand receipt or recording a failed test. Payload output
-      // (including the admitted-scope notice) makes this shape ambiguous and
-      // must retain its own verdict. Never replay the payload on this evidence.
+      // EI-25878128777441671: the harmless preflight and this named-scope
+      // admission are separate manager requests. Classify only an exact
+      // systemd rejection with no stdout as a pre-payload launch failure;
+      // runChild may then make one setsid fallback. Payload output (including
+      // the admitted-scope notice) keeps its own test verdict and is never replayed.
       const scopeAdmissionFailed = launcher === 'systemd-run' && status !== 0 && status != null && !signal &&
         !timedOut && capturedStdout.trim() === '' &&
         /^(?:Failed to start transient scope unit:|Failed to connect to bus:)[^\r\n]+$/i.test(capturedStderr.trim());
@@ -3131,9 +3130,30 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // Bus metadata is only a hint: a stale transport can still reject scope
     // creation. Probe true under the same env before launching any test payload,
     // so an actual assertion failure is never retried as a launcher failure.
-    return Promise.resolve(probeScopeSupportImpl({ env: childEnv, systemdRunPath })).then(support => {
+    return Promise.resolve(probeScopeSupportImpl({ env: childEnv, systemdRunPath })).then(async support => {
       onProgress(`TEST_FILE_SCOPE_PREFLIGHT ${JSON.stringify(support)}`);
-      return runPayload(admissionContext, governedEnv, context, support);
+      const result = await runPayload(admissionContext, governedEnv, context, support);
+      if (result?.error?.code !== 'TEST_SCOPE_LAUNCH_FAILED' || !setsidPath) return result;
+
+      // The exact launch-error classifier above proves systemd rejected the
+      // scope before handing off to Vitest. Reuse the router's existing local
+      // process-group watchdog once; never retry a test payload or an ambiguous
+      // post-handoff failure.
+      const scopeFallback = {
+        from: 'systemd-run',
+        to: 'setsid',
+        reason: 'scope-admission-failed-before-payload',
+        failureCode: result.error.code,
+        failure: result.stderr.trim(),
+        probePassed: support?.ok === true,
+        failedScope: result.error.scopeLaunchEvidence ?? null,
+      };
+      onProgress(`TEST_FILE_SCOPE_FALLBACK ${JSON.stringify(scopeFallback)}`);
+      const fallbackResult = await runPayload(admissionContext, governedEnv, context, {
+        ok: false,
+        reason: scopeFallback.reason,
+      });
+      return { ...fallbackResult, scopeFallback };
     });
   };
   // A repeated invocation of the same file is a NEW resident process and must

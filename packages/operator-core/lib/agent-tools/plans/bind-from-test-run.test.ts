@@ -1543,6 +1543,19 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     expect(refused.ok ? '' : refused.message).toContain('submodule index unavailable');
   });
 
+  it('does not treat partial missing-object stderr from a killed probe as verified absence', async () => {
+    const deps = binder(cleanRow());
+    deps.git = async (cwd, args) => {
+      if (args[0] === 'ls-tree' && args.at(-1) === 'pkg/lib/x.test.ts') {
+        throw Object.assign(new Error('git probe killed\nfatal: not a tree object'), { status: null, signal: 'SIGTERM' });
+      }
+      return localGitRunner(cwd, args);
+    };
+    const refused = await expandTestRunBinding(input(), SCOPE, deps);
+    expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_probe_failed' });
+    expect(refused.ok ? '' : refused.message).toContain('git probe killed');
+  });
+
   it('preserves malformed test-path output instead of claiming file absence', async () => {
     const deps = binder(cleanRow());
     deps.git = async (cwd, args) => args[0] === 'ls-tree' && args.at(-1) === 'pkg/lib/x.test.ts'

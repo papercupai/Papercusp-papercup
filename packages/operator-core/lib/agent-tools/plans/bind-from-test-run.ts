@@ -540,6 +540,14 @@ const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 const MAX_SUBMODULE_PREFIX_SEGMENTS = 8;
 const MAX_GITLINK_DEPTH = 4;
 
+/** Mapping uncertainty must not become a definite "file absent" verdict. */
+class AsCommittedProbeError extends Error {
+  constructor(repo: string, commit: string, path: string, cause: unknown) {
+    const detail = (cause instanceof Error ? cause.message : String(cause)).split('\n')[0]!.slice(0, 500);
+    super(`repository=${JSON.stringify(repo)} commit=${commit} path=${JSON.stringify(path)}: ${detail}`, { cause });
+  }
+}
+
 async function trackedSubmodulePaths(
   root: string,
   paths: readonly string[],
@@ -558,8 +566,8 @@ async function trackedSubmodulePaths(
       if (candidates.has(path) && /^160000 [0-9a-f]{40} 0$/.test(entry.slice(0, tab))) tracked.add(path);
     }
     return tracked;
-  } catch {
-    return new Set();
+  } catch (error) {
+    throw new AsCommittedProbeError(root, 'index', paths.join(','), error);
   }
 }
 
@@ -596,15 +604,18 @@ export async function asCommittedTestPath(
   for (let k = 1; k <= Math.min(segments.length, MAX_SUBMODULE_PREFIX_SEGMENTS); k += 1) {
     prefixes.push(segments.slice(-k).join('/'));
   }
-  const submodules = await trackedSubmodulePaths(root, prefixes.slice(1), git);
+  let submodules: Set<string> | undefined;
   for (const repoPrefix of prefixes) {
-    if (repoPrefix && !submodules.has(repoPrefix)) continue;
+    if (repoPrefix) {
+      submodules ??= await trackedSubmodulePaths(root, prefixes.slice(1), git);
+      if (!submodules.has(repoPrefix)) continue;
+    }
     // Cargo runs from the crate checkout but the reporter can pin the enclosing
     // superproject commit. Resolve that commit's gitlink before trying a commit
     // belonging to the submodule itself; both retain the recorded path and SHA.
     if (repoPrefix) {
       const testPath = `${repoPrefix}/${inClone}`;
-      if (await blobAtCommit(root, commitSha, testPath, git)) {
+      if (await mappingBlobAtCommit(root, commitSha, testPath, git)) {
         return { testPath, repoPrefix: '', commitSha };
       }
     }
@@ -617,10 +628,11 @@ export async function asCommittedTestPath(
       // WI-10006842: descend gitlinks exactly like verifyAsCommittedContent does. A superproject
       // clone run of a SUBMODULE file (papercusp-desktop/test/...) names a path below a 160000
       // entry, which a bare `cat-file -e <commit>:<path>` reports absent.
-      if (!(await blobAtCommit(repo, commitSha, inClone, git))) continue;
+      if (!(await mappingBlobAtCommit(repo, commitSha, inClone, git))) continue;
       return { testPath: repoPrefix ? `${repoPrefix}/${inClone}` : inClone, repoPrefix, commitSha };
-    } catch {
-      // Not a repository here, or X / the file is not in it: try the next candidate.
+    } catch (error) {
+      if (error instanceof AsCommittedProbeError) throw error;
+      throw new AsCommittedProbeError(repo, commitSha, inClone, error);
     }
   }
   return null;
@@ -641,12 +653,7 @@ export async function canonicalAsCommittedPrefix(
   commitSha: string,
   git: GitRunner = defaultGitRunner,
 ): Promise<string> {
-  try {
-    await git(resolve(root), ['cat-file', '-e', `${commitSha}^{commit}`]);
-    return '';
-  } catch {
-    // Not a superproject commit: look for the submodule checkout that holds it.
-  }
+  if (await mappingBlobAtCommit(resolve(root), commitSha, canonicalTestPath, git)) return '';
   const dirs = canonicalTestPath.split('/').slice(0, -1);
   git = withRepoIdentityMemo(git);
   for (let k = dirs.length; k >= 1; k -= 1) {
@@ -655,13 +662,33 @@ export async function canonicalAsCommittedPrefix(
     try {
       const top = (await git(repo, ['rev-parse', '--show-toplevel'])).trim();
       if (!(await sameDirectory(top, repo))) continue;
-      await git(repo, ['cat-file', '-e', `${commitSha}:${canonicalTestPath.slice(repoPrefix.length + 1)}`]);
-      return repoPrefix;
-    } catch {
-      // Not a repository root here, or the commit / file is not in it.
+      if (await mappingBlobAtCommit(repo, commitSha, canonicalTestPath.slice(repoPrefix.length + 1), git)) return repoPrefix;
+    } catch (error) {
+      if (error instanceof AsCommittedProbeError) throw error;
+      // Plain path ancestors are not candidate repository roots.
+      if (await stat(resolve(repo, '.git')).then(() => true, () => false)) {
+        throw new AsCommittedProbeError(repo, commitSha, canonicalTestPath, error);
+      }
     }
   }
   return '';
+}
+
+/** A known-absent commit may belong to another candidate repository. Other failures are unknown. */
+async function mappingBlobAtCommit(repo: string, commit: string, rel: string, git: GitRunner) {
+  try {
+    return await blobAtCommit(repo, commit, rel, git, 0, true);
+  } catch (error) {
+    const cause = error instanceof Error && error.cause !== undefined ? error.cause : error;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const exitedMissing = cause instanceof Error && (
+      ('status' in cause && cause.status === 128 && (!('signal' in cause) || cause.signal == null))
+      || message.startsWith('Command failed (exit 128): git ')
+    );
+    if (exitedMissing && message.split('\n').some(line => line.trim() === 'fatal: not a tree object'
+      || line.trim() === `fatal: not a tree object: ${commit}`)) return null;
+    throw new AsCommittedProbeError(repo, commit, rel, error);
+  }
 }
 
 /** Resolve `rel` at `commit` in `repo`, descending through any submodule gitlink the commit pins. */
@@ -673,8 +700,9 @@ async function blobAtCommit(
   depth = 0,
   requireSuccessfulProbe = false,
 ): Promise<{ blob: string; repo: string; rel: string } | null> {
-  const probeError = (path: string, detail: string): Error => new Error(
+  const probeError = (path: string, detail: string, cause?: unknown): Error => new Error(
     `git ls-tree repository=${JSON.stringify(repo.slice(0, 180))} commit=${commit} path=${JSON.stringify(path.slice(0, 160))}: ${detail}`,
+    { cause },
   );
   const errorDetail = (error: unknown): string =>
     (error instanceof Error ? error.message : String(error)).split('\n')[0]!.slice(0, 200);
@@ -684,7 +712,7 @@ async function blobAtCommit(
     // empty result. A failed probe therefore cannot masquerade as file absence.
     directEntry = (await git(repo, ['ls-tree', commit, '--', rel])).trim();
   } catch (error) {
-    if (requireSuccessfulProbe) throw probeError(rel, errorDetail(error));
+    if (requireSuccessfulProbe) throw probeError(rel, errorDetail(error), error);
     return null;
   }
   const directBlob = /^[0-7]{6} blob ([0-9a-f]{40})\t/.exec(directEntry);
@@ -703,7 +731,7 @@ async function blobAtCommit(
     try {
       entry = (await git(repo, ['ls-tree', commit, '--', dir])).trim();
     } catch (error) {
-      if (requireSuccessfulProbe) throw probeError(dir, errorDetail(error));
+      if (requireSuccessfulProbe) throw probeError(dir, errorDetail(error), error);
       return null;
     }
     const gitlink = /^160000 commit ([0-9a-f]{40})\t/.exec(entry);
@@ -1518,6 +1546,22 @@ export async function expandTestRunBinding(
   scope: TestRunBindingScope,
   deps: TestRunBindingDeps = defaultTestRunBindingDeps,
 ): Promise<TestRunExpansion> {
+  try {
+    return await expandTestRunBindingInScope(input, scope, deps);
+  } catch (error) {
+    if (!(error instanceof AsCommittedProbeError)) throw error;
+    return {
+      ok: false, error: 'test_run_as_committed_probe_failed', testRunId: input.fromTestRun,
+      message: `test-run ${input.fromTestRun} committed test path could not be verified: ${error.message}. No binding was created.`,
+    };
+  }
+}
+
+async function expandTestRunBindingInScope(
+  input: TestRunBindingInput,
+  scope: TestRunBindingScope,
+  deps: TestRunBindingDeps,
+): Promise<TestRunExpansion> {
   const testRunId = input.fromTestRun;
   let row = await deps.loadRun(scope, testRunId);
   if (!row) {
@@ -1683,7 +1727,8 @@ export async function expandTestRunBinding(
         const mapped = await asCommittedTestPath(root, row, git);
         if (mapped?.testPath === testPath) asCommitted = mapped;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof AsCommittedProbeError) throw error;
       // Unverified identity retains the existing mutable-checkout safeguards.
     }
   }

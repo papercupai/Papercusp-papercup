@@ -127,6 +127,46 @@ function deps(over: Partial<PlanSpecCoverageDeps> = {}): PlanSpecCoverageDeps {
 }
 
 describe('evaluatePlanSpecCoverageGate — proof freshness', () => {
+  it('keeps delivery gaps visible while reviewing exact validated manual clause pins', async () => {
+    const delivery = clause({ specId: 'DELIVERY', revision: 2, currentRevision: 2, contentHash: 'delivery-2' });
+    const pendingDeliveryReview = { phase: 'pre-grading' as const, applicable: true, satisfied: true,
+      pendingDeliverySpecClauses: [{ planSlug: PLAN, specId: 'DELIVERY', specRevision: 2,
+        specContentHash: 'delivery-2' }] };
+    const inputs = deps({ listClauses: vi.fn(async () => [delivery]) });
+    const input = { harnessSlug: 'papercusp', planSlug: PLAN, pendingDeliveryReview };
+    const review = await evaluatePlanSpecCoverageGate(input, inputs);
+    expect(review).toMatchObject({ satisfied: true, aggregate: {
+      coverage: { proven: 0, unproven: 1 }, pendingDeliverySpecIds: ['DELIVERY'],
+    } });
+    expect(review.reports).toContain('pending-delivery-review:DELIVERY');
+    expect(await evaluatePlanSpecCoverageGate({ planSlug: PLAN }, inputs))
+      .toMatchObject({ satisfied: false, code: 'spec_clause_unproven' });
+    inputs.listEvidence = vi.fn(async () => [evidence('DELIVERY', 1)]);
+    expect(await evaluatePlanSpecCoverageGate(input, inputs)).toMatchObject({ satisfied: true,
+      aggregate: { coverage: { staleProof: 1, proven: 0 } } });
+    expect(await evaluatePlanSpecCoverageGate({ planSlug: PLAN }, inputs))
+      .toMatchObject({ satisfied: false, code: 'spec_proof_stale' });
+    inputs.listClauses = vi.fn(async () => [delivery, clause({ specId: 'CODE' })]);
+    expect(await evaluatePlanSpecCoverageGate(input, inputs)).toMatchObject({ satisfied: false,
+      code: 'spec_clause_unproven', aggregate: { coverage: { unprovenSpecIds: ['CODE'] } } });
+  });
+
+  it.each(['revision', 'fingerprint', 'plan', 'phase', 'blocked'])(
+    'does not defer a delivery clause with a mismatched %s', async (mismatch) => {
+      const pin = { planSlug: PLAN, specId: 'DELIVERY', specRevision: 1, specContentHash: 'hash-1' };
+      const pendingDeliveryReview = { phase: 'pre-grading' as 'pre-grading' | 'ship',
+        applicable: true, satisfied: true, pendingDeliverySpecClauses: [pin] };
+      if (mismatch === 'revision') pin.specRevision = 2;
+      if (mismatch === 'fingerprint') pin.specContentHash = 'another-meaning';
+      if (mismatch === 'plan') pin.planSlug = 'another-plan';
+      if (mismatch === 'phase') pendingDeliveryReview.phase = 'ship';
+      if (mismatch === 'blocked') pendingDeliveryReview.satisfied = false;
+      expect(await evaluatePlanSpecCoverageGate({ planSlug: PLAN, pendingDeliveryReview },
+        deps({ listClauses: vi.fn(async () => [clause({ specId: 'DELIVERY' })]) })))
+        .toMatchObject({ satisfied: false, code: 'spec_clause_unproven' });
+    },
+  );
+
   it('a spec revision recorded AFTER green evidence blocks shipping, and current proof unblocks it', async () => {
     // The clause was proven at r1, then revised to r2: the existing green evidence is
     // proof of a promise that no longer applies.

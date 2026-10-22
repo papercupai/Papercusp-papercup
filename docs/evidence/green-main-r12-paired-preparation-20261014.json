@@ -2634,7 +2634,7 @@
     },
     "nativeWritableStreamPreparation": {
       "workItem": "WI-6554700010013569",
-      "status": "current-committed-five-pin-native-guard-passed",
+      "status": "selected-current-source-guards-passed-historical-full-guard-retained",
       "reused": ["existing OUT-gated vitest-startup-trace preload", "existing immutable native process events", "existing affected native execution receipt transport"],
       "behavior": "Retain bounded binary inputs accepted by each observed process stdout/stderr Writable API, with immutable SHA256 sidecars and process identity. Delegate original write receiver, arguments, callbacks, return and thrown error unchanged; retain synchronous exit-listener writes after the original exit emission. Parent verifies stream pins, bounds and hashes and retains explicit unavailable, truncated or missing-terminal gaps.",
       "sourcePinsAtPreparation": [
@@ -2678,7 +2678,182 @@
         "provenance":"Named five pins match committed source. Both test children report zero substitutions and skips. Router substituted two unrelated modules; imported-source radius is unmeasured. Ledger harness is null because PAPERCUSP_TEST_RUN_HARNESS was omitted; exact row IDs and file paths identify this local run. No full-runtime or operational acceptance is inferred.",
         "rootCauseVerification":"The previous 60s guard timeout originated in generic Vitest deep equality over an equal 16MiB Buffer. The exact piped child completed1167ms and Buffer.equals1ms, while the installed generic comparator exceeded20s. Replacing only that assertion with full-byte Buffer.equals keeps all bounds/timeouts and now passes in the maintained two-suite native run."
       },
-      "next":"Publish the verified current guard and five source pins through the existing Writable readiness generation, then continue original per-step receipt and runtime-closure preparation. Do not repeat unchanged original operational chains.",
+      "currentSourceRevalidation20261022": {
+        "parentWorkItem": "WI-6554700010010682",
+        "historicalChildWorkItem": "WI-6554700010013569",
+        "status": "selected-current-source-stream-and-receipt-guards-passed",
+        "reason": "All five current source/test pins differ from the historical 2026-10-15 full guard. The closed historical child was read, not reclaimed or reclosed.",
+        "coverage": "Nine selected maintained assertions in two separate exact-file invocations; 314 explicit unselected cases. The historical 284-pass result is not a current full-suite verdict.",
+        "sourcePins": [
+          {
+            "path": "scripts/lib/vitest-startup-trace.mjs",
+            "sha256": "4912efb5c5483329bfac50b9f63de3112d0a28c50f8c7f4347945ffa8b1b93ac",
+            "bytes": 15510,
+            "headBlobSha256": "4912efb5c5483329bfac50b9f63de3112d0a28c50f8c7f4347945ffa8b1b93ac",
+            "matchesCommitted": true,
+            "matchesBefore": true
+          },
+          {
+            "path": "scripts/lib/budgeted-task-scheduler.mjs",
+            "sha256": "65d6f63a2aba55475c498c35920b8d48ea653ad4098e41cf27b3f72d900489e7",
+            "bytes": 155130,
+            "headBlobSha256": "65d6f63a2aba55475c498c35920b8d48ea653ad4098e41cf27b3f72d900489e7",
+            "matchesCommitted": true,
+            "matchesBefore": true
+          },
+          {
+            "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+            "sha256": "42154a89c0826f5c043e4f8c5e6cc3366062929d99cce15b42938361c9be6a23",
+            "bytes": 28916,
+            "headBlobSha256": "42154a89c0826f5c043e4f8c5e6cc3366062929d99cce15b42938361c9be6a23",
+            "matchesCommitted": true,
+            "matchesBefore": true
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts",
+            "sha256": "b74f788f0c8f5368332bed09f75db5780c3e0ebf1100774de3f72bc00098152b",
+            "bytes": 28927,
+            "headBlobSha256": "b74f788f0c8f5368332bed09f75db5780c3e0ebf1100774de3f72bc00098152b",
+            "matchesCommitted": true,
+            "matchesBefore": true
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+            "sha256": "7fab2aa8139fbd0c15efb9c99e4b9854117d89074ee5d9ff3458fcc3d8df61b4",
+            "bytes": 199487,
+            "headBlobSha256": "7fab2aa8139fbd0c15efb9c99e4b9854117d89074ee5d9ff3458fcc3d8df61b4",
+            "matchesCommitted": true,
+            "matchesBefore": true
+          }
+        ],
+        "sourceSnapshots": {
+          "before": {
+            "ref": "~/.papercusp/scratch/c0523-native-stream-revalidation-20261022-before.json",
+            "sha256": "41bf28bbc941f09aa21bf02dfa02a412676b23ea6bed9e4d20fd7fe3ac6cb8f1",
+            "byteLength": 1679
+          },
+          "after": {
+            "ref": "~/.papercusp/scratch/c0523-native-stream-revalidation-20261022-after.json",
+            "sha256": "740a211a75acf2142f558340a8fb49b624b036531d49cac82eb46d177415bfc3",
+            "byteLength": 1824
+          },
+          "headBefore": "c19580e1c1214307a4f88be71ba4f3559e3f0039",
+          "headAfter": "b4d550e595d6c8689a5c96aff6b034d58454e7ab"
+        },
+        "runs": [
+          {
+            "runId": "be12e017-5036-401e-9cd9-f42858134070",
+            "ledgerRowId": 21759920,
+            "sourceHead": "b4d550e595d6c8689a5c96aff6b034d58454e7ab",
+            "passed": 4,
+            "failed": 0,
+            "unselected": 16,
+            "requestedFiles": 1,
+            "executedFiles": 1,
+            "matchedFiles": 1,
+            "childSubstituted": 0,
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "cleanupComplete": true,
+            "artifacts": [
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-h9dhjX/manifest.json",
+                "sha256": "352d0dfb46825df4b83717dad96732aab540d4cd8a33a4f5d272781c9785c93f",
+                "byteLength": 1898
+              },
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-h9dhjX/source.json",
+                "sha256": "75e8b7d501694d8063538bc542764df91a92c65a7733a48b3298dcdafb5d4c94",
+                "byteLength": 1527
+              },
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-h9dhjX/reports/report.json",
+                "sha256": "ebffb17f3f0c6152384f120ee5f06c7fed3d7a81e83b7f5e6ab7ef44edb79b78",
+                "byteLength": 7261
+              },
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-h9dhjX/router-be12e017-5036-401e-9cd9-f42858134070-903175e4-b993-453b-a7f9-22799c2b4e31.stdout.log",
+                "sha256": "a15e5c274ac78acc067cce0d2a7634302dd6c6db7bd3bd4ca208a78974e7746e",
+                "byteLength": 6578
+              },
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-h9dhjX/router-be12e017-5036-401e-9cd9-f42858134070-903175e4-b993-453b-a7f9-22799c2b4e31.stdout.log.stderr.log",
+                "sha256": "5eeab77a1906e88c58e988e89da8d0a2cdfe4ce14313d3f8daafd18b2cf24490",
+                "byteLength": 3459
+              }
+            ],
+            "testPath": "packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts",
+            "testNamePattern": "Writable inputs|write receiver|stream bound|evidence directory is unavailable"
+          },
+          {
+            "runId": "7744ed19-fe67-4877-8207-357a86961557",
+            "ledgerRowId": 21759927,
+            "sourceHead": "b4d550e595d6c8689a5c96aff6b034d58454e7ab",
+            "passed": 5,
+            "failed": 0,
+            "unselected": 298,
+            "requestedFiles": 1,
+            "executedFiles": 1,
+            "matchedFiles": 1,
+            "childSubstituted": 0,
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "cleanupComplete": true,
+            "artifacts": [
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-1CUflY/manifest.json",
+                "sha256": "dc6c32520e25b5501cd4a7ea346277edb65724b0a5c87f18e1117fefaabfcd43",
+                "byteLength": 1912
+              },
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-1CUflY/source.json",
+                "sha256": "395211a80c87542178cd3d241b67051df690121bab554deef9d3325dbf7f6005",
+                "byteLength": 1540
+              },
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-1CUflY/reports/report.json",
+                "sha256": "a8de6689d35847e0e79baa7b40d3423deea8e1dc4228092b2c85c118e9145b66",
+                "byteLength": 100721
+              },
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-1CUflY/router-7744ed19-fe67-4877-8207-357a86961557-025c0330-1ed2-40b2-a509-51c9c02d06ee.stdout.log",
+                "sha256": "45c0205f87745946e6e1c00d0253f5bb2ed77ef37736f141b7781add57da8ef5",
+                "byteLength": 103992
+              },
+              {
+                "ref": "~/.papercusp/test-artifacts/testing-run/run-1CUflY/router-7744ed19-fe67-4877-8207-357a86961557-025c0330-1ed2-40b2-a509-51c9c02d06ee.stdout.log.stderr.log",
+                "sha256": "de59ab2dcfff52e3e270b09fca11a13cc01aa77ffd0f317b21d0830b15052b4d",
+                "byteLength": 3498
+              }
+            ],
+            "testPath": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+            "testNamePattern": "binds real process-step artifacts|retains the actual command and binary streams|preserves partial capture|refuses overwritten and symlinked sidecars|executes the production OUT observation"
+          }
+        ],
+        "controls": [
+          "Binary/encoded Writable inputs and late exit-listener writes",
+          "Original write receiver/callback/return/error delegation",
+          "16 MiB truncation with complete native output preserved",
+          "Unavailable evidence directory preserves native output/status",
+          "Root process identity and stream hash binding; tampered stream refusal",
+          "Immutable binary receipt artifacts; partial capture and wrapper input gaps",
+          "Overwritten/symlinked sidecar refusal; production OUT and settled journal"
+        ],
+        "provenance": "Both router invocations stamped b4d550e595d6c8689a5c96aff6b034d58454e7ab before and after; named test files clean, childSubstituted=0, native exit=0. Five named source/test byte hashes matched committed blobs before/after the checks and did not drift. The shared checkout contained unrelated dirty files; full imported-source, dependency, and runtime closure was not measured.",
+        "limits": [
+          "Node Writable call inputs only; inherited shell/direct fd/native writes remain unobserved",
+          "No new original fixture or unchanged lifecycle child run; no original ordered-chain qualification",
+          "Historical scoped typecheck retained; no fresh typecheck or repository-wide verdict",
+          "Original 12 conditional skips, config/main-process source, engine archive review, per-step streams/reports, D020/P006, six forms, P018/P028/P031/D045 and final shipment remain open"
+        ],
+        "orderedChainQualified": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "fullPlan": "unshipped"
+      },
+      "next":"Current selected stream/receipt verification is saved; continue authentic original per-step output/report and reader preparation under the parent. Reuse the nine selected checks only while their named pins remain unchanged. Do not repeat unchanged original operational chains.",
       "limits":["Writable call inputs only; direct fd/native and inherited child writes unobserved", "missing preloads or terminal observations remain gaps", "16 MiB per stream and 64 MiB retained parent population bound", "original test reports, installed dependencies, final transforms, pre-setup, external and nonmodule runtime closure unverified"],
       "orderedChainQualified":false,"runtimeClosure":"unmeasured","operationalAcceptance":false,"fullPlan":"unshipped"
     },
@@ -3465,10 +3640,302 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
+  "artifactReferencePortabilityRepair20261022": {
+    "workItems": [
+      "WI-6554700010020258",
+      "WI-6554700010020259"
+    ],
+    "rootCause": "Runtime absolute artifact home paths were copied into versioned evidence JSON.",
+    "fix": "Exactly twelve artifact reference prefixes use existing ~/ notation; no hashes, artifact bytes or acceptance claims changed.",
+    "verifiedArtifacts": 12,
+    "guards": [
+      {
+        "command": "npm run lint:no-box-identity",
+        "before": {
+          "exitCode": 1,
+          "findings": 12
+        },
+        "after": {
+          "exitCode": 0
+        },
+        "logs": [
+          "~/.papercusp/scratch/c0523-r12-box-identity-before-20261022.log",
+          "~/.papercusp/scratch/c0523-r12-box-identity-after-20261022.log"
+        ]
+      },
+      {
+        "command": "npm run lint:no-identity-literals",
+        "before": {
+          "exitCode": 1,
+          "findings": 12
+        },
+        "after": {
+          "exitCode": 0
+        },
+        "logs": [
+          "~/.papercusp/scratch/c0523-r12-identity-literals-before-20261022.log",
+          "~/.papercusp/scratch/c0523-r12-identity-literals-after-20261022.log"
+        ]
+      }
+    ],
+    "prefixOnlyCorrectionSha256": "07786143e8a17b3551a2af2165b752d2dc5b606cc3cb3863c76865459ac9773a",
+    "portableStreamSectionSha256": "2fc4af2e1e275f7541f6e6c4c5830f7b1c00ff54823ea788c69b41f25e54f0aa",
+    "recurrenceGuard": "Run both existing maintained identity guards after future evidence appends; do not add exceptions."
+  },
   "currentNativeNpmLifecycleDiagnostics20261022": {
+    "prospectiveScenarioVerification20261022": {
+      "workItemId": "WI-6554700010020304",
+      "parentWorkItemId": "WI-6554700010010682",
+      "status": "prospective-labels-verified-current-local-clean-committed-mutation-pending",
+      "clause": {
+        "specId": "adhoc.WI-6554700010020188.native-npm-lifecycle-diagnostics",
+        "revision": 2,
+        "contentHash": "7b20041e8763630fff842cbd1dc2d94d9e0e6c68fd72910cf6c2f1f61071b836",
+        "requiredScenarios": ["native-npm-shell-identity"],
+        "change": "Added a prospective canonical scenario and matching labels on five existing shell-identity assertions. Behavior, evidence requirements, fixture bodies and eleven rejection controls are unchanged. Historical clause@1 runs and bindings are not relabelled."
+      },
+      "verification": {
+        "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_RUN_GROUP=c0523-lifecycle-scenarios-local-20261022-v1 npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native npm lifecycle diagnostics'",
+        "ledgerRowId": 21763628,
+        "sourceHead": "47dc916f2d3e9f1835c6bf42dd9665e6121f47f3",
+        "testPath": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "testSha256": "8a0a012c3626c673071b5fc97f21665457c703ff27c463eb7ca9d3d64c1e9e0b",
+        "passed": 16,
+        "failed": 0,
+        "explicitUnselected": 287,
+        "requestedFiles": 1,
+        "executedFiles": 1,
+        "matchedFiles": 1,
+        "childSubstituted": 0,
+        "nativeExitCode": 0,
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "log": {
+          "ref": "~/.papercusp/scratch/c0523-lifecycle-scenarios-local-20261022-v1.log",
+          "sha256": "f651f950bd87637264976258790c11da94af4153444d49ba4bd71b656aeeb0cc",
+          "byteLength": 109550
+        }
+      },
+      "settlement": {
+        "status": "pending",
+        "observedHead": "6430ced5a641ddfa3cfcf9ad4820e92a0ca2aa57",
+        "testMatchesCommittedBlob": false,
+        "evidenceItem": "EI-26684217014717384",
+        "observation": "An exact resource-release await timed out. Earlier attributed shared-index refresh failures are recorded; a later routine health read shows a new active local-sync operation, fresh progress and safe_to_restart=false. Its exclusion summary includes turn-hold and locked-path. The specific label-file exclusion is not established by the bounded sample. No restart, lock deletion, manual Git operation or repeated heavy proof run was performed.",
+        "next": "End the editing turn so any turn hold can release. Recheck the exact committed test blob on the next implementation wake; only then measure retained clean committed baseline and contained shell mutation for clause@2."
+      },
+      "limits": [
+        "The new run is dirty current-local verification, not clean committed proof or evidence binding.",
+        "Earlier clause@1 clean and mutation results remain historical evidence with their original test labels and source pins.",
+        "Clause@2 falsifiability, independent oracle, exact-clause l3 coverage and disclosed-gap acceptance remain unqualified.",
+        "Original twelve fixture skips, authentic per-step streams/reports, ordered-chain/runtime closure, engine review and full-plan shipment remain unqualified."
+      ]
+    },
     "workItemId": "WI-6554700010020188",
     "admission": "green-main-cycle-time-2026-10-08#D-088; revision15 actual logic claim before manual locks/edits.",
-    "status": "current-local-diagnostics-and-saved-capture-replay-verified",
+    "status": "committed-selected-diagnostics-clause-bound-historical-local-replay-retained",
+    "nativeShellIdentityMutation20261022": {
+      "status": "native-shell-identity-mutant-caught-clause-falsifiability-still-unqualified",
+      "clause": "adhoc.WI-6554700010020188.native-npm-lifecycle-diagnostics@1",
+      "description": "Maintained copy-out overlay deliberately replaces retained actual spawn.command with /bin/bash. Native original sh assertions and the configured-Bash-versus-original-sh control catch the relabelling.",
+      "sourceHead": "b4d550e595d6c8689a5c96aff6b034d58454e7ab",
+      "retainedRoot": "/tmp/pcv/papercusp-lint-as-committed-b4d550e595-zqfu3n",
+      "descriptorId": "7b2266a5-ed78-4b69-aec9-2560151f44dd",
+      "runner": {
+        "path": "scripts/mutation-probe.sh",
+        "sha256": "ffb64b6dad3f3481546b77179b1c05ddc08e44726a69e5d4e45ddb60016f3e1e",
+        "commit": "b4d550e595d6c8689a5c96aff6b034d58454e7ab"
+      },
+      "mutationExpression": "s/command: spawn\\.command, argv: spawn\\.argv\\.slice\\(\\)/command: \"\\/bin\\/bash\", argv: spawn.argv.slice()/g",
+      "command": "npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native npm lifecycle diagnostics'",
+      "log": {
+        "ref": "~/.papercusp/scratch/c0523-native-shell-mutation-20261022-v1.log",
+        "sha256": "086af8665bc07eca740c2ae08bdbc055d3e9c83643c3da2d455be99a949f0f3f",
+        "byteLength": 368503
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "ledgerRowId": 21762009,
+          "passed": 16,
+          "failed": 0,
+          "unselected": 287,
+          "exitCode": 0,
+          "worktreeDirty": false
+        },
+        {
+          "phase": "copy-baseline",
+          "ledgerRowId": 21762012,
+          "passed": 16,
+          "failed": 0,
+          "unselected": 287,
+          "exitCode": 0,
+          "worktreeDirty": false
+        },
+        {
+          "phase": "mutant",
+          "ledgerRowId": 21762013,
+          "passed": 11,
+          "failed": 5,
+          "unselected": 287,
+          "exitCode": 1,
+          "worktreeDirty": false
+        }
+      ],
+      "result": {
+        "verdict": "caught",
+        "expected": "caught",
+        "probeExitCode": 0,
+        "mutantParse": "ok",
+        "assertionEvidence": "test-file-assertion-failure",
+        "relocation": "overlay",
+        "writeContainment": "contained",
+        "uncovered": 0,
+        "failedOverlays": 0
+      },
+      "subject": {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "beforeSha256": "65d6f63a2aba55475c498c35920b8d48ea653ad4098e41cf27b3f72d900489e7",
+        "mutantSha256": "12daf5afbef97e6cfaea09e9fd29bdaf71b134098aed221774c8e9615c3c9e77",
+        "canonicalAndRetainedAfterSha256": "65d6f63a2aba55475c498c35920b8d48ea653ad4098e41cf27b3f72d900489e7",
+        "retainedTrackedTreeCleanAfter": true
+      },
+      "binding": {
+        "id": 64234,
+        "bindingFingerprint": "43f1c5766abac6152ec223e637505919e1da9bd9a8b260cadd725926aa122a6e",
+        "evidenceKind": "mutation",
+        "testRunId": 21762013,
+        "targeted": "adhoc.WI-6554700010020188.native-npm-lifecycle-diagnostics",
+        "testCases": [
+          "native npm lifecycle diagnostics > retains actual npm shells, inherited stdio and lifecycle failure null",
+          "native npm lifecycle diagnostics > retains actual npm shells, inherited stdio and lifecycle failure pretest",
+          "native npm lifecycle diagnostics > retains actual npm shells, inherited stdio and lifecycle failure test",
+          "native npm lifecycle diagnostics > retains actual npm shells, inherited stdio and lifecycle failure posttest",
+          "native npm lifecycle diagnostics > preserves an actually configured bash shell without relabelling the original sh capture"
+        ],
+        "currentness": {
+          "overall": "current",
+          "staleReasons": [],
+          "unknownReasons": []
+        }
+      },
+      "adequacyDiagnostic": {
+        "governing": false,
+        "verdict": "fail",
+        "passing": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness"
+        ],
+        "wouldBlock": [
+          "falsifiability",
+          "oracle-independence",
+          "plan-class-risk-floor",
+          "disclosed-gap"
+        ],
+        "falsifiabilityReason": "The measured failures have a passing current same-clause binding, but their exact scenario labels do not align to canonical falsifier.requiredScenarios IDs. An own-specId target establishes identity only.",
+        "next": "Add prospective canonical requiredScenarios and matching maintained assertion labels, preserving the existing behavior contract and all rejection controls; record new labelled native baseline/mutation proof instead of relabelling historical runs."
+      },
+      "coverageRead": {
+        "tool": "testing:coverage",
+        "sourceFile": "scripts/lib/budgeted-task-scheduler.mjs",
+        "rung": "l3",
+        "verdict": "not-measured",
+        "note": "No matching census surface was returned; data-plane degradation warning requires rechecking before inferring absence. No l3 proof bound."
+      },
+      "limits": [
+        "Shell identity mutant only; malformed/ambiguous/overlap and failure acceptance remain bounded by saved native tests",
+        "287 cases are explicitly unselected in each leg",
+        "No shared tracked source mutation; no original fixture or ordered-chain operational rerun",
+        "Original twelve skips, authentic per-step streams/reports, full runtime/dependency closure, independent oracle/l3 proof and shipment remain unqualified"
+      ]
+    },
+    "committedClauseVerification20261022": {
+      "status": "clean-committed-selected-guard-bound-to-diagnostics-clause",
+      "reason": "The clause's saved historical run21750815 was dirty. A new maintained committed-snapshot run supplied clean ledger provenance; no original operational chain was rerun and the terminal child was not reopened/reclosed.",
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_RUN_GROUP=c0523-lifecycle-committed-20261022-v1 npm run lint:as-committed -- test:file --any --ref=b4d550e595d6c8689a5c96aff6b034d58454e7ab -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native npm lifecycle diagnostics'",
+      "sourceHead": "b4d550e595d6c8689a5c96aff6b034d58454e7ab",
+      "retainedRoot": "/tmp/pcv/papercusp-lint-as-committed-b4d550e595-zqfu3n",
+      "retention": "Existing retainCommittedWorkRoot helper ties the immutable source root to the retained native log. Owner marker/readback confirms exact SHA and dependent artifact; no manual source edit.",
+      "log": {
+        "ref": "~/.papercusp/scratch/c0523-npm-lifecycle-as-committed-20261022-v1.log",
+        "sha256": "1c443578b3bd25fd37fb01bc6f5380078bbf93d0010fbc2d3cc80e8f22db7dbf",
+        "byteLength": 123440
+      },
+      "runGroup": "c0523-lifecycle-committed-20261022-v1",
+      "ledgerRowId": 21760511,
+      "passed": 16,
+      "failed": 0,
+      "explicitUnselected": 287,
+      "requestedFiles": 1,
+      "executedFiles": 1,
+      "matchedFiles": 1,
+      "childSubstituted": 0,
+      "nativeExitCode": 0,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "ledgerReadback": "Exact run group yields one pass row at the recorded committed root/SHA, worktreeDirty=false, sixteen passed case titles and287unselected. Router before/after markers name the same SHA and clean named test path.",
+      "sourcePins": [
+        {
+          "path": "scripts/lib/vitest-startup-trace.mjs",
+          "sha256": "4912efb5c5483329bfac50b9f63de3112d0a28c50f8c7f4347945ffa8b1b93ac"
+        },
+        {
+          "path": "scripts/lib/budgeted-task-scheduler.mjs",
+          "sha256": "65d6f63a2aba55475c498c35920b8d48ea653ad4098e41cf27b3f72d900489e7"
+        },
+        {
+          "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+          "sha256": "42154a89c0826f5c043e4f8c5e6cc3366062929d99cce15b42938361c9be6a23"
+        },
+        {
+          "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+          "sha256": "7fab2aa8139fbd0c15efb9c99e4b9854117d89074ee5d9ff3458fcc3d8df61b4"
+        }
+      ],
+      "clause": {
+        "planSlug": "adhoc-work-item-specs",
+        "workItemId": "WI-6554700010020188",
+        "specId": "adhoc.WI-6554700010020188.native-npm-lifecycle-diagnostics",
+        "revision": 1,
+        "contentHash": "2346fe1ea4487422c8332356cbf955c9c7f539a2fd5a2df3bafc854cf2582c95",
+        "bindingId": 64172,
+        "bindingFingerprint": "9b136d4a9cee0887df06f241b14387480e4b47109ee6171de52a3b03c88bde09",
+        "explicitCaseScope": "All sixteen passedCaseTitles copied verbatim from canonical ledger21760511;287 unselected cases remain unmeasured.",
+        "previousBinding": { "id": 64143, "status": "retracted", "reason": "Duplicate same-run mapping lacked explicit case scope; replacement preserves the same measured recipe and disclosed gap." },
+        "adequacyDiagnostic": {
+          "classRef": "plan-class-feature-ship",
+          "governing": false,
+          "verdict": "fail",
+          "passing": ["traceability", "fixture-calibration", "execution-integrity", "freshness"],
+          "wouldBlock": ["falsifiability", "oracle-independence", "plan-class-risk-floor", "disclosed-gap"],
+          "next": "Provide ledger-backed mutation/counterexample, an independent oracle and exact-clause meets_l3 coverage evidence; preserve the author-disclosed original receipt/runtime gaps. Do not grade currentness as acceptance."
+        },
+        "sourcePaths": [
+          "scripts/lib/budgeted-task-scheduler.d.mts",
+          "scripts/lib/budgeted-task-scheduler.mjs",
+          "scripts/lib/vitest-startup-trace.mjs"
+        ],
+        "testPaths": [
+          "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts"
+        ],
+        "readback": {
+          "overall": "current",
+          "staleReasons": [],
+          "unknownReasons": []
+        }
+      },
+      "limits": [
+        "Currentness is for this exact diagnostics-only clause and its bounded measured file set",
+        "Historical local run/replay provenance remains unchanged",
+        "Actual sh/configured Bash, argv, stdio and failure identities remain distinct; per-step streams/reports and original ordered-chain/no-skip acceptance remain unqualified",
+        "No complete installed dependency/import/runtime/environment closure or operational/full-plan shipment assertion"
+      ]
+    },
     "implementation": "Existing parent writer derives unique original root npm direct spawn/close spans. Actual command/argv/cwd/stdio, process/lifecycle identities, nonpass outcomes and source event pins remain intact. Ambiguous roots/pairs, descendant inherited labels, malformed metadata and overlaps do not become valid direct spans. No ordered reader or native spawn/stdio changes.",
     "verification": {
       "testCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native npm lifecycle diagnostics'",
@@ -3597,5 +4064,5 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Child0188 locally verifies direct original npm lifecycle diagnostics and saved-input replay. Preserve its exact source/log pins and let automatic git settle them. Continue original per-step stdout/stderr/report and ordered-reader compatibility gaps through the existing fleet. This unit does not qualify an original chain, resolve EI-26674110593853508, or satisfy runtime/operational/full-plan shipment acceptance. Preserve engine review, D020/P006, six forms, P018, P028 and P031/D045."
+  "next": "Prospective child0304 adds canonical shell-identity scenario labels for diagnostics clause@2; local run21763628 passes16 with287unselected and dirty provenance. End the editing turn, verify automatic committed-content settlement, then measure retained clean baseline and contained mutation before binding new proof. Preserve historical clause@1 identities and all original per-step stdout/stderr/report and ordered-reader compatibility gaps. This does not resolve EI-26674110593853508 or satisfy runtime/operational/full-plan shipment acceptance. Preserve engine review, D020/P006, six forms, P018, P028 and P031/D045."
 }

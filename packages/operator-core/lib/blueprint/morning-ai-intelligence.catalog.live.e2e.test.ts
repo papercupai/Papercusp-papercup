@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { prepareRuntimeReader } from '../../vitest.e2e.config';
 
 const execute = promisify(execFile);
@@ -36,10 +36,22 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
     expect(witness?.units).toEqual(profile.runtimeUnits);
   });
 
-  async function read(script: string, missingReportExpected = false) {
-    const { stdout } = await execute('ptool', ['code:run', '--url', origin,
+  async function read(script: string, missingReportExpected = false, run = execute) {
+    // The installed shim may select the release checkout. Keep the transport
+    // caller on the same committed source as this verification instrument.
+    const launcher = resolve(root, 'apps/operator/scripts/ptool.mjs');
+    const startedAt = Date.now();
+    const { stdout } = await run(process.execPath, [launcher, 'code:run', '--url', origin,
       '--harness', 'papercusp', '--raw', '--json', JSON.stringify({ script })],
-    { cwd: root, timeout: 45_000, maxBuffer: 256_000 });
+    { cwd: root, timeout: 45_000, maxBuffer: 256_000 }).catch(error => {
+      const child = error as Error & { code?: string | number; signal?: string; killed?: boolean;
+        stdout?: string; stderr?: string };
+      const diagnostic = { launcher, origin, elapsedMs: Date.now() - startedAt,
+        code: child.code, signal: child.signal, killed: child.killed,
+        stdoutTail: child.stdout?.slice(-4_000), stderrTail: child.stderr?.slice(-6_000) };
+      console.error('AI_LIVE_READ_FAILURE ' + JSON.stringify(diagnostic));
+      throw new Error('Live acceptance read failed: ' + JSON.stringify(diagnostic), { cause: error });
+    });
     const result = JSON.parse(stdout);
     expect(result.ok, JSON.stringify(result)).toBe(true);
     if (missingReportExpected) {
@@ -54,6 +66,30 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
     expect(result.summary).toBeDefined();
     return result.summary;
   }
+
+  it('retains bounded child failure diagnostics with the pinned caller and unchanged read timeout', async () => {
+    const failure = Object.assign(new Error('Injected child timeout'), {
+      code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true,
+      stdout: 'x'.repeat(5_000), stderr: 'y'.repeat(7_000),
+    });
+    const run = vi.fn<typeof execute>().mockRejectedValueOnce(failure);
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(read('return {};', false, run)).rejects.toThrow('Live acceptance read failed:');
+      expect(run).toHaveBeenCalledWith(process.execPath,
+        [resolve(root, 'apps/operator/scripts/ptool.mjs'), 'code:run', '--url', origin,
+          '--harness', 'papercusp', '--raw', '--json', JSON.stringify({ script: 'return {};' })],
+        { cwd: root, timeout: 45_000, maxBuffer: 256_000 });
+      expect(diagnostic).toHaveBeenCalledTimes(1);
+      const observed = JSON.parse(String(diagnostic.mock.calls[0][0]).replace(/^AI_LIVE_READ_FAILURE /, ''));
+      expect(observed).toMatchObject({ launcher: resolve(root, 'apps/operator/scripts/ptool.mjs'),
+        origin, code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true,
+        stdoutTail: 'x'.repeat(4_000), stderrTail: 'y'.repeat(6_000) });
+      expect(observed.elapsedMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
 
   it('serves the existing repo-less research parent and AI child from canonical blueprint source', async () => {
     const observed = await read(`

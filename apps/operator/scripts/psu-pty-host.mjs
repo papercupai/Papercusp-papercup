@@ -15079,8 +15079,9 @@ export function hostThroughPty(o) {
       // The initial scripted kickoff writes outside this pipeline. Do not let
       // a queued wake paste into its composer before its submit/proof settles.
       // Wait before acquiring the mutex: kickoff redelivery may need that same
-      // mutex after a child replacement. Raw control remains immediate.
-      if (msg.gated) await launchKickoffCompletion;
+      // mutex after a child replacement. Lifecycle recovery must remain able
+      // to replace an interrupted kickoff's child; raw control stays immediate.
+      if (msg.mode === 'turn' && !launchKickoffSettled) await launchKickoffCompletion;
       // EI-8822: hold the per-host inject mutex across the ENTIRE gated
       // critical section (gate wait → pty write → submit verify) so a wake
       // `turn` and a session:request-compaction `/compact` freed at the SAME

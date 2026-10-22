@@ -792,6 +792,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const rubricGate = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE, 'system').catch(() => true);
   const forcedChecks: PlanAcceptanceGateWaivedCheck[] = [];
   let deferredBarShipRefusal: PlanAcceptanceGateVerdictWithoutBuildProvenance | undefined;
+  let pendingDeliveryReview: AcceptanceBarLifecycleVerdict | undefined;
   // WI-10004135: whether the acceptance-BAR contract governs this plan's ship. Only
   // then do deployed/live BARs block on their own codes; outside that contract an
   // author's 'accept-pending-delivery' verdict is the ONLY record that delivery is
@@ -1008,6 +1009,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           deferredBarShipRefusal = undefined;
           if (refuse(preGradingBlockedRefusal(refusal, preGrading))) return collectedRefusal();
         } else {
+          if (opts.gradingRecruitment && preGrading.pendingDeliverySpecClauses?.length) {
+            pendingDeliveryReview = preGrading;
+          }
           requireCurrentBarGrading = gradingStale;
           if (gradingStale) barStaleGradingScorecardId = barLifecycle.staleGradingScorecardId;
         }
@@ -1475,6 +1479,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     specCoverage = await evaluatePlanSpecCoverageGate({
       ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
       planSlug,
+      ...(pendingDeliveryReview ? { pendingDeliveryReview } : {}),
     });
     if (!specCoverage.satisfied) {
       // ⚠ Carry the census's OWN code through rather than hardcoding one. This said

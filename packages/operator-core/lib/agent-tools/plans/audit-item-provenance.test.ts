@@ -116,7 +116,12 @@ const TURNS: Record<number, { speaker: string; head: string; turn_origin_verdict
 };
 
 const planContent = (items: string[]) =>
-  `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-09-29\nupdated: 2026-09-29\nowner: test\n---\n\n## Items\n\n${items.join('\n')}\n`;
+  `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-09-29\nupdated: 2026-09-29\nowner: test\n---\n\n## Items\n\n${items.join('\n')}\n` +
+  '\n## Existing infrastructure reused\n\n```reuse\n' +
+  '{"searched":[],"reused":[],"newSurfaces":[],"notApplicable":"Test fixture; no code surface."}\n' +
+  '```\n\n## Third-party libraries\n\n```libraries\n' +
+  '{"needs":[],"notApplicable":"Test fixture; no library need."}\n' +
+  '```\n';
 const TWO_ITEMS = planContent([
   '- **P-001** `todo` Refuse unsourced items at activation.',
   '- **P-002** `todo` Add a GUI badge per item.',

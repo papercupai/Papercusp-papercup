@@ -1433,6 +1433,40 @@ describe.each(['selected', 'refill'] as const)('failed cascade dispatch — %s m
     expect(emits).toEqual([]);
   });
 
+  it('treats a zero-row answering-owner stamp as a refused launch and advances', async () => {
+    const id = await seedConsult({ routing: routingFor(['unstampable', 'available']) });
+    const { deps, dispatchCalls, emits } = makeDeps();
+    deps.dispatch = async (o) => {
+      dispatchCalls.push(o);
+      if (o.responder === 'unstampable') {
+        // Remove the selected slot after the cursor advances so the stamp's
+        // guarded UPDATE affects zero rows instead of throwing a SQL error.
+        await rootSql`
+          UPDATE harness_shared.consult_state
+             SET routing = routing #- ARRAY['selection', 'selected', '1', 'ownerId']
+           WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+        try {
+          await o.onAnsweringOwner?.('unstampable-fork');
+        } catch {
+          return { woke: 0 };
+        }
+        return { woke: 1, answeringOwnerId: 'unstampable-fork' };
+      }
+      await o.onAnsweringOwner?.('available-fork');
+      return { woke: 1, answeringOwnerId: 'available-fork' };
+    };
+
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict of interest' }, deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.cascade).toMatchObject({ advanced_to: 'available', exhausted: false, woke: 1 });
+    expect(dispatchCalls.map((o) => o.responder)).toEqual(['unstampable', 'available']);
+    expect(dispatchCalls[1].body).toContain('unstampable (dispatch_failed)');
+    expect(await stateRow(id)).toMatchObject({ responder_id: 'available', cascade_cursor: 2, closed_at: null });
+    expect(emits).toEqual([]);
+  });
+
   it('exhausts refused launches and closes honestly without waiting for another expiry', async () => {
     const id = await seedConsult({ routing: routingFor(['unlaunchable', 'also-unlaunchable']) });
     const { deps, dispatchCalls, emits } = makeDeps();

@@ -694,12 +694,16 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
     expect(evaluateAcceptanceBarLifecycle(subject, 'pre-grading').satisfied).toBe(false);
     expect(evaluateAcceptanceBarLifecycle(subject, 'pre-grading', options)).toMatchObject({
       satisfied: true, codes: [], pendingDeliveryBarKeys: ['R-15'],
+      pendingDeliverySpecClauses: [{ planSlug: 'plan-a', specId: 'spec-1',
+        specRevision: 1, specContentHash: 'spec-hash' }],
     });
     expect(evaluateAcceptanceBarLifecycle(subject, 'ship', options)).toMatchObject({
       satisfied: false, codes: expect.arrayContaining([
         'bar_snapshot_proof_stale', 'bar_snapshot_evidence_plane_unmet',
       ]),
     });
+    expect(evaluateAcceptanceBarLifecycle(subject, 'ship', options))
+      .not.toHaveProperty('pendingDeliverySpecClauses');
     vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(subject);
     expect(await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-grading', options))
       .toMatchObject({ satisfied: true, pendingDeliveryBarKeys: ['R-15'] });
@@ -727,6 +731,7 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
     });
     expect(verdict.satisfied).toBe(false);
     expect(verdict.codes).toContain('bar_snapshot_scope_invalid');
+    expect(verdict).not.toHaveProperty('pendingDeliverySpecClauses');
   });
 
   it('P-004: at ship, an unvetted rubric with missing proof is told to VET first, with the full action', () => {

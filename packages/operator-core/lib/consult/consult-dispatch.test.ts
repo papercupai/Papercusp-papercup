@@ -633,6 +633,23 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(calls.spawn).toHaveLength(0);
   });
 
+  it('does not launch a responder when persisting its participant identity fails', async () => {
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'claude', model: 'opus' }],
+    });
+    const r = await dispatchConsultResponder({
+      ...OPTS,
+      onAnsweringOwner: async () => { throw new Error('stamp write failed'); },
+    }, CTX, deps);
+
+    expect(r).toMatchObject({
+      dispatched: false,
+      answeringOwnerId: null,
+      attempts: [{ outcome: 'failed', reason: 'answering-owner-stamp-failed' }],
+    });
+    expect(calls.spawn).toHaveLength(0);
+  });
+
   it('skips a rank whose LAUNCH fails and dispatches the next', async () => {
     const { deps } = makeFakes({}, { spawnStatuses: ['error', 'ok'] });
     const r = await dispatchConsultResponder(OPTS, CTX, deps);

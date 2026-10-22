@@ -24,6 +24,7 @@ import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-he
 import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
   runGreenCheckpoint,
+  planCheckpointCarryAtCut,
   failingRepairLegsForRouting,
   archivePureProofCapture,
   recordDerivedFreezeDispositionWithDeadline,
@@ -15166,6 +15167,30 @@ describe("quiet-cut — never judge a tip younger than the quiet window (2026-07
       deps.log = (line: string) => logs.push(line);
       return { logs, consume, read };
     }
+
+    it("plans the exact carried candidate and leaves the captured carry unchanged", async () => {
+      const cut = await datedCommit("a.txt", "before fix", 300);
+      const tip = await commit("fix.ts", "fixed\n", "carry fix");
+      const pending = pendingCarry("fix.ts", await git(repo, ["rev-parse", `${tip}:fix.ts`]));
+      const before = structuredClone(pending);
+      const blobAt = async (sha: string, path: string): Promise<string | null> => {
+        const tree = (await git(repo, ["ls-tree", sha, "--", path])).trim();
+        return tree ? tree.split(/\s+/)[2]! : null;
+      };
+
+      const proposal = await planCheckpointCarryAtCut(
+        { pending, candidate: cut, stagingTip: tip },
+        blobAt,
+        () => 1_800_000_000_001,
+      );
+
+      expect(proposal).toMatchObject({
+        candidate: tip,
+        record: { initialCandidate: cut, initialMissing: ["fix.ts"], judgedCandidate: tip,
+          advancedToTip: true, entries: [{ path: "fix.ts", status: "carried" }] },
+      });
+      expect(pending).toEqual(before);
+    });
 
     it("judges the staging tip when the quiet cut lacks an admitted fix, and records the carry", async () => {
       const c1 = await datedCommit("a.txt", "c1", 600);

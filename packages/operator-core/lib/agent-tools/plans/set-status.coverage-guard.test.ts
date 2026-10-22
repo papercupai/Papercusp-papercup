@@ -11,17 +11,27 @@
  * →dropped cascade so a duplicate's drop never de-queues a sibling
  * implementer's coverage.
  *
- * Sibling to set-status.residual-warning.test.ts (same lock-mocking harness);
- * this file mocks ../../plan-items/reconcile-linked-work-items instead of
- * ../../plan-items/convert, since the coverage guard reads the WIDER
- * findAllLinkedWorkItems union (implements + relates + stamp), not the
- * relates-only findCoverageWorkItems the residual warning uses.
- * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/set-status.coverage-guard.test.ts
+ * Sibling to set-status.residual-warning.test.ts (same lock-mocking harness).
+ * It mocks the wide linked-work-item union used by the guard, plus the
+ * post-commit reconciler and residual-coverage reader used by terminal flips.
+ * Run: npm run test:file -- packages/operator-core/lib/agent-tools/plans/set-status.coverage-guard.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const reconcileMocks = vi.hoisted(() => ({
   findAllLinkedWorkItems: vi.fn(async () => [] as Array<{ id: string; state: string; assignee?: string | null }>),
+  reconcileLinkedWorkItemsForPlanItem: vi.fn<
+    typeof import('../../plan-items/reconcile-linked-work-items').reconcileLinkedWorkItemsForPlanItem
+  >(async (item) => ({
+    planSlug: item.planSlug,
+    itemId: item.itemId,
+    reconciled: [],
+    skippedInFlight: [],
+    skippedAlreadyTerminal: [],
+    skippedUnprovenLink: [],
+    skippedGatedState: [],
+  })),
+  findCoverageWorkItems: vi.fn<typeof import('../../plan-items/convert').findCoverageWorkItems>(async () => []),
   resolveAgentIdentity: vi.fn(),
   getClaim: vi.fn<typeof import('../../plan-items/claims').getClaim>(async () => null),
 }));
@@ -56,6 +66,11 @@ vi.mock('../../plan-items/claims', () => ({
 vi.mock('../../plan-items/reconcile-linked-work-items', async (orig) => ({
   ...(await orig<typeof import('../../plan-items/reconcile-linked-work-items')>()),
   findAllLinkedWorkItems: reconcileMocks.findAllLinkedWorkItems,
+  reconcileLinkedWorkItemsForPlanItem: reconcileMocks.reconcileLinkedWorkItemsForPlanItem,
+}));
+vi.mock('../../plan-items/convert', async (orig) => ({
+  ...(await orig<typeof import('../../plan-items/convert')>()),
+  findCoverageWorkItems: reconcileMocks.findCoverageWorkItems,
 }));
 
 import { withPlanLock } from './with-plan-lock';
@@ -81,6 +96,16 @@ function lockReturnsMutatorValue(knownItems: Set<string>, currentStatus = 'wip')
 beforeEach(() => {
   vi.clearAllMocks();
   reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([]);
+  reconcileMocks.findCoverageWorkItems.mockResolvedValue([]);
+  reconcileMocks.reconcileLinkedWorkItemsForPlanItem.mockImplementation(async (item) => ({
+    planSlug: item.planSlug,
+    itemId: item.itemId,
+    reconciled: [],
+    skippedInFlight: [],
+    skippedAlreadyTerminal: [],
+    skippedUnprovenLink: [],
+    skippedGatedState: [],
+  }));
   reconcileMocks.resolveAgentIdentity.mockImplementation(() => {
     throw new Error('no identity in this test');
   });

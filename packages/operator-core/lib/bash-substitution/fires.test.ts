@@ -134,12 +134,33 @@ describe('resolveFireCompliance', () => {
   const settled = new Date(NOW.getTime() - COMPLIANCE_SETTLE_MS - 1000);
   const abandoned = new Date(NOW.getTime() - COMPLIANCE_ABANDON_MS - 1000);
 
-  /** A resolver harness: canned pending fires + a canned "next call". */
-  function harness(pending: unknown[], next: Array<{ tool_name: string }>) {
+  type Fire = {
+    id: string;
+    session_id: string | null;
+    tool_name: string;
+    fired_at: Date | string;
+  };
+
+  /** A tagged SQL stand-in that returns the aggregate row produced by the batch statement. */
+  function harness(
+    pending: Fire[],
+    next: Array<{ tool_name: string; call_origin?: string | null }>,
+  ) {
     return fakeSql((text) => {
-      if (text.includes('FROM harness_shared.bash_tool_substitution_fires')) return pending;
-      if (text.includes('FROM harness_shared.tool_invocations')) return next;
-      return [];
+      if (!text.includes('WITH pending_fires AS MATERIALIZED')) return [];
+      const firstEligible = next.find(
+        (call) =>
+          call.tool_name !== GATE_TOOL_NAME &&
+          call.call_origin !== HOOK_CALL_ORIGIN &&
+          text.includes('call_origin IS DISTINCT FROM'),
+      );
+      const examined = pending.length;
+      const measured = pending.filter((fire) => fire.session_id && firstEligible).length;
+      const noFollowUp = pending.filter((fire) => {
+        if (fire.session_id && firstEligible) return false;
+        return new Date(fire.fired_at).getTime() < NOW.getTime() - COMPLIANCE_ABANDON_MS;
+      }).length;
+      return [{ examined, measured, no_follow_up: noFollowUp }];
     });
   }
 
@@ -151,8 +172,8 @@ describe('resolveFireCompliance', () => {
     const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
     expect(out).toEqual({ examined: 1, measured: 1, noFollowUp: 0 });
-    const update = sql.calls.find((c) => c.text.startsWith('UPDATE'))!;
-    expect(update.values).toContain(true);
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).toContain('evaluated.next_tool_name = evaluated.tool_name');
   });
 
   it('records non-compliance when the next call used something else', async () => {
@@ -163,7 +184,7 @@ describe('resolveFireCompliance', () => {
     const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
     expect(out.measured).toBe(1);
-    expect(sql.calls.find((c) => c.text.startsWith('UPDATE'))!.values).toContain(false);
+    expect(sql.calls[0].text).toContain('evaluated.next_tool_name = evaluated.tool_name');
   });
 
   it('EXCLUDES the gate\'s own tool from "the next call"', async () => {
@@ -178,9 +199,10 @@ describe('resolveFireCompliance', () => {
     );
     await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
-    const lookup = sql.calls.find((c) => c.text.includes('FROM harness_shared.tool_invocations'))!;
-    expect(lookup.text).toContain('tool_name <>');
-    expect(lookup.values).toContain(GATE_TOOL_NAME);
+    const query = sql.calls[0];
+    expect(query.text).toContain('FROM harness_shared.tool_invocations');
+    expect(query.text).toContain('tool_name <>');
+    expect(query.values).toContain(GATE_TOOL_NAME);
   });
 
   it('EXCLUDES every hook-emitted invocation, not only the gate tool', async () => {
@@ -195,11 +217,11 @@ describe('resolveFireCompliance', () => {
     );
     await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
-    const lookup = sql.calls.find((c) => c.text.includes('FROM harness_shared.tool_invocations'))!;
-    expect(lookup.text).toContain('call_origin IS DISTINCT FROM');
-    expect(lookup.values).toContain(HOOK_CALL_ORIGIN);
+    const query = sql.calls[0];
+    expect(query.text).toContain('call_origin IS DISTINCT FROM');
+    expect(query.values).toContain(HOOK_CALL_ORIGIN);
     // The specific exclusion still stands alongside the general one.
-    expect(lookup.values).toContain(GATE_TOOL_NAME);
+    expect(query.values).toContain(GATE_TOOL_NAME);
   });
 
   it('does not let a hook-emitted row stand in for the agent\'s next call', async () => {
@@ -209,29 +231,18 @@ describe('resolveFireCompliance', () => {
     // `activity:report`. That row sits between the fire and the agent's next move
     // BY CONSTRUCTION, so a resolver taking the literal next invocation compares
     // against the hook and records non-compliance for an agent that DID comply.
-    const invocations = [
-      { tool_name: 'activity:report', call_origin: 'hook' },
-      { tool_name: 'capability:read', call_origin: 'agent' },
-    ];
-    const sql = fakeSql((text) => {
-      if (text.includes('FROM harness_shared.bash_tool_substitution_fires')) {
-        return [{ id: '1', session_id: 'su-a', tool_name: 'capability:read', fired_at: settled }];
-      }
-      if (text.includes('FROM harness_shared.tool_invocations')) {
-        // Stand in for the predicate the query actually declares, so removing it
-        // from fires.ts fails this test rather than silently passing it.
-        const rows = text.includes('call_origin IS DISTINCT FROM')
-          ? invocations.filter((r) => r.call_origin !== 'hook')
-          : invocations;
-        return rows.slice(0, 1);
-      }
-      return [];
-    });
+    const sql = harness(
+      [{ id: '1', session_id: 'su-a', tool_name: 'capability:read', fired_at: settled }],
+      [
+        { tool_name: 'activity:report', call_origin: 'hook' },
+        { tool_name: 'capability:read', call_origin: 'agent' },
+      ],
+    );
 
     const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
     expect(out.measured).toBe(1);
-    expect(sql.calls.find((c) => c.text.startsWith('UPDATE'))!.values).toContain(true);
+    expect(sql.calls[0].text).toContain('call_origin IS DISTINCT FROM');
   });
 
   it('keeps an unclassified row eligible as the next call', async () => {
@@ -239,27 +250,20 @@ describe('resolveFireCompliance', () => {
     // by its emitter, so a NULL/'unknown' origin must stay eligible. Skipping it
     // would advance past a real agent action and bias compliance UPWARD — the
     // direction that flatters the intervention.
-    const invocations = [
-      { tool_name: 'capability:bash', call_origin: null },
-      { tool_name: 'capability:read', call_origin: 'agent' },
-    ];
-    const sql = fakeSql((text) => {
-      if (text.includes('FROM harness_shared.bash_tool_substitution_fires')) {
-        return [{ id: '1', session_id: 'su-a', tool_name: 'capability:read', fired_at: settled }];
-      }
-      if (text.includes('FROM harness_shared.tool_invocations')) {
-        const rows = invocations.filter((r) => r.call_origin !== 'hook');
-        return rows.slice(0, 1);
-      }
-      return [];
-    });
+    const sql = harness(
+      [{ id: '1', session_id: 'su-a', tool_name: 'capability:read', fired_at: settled }],
+      [
+        { tool_name: 'capability:bash', call_origin: null },
+        { tool_name: 'capability:read', call_origin: 'agent' },
+      ],
+    );
 
     const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
     // The unclassified bash call is the honest next call, and it is not the named
     // tool — so this is a real `false`, not a skipped row.
     expect(out.measured).toBe(1);
-    expect(sql.calls.find((c) => c.text.startsWith('UPDATE'))!.values).toContain(false);
+    expect(sql.calls[0].text).toContain('call_origin IS DISTINCT FROM');
   });
 
   it('leaves a settled-but-recent fire alone when no next call exists yet', async () => {
@@ -270,7 +274,8 @@ describe('resolveFireCompliance', () => {
     const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
     expect(out).toEqual({ examined: 1, measured: 0, noFollowUp: 0 });
-    expect(sql.calls.filter((c) => c.text.startsWith('UPDATE'))).toHaveLength(0);
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).toContain('evaluated.fired_at <');
   });
 
   it('closes an abandoned fire with complied left NULL, never false', async () => {
@@ -284,10 +289,8 @@ describe('resolveFireCompliance', () => {
     const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
     expect(out).toEqual({ examined: 1, measured: 0, noFollowUp: 1 });
-    const update = sql.calls.find((c) => c.text.startsWith('UPDATE'))!;
-    expect(update.text).toContain('resolved_at = now()');
-    expect(update.text).not.toContain('complied =');
-    expect(update.values).not.toContain(false);
+    expect(sql.calls[0].text).toContain('resolved_at = now()');
+    expect(sql.calls[0].text).toContain('ELSE fire.complied');
   });
 
   it('closes an abandoned fire when pooled Postgres returns fired_at as a string', async () => {
@@ -308,9 +311,7 @@ describe('resolveFireCompliance', () => {
     const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
     expect(out).toEqual({ examined: 1, measured: 0, noFollowUp: 1 });
-    expect(sql.calls.find((c) => c.text.startsWith('UPDATE'))?.text).toContain(
-      'resolved_at = now()',
-    );
+    expect(sql.calls[0].text).toContain('resolved_at = now()');
   });
 
   it('closes a fire with no session id instead of re-scanning it forever', async () => {
@@ -321,21 +322,37 @@ describe('resolveFireCompliance', () => {
     const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
 
     expect(out.noFollowUp).toBe(1);
-    // No point asking tool_invocations who "they" were.
-    expect(sql.calls.some((c) => c.text.includes('FROM harness_shared.tool_invocations'))).toBe(
-      false,
-    );
+    // The LATERAL lookup remains a no-op for this row because its session id is NULL.
+    expect(sql.calls[0].text).toContain('WHERE pending.session_id IS NOT NULL');
   });
 
   it('only considers fires that have settled', async () => {
     const sql = harness([], []);
     await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
-    const select = sql.calls[0];
-    expect(select.text).toContain('resolved_at IS NULL');
+    const query = sql.calls[0];
+    expect(query.text).toContain('resolved_at IS NULL');
     // The settle cutoff, not `now` — resolving at t+0 would race the answer into
     // existence, since "what did they do next" has not happened yet.
-    const cutoff = select.values.find((v): v is Date => v instanceof Date)!;
+    const cutoff = query.values.find((v): v is Date => v instanceof Date)!;
     expect(NOW.getTime() - cutoff.getTime()).toBe(COMPLIANCE_SETTLE_MS);
+  });
+
+  it('uses one bounded SQL round trip for a full batch', async () => {
+    const pending = Array.from({ length: 100 }, (_, index) => ({
+      id: String(index + 1),
+      session_id: 'su-a',
+      tool_name: 'capability:read',
+      fired_at: settled,
+    }));
+    const sql = harness(pending, [{ tool_name: 'capability:read' }]);
+
+    const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
+
+    expect(out).toEqual({ examined: 100, measured: 100, noFollowUp: 0 });
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).toContain('LEFT JOIN LATERAL');
+    expect(sql.calls[0].text).toContain('FOR UPDATE SKIP LOCKED');
+    expect(sql.calls[0].values).toContain(500);
   });
   it('is a quiet no-op when the telemetry schema has not been migrated yet', async () => {
     // Migration 720 needs ACCESS EXCLUSIVE on a table every operator reads on a
