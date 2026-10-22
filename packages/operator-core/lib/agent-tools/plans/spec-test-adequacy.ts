@@ -862,6 +862,11 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
 // be mistaken for the coverage phrase "only ... test/cover".
 const CLI_FLAG_TOKEN_PATTERN = /--[a-z0-9][a-z0-9-]*/gi;
 
+// A hyphenated compound such as `whitespace-only` or `add-only` uses `only` as
+// an adjective suffix, not as a standalone claim about proof coverage. Keep
+// `client-only coverage` intact because that directly states a coverage limit.
+const HYPHENATED_ONLY_ADJECTIVE_PATTERN = /\b([a-z0-9]+)-only\b(?!\s+coverage\b)/gi;
+
 // Evidence-ledger replacement scope is operational bookkeeping, not a claim about
 // which behavior the proof covers. Strip only that clause before applying the broad
 // prose heuristic so a separate proof limitation in the same note remains visible.
@@ -896,6 +901,7 @@ function explicitCoverageLimitations(value: unknown): string[] {
           if (entry.length === 0) return false;
           const coverageProse = entry
             .replace(CLI_FLAG_TOKEN_PATTERN, ' ')
+            .replace(HYPHENATED_ONLY_ADJECTIVE_PATTERN, '$1 ')
             .replace(EVIDENCE_SUPERSESSION_SCOPE_PATTERN, ' ')
             .replace(BEHAVIOR_GUARD_CONDITION_PATTERN, '$1$2');
           return EXPLICIT_COVERAGE_LIMITATION_PATTERNS.some((pattern) => pattern.test(coverageProse));

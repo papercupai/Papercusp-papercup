@@ -713,7 +713,7 @@ const MECHANISM_EVIDENCE_RE =
 /** A question or a verification PLAN mentions a mechanism without asserting it — the
  *  same mention-vs-use split {@link isConditionalActionMention} makes for actions. */
 const MECHANISM_QUESTION_RE =
-  /\b(?:whether|why\s+does|does\s+the|verify|confirm\s+that|check\s+whether|find\s+out)\b/i;
+  /\b(?:whether|why\s+does|why\s+(?:\w+\s+){1,4}(?:wait(?:s|ing)?|block(?:ed|ing|s)?|need(?:s)?|require(?:s)?|depend(?:s)?|gate(?:d|s)?)|does\s+the|verify|confirm\s+that|check\s+whether|find\s+out)\b/i;
 
 /** Classify a line's causal-mechanism claim, or null when it makes none. */
 function classifyMechanismClaim(

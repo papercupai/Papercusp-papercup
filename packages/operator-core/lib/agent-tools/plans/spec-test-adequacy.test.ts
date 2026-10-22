@@ -5305,6 +5305,17 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
   });
 
   it.each([
+    'The field-path case asserts that an empty and a whitespace-only notApplicable value is refused.',
+    'The caught test title says add-only validated test selection and is not a coverage disclosure.',
+  ])('does not treat a hyphenated -only adjective as a coverage limitation: %s', observations => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({ clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })], classRef: 'plan-class-feature-ship' });
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it.each([
     'Client-only coverage leaves the broader proof incomplete.',
     'Ledger-only re-aim detection is measured. Only the happy path is covered.',
     'The read-only query is verified, but the failure path is not covered.',

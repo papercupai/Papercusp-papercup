@@ -195,7 +195,9 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-hea
 // reached them, so LSP daemons outlived their :3170 generation and pinned
 // superseded staging checkouts until / filled (6 orphans, 2026-10-15). The
 // watch is a no-op off-desktop unless the launcher declared a parent pid.
-if (sidecarMode !== null) startSidecarParentDeathWatch();
+// R6 prechecks are managed tasks that outlive serving-host replacement. As in
+// serve.ts, leave their lifetime to managed-task supervision, not this watch.
+if (sidecarMode !== null && sidecarMode !== 'repair-precheck') startSidecarParentDeathWatch();
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
 if (sidecarMode === 'lsp') {

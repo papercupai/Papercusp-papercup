@@ -30,13 +30,32 @@ function sidecarModeVars(src: string, from: number, to: number): Set<string> {
 
 describe('hono-host sidecar divert arms the parent-death watch (WI-6554700010015388)', () => {
   const decl = honoSrc.indexOf('const sidecarMode');
-  const arm = honoSrc.indexOf('if (sidecarMode !== null) startSidecarParentDeathWatch();');
+  const watchStatement = honoSrc.match(/if \(([^;\n]+)\) startSidecarParentDeathWatch\(\);/);
+  const arm = watchStatement?.index ?? -1;
   const firstDivert = honoSrc.indexOf("if (sidecarMode === '", decl);
 
-  it('arms the watch for every sidecar mode before the first sidecar divert', () => {
+  it('arms the watch for host-bound sidecars before the first sidecar divert', () => {
     expect(decl).toBeGreaterThan(-1);
     expect(arm).toBeGreaterThan(decl);
     expect(firstDivert).toBeGreaterThan(arm);
+  });
+
+  it.each([
+    ['substrate', true],
+    ['spawner', true],
+    ['gateway', true],
+    ['embed', true],
+    ['resource-health', true],
+    ['lsp', true],
+    ['repair-precheck', false],
+    [null, false],
+  ] as const)('applies parent supervision to %s: %s', (mode, expected) => {
+    expect(watchStatement).not.toBeNull();
+    // Execute the actual guard without importing the host and booting services.
+    const runGuard = new Function('sidecarMode', 'startSidecarParentDeathWatch', watchStatement![0]);
+    let armed = false;
+    runGuard(mode, () => { armed = true; });
+    expect(armed).toBe(expected);
   });
 
   it('diverts every packaged sidecar mode that serve.ts arms the watch for', () => {

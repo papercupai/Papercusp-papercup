@@ -162,17 +162,19 @@ function run(argv: string[], env: NodeJS.ProcessEnv, auditFile?: string, input?:
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
-function runViteConfig(configDirectory: string) {
+function runViteConfig(configDirectory: string, configLoader: 'bundle' | 'native' = 'bundle', auditFile?: string) {
   const configFile = join(configDirectory, 'vitest.config.ts');
   const script = [
     "import { loadConfigFromFile } from 'vite';",
     "const loaded = await loadConfigFromFile({ command: 'serve', mode: 'test' }, "
-      + JSON.stringify(configFile) + ', ' + JSON.stringify(configDirectory) + ", 'silent');",
+      + JSON.stringify(configFile) + ', ' + JSON.stringify(configDirectory)
+      + ", 'silent', undefined, " + JSON.stringify(configLoader) + ");",
     "console.log('CONFIG=' + loaded.config.marker);",
   ].join('\n');
   const result = spawnSync(process.execPath, [
     '--import', COMMITTED_SOURCE_LOADER, '--input-type=module', '-e', script,
-  ], { cwd: REPO, env: cleanEnv(), encoding: 'utf8', timeout: 60_000 });
+  ], { cwd: REPO, env: auditFile ? { ...cleanEnv(), [AUDIT_ENV]: auditFile } : cleanEnv(),
+    encoding: 'utf8', timeout: 60_000 });
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
@@ -625,6 +627,28 @@ describe('committed-source loader — Vite config bundles', () => {
     expect(dirty.status).not.toBe(0);
     expect(dirty.stderr).toContain('COMMITTED_SOURCE refused esm-config/vitest.config.ts');
     expect(dirty.stdout).not.toContain('CONFIG=DIRTY');
+  }, 60_000);
+
+  it('accepts native config source without a bundle map and substitutes dirty bytes', () => {
+    const configDirectory = join(fixture, 'esm-config');
+    put(fixture, 'esm-config/vitest.config.ts', 'export default { marker: "HEAD" };\n');
+    const cleanAudit = join(scratch, 'native-config-clean.audit');
+    const clean = runViteConfig(configDirectory, 'native', cleanAudit);
+    expect(clean.status, clean.stderr).toBe(0);
+    expect(clean.stdout).toContain('CONFIG=HEAD');
+    expect(readAudit(cleanAudit)).toContainEqual(expect.objectContaining({
+      via: 'esm', kind: 'committed', rel: 'esm-config/vitest.config.ts',
+    }));
+
+    put(fixture, 'esm-config/vitest.config.ts', 'export default { marker: "DIRTY" };\n');
+    const dirtyAudit = join(scratch, 'native-config-dirty.audit');
+    const dirty = runViteConfig(configDirectory, 'native', dirtyAudit);
+    expect(dirty.status, dirty.stderr).toBe(0);
+    expect(dirty.stdout).toContain('CONFIG=HEAD');
+    expect(dirty.stdout).not.toContain('CONFIG=DIRTY');
+    expect(readAudit(dirtyAudit)).toContainEqual(expect.objectContaining({
+      via: 'esm', kind: 'substituted', rel: 'esm-config/vitest.config.ts',
+    }));
   }, 60_000);
 });
 

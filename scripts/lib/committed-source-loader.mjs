@@ -308,7 +308,10 @@ function judgeViteConfigBundle(file, bytes) {
   const isViteConfigBundle = tempConfigName !== null || namedConfig;
   const map = viteInlineSourceMap(bytes);
   if (!map) {
-    return isViteConfigBundle
+    // Native config loading presents the original source at its real filename. Let the ordinary
+    // committed-source judge verify or substitute those bytes. A Vite temp filename proves this
+    // is a bundle, so its source map is still required to attest the inputs.
+    return tempConfigName !== null
       ? unverifiableViteConfigBundle(file, 'inline-source-map-missing-or-invalid')
       : null;
   }

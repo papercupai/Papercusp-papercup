@@ -37,6 +37,8 @@ describe('conformance test-ledger evidence population', () => {
       worktreeDirty?: boolean;
       commitSha?: string | null;
       skipped?: number;
+      passed?: number;
+      failed?: number;
       includeDetails?: boolean;
     } = {},
   ) {
@@ -51,8 +53,8 @@ describe('conformance test-ledger evidence population', () => {
       workspaceId: workspace,
       harnessSlug: 'papercusp',
       testNamePattern: options.testNamePattern ?? null,
-      passed: status === 'pass' ? 1 : 0,
-      failed: status === 'fail' ? 1 : 0,
+      passed: options.passed ?? (status === 'pass' ? 1 : 0),
+      failed: options.failed ?? (status === 'fail' ? 1 : 0),
       skipped: options.skipped ?? 0,
       collectionFailed: false,
       mutationPhase: null,
@@ -64,6 +66,14 @@ describe('conformance test-ledger evidence population', () => {
       VALUES (${file}, ${workspace}, 'vitest', ${source}, ${status}, ${finishedAt}, ${commitSha}, ${worktreeDirty},
         ${executionDetails === null ? null : db.sql.json(executionDetails as never)})`;
   }
+
+  const r1CasePrefix = 'source-preview export — R-1 selection parity with the installer cut > ';
+  const r1CaseNames = [
+    'ships every selected tracked file, including the submodule contents',
+    'drops every excluded class, node_modules at any depth, and all git metadata',
+    'retains the exact eligible bytes from both internal documentation roots',
+    'equals the installer selection over the same clean commit, minus node_modules',
+  ];
 
   it('keeps a production pass after a newer intentional mutant failure', async () => {
     await record('local', 'pass', 1);
@@ -87,6 +97,69 @@ describe('conformance test-ledger evidence population', () => {
       verdict: 'error',
       value: null,
       detail: expect.stringContaining('name-filtered test run'),
+    });
+  });
+
+  it('judges a named case independently from unrelated failures in the same file', async () => {
+    await record('ci', 'fail', 3, input.workspaceId, { passed: 217, failed: 2 });
+    const caseLoader = async ({ testRunIds, file: selectedFile }: { testRunIds: readonly number[]; file: string }) => {
+      expect(selectedFile).toBe(file);
+      expect(testRunIds).toHaveLength(1);
+      return r1CaseNames.map((testName) => ({
+        caseKey: r1CasePrefix + testName,
+        occurrence: 1,
+        status: 'pass' as const,
+        durationMs: 1,
+      }));
+    };
+    const result = await judgeTestsFromLedger({
+      ...input,
+      cases: r1CaseNames.map((testName) => ({ file, testName })),
+      caseLoader,
+    }, db.sql);
+    expect(result).toMatchObject({ verdict: 'pass', value: 4, unit: 'cases' });
+  });
+
+  it('fails when one named case fails even if its selected siblings pass', async () => {
+    await record('ci', 'fail', 4, input.workspaceId, { passed: 216, failed: 3 });
+    const result = await judgeTestsFromLedger({
+      ...input,
+      cases: r1CaseNames.map((testName) => ({ file, testName })),
+      caseLoader: async () => r1CaseNames.map((testName, index) => ({
+        caseKey: r1CasePrefix + testName,
+        occurrence: 1,
+        status: index === 2 ? 'fail' as const : 'pass' as const,
+        durationMs: 1,
+      })),
+    }, db.sql);
+    expect(result).toMatchObject({ verdict: 'fail', value: 3, unit: 'cases' });
+    expect(result.detail).toContain(r1CaseNames[2]);
+  });
+
+  it('keeps dirty-worktree evidence unjudgeable for a named case', async () => {
+    await record('local', 'pass', 3, input.workspaceId, {
+      testNamePattern: 'equals the installer selection over the same clean commit, minus node_modules',
+      worktreeDirty: true,
+      passed: 1,
+      skipped: 220,
+    });
+    const result = await judgeTestsFromLedger({
+      ...input,
+      cases: [{
+        file,
+        testName: 'equals the installer selection over the same clean commit, minus node_modules',
+      }],
+      caseLoader: async () => [{
+        caseKey: r1CasePrefix + 'equals the installer selection over the same clean commit, minus node_modules',
+        occurrence: 1,
+        status: 'pass',
+        durationMs: 1,
+      }],
+    }, db.sql);
+    expect(result).toMatchObject({
+      verdict: 'error',
+      value: null,
+      detail: expect.stringContaining('worktree was not proven clean'),
     });
   });
 

@@ -28,7 +28,12 @@ import {
   runInstrumentChecks,
   type RubricCheckResult,
 } from '../check-results-ledger';
-import { evaluateCriterionProbeChecks } from '../rubrics-criterion-checks';
+import {
+  evaluateCriterionProbeChecks,
+  loadCriterionCheckCases,
+  type CriterionCaseLoader,
+} from '../rubrics-criterion-checks';
+import { resolveTestCaseFilter, type RecordedTestCase } from '../testing-case-filter';
 import { rescoreProbeDispatcher } from '../harness/routines/rubric-rescore-action';
 import { upsertConditionWorkItem } from '../coord/condition-upsert';
 import { emitAwaitedEvent } from '../events/await/engine';
@@ -112,6 +117,10 @@ export async function judgeTestsFromLedger(
   input: {
     files: readonly string[];
     workspaceId: string;
+    /** Named cases narrow the verdict to exact recorded case outcomes within each file. */
+    cases?: ReadonlyArray<{ file: string; testName: string }>;
+    /** Injectable case reader for focused tests; production reads the per-case ledger. */
+    caseLoader?: CriterionCaseLoader;
     /** Injectable clock for deterministic evidence-window tests. */
     now?: () => Date;
     /** Override only for focused tests; production uses the seven-day policy above. */
@@ -151,6 +160,114 @@ export async function judgeTestsFromLedger(
       || finishedMs < nowMs - maxAgeMs
       || finishedMs > nowMs + SPEC_CONFORMANCE_TEST_EVIDENCE_MAX_FUTURE_SKEW_MS;
   });
+  const latest = rows
+    .map((row) => (row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at ?? '')))
+    .sort()
+    .at(-1);
+  const measuredAt = latest || new Date().toISOString();
+  const caseSelectors = input.cases ?? [];
+  if (caseSelectors.length > 0) {
+    const selectorFiles = new Set(caseSelectors.map((selector) => selector.file));
+    const selectorProblems = [
+      ...input.files.filter((file) => !selectorFiles.has(file)).map((file) => file + ' (no named case selector)'),
+      ...caseSelectors
+        .filter((selector) => !input.files.includes(selector.file))
+        .map((selector) => selector.file + ' (named case selector is outside check.files)'),
+    ];
+    const invalidCaseRows = rows.flatMap((row) => {
+      if (!selectorFiles.has(row.file_path)) return [];
+      const details = parseTestRunExecutionDetails(row.execution_details);
+      if (!details) {
+        return [row.file_path + ' (missing or invalid execution details, test_runs #' + String(row.id) + ')'];
+      }
+      const reasons: string[] = [];
+      if (row.status === 'error') reasons.push('test run status is error');
+      if (details.filePath !== row.file_path) reasons.push('execution details file path mismatch');
+      if (details.collectionFailed) reasons.push('test collection failed');
+      if (row.worktree_dirty !== false || details.worktreeDirty) reasons.push('worktree was not proven clean');
+      if (!row.commit_sha || details.commitSha !== row.commit_sha) reasons.push('commit SHA is absent or inconsistent');
+      if (details.passed + details.failed === 0) reasons.push('no executed cases recorded');
+      return reasons.length > 0
+        ? [row.file_path + ' (' + reasons.join(', ') + ', test_runs #' + String(row.id) + ')']
+        : [];
+    });
+    if (missing.length > 0 || stale.length > 0 || selectorProblems.length > 0 || invalidCaseRows.length > 0) {
+      const unavailable = [
+        ...missing.map((file) => file + ' (no test-run ledger row)'),
+        ...stale.map((row) => row.file_path + ' (stale test-run evidence, test_runs #' + String(row.id) + ')'),
+        ...selectorProblems,
+        ...invalidCaseRows,
+      ];
+      return {
+        kind: 'tests',
+        verdict: 'error',
+        value: null,
+        unit: 'cases',
+        measuredAt,
+        detail: 'named test-case evidence unavailable, stale, or incomplete: ' + unavailable.join('; '),
+      };
+    }
+
+    const loadCases = input.caseLoader ?? loadCriterionCheckCases;
+    const recordedByFile = new Map<string, RecordedTestCase[] | null>();
+    const outcomes = new Map<string, RecordedTestCase>();
+    const caseProblems: string[] = [];
+    for (const selector of caseSelectors) {
+      const row = byFile.get(selector.file);
+      if (!row) continue;
+      const testRunId = Number(row.id);
+      if (!Number.isSafeInteger(testRunId) || testRunId < 1) {
+        caseProblems.push(selector.file + ' (invalid test-run id)');
+        continue;
+      }
+      if (!recordedByFile.has(selector.file)) {
+        try {
+          recordedByFile.set(
+            selector.file,
+            await loadCases({ testRunIds: [testRunId], file: selector.file }),
+          );
+        } catch (error) {
+          caseProblems.push(
+            selector.file + ' (per-case results could not be read: ' +
+              (error instanceof Error ? error.message : String(error)) + ')',
+          );
+          continue;
+        }
+      }
+      const resolution = resolveTestCaseFilter(selector, recordedByFile.get(selector.file));
+      if (!resolution.ok) {
+        caseProblems.push(selector.file + ' (' + resolution.message + ')');
+        continue;
+      }
+      for (const result of resolution.matched) {
+        outcomes.set(JSON.stringify([selector.file, result.caseKey, result.occurrence]), result);
+      }
+    }
+    if (caseProblems.length > 0 || outcomes.size === 0) {
+      return {
+        kind: 'tests',
+        verdict: 'error',
+        value: null,
+        unit: 'cases',
+        measuredAt,
+        detail: 'named test-case evidence unavailable or unresolved: ' +
+          (caseProblems.length > 0 ? caseProblems.join('; ') : 'no selected cases were measured'),
+      };
+    }
+    const measuredCases = [...outcomes.values()];
+    const passingCases = measuredCases.filter((result) => result.status === 'pass');
+    const failingCases = measuredCases.filter((result) => result.status === 'fail');
+    return {
+      kind: 'tests',
+      verdict: failingCases.length > 0 ? 'fail' : 'pass',
+      value: passingCases.length,
+      unit: 'cases',
+      measuredAt,
+      ...(failingCases.length > 0
+        ? { detail: 'failing: ' + failingCases.map((result) => result.caseKey).join('; ') }
+        : {}),
+    };
+  }
   const failing = rows.filter((row) => row.status !== 'pass').map((row) => `${row.file_path} (${row.status}, test_runs #${row.id})`);
   // A passing status is not enough for file-wide evidence: filtered or dirty runs
   // can pass only a subset or a moving source tree. Legacy failure rows remain
@@ -173,11 +290,6 @@ export async function judgeTestsFromLedger(
       ? [`${row.file_path} (${reasons.join(', ')}, test_runs #${row.id})`]
       : [];
   });
-  const latest = rows
-    .map((row) => (row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at ?? '')))
-    .sort()
-    .at(-1);
-  const measuredAt = latest || new Date().toISOString();
   const passing = rows.length - failing.length;
   if (missing.length > 0 || stale.length > 0 || unprovenPasses.length > 0) {
     const unavailable = [
@@ -233,7 +345,16 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
     async evaluateCheck(request: ConformanceCheckRequest) {
       const check = request.check;
       if (check.kind === 'tests') {
-        return judgeTestsFromLedger({ files: check.files, workspaceId: input.workspaceId }, sql());
+        const cases = check.cases ?? (
+          check.testName === undefined
+            ? undefined
+            : [{ file: check.files[0]!, testName: check.testName }]
+        );
+        return judgeTestsFromLedger({
+          files: check.files,
+          workspaceId: input.workspaceId,
+          ...(cases ? { cases } : {}),
+        }, sql());
       }
       if (check.kind === 'probe') {
         const criterion = { key: request.checkId, check };

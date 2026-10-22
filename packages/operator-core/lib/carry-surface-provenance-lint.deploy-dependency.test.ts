@@ -38,6 +38,7 @@ describe('unprobed-deploy-dependency', () => {
     'R-3 probably needs main [inferred]',
     '[self-imposed] hold R-9 until the deploy lands (final shipment bar)',
     'check whether R-3 actually needs main',
+    '#2127 (why agents wait for :3070 before acceptance; answered by this plan)',
     // the corrected premise
     'R-3 does not need main — bg-host already runs it',
     'no longer blocked on the deploy',
