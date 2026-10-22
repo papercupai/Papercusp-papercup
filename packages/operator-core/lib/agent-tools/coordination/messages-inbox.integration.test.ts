@@ -250,7 +250,7 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
    *       with exactly what the authoritative `readInbox` would have returned.
    */
   describe('readInboxWindow — bounded keyset-paged read (WI-6939)', () => {
-    const TOTAL = INBOX_PAGE_ROWS * 2 + 500; // spans 3 pages
+    const TOTAL = INBOX_PAGE_ROWS * 2 + 500; // spans 2 geometrically growing pages
 
     async function seedPages(count: number = TOTAL): Promise<void> {
       await fx.admin`
@@ -294,7 +294,7 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
       const authoritative = await readInbox('alice');
 
       expect(windowed.exhausted).toBe(true);
-      expect(windowed.pages).toBe(3);
+      expect(windowed.pages).toBe(2);
       expect(windowed.rowsScanned).toBe(TOTAL);
       // No under-delivery: byte-identical to the unbounded read it replaces.
       expect(ids(windowed.entries)).toEqual(ids(authoritative));
@@ -315,10 +315,10 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
     it('suppresses a retraction whose NOTICE and TARGET land on different pages', async () => {
       // The invariant the design leans on: a notice is always NEWER than its target
       // and shares its audience, so a newest-first window containing the target also
-      // contains the notice. Here the notice is on page 1 and the victim on page 3 —
+      // contains the notice. Here the notice is on page 1 and the victim on page 2 —
       // markers must accumulate ACROSS pages, not be collected per-page and dropped.
-      await seedPages();
       await seed({ msg_id: 'victim', ts: '2026-01-01T00:00:00.500Z', from: 'bob', to: ['*'] });
+      await seedPages();
       await seed({
         msg_id: 'notice',
         ts: '2026-06-01T00:00:00.000Z',
@@ -344,7 +344,7 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
       // matching rows. The caller of readInbox only ever sees `entries`, so budget
       // exhaustion has to be audible.
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      await seedPages(INBOX_PAGE_ROWS * INBOX_MAX_PAGES + 50);
+      await seedPages(INBOX_FAST_PATH_ROW_CAP + 50);
       const got = await readInboxWindow('alice', {}, () => false);
 
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('page budget'));
@@ -353,10 +353,10 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
 
       expect(got.exhausted).toBe(false);
       expect(got.pages).toBe(INBOX_MAX_PAGES);
-      expect(got.rowsScanned).toBe(INBOX_PAGE_ROWS * INBOX_MAX_PAGES);
-      // The budget is deliberately >= the old row cap, so a bounded read never
-      // reaches LESS history than the unbounded path it replaces.
-      expect(INBOX_PAGE_ROWS * INBOX_MAX_PAGES).toBeGreaterThanOrEqual(INBOX_FAST_PATH_ROW_CAP);
+      expect(got.rowsScanned).toBe(INBOX_FAST_PATH_ROW_CAP);
+      // Geometric growth preserves the same row horizon while reducing the
+      // worst-case serial page count from 25 to five.
+      expect(got.pages).toBe(5);
     });
 
     it('honours since_ts, and a short first page reports exhausted', async () => {

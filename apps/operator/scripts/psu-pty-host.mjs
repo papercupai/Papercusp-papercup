@@ -12103,6 +12103,10 @@ export function hostThroughPty(o) {
     freshChildOwnerInputGeneration = null,
     abortBeforeWrite = null,
     prepareBeforeWrite = null,
+    // A final synchronous guard for facts that can expire while preparation,
+    // startup recovery, or the prompt verifier is awaiting. Runs immediately
+    // before the first PTY byte, after all other pre-write waits.
+    validateBeforeWrite = null,
     onSubmitted = null,
     abortSubmission = () => null,
     // WI-10004943 (d): when set (ms, measured from this call), a kickoff whose
@@ -12553,6 +12557,7 @@ export function hostThroughPty(o) {
           }
           let markerEchoFailureReason = null;
           let submissionObserved = false;
+          let writeValidationComplete = false;
           for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
             const step = steps[stepIndex];
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
@@ -12565,6 +12570,13 @@ export function hostThroughPty(o) {
               }
               markerEchoFailureReason = startupWaitAtStep;
               break;
+            }
+            if (!writeValidationComplete) {
+              const writeValidationRejection = validateBeforeWrite?.();
+              if (typeof writeValidationRejection === 'string' && writeValidationRejection) {
+                return { delivered: false, reason: writeValidationRejection, attempts };
+              }
+              writeValidationComplete = true;
             }
             const chunks = ptyWriteChunks(step.data);
             const marker = stepIndex === 0 && verifyKickoffMarkerEcho
@@ -13941,6 +13953,7 @@ export function hostThroughPty(o) {
           promptAlreadyVerified: true,
           terminateOnSubmitVerifyExhaustion: false,
           submitVerificationRequired: true,
+          validateBeforeWrite: () => rejectWakeProvenance(message, 'rearm-pre-write'),
           onSubmitted: (submission) => {
             submittedTurn = submission;
             if (nativeProofAvailable) nativeSubmission = { ...submission, marker, submissionOnly: true,

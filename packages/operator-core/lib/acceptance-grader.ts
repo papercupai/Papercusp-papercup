@@ -986,12 +986,18 @@ export function classifyAcceptanceGraderTerminalFailure(
  * judge that actually started.
  */
 function hasAcceptanceGraderFirstTurnProgress(normalized: string): boolean {
+  // renderStatusDisplay appends another session's latest tool to its chip row.
+  // That footer can repaint after a terminal error without this judge resuming.
+  const progress = normalized.replace(
+    /^[ \t]*(?:◇|⇢|🔭|✎)[^\n]*⟳[^\n]*(?:\b\d+\s*peers?\b|\bsolo\b)[^\n]*$/gm,
+    '',
+  );
   return (
     /scorecards:emit|rubrics:get|plans:get|work_items:get|papercusp(?:\.tools:invoke|\/tools:invoke)|\bmcp__|PostToolUse hook|\btool(?:_use| call| invocation)\b/i.test(
-      normalized,
+      progress,
     ) ||
-    /\b(?:Thinking|Working)\s*(?:\(|·)/.test(normalized) ||
-    /^\s*[•└├]\s+/m.test(normalized)
+    /\b(?:Thinking|Working)\s*(?:\(|·)/.test(progress) ||
+    /^\s*[•└├]\s+/m.test(progress)
   );
 }
 

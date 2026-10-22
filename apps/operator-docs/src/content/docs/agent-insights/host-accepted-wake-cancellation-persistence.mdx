@@ -15,6 +15,8 @@ documents:
   - "packages/operator-core/lib/events/await/engine.ts"
   - "packages/operator-core/lib/events/await/wake-executor.ts"
   - "apps/operator/scripts/psu-pty-host.mjs :: makeDeliveryDedup"
+  - "apps/operator/scripts/psu-pty-host.mjs :: rejectWakeProvenance"
+  - "apps/operator/lib/psu-pty-host.test.ts"
   - "apps/operator/lib/psu-pty-host-turn.integration.test.ts"
 promotedFrom:
   - kind: work-item
@@ -29,7 +31,9 @@ The pump persists a park's reason in the delivery row's `lastError`. The outcome
 
 WI-6554700010015883 exposed a mismatch: the cancellation and fail-open paths returned `hostCommitPending: true` with reasons outside the old two-prefix checks. On the next retry the engine could retire the durable row without asking the host to cancel its accepted write. The executor used the same incomplete check for terminal host-ending recovery.
 
-`isAcceptedPsuHostDelivery` in `packages/operator-core/lib/events/await/types.ts` is the shared predicate for both consumers. It recognizes `psu-host accepted:`, `psu-host pending-delivery-id:`, `psu-host coalesced-into-pending-turn:`, and the three incumbent cancellation/fail-open reason prefixes. New producer reasons retain the `psu-host accepted:` marker. Supporting incumbent reasons matters: changing only the producers leaves already parked rows exposed.
+`isAcceptedPsuHostDelivery` in `packages/operator-core/lib/events/await/types.ts` is the shared predicate for both consumers. It recognizes `psu-host accepted:`, `psu-host deferred-busy-gate:`, `psu-host pending-delivery-id:`, `psu-host coalesced-into-pending-turn:`, and the three incumbent cancellation/fail-open reason prefixes. New producer reasons retain the `psu-host accepted:` marker. Supporting incumbent reasons matters: changing only the producers leaves already parked rows exposed.
+
+A deferred turn's nonce freshness must also be checked after its prompt re-arm, immediately before its first PTY byte. The initial receive can be fresh and the re-arm can outlast the nonce TTL, so stale re-arms are rejected before injection.
 
 ## Cancellation is a two-stage handshake
 
@@ -39,7 +43,7 @@ The host's `makeDeliveryDedup.requestCancel` records intent. The atomic `beginWr
 
 ## Maintained verification
 
-The engine regression retries persisted incumbent reasons across multiple pumps and requires cancellation metadata until the exact receipt. The executor regression checks terminal host-ending recovery for those same incumbent reasons. The old policy failed eight distinguishing cases; the shared predicate passed the focused engine and executor suites (434 tests, zero skipped, local working-tree evidence recorded on WI5883).
+The engine regression retries persisted incumbent reasons, including `deferred-busy-gate`, across multiple pumps and requires cancellation metadata until the exact receipt. The host unit guard pins provenance validation to the re-arm path immediately before its first PTY byte. The executor regression checks terminal host-ending recovery for the same incumbent reasons.
 
 The real socket/PTY case in `apps/operator/lib/psu-pty-host-turn.integration.test.ts`, “keeps repeated host cancellation requests pending until the real zero-byte receipt (WI5883),” holds an isolated child behind an unsubmitted owner line. Two request ACKs must precede any terminal receipt; releasing the gate must report exact delivery/message IDs and zero bytes written. No native transcript or loop-origin proof is manufactured by that fixture.
 

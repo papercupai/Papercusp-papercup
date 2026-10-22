@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CANDIDATE_SNAPSHOT_MAX_AGE_MS,
+  CANDIDATE_SNAPSHOT_MAX_FAILURES,
   buildCandidateSnapshot,
   candidateSnapshotFailureSignature,
   candidateSnapshotMatchesDispatch,
@@ -206,6 +207,57 @@ describe('candidate snapshot', () => {
         nowMs: 900,
       }),
     ).toBe(false);
+  });
+
+  it('matches a measured failure beyond the snapshot display cap in its frozen queue', () => {
+    const repairHead = 'D'.repeat(40);
+    const snapshot = buildCandidateSnapshot({
+      candidate,
+      failingTests: ['lint:tsc'],
+      repairQueue: { candidate, repairHead, phase: 'awaiting-fixer' },
+    }, 1_000);
+    const retainedTests = Array.from(
+      { length: CANDIDATE_SNAPSHOT_MAX_FAILURES },
+      (_, index) => `lib/retained-${index}.test.ts`,
+    );
+    const queue = { candidate, repairHead, phase: 'awaiting-fixer', failingTests: [...retainedTests, ' lint:tsc '] };
+
+    expect(candidateSnapshotMatchesDispatch(snapshot, { candidate: repairHead, repairQueue: queue, nowMs: 2_000 })).toBe(true);
+    expect(candidateSnapshotMatchesDispatch(snapshot, {
+      candidate: repairHead,
+      repairQueue: { ...queue, failingTests: retainedTests },
+      nowMs: 2_000,
+    })).toBe(false);
+  });
+
+  it('covers fresh failing queue legs while refusing stale or unmeasured leg records', () => {
+    const repairHead = 'D'.repeat(40);
+    const snapshot = buildCandidateSnapshot({
+      candidate,
+      failingTests: ['lint:tsc'],
+      repairQueue: { candidate, repairHead, phase: 'awaiting-fixer' },
+    }, 1_000);
+    const queue = {
+      candidate,
+      repairHead,
+      phase: 'awaiting-fixer',
+      failingTests: ['retained-unit.test.ts'],
+      legs: [{ id: 'lint:tsc', state: 'failing', lastMeasuredHead: repairHead }],
+    };
+    expect(candidateSnapshotMatchesDispatch(snapshot, { candidate: repairHead, repairQueue: queue, nowMs: 2_000 })).toBe(true);
+
+    for (const leg of [
+      { id: 'lint:tsc', state: 'failing', lastMeasuredHead: 'E'.repeat(40) },
+      { id: 'lint:tsc', state: 'passing', lastMeasuredHead: repairHead },
+      { id: 'lint:tsc', state: 'not-checked', lastMeasuredHead: repairHead },
+      { id: 'lint:tsc', state: 'failing' },
+    ]) {
+      expect(candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: repairHead,
+        repairQueue: { ...queue, legs: [leg] },
+        nowMs: 2_000,
+      })).toBe(false);
+    }
   });
 
   // WI-10007398: the snapshot writer prefers the hold tick's leg measurement, while the queue's

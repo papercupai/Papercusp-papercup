@@ -5446,6 +5446,24 @@ describe('work_items:checkpoint — prose path continuity lint (EI-2238651493968
     );
   });
 
+  it('checks a nested repository path as one complete path', async () => {
+    const nested = 'libs/papercusp/packages/orchestrator/src/spawn-mcp.test.ts';
+    const body = `Verified that ${nested} exists in the nested repository.`;
+    resolveCurrentTokens.mockResolvedValue(new Map([[`file:${nested}`, 'sha256:present']]));
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-NESTED-REPO-PATH', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-NESTED-REPO-PATH', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toBeUndefined();
+    expect(resolveCurrentTokens).toHaveBeenCalledWith([`file:${nested}`], {
+      workspaceId: 'default',
+      harness: 'papercup',
+    }, { allowDirectories: true });
+  });
+
   it('checks only narrative prose, not paths quoted by a structured recheck row', async () => {
     const recheckPath = 'packages/operator-core/lib/agent-tools/fleet/respawn-member.ts';
     const stored = withCarryNoteChecks('The implementation is ready.', [

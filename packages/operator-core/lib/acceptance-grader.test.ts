@@ -1877,6 +1877,27 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     })).toBeNull();
   });
 
+  it.each([
+    '⇢aviynw2-pi · ⟳ off · ▶auto · 8 peers ·mcp__pap…',
+    '◇ su-966e6 · ⟳ off · ▶ auto · 11 peers · plans:get',
+    '🔭 review · ◇ su-966e6 · ⟳ off · ▶ auto · 8 peers · rubrics:get',
+  ])('ignores statusline tool names after a completed credit refusal: %s', (statusline) => {
+    const raw = '\u001b[31m  ⎿ \u00a0Credit balance too low · Add funds: \u001b[0m\r\n'
+      + '\r\n✻Sautéed for 1m 13s · done 7:19 AM\r\n────────────────\r\n❯\u00a0'
+      + `\n${statusline}\n[psu] native-turn-failed agent=claude code=native_error retryable=false`;
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toMatchObject({
+      code: 'inference_gateway_error',
+      evidence: expect.stringContaining('Credit balance too low · Add funds:'),
+    });
+    expect(classifyAcceptanceGraderTerminalFailure(raw + '\n• Called mcp__papercusp_su__scorecards_get', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw + '\n● I resumed the audit.', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+  });
+
   it('matches a completed inference-gateway 5xx turn only for a controlled caller', () => {
     const raw =
       '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +

@@ -1358,6 +1358,29 @@ describe('wake provenance TTL guard (EI-18126834395314388)', () => {
     expect(writeGuard).toBeLessThan(staleFireCommit);
     expect(src).toContain('provenanceIssuedAtMs: message.provenanceIssuedAtMs ?? null');
   });
+
+  it('rechecks wake provenance at the actual PTY write boundary for a re-armed turn', () => {
+    const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const rearmStart = src.indexOf('performDelivery: async (message, { drillId, mode }) => {');
+    const rearmEnd = src.indexOf('return recycleChild(message?.data', rearmStart);
+    const rearmGuard = src.indexOf(
+      "validateBeforeWrite: () => rejectWakeProvenance(message, 'rearm-pre-write')",
+      rearmStart,
+    );
+    const writeLoop = src.indexOf('for (let stepIndex = 0; stepIndex < steps.length; stepIndex++)');
+    const finalGuard = src.indexOf('const writeValidationRejection = validateBeforeWrite?.();', writeLoop);
+    const chunks = src.indexOf('const chunks = ptyWriteChunks(step.data);', finalGuard);
+    const byteWrite = src.indexOf('child.write(chunks[i]);', chunks);
+
+    expect(rearmStart).toBeGreaterThan(-1);
+    expect(rearmEnd).toBeGreaterThan(rearmStart);
+    expect(rearmGuard).toBeGreaterThan(rearmStart);
+    expect(rearmGuard).toBeLessThan(rearmEnd);
+    expect(writeLoop).toBeGreaterThan(-1);
+    expect(finalGuard).toBeGreaterThan(-1);
+    expect(finalGuard).toBeLessThan(chunks);
+    expect(chunks).toBeLessThan(byteWrite);
+  });
 });
 
 describe('isCarryRespawnStale (EI-18109211232286833 — age-based carry-respawn dead-man switch)', () => {

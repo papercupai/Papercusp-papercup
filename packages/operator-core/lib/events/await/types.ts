@@ -254,12 +254,15 @@ export function wakeChannelInvokesTurn(channel: WakeChannel | null | undefined):
 }
 
 /** A parked host still owns the delivery until its exact write/cancel/drop receipt.
- * New producers retain the accepted: marker. Keep incumbent park reasons readable
- * across deployment so a handled inbox message cannot retire a queued host write. */
+ * New producers retain the accepted: marker. The deferred-busy-gate reason is
+ * also host-owned: its original accepted write is waiting in the PTY re-arm.
+ * Keep incumbent park reasons readable across deployment so a handled inbox
+ * message cannot retire a queued host write. */
 export function isAcceptedPsuHostDelivery(delivery: Pick<DeliveryWork, 'lastError'>): boolean {
   const reason = delivery.lastError ?? '';
   return [
     'psu-host accepted:',
+    'psu-host deferred-busy-gate:',
     'psu-host pending-delivery-id:',
     'psu-host coalesced-into-pending-turn:',
     'psu-host accepted the cancellation request;',

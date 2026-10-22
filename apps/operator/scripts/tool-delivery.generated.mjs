@@ -9,14 +9,14 @@
 // registry in apps/operator/lib/tool-delivery-floors.ts. Editing this file
 // changes nothing durable: the next generator run overwrites it.
 //
-// Catalog measured: 981 tools.
+// Catalog measured: 986 tools.
 
-/** claude: 1 full + 64 compact = 99989 B of 100000 B. */
+/** claude: 0 full + 65 compact = 99937 B of 100000 B. */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99989,
+  spentBytes: 99937,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 1, compact: 64, deferred: 916 }),
+  counts: Object.freeze({ full: 0, compact: 65, deferred: 921 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -29,7 +29,7 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "coord:orient": "compact",
     "coord:presence": "compact",
     "coord:send": "compact",
-    "coord:whoami": "full",
+    "coord:whoami": "compact",
     "db:migrations": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",
@@ -222,12 +222,12 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** codex: 1 full + 64 compact = 99989 B of 100000 B. */
+/** codex: 0 full + 65 compact = 99937 B of 100000 B. */
 export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99989,
+  spentBytes: 99937,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 1, compact: 64, deferred: 916 }),
+  counts: Object.freeze({ full: 0, compact: 65, deferred: 921 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -240,7 +240,7 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "coord:orient": "compact",
     "coord:presence": "compact",
     "coord:send": "compact",
-    "coord:whoami": "full",
+    "coord:whoami": "compact",
     "db:migrations": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",
@@ -433,12 +433,12 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** omp: 1 full + 64 compact = 99989 B of 100000 B. */
+/** omp: 0 full + 65 compact = 99937 B of 100000 B. */
 export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99989,
+  spentBytes: 99937,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 1, compact: 64, deferred: 916 }),
+  counts: Object.freeze({ full: 0, compact: 65, deferred: 921 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -451,7 +451,7 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "coord:orient": "compact",
     "coord:presence": "compact",
     "coord:send": "compact",
-    "coord:whoami": "full",
+    "coord:whoami": "compact",
     "db:migrations": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",

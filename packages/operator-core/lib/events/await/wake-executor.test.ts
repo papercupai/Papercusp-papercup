@@ -3720,6 +3720,7 @@ describe('executeWake — the liveness ladder', () => {
   });
 
   it.each([
+    'psu-host deferred-busy-gate: delivery accepted before turn-start proof; retry remains durable',
     'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
     'psu-host still owns the accepted delivery; cancellation is unsupported and the retry remains durable',
     'psu-host accepted the fail-open wake retry; waiting for its delivery outcome',

@@ -776,15 +776,16 @@ export function mergeInboxEntries<T extends { msg_id?: unknown; ts?: unknown }>(
   );
 }
 
-/** Rows fetched per keyset page by {@link readInboxWindow}. Sized so a normal
- *  read is satisfied by ONE page while transferring ~20x less than the
- *  unbounded read it replaces. */
+/** Rows fetched by the first keyset page. The common case stays small; each
+ *  underfilled page doubles the next page size to limit serial database trips. */
 export const INBOX_PAGE_ROWS = 1_000;
 
-/** Safety stop on pages walked by one {@link readInboxWindow} call.
- *  INBOX_PAGE_ROWS * INBOX_MAX_PAGES is deliberately >= INBOX_FAST_PATH_ROW_CAP,
- *  so a bounded read can never reach LESS history than the capped full read. */
-export const INBOX_MAX_PAGES = 25;
+function maxPagesForRowBudget(rowBudget: number): number {
+  return Math.max(1, Math.ceil(Math.log2(rowBudget / INBOX_PAGE_ROWS + 1)));
+}
+
+/** Maximum pages needed to cover the same row horizon as the capped full read. */
+export const INBOX_MAX_PAGES = maxPagesForRowBudget(INBOX_FAST_PATH_ROW_CAP);
 
 /** Opt a `readInbox` or `readOutbox` call into the bounded keyset-paged read
  *  (WI-6939 built it for the inbox; EI-19323045109346905 extended it to the
@@ -836,16 +837,20 @@ async function pageCoordEventLogDesc(params: {
   match: (sql: ReturnType<typeof coordSql>) => postgres.Fragment;
   /** Skew-padded lower bound, or null for no bound. */
   sinceBound: string | null;
+  /** Same newest-row horizon as the corresponding capped full-read path. */
+  rowBudget: number;
   /** Caller's stopping rule over the accumulated raw rows. */
   satisfied: (raw: CoordEnvelope[]) => boolean;
 }): Promise<{ raw: CoordEnvelope[]; exhausted: boolean; pages: number }> {
-  const { match, sinceBound, satisfied } = params;
+  const { match, sinceBound, rowBudget, satisfied } = params;
   const raw: CoordEnvelope[] = [];
   let beforeId: string | number | null = null;
   let pages = 0;
   let exhausted = false;
   const sql = coordSql();
-  while (pages < INBOX_MAX_PAGES) {
+  const maxPages = maxPagesForRowBudget(rowBudget);
+  while (pages < maxPages && raw.length < rowBudget) {
+    const pageSize = Math.min(INBOX_PAGE_ROWS * 2 ** pages, rowBudget - raw.length);
     // Explicit annotation: `beforeId` is assigned FROM `rows` and then read back
     // into the next iteration's query, which TS otherwise flags as circular (TS7022).
     const rows: { id: string | number; body: unknown; ts: unknown; msg_id: string }[] = await sql<
@@ -859,14 +864,14 @@ async function pageCoordEventLogDesc(params: {
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
          ${match(sql)}
        ORDER BY id DESC
-       LIMIT ${INBOX_PAGE_ROWS}
+       LIMIT ${pageSize}
     `;
     pages += 1;
     for (const r of rows) {
       raw.push(parseBody(r.body, r));
     }
     // A short page means we reached the end of this owner's matching history.
-    if (rows.length < INBOX_PAGE_ROWS) {
+    if (rows.length < pageSize) {
       exhausted = true;
       break;
     }
@@ -891,10 +896,11 @@ function warnOnPageBudgetExhausted(
   exhausted: boolean,
   pages: number,
   rowsScanned: number,
+  rowBudget: number,
 ): void {
-  if (exhausted || pages < INBOX_MAX_PAGES) return;
+  if (exhausted || rowsScanned < rowBudget) return;
   console.warn(
-    `[${label}] page budget (${INBOX_MAX_PAGES} x ${INBOX_PAGE_ROWS}) exhausted for ` +
+    `[${label}] page budget (${pages} pages, ${rowsScanned}/${rowBudget} rows) exhausted for ` +
       `owner=${ownerId} since_ts=${sinceTs ?? '(none)'} without satisfying the caller's ` +
       `stopping rule — matching rows OLDER than the ${rowsScanned} read were NOT returned; ` +
       'page via since_ts for a genuine full-history backfill.',
@@ -953,6 +959,7 @@ export async function readInboxWindow(
   try {
     const paged = await pageCoordEventLogDesc({
       sinceBound,
+      rowBudget: INBOX_FAST_PATH_ROW_CAP,
       match: (sql) => sql`
         -- Same GIN-backed spelling as the single-shot path above. The ts/id
         -- keyset bounds reduce the candidate range; the native operator keeps recipient
@@ -970,6 +977,7 @@ export async function readInboxWindow(
       paged.exhausted,
       paged.pages,
       paged.raw.length,
+      INBOX_FAST_PATH_ROW_CAP,
     );
     observeFallback('coordination-window-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'inbox' }, { workspaceId: coordWorkspaceId() });
     return {
@@ -986,7 +994,7 @@ export async function readInboxWindow(
     // to avoid (messages.ts's top-level readInbox, coord_event_log queryid
     // 6351213335932394379 — the query WI-1338374 measured at 32k calls/10 days).
     // Under load, a page failing partway through pageCoordEventLogDesc's own
-    // up-to-25-sequential-round-trip loop is plausible, and the fallback then
+    // bounded multi-page loop is plausible, and the fallback then
     // amplifies the load with the single MOST expensive query in this file — a
     // vicious-cycle candidate. Log it so a future occurrence is ATTRIBUTABLE
     // (grep for this tag) instead of requiring the same code trace again.
@@ -1306,6 +1314,7 @@ export async function readOutboxWindow(
   try {
     const paged = await pageCoordEventLogDesc({
       sinceBound,
+      rowBudget: OUTBOX_FAST_PATH_ROW_CAP,
       match: (s) => s`AND body->>'from' = ${ownerId}`,
       satisfied: (raw) => enough(visible(raw)),
     });
@@ -1317,6 +1326,7 @@ export async function readOutboxWindow(
       paged.exhausted,
       paged.pages,
       paged.raw.length,
+      OUTBOX_FAST_PATH_ROW_CAP,
     );
     observeFallback('coordination-window-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'outbox' }, { workspaceId: coordWorkspaceId() });
     return {

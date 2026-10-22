@@ -171,19 +171,13 @@ export function deriveRepoPathsFromText(text: string, opts: DeriveRepoPathsOptio
   const seen = new Set<string>();
   const out: string[] = [];
   for (const m of text.matchAll(REPO_PATH_PATTERN)) {
-    // A formatter can concatenate adjacent path mentions; split a later repo
-    // prefix back out instead of probing a synthetic joined path.
-    const candidates = m[0].split(/\/(?=(?:packages|libs|apps|src|scripts|sql)\/)/g);
-    for (const candidate of candidates) {
-      const p = candidate.replace(TRAILING_PUNCT_RE, '').replace(/\/+$/, '');
-      // Require at least one path separator beyond the prefix dir itself.
-      if (!p.includes('/') || p.split('/').some((seg) => seg.length === 0)) continue;
-      if (opts.repoRoot && !isExistingContainedPath(opts.repoRoot, p)) continue;
-      if (seen.has(p)) continue;
-      seen.add(p);
-      out.push(p);
-      if (out.length >= max) break;
-    }
+    const p = m[0].replace(TRAILING_PUNCT_RE, '').replace(/\/+$/, '');
+    // Require at least one path separator beyond the prefix dir itself.
+    if (!p.includes('/') || p.split('/').some((seg) => seg.length === 0)) continue;
+    if (opts.repoRoot && !isExistingContainedPath(opts.repoRoot, p)) continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
     if (out.length >= max) break;
   }
   return out;

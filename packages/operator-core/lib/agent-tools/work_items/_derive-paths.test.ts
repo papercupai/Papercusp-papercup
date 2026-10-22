@@ -42,6 +42,12 @@ describe('deriveRepoPathsFromText (EI-16028)', () => {
     ]);
   });
 
+  it('preserves a nested repository path that contains another repo prefix', () => {
+    const nested = 'libs/papercusp/packages/orchestrator/src/spawn-mcp.test.ts';
+    expect(deriveRepoPathsFromText(`The failing test is ${nested}.`)).toEqual([nested]);
+    expect(deriveRepoPathsFromText(`The failing test is ${nested}.`, { repoRoot })).toEqual([nested]);
+  });
+
   it('returns empty for text with no repo-path mentions', () => {
     expect(deriveRepoPathsFromText('the gateway is admission-starved, raise the ceiling')).toEqual([]);
   });

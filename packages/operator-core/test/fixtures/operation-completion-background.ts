@@ -133,10 +133,15 @@ try {
         (SELECT count(*)::int FROM harness_shared.adv_sessions WHERE workspace_id = ${workspaceId}) AS workers,
         (SELECT count(*)::int FROM harness_shared.blueprint_operation_invocations WHERE workspace_id = ${workspaceId}) AS submissions,
         (SELECT count(*)::int FROM harness_shared.report_library WHERE workspace_id = ${workspaceId}) AS reports,
+        ((SELECT count(*)::int FROM harness_shared.attention_notifications WHERE workspace_id = ${workspaceId}) +
+         (SELECT count(*)::int FROM harness_shared.coord_event_log WHERE workspace_id = ${workspaceId}
+           AND (surface = 'escalations' OR (surface IN ('messages', 'handoffs')
+             AND jsonb_typeof(body->'to') = 'array' AND body->'to' ? 'human')))) AS notifications,
         (SELECT count(*)::int FROM harness_shared.tool_invocations WHERE workspace_id = ${workspaceId}) AS tool_calls`;
       return row;
     };
     const countsBefore = await counts();
+    assert.equal(countsBefore.notifications, 0, 'the private control starts without human notifications');
     const close = () => setWorkItemState(itemId, 'done', { harness: harnessSlug, by: owner,
       completionAuthority: 'committed', outputPayload: output });
     await assert.rejects(close(), /unmatched request-grain/);

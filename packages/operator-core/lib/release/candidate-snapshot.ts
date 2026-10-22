@@ -115,6 +115,11 @@ export interface CandidateSnapshotDispatchRepairQueue {
   repairHead: string;
   phase: string;
   failingTests?: readonly string[] | null;
+  legs?: readonly {
+    id: string;
+    state: string;
+    lastMeasuredHead?: string | null;
+  }[] | null;
 }
 
 function boundedText(value: unknown, max: number): string | null {
@@ -446,8 +451,24 @@ export function candidateSnapshotMatchesDispatch(
     // still refuses (the queue is stale the other way); an empty observed set never matches here.
     const observed = boundedFailureList(snapshot.failingTests);
     if (observed.length === 0) return false;
-    const covered = new Set(boundedFailureList(queue.failingTests));
-    return observed.every((failure) => covered.has(failure));
+    // The snapshot bounds its diagnostic list; the authoritative queue can contain
+    // more failures. Its tail must still count when checking observed coverage.
+    const uncovered = new Set(observed);
+    for (const entry of queue.failingTests ?? []) {
+      const failure = boundedText(entry, CANDIDATE_SNAPSHOT_MAX_TEXT);
+      if (failure) uncovered.delete(failure);
+      if (uncovered.size === 0) return true;
+    }
+    // A repair tick can discover a failing leg outside the original admitted
+    // signature. The queue records that measurement separately; only a failing
+    // result at this exact repair head can cover the snapshot observation.
+    for (const leg of queue.legs ?? []) {
+      if (leg.state !== 'failing' || !sameSha(leg.lastMeasuredHead, queue.repairHead)) continue;
+      const failure = boundedText(leg.id, CANDIDATE_SNAPSHOT_MAX_TEXT);
+      if (failure) uncovered.delete(failure);
+      if (uncovered.size === 0) return true;
+    }
+    return false;
   }
 
   if (!isCandidateSnapshotFresh(snapshot, nowMs, input.maxAgeMs)) return false;
