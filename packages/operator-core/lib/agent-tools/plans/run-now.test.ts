@@ -23,6 +23,11 @@ vi.mock('../_harness-scope', async (orig) => ({
   harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
 }));
 vi.mock('../../harness/routines/plan-run-action', () => ({ runScheduledPlanFire: vi.fn() }));
+// These handler fixtures do not read registry/pin storage; plan-types tests cover that seam.
+vi.mock('../../plan-types/pins', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../plan-types/pins')>()),
+  withPinnedPlanTypes: <T>(_scope: unknown, fn: () => Promise<T>) => fn(),
+}));
 vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
   readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
