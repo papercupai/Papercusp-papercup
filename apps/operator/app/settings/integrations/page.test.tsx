@@ -368,7 +368,7 @@ describe('Settings → Integrations', () => {
     expect(H.openExternal).not.toHaveBeenCalled();
   });
 
-  it.each(['devto', 'hashnode'])('saves the actual %s publishing credential through the generic card without OAuth', async (id) => {
+  it.each(['devto', 'hashnode', 'discord'])('saves the actual %s package credential through the generic card without OAuth', async (id) => {
     const d = packageDescriptor(id);
     const credentials = d.setup!.credentials!.map((field) => ({ ...field, configured: false, savedAt: null }));
     serve({ providers: [{
@@ -381,7 +381,7 @@ describe('Settings → Integrations', () => {
     render(<Page />);
     const card = within(await screen.findByRole('region', { name: d.displayName }));
     expect(card.getByRole('status').textContent).toBe('Needs 1 of 1 credential');
-    expect(card.getByText('blog.post')).toBeTruthy();
+    for (const capability of d.capabilities) expect(card.getByText(capability)).toBeTruthy();
     expect(card.queryByRole('button', { name: /^Connect/ })).toBeNull();
     expect(card.queryByLabelText('Client ID')).toBeNull();
     expect(card.queryByLabelText('Client secret')).toBeNull();
@@ -389,11 +389,11 @@ describe('Settings → Integrations', () => {
     const input = card.getByLabelText(credentials[0].label) as HTMLInputElement;
     expect(input.type).toBe('password');
     expect(input.value).toBe('');
-    fireEvent.change(input, { target: { value: 'fixture-publishing-key' } });
+    fireEvent.change(input, { target: { value: 'fixture-provider-credential' } });
     fireEvent.click(card.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(call('PUT', path)?.body).toEqual({ values: { [credentials[0].key]: 'fixture-publishing-key' } }));
+    await waitFor(() => expect(call('PUT', path)?.body).toEqual({ values: { [credentials[0].key]: 'fixture-provider-credential' } }));
     await waitFor(() => expect(input.value).toBe(''));
-    expect(H.calls.filter((entry) => /oauth|gql\.hashnode|dev\.to\/api/.test(entry.url))).toEqual([]);
+    expect(H.calls.filter((entry) => /oauth|gql\.hashnode|dev\.to\/api|discord\.com/.test(entry.url))).toEqual([]);
     expect(H.openExternal).not.toHaveBeenCalled();
   });
 

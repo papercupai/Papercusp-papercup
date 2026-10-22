@@ -503,6 +503,43 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     expect(runRow!.detail).not.toHaveProperty('targetItemIds');
   });
 
+  it.each(['running', 'complete'] as const)(
+    'settles only an interrupted ordinary ledger on a recovery-only replay (%s)',
+    async (priorStatus) => {
+      const original = await create();
+      await request(original.id);
+      const runId = `chain-${++run}`;
+      const producingRuntime = { pid: 12345, buildIdentity: 'original-process-build' };
+      await db.sql`INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, started_at, finished_at, detail)
+        VALUES (${runId}, ${scope.workspaceId}, ${scope.harnessSlug}, 'promoter-tick',
+          now() - interval '1 minute', ${priorStatus === 'complete' ? new Date(0) : null},
+          ${JSON.stringify({ status: priorStatus, mode: 'promoter', producingRuntime,
+            outcome: { unit: 'items', attempted: null, successful: null, failureReason: null } })}::text::jsonb)`;
+      const [before] = await db.sql`SELECT finished_at, detail FROM harness_shared.admission_runs WHERE id = ${runId}`;
+      expect(before!.detail).toMatchObject({ status: priorStatus, mode: 'promoter', producingRuntime });
+
+      const result = await runAdmissionPromoterWithRecovery({
+        ...scope, runId, batchSize: 10, recentTerminalDays: 30, model: undefined,
+      }, { sql: db.sql, lockSql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch });
+      expect(result.promoted).toBe(1);
+      const [child] = await db.sql`SELECT detail FROM harness_shared.admission_runs
+        WHERE id = ${`${runId}:recovery:${original.id}`}`;
+      expect(child!.detail.status).toBe('complete');
+      const [parent] = await db.sql`SELECT finished_at, detail FROM harness_shared.admission_runs WHERE id = ${runId}`;
+      if (priorStatus === 'running') {
+        expect(parent!.finished_at).not.toBeNull();
+        expect(parent!.detail).toMatchObject({
+          status: 'failed', mode: 'promoter', producingRuntime,
+          outcome: { successful: null, failureReason: 'replaced-by-recovery' },
+          recoveryRunIds: [`${runId}:recovery:${original.id}`],
+        });
+      } else {
+        expect(parent).toEqual(before);
+      }
+    },
+  );
+
   it('a delivered request cannot lend authority to a target whose current role is denied', async () => {
     const original = await create();
     await request(original.id);

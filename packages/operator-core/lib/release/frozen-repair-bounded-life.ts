@@ -10,6 +10,8 @@
  *  - retire when the failing count has made no new low in
  *    `FROZEN_REPAIR_BOUNDED_LIFE_ROUNDS_WITHOUT_LOW` consecutive rounds (`non-improving`), or the
  *    queue is older than `FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS` (`age`);
+ *  - first settle any verification the current repair head still owes; an admission must
+ *    not be retired against verdicts measured only at its predecessor;
  *  - never retire while the count is still making new lows inside 24h (both bounds unmet);
  *  - at most ONE automatic retirement per install per `FROZEN_REPAIR_BOUNDED_LIFE_RETIRE_WINDOW_MS`;
  *    a second trigger inside that window ESCALATES (once per candidate) instead of retiring;
@@ -31,6 +33,7 @@
  */
 import {
   FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
+  frozenRepairHeadOwesVerification,
   type FrozenCandidateRepairQueue,
   type FrozenRepairConvergenceRound,
 } from './frozen-candidate-repair-queue';
@@ -121,6 +124,7 @@ export interface FrozenRepairBoundedLifeState {
 
 export type FrozenRepairBoundedLifeDeferral =
   | 'promoting'
+  | 'repair-verification-pending'
   | 'admission-precheck-running'
   | 'dispatch-reserved';
 
@@ -200,6 +204,12 @@ export function decideFrozenRepairBoundedLife(
   // A promotion is already in flight: main is moving to this lineage. Never cut under it.
   if (queue.phase === 'ready-to-promote') {
     return { kind: 'deferred', trigger, reason: 'promoting', ...basis };
+  }
+  // D-084 / EI-26652045828502628: a newly admitted head must receive the
+  // verification it already owes before the old queue's age/history can retire
+  // it. The shared predicate also covers an explicitly requested same-head retest.
+  if (frozenRepairHeadOwesVerification(queue)) {
+    return { kind: 'deferred', trigger, reason: 'repair-verification-pending', ...basis };
   }
   const precheck = queue.admissionPrecheck;
   if (precheck && precheck.status === 'running' && precheck.expiresAtMs > input.nowMs) {

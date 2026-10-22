@@ -2721,6 +2721,35 @@ async function beginRun(
     ON CONFLICT (id) DO NOTHING`;
 }
 
+/**
+ * A replay can switch from an interrupted ordinary pass to exact-item recovery.
+ * Its successful child passes do not complete the original ordinary screening.
+ * Settle only that unfinished row, preserving its original producer and evidence.
+ */
+export async function settleAdmissionRunReplacedByRecovery(
+  sql: OrgSql,
+  input: { runId: string; workspaceId: string; harnessSlug: string; recoveryRunIds: readonly string[] },
+): Promise<void> {
+  const replacement = JSON.stringify({
+    status: 'failed',
+    error: 'ordinary admission pass interrupted; workflow replay ran exact-item recovery instead',
+    recoveryRunIds: input.recoveryRunIds,
+  });
+  await sql`
+    UPDATE harness_shared.admission_runs
+       SET finished_at = now(),
+           detail = COALESCE(detail, '{}'::jsonb) || ${replacement}::text::jsonb ||
+             jsonb_build_object('outcome', COALESCE(detail->'outcome', '{}'::jsonb) ||
+               jsonb_build_object('failureReason', 'replaced-by-recovery'))
+     WHERE id = ${input.runId}
+       AND workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND run_kind = 'promoter-tick'
+       AND detail->>'mode' = 'promoter'
+       AND detail->>'status' = 'running'
+       AND finished_at IS NULL`;
+}
+
 async function finishRun(
   sql: OrgSql,
   input: {

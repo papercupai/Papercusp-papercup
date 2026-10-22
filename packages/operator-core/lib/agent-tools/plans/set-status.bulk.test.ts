@@ -103,6 +103,15 @@ const laneSync = vi.hoisted(() => ({
     skippedGatedState: [],
   })),
 }));
+const planDrainMocks = vi.hoisted(() => ({
+  planDrainTransitionMutationGated: vi.fn(async () => ({
+    newBody: null,
+    value: { applied: false, to: null },
+  })),
+}));
+vi.mock('./plan-drain-transition', () => ({
+  planDrainTransitionMutationGated: planDrainMocks.planDrainTransitionMutationGated,
+}));
 vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
   findAllLinkedWorkItems: vi.fn(async () => []),
   reconcileLinkedWorkItemsForPlanItem: laneSync.terminal,
@@ -140,7 +149,12 @@ function lockReturnsMutatorValue(
     const fakeBody = knownItems.has(itemId)
       ? `- **${itemId}** \`${status}\` x${importance ? ` importance: ${importance}` : ''}`
       : '';
-    const { value } = await (mutate as (b: string | null) => Promise<{ value: unknown }>)(fakeBody);
+    const lockScope = { workspaceId: 'default', harnessSlug: 'papercup' };
+    const { value } = await (mutate as (
+      body: string | null,
+      metadata: unknown,
+      scope: { workspaceId: string; harnessSlug: string },
+    ) => Promise<{ value: unknown }>)(fakeBody, undefined, lockScope);
     return { kind: 'ok', value, filePath: 'plan.md' } as never;
   });
 }
@@ -194,7 +208,7 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
       oldStatus: 'todo',
       newStatus: 'wip',
     });
-    expect(laneSync.item).toHaveBeenCalledWith('plan-a', 'P-001', null);
+    expect(laneSync.item).toHaveBeenCalledWith('plan-a', 'P-001', null, undefined);
     expect(laneSync.dependents).not.toHaveBeenCalled();
   });
 
@@ -263,8 +277,8 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
       { planSlug: 'plan-a', itemId: 'P-002', harnessSlug: null },
       { knownTerminalStatus: 'done' },
     );
-    expect(laneSync.dependents).toHaveBeenNthCalledWith(1, 'plan-a', 'P-001', null);
-    expect(laneSync.dependents).toHaveBeenNthCalledWith(2, 'plan-a', 'P-002', null);
+    expect(laneSync.dependents).toHaveBeenNthCalledWith(1, 'plan-a', 'P-001', null, undefined);
+    expect(laneSync.dependents).toHaveBeenNthCalledWith(2, 'plan-a', 'P-002', null, undefined);
   });
 
   it('awaits terminal reconciliation for dropped before returning', async () => {
@@ -277,6 +291,10 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
     });
 
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(planDrainMocks.planDrainTransitionMutationGated).toHaveBeenCalledWith(
+      expect.any(String),
+      { planSlug: 'plan-a', harnessSlug: 'papercup', workspaceId: 'default' },
+    );
     expect(laneSync.terminal).toHaveBeenCalledWith(
       { planSlug: 'plan-a', itemId: 'P-003', harnessSlug: null },
       { knownTerminalStatus: 'dropped' },

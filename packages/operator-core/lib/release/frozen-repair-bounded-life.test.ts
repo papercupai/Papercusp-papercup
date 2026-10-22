@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import { settleFrozenRepairRetestRequest, type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import {
   FROZEN_REPAIR_BOUNDED_LIFE_HISTORY_CAP,
   FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS,
@@ -116,6 +116,67 @@ describe('P-021 bounded-life decision', () => {
         { nowMs: NOW, state: null },
       ),
     ).toMatchObject({ kind: 'deferred', reason: 'dispatch-reserved' });
+  });
+
+  it.each([
+    { counts: [3, 5, 8, 12, 28], ageMs: HOUR, trigger: 'non-improving' },
+    { counts: [10, 8, 6], ageMs: FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS + 1, trigger: 'age' },
+  ])('measures an admitted repair before applying the $trigger retirement bound', ({ counts, ageMs, trigger }) => {
+    const pending = queue(counts, ageMs, { phase: 'ready-to-verify' });
+    // These verdicts belong to the old candidate. The newly admitted repair head
+    // must get its own verdict before the old history can retire the lineage.
+    pending.convergenceRounds = pending.convergenceRounds!.map((round) => ({ ...round, head: C }));
+    expect(decideFrozenRepairBoundedLife(pending, { nowMs: NOW, state: null })).toMatchObject({
+      kind: 'deferred',
+      reason: 'repair-verification-pending',
+    });
+
+    const measured = {
+      ...pending,
+      phase: 'awaiting-fixer' as const,
+      convergenceRounds: [
+        ...pending.convergenceRounds,
+        { round: counts.length + 1, head: H, failingCount: counts[counts.length - 1]!, atMs: NOW },
+      ],
+    };
+    // Deferral is sequencing, not an exemption: the unchanged bound applies
+    // again once this head has actually been measured.
+    expect(decideFrozenRepairBoundedLife(measured, { nowMs: NOW, state: null })).toMatchObject({
+      kind: 'retire',
+      trigger,
+    });
+  });
+
+  it('preserves an owed same-head retest until its matching request is settled', () => {
+    const pending = queue([3, 5, 8, 12, 28], HOUR, {
+      phase: 'ready-to-verify',
+      unmeasuredRetestHead: H,
+      retestRequested: { candidate: C, repairHead: H, requestedAtMs: NOW - 1 },
+    });
+    // H already has a recorded verdict. Only the explicit retest marker makes
+    // this head still owe verification; a never-judged-head check is insufficient.
+    expect(decideFrozenRepairBoundedLife(pending, { nowMs: NOW, state: null })).toMatchObject({
+      kind: 'deferred', reason: 'repair-verification-pending',
+    });
+    const olderHead = settleFrozenRepairRetestRequest(pending, C);
+    expect(olderHead.kind).toBe('refire');
+    expect(decideFrozenRepairBoundedLife(olderHead.queue, { nowMs: NOW, state: null })).toMatchObject({
+      kind: 'deferred', reason: 'repair-verification-pending',
+    });
+
+    const settled = settleFrozenRepairRetestRequest(pending, H);
+    expect(settled.kind).toBe('settled');
+    expect(settled.queue.retestRequested).toBeUndefined();
+    expect(decideFrozenRepairBoundedLife(settled.queue, { nowMs: NOW, state: null })).toMatchObject({
+      kind: 'retire', trigger: 'non-improving',
+    });
+  });
+
+  it('does not invent a pending repair when the head is still the original candidate', () => {
+    expect(decideFrozenRepairBoundedLife(
+      queue([], FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS + 1, { repairHead: C }),
+      { nowMs: NOW, state: null },
+    )).toMatchObject({ kind: 'retire', trigger: 'age' });
   });
 
   it('rate-limits a second retirement inside 24h and escalates once per candidate', () => {

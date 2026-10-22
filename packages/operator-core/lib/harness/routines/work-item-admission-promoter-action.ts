@@ -14,6 +14,7 @@ import {
   readPromoterLiveness,
   runWorkItemAdmissionFailOpen,
   runWorkItemAdmissionPromoter,
+  settleAdmissionRunReplacedByRecovery,
   normalizeAdmissionTargetIds,
   WORK_ITEM_ADMISSION_FAIL_OPEN,
   WORK_ITEM_ADMISSION_PROMOTER,
@@ -108,20 +109,28 @@ export async function runAdmissionPromoterWithRecovery(
   }, deps.sql);
   // A request-accelerated fire must not also accelerate writes to unrelated items.
   // The routine engine has already retained its ordinary recurring cadence.
-  if (recovered > 0) return recoveryRuns.reduce<PromoterRunResult>((total, run) => ({
-    ...total,
-    batchSize: total.batchSize + run.batchSize, flaggedPairs: total.flaggedPairs + run.flaggedPairs,
-    promoted: total.promoted + run.promoted, merged: total.merged + run.merged, held: total.held + run.held,
-    modelCalled: total.modelCalled || run.modelCalled, tokensIn: total.tokensIn + run.tokensIn,
-    tokensOut: total.tokensOut + run.tokensOut,
-    censusBefore: recoveryRuns[0]!.censusBefore, censusAfter: run.censusAfter,
-    guardRefusals: [...(total.guardRefusals ?? []), ...(run.guardRefusals ?? [])],
-    writerCoverageGap: [...total.writerCoverageGap, ...run.writerCoverageGap],
-  }), {
-    runId: options.runId, batchSize: 0, flaggedPairs: 0, promoted: 0, merged: 0, held: 0,
-    modelCalled: false, tokensIn: 0, tokensOut: 0, censusBefore: 0, censusAfter: 0,
-    guardRefusals: [], writerCoverageGap: [],
-  });
+  if (recovered > 0) {
+    await settleAdmissionRunReplacedByRecovery(deps.sql, {
+      runId: options.runId,
+      workspaceId: options.workspaceId,
+      harnessSlug: options.harnessSlug,
+      recoveryRunIds: recoveryRuns.map((run) => run.runId),
+    });
+    return recoveryRuns.reduce<PromoterRunResult>((total, run) => ({
+      ...total,
+      batchSize: total.batchSize + run.batchSize, flaggedPairs: total.flaggedPairs + run.flaggedPairs,
+      promoted: total.promoted + run.promoted, merged: total.merged + run.merged, held: total.held + run.held,
+      modelCalled: total.modelCalled || run.modelCalled, tokensIn: total.tokensIn + run.tokensIn,
+      tokensOut: total.tokensOut + run.tokensOut,
+      censusBefore: recoveryRuns[0]!.censusBefore, censusAfter: run.censusAfter,
+      guardRefusals: [...(total.guardRefusals ?? []), ...(run.guardRefusals ?? [])],
+      writerCoverageGap: [...total.writerCoverageGap, ...run.writerCoverageGap],
+    }), {
+      runId: options.runId, batchSize: 0, flaggedPairs: 0, promoted: 0, merged: 0, held: 0,
+      modelCalled: false, tokensIn: 0, tokensOut: 0, censusBefore: 0, censusAfter: 0,
+      guardRefusals: [], writerCoverageGap: [],
+    });
+  }
   const componentScreeningItemIds = options.targetItemIds === undefined
     ? await readAuthorizedComponentScreeningIds(options, deps, deps.sql) : [];
   return runWorkItemAdmissionPromoter({
