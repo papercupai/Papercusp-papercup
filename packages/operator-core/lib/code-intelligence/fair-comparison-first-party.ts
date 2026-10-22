@@ -177,6 +177,12 @@ const itemId = (i: TsModule.CallHierarchyItem): string => `${i.file}#${i.selecti
 
 /** One case through the LanguageService. Pure over an opened tree, so it is tested on the real micro repo. */
 export function askTypescript(tree: TsTree, kase: FairCase): RawReply {
+  // This program reads JS/TS only. Without admission, a foreign anchor has no
+  // declaration and narrowToAnchor's same-name fallback searches unrelated
+  // JS/TS homonyms (including expensive whole-tree reference queries). Keep
+  // unsupported coverage explicit rather than answering a different question.
+  if (kase.language && kase.language !== 'javascript' && kase.language !== 'typescript')
+    return { sites: [], error: `declined: unsupported TypeScript LanguageService language '${kase.language}'` };
   const program = tree.service.getProgram();
   if (!program) return { sites: [], error: 'TypeScript produced no program for the tree' };
   const all = tsDeclarations(tree, program, kase.subject);

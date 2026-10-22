@@ -162,6 +162,26 @@ describe('P-006: a resume read that misses its bound is parked for the next batc
     expect(settledRecord.phaseMs).toHaveProperty('pushedSubjects');
   });
 
+  it('records bounded phase error details so a late context failure can be diagnosed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failure = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+      const { deps } = resumeDeps({ epoch: async () => { throw failure; } });
+      expect(await boundedResumeContext(input(), (value, diagnostics) => readPushResumeContext(value, deps, diagnostics)))
+        .toBeUndefined();
+      let errorLine: string | undefined;
+      await vi.waitFor(() => {
+        errorLine = warn.mock.calls.map(([message]) => String(message))
+          .find(line => line.startsWith('[code-intel-resume-context] ') && line.includes('"event":"read-error"'));
+        expect(errorLine).toBeDefined();
+      });
+      const record = JSON.parse(errorLine!.slice(errorLine!.indexOf(']') + 2));
+      expect(record.phaseOutcomes.epoch).toBe('error');
+      expect(record.phaseErrors.epoch).toBe('Error: [57014]: canceling statement due to statement timeout');
+      expect(record.readId).toBeTruthy();
+    } finally { warn.mockRestore(); }
+  });
+
   it('joins an in-flight read rather than starting another, and keys it per (workspace, owner)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const slow = slowChannel();

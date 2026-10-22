@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as ts from 'typescript';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { CodeIntelAnswer, SymbolSite } from './contracts';
 import type { FairCase } from './fair-comparison';
 import { materializeMicroRepo, runConformance } from './fair-comparison-arms';
@@ -149,6 +149,22 @@ describe('no-third-party arm on the real micro repo (TypeScript LanguageService)
     const r = askTypescript(tree, kase('callers', 'add', 'src/util/math.ts'));
     expect(r.sites.map((s) => `${s.path}:${s.line1}`).sort()).toEqual(['src/app/report.ts:4', 'src/app/report.ts:7', 'src/app/report.ts:8', 'src/util/math.ts:7']);
   });
+
+  it.each(['rust', 'python', 'go'] as const)(
+    'declines %s before unrelated TypeScript homonyms reach whole-tree reference search', language => {
+      const positive = askTypescript(tree, { ...kase('references', 'add', 'src/util/math.ts'), language: 'typescript' });
+      expect(positive.error).toBeNull();
+      expect(positive.sites.length).toBeGreaterThan(0);
+      const findReferences = vi.spyOn(tree.service, 'findReferences');
+      try {
+        const unsupported = askTypescript(tree, {
+          ...kase('references', 'add', `native-controls/${language}/control`), language,
+        });
+        expect(unsupported.error).toEqual(expect.stringMatching(/^declined:.*unsupported.*language/));
+        expect(unsupported.sites).toEqual([]);
+        expect(findReferences).not.toHaveBeenCalled();
+      } finally { findReferences.mockRestore(); }
+    });
 
   it('callees omit default-lib targets as neutral and say how many', () => {
     const r = askTypescript(tree, kase('callees', 'report', 'src/app/report.ts'));

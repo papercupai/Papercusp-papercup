@@ -137,13 +137,14 @@ function configuredRemoteTrackingRef(branch: string): { trackingRef: string; rem
 }
 
 /** Injectable git runner (returns trimmed stdout, or null on any failure). */
-export type GitRunner = (repo: string, args: string[]) => Promise<string | null>;
+export type GitRunner = (repo: string, args: string[], signal?: AbortSignal) => Promise<string | null>;
 
 export function gitPipelinePositionSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return gitSidecarEnabled('PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR', env);
 }
 
-export const realGit: GitRunner = async (repo, args) => {
+export const realGit: GitRunner = async (repo, args, signal) => {
+  if (signal?.aborted) return null;
   const argv = ['-C', repo, ...args];
   const env = args[0] === 'status'
     ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
@@ -155,22 +156,33 @@ export const realGit: GitRunner = async (repo, args) => {
   // fallback is counted/circuit-broken by the shared seam.
   if (gitPipelinePositionSidecarEnabled()) {
     try {
-      const result = await runGitViaSpawnerSidecar(
-        argv,
-        process.cwd(),
-        GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
-        env,
-      );
+      const result = signal
+        ? await runGitViaSpawnerSidecar(
+            argv,
+            process.cwd(),
+            GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+            env,
+            { signal },
+          )
+        : await runGitViaSpawnerSidecar(
+            argv,
+            process.cwd(),
+            GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+            env,
+          );
       return result.code === 0 ? result.stdout.trim() : null;
     } catch (error) {
+      if (signal?.aborted) return null;
       noteSidecarFallback('git-pipeline-position', error);
     }
   }
+  if (signal?.aborted) return null;
   try {
     const { stdout } = await pexec('git', argv, {
       maxBuffer: 16 * 1024 * 1024,
       timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
       ...(args[0] === 'status' ? { env } : {}),
+      ...(signal ? { signal } : {}),
     });
     return stdout.trim();
   } catch {
@@ -191,6 +203,8 @@ export const GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS = 35_000;
 
 export interface GitReadBudgetOptions {
   budgetMs?: number;
+  /** Stop launching reads and cancel the in-flight child when the owning call is cancelled. */
+  signal?: AbortSignal;
   /** Injectable clock (tests). */
   now?: () => number;
   /** Fired ONCE, on the first read refused for budget. */
@@ -224,6 +238,7 @@ export function withGitReadBudget(
   const memo = new Map<string, Promise<string | null>>();
   const stats: GitReadBudgetStats = { requested: 0, spawned: 0, deduped: 0, refused: 0 };
   const git: GitRunner = (repo, args) => {
+    if (opts.signal?.aborted) return Promise.resolve(null);
     stats.requested += 1;
     const key = `${repo}\u0000${args.join('\u0000')}`;
     const hit = memo.get(key);
@@ -237,7 +252,7 @@ export function withGitReadBudget(
       return Promise.resolve(null);
     }
     stats.spawned += 1;
-    const pending = base(repo, args);
+    const pending = base(repo, args, opts.signal);
     memo.set(key, pending);
     return pending;
   };
@@ -4676,8 +4691,8 @@ export function resolveEditTreeRoot(integrationRoot: string, env: NodeJS.Process
 
 export interface PipelinePositionDeps {
   git?: GitRunner;
-  /** EI-24040329952723202: override the per-call git read budget / clock. TESTS only — the default is the real budget. */
-  gitReadBudget?: Pick<GitReadBudgetOptions, 'budgetMs' | 'now'>;
+  /** Caller-scoped git budget/cancellation; omitted callers keep the 35s default. */
+  gitReadBudget?: Pick<GitReadBudgetOptions, 'budgetMs' | 'now' | 'signal'>;
   /** EI-24049239243821100: the edit-tree resolution; defaults to {@link resolveEditTreeRoot}. */
   resolveEditTreeRoot?: (integrationRoot: string) => string;
   loadDeploy?: () => Promise<DevDeployState>;

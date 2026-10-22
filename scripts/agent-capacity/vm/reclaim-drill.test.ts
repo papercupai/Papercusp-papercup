@@ -25,6 +25,13 @@ case "$*" in
   *"compute scp"*) exit 0 ;;
   *"compute ssh"*)
     case "$*" in
+      *" -N "*)
+        if [ -n "$FAKE_IPV4_IN_USE" ]; then
+          # OpenSSH can report success for an implicit localhost forward that
+          # only bound IPv6. An explicit occupied IPv4 listener must fail.
+          : > "$q"
+          case "$*" in *"-R 127.0.0.1:8788:"*) exit 255 ;; *) exit 0 ;; esac
+        fi ;;
       *healthz*) [ -n "$FAKE_GW_DOWN" ] && echo 000 || echo 200 ;;
       *"--command true"*)
         n=$(cat "$FAKE/ssh.tries" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE/ssh.tries"
@@ -68,6 +75,13 @@ describe('vm/reclaim-drill.sh (faked gcloud)', () => {
       },
     });
   const lines = (s: string) => s.split('\n').map((l) => l.replace(/ \d{4}-\d\d-\d\dT[\d:.]+Z$/, ''));
+
+  it('tunnel: refuses an occupied IPv4 route instead of accepting an IPv6-only forward', () => {
+    const r = run(['tunnel', 'cap-x', 'proj', 'zone-a'], { FAKE_IPV4_IN_USE: '1' });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(lines(r.stdout)).toContain('TUNNEL_CLOSED rc=255');
+    expect(lines(r.stdout)).toContain('TUNNEL_VM_GONE');
+  });
 
   it('reclaim: fires the preemption, waits for TERMINATED, restarts, waits for RUNNING and ssh, in that order', () => {
     const r = run(['reclaim', 'cap-x', 'proj', 'zone-a'], { FAKE_SSH_FAIL: '1' });

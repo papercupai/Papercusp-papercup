@@ -8,6 +8,7 @@ import {
   DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS,
   MAX_DEPLOYMENT_POSITION_PATHS,
 } from './deployment-position';
+import { deploymentPositionForPaths } from '../../deployment-position';
 
 function position(path: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -126,6 +127,44 @@ describe('deploymentPositionForEvidence', () => {
       truncated: false,
       unknownReason: 'timeout',
     });
+  });
+
+  it('aborts every evidence path on one shared signal and keeps the exact timeout UNKNOWN', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const signals: AbortSignal[] = [];
+    vi.useFakeTimers();
+    gitPipelinePosition.mockImplementation((_input: unknown, deps?: { gitReadBudget?: { signal?: AbortSignal } }) => {
+      const signal = deps?.gitReadBudget?.signal;
+      if (signal) signals.push(signal);
+      return new Promise(() => {});
+    });
+    const paths = Array.from({ length: MAX_DEPLOYMENT_POSITION_PATHS }, (_, i) => 'src/' + i + '.ts');
+
+    const resultPromise = deploymentPositionForEvidence({ filesChanged: paths });
+    await vi.advanceTimersByTimeAsync(DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS);
+    const result = await resultPromise;
+    warnSpy.mockRestore();
+
+    expect(signals).toHaveLength(MAX_DEPLOYMENT_POSITION_PATHS);
+    expect(new Set(signals).size).toBe(1);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(result).toEqual({
+      paths: [],
+      unknownPaths: paths,
+      totalPaths: paths.length,
+      truncated: false,
+      unknownReason: 'timeout',
+    });
+  });
+
+  it('leaves shared path callers on the default pipeline budget when no evidence options are passed', async () => {
+    gitPipelinePosition.mockResolvedValue(position('src/a.ts'));
+
+    await expect(deploymentPositionForPaths(['src/a.ts'])).resolves.toMatchObject({
+      paths: [{ path: 'src/a.ts' }],
+      unknownPaths: [],
+    });
+    expect(gitPipelinePosition).toHaveBeenCalledWith({ path: 'src/a.ts' });
   });
 
   it('resolves promptly (well inside the timeout) when gitPipelinePosition answers fast', async () => {

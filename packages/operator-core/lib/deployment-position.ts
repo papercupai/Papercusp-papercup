@@ -16,7 +16,11 @@
  * "not deployed" because the probe threw would be manufacturing exactly the
  * confident-but-wrong verdict this join exists to prevent.
  */
-import { gitPipelinePosition, type PipelinePosition } from './git-pipeline-position';
+import {
+  gitPipelinePosition,
+  GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS,
+  type PipelinePosition,
+} from './git-pipeline-position';
 
 /**
  * Callers may name many paths (completion evidence accepts up to 60); do not fan
@@ -53,6 +57,12 @@ export interface DeploymentPositionForPaths {
   totalPaths: number;
   /** True when the caller named more paths than this read probes. */
   truncated: boolean;
+}
+
+/** Optional caller-local cancellation and deadline. Omitted callers retain the shared defaults. */
+export interface DeploymentPositionReadOptions {
+  signal?: AbortSignal;
+  deadlineMs?: number;
 }
 
 /**
@@ -126,6 +136,7 @@ function deployedLegIsMeasured(entry: DeploymentPath): boolean {
  */
 export async function deploymentPositionForPaths(
   paths: readonly string[],
+  options: DeploymentPositionReadOptions = {},
 ): Promise<DeploymentPositionForPaths> {
   const distinct = [...new Set(paths.map((entry) => entry.trim()).filter(Boolean))];
   const selected = distinct.slice(0, MAX_DEPLOYMENT_POSITION_PATHS);
@@ -133,7 +144,21 @@ export async function deploymentPositionForPaths(
   const resolved = await Promise.all(
     selected.map(async (path) => {
       try {
-        const result = await gitPipelinePosition({ path });
+        const remainingMs = options.deadlineMs === undefined ? undefined : options.deadlineMs - Date.now();
+        if (options.signal?.aborted || (remainingMs !== undefined && remainingMs <= 0)) {
+          return { path, result: null };
+        }
+        const gitReadBudget = options.signal || remainingMs !== undefined
+          ? {
+              ...(options.signal ? { signal: options.signal } : {}),
+              ...(remainingMs !== undefined
+                ? { budgetMs: Math.min(GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS, remainingMs) }
+                : {}),
+            }
+          : undefined;
+        const result = gitReadBudget
+          ? await gitPipelinePosition({ path }, { gitReadBudget })
+          : await gitPipelinePosition({ path });
         return { path, result };
       } catch {
         return { path, result: null };

@@ -60,9 +60,11 @@ tunnel)
     st=$(status)
     case "$st" in
       RUNNING) say "TUNNEL_OPEN"
+        # Clients use 127.0.0.1. An implicit localhost bind can succeed only on ::1
+        # while another gateway owns IPv4, despite ExitOnForwardFailure=yes.
         gcloud compute ssh "$VM" --project="$PROJECT" --zone="$ZONE" --quiet -- -N \
           -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes \
-          -R 8788:127.0.0.1:8788 >>"$LOG" 2>&1
+          -R 127.0.0.1:8788:127.0.0.1:8788 >>"$LOG" 2>&1
         say "TUNNEL_CLOSED rc=$?" ;;
       "") say "TUNNEL_VM_GONE"; exit 0 ;;
       *) sleep 5 ;;

@@ -34,6 +34,7 @@ import {
   GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
   realGit,
   realResolveGateCandidates,
+  withGitReadBudget,
 } from './git-pipeline-position';
 
 describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () => {
@@ -132,5 +133,63 @@ describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () =>
         }),
       );
     }
+  });
+
+  it('cancels an in-flight local git child and preserves UNKNOWN when its caller aborts', async () => {
+    const controller = new AbortController();
+    childProcessMocks.execFile.mockImplementation((_command, _args, options, callback) => {
+      const signal = (options as { signal?: AbortSignal }).signal;
+      signal?.addEventListener('abort', () => {
+        callback(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' }));
+      }, { once: true });
+    });
+
+    const pending = realGit('/repo', ['rev-parse', 'HEAD'], controller.signal);
+    controller.abort();
+
+    await expect(pending).resolves.toBeNull();
+    expect(childProcessMocks.execFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/repo', 'rev-parse', 'HEAD'],
+      expect.objectContaining({ signal: controller.signal }),
+      expect.any(Function),
+    );
+  });
+
+  it('does not launch later reads after the shared git budget signal aborts', async () => {
+    const controller = new AbortController();
+    const base = vi.fn(async (_repo: string, _args: string[], signal?: AbortSignal) =>
+      signal?.aborted ? null : 'ok');
+    const { git } = withGitReadBudget(base, { signal: controller.signal });
+
+    await expect(git('/repo', ['rev-parse', 'HEAD'])).resolves.toBe('ok');
+    controller.abort();
+    await expect(git('/repo', ['log', '-1'])).resolves.toBeNull();
+    expect(base).toHaveBeenCalledTimes(1);
+    expect(base).toHaveBeenCalledWith('/repo', ['rev-parse', 'HEAD'], controller.signal);
+  });
+
+  it('does not retry locally when an in-flight sidecar git call is cancelled', async () => {
+    sidecarMocks.enabled.mockReturnValue(true);
+    const controller = new AbortController();
+    sidecarMocks.run.mockImplementation((_args, _cwd, _timeout, _env, options) => new Promise((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => {
+        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      }, { once: true });
+    }));
+
+    const pending = realGit('/repo', ['rev-parse', 'HEAD'], controller.signal);
+    controller.abort();
+
+    await expect(pending).resolves.toBeNull();
+    expect(sidecarMocks.run).toHaveBeenCalledWith(
+      ['-C', '/repo', 'rev-parse', 'HEAD'],
+      process.cwd(),
+      GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+      process.env,
+      { signal: controller.signal },
+    );
+    expect(sidecarMocks.noteFallback).not.toHaveBeenCalled();
+    expect(childProcessMocks.execFile).not.toHaveBeenCalled();
   });
 });

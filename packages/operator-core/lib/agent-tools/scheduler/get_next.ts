@@ -55,6 +55,7 @@ import { getSessionBrief } from '../../session-brief';
 import { planHarnessesForSlugs } from '../plans/source';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
+import { noteGoalClaimed } from '../../agent-state-stamp';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { backfillToolInvocationMetadataByCallId } from '../../projected-tool-deps';
 import { DbCallDeadlineError } from '@papercusp/db-org';
@@ -2914,6 +2915,10 @@ export default defineTool({
       );
     };
     if (res?.workItem) {
+      // scheduler:get_next claims through getNextWorkItem directly, bypassing the
+      // noteGoalClaimed hook on claimWorkItem. Refresh this process's stamp before
+      // later file-lock hooks read it, and publish the update to sibling workers.
+      noteGoalClaimed(ident.ownerId, res.workItem.id);
       await withBoundedTimeout(enrichSuccessfulClaim, {
         fallback: undefined,
         timeoutMs: remainingBudgetMs(),

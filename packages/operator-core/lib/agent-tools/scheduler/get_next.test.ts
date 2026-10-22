@@ -12,6 +12,12 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
+import {
+  noteGoalClaimed,
+  readAgentStateStamp,
+  resetAgentStateStamps,
+  setAgentStampPublisher,
+} from '../../agent-state-stamp';
 
 const scopeState = vi.hoisted(() => ({
   scope: null as any,
@@ -1771,6 +1777,7 @@ describe('scheduler:get_next bounds post-claim enrichment (EI-21834503221873518)
  */
 describe('a successful claim declares the caller intent (EI-20099413453852234)', () => {
   beforeEach(() => {
+    resetAgentStateStamps();
     vi.clearAllMocks();
     scopeState.scope = null;
     scopeState.quarantinedIds = [];
@@ -1783,12 +1790,31 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     writePresenceM.mockResolvedValue(undefined);
   });
 
+  afterEach(() => resetAgentStateStamps());
+
   it('writes an intent naming the claimed item', async () => {
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
     expect(writePresenceM).toHaveBeenCalledTimes(1);
     expect(writePresenceM.mock.calls[0]![1]).toMatchObject({
       intent: 'WI-4242: Fix the flaky thing',
     });
+  });
+
+  it('refreshes and replicates the goal stamp for the latest self-pulled claim', async () => {
+    noteGoalClaimed('su-member', 'EI-25326697847423736');
+    const published: unknown[] = [];
+    setAgentStampPublisher((event) => published.push(event));
+    getNextM.mockResolvedValue({ workItem: { id: 'EI-26598921038841599', title: 'Fix the test' } });
+
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+
+    expect(readAgentStateStamp('su-member').goalRef).toBe('EI-26598921038841599');
+    expect(published).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        ownerId: 'su-member',
+        patch: { goalRef: 'EI-26598921038841599' },
+      }),
+    ]));
   });
 
   it('publishes the complete committed claim through structuredContent for programmatic callers', async () => {

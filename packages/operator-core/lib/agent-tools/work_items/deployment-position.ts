@@ -74,13 +74,17 @@ export async function deploymentPositionForEvidence(
     return { paths: [], unknownPaths: [], totalPaths: 0, truncated: false, unknownReason: 'no-filesChanged' };
   }
 
-  const bounded = await withBoundedTimeout(() => deploymentPositionForPaths(paths), {
+  const deadlineMs = Date.now() + DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS;
+  const bounded = await withBoundedTimeout(
+    (signal) => deploymentPositionForPaths(paths, { signal, deadlineMs }),
+    {
     // Fallback is honest about WHICH paths went unresolved (never a bare "0 paths" that would
     // read as "evidence named nothing" — see the `unknownReason` doc above) — the whole point
     // of degrading here rather than letting the caller hang is to keep that distinction visible.
     fallback: { paths: [], unknownPaths: paths, totalPaths: paths.length, truncated: false },
     timeoutMs: DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS,
     label: 'deploymentPositionForEvidence',
-  });
+    },
+  );
   return bounded.degraded ? { ...bounded.value, unknownReason: 'timeout' } : bounded.value;
 }
