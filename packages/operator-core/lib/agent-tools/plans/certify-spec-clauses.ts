@@ -150,6 +150,7 @@ export default defineTool({
     .object({
       ok: z.boolean(),
       dryRun: z.boolean(),
+      evaluatorBuild: z.object({ sha: z.string().nullable(), version: z.string() }).strict(),
       counts: z
         .object({
           clauses: z.number().int(),

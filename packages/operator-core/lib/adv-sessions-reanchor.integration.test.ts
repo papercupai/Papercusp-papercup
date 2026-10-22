@@ -1427,6 +1427,61 @@ describe('setAdvSessionPid workspace override (WI-10002854, real PG)', () => {
   });
 });
 
+describe('resume finalization records the current headless posture (real PG)', () => {
+  it('persists a visible resume posture and repairs it on an idempotent finalize replay', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    const claimKey = randomUUID();
+    const oldArgv = ['psu', `--resume=${id}`, '--agent=claude', '--headless', '--carry=cold'];
+    const launchSpec = {
+      v: 1,
+      agent: 'claude',
+      workspaceId: WS,
+      harnessSlug: 'papercusp',
+      profile: 'engineer',
+      contextSize: 'trimmed',
+      personaTier: 'su',
+      model: null,
+      planSlug: null,
+      autoMode: false,
+      drainMode: false,
+      loopArmed: false,
+      headless: true,
+      fleet: null,
+      stack: [],
+    };
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET launch_spec = ${JSON.stringify(launchSpec)}::text::jsonb,
+             launch_argv = ${JSON.stringify(oldArgv)}::text::jsonb,
+             resume_claim_key = ${claimKey},
+             resume_claimed_at = now()
+       WHERE id = ${id}
+    `;
+
+    const visibleArgv = ['psu', `--resume=${id}`, '--agent=claude'];
+    await expect(finalizeAdvSessionResume(id, claimKey, visibleArgv)).resolves.toBe(true);
+    let [row] = await admin<{ launch_spec: Record<string, unknown>; launch_argv: string[] }[]>`
+      SELECT launch_spec, launch_argv FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    expect(row.launch_spec.headless).toBe(false);
+    expect(row.launch_argv).toEqual(visibleArgv);
+
+    // Model a prior runtime that finalized the row but left the launch spec stale.
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET launch_spec = jsonb_set(launch_spec, '{headless}', 'true'::jsonb),
+             launch_argv = ${JSON.stringify(oldArgv)}::text::jsonb
+       WHERE id = ${id}
+    `;
+    await expect(finalizeAdvSessionResume(id, claimKey, visibleArgv)).resolves.toBe(true);
+    [row] = await admin<{ launch_spec: Record<string, unknown>; launch_argv: string[] }[]>`
+      SELECT launch_spec, launch_argv FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    expect(row.launch_spec.headless).toBe(false);
+    expect(row.launch_argv).toEqual(visibleArgv);
+  });
+});
+
 describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
   it('records the accepted operation and activates its grant-bearing identity before returning', async () => {
     const sid = 'su-receipt-route-integration';

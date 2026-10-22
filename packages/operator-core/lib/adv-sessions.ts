@@ -1402,6 +1402,26 @@ export async function acquireAdvSessionResume(
 
 type AdvSessionResumeTransition = 'finalize' | 'release';
 
+async function recordResumedLaunchPostureInTransaction(
+  tx: Sql | TransactionSql,
+  id: number,
+  launchArgv?: string[] | null,
+): Promise<void> {
+  if (launchArgv == null) return;
+  const headless = launchArgv.includes('--headless');
+  const serializedLaunchArgv = JSON.stringify(launchArgv);
+  await tx`
+    UPDATE harness_shared.adv_sessions
+       SET launch_argv = ${serializedLaunchArgv}::text::jsonb,
+           launch_spec = CASE
+         WHEN jsonb_typeof(launch_spec) = 'object'
+         THEN jsonb_set(launch_spec, '{headless}', to_jsonb(${headless}), true)
+         ELSE launch_spec
+       END
+     WHERE id = ${id}
+  `;
+}
+
 /**
  * Apply one keyed post-acquire transition with a durable replay receipt.
  *
@@ -1449,6 +1469,7 @@ async function transitionAdvSessionResume(
       if (transition === 'finalize' && receipt.summary.transitioned) {
         // Reconcile receipts from finalizations committed by an older runtime,
         // without reopening the row or touching the reservation again.
+        await recordResumedLaunchPostureInTransaction(tx, id, launchArgv);
         await recordSuLaunchSpecInTransaction(tx, id, null);
       }
       return receipt.summary.transitioned;
@@ -1463,11 +1484,7 @@ async function transitionAdvSessionResume(
                  retired_by = CASE WHEN ${allowRetired} THEN NULL ELSE retired_by END,
                  retired_reason = CASE WHEN ${allowRetired} THEN NULL ELSE retired_reason END,
                  started_at = now(), shutdown_accepted_at = NULL,
-                 resume_claim_key = NULL, resume_claimed_at = NULL,
-                 launch_argv = COALESCE(
-                   ${launchArgv == null ? null : JSON.stringify(launchArgv)}::text::jsonb,
-                   launch_argv
-                 )
+                 resume_claim_key = NULL, resume_claimed_at = NULL
            WHERE id = ${id} AND resume_claim_key = ${key}
              AND (retired_at IS NULL OR ${allowRetired})
           RETURNING id
@@ -1482,6 +1499,7 @@ async function transitionAdvSessionResume(
     if (transition === 'finalize' && transitioned) {
       // Liveness and the exact already-acknowledged identity must commit together
       // before the managed host declares the resumed process ready.
+      await recordResumedLaunchPostureInTransaction(tx, id, launchArgv);
       await recordSuLaunchSpecInTransaction(tx, id, null);
     }
     const summary = JSON.stringify({ kind: receiptKind, transitioned });

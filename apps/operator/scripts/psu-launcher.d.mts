@@ -3157,19 +3157,36 @@ export function reportSessionResumeReleased(advSessionId: number | string | null
  * Reconstruct the current psu invocation for a tracked exact resume.
  *
  * The prior launch record supplies durable identity/placement flags (fleet,
- * carry, mode, etc.); model/account and per-invocation backend flags are
- * replaced with the values actually resolved for this resume. The resulting
+ * mode, etc.); headed/headless and carry posture, model/account, and other
+ * per-invocation flags are replaced with the values resolved for this resume. The resulting
  * argv is only sent after runWrapper reports a concrete child spawn, so a
  * failed setup never erases the last known-good launch record.
+ *
+ * @param {any} session
+ * @param {{
+ *   model?: string | null,
+ *   modelSource?: string | null,
+ *   account?: any,
+ *   addDir?: string[],
+ *   allowSubagents?: boolean | null,
+ *   passthrough?: string[],
+ *   headless?: boolean,
+ *   carry?: "warm" | "cold" | null,
+ *   launchMode?: any,
+ *   brain?: boolean,
+ * }} [options]
  */
-export function resumeLaunchArgvRecord(session: any, { model, modelSource, account, addDir, allowSubagents, passthrough, launchMode, brain, }?: {
-    model?: null | undefined;
-    modelSource?: null | undefined;
-    addDir?: never[] | undefined;
-    allowSubagents?: null | undefined;
-    passthrough?: never[] | undefined;
-    launchMode?: null | undefined;
-    brain?: boolean | undefined;
+export function resumeLaunchArgvRecord(session: any, { model, modelSource, account, addDir, allowSubagents, passthrough, headless, carry, launchMode, brain, }?: {
+    model?: string | null;
+    modelSource?: string | null;
+    account?: any;
+    addDir?: string[];
+    allowSubagents?: boolean | null;
+    passthrough?: string[];
+    headless?: boolean;
+    carry?: "warm" | "cold" | null;
+    launchMode?: any;
+    brain?: boolean;
 }): string[];
 /**
  * Render a refused {@link ResumeClaimOutcome} as the clause the operator reads

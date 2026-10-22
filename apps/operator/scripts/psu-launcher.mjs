@@ -11488,10 +11488,24 @@ export function reportSessionResumeReleased(
  * Reconstruct the current psu invocation for a tracked exact resume.
  *
  * The prior launch record supplies durable identity/placement flags (fleet,
- * carry, mode, etc.); model/account and per-invocation backend flags are
- * replaced with the values actually resolved for this resume. The resulting
+ * mode, etc.); headed/headless and carry posture, model/account, and other
+ * per-invocation flags are replaced with the values resolved for this resume. The resulting
  * argv is only sent after runWrapper reports a concrete child spawn, so a
  * failed setup never erases the last known-good launch record.
+ *
+ * @param {any} session
+ * @param {{
+ *   model?: string | null,
+ *   modelSource?: string | null,
+ *   account?: any,
+ *   addDir?: string[],
+ *   allowSubagents?: boolean | null,
+ *   passthrough?: string[],
+ *   headless?: boolean,
+ *   carry?: "warm" | "cold" | null,
+ *   launchMode?: any,
+ *   brain?: boolean,
+ * }} [options]
  */
 export function resumeLaunchArgvRecord(
   session,
@@ -11502,6 +11516,8 @@ export function resumeLaunchArgvRecord(
     addDir = [],
     allowSubagents = null,
     passthrough = [],
+    headless = undefined,
+    carry = undefined,
     launchMode = null,
     brain = false,
   } = {},
@@ -11529,6 +11545,8 @@ export function resumeLaunchArgvRecord(
     allowSubagents,
     passthrough,
   };
+  if (typeof headless === "boolean") effectiveArgs.headless = headless;
+  if (carry !== undefined) effectiveArgs.carry = carry;
   if (account !== undefined) {
     effectiveArgs.account =
       account?.mode === "auto" || account?.forward === "auto" || account?.auto === true
@@ -14319,6 +14337,7 @@ async function launchResume(
     brain = false,
     fork = false,
     headless = false,
+    carry = null,
     passthrough = [],
     addDir = [],
     accountEnv = null,
@@ -14802,6 +14821,8 @@ async function launchResume(
       addDir,
       allowSubagents,
       passthrough,
+      headless,
+      carry,
       launchMode,
       brain,
     });
@@ -17260,6 +17281,7 @@ async function launchResolvedResume(source, args, { tracked }) {
   await launchResume(source, {
     fork: args.fork,
     headless: args.headless === true,
+    carry: args.carry,
     passthrough: args.passthrough,
     addDir: args.addDir,
     accountEnv: account,
@@ -17297,7 +17319,7 @@ export async function resumeFlow(
       process.exitCode = WALLED_POOL_REFUSAL_EXIT;
       return;
     }
-    await launchResume(source, { headless: args.headless === true, accountEnv: account, model,
+    await launchResume(source, { headless: args.headless === true, carry: args.carry, accountEnv: account, model,
       kickoff: resumeKickoffText(args), originalRouting });
     return;
   }

@@ -18281,6 +18281,43 @@ describe("psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)", () => {
 });
 
 describe("resumeLaunchArgvRecord (EI-22441173036886852)", () => {
+  it("uses the current resume's terminal and carry posture instead of stale launch flags", () => {
+    const session = {
+      id: 48452,
+      agent: "claude",
+      workspaceId: "papercusp-workspace",
+      harnessSlug: "papercusp",
+      launchArgv: [
+        "psu",
+        "--no-picker",
+        "--resume=48452",
+        "--agent=claude",
+        "--headless",
+        "--carry=cold",
+        "--fleet=shared-hive",
+      ],
+    };
+    const visible = resumeLaunchArgvRecord(session, {
+      account: { mode: "auto", forward: "auto", id: null },
+      model: null,
+      headless: false,
+      carry: null,
+    });
+
+    expect(visible).not.toContain("--headless");
+    expect(visible).not.toContain("--carry=cold");
+    expect(visible).toContain("--fleet=shared-hive");
+
+    const resumedHeadless = resumeLaunchArgvRecord(session, {
+      account: { mode: "auto", forward: "auto", id: null },
+      model: null,
+      headless: true,
+      carry: "cold",
+    });
+    expect(resumedHeadless).toContain("--headless");
+    expect(resumedHeadless).toContain("--carry=cold");
+  });
+
   it("refreshes the effective account/model while retaining durable resume placement", () => {
     const argv = resumeLaunchArgvRecord(
       {
