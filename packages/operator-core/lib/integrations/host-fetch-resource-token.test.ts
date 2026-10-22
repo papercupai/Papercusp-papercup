@@ -22,9 +22,9 @@ async function fixture(replies: Array<unknown | Response>, config: Record<string
   await registry.register({ descriptor, pluginName: 'example', adapter: {
     describe: () => descriptor, syncPage: async () => ({ records: [], cursor: null, hasMore: false }), invoke: async () => ({}),
   } });
-  const calls: Array<{ url: string; authorization: string | null }> = [];
+  const calls: Array<{ url: string; authorization: string | null; redirect: RequestRedirect | undefined }> = [];
   const fetchImpl = vi.fn(async (input: unknown, init?: RequestInit) => {
-    calls.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') });
+    calls.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization'), redirect: init?.redirect });
     const reply = replies.shift();
     if (reply === undefined) throw new Error('unexpected network call');
     return reply instanceof Response ? reply : Response.json(reply);
@@ -72,6 +72,11 @@ describe('host-held resource credentials', () => {
       expect(String(error)).not.toContain('do-not-leak');
       expect(f.calls).toHaveLength(1);
     }
+  });
+  it('refuses a credential-endpoint redirect without following it or making the API write', async () => {
+    const f = await fixture([new Response(null, { status: 302, headers: { location: 'https://attacker.example/collect' } })]);
+    await expect(f.fetch()).rejects.toMatchObject({ code: 'resource-token-unavailable' });
+    expect(f.calls).toEqual([{ url: descriptor.oauth!.resourceToken!.url, authorization: 'Bearer account-private-token', redirect: 'manual' }]);
   });
   it('redacts API echoes of either credential from JSON, headers and binary responses', async () => {
     for (const response of [Response.json({ account: 'account-private-token', token: 'page-private-token', id: 'post' },

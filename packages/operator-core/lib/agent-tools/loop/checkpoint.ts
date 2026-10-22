@@ -98,6 +98,7 @@ import {
 } from '../../carry-surface-provenance-stamp';
 import { uncoveredAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
+import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
 import { unresolvedPlanDecisionRefs } from '../coordination/decision-ref-advisory';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { FleetZeroWorkersVerdict } from '../../fleet/fleet-zero-workers-guard';
@@ -113,6 +114,26 @@ import {
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
 import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
+
+/**
+ * A structured next action is authored by the current agent. Preserve that
+ * field-level source when rendering it as a plain carry note: otherwise a
+ * self-imposed "do not ... until" caution is indistinguishable from an
+ * unattributed owner gate. Tag only bare-gate lines; explicit owner claims and
+ * completed-action claims keep their existing lint.
+ */
+function tagSelfAuthoredNextGateLines(value: string): string {
+  return value
+    .split('\n')
+    .map((line) => {
+      const { matches } = lintCarrySurfaceProvenance(line);
+      if (matches.length === 0 || matches.some((match) => match.kind !== 'bare-gate-imperative')) return line;
+
+      const prefix = line.match(/^(\s*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+)|(?:>\s*))*)/)?.[1] ?? '';
+      return prefix + '[self-imposed] ' + line.slice(prefix.length);
+    })
+    .join('\n');
+}
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -1372,6 +1393,9 @@ export default defineTool({
       fields.left !== undefined ||
       fields.insight !== undefined ||
       fields.next !== undefined;
+    if (typeof fields.next === 'string') {
+      fields.next = tagSelfAuthoredNextGateLines(fields.next);
+    }
     // Structured fields win over a raw note (renderCarryNote skips blank sections, so an
     // all-blank structured write renders '' ⇒ a clear). Otherwise write the raw note
     // verbatim. `checkpoint` is the historical generic carry-note spelling used by

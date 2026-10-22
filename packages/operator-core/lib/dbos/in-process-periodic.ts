@@ -1184,7 +1184,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
     const due = await findDueReleaseRequests(sql, { nowMs: Date.now() });
     for (const row of due) {
       const { request: req } = row;
-      const resolution =
+      const resolution: import('../work-items-release-request').ReleaseRequestConsequenceResolution =
         req.onSilence === 'reclaim' ? 'consequence-reclaim' : req.onSilence === 'escalate' ? 'consequence-escalate' : 'consequence-nothing';
       const consequenceJob = {
         id: 'release-request:' + req.requestedAt + ':' + req.deadlineAt,

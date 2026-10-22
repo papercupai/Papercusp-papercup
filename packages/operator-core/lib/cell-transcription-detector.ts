@@ -183,6 +183,15 @@ const MEMORY_ID_VALUE_PREFIX =
   /\b(?:memory(?:[-\s]+(?:id|identifier))?|mem0(?:[-\s]+memory)?(?:[-\s]+(?:id|identifier))?)\s*(?:[:=#]\s*)?$/i;
 
 /**
+ * A short session UUID prefix can be copied without its hyphens, making it
+ * indistinguishable from a standalone SHA by shape alone. Keep the exclusion
+ * anchored to an explicit session label so a nearby main or live word cannot
+ * turn that identifier into a pipeline-position transcription.
+ */
+const SESSION_ID_VALUE_PREFIX =
+  /\b(?:native[-\s]+)?session(?:[-\s]+(?:id|identifier|uuid|prefix))?\s*(?:[:=#]\s*)?$/i;
+
+/**
  * Git blob object ids are hex-shaped, but a blob is an object artifact rather than
  * a commit or pipeline position. Keep this exclusion anchored to the value: the
  * reported `InboxPane staging blob <sha>` shape must stay quiet even though
@@ -240,6 +249,11 @@ function isCheckpointMetadataValue(haystack: string, valueStart: number): boolea
 function isExplicitMemoryIdentifier(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   return MEMORY_ID_VALUE_PREFIX.test(before);
+}
+
+function isExplicitSessionIdentifier(haystack: string, valueStart: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  return SESSION_ID_VALUE_PREFIX.test(before);
 }
 
 function isGitBlobHash(haystack: string, valueStart: number): boolean {
@@ -405,7 +419,8 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
         isExplicitLockOrLeaseIdentifier(haystack, m.index, m[0].length) ||
         isExplicitMemoryIdentifier(haystack, m.index) ||
         (p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
-          (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
+          (isExplicitSessionIdentifier(haystack, m.index) ||
+            isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
             isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||
             isUnlinkedAcceptancePinCitation(haystack, m.index, m[0].length) ||
             isUnlinkedHistoricalCommitCitation(haystack, m.index, m[0].length) ||

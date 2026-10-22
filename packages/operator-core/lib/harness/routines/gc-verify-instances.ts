@@ -66,7 +66,7 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  *   - BOUND every run, and support dryRun that names what it WOULD reap (a bare count
  *     hides destruction — see the gen-gallery.py lesson).
  *
- * ── SCAN A ROOT SET, NOT JUST /tmp (WI-10002867, owner #443) ────────────────────
+ * ── SCAN A ROOT SET, NOT JUST /tmp (WI-10002867, WI-6554700010019500) ───────────
  *
  * The verifier writes TWO kinds of `verify-tauri-headless.*` dir, and they need not
  * share a filesystem:
@@ -77,6 +77,9 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  *     (true on the dev box: /tmp is its own 7.3T disk, the repo is on the 1.9T root)
  *     `select_verifier_snapshot_root` puts it under `<repo>/.papercusp/tmp`. It holds a
  *     `.papercusp-run` owner marker but NO stop.sh; the WORK dir's stop.sh removes it.
+ *   - Copy-mode source snapshots — when the repository is on the root filesystem,
+ *     `select_verifier_snapshot_root` places them under `/mnt/data/tmp`, which is a
+ *     separate data filesystem and therefore needs its own discovery root.
  *
  * This sweep used to scan only /tmp, so whenever a snapshot outlived its WORK dir (run
  * SIGKILLed before stop.sh existed, WORK removed by another cleaner) nothing ever
@@ -136,8 +139,14 @@ export const PROTECTED_DISPLAYS = new Set([':0', ':1', ':2']);
 
 /** Where discovery looks for checkouts, each of which may own a `.papercusp/tmp`. */
 export interface VerifyScanRootEnv {
-  /** Always-scanned bases (default: /tmp and os.tmpdir()). */
+  /** Always-scanned bases (default: /tmp, os.tmpdir(), and the verifier data-temp root). */
   baseDirs?: string[];
+  /**
+   * The verifier's copy-mode source snapshots are placed here when the repository is on the
+   * root filesystem. The production path is the shell verifier's fixed `/mnt/data/tmp` root;
+   * this override keeps root discovery deterministic in tests and alternate host fixtures.
+   */
+  dataTempDir?: string;
   /** Parent of the sibling checkouts (default $PAPERCUSP_WORKSPACE_ROOT or ~/papercupai-workspace). */
   workspaceRoot?: string;
   /** Parent of the pot hives, some of which a workspace entry symlinks into (default ~/.papercusp/hives). */
@@ -153,7 +162,7 @@ async function isDir(path: string): Promise<boolean> {
 }
 
 /**
- * The root SET this sweep scans: the base temp dirs plus every checkout's
+ * The root SET this sweep scans: the base temp dirs, the verifier data-temp root, plus every checkout's
  * `.papercusp/tmp` (where the verifier's cross-device source snapshot lands — see the
  * header). Deduplicated by realpath, because /tmp is usually os.tmpdir() and several
  * workspace entries are symlinks into the hives. Missing dirs are simply absent.
@@ -163,7 +172,9 @@ export async function defaultVerifyScanRoots(env: VerifyScanRootEnv = {}): Promi
     env.workspaceRoot ??
     (process.env.PAPERCUSP_WORKSPACE_ROOT?.trim() || join(homedir(), 'papercupai-workspace'));
   const hivesRoot = env.hivesRoot ?? papercuspPath('hives');
-  const candidates = [...(env.baseDirs ?? ['/tmp', tmpdir()])];
+  const dataTempDir = env.dataTempDir ?? '/mnt/data/tmp';
+  const candidates = [...(env.baseDirs ?? ['/tmp', tmpdir(), dataTempDir])];
+  if (env.baseDirs !== undefined && env.dataTempDir !== undefined) candidates.push(dataTempDir);
   for (const parent of [workspaceRoot, hivesRoot]) {
     let names: string[];
     try {

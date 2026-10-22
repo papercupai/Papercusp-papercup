@@ -318,6 +318,43 @@ describe('gc-verify-instances — the root SET (WI-10002867: 20GB leaked outside
     expect(existsSync(leaked)).toBe(false);
   });
 
+  it('reaps an abandoned source snapshot in the verifier data-temp root (WI-6554700010019500)', async () => {
+    // Copy-mode verifier snapshots use /mnt/data/tmp when the repository is on the root
+    // filesystem. Keep that root in the default discovery set so SIGKILLed runs cannot
+    // accumulate outside /tmp.
+    const dataTemp = join(root, 'data-tmp');
+    await mkdir(dataTemp, { recursive: true });
+    const leaked = await makeSourceSnapshot(dataTemp, 'DATA123', {
+      ageHours: 360,
+      marker: 'pid=2147483646\nstart_ticks=1\n',
+    });
+    const stop = vi.fn(async () => {});
+
+    const roots = await defaultVerifyScanRoots({
+      baseDirs: [],
+      dataTempDir: dataTemp,
+      workspaceRoot: join(root, 'no-workspace'),
+      hivesRoot: join(root, 'no-hives'),
+    });
+    const res = await gcVerifyInstances({ roots, now: NOW, runStopScript: stop });
+
+    expect(res.roots).toEqual([realpathSync(dataTemp)]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(res.reaped).toBe(1);
+    expect(existsSync(leaked)).toBe(false);
+  });
+
+  it('includes the production verifier data-temp root in default discovery when present', async () => {
+    if (!existsSync('/mnt/data/tmp')) return;
+
+    const roots = await defaultVerifyScanRoots({
+      workspaceRoot: join(root, 'no-workspace'),
+      hivesRoot: join(root, 'no-hives'),
+    });
+
+    expect(roots).toContain(realpathSync('/mnt/data/tmp'));
+  });
+
   it('REFUSES a stop.sh-less snapshot whose owner run is still alive, however old', async () => {
     const dir = await makeSourceSnapshot(root, 'live', {
       ageHours: 500,

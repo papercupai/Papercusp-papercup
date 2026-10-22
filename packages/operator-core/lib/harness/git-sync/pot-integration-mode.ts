@@ -329,6 +329,7 @@ export interface IntegrationModeHarnessEntry {
   hive_slug?: string | null;
   self_repo?: boolean | null;
   fork_remote?: string | null;
+  github_remote?: string | null;
 }
 
 /**

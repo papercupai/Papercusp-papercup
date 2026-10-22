@@ -300,8 +300,8 @@ describe('production gateway account-governor wiring', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(governor.state.inFlight).toBe(0);
     expect(governor.state.rpmFactor ?? 1).toBe(1);
-    await vi.waitFor(() => expect(gateway!.stats().requestStages.recent.at(-1)?.outcome).toBe('cancelled'));
-    expect(gateway.stats().requestStages.recent.at(-1)?.events.some(event => event.stage === 'upstreamTtfb')).toBe(false);
+    await vi.waitFor(() => expect(gateway!.stats().requestStages?.recent.at(-1)?.outcome).toBe('cancelled'));
+    expect(gateway!.stats().requestStages?.recent.at(-1)?.events.some(event => event.stage === 'upstreamTtfb')).toBe(false);
   });
 
   it('paces the first and destination retry accounts outside their upstream TTFB deadlines', async () => {

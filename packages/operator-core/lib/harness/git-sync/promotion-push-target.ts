@@ -57,7 +57,7 @@ export type PromotionPushTarget =
   | { kind: 'skip'; reason: 'working_copy_fork_missing'; message: string }
   | {
       kind: 'hold';
-      reason: 'integration_mode_unknown' | 'integration_mode_malformed' | 'registry_unreadable';
+      reason: 'integration_mode_unknown' | 'integration_mode_malformed' | 'registry_unreadable' | 'direct_upstream_other_hive';
       message: string;
     };
 

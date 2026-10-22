@@ -12840,6 +12840,7 @@ export function hostThroughPty(o) {
   // prompts stay out of argv. Only a fresh Codex thread can use startup proof
   // instead of output silence. Resume/fork may already be running a turn.
   let launchKickoffSettled = !launchKickoff;
+  let launchKickoffCompletion = Promise.resolve();
   let carryBindingChild = null;
   let carryBindingNativeId = null;
   let confirmedCarryChild = null;
@@ -12964,7 +12965,7 @@ export function hostThroughPty(o) {
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
       !args.some((arg) => arg === 'resume' || arg === 'fork') &&
       Boolean(leadingTurnOriginMarker(launchKickoff));
-    void (async () => {
+    launchKickoffCompletion = (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
       const isResumeLaunch = args.some((arg) => arg === 'resume' || arg === 'fork');
       const kickoffBudgetMs = requireRoleMcp
@@ -15062,6 +15063,11 @@ export function hostThroughPty(o) {
       // below also records every refusal uniformly, so an early accepted ACK
       // never leaves a later negative outcome unexplained.
       const runGatedDelivery = async (unparkTransition = null) => {
+      // The initial scripted kickoff writes outside this pipeline. Do not let
+      // a queued wake paste into its composer before its submit/proof settles.
+      // Wait before acquiring the mutex: kickoff redelivery may need that same
+      // mutex after a child replacement. Raw control remains immediate.
+      if (msg.gated) await launchKickoffCompletion;
       // EI-8822: hold the per-host inject mutex across the ENTIRE gated
       // critical section (gate wait → pty write → submit verify) so a wake
       // `turn` and a session:request-compaction `/compact` freed at the SAME

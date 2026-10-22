@@ -372,7 +372,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(120)
       .optional()
       .describe(
-        'Bind a missing class to an existing standard rubric while preserving BARs/criteria; an existing class may repeat but cannot change.',
+        'Bind a missing class or repeat it while preserving BARs/criteria. With a non-empty reason, general/investigation may strengthen to a coding class; prior class and compositions are retained. Other replacements are refused.',
       ),
     composes: z
       .array(z.string().trim().min(1))

@@ -579,6 +579,56 @@ describe('applyRubricAmendment kind round-trip (acceptance-rubrics-on-every-plan
     })).toThrow(/non-empty class reference/);
   });
 
+  it.each(['plan-class-investigation', 'plan-class-general'])(
+    'strengthens %s to shipment while retaining adopted BARs and prior standards',
+    (priorClass) => {
+      const stored = rubric([crit({ key: 'r-1', check: { kind: 'tests', files: ['guard.test.ts'] } })], {
+        kind: 'acceptance', subjectPlan: 'hybrid-pool', classRef: priorClass,
+        status: 'active', composes: ['prior-standard'], barSetHash: 'a'.repeat(64),
+        barContract: {
+          schemaVersion: 1, adoptionEpoch: 2, cohort: 'post-epoch', subjectPlanRevision: 230,
+          seededAt: '2026-09-06T16:59:00.000Z', seededBy: 'original-author',
+        },
+      });
+      const out = applyRubricAmendment(stored, {
+        rubricId: stored.rubricId, classRef: 'plan-class-feature-ship',
+        reason: 'The investigation now includes customer implementation and verified shipment.',
+        composes: ['new-standard', 'prior-standard'],
+      });
+      expect(out.classRef).toBe('plan-class-feature-ship');
+      expect(out.composes).toEqual(['prior-standard', 'new-standard', priorClass]);
+      expect(out.criteria).toEqual(stored.criteria);
+      expect(out.barSetHash).toBe(stored.barSetHash);
+      expect(out.barContract).toEqual(stored.barContract);
+      expect(out.status).toBe(stored.status);
+      expect(out.by).toBe(stored.createdBy);
+      expect(() => assertNoSilentRubricLoss(stored, out)).not.toThrow();
+    },
+  );
+
+  it('refuses an unexplained promotion, unknown target, or downgrade even with a reason', () => {
+    const stored = rubric([crit({ key: 'r-1' })], {
+      kind: 'acceptance', subjectPlan: 'hybrid-pool', classRef: 'plan-class-investigation',
+    });
+    for (const reason of [undefined, '   ']) {
+      expect(() => applyRubricAmendment(stored, {
+        rubricId: stored.rubricId, classRef: 'plan-class-feature-ship', reason,
+      })).toThrow(/non-empty reason/);
+    }
+    for (const [prior, next] of [
+      ['plan-class-investigation', 'unregistered-class'],
+      ['plan-class-feature-ship', 'plan-class-investigation'],
+      ['plan-class-bugfix', 'plan-class-feature-ship'],
+    ]) {
+      expect(() => applyRubricAmendment({ ...stored, classRef: prior }, {
+        rubricId: stored.rubricId, classRef: next, reason: 'Change the profile.',
+      })).toThrow(/existing acceptance class cannot be replaced/);
+    }
+    expect(applyRubricAmendment(stored, {
+      rubricId: stored.rubricId, classRef: 'plan-class-feature-ship', reason: 'Ship the implementation.',
+    }).composes).toEqual(['plan-class-investigation']);
+  });
+
   it('carries kind/subjectPlan/classRef through an amendment (identity fields, WI-4287 loss class)', () => {
     const stored = rubric([crit({ key: 'k1' })], {
       kind: 'acceptance',

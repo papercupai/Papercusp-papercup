@@ -90,6 +90,9 @@ const unresolvedPlanDecisionRefs = vi.hoisted(() => vi.fn());
 const resolveCurrentTurnStamp = vi.hoisted(() => vi.fn());
 const verifyTurnRefs = vi.hoisted(() => vi.fn());
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
+const renderCarryNoteMock = vi.hoisted(() =>
+  vi.fn((fields: Record<string, string | undefined>) => 'RENDERED:' + JSON.stringify(fields)),
+);
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -154,7 +157,7 @@ vi.mock('../../carry-note', async (importOriginal) => ({
   listLoopCarryNoteHarnesses: (...a: unknown[]) => listLoopCarryNoteHarnesses(...a),
   listLoopCarryNoteScopes: (...a: unknown[]) => listLoopCarryNoteScopes(...a),
   getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
-  renderCarryNote: (f: Record<string, string | undefined>) => `RENDERED:${JSON.stringify(f)}`,
+  renderCarryNote: (f: Record<string, string | undefined>) => renderCarryNoteMock(f),
 }));
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
@@ -1093,6 +1096,30 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       'RENDERED:' +
         JSON.stringify({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }),
     );
+  });
+
+  it('marks a bare gate in structured next as self-imposed without suppressing explicit owner claims', async () => {
+    const next = 'Do not retry compaction until current host/native-session state shows the prior recovery is no longer in flight.';
+    renderCarryNoteMock.mockImplementationOnce((fields) => '## Next action\n' + (fields.next ?? ''));
+
+    const result = body(await call({ next }));
+
+    expect(result.provenanceLint).toBeUndefined();
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe('## Next action\n[self-imposed] ' + next);
+  });
+
+  it('keeps an explicit owner claim in structured next visible to provenance lint', async () => {
+    const next = 'The owner asked me to wait; do not retry compaction until the owner responds.';
+    renderCarryNoteMock.mockImplementationOnce((fields) => '## Next action\n' + (fields.next ?? ''));
+
+    const result = body(await call({ next }));
+
+    expect(result.provenanceLint?.matches).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'owner-attribution' })]),
+    );
+    const stored = String(setLoopCarryNote.mock.calls[0]?.[1] ?? '');
+    expect(stored).toContain('⚠ UNVERIFIED OWNER ATTRIBUTION');
+    expect(stored).toContain('## Next action\n' + next);
   });
 
   it('surfaces durable stalled-wait evidence and the takeover remedy in the checkpoint result', async () => {

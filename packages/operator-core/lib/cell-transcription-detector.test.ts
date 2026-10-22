@@ -77,6 +77,9 @@ describe('cell-transcription detector — TRUE positives (the 2026-07-26 shape)'
 });
 
 describe('cell-transcription detector — FALSE positives it must NOT raise (EI-10949)', () => {
+  const shortSessionPrefixIntent =
+    'Owner-directed AUTO takeover of session 1ed01c9b; lead main-green-sol61-1016 and resume WI-10006055 / WI-6554700010019489 / WI-6554700010019467 after canonical claim handoff; EI-26605384996080638 pending admission';
+
   const mustNotFire = [
     // A citation, not a state claim — the single most important negative.
     ['a historical commit citation', 'see commit abc1234 for the rationale behind this change'],
@@ -89,6 +92,7 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     // large share of real traffic. Both the prefixed and bare forms are pinned.
     ['a prefixed agent id', 'session su-8d9a671c-ccda-4aa9-b4f4-8f0d1c7a4804 is live'],
     ['a bare uuid (leading segment, no prefix)', '8d9a671c-ccda-4aa9-b4f4-8f0d1c7a4804 is running'],
+    ['a short session UUID prefix beside main context', shortSessionPrefixIntent],
     ['an id in a deploy sentence', 'agent su-2846407f-4f4c-4313-8db8-dce7592e269d deployed the change'],
     ['a hyphenated identifier', 'the branch deadbeef-fix is now on staging'],
     [
@@ -116,6 +120,17 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     ['plain prose', 'refactored the resolver so the audience check is applied on the read path'],
     ['an empty string', ''],
   ] as const;
+
+  it('does not treat a session UUID prefix as a deployed SHA even when Git resolves it', async () => {
+    let resolverCalls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits(shortSessionPrefixIntent, async () => {
+      resolverCalls += 1;
+      return true;
+    });
+
+    expect(hint).toBeNull();
+    expect(resolverCalls).toBe(0);
+  });
 
   for (const [label, text] of mustNotFire) {
     it(`does not fire on ${label}`, () => {

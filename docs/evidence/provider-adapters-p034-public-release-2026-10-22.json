@@ -1,0 +1,835 @@
+{
+  "schemaVersion": 1,
+  "kind": "provider-distribution-evidence",
+  "planSlug": "provider-adapters-to-packages-2026-10-11",
+  "workItemId": "WI-6554700010018428",
+  "specId": "SPEC-P-034",
+  "specRevision": 1,
+  "verifiedAt": "2026-10-22T05:52:22.905Z",
+  "verificationScope": "Local integrity validation of retained immutable publication, public lookup and completed install assertions; historical public/vendor outcomes are not re-executed by this validation.",
+  "limitations": [
+    "The original public install smoke completed all sixteen package assertion groups but was terminated with exit130 after summary because imported runtime handles remained open. This is retained operational assertion evidence, not a framework test pass.",
+    "Only the first five smoke rows resolved a Cupboard listing during installation. The remaining eleven installed from their public GitHub URLs, and their listings were separately read back later.",
+    "No real vendor-account acceptance is claimed. R3/R8 remain UNKNOWN.",
+    "The earlier vendorApiCalls:0 helper field was a constant, not instrumented network telemetry, and is not used as evidence."
+  ],
+  "sourceReceiptHashes": {
+    "release.json": "7da57f6001ab281301a8d958e4127b09d493ecfbf9573a0cad4b77b53ea22c58",
+    "install-smoke-results.json": "9b614e8ff912899f75778547d026ca9072c222862d45a607332263816a5b9d73",
+    "public-listing-readback-final.json": "614b69d4cad716526a9828d1afac4d0769368acd2ab9160881301f0f18d0e9eb"
+  },
+  "providers": [
+    {
+      "name": "facebook",
+      "manifestName": "facebook",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-facebook",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "75748a0c458531b9648295d262f1d70b55a62ecd54d7c69b68c9600c72d2801e"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "6c6ae75f870fd33b81bfa036f76041c72699d1fb02ee17a32636a0e94a6b224b"
+        },
+        {
+          "path": "README.md",
+          "sha256": "c2a5b55faeaec3451d49828922b80450e05417c1df16fc6bc292430a0c7cb117"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "50b1c3eab81ead587d02b8cc6fb5588c66b4cbd0",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=50b1c3eab81ead587d02b8cc6fb5588c66b4cbd0 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "facebook",
+        "manifestName": "facebook",
+        "listingId": "0644a4fe-087c-4fe5-9c56-f9117ed4a2bb",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-facebook"
+      },
+      "installAssertions": {
+        "name": "facebook",
+        "slug": "facebook",
+        "listingId": "0644a4fe-087c-4fe5-9c56-f9117ed4a2bb",
+        "listingResolved": true,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "google-contacts",
+      "manifestName": "google-contacts",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-google-contacts",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "d049f2dfcebdce414c1ed6523d9d0511ee05b5a7c09ed9b9e3c4006aab7fef98"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "81fdc1c283448921b1d69b69aaaaff42489ff21de59ffaff738f026b4fa86d5d"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "e7bf77f65b491ca2b31763a04ba61c64aa6931c9",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=e7bf77f65b491ca2b31763a04ba61c64aa6931c9 src=e857fa70abbfce2e0822ffeb315d21a8354e70ca"
+      },
+      "listing": {
+        "name": "google-contacts",
+        "manifestName": "google-contacts",
+        "listingId": "365b3770-5d74-48e7-b3af-304149d442e8",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-google-contacts"
+      },
+      "installAssertions": {
+        "name": "google-contacts",
+        "slug": "google-contacts",
+        "listingId": "365b3770-5d74-48e7-b3af-304149d442e8",
+        "listingResolved": true,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "facebook-pages",
+      "manifestName": "facebook-pages",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-facebook-pages",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "1801a44f8002b0b8860ffe15f689b5ca633f3f2ae6ea3e8d2a1e4dca69c04f72"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "22babdde776aa94bec054daff0b2e079db2546ec1aaca8683f3906d26c88d566"
+        },
+        {
+          "path": "README.md",
+          "sha256": "f4f3fcfa6a94b574ea96d1c3816a277c7359ea76650eacd2566ef0b02be20652"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "102dfd9ae43ded8e75460f913fd17d59986b6fc1",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=102dfd9ae43ded8e75460f913fd17d59986b6fc1 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "facebook-pages",
+        "manifestName": "facebook-pages",
+        "listingId": "b89d8cdf-552f-4c81-a494-f81402326b84",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-facebook-pages"
+      },
+      "installAssertions": {
+        "name": "facebook-pages",
+        "slug": "facebook-pages",
+        "listingId": "b89d8cdf-552f-4c81-a494-f81402326b84",
+        "listingResolved": true,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "instagram",
+      "manifestName": "instagram",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-instagram",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "daca3b49e8fe258f7729a0b56f9482940e050ff505f353e41023b3cbe2ba2462"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "368450cb30ca8cf7078e9c7cfdae09da10611fff714509283918fe170e2fea84"
+        },
+        {
+          "path": "README.md",
+          "sha256": "fb1cbad5aecc97c59d6b3a66d452981e1be427759f7286c7df647069416506bf"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "f88bfb589c9be55f11144d182e89c6efa24498a9",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=f88bfb589c9be55f11144d182e89c6efa24498a9 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "instagram",
+        "manifestName": "instagram",
+        "listingId": "80c49d6b-18fa-4870-8744-2c055c78b466",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-instagram"
+      },
+      "installAssertions": {
+        "name": "instagram",
+        "slug": "instagram",
+        "listingId": "80c49d6b-18fa-4870-8744-2c055c78b466",
+        "listingResolved": true,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "x",
+      "manifestName": "x-twitter",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-x",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "7df7d594b9843834df1f3f39dde5a683a75066ff6b1b3f3616951595eb88d14a"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "eb47b49ca75ee40ecd40e557b10a59fd4c4eaf4836f0f61a162b582fe2a63868"
+        },
+        {
+          "path": "README.md",
+          "sha256": "bc923eb76667d7bd7aeeaab2cbf87aa340c57f491c8c9384cafd38e3aef4989e"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "5e47c58a21c14d8f1069710a0a2ce5e1a48446cb",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=5e47c58a21c14d8f1069710a0a2ce5e1a48446cb src=e857fa70abbfce2e0822ffeb315d21a8354e70ca"
+      },
+      "listing": {
+        "name": "x",
+        "manifestName": "x-twitter",
+        "listingId": "ccd82e42-22c5-473c-9bd6-90d92c56ce15",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-x"
+      },
+      "installAssertions": {
+        "name": "x",
+        "slug": "x-twitter",
+        "listingId": "ccd82e42-22c5-473c-9bd6-90d92c56ce15",
+        "listingResolved": true,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "threads",
+      "manifestName": "threads",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-threads",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "de496809209ddc5646cc149c4bd369e78f2acccf225c479938fa02419ebe2a6f"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "5dfba029add3b3da9b86519a88415d5576451375d7442f6b42c8309409c76a3c"
+        },
+        {
+          "path": "README.md",
+          "sha256": "7410bf53a2bf6ad8b22bb74eca60f2abe63a197e279c0273a7216c9deb5e2e6f"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "106ca460d1286bb22fdebe5b6e30f76c53acef50",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=106ca460d1286bb22fdebe5b6e30f76c53acef50 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "threads",
+        "manifestName": "threads",
+        "listingId": "e49e6ac9-059d-4963-b91e-f57b64021fee",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-threads"
+      },
+      "installAssertions": {
+        "name": "threads",
+        "slug": "threads",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "tiktok",
+      "manifestName": "tiktok",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-tiktok",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "b4f64585d237efc204a9a9d18c8e05470895cc8c2f9a40f08786b96e26122382"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "1c3a61b507210542f003f2f992834e815fade63ca4e2df4b0c36f09ef413fb83"
+        },
+        {
+          "path": "README.md",
+          "sha256": "53335d52e49ed32609f40c2d23ac63511b0eafa555955ccddbbe965104ec24e8"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "7e2ff062118fd1facb3dfb88c814b6c3b9b0d7a3",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=7e2ff062118fd1facb3dfb88c814b6c3b9b0d7a3 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "tiktok",
+        "manifestName": "tiktok",
+        "listingId": "3d9a8120-4acc-483e-8589-4993410099e5",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-tiktok"
+      },
+      "installAssertions": {
+        "name": "tiktok",
+        "slug": "tiktok",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "linkedin",
+      "manifestName": "linkedin",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-linkedin",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "5c5b54bfba62f0b1e4754a5075c135624f4bbc89ed76564417868b176f1a4c3c"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "143bae0c60aabdce02db0ee4fa7712da1ad2247413e077daa812ba26b20427cd"
+        },
+        {
+          "path": "README.md",
+          "sha256": "f4440513348f5082bb789020defd714a1af273b4ee6c4e767f53f757ff43e6af"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "8130814c85668960fea89de51a754952de34d267",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=8130814c85668960fea89de51a754952de34d267 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "linkedin",
+        "manifestName": "linkedin",
+        "listingId": "691fa242-c336-4d78-9696-a7a6ced4f485",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-linkedin"
+      },
+      "installAssertions": {
+        "name": "linkedin",
+        "slug": "linkedin",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "linkedin-company",
+      "manifestName": "linkedin-company",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-linkedin-company",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "aa0ac67574ed6e2c89103afd155310726a62eb866dbdcfd7ddd14c01ab97e72a"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "29ef0a868b6618c406d7075afe0864d840af770314ca2ebaac869ae7e126f8a5"
+        },
+        {
+          "path": "README.md",
+          "sha256": "acda61c4caeabbec6a83ecd208acb05751442526a0ccece6ba35d7c8335f7ead"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "9a4212157664ec318a774b4f1b84b64a19cd56da",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=9a4212157664ec318a774b4f1b84b64a19cd56da src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "linkedin-company",
+        "manifestName": "linkedin-company",
+        "listingId": "4e8e0306-ccae-4ab6-bab7-146a5891d17e",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-linkedin-company"
+      },
+      "installAssertions": {
+        "name": "linkedin-company",
+        "slug": "linkedin-company",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "youtube",
+      "manifestName": "youtube",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-youtube",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "691f45672383d412fb03bfdcfb663b0fe77a7d4aa0da300543b801f42220d6cb"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "bc9e215730e1cdf314798015670bf3622cf9469a8bbd49eb26b021465fc0d711"
+        },
+        {
+          "path": "README.md",
+          "sha256": "2d0ca0bc8416cf1fbb6158954d998b05bff09fabf26da51e2ab99ca3ccb45bce"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "f56764e67f69678018a3dd8751298e890ccbde02",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=f56764e67f69678018a3dd8751298e890ccbde02 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "youtube",
+        "manifestName": "youtube",
+        "listingId": "779906c9-26e2-4ee1-b225-2f45876472c3",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-youtube"
+      },
+      "installAssertions": {
+        "name": "youtube",
+        "slug": "youtube",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "mastodon",
+      "manifestName": "mastodon",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-mastodon",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "5766101880325cce0905c1d2e4aded4486158f0beb7aa1761ffeda08ddaf0e2f"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "dc8cf17ed460818bbdd6424cf232b7e7facc043bbbbb39cf85ce139bf3fe4b1f"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "d15c233627cf1005e896bdf69649cd59c126740b2b574441a1e4ebc0558c6128"
+        },
+        {
+          "path": "README.md",
+          "sha256": "ce1d90fc25dd5c928748de2addbda7379f72c3e5db25fe215a93b7f3eb2e712b"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "a46729559e7dab596da07d2131b20a64cacae9c1",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=a46729559e7dab596da07d2131b20a64cacae9c1 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "mastodon",
+        "manifestName": "mastodon",
+        "listingId": "6acdd8dc-b551-4ef6-834f-cb261cf9e282",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-mastodon"
+      },
+      "installAssertions": {
+        "name": "mastodon",
+        "slug": "mastodon",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "reddit",
+      "manifestName": "reddit",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-reddit",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "45d44b39552dfe5543cd5ce11b3efbd8b8dee240e5f5950e03f47fef8df85eaf"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "f784b0c0c17e7876cde4f4ef2cd24dce84c3edc9f46b82bb6aa15507a75019e6"
+        },
+        {
+          "path": "README.md",
+          "sha256": "c1d3d6708d71b8a1e5dde8e4e9c31623615717a0dd6e5a32be280fd35e890b5b"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "e254e2ad9d7da0ca3fd39edfa117aa393891365c",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=e254e2ad9d7da0ca3fd39edfa117aa393891365c src=e857fa70abbfce2e0822ffeb315d21a8354e70ca"
+      },
+      "listing": {
+        "name": "reddit",
+        "manifestName": "reddit",
+        "listingId": "aa14b9e2-9393-4a4f-8aea-fec6222f7a84",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-reddit"
+      },
+      "installAssertions": {
+        "name": "reddit",
+        "slug": "reddit",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "bluesky",
+      "manifestName": "bluesky",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-bluesky",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "e4ec8085c2fd494a1cbdc0944c0744fb186df8ceb19bd87967a064b584fe0a7e"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "34872e1f9234b63a4ed342d73c59fd64b3cf69347d960e3e4494e483ff9e3928"
+        },
+        {
+          "path": "README.md",
+          "sha256": "67296b0c1d40490c06f50afdcbf49f5f26d738a44cb3f8f0375a51b4a6c15b60"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "8f4969104d5472b8c7fc70733df02573ea82e572",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=8f4969104d5472b8c7fc70733df02573ea82e572 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "bluesky",
+        "manifestName": "bluesky",
+        "listingId": "9f0f919b-808c-4c5a-b6eb-d5d58d54afb8",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-bluesky"
+      },
+      "installAssertions": {
+        "name": "bluesky",
+        "slug": "bluesky",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "devto",
+      "manifestName": "devto",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-devto",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "c613427954e852df4e634c10ed8607b8505f88562aa9cd8ac45f361a18bef67d"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "785f8c99f5236427ce5ac3389497485d4691ae575e5e9f65c4057077f5778931"
+        },
+        {
+          "path": "README.md",
+          "sha256": "6c0800e246a990739879bb7ad67cc2a83e894b6db9cab1e695f55b354ec64d1e"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "02af39e59ea6f34a4869319e510d483749d5e0d2",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=02af39e59ea6f34a4869319e510d483749d5e0d2 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "devto",
+        "manifestName": "devto",
+        "listingId": "4c922104-c142-4c6d-97cb-a514d2100122",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-devto"
+      },
+      "installAssertions": {
+        "name": "devto",
+        "slug": "devto",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "hashnode",
+      "manifestName": "hashnode",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-hashnode",
+      "version": "0.1.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "055b1ff649c0c0e5fa90885a438b7a23a04868f7003ab214310236927d9d0a70"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "aa403df042d5b1ed657b2d3997a5beb3ac58d2c7075ddfdcd3ef42f06bb882e2"
+        },
+        {
+          "path": "README.md",
+          "sha256": "e80c6d5946364d101806628dd2efa36825850342c92b469f73eca31285b5eeb6"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "08ba9bc0087af4812696ad2c28aa7d5ce5ada253",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=08ba9bc0087af4812696ad2c28aa7d5ce5ada253 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "hashnode",
+        "manifestName": "hashnode",
+        "listingId": "a1c686c1-e247-4edc-beff-8b9d056ab200",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-hashnode"
+      },
+      "installAssertions": {
+        "name": "hashnode",
+        "slug": "hashnode",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    },
+    {
+      "name": "discord",
+      "manifestName": "discord",
+      "sourceRef": "2d1d1d5ed0ac23758f26c0efa6e62da5829f75f4",
+      "repo": "Papercusp/papercusp-discord",
+      "version": "0.2.0",
+      "files": [
+        {
+          "path": "daemon.cjs",
+          "sha256": "f9008ac359b815b70f07365baabeb649a9f10854e30d5f32682b8fecfcfa9b45"
+        },
+        {
+          "path": "index.cjs",
+          "sha256": "43443d82e28e5c2bb66101bf3fb86139692b7e0f95d8f0b5fb03f66c25a3c5c7"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "41923fa4628ed7108e2cb3874ff704c4e52cfa7702b999e5d41544b24a52f1df"
+        },
+        {
+          "path": "papercusp.json",
+          "sha256": "29d42bf6d808bae653e1a9e001bfa30444b3d52c87fa684c8c96a907b81b52ef"
+        },
+        {
+          "path": "README.md",
+          "sha256": "f4c4315313c272cc0907747208292977510e82ffa51b67bec1b25acc06a13418"
+        }
+      ],
+      "publicationReceipt": {
+        "publishedHead": "93affc2a19dcfcc8e75466d1020d94729c026540",
+        "publicManifestVerified": true,
+        "publishResult": "MIRROR_PUBLISHED head=93affc2a19dcfcc8e75466d1020d94729c026540 src=618e68332d0c0adc9a5de9b702416adc4019284b"
+      },
+      "listing": {
+        "name": "discord",
+        "manifestName": "discord",
+        "listingId": "160035ed-acb3-4cb7-8cb0-3725cb559a25",
+        "status": "approved",
+        "repoUrl": "https://github.com/Papercusp/papercusp-discord"
+      },
+      "installAssertions": {
+        "name": "discord",
+        "slug": "discord",
+        "listingId": null,
+        "listingResolved": false,
+        "consentRefusedBeforeWrite": true,
+        "filesMatched": true,
+        "discoveredAfterInstall": true,
+        "daemonDescribed": true
+      }
+    }
+  ]
+}

@@ -74,7 +74,11 @@ describe('duplicate verdict survives existing CDC, mapper and receiver', () => {
       expect(duplicateOps).toHaveLength(2);
       const duplicateOp = outboxRowToLocalWriteOp(duplicateOps[1]);
       if (duplicateOp.type !== 'put') throw new Error('expected duplicate put');
-      expect(duplicateOp.value).toMatchObject({ duplicate_of: 'WI-CANONICAL', duplicate_source: 'agent' });
+      const duplicateValue = duplicateOp.value;
+      if (duplicateValue === null || typeof duplicateValue !== 'object' || Array.isArray(duplicateValue)) {
+        throw new Error('expected duplicate put value to be an object');
+      }
+      expect(duplicateValue).toMatchObject({ duplicate_of: 'WI-CANONICAL', duplicate_source: 'agent' });
 
       // Reject malformed verdicts before PostgreSQL sees them. In particular,
       // String(['agent']) is a valid enum spelling, but an array is not a source.
@@ -82,7 +86,7 @@ describe('duplicate verdict survives existing CDC, mapper and receiver', () => {
       const projection = kind === 'feature'
         ? buildHarnessFeaturesProjection(options) : buildEngineerIssuesProjection(options);
       for (const duplicate_source of [['agent'], { source: 'agent' }, 1, 'unknown']) {
-        expect(projection.decodeValue({ ...duplicateOp.value, duplicate_source })).toBeNull();
+        expect(projection.decodeValue({ ...duplicateValue, duplicate_source })).toBeNull();
       }
 
       await sql`UPDATE harness_shared.work_items SET duplicate_of=NULL,duplicate_source=NULL

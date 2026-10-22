@@ -20,7 +20,7 @@
  * (pid + perf-now + suffix) keep it from ever colliding with the live fleet, and
  * each test asserts its socket+meta are removed on child exit.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
@@ -102,6 +102,70 @@ function hostTestDiagnostics(ownerId: string, captured: () => string): string {
     : [];
   return JSON.stringify({ output: captured().slice(-2000), events });
 }
+
+it('serializes a resumed launch kickoff before a concurrent wake', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-kickoff-wake-order-'));
+  const codexHome = join(root, 'codex-home');
+  const nativeId = '01234567-89ab-4cde-8fab-0123456789ab';
+  const nativeFile = join(codexHome, 'sessions', `rollout-${nativeId}.jsonl`);
+  const ownerId = uniqueOwner('KICKOFF-WAKE-ORDER');
+  const sock = socketPathFor(ownerId);
+  const kickoff = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\nResume the saved task';
+  const wake = '⟦turn-origin:loop-fire nonce:fedcba9876543210⟧\nContinue the queued unit';
+  const { captured, io } = fakeIo();
+  const signalSource = new EventEmitter();
+  const childCode = [
+    "const fs=require('node:fs'),path=require('node:path');let composer='',turn=0;",
+    "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+    "process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+    "process.stdin.on('data',data=>{for(const ch of data){if(ch!=='\\r'){composer+=ch;continue;}if(!composer)continue;",
+    "fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString(),turn_id=String(++turn);",
+    "const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},",
+    "{type:'event_msg',timestamp,payload:{type:'task_started',turn_id}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id}}];",
+    "fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));composer='';process.stdout.write('NATIVE_ACCEPTED\\n');",
+    "}process.stdout.write('COMPOSER_ECHO:'+composer+'\\n');});",
+  ].join('');
+  const done = hostThroughPty({
+    command: execPath, args: ['-e', childCode, 'resume'], cwd: root, ownerId,
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
+      NATIVE_FILE: nativeFile,
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '20',
+      // Expose the real paste-to-Enter interval so the socket wake can race it.
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '1500',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '20',
+      PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '20',
+      PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
+      PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '20',
+    }),
+    io, bridgeTty: false, signalSource, kickoff, nativePersistenceTimeoutMs: 1000,
+    resolveRespawnNativeId: () => nativeId, onRespawn: async () => true,
+    onExit: () => undefined,
+  });
+  const prompts = () => readFileSync(nativeFile, 'utf8').trim().split('\n')
+    .map(line => JSON.parse(line))
+    .filter(row => row.type === 'response_item' && row.payload?.role === 'user')
+    .map(row => row.payload.content[0].text);
+  try {
+    expect(await waitForOutput(captured, `COMPOSER_ECHO:${leadingTurnOriginMarker(kickoff)}`, CHILD_START_OUTPUT_TIMEOUT_MS),
+      hostTestDiagnostics(ownerId, captured)).toBe(true);
+    expect(existsSync(nativeFile)).toBe(false);
+    expect(await injectIntoHostWithConfirmation(sock, {
+      mode: 'turn', ownerId, data: wake, deliveryId: 'queued-during-kickoff',
+    })).toMatchObject({ ok: true, reason: 'accepted' });
+    await vi.waitFor(() => expect(existsSync(nativeFile)).toBe(true), { timeout: 5000 });
+    expect(prompts()[0], hostTestDiagnostics(ownerId, captured)).toBe(kickoff);
+    await vi.waitFor(() => expect(prompts()).toEqual([kickoff, wake]), { timeout: 6000 });
+  } finally {
+    signalSource.emit('SIGTERM');
+    await done;
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(existsSync(sock)).toBe(false);
+  expect(existsSync(metaPathFor(ownerId))).toBe(false);
+}, 20000);
 
 it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-after-reconcile', 'rearmed-replaced'] as const)(
   'keeps a repainting tagged wake pending until native submission: %s',

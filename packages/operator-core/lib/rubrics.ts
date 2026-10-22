@@ -34,6 +34,7 @@ import { activeWorkspaceId } from './workspace-registry';
 import { boundedPgReadTxn } from './pg-read-query';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
 import type { EvidenceRuntimeId } from './serving-runtimes';
+import { PLAN_CLASSES_BY_PROFILE } from './plan-class-refs';
 import {
   normalizeRequirementSections,
   requirementSections,
@@ -3948,12 +3949,29 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
   }
 
   const classRef = input.classRef?.trim();
+  let composes = input.composes === undefined ? stored.composes : normalizeRubricCompositionRefs(input.composes);
   if (input.classRef !== undefined) {
     if (stored.kind !== 'acceptance' || !classRef) {
       throw new Error('invalid_args: amendRubric: classRef requires an acceptance rubric and a non-empty class reference');
     }
     if (stored.classRef && stored.classRef !== classRef) {
-      throw new Error('invalid_args: amendRubric: an existing acceptance class cannot be replaced through this amendment');
+      // An investigation may become an implementation programme. Tighten its
+      // verification profile without reopening the whole-document proposal path
+      // (which does not carry the server-owned adopted BAR contract). Retain every
+      // prior standard as a composition; a coding-to-general downgrade or an
+      // arbitrary class swap must still fail closed.
+      const strengthensProfile =
+        PLAN_CLASSES_BY_PROFILE.general.some((ref) => ref === stored.classRef) &&
+        PLAN_CLASSES_BY_PROFILE.coding.some((ref) => ref === classRef);
+      if (!strengthensProfile || !input.reason?.trim()) {
+        throw new Error(
+          'invalid_args: amendRubric: an existing acceptance class cannot be replaced through this amendment ' +
+          'except general/investigation to a coding class with a non-empty reason; prior standards are retained',
+        );
+      }
+      composes = normalizeRubricCompositionRefs([
+        ...(stored.composes ?? []), ...(composes ?? []), stored.classRef,
+      ]);
     }
   }
 
@@ -4078,11 +4096,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     ...(stored.subjectHarnessSlug ? { subjectHarnessSlug: stored.subjectHarnessSlug } : {}),
     ...(stored.subjectGoal ? { subjectGoal: stored.subjectGoal } : {}),
     ...(classRef || stored.classRef ? { classRef: classRef ?? stored.classRef! } : {}),
-    ...(input.composes !== undefined
-      ? { composes: normalizeRubricCompositionRefs(input.composes) }
-      : stored.composes
-        ? { composes: [...stored.composes] }
-        : {}),
+    ...(composes !== undefined ? { composes: [...composes] } : {}),
     ...(stored.barSetHash ? { barSetHash: stored.barSetHash } : {}),
     ...(stored.barContract ? { barContract: stored.barContract } : {}),
     characteristic: stored.characteristic,
