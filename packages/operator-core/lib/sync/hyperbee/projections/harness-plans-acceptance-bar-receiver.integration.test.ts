@@ -266,6 +266,15 @@ describe('federated receiver acceptance-BAR seed (D-093 option B)', () => {
     const { plan, rubric } = await authorSeed(planSlug);
 
     await applyRemote(plan);
+    const [receiverProfile] = await db.adminSql<Array<{
+      verification_profile: string | null;
+      verification_profile_source: string | null;
+    }>>`
+      SELECT verification_profile, verification_profile_source
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${RECEIVER_WS} AND harness_slug = ${HARNESS} AND plan_slug = ${planSlug}`;
+    expect(receiverProfile?.verification_profile).toMatch(/^(coding|general)$/);
+    expect(receiverProfile?.verification_profile_source).toBe('harness-default');
     // The falsifier for the design hazard: an unguarded seed would INSERT an
     // `acceptance-<slug>` rubric here, which would then federate and compete.
     expect(await rubricRows(RECEIVER_WS, planSlug)).toHaveLength(0);

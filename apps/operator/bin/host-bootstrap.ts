@@ -16,6 +16,7 @@
  * so even an accidental double-call from a different bootstrap path is safe.
  */
 import { mountPluginApiRoutes } from '@papercusp/operator-core/lib/plugin-api-mount';
+import { initializeRuntimeObservability } from '@papercusp/operator-core/lib/observability/runtime';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import cluster from 'node:cluster';
@@ -413,6 +414,7 @@ export function runBootstrap(): void {
   declareOperatorHostProcess();
   if (BOOTSTRAP_STATE.ran) return;
   BOOTSTRAP_STATE.ran = true;
+  initializeRuntimeObservability();
   // The generic DB package reports identity outcomes without depending on this host's rail.
   setDiscoveryIdentityObserver((mechanism, observation) => {
     observeFallback(mechanism, observation);

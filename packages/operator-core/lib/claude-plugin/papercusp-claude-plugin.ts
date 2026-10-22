@@ -29,9 +29,8 @@ import {
   PAPERCUSP_CLAUDE_PLUGIN_ID,
   PAPERCUSP_CLAUDE_PLUGIN_NAME,
   PAPERCUSP_CLAUDE_PLUGIN_SUBDIR,
-  commandScriptNames,
-  hookCommandsForEvent,
-  type ClaudeHookGroup,
+  enrollPapercuspClaudePlugin,
+  stripPluginCarriedInlineHooks,
   type ClaudeHookMap,
 } from './plugin-rails.mjs';
 
@@ -42,6 +41,7 @@ export {
   PAPERCUSP_CLAUDE_PLUGIN_NAME,
 };
 export type { ClaudeHookMap };
+export { enrollPapercuspClaudePlugin, stripPluginCarriedInlineHooks };
 
 /** Marketplace root for a given home directory. */
 export function papercuspClaudePluginRoot(home: string): string {
@@ -123,59 +123,6 @@ export async function detectPapercuspClaudePluginDrift(
   if (missing.length > 0) return { status: 'missing', files: [...missing, ...differing] };
   if (differing.length > 0) return { status: 'drift', files: differing };
   return { status: 'in-sync', files: [] };
-}
-
-function objectAt(cfg: Record<string, any>, key: string): Record<string, any> {
-  const value = cfg[key];
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-  cfg[key] = {};
-  return cfg[key];
-}
-
-/** Enroll the plugin in a settings object (mutated + returned): declare the directory marketplace
- *  and enable the plugin. Other marketplaces and plugins are left untouched. */
-export function enrollPapercuspClaudePlugin(cfg: Record<string, any>, root: string): Record<string, any> {
-  objectAt(cfg, 'extraKnownMarketplaces')[PAPERCUSP_CLAUDE_MARKETPLACE_NAME] = {
-    source: { source: 'directory', path: root },
-  };
-  objectAt(cfg, 'enabledPlugins')[PAPERCUSP_CLAUDE_PLUGIN_ID] = true;
-  return cfg;
-}
-
-/**
- * Remove, per event, every inline hook command that runs a script the plugin carries under that
- * same event (settings object mutated in place). A foreign command sharing an entry with one of ours
- * is kept; an entry left with no commands is dropped, and an event left with no entries is deleted.
- * Returns how many inline commands were removed.
- */
-export function stripPluginCarriedInlineHooks(cfg: Record<string, any>, pluginHooks: ClaudeHookMap): number {
-  const inline = cfg.hooks;
-  if (!inline || typeof inline !== 'object' || Array.isArray(inline)) return 0;
-  let removed = 0;
-  for (const event of Object.keys(pluginHooks)) {
-    const carried = new Set<string>();
-    for (const command of hookCommandsForEvent(pluginHooks, event)) {
-      for (const name of commandScriptNames(command)) carried.add(name);
-    }
-    if (carried.size === 0 || !Array.isArray(inline[event])) continue;
-    const kept: ClaudeHookGroup[] = [];
-    for (const group of inline[event] as ClaudeHookGroup[]) {
-      if (!Array.isArray(group?.hooks)) {
-        kept.push(group);
-        continue;
-      }
-      const hooks = group.hooks.filter((hook) => {
-        const ours = [...commandScriptNames(hook?.command)].some((name) => carried.has(name));
-        if (ours) removed += 1;
-        return !ours;
-      });
-      if (hooks.length > 0) kept.push({ ...group, hooks });
-    }
-    if (kept.length > 0) inline[event] = kept;
-    else delete inline[event];
-  }
-  if (Object.keys(inline).length === 0) delete cfg.hooks;
-  return removed;
 }
 
 export interface PapercuspClaudePluginCarrierResult {

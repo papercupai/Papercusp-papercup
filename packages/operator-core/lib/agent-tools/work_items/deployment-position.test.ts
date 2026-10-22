@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { gitPipelinePosition } = vi.hoisted(() => ({ gitPipelinePosition: vi.fn() }));
+const { deploymentPositionForPathsMock, gitPipelinePosition } = vi.hoisted(() => ({
+  deploymentPositionForPathsMock: vi.fn(),
+  gitPipelinePosition: vi.fn(),
+}));
 vi.mock('../../git-pipeline-position', () => ({ gitPipelinePosition }));
+vi.mock('../../deployment-position', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../deployment-position')>();
+  return { ...actual, deploymentPositionForPaths: deploymentPositionForPathsMock };
+});
 
 import {
   deploymentPositionForEvidence,
   DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS,
-  MAX_DEPLOYMENT_POSITION_PATHS,
 } from './deployment-position';
-import { deploymentPositionForPaths } from '../../deployment-position';
 
 function position(path: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -22,7 +27,7 @@ function position(path: string, overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  gitPipelinePosition.mockReset();
+  deploymentPositionForPathsMock.mockReset();
 });
 
 afterEach(() => {
@@ -41,140 +46,75 @@ describe('deploymentPositionForEvidence', () => {
     });
   });
 
-  it('resolves top-level and nested filesChanged paths in parallel and keeps compact positions', async () => {
-    gitPipelinePosition.mockImplementation(async ({ path }: { path: string }) => position(path));
+  it('collects top-level and nested filesChanged paths before delegating to the shared reader', async () => {
+    const expected = {
+      paths: [
+        { path: 'src/a.ts', ...position('src/a.ts') },
+        { path: 'src/b.ts', ...position('src/b.ts') },
+      ],
+      unknownPaths: [],
+      totalPaths: 2,
+      truncated: false,
+    };
+    deploymentPositionForPathsMock.mockResolvedValue(expected);
 
     const result = await deploymentPositionForEvidence({
       filesChanged: ['src/a.ts'],
       verification: { filesChanged: ['src/b.ts', 'src/a.ts'] },
     });
 
-    expect(gitPipelinePosition).toHaveBeenCalledTimes(2);
-    expect(gitPipelinePosition).toHaveBeenCalledWith({ path: 'src/a.ts' });
-    expect(gitPipelinePosition).toHaveBeenCalledWith({ path: 'src/b.ts' });
-    expect(result).toEqual({
-      paths: [
-        {
-          path: 'src/a.ts',
-          targetSha: 'src/a.ts-sha',
-          deployedSha: 'deployed-sha',
-          positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
-          blockedOn: null,
-        },
-        {
-          path: 'src/b.ts',
-          targetSha: 'src/b.ts-sha',
-          deployedSha: 'deployed-sha',
-          positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
-          blockedOn: null,
-        },
-      ],
-      unknownPaths: [],
-      totalPaths: 2,
-      truncated: false,
-    });
+    expect(deploymentPositionForPathsMock).toHaveBeenCalledTimes(1);
+    expect(deploymentPositionForPathsMock.mock.calls[0]?.[0]).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(deploymentPositionForPathsMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(deploymentPositionForPathsMock.mock.calls[0]?.[1]?.deadlineMs).toBeGreaterThan(Date.now());
+    expect(result).toEqual(expected);
   });
 
-  it('keeps one probe failure and unknown pipeline legs explicit without failing the batch', async () => {
-    gitPipelinePosition
-      .mockResolvedValueOnce(position('src/a.ts', { positionsUnknown: ['deployed'] }))
-      .mockRejectedValueOnce(new Error('pipeline unavailable'));
-
-    await expect(
-      deploymentPositionForEvidence({ filesChanged: ['src/a.ts', 'src/b.ts'] }),
-    ).resolves.toMatchObject({
-      paths: [
-        {
-          path: 'src/a.ts',
-          positionsUnknown: ['deployed'],
-        },
-      ],
-      unknownPaths: ['src/a.ts', 'src/b.ts'],
-      totalPaths: 2,
-      truncated: false,
-    });
-  });
-
-  it('bounds path fan-out and records truncation', async () => {
-    gitPipelinePosition.mockImplementation(async ({ path }: { path: string }) => position(path));
-    const filesChanged = Array.from({ length: MAX_DEPLOYMENT_POSITION_PATHS + 2 }, (_, i) => `src/${i}.ts`);
-
-    const result = await deploymentPositionForEvidence({ filesChanged });
-
-    expect(gitPipelinePosition).toHaveBeenCalledTimes(MAX_DEPLOYMENT_POSITION_PATHS);
-    expect(result).toMatchObject({ totalPaths: filesChanged.length, truncated: true });
-    expect(result?.paths).toHaveLength(MAX_DEPLOYMENT_POSITION_PATHS);
-  });
-
-  it('EI-21751879754001299: degrades to an honest "timeout" unknown instead of hanging when gitPipelinePosition never settles in time', async () => {
+  it('degrades to an honest timeout unknown and aborts the shared read when it never settles', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const paths = ['src/a.ts', 'src/b.ts'];
+    let signal: AbortSignal | undefined;
+    deploymentPositionForPathsMock.mockImplementation(
+      (_paths: string[], options?: { signal?: AbortSignal }) => {
+        signal = options?.signal;
+        return new Promise(() => {});
+      },
+    );
     vi.useFakeTimers();
-    // Simulates the real defect: gitPipelinePosition (many sequential git subprocess calls
-    // under fleet load) simply never resolves within this leg's budget.
-    gitPipelinePosition.mockImplementation(() => new Promise(() => {}));
-
-    const resultPromise = deploymentPositionForEvidence({ filesChanged: ['src/a.ts', 'src/b.ts'] });
-    await vi.advanceTimersByTimeAsync(DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS);
-    const result = await resultPromise;
-    warnSpy.mockRestore();
-
-    // Honest about WHICH paths went unresolved — never a bare totalPaths:0 that would read as
-    // "evidence named nothing" (that is the `no-filesChanged` case, a different fact).
-    expect(result).toEqual({
-      paths: [],
-      unknownPaths: ['src/a.ts', 'src/b.ts'],
-      totalPaths: 2,
-      truncated: false,
-      unknownReason: 'timeout',
-    });
-  });
-
-  it('aborts every evidence path on one shared signal and keeps the exact timeout UNKNOWN', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const signals: AbortSignal[] = [];
-    vi.useFakeTimers();
-    gitPipelinePosition.mockImplementation((_input: unknown, deps?: { gitReadBudget?: { signal?: AbortSignal } }) => {
-      const signal = deps?.gitReadBudget?.signal;
-      if (signal) signals.push(signal);
-      return new Promise(() => {});
-    });
-    const paths = Array.from({ length: MAX_DEPLOYMENT_POSITION_PATHS }, (_, i) => 'src/' + i + '.ts');
-
     const resultPromise = deploymentPositionForEvidence({ filesChanged: paths });
+    await Promise.resolve();
+    const startedSharedRead = deploymentPositionForPathsMock.mock.calls.length;
     await vi.advanceTimersByTimeAsync(DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS);
     const result = await resultPromise;
     warnSpy.mockRestore();
 
-    expect(signals).toHaveLength(MAX_DEPLOYMENT_POSITION_PATHS);
-    expect(new Set(signals).size).toBe(1);
-    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(startedSharedRead).toBe(1);
+    expect(signal?.aborted).toBe(true);
     expect(result).toEqual({
       paths: [],
       unknownPaths: paths,
-      totalPaths: paths.length,
+      totalPaths: 2,
       truncated: false,
       unknownReason: 'timeout',
     });
   });
 
-  it('leaves shared path callers on the default pipeline budget when no evidence options are passed', async () => {
-    gitPipelinePosition.mockResolvedValue(position('src/a.ts'));
-
-    await expect(deploymentPositionForPaths(['src/a.ts'])).resolves.toMatchObject({
-      paths: [{ path: 'src/a.ts' }],
-      unknownPaths: [],
-    });
-    expect(gitPipelinePosition).toHaveBeenCalledWith({ path: 'src/a.ts' });
-  });
-
   it('resolves promptly (well inside the timeout) when gitPipelinePosition answers fast', async () => {
-    gitPipelinePosition.mockImplementation(async ({ path }: { path: string }) => position(path));
+    const expected = {
+      paths: [{ path: 'src/a.ts', ...position('src/a.ts') }],
+      unknownPaths: [],
+      totalPaths: 1,
+      truncated: false,
+    };
+    deploymentPositionForPathsMock.mockResolvedValue(expected);
     const start = Date.now();
 
     const result = await deploymentPositionForEvidence({ filesChanged: ['src/a.ts'] });
 
     expect(Date.now() - start).toBeLessThan(DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS);
     expect(result?.unknownReason).toBeUndefined();
+    expect(deploymentPositionForPathsMock).toHaveBeenCalledTimes(1);
     expect(result?.paths).toHaveLength(1);
+    expect(result).toEqual(expected);
   });
 });

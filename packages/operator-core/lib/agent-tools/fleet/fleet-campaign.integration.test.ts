@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import { createOrgTestDb } from '../../../test/_org-test-db';
-import { readFleetCampaign } from './fleet-campaign';
+import {
+  FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY,
+  readFleetCampaign,
+} from './fleet-campaign';
 
 const WS = 'fleet-campaign-ws';
 const HARNESS = 'fleet-campaign-harness';
@@ -134,5 +137,39 @@ describe('fleet campaign (real Postgres)', () => {
         reason: 'no-ever-members',
       });
     }
+  });
+
+  it('overlaps independent database axes within the bounded read width', async () => {
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const instrumentedSql = new Proxy(db.adminSql, {
+      apply(target, thisArg, args) {
+        const result = Reflect.apply(target, thisArg, args) as { then?: unknown };
+        const firstSql =
+          typeof args[0]?.[0] === 'string' ? args[0][0].trimStart().toUpperCase() : '';
+        const isReadQuery = firstSql.startsWith('SELECT') || firstSql.startsWith('WITH');
+        if (!isReadQuery || !result || typeof result.then !== 'function') return result;
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        return Promise.resolve(result).finally(() => {
+          inFlight -= 1;
+        });
+      },
+    });
+
+    const campaign = await readFleetCampaign(
+      {
+        workspaceId: WS,
+        fleetSlug: FLEET,
+        fleetCreatedAtMs: Date.parse('2026-08-12T00:00:00Z'),
+        since: SINCE,
+        harnessSlug: HARNESS,
+      },
+      instrumentedSql,
+    );
+
+    expect(campaign.axes.membership.available).toBe(true);
+    expect(peakInFlight).toBeGreaterThan(1);
+    expect(peakInFlight).toBeLessThanOrEqual(FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY);
   });
 });

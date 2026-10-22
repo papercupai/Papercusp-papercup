@@ -84,6 +84,20 @@ it('does not accept queue prose outside the matching compaction output', () => {
   expect(protocol.carryRequested).toBe(false);
 });
 
+it('pins lineage at compaction after initial native binding and keeps it across successor mapping', () => {
+  const protocol = createCurrentSuNativeProtocol();
+  // The first HTTP request can precede the launcher's durable native mapping.
+  protocol.respond(kickoff, { ...proof, predecessorSessionId: 'launch-placeholder' });
+  protocol.respond({ ...kickoff, input: [output('call_private_edit', 'ok')] }, proof);
+  protocol.respond({ ...kickoff, input: [output('call_private_compact', '{"requested":true,"respawn":"queued"}')] }, proof);
+  // The database now names the successor. Its carry still names the actual
+  // predecessor frozen before the compaction call was issued.
+  protocol.respond({ ...kickoff, input: 'codex-carry-lineage predecessor:predecessor' },
+    { ...proof, predecessorSessionId: 'successor' });
+  expect(protocol.carryInputSeen).toBe(true);
+  expect(protocol.census.at(-1)).toMatchObject({ lineage: true, expectedPredecessorSessionId: 'predecessor' });
+});
+
 const queuedToon = 'format: toon\nok: true\nrequested: true\nrespawn: queued\npriorRespawn:\n  outcome: none';
 it.each([
   queuedToon,

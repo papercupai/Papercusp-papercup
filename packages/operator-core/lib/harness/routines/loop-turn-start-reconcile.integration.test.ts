@@ -1,5 +1,8 @@
 /** EI-24791346664119438: real producer/store/reconciler correlation before transcript ingest. */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
@@ -13,12 +16,15 @@ vi.mock('@papercusp/db-org', async (original) => ({
 import { recordLoopTurnStart } from './loop-turn-start-stamp';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 
 let pg: DedicatedNativePg;
 let org: OrgTestDb;
 let sql: Sql;
 const savedAdmin = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+const savedProvenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
 const WS = 'ws-loop-start-correlation';
+let provenanceDir: string | undefined;
 
 beforeAll(async () => {
   // This acceptance owns its cluster: no live workspace or shared baseline mutex.
@@ -27,15 +33,23 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   h.sql = sql;
+  provenanceDir = await mkdtemp(join(tmpdir(), 'pc-loop-turn-start-'));
+  process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provenanceDir;
 }, 180_000);
 
 afterAll(async () => {
   try {
     await org?.cleanup();
   } finally {
-    await pg?.stop();
-    if (savedAdmin === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
-    else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = savedAdmin;
+    try {
+      await pg?.stop();
+    } finally {
+      if (provenanceDir) await rm(provenanceDir, { recursive: true, force: true });
+      if (savedAdmin === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = savedAdmin;
+      if (savedProvenanceDir === undefined) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+      else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = savedProvenanceDir;
+    }
   }
 });
 
@@ -47,17 +61,18 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
     const fired = new Date(now - 10_000);
     const dispatched = new Date(now - 5_000);
     const cases = [
-      { id: 'rt-start-proof', owner: 'su-start-proof', stamped: true, genericPickupObserved: false },
-      { id: 'rt-no-start-proof', owner: 'su-no-start-proof', stamped: false, genericPickupObserved: true },
+      { id: 'rt-start-proof', owner: 'su-start-proof', enrolled: true, genericPickupObserved: false },
+      { id: 'rt-no-start-proof', owner: 'su-no-start-proof', enrolled: false, genericPickupObserved: true },
     ];
     for (const c of cases) {
       await sql`
         INSERT INTO harness_shared.routines
           (id, install_slug, name, trigger_kind, trigger_config, target_role,
            active, workspace_id, last_fired_at, next_fire_at,
-           reschedule_interval_sec, target_owner_id)
+           reschedule_interval_sec, target_owner_id, metadata)
         VALUES (${c.id}, 'papercusp', ${c.id}, 'cron', '{}'::jsonb, 'su',
-                TRUE, ${WS}, ${fired}, 'infinity'::timestamptz, 60, ${c.owner})`;
+                TRUE, ${WS}, ${fired}, 'infinity'::timestamptz, 60, ${c.owner},
+                ${JSON.stringify({ fire_count: 1 })}::jsonb)`;
       const awaits = await sql<Array<{ id: number }>>`
         INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
         VALUES (${WS}, ${c.owner}, ${'test:' + c.id}) RETURNING id`;
@@ -73,12 +88,21 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
                 ${'loop:' + c.id}, 'delivered', 'inbox', ${dispatched}, ${dispatched},
                 ${genericTurnProof}, ${genericTurnStartedAt}, ${new Date(dispatched.getTime() + 600_000)})`;
       // Exercise the real producer and default PG telemetry writer, not a seeded marker.
+      let prompt = 'An unrelated owner turn.';
+      if (c.enrolled) {
+        const tagged = await tagTurnForInjection({
+          sid: c.owner,
+          origin: 'loop-fire',
+          text: 'Continue the loop.',
+          loopFire: { routineId: c.id, wakeCount: 1 },
+          dir: provenanceDir,
+        });
+        expect(tagged.ledgerWritten).toBe(true);
+        prompt = tagged.taggedText;
+      }
       expect(await recordLoopTurnStart({
-        owner: c.owner, workspaceId: WS, client: 'codex',
-        prompt: c.stamped
-          ? '⟦turn-origin:loop-fire nonce:8ed10949adab325d⟧\nContinue the loop.'
-          : 'An unrelated owner turn.',
-      })).toBe(c.stamped);
+        owner: c.owner, workspaceId: WS, client: 'codex', prompt,
+      })).toBe(c.enrolled);
     }
 
     const stamps = await sql<Array<{ owner_id: string; created_at: Date; summary: string }>>`
@@ -87,6 +111,13 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
     expect(stamps).toHaveLength(1);
     expect(stamps[0]).toMatchObject({ owner_id: 'su-start-proof', summary: LOOP_TURN_START_MARKER });
     expect(stamps[0]!.created_at.getTime()).toBeGreaterThan(dispatched.getTime());
+    const enrolledIdentity = await sql<Array<{ detail: Record<string, unknown> }>>`
+      SELECT detail FROM harness_shared.agent_activity
+       WHERE workspace_id = ${WS} AND owner_id = 'su-start-proof'`;
+    expect(enrolledIdentity).toHaveLength(1);
+    expect(enrolledIdentity[0]!.detail).toMatchObject({
+      loopFire: { routineId: 'rt-start-proof', wakeCount: 1 },
+    });
 
     const genericProof = await sql<Array<{ turn_proof: string; turn_started_at: Date }>>`
       SELECT turn_proof, turn_started_at FROM harness_shared.event_wake_deliveries

@@ -9,11 +9,81 @@
 
 import { describe, expect, it } from 'vitest';
 import { composeGateOwnerBrief, type GateOwnerBriefInput } from './gate-owner-brief';
+import { projectFrozenRepairConvergenceCell } from './release/frozen-candidate-repair-queue';
+import { buildTestPassReuseHealth } from './release/test-pass-reuse-report';
 
 const NOW = 1_788_193_000_000;
 const CANDIDATE = '1111111111111111111111111111111111111111';
 const MAIN_PIN = '2222222222222222222222222222222222222222';
 const STAGING_HEAD = '3333333333333333333333333333333333333333';
+
+describe('owner brief test progress retrieval', () => {
+  const failures: NonNullable<GateOwnerBriefInput['candidateFailures']> = {
+    candidateSha: CANDIDATE, repairHeadSha: MAIN_PIN, filesJudged: 400,
+    failingFileCount: 83, scope: 'Candidate affected radius only.', unavailable: null, truncated: true,
+  };
+  const progress = (overrides: Partial<GateOwnerBriefInput> = {}) => composeGateOwnerBrief({
+    ...base, repairQueue: redQueue({ candidate: CANDIDATE, repairHead: MAIN_PIN }),
+    candidateFailures: failures, ...overrides,
+  }).testProgress;
+  const convergence = () => projectFrozenRepairConvergenceCell({
+    openedAtMs: NOW - 60_000, ageMs: 60_000, attempts: 2, admissionRounds: 2,
+    failingFirst: 9, failingNow: 3, shrinkTotal: 6,
+    shrinkPerRound: [{ round: 1, failingCount: 9, delta: null }, { round: 2, failingCount: 3, delta: -6 }],
+    converging: true, candidate: CANDIDATE, repairHead: MAIN_PIN,
+    phase: 'awaiting-fixer', observedAtMs: NOW - 10_000,
+  });
+
+  it('keeps aggregate file counts exact when rendered details are truncated, without inventing a case total', () => {
+    const p = progress();
+    expect(p.candidateFiles).toMatchObject({ value: 83, filesJudged: 400, detailsTruncated: true,
+      unit: 'test-files', candidateSha: CANDIDATE, readAtMs: NOW });
+    expect(p.fullSuiteFailingCases).toMatchObject({ value: null, status: 'not-measured', unit: 'test-cases' });
+  });
+
+  it('distinguishes measured zero from unavailable evidence', () => {
+    expect(progress({ candidateFailures: { ...failures, failingFileCount: 0 } }).candidateFiles.value).toBe(0);
+    expect(progress({ candidateFailures: null }).candidateFiles).toMatchObject({ value: null, status: 'unavailable' });
+    expect(progress({ candidateFailures: { ...failures, unavailable: 'ledger unreadable' } }).candidateFiles.value).toBeNull();
+  });
+
+  it('returns the existing trend with its signature units and observation time', () => {
+    expect(progress({ convergence: convergence() }).trend).toMatchObject({
+      status: 'converging', baseline: 9, latest: 3, decrease: 6,
+      unit: 'queue-failure-signatures', observedAtMs: NOW - 10_000,
+    });
+  });
+
+  it('withholds a trend when the repair head or candidate differs', () => {
+    const c = convergence();
+    for (const changed of [{ ...c, repairHead: STAGING_HEAD }, { ...c, candidate: STAGING_HEAD }]) {
+      expect(progress({ convergence: changed }).trend).toMatchObject({ status: 'incomparable', latest: null, rounds: [] });
+    }
+  });
+
+  it('retains the latest timeout and does not treat an older decreasing series as a current count', () => {
+    const p = progress({ convergence: convergence(),
+      inconclusive: { status: 'deadline-exceeded', detail: 'three-hour ceiling', observedAtMs: NOW - 1_000 } });
+    expect(p.trend).toMatchObject({ status: 'incomparable', baseline: null, latest: null });
+    expect(p.lastAttempt).toMatchObject({ inconclusiveStatus: 'deadline-exceeded', detail: 'three-hour ceiling', observedAtMs: NOW - 1_000 });
+  });
+
+  it('reports missing reuse evidence as unknown rather than zero', () => {
+    expect(progress().passReuse).toMatchObject({ status: 'not-recorded', selectedForReuse: null, consumerSkippedFiles: null });
+  });
+
+  it('exposes persisted selector decisions without promoting them to actual runner skips', () => {
+    const reuse = buildTestPassReuseHealth(
+      'TEST_PASS_REUSE_TOTAL tasks=1 candidates=20 reused=12 audited=1 minSavedTestMs=50 unmeasured=0',
+      CANDIDATE, NOW - 5_000,
+    );
+    expect(reuse).not.toBeNull();
+    expect(progress({ testPassReuse: reuse }).passReuse).toMatchObject({
+      status: 'recorded', judgedSha: CANDIDATE, recordedAtMs: NOW - 5_000,
+      selectedForReuse: 12, candidates: 20, consumerSkippedFiles: null,
+    });
+  });
+});
 
 const heldLiveOwnership = {
   claimState: 'held',

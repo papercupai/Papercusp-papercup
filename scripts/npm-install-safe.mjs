@@ -1558,6 +1558,12 @@ function manifestOnlyResolutionLayout(repoRoot) {
             supported: false,
             reason: "file dependency leaves the repository in " + manifestPath,
           };
+        // npm also accepts packed local dependencies. Copy their opaque bytes
+        // into the resolver snapshot; an archive is not a package directory.
+        if (/\.(?:tgz|tar\.gz)$/i.test(targetPath) && existsSync(targetPath) && lstatSync(targetPath).isFile()) {
+          inputPaths.add(toRepoRelativePath(repoRoot, targetPath));
+          continue;
+        }
         const targetManifest = join(targetPath, "package.json");
         if (!existsSync(targetManifest))
           return {
@@ -1678,6 +1684,12 @@ async function runManifestOnlyInstall({
         }
         const value = manifestOnlyResolutionLayout(repoRoot);
         if (!value.supported) return value;
+        const { workspaceDirs } = verificationScopeForNpmArgs({ repoRoot, npmArgs });
+        const ranges = await findUnsatisfiedDeclaredDepRangesWithRetry({ repoRoot, workspaceDirs });
+        // A broken installed graph needs a writer reservation so sustained new
+        // readers cannot starve its repair. Existing readers still drain under
+        // the exclusive mutex; healthy installs retain the D-009 pre-drain.
+        value.repairInstalledGraph = ranges.invalid.length > 0;
         input = createManifestOnlyTree(repoRoot, value.inputPaths);
         return value;
       });
@@ -1800,7 +1812,7 @@ async function runManifestOnlyInstall({
             });
           }),
           {
-            waitForReadersBeforeReserve: true,
+            waitForReadersBeforeReserve: !layout.repairInstalledGraph,
             ...installLockWaitReporter({
               lock: "writer",
               describe: (owner, elapsedMs) =>

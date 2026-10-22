@@ -19,7 +19,7 @@
  * the runWrapper seam every launch kind passes through.
  */
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, existsSync, symlinkSync, linkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -293,6 +293,28 @@ describe('psu Claude launch native-compaction switches (R-6, D-004)', () => {
         idleCompaction: false,
       });
     });
+
+    it('refuses directory symlink aliases even when owner settings do not yet exist', () => {
+      rmSync(ownerSettings);
+      const alias = join(root, 'owner-alias');
+      symlinkSync(userClaudeDir, alias, 'dir');
+      expect(persistPsuClaudeSessionSettings({ wrapperBin: 'claude',
+        env: { CLAUDE_CONFIG_DIR: alias }, userClaudeDir, log: quiet })).toBe(false);
+      expect(existsSync(ownerSettings)).toBe(false);
+    });
+
+    for (const alias of ['symlink', 'hardlink']) {
+      it(`refuses a settings-file ${alias} to the owner and preserves both files`, () => {
+        const before = readFileSync(ownerSettings, 'utf8');
+        const target = join(sessionDir, 'settings.json');
+        if (alias === 'symlink') symlinkSync(ownerSettings, target);
+        else linkSync(ownerSettings, target);
+        expect(persistPsuClaudeSessionSettings({ wrapperBin: 'claude',
+          env: { CLAUDE_CONFIG_DIR: sessionDir }, userClaudeDir, log: quiet })).toBe(false);
+        expect(readFileSync(ownerSettings, 'utf8')).toBe(before);
+        expect(readFileSync(target, 'utf8')).toBe(before);
+      });
+    }
 
     it("refuses the owner's user-level dir, an unset config dir and non-Claude backends", () => {
       const before = sha256(ownerSettings);

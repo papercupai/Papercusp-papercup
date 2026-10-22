@@ -797,6 +797,14 @@ describe('docs:search handler', () => {
       searchDocs.mockImplementationOnce(
         async (...params: unknown[]) => {
           const engineCtx = params[2] as { metadata: (data: Record<string, unknown>) => void };
+          setTimeout(() => engineCtx.metadata({ docsLexicalTiming: {
+            version: 1,
+            totalElapsedMs: 19_999,
+            outcome: 'running',
+            completedMs: { listPages: 10 },
+            active: { phase: 'getContent', elapsedMs: 19_989 },
+            pages: { listed: 37, searchable: 33, loaded: 12 },
+          } }), 19_999);
           return await new Promise((resolve) => {
             releaseSearch = () => {
               engineCtx.metadata({ docsLexicalTiming: {
@@ -823,8 +831,13 @@ describe('docs:search handler', () => {
       expect(searchDocs).toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(20_000);
       expect(log).toHaveBeenCalledWith(
-        '[docs:search timing] lexicalSearch still pending after at least 20000ms',
+        expect.stringContaining(
+          '[docs:search timing] lexicalSearch still pending after at least 20000ms; docsLexicalTiming',
+        ),
       );
+      expect(log).toHaveBeenCalledWith(expect.stringContaining(
+        'total=19999ms outcome=running phases=listPages=10ms active=getContent:19989ms pages=37/33/12',
+      ));
 
       releaseSearch?.();
       await pending;

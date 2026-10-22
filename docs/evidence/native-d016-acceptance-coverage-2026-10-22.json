@@ -1,0 +1,315 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-delivery-acceptance-coverage",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-10007889",
+  "status": "proposal-and-detector-evidence; independent amendment review pending; not an acceptance grade",
+  "source": {
+    "rubricRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+    "rubricRevision": 17,
+    "criteriaHash": "0c69e64603c16fd802517b5bd25ac15000d97b2ba03026a9c7c3cdf8b67899f5",
+    "planRevision": 144,
+    "decisionRef": "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016",
+    "ownerChoiceRef": "session_turn:claude:35b33faa-e48e-454c-81b9-39d4a7512e9b:11"
+  },
+  "finding": {
+    "conclusion": "The existing 29 mandatory acceptance models and their methods did not grade D-016's default flags, snapshot-only hot path, shared turn budget, session-epoch dedupe, snapshot freshness stamp or read-only judge admission.",
+    "method": "Read full rubric revision17; inspect each model, method and driftMarkers plus the owning delivery implementations and maintained tests. Issuance and follow-through instruments are distinct outcomes and do not discharge these promises.",
+    "unaffected": "The submitted amendment reuses all existing29 criterion objects unchanged and appends only R35..R40. The initial independent reviewer verified the prior population and all six first-preview hashes. R40 is corrected in plan144 to deployed/release-operator after objection1196294; the other five additions retain their original contracts. D011 baseline, sample bounds, target and 72-hour qualification remain unchanged."
+  },
+  "proposedCriteria": [
+    {
+      "key": "r-35",
+      "barKey": "R-35",
+      "title": "Proactive legs are enabled by default",
+      "model": "Every registered native code-intelligence push leg is enabled by default.",
+      "driftMarkers": "A registered push leg has a default-OFF flag or lacks an explicit registered flag.",
+      "method": "Read PUSH_LEG_FLAGS and FLAG_DEFAULTS in the exact pinned source. Run push-channel.test.ts through testing:run and retain the case 'keeps every registered leg ON by default'. Its nonempty registered-leg set must be checked against true defaults; a removed leg must be disclosed against D-016. Change one default to false as a controlled negative and require that case to fail. Restore the source before recording the passing run. No source substitution or skipped case counts.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/push-channel.test.ts"
+        ]
+      },
+      "requiredScope": [
+        "P-034",
+        "P-026"
+      ],
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "role": "outcome",
+      "mandatory": true,
+      "evidencePlane": "tree",
+      "passRatings": [
+        "pass"
+      ],
+      "intent": {
+        "request": "Enforce the proactive-delivery and read-only judge guarantees selected in D-016.",
+        "rationale": "The prior acceptance rubric measured related outcomes without grading this explicit guarantee.",
+        "sourceRefs": [
+          "owner-directive:1925",
+          "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+        ],
+        "constraints": [
+          "Additive acceptance repair under D-030 AUTO/self. Preserve all existing 29 criteria and D-011 targets."
+        ]
+      }
+    },
+    {
+      "key": "r-36",
+      "barKey": "R-36",
+      "title": "Push delivery uses the precomputed snapshot",
+      "model": "The shared mid-turn code-intelligence injector serves eligible pushes from the precomputed first-party snapshot without starting or awaiting a cold language server.",
+      "driftMarkers": "An eligible snapshot-backed push starts or waits for a compiler, a missing snapshot initiates a cold compiler, or the bounded delivery wall is exceeded without abandoning the pending delivery.",
+      "method": "Trace codeIntelPushText from PostToolBatch into the snapshot loader and commit seam. Run the bound unit and real-database integration suites through testing:run. Require the available-snapshot positive, cold/missing-snapshot negative and slow-context/abandoned-commit cases to execute. Preserve snapshot source identity, rendered nonempty answer and ledger row in the positive; compiler-start or a late abandoned commit is fail. A missing snapshot must return without compilation. An unexecuted hot-path case is unknown, never pass.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts"
+        ]
+      },
+      "requiredScope": [
+        "P-034",
+        "P-026"
+      ],
+      "requiredTestLayers": [
+        "unit",
+        "integration"
+      ],
+      "role": "outcome",
+      "mandatory": true,
+      "evidencePlane": "tree",
+      "passRatings": [
+        "pass"
+      ],
+      "intent": {
+        "request": "Enforce the proactive-delivery and read-only judge guarantees selected in D-016.",
+        "rationale": "The prior acceptance rubric measured related outcomes without grading this explicit guarantee.",
+        "sourceRefs": [
+          "owner-directive:1925",
+          "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+        ],
+        "constraints": [
+          "Additive acceptance repair under D-030 AUTO/self. Preserve all existing 29 criteria and D-011 targets."
+        ]
+      }
+    },
+    {
+      "key": "r-37",
+      "barKey": "R-37",
+      "title": "Pushes obey the shared turn budget",
+      "model": "Code-intelligence pushes remain within the shared per-turn character budget after memory's allocation, including simultaneous worker deliveries.",
+      "driftMarkers": "Memory and code intelligence exceed the shared turn allocation, concurrent deliveries overspend the code-intelligence turn budget, or a dropped oversized fact is clipped into misleading evidence.",
+      "method": "Run the bound suites through testing:run. Require 'delivers immediately from an available snapshot and gives memory its budget first', 'concurrent workers cannot spend the per-turn budget more than once', and whole-fact drop cases. Read the budget writer and retain exact delivered-character sums and memory-reduced request allocation. Concurrent distinct facts must produce nonempty deliveries within CODE_INTEL_PUSH_TURN_CHARS; memory exhaustion must suppress a push. Overspend or partial clipping fails; zero eligible deliveries cannot establish the positive.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts"
+        ]
+      },
+      "requiredScope": [
+        "P-034",
+        "P-026"
+      ],
+      "requiredTestLayers": [
+        "unit",
+        "integration"
+      ],
+      "role": "outcome",
+      "mandatory": true,
+      "evidencePlane": "tree",
+      "passRatings": [
+        "pass"
+      ],
+      "intent": {
+        "request": "Enforce the proactive-delivery and read-only judge guarantees selected in D-016.",
+        "rationale": "The prior acceptance rubric measured related outcomes without grading this explicit guarantee.",
+        "sourceRefs": [
+          "owner-directive:1925",
+          "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+        ],
+        "constraints": [
+          "Additive acceptance repair under D-030 AUTO/self. Preserve all existing 29 criteria and D-011 targets."
+        ]
+      }
+    },
+    {
+      "key": "r-38",
+      "barKey": "R-38",
+      "title": "Push facts deduplicate within a session epoch",
+      "model": "The shared delivery ledger suppresses repeated delivery of the same fact within a session epoch across turns and simultaneous workers.",
+      "driftMarkers": "A same-fact repeat is delivered twice in one session epoch, including across a new turn or concurrent workers, or one session suppresses a different session's eligible fact.",
+      "method": "Run the bound suites through testing:run and require the real-database cases 'a new turn restores spend but only compaction makes the same fact eligible again' and 'dedupes concurrent same-fact attempts and enforces RLS on the real app role'. Preserve first nonempty delivery, zero same-epoch repeats, concurrent one-row outcome, separate-owner control and compaction epoch change. Compaction may re-derive a fresh fact from the current snapshot; it must not replay stale stored text. Missing positive or repeat control rates unknown.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts"
+        ]
+      },
+      "requiredScope": [
+        "P-034",
+        "P-026"
+      ],
+      "requiredTestLayers": [
+        "unit",
+        "integration"
+      ],
+      "role": "outcome",
+      "mandatory": true,
+      "evidencePlane": "tree",
+      "passRatings": [
+        "pass"
+      ],
+      "intent": {
+        "request": "Enforce the proactive-delivery and read-only judge guarantees selected in D-016.",
+        "rationale": "The prior acceptance rubric measured related outcomes without grading this explicit guarantee.",
+        "sourceRefs": [
+          "owner-directive:1925",
+          "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+        ],
+        "constraints": [
+          "Additive acceptance repair under D-030 AUTO/self. Preserve all existing 29 criteria and D-011 targets."
+        ]
+      }
+    },
+    {
+      "key": "r-39",
+      "barKey": "R-39",
+      "title": "Push evidence carries current snapshot identity",
+      "model": "Each issued code-intelligence push identifies its snapshot source and refuses stale, foreign or source-drifted evidence as current.",
+      "driftMarkers": "A delivered push lacks its snapshot SHA stamp, serves stale or foreign snapshot content, or labels changed source evidence as current.",
+      "method": "Run the bound suites through testing:run. Require a nonempty real ledger delivery containing 'Snapshot' and its exact commit; exercise stale/future/foreign snapshot rejection and changed definition/caller source-hash controls. Inspect the rendering and validation writers rather than infer currentness from a field name. Source-drift controls must suppress or explicitly qualify the evidence; no cold fallback may disguise a stale snapshot as current. Record exact snapshot SHA and source hashes; absent evidence is unknown.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-snapshot.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-snapshot-query.test.ts"
+        ]
+      },
+      "requiredScope": [
+        "P-034",
+        "P-026"
+      ],
+      "requiredTestLayers": [
+        "unit",
+        "integration"
+      ],
+      "role": "outcome",
+      "mandatory": true,
+      "evidencePlane": "tree",
+      "passRatings": [
+        "pass"
+      ],
+      "intent": {
+        "request": "Enforce the proactive-delivery and read-only judge guarantees selected in D-016.",
+        "rationale": "The prior acceptance rubric measured related outcomes without grading this explicit guarantee.",
+        "sourceRefs": [
+          "owner-directive:1925",
+          "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+        ],
+        "constraints": [
+          "Additive acceptance repair under D-030 AUTO/self. Preserve all existing 29 criteria and D-011 targets."
+        ]
+      }
+    },
+    {
+      "key": "r-40",
+      "barKey": "R-40",
+      "title": "Judges can read native code intelligence",
+      "model": "The deployed release operator admits the judge principal to native read-only code-intelligence tools while denying source changes.",
+      "driftMarkers": "On the deployed release operator, judge access to lsp:query, graph:query, code:pack or code:structural is refused by role or capability, or the judge principal receives intel:write needed by lsp:apply.",
+      "method": "Retain the unit detector: run role-principal-caps.test.ts through testing:run and require 'judge can read rubric docs and use read-only SQL/LSP evidence fallbacks without write access'. Check both role allowlists and intel:read capability for lsp:query, graph:query, code:pack and code:structural. The negative requires lsp:apply to need intel:write and that capability to remain absent for judge. Separately verify the actual deployed release-operator artifact with an authenticated signed judge principal: record its serving health/build SHA, effective role/capability identity, exact requests and responses, and invocation-ledger references for nonempty scoped read fixtures through all four read tools. Exercise the denied-write admission control with no source mutation. The release artifact must contain the intended P040 access change, and the source fixture must have a known nonempty answer. Refused reads or an admitted write fails. Missing artifact/identity/read/negative-control evidence is unknown, never pass. A current-build or tree-only journey cannot discharge this final deployed admission guarantee; it remains useful implementation evidence.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.test.ts"
+        ]
+      },
+      "requiredScope": [
+        "P-040",
+        "P-026"
+      ],
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "role": "outcome",
+      "mandatory": true,
+      "evidencePlane": "deployed",
+      "passRatings": [
+        "pass"
+      ],
+      "intent": {
+        "request": "Enforce the proactive-delivery and read-only judge guarantees selected in D-016.",
+        "rationale": "D-016 and P-040 explicitly require deployed verification. Independent objection thread-post:1196294 identified the tree/current-build mismatch in the first preview.",
+        "sourceRefs": [
+          "owner-directive:1925",
+          "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+        ],
+        "constraints": [
+          "Additive acceptance repair under D-030 AUTO/self. Preserve all existing 29 criteria and D-011 targets."
+        ]
+      },
+      "evidenceRuntime": "release-operator"
+    }
+  ],
+  "detectorRun": {
+    "taskId": "0mvjrlcoo1iy4oit19m",
+    "logRef": ".papercusp/scratch/bash-0887d3a7-bff.log",
+    "runner": "npm run test:file",
+    "files": [
+      "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+      "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+      "packages/operator-core/lib/code-intelligence/push-snapshot.test.ts",
+      "packages/operator-core/lib/code-intelligence/push-snapshot-query.test.ts",
+      "packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.test.ts"
+    ],
+    "result": "passed",
+    "exitCode": 0,
+    "executedFiles": 5,
+    "requestedFiles": 5,
+    "unitTests": 147,
+    "integrationTests": 14,
+    "skippedTests": 0,
+    "childSubstituted": 0,
+    "head": "dc8eecc6de",
+    "startedAt": "2026-10-22T16:38:26.641Z",
+    "completedAt": "2026-10-22T16:41:13.084Z",
+    "sourceScope": "Named tested paths were clean. Transitive import graph freshness is not measured by test:file's named-path stamp; bind the complete source/fixture fingerprints separately.",
+    "doesNotProve": [
+      "The controlled default-OFF mutation owed by proposed R35",
+      "Independent judge runtime journey required by proposed R40",
+      "Completed frozen backend verdict for R7",
+      "R1 final distribution manifest",
+      "R24 final deployed consumer/backend-loss witnesses",
+      "R31 a qualified successful 72-hour post-intervention adoption window",
+      "Rubric vetting, independent grading, author verdict or shipment"
+    ]
+  },
+  "review": {
+    "previewPostRef": "thread-post:1196308",
+    "state": "corrected preview posted; fresh hash-bound approval required",
+    "priorReview": {
+      "previewPostRef": "thread-post:1196280",
+      "objectionRef": "thread-post:1196294",
+      "result": "objected: R40 required deployed verification; original tree/current-build promise was insufficient"
+    },
+    "model": "codex/sol:high",
+    "application": "No amendment has been applied by this edition. Route the corrected preview through the canonical workflow and apply only with its authenticated approval; verify unchanged prior29 plus all six additions."
+  },
+  "transportReconciliation": {
+    "record": "EI-24753639268813405",
+    "observation": "Launcher proxy advertised an older amendment schema; current staging accepted discovery but its scripted request aborted before a preview was posted. Invocation ledger recorded script_aborted on the staging call. The supported manual-preview route posted1196280 and produced the explicit preview receipt above. Earlier outcome-unknown CLI recoveries were reconciled before this post."
+  },
+  "remaining": [
+    "Obtain a fresh independent answer to corrected preview1196308, then apply or repair that exact proposal.",
+    "Update the complete detector trace and inverse decision map for the eventual rubric revision.",
+    "Run distinguishing controls omitted by these detector results and qualify actual outcome witnesses.",
+    "Refresh activation audit, vetting and independent grading before final shipment."
+  ]
+}

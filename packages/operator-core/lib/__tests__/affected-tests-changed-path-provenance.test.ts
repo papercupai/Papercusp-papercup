@@ -19,8 +19,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { enumerateAffectedTaskSelection } from '../../../../scripts/lib/related-tests.mjs';
 import {
   summarizeDerivation,
   formatDerivationMarker,
@@ -154,6 +156,65 @@ describe('changed-path provenance: the banner', () => {
 });
 
 describe('changed-path provenance: through the real CLI', () => {
+  it('keeps managed-carry regressions in the normal promotion task manifests', () => {
+    const changedPaths = [
+      'apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs',
+      'packages/operator-core/lib/role-codex-home.ts',
+      'apps/operator/scripts/psu-pty-host.mjs',
+      'packages/operator-core/lib/agent-tools/session/carry-drill.ts',
+    ];
+    const { stdout } = probe(['--changed-paths', changedPaths.join(',')]);
+    const commands = new Set(stdout.split('\n')
+      .filter((line) => line.startsWith('AFFECTED_WS_CMD\t'))
+      .map((line) => line.split('\t').slice(2).join('\t')));
+    const requiredTasks = [
+      { dir: 'apps/operator', script: 'test' },
+      { dir: 'packages/operator-core', script: 'test:lane-pure' },
+      { dir: 'packages/operator-core', script: 'test:lane-stateful' },
+    ];
+    const tasks = requiredTasks.map(({ dir, script }) => {
+      expect(commands).toContain(`npm run --silent --workspace ${dir} ${script}`);
+      const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, dir, 'package.json'), 'utf8'));
+      expect(pkg.scripts[script]).toBeTruthy();
+      return { ws: { ...pkg, dir }, script };
+    });
+    expect(stdout).toContain('AFFECTED_WS\t@papercusp/agent-mcp');
+    expect(stdout).toContain('AFFECTED_WS\t@papercusp/cli');
+    expect(stdout.split('\n').some((line) => line.startsWith('AFFECTED_GUARD\t')
+      && line.includes('\tlint:post-compaction-recovery-contract\t'))).toBe(true);
+
+    // A selected broad task proves no file coverage until its real config has
+    // been enumerated. Reuse the maintained gate-manifest reader, not a glob
+    // guessed from a workspace name or a passing formatter/provenance test.
+    const manifest = enumerateAffectedTaskSelection(tasks, { root: REPO_ROOT });
+    expect(manifest.unenumerated).toEqual([]);
+    expect(manifest.overlaps).toEqual([]);
+    expect(manifest.coverage).toBe('complete');
+    expect(manifest.tasks).toHaveLength(requiredTasks.length);
+    for (const regression of [
+      'apps/operator/scripts/hooks/cc/__tests__/precompact-managed-carry.test.ts',
+      'packages/operator-core/lib/role-codex-home.test.ts',
+      'packages/operator-core/lib/agent-tools/session/request-compaction.test.ts',
+      'packages/operator-core/lib/agent-tools/session/request-compaction-continuation-addressing.test.ts',
+      'apps/operator/lib/psu-pty-host.test.ts',
+      'packages/operator-core/lib/carry-respawn-outcome.test.ts',
+      'packages/operator-core/lib/cold-boot-drill-live.test.ts',
+    ]) {
+      expect(manifest.files, `normal promotion omitted ${regression}`).toContain(regression);
+    }
+    expect(stdout).not.toContain('AFFECTED_TESTS_RESULT');
+
+    // Control: an unrelated path cannot pass by selecting these tasks for every
+    // input. This exercises the same real selector as the positive carry case.
+    // Keep the path repository-relative: a basename such as README.md expands
+    // conservatively to every matching file across workspaces.
+    const unrelated = probe(['--changed-paths', 'apps/operator-docs/astro.config.mjs']).stdout;
+    expect(markerField(markerLines(unrelated)[0], 'changedPaths')).toBe('1');
+    for (const { dir, script } of requiredTasks) {
+      expect(unrelated).not.toContain(`AFFECTED_WS_CMD\t${tasks.find((task) => task.ws.dir === dir)!.ws.name}\tnpm run --silent --workspace ${dir} ${script}`);
+    }
+  }, 300_000);
+
   it('P-007: related enumeration emits positive workspace and forward-dependency closure evidence', () => {
     const { stdout } = probe(['--changed-paths', 'apps/operator/lib/release/green-checkpoint.ts', '--related']);
     const lines = stdout.split('\n').filter(Boolean);

@@ -51,7 +51,7 @@ import { SPAWNER_SOCKET_ENV, resolveSpawnerSocketPath } from './spawner-socket-p
 import type { SpawnerCallOpts } from './spawner-ipc-client';
 import { reapDeadSidecar, sidecarContainmentCurrent, type SidecarContainment } from './sidecar-exec-lifetime';
 import { recordSidecarExecLatency } from './sidecar-read-only-git';
-import { markSidecarPostDispatchFault } from './sidecar-dispatch-fault';
+import { isSidecarPostDispatchFault, markSidecarPostDispatchFault } from './sidecar-dispatch-fault';
 import type { ProcessExecCallerLabel } from './sidecar-exec-process';
 
 /** The shape every `RunGit` seam in the repo returns. */
@@ -574,7 +574,7 @@ export async function runCommandViaSpawnerSidecar(
   // cannot abort other calls multiplexed through the host's shared client.
   const isolated = opts.signal ? new SpawnerIpcClient(socketPath) : null;
   const client = isolated ?? getSpawnerIpcClient();
-  let fence: { serverGeneration: string; connectionId: string } | undefined;
+  let fence: { serverGeneration: string; connectionId: string; forkserverIdentity?: string | null } | undefined;
   let containment: SidecarContainment | undefined;
   let requestId: number | undefined;
   let clientConnectionId: string | undefined;
@@ -595,10 +595,11 @@ export async function runCommandViaSpawnerSidecar(
       const preflight = await client.call<{
         processExecFence?: typeof fence;
         processExecContainment?: SidecarContainment | null;
-      }>('spawn:cancel', {}, { timeoutMs: 5000 });
+      }>('spawn:cancel', { prepareProcessExec: true }, { timeoutMs: 15_000 });
       fence = preflight.processExecFence;
       containment = preflight.processExecContainment ?? undefined;
-      if (!fence?.serverGeneration || !fence.connectionId || !containment || !sidecarContainmentCurrent(containment)) {
+      if (!fence?.serverGeneration || !fence.connectionId || !Object.hasOwn(fence, 'forkserverIdentity') ||
+          !containment || !sidecarContainmentCurrent(containment)) {
         throw new Error('sidecar execution containment unavailable before dispatch');
       }
       if (opts.signal?.aborted) return aborted();
@@ -822,6 +823,9 @@ export async function execFileViaSidecar(
         ...(opts.env !== undefined ? { env: opts.env } : {}),
       });
     } catch (e) {
+      // A transport error after dispatch can hide an already-applied mutation.
+      // Preserve the existing marker through this final fallback boundary.
+      if (isSidecarPostDispatchFault(e)) throw e;
       noteSidecarFallback(opts.subsystem, e);
     }
     if (res && isSidecarInfrastructureFault(res)) {

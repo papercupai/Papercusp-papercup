@@ -37,7 +37,7 @@ import {
   createGcpWorkspaceHostAcquireAuth,
   type GcpResolvedAuth,
 } from '../cloud-workspaces/gcp-preflight';
-import { createGcpWorkspaceHostApiClient, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
+import { createGcpWorkspaceHostApiClient, gcpFiniteCanaryScheduling, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
 import { assertGcpImmutableImageId } from './gcp-image-family';
 import {
   renderDurableFilesystemScript,
@@ -296,7 +296,16 @@ export interface GcpInstanceInsertInput {
   serviceAccounts?: readonly [{ email: string; scopes: readonly string[] }];
   metadata: { items: readonly { key: string; value: string }[] };
   /** Absent = GCP's default, an on-demand (STANDARD) instance. */
-  scheduling?: GcpInstanceSpotScheduling;
+  scheduling?: GcpInstanceSpotScheduling | GcpInstanceFiniteCanaryScheduling;
+}
+
+/** Admitted on-demand canaries expire at the original absolute deadline. */
+export interface GcpInstanceFiniteCanaryScheduling {
+  provisioningModel: 'STANDARD';
+  terminationTime: string;
+  instanceTerminationAction: 'DELETE';
+  automaticRestart: false;
+  onHostMaintenance: 'TERMINATE';
 }
 
 /**
@@ -2139,6 +2148,17 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
   ): Promise<readonly WorkspaceHostPlanStep[]> {
     const desired = request.desired;
     const settings = readSettings(desired);
+    // Refuse before image lookup or network/disk planning. Desired settings cannot grant expiry.
+    if (desired.provider?.terminationTime !== undefined || desired.provider?.maxRunDuration !== undefined ||
+        desired.provider?.canaryTeardownDeadlineAt !== undefined) {
+      throw new Error('GCP canary deadline must come from validated controller admission');
+    }
+    if (ctx.canaryTeardownDeadlineAt !== undefined && settings.provisioningModel === 'spot') {
+      throw new Error('GCP finite canary scheduling requires standard provisioning; spot STOP policy is unchanged');
+    }
+    const scheduling = ctx.canaryTeardownDeadlineAt !== undefined
+      ? gcpFiniteCanaryScheduling(ctx.canaryTeardownDeadlineAt, this.now())
+      : settings.provisioningModel === 'spot' ? GCP_SPOT_SCHEDULING : undefined;
     // This is an admission-time lookup. It must happen before the plan can be applied because
     // GCP rejects boot disks below their source image's size, while the plan intentionally creates
     // network and data-disk resources before the VM. The API client repeats the clamp at mutation
@@ -2430,7 +2450,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             ? { serviceAccounts: [{ email: settings.serviceAccountEmail, scopes: settings.serviceAccountScopes }] as const }
             : {}),
           metadata: { items: metadata(settings, desired.hostId, ctx.hostBootstrapScript, sourceSnapshotName ? 'existing' : 'fresh', ctx.durableTenantIdentity, ctx.durableStorageAllocation) },
-          ...(settings.provisioningModel === 'spot' ? { scheduling: GCP_SPOT_SCHEDULING } : {}),
+          ...(scheduling ? { scheduling } : {}),
         },
       } satisfies GcpStepInput,
     });

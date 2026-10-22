@@ -15,7 +15,7 @@
  */
 import { homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FILE_ADAPTERS } from './session-ingest.js';
 
@@ -50,9 +50,47 @@ const PSU_LAYOUTS: Record<string, { root: string; sample: string }> = {
       '2026-08-11T19-31-28-125Z_019ff24e-f2fd-7000-a2ff-36c02fc83c32.jsonl',
     ),
   },
+  codex: {
+    root: join(HOME, '.papercusp', 'su-codex-homes'),
+    sample: join(
+      HOME, '.papercusp', 'su-codex-homes', 'session-14830', 'sessions',
+      '2026', '10', '22', 'rollout-2026-10-22T12-13-47-01a16463-d80d-7410-b9e4-102587216c41.jsonl',
+    ),
+  },
 };
 
 describe('session-ingest psu isolation roots', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('keeps live legacy homes discoverable with a workspace-scoped state directory', () => {
+    const scopedHome = join(HOME, '.papercusp-workspaces', 'test-workspace', '.papercusp');
+    vi.stubEnv('PAPERCUSP_HOME', scopedHome);
+    for (const [sourceKind, layout] of Object.entries(PSU_LAYOUTS)) {
+      const adapter = FILE_ADAPTERS.find((a) => a.sourceKind === sourceKind)!;
+      const roots = adapter.roots();
+      const legacy = roots.find((r) => r.root === layout.root);
+      const scoped = roots.find((r) => r.root === join(scopedHome, layout.root.split(sep).at(-1)!));
+      expect(legacy, sourceKind).toBeDefined();
+      expect(scoped, sourceKind).toBeDefined();
+      expect(scoped!.dirDepth).toBe(legacy!.dirDepth);
+      expect(new Set(roots.map((r) => r.root)).size).toBe(roots.length);
+      if (sourceKind === 'codex') {
+        expect(legacy!.descend?.('sessions', 2)).toBe(true);
+        expect(legacy!.descend?.('cache', 2)).toBe(false);
+        expect(scoped!.descend?.('sessions', 2)).toBe(true);
+        expect(scoped!.descend?.('cache', 2)).toBe(false);
+      }
+    }
+  });
+
+  it('scans a managed home once when the state directory is the legacy home', () => {
+    vi.stubEnv('PAPERCUSP_HOME', join(HOME, '.papercusp'));
+    for (const [sourceKind, layout] of Object.entries(PSU_LAYOUTS)) {
+      const adapter = FILE_ADAPTERS.find((a) => a.sourceKind === sourceKind)!;
+      expect(adapter.roots().filter((r) => r.root === layout.root)).toHaveLength(1);
+    }
+  });
+
   for (const [sourceKind, layout] of Object.entries(PSU_LAYOUTS)) {
     it(`${sourceKind}: scans its psu isolation home`, () => {
       const adapter = FILE_ADAPTERS.find((a) => a.sourceKind === sourceKind);
@@ -89,6 +127,7 @@ describe('session-ingest psu isolation roots', () => {
     const defaults: Record<string, string> = {
       claude: join(HOME, '.claude', 'projects'),
       omp: join(HOME, '.omp', 'agent', 'sessions'),
+      codex: join(HOME, '.codex', 'sessions'),
     };
     for (const [sourceKind, root] of Object.entries(defaults)) {
       const adapter = FILE_ADAPTERS.find((a) => a.sourceKind === sourceKind);

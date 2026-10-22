@@ -87,7 +87,11 @@ const RESULT_DOOR_SCRATCH_WRITE_WAIT_MS = 30_000;
 // or fair mutex queue was still inside the result-door's 30s request budget. The outer
 // wait remains the hard ceiling; this only lets the normal durable writer use that budget.
 const RESULT_DOOR_SCRATCH_MUTEX_WAIT_MS = RESULT_DOOR_SCRATCH_WRITE_WAIT_MS;
-const RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS = 5_000;
+// Primary spill can consume its full 30s cap before durable recovery starts. Keep the
+// combined wait at 50s (below the ~55s MCP transport cap, with 5s of headroom) while
+// allowing the PG payload spool's contention retries to settle instead of cutting them
+// off after the former 5s sub-budget.
+const RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS = 20_000;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOOL_SEGMENT_REGEX = /^[A-Za-z0-9._:-]+$/;
@@ -2554,6 +2558,22 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     }
   }
   const spillDiagnostic = [spillErrorCode, spillErrorSummary].filter(Boolean).join('; ') || 'unknown error';
+  const modelFacingRecovery = volatileRecovery
+    ? (() => {
+        const recovery = volatileScratchRecoveryForTool(
+          volatileRecovery,
+          input.opts.toolName,
+          input.opts.nestedTargetToolName,
+        );
+        return {
+          ...recovery,
+          next: recovery.next.replace(
+            'Read cursor.args with capability:read',
+            'Read _projection.cursor.args with capability:read',
+          ),
+        };
+      })()
+    : undefined;
   const envelope = reference
     ? buildOutputEnvelope(
         {
@@ -2564,12 +2584,8 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
             reason: input.reason,
             spilledItems: input.result.content.length,
             recoverable: !sourceWasPartial,
-            note: volatileFallback
-              ? volatileScratchRecoveryForTool(
-                  volatileRecovery!,
-                  input.opts.toolName,
-                  input.opts.nestedTargetToolName,
-                ).next
+            note: modelFacingRecovery
+              ? modelFacingRecovery.next
               : spillRecoveryNote(input.reason, {
                   toolName: input.opts.toolName,
                   nestedTargetToolName: input.opts.nestedTargetToolName,
@@ -2619,9 +2635,24 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         { summaryBudgetChars: 0 },
       );
 
+  // A volatile reference item exposes its URI, while its actionable byte-page
+  // args live in the recovery cursor. Keep that cursor in the model-facing
+  // envelope as well as resultDoor metadata so the note above is executable.
+  const modelFacingEnvelope = modelFacingRecovery
+    ? {
+        ...envelope,
+        _projection: {
+          kind: 'bounded-payload',
+          truncated: true,
+          cursor: modelFacingRecovery.cursor,
+          next: modelFacingRecovery.next,
+        },
+      }
+    : envelope;
+
   return {
     ...input.result,
-    content: [{ type: 'text' as const, text: JSON.stringify(envelope) }],
+    content: [{ type: 'text' as const, text: JSON.stringify(modelFacingEnvelope) }],
     _meta: {
       ...(input.result._meta ?? {}),
       resultDoor: {
@@ -2644,7 +2675,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         upstreamProjected: Boolean(upstreamProjection?.truncated),
         innerTruncationMarkers,
         ...(input.aggregate ? { aggregate: input.aggregate } : {}),
-        outputEnvelope: envelope,
+        outputEnvelope: modelFacingEnvelope,
       },
     },
   } as T;

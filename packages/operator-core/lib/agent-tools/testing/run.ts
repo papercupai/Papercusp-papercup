@@ -3475,7 +3475,10 @@ type TestFilesCoreDeps = {
 
 export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
   const runId = opts.runId ?? randomUUID();
-  const deadline = opts.deadline ?? testRunDeadline(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts);
+  // The foreground cap bounds transport waiting, while recoveryTimeoutMs is
+  // the requested task budget. Preparation must not consume a cleanup reserve
+  // derived from the shorter transport cap and prevent detached recovery.
+  const deadline = opts.deadline ?? testRunDeadline(opts.recoveryTimeoutMs ?? opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts);
   if (Date.now() >= deadline.childCutoffAtMs) return { ok: false, runId, root: resolve(opts.root),
     error: 'deadline_exhausted', hint: 'absolute child cutoff reached; no test child or artifact packet was created' };
   // Transport time and the caller's absolute task budget are independent. A

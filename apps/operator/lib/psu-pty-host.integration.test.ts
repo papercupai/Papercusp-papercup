@@ -4602,6 +4602,9 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '500',
+          // This test grades staleness, not fresh-epoch proof recovery. Leave
+          // that independent retry path to the native-proof fixtures above.
+          PAPERCUSP_PSU_PTY_CARRY_PROOF_RETRIES: '0',
         },
         ownerId,
         io,
@@ -4940,17 +4943,18 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
         nativeId: 'aaaabbbb-1111-2222-3333-444455556666',
         advSessionId: 42,
         codexHome: '/tmp/codex-home-for-handoff',
-        // P-022: a carry successor must not keep Claude's native compactors.
+        // These are Codex orders; Claude's compactor switches belong only to
+        // Claude successors (psu-native-compaction-switches.test.ts).
         childEnv: {
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_ADV_SESSION_ID: '42',
           CODEX_HOME: '/tmp/codex-home-for-handoff',
           PAPERCUSP_FS_MUTEX_LOCK_DIR: '/isolated/explicit-mutex-root',
-          DISABLE_AUTO_COMPACT: '1',
-          DISABLE_COMPACT: '1',
         },
       });
+      expect(orders.childEnv).not.toHaveProperty('DISABLE_AUTO_COMPACT');
+      expect(orders.childEnv).not.toHaveProperty('DISABLE_COMPACT');
       expect(orders.args).toContain('--append-system-prompt-file');
       expect(orders.args).toContain(carryFile);
 
@@ -5707,22 +5711,31 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       // the durable meta counter. QUIT still
       // lands (raw inject bypasses the gate; the stdin handler fires between
       // the non-blocking spin ticks).
-      const childCode =
-        "const fs=require('fs');" +
-        "const marker=process.argv[process.argv.length-1];" +
-        "const boot=()=>{process.stdout.write('BOOT:'+process.pid+'\\n');" +
-        "if(marker==='RECYCLED'){setInterval(()=>process.stdout.write('.'),20);}" +
-        "else{let n=0;const iv=setInterval(()=>{process.stdout.write('.');if(++n>8){clearInterval(iv);process.stdout.write('INITIAL_SETTLED\\n');}},20);}};" +
-        "if(marker==='RECYCLED'){boot();}else{process.stdout.write('BOOT_PENDING\\n');const gate=setInterval(()=>{if(fs.existsSync(process.env.BOOT_RELEASE)){clearInterval(gate);boot();}},10);}" +
-        "process.stdin.setEncoding('utf8');let b='';" +
-        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
-        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
-        'setTimeout(()=>process.exit(0),20000);';
+      // Shell builtins make the busy signal available at exec, before the
+      // 700ms carry budget. A fresh Node runtime can emit its first byte only
+      // after that budget and accidentally exercise the no-output last resort.
+      const childCode = [
+        'marker=$1; n=0',
+        'if [[ "$marker" != RECYCLED ]]; then',
+        "  printf 'BOOT_PENDING\\n'",
+        '  until [[ -e "$BOOT_RELEASE" ]]; do read -r -t 0.01 ignored || :; done',
+        'fi',
+        "printf 'BOOT:%s\\n' $$",
+        'while (( SECONDS < 20 )); do',
+        '  if read -r -t 0.02 line; then',
+        '    [[ "$line" == QUIT ]] && exit 0',
+        "    printf 'ECHO:%s\\n' \"$line\"",
+        '  fi',
+        '  if [[ "$marker" == RECYCLED ]]; then printf .',
+        '  elif (( ++n <= 9 )); then printf .',
+        "  elif (( n == 10 )); then printf 'INITIAL_SETTLED\\n'; fi",
+        'done',
+      ].join('\n');
 
       let exitCode: number | null = null;
       const done = hostThroughPty({
-        command: execPath,
-        args: ['-e', childCode, 'INITIAL'],
+        command: 'bash',
+        args: ['-c', childCode, 'carry-busy-fixture', 'INITIAL'],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),

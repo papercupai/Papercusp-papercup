@@ -34,6 +34,10 @@ import { guardAcceptanceBarTemplateDataWrite } from '../../../agent-tools/plans/
 // module top level and kills the child before it can emit `ready`.
 import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
 import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
+import {
+  resolveNewPlanVerificationProfile,
+  stampNewPlanVerificationProfile,
+} from '../../../agent-tools/plans/plan-verification-profile-stamp';
 import { applyFederatedNowNote, type NowNoteSql } from '../../../agent-tools/plans/now-note-store';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 import {
@@ -448,6 +452,16 @@ async function writeToPg(
         // existing row is owned by per-part recomposition; never derive from a
         // stale whole-blob snapshot over that row's index.
         if (inserted.length > 0) {
+          const profileStamp = await resolveNewPlanVerificationProfile({
+            harnessSlug: row.harness_slug,
+            workspaceId: opts.workspaceId,
+          });
+          await stampNewPlanVerificationProfile(
+            tx as unknown as Parameters<typeof stampNewPlanVerificationProfile>[0],
+            { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug },
+            row.plan_slug,
+            profileStamp,
+          );
           await writePlanIndexRows(
             tx as unknown as Parameters<typeof writePlanIndexRows>[0],
             { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
@@ -540,6 +554,18 @@ async function writeToPg(
         RETURNING plan_slug
       `;
       if (written.length > 0) {
+        if (prior === null) {
+          const profileStamp = await resolveNewPlanVerificationProfile({
+            harnessSlug: row.harness_slug,
+            workspaceId: opts.workspaceId,
+          });
+          await stampNewPlanVerificationProfile(
+            tx as unknown as Parameters<typeof stampNewPlanVerificationProfile>[0],
+            { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug },
+            row.plan_slug,
+            profileStamp,
+          );
+        }
         await writePlanIndexRows(
           tx as unknown as Parameters<typeof writePlanIndexRows>[0],
           { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },

@@ -7,9 +7,11 @@
  * fail-open: a missing token, an unreachable operator or a malformed stdin answers
  * an empty / false value and never throws.
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { papercuspHome } from './pc_home.mjs';
+import { parseManagedCarryResponse } from './precompact-managed-carry.mjs';
 
 const REPORT_TIMEOUT_MS = 4000;
 
@@ -76,14 +78,21 @@ export function readHookStdin(timeoutMs) {
 
 /**
  * POST one `activity:report` call to the operator's MCP endpoint as `args.owner`.
- * Returns true when the operator answered 2xx; never throws.
+ * Returns true only for a confirmed inserted row. Reuses the managed hook MCP
+ * parser (JSON/SSE, structuredContent, text content). Undelivered records are
+ * retained privately in hook-state for recovery; stdout and exit remain silent.
  * @param {{ owner: string } & Record<string, unknown> | null | undefined} args
  * @param {{ env?: NodeJS.ProcessEnv, token: string, fetchImpl?: typeof fetch }} opts
  * @returns {Promise<boolean>}
  */
 export async function postActivityReport(args, { env = process.env, token, fetchImpl = fetch }) {
-  if (!args || !token) return false;
-  const params = new URLSearchParams({ superuser: '1', origin: 'hook', client: args.owner });
+  if (!args) return false;
+  const failed = (reason) => {
+    preserveUndeliveredActivity(args, env, reason);
+    return false;
+  };
+  if (!token) return failed('superuser token unavailable');
+  const params = new URLSearchParams({ superuser: '1', origin: 'hook', client: args.owner, format: 'json' });
   if (env.PAPERCUSP_WORKSPACE) params.set('workspace', env.PAPERCUSP_WORKSPACE);
   try {
     const res = await fetchImpl(`${operatorBase(env)}/api/mcp?${params}`, {
@@ -101,8 +110,32 @@ export async function postActivityReport(args, { env = process.env, token, fetch
       }),
       signal: AbortSignal.timeout(REPORT_TIMEOUT_MS),
     });
-    return res.ok;
+    if (!res.ok) return failed(`HTTP ${res.status}`);
+    let raw = await res.text();
+    // Accept pretty JSON as well as the parser's line-delimited SSE frames.
+    try { raw = JSON.stringify(JSON.parse(raw)); } catch { /* SSE */ }
+    const parsed = parseManagedCarryResponse(raw);
+    const body = parsed.inner;
+    if (parsed.ok && !parsed.isError && body?.ok === true &&
+        body.id != null && String(body.id).trim() && !body.dropped) return true;
+    return failed(parsed.detail || 'operator did not confirm an inserted activity row');
+  } catch (error) {
+    return failed(String(error?.message ?? error));
+  }
+}
+
+/** Preserve a failed report, never a token. This is evidence for recovery, not
+ * a successful server insertion or an automatic retry (which could duplicate a
+ * row after a lost acknowledgement). */
+function preserveUndeliveredActivity(args, env, reason) {
+  try {
+    const dir = join(papercuspHome(env), 'hook-state', 'undelivered-activity');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, `${Date.now()}-${randomUUID()}.json`);
+    writeFileSync(path, JSON.stringify({ recordedAt: new Date().toISOString(), reason, args }),
+      { mode: 0o600, flag: 'wx' });
+    process.stderr.write(`papercusp: activity report unconfirmed; preserved at ${path}\n`);
   } catch {
-    return false;
+    try { process.stderr.write('papercusp: activity report unconfirmed; could not preserve recovery record\n'); } catch { /* fail open */ }
   }
 }

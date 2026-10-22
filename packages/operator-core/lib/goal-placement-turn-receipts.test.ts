@@ -10,10 +10,12 @@ import {
   type GoalPlacementTurnReceiptDeps,
   recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps, GOAL_PLACEMENT_TURN_END_SETTLE_POLLS,
   recordGoalPlacementTurnEndOutcome, recordGoalPlacementDeliveryOutcome, boundedRecordGoalPlacementTurnEnd,
+  boundedRecordGoalPlacementTurnEndOutcome,
   observeGoalPlacementAdmission, qualifyGoalPlacementTurn, type GoalPlacementAdmissionDeps,
   type GoalPlacementAdmissionObservation, noProgressAge, placementSelection,
 } from './goal-placement-turn-receipts';
 import type { GovernorStateSnapshot } from './resource-governor/state-snapshot';
+import { drainDetached } from './detached-imports';
 
 const at = (n: number) => new Date(Date.UTC(2026, 8, 23, 0, n));
 const row = defineAgentObligation({ ruleId: 'placement', ruleRevision: 'v1', family: 'plan-placement',
@@ -558,6 +560,40 @@ describe('native turn-end non-recording diagnostics', () => {
     expect(await recordGoalPlacementTurnEndOutcome(input,
       { recorded: false, reason: 'no-canonical-goal' }, deps)).toBe(false);
     expect(append).not.toHaveBeenCalled();
+  });
+
+  it('records the actual completion time when the bounded outcome append finishes after its deadline', async () => {
+    let finishOutcomeAppend: ((value: { id: string }) => void) | undefined;
+    const append = vi.fn(async (record: any) => {
+      if ('goalPlacementTurnEndOutcome' in record.detail) {
+        return await new Promise<{ id: string }>((resolve) => { finishOutcomeAppend = resolve; });
+      }
+      return { id: 'timing' };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const pending = boundedRecordGoalPlacementTurnEndOutcome(input,
+        { recorded: false, reason: 'turn-end-read-unavailable' }, { append, now: () => at(5).getTime() });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(append).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(pending).resolves.toMatchObject({ status: 'timeout', recorded: false, elapsedMs: 500 });
+      await vi.advanceTimersByTimeAsync(275);
+      finishOutcomeAppend?.({ id: 'outcome' });
+      await drainDetached();
+
+      const timingReceipt = append.mock.calls.find(([record]) =>
+        'goalPlacementTurnEndOutcomeAppendTiming' in record.detail)?.[0];
+      expect(timingReceipt?.detail.goalPlacementTurnEndOutcomeAppendTiming).toMatchObject({
+        version: 1, state: 'completed', elapsedMs: 775,
+        outcomeToolUseId: `goal-placement-turn-end-outcome:codex:old-session:${at(5).toISOString()}`,
+      });
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 });
 

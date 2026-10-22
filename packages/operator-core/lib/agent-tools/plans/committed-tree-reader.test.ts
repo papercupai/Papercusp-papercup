@@ -272,6 +272,23 @@ describe('fingerprintRepoFileSetAtCommit', () => {
     expect((await readCommittedFiles(root, commit, ['src/new.ts'])).get('src/new.ts')).toBeNull();
   });
 
+  it.each([
+    { kind: 'unterminated record', corrupt: (output: string) => output.slice(0, -1) },
+    { kind: 'malformed header', corrupt: () => 'unreadable tree record\0' },
+    { kind: 'invalid object', corrupt: (output: string) => output.replace(/[a-f0-9]{40}/, 'invalid-object') },
+    { kind: 'invalid type', corrupt: (output: string) => output.replace(' blob ', ' unknown ') },
+    { kind: 'invalid size', corrupt: (output: string) => output.replace(/ ([0-9]+)\t/, ' invalid\t') },
+    { kind: 'empty path', corrupt: (output: string) => output.slice(0, output.indexOf('\t') + 1) + '\0' },
+  ])('distinguishes $kind from an absent committed file', async ({ corrupt }) => {
+    const commit = git(root, 'rev-parse', 'HEAD');
+    const corruptedGit: GitRunner = async (dir, args) => {
+      const output = await defaultGitRunner(dir, args);
+      return args[0] === 'ls-tree' ? corrupt(output) : output;
+    };
+    await expect(fingerprintRepoFileSetAtCommit(root, commit, ['src/a.ts'], { git: corruptedGit }))
+      .rejects.toThrow(/^repo_measurement_invalid_ls_tree:/);
+  });
+
   it('refuses paths that escape the measurement root and paths that are not files', async () => {
     const commit = git(root, 'rev-parse', 'HEAD');
     await expect(fingerprintRepoFileSetAtCommit(root, commit, ['../outside.ts'])).rejects.toThrow(

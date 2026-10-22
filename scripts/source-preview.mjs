@@ -776,13 +776,18 @@ function verifierChildDiagnostics(receiptPath) {
  * @param {string} command
  * @param {string[]} args
  * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
- *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal }} options
+ *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal, cutoffEpochMs?: number | null, now?: () => number }} options
  */
 export async function runVerifierDependencyCommand(command, args, { cwd, env,
-  timeoutMs = 600_000, maxMs = 1_800_000, stallWindowMs = 150_000, extensionMs = 60_000, signal }) {
+  timeoutMs = 600_000, maxMs = 1_800_000, stallWindowMs = 150_000, extensionMs = 60_000, signal, cutoffEpochMs, now = Date.now }) {
   if (signal?.aborted) throw new PreviewError('verifier dependency preflight canceled before launch', 2);
   const deadline = readTaskDeadlineEpochMs(env);
-  if (deadline !== null) maxMs = Math.min(maxMs, deadline - Date.now() - 10_000);
+  if (deadline !== null) maxMs = Math.min(maxMs, deadline - now() - 10_000);
+  if (cutoffEpochMs != null) {
+    if (!Number.isSafeInteger(cutoffEpochMs) || cutoffEpochMs <= 0)
+      throw new PreviewError('invalid verifier preparation cutoff', 2);
+    maxMs = Math.min(maxMs, cutoffEpochMs - now());
+  }
   if (maxMs <= 0) throw new PreviewError('verifier dependency preflight has no task budget remaining', 2);
   const child = spawn(command, args, { cwd, env, detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'] });
@@ -859,16 +864,28 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
 
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal }} options
+ * An explicit allowance is shared across phases and requires a finite caller
+ * deadline. Neither progress nor a forecast grants more time. Keep the default
+ * dependency ceiling when omitted, and reserve the parent's cleanup window.
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal,
+ *   env?: NodeJS.ProcessEnv, maxMs?: number, cutoffEpochMs?: number | null, now?: () => number }} options
  */
-export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation(), signal }) {
+export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation(), signal,
+  env = process.env, maxMs, cutoffEpochMs, now = Date.now }) {
+  const admission = admitVerifierCommandBudget(null, { env, nowMs: now() });
+  if (maxMs !== undefined && (!Number.isSafeInteger(maxMs) || maxMs <= 0 || admission.deadlineEpochMs === null))
+    throw new PreviewError('explicit verifier preparation allowance needs positive integer milliseconds and a finite caller task deadline', 2);
+  const cutoffs = [admission.childCutoffEpochMs, cutoffEpochMs,
+    maxMs === undefined ? null : now() + maxMs].filter(value => value != null);
+  const preparationCutoff = cutoffs.length ? Math.min(...cutoffs) : null;
   // A retry can retain staging and completed dependency trees. Only this
   // pre-copy check permits staging; the locked helper must adopt it, and
   // subsequent source checks still reject unfinished copies.
   await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt,
     { runtimeArtifacts: true, dependencyStaging: true }));
-  const env = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' };
-  const run = (command, args) => runVerifierDependencyCommand(command, args, { cwd: dest, env, signal });
+  env = { ...env, NODE_OPTIONS: '', NODE_PATH: '' };
+  const run = (command, args) => runVerifierDependencyCommand(command, args,
+    { cwd: dest, env, signal, maxMs, cutoffEpochMs: preparationCutoff, now });
   const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
   await runPhase('deps.snapshot', () => run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
     'snapshot-locked', realpathSync(donor), realpathSync(dest), copyMode]));
@@ -886,19 +903,19 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
       throw new PreviewError('verifier dependency preflight returned no source size', 2);
   });
   await runPhase('deps.source.after-preflight', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
-  return runPhase('deps.census', () => captureVerifierDependencies({ dest, receipt }));
+  return runPhase('deps.census', () => captureVerifierDependencies({ dest, receipt, env }));
 }
 
 /** Measure installed bytes, not lockfile intent. Reuse the release helper's
  * product-owned tree population and the source verifier's exact file census.
  * Workspace link targets still need source verification; this receipt does
  * not claim final transformed code or a complete runtime import closure.
- * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, env?: NodeJS.ProcessEnv }} options
  */
-export function captureVerifierDependencies({ dest, receipt }) {
+export function captureVerifierDependencies({ dest, receipt, env = process.env }) {
   const root = realpathSync(dest);
   const result = spawnSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'trees', root],
-    { cwd: root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
+    { cwd: root, env: { ...env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
       timeout: 60_000, maxBuffer: 1024 * 1024 });
   if (result.error || result.status !== 0)
     throw new PreviewError(`verifier dependency enumeration failed: ${result.error?.message || result.stderr || result.status}`, 2);
@@ -922,7 +939,7 @@ export function captureVerifierDependencies({ dest, receipt }) {
     const records = spawnSync('bash', ['-c',
       'source "$1" || exit; records=$(mktemp) || exit; trap \'rm -f -- "$records" "$records.unsorted"\' EXIT; dependency_generation_source_records "$2" "$records" || exit; cat "$records"',
       'verifier-dependency-records', join(root, policyPath), tree],
-    { cwd: root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
+    { cwd: root, env: { ...env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
       timeout: 120_000, maxBuffer: 128 * 1024 * 1024 });
     if (records.error || records.status !== 0)
       throw new PreviewError(`verifier dependency census failed: ${records.error?.message || records.stderr || records.status}`, 2);
@@ -966,11 +983,11 @@ export function verifierCommandAdmissionEnv({ repo, env = process.env, preflight
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number,
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number,
  *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0,
+export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
     throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
@@ -978,6 +995,8 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
   const sourceRepo = realpathSync(repo);
   env = verifierCommandAdmissionEnv({ repo: sourceRepo, env });
+  if (preparationMaxMs !== undefined && (!Number.isSafeInteger(preparationMaxMs) || preparationMaxMs <= 0 || readTaskDeadlineEpochMs(env) === null))
+    throw new PreviewError('explicit verifier preparation allowance needs positive integer milliseconds and a finite caller task deadline', 2);
   const donor = committedWorkRootDependencyDonor(sourceRepo);
   // Keep hardlinks beside a donor on a data device. A donor on the root device
   // must use the admitted data scratch instead; pinned-deps already supports
@@ -1061,7 +1080,8 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
-    const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase, signal: cancellation.signal });
+    const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase,
+      signal: cancellation.signal, env, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
     const childEstimate = estimateVerifierCommandBudget({ ...previousMeasurements, ...measurements }, childEstimateMs);
@@ -1160,7 +1180,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       }
     });
     await runPhase('deps.postverify', async () => {
-      const after = captureVerifierDependencies({ dest: root, receipt });
+      const after = captureVerifierDependencies({ dest: root, receipt, env });
       // Keep the actual final census even on drift; never overwrite the
       // original observation with a reconstructed matching receipt.
       await fs.writeFile(`${receiptPath}.dependencies.after.json`, `${JSON.stringify(after)}\n`,
@@ -2350,7 +2370,7 @@ function parseArgs(argv) {
     else if (a === '--git-checkout') opts.gitCheckout = true;
     else if (a === '--tauri-inputs') opts.tauriInputs = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
-    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--operator-api-root', '--operator-api-source-receipt',
+    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--preparation-max-ms', '--operator-api-root', '--operator-api-source-receipt',
       '--operator-api-source-sha', '--operator-api-inputs', '--operator-api-inputs-sha'].includes(a)) {
       const path = rest[++i];
       if (!path || path.startsWith('--')) throw new PreviewError(`missing value for ${a}`, 2);
@@ -2379,7 +2399,8 @@ async function main(argv) {
     return runVerifierCommand({ repo: opts.repo, ref: opts.ref, receiptPath: opts.receipt,
       inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'],
       tauriInputs: opts.tauriInputs === true, command: opts.command,
-      budgetFrom: opts['budget-from'], childEstimateMs: opts['child-estimate-ms'] === undefined ? 0 : Number(opts['child-estimate-ms']) });
+      budgetFrom: opts['budget-from'], childEstimateMs: opts['child-estimate-ms'] === undefined ? 0 : Number(opts['child-estimate-ms']),
+      preparationMaxMs: opts['preparation-max-ms'] === undefined ? undefined : Number(opts['preparation-max-ms']) });
   }
   if (cmd === 'verifier-inputs-check') {
     if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {

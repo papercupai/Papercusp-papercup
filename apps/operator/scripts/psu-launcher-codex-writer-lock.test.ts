@@ -94,6 +94,39 @@ describe('Codex carry startup identity (EI-24961854655864836)', () => {
   });
 });
 
+describe('Docker carry exact-process identity (WI-6554700010020544)', () => {
+  const env = { PAPERCUSP_NATIVE_CONTAINER_EXEC: 'bound-container', CODEX_HOME: '/isolated' };
+  const held = { held: true, pid: 42, lockPath: '/isolated/thread.lock', sessionId: LIVE_THREAD, reason: 'held' };
+
+  it('uses only the daemon-attested root and exact kernel writer PID', () => {
+    const readHolder = vi.fn(() => held);
+    const readContainerProcess = vi.fn(() => ({ pid: 42, locks: [] }));
+    expect(codexNativeIdForPty('/isolated', 12, { env, readContainerProcess,
+      readStartupPid: pid => pid === 42 ? 42 : null, readHolder })).toBe(LIVE_THREAD);
+    expect(readContainerProcess).toHaveBeenCalledWith(env, 12);
+    expect(readHolder).toHaveBeenCalledWith('/isolated', null, {
+      holderPid: 42, readProcLocks: expect.any(Function), listDir: expect.any(Function), statFile: expect.any(Function),
+    });
+  });
+
+  it('never falls back to host descendants after a missing or refused container binding', () => {
+    const readStartupPid = vi.fn(() => 43), readHolder = vi.fn(() => held);
+    expect(codexNativeIdForPty('/isolated', 12, { env,
+      readContainerProcess: () => null, readStartupPid, readHolder })).toBeNull();
+    expect(readStartupPid).not.toHaveBeenCalled();
+    expect(readHolder).not.toHaveBeenCalled();
+  });
+
+  it('rejects nested native children and a sibling writer at the same home', () => {
+    const readHolder = vi.fn(() => held);
+    expect(codexNativeIdForPty('/isolated', 12, { env, readContainerProcess: () => ({ pid: 42, locks: [] }),
+      readStartupPid: () => 43, readHolder })).toBeNull();
+    expect(readHolder).not.toHaveBeenCalled();
+    expect(codexNativeIdForPty('/isolated', 12, { env, readContainerProcess: () => ({ pid: 42, locks: [] }),
+      readStartupPid: () => 42, readHolder: () => ({ ...held, pid: 43 }) })).toBeNull();
+  });
+});
+
 /** A verbatim /proc/locks excerpt from the box while the bug was reproducing.
  *  Row 995 is the real holder of the real session's writer lock. */
 const PROC_LOCKS = [

@@ -255,15 +255,16 @@ export function firstTouchPaths(input: PushInput): string[] {
 }
 
 /** Existing P-016 anchors and P-015 measurement recipes; these are links, not proof of acceptance. */
-export async function readPushSourceLinks(input: PushInput, paths: string[], sql = getOrgPg().sql): Promise<Pick<FirstTouchContext, 'docs' | 'specs' | 'byPath'>> {
+export async function readPushSourceLinks(input: PushInput, paths: string[], sql = getOrgPg().sql,
+  diagnostics?: ResumeReadDiagnostics): Promise<Pick<FirstTouchContext, 'docs' | 'specs' | 'byPath'>> {
   const harness = input.harness;
   if (!harness || !paths.length) return { docs: null, specs: null };
   return sql.begin(async tx => {
     await tx`SELECT set_config('statement_timeout', '75ms', true)`;
-    const docs = await tx<{ doc_id: string; anchor_paths: string[] }[]>`SELECT doc_id, anchor_paths FROM harness_shared.harness_docs
+    const docs = await timeResumeReadPhase(diagnostics, 'context.sourceLinks.docs', () => tx<{ doc_id: string; anchor_paths: string[] }[]>`SELECT doc_id, anchor_paths FROM harness_shared.harness_docs
       WHERE workspace_id = ${input.workspace} AND harness_slug = ${harness}
-        AND anchor_paths && ${paths}::text[] ORDER BY doc_id LIMIT 3`;
-    const specs = await tx<{ path: string; plan_slug: string; spec_id: string; spec_revision: number }[]>`
+        AND anchor_paths && ${paths}::text[] ORDER BY doc_id LIMIT 3`);
+    const specs = await timeResumeReadPhase(diagnostics, 'context.sourceLinks.specs', () => tx<{ path: string; plan_slug: string; spec_id: string; spec_revision: number }[]>`
       SELECT DISTINCT p.path, plan_slug, spec_id, spec_revision FROM harness_shared.spec_evidence_bindings b
       CROSS JOIN unnest(${paths}::text[]) p(path)
       WHERE workspace_id = ${input.workspace} AND harness_slug = ${harness}
@@ -275,7 +276,7 @@ export async function readPushSourceLinks(input: PushInput, paths: string[], sql
             THEN b.details->'measurementPin'->'files' ELSE '[]'::jsonb END) f
             WHERE f->>'dimension' = 'source' AND f->>'path' = p.path
               AND COALESCE(f->>'rootHarnessSlug', b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${harness}))
-      ORDER BY p.path, plan_slug, spec_id, spec_revision DESC LIMIT 12`;
+      ORDER BY p.path, plan_slug, spec_id, spec_revision DESC LIMIT 12`);
     return { docs: null, specs: null, byPath: Object.fromEntries(paths.map(path => [path, {
       docs: docs.filter(row => row.anchor_paths.includes(path)).map(row => row.doc_id),
       specs: specs.filter(row => row.path === path).map(row => `${row.plan_slug}#${row.spec_id}@${row.spec_revision}`),
@@ -450,14 +451,15 @@ const resumeDefaults: ReadResumeContextDeps = {
  * items by a different owner; minus anything already pushed this epoch. */
 export async function readPushResumeContext(input: PushInput, deps: ReadResumeContextDeps = resumeDefaults,
   diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext> {
-  if (!input.owner || !input.workspace || !input.harness) return { entries: [] };
+  const harness = input.harness;
+  if (!input.owner || !input.workspace || !harness) return { entries: [] };
   const epoch = await timeResumeReadPhase(diagnostics, 'epoch', () => deps.epoch(input.owner));
   const [previous, foreign, pushed] = await Promise.all([
     timeResumeReadPhase(diagnostics, 'previousWorkingSet', () => deriveCodeWorkingSet(
-      { workspace: input.workspace, harness: input.harness, owner: input.owner, which: 'previous', root: input.root },
+      { workspace: input.workspace, harness, owner: input.owner, which: 'previous', root: input.root },
       { epoch: async () => epoch, signals: query => deps.signals(query) },
     )).catch(() => null),
-    timeResumeReadPhase(diagnostics, 'foreignWorkingSets', () => deps.foreign(input.owner, input.workspace, input.harness))
+    timeResumeReadPhase(diagnostics, 'foreignWorkingSets', () => deps.foreign(input.owner, input.workspace, harness))
       .catch(() => [] as ForeignWorkingSet[]),
     timeResumeReadPhase(diagnostics, 'pushedSubjects', () => deps.pushed(input, epoch.epoch)).catch(() => [] as string[]),
   ]);
@@ -651,10 +653,10 @@ export const readNoteAnchorStaleness: ReadNotesContextDeps['staleness'] = async 
     input.root ? { fileRepoRoot: input.root } : undefined);
 };
 const notesDefaults: ReadNotesContextDeps = {
-  fold: (input, paths) =>
+  fold: (input, paths) => withWorkspace(input.workspace, tx =>
     foldCodeNotesForPaths(
       [{ scope: 'workspace' }, ...(input.harness ? [{ scope: 'harness' as const, scopeRef: input.harness }] : [])],
-      paths, { workspaceId: input.workspace }),
+      paths, { workspaceId: input.workspace }, tx)),
   staleness: readNoteAnchorStaleness,
 };
 
@@ -897,6 +899,7 @@ export const snapshotGrepLeg: PushLeg = (input, snapshot) => {
 registerCodeIntelPushLeg('grep', snapshotGrepLeg);
 
 export interface PushChannelDeps {
+  research?(input: PushInput): Promise<void>;
   snapshot(input: PushInput): Promise<PushSnapshot | null>;
   enabled(flag: FlagKey): Promise<boolean>;
   legs(): ReadonlyMap<PushLegId, PushLeg>;
@@ -1020,6 +1023,7 @@ export function formatPushFact(fact: PushFact, snapshot: PushSnapshot): string {
 }
 
 const defaults: PushChannelDeps = {
+  research: async input => (await import('./research-trail')).recordResearchBatch(input),
   snapshot: async input => {
     // Only the registered home repository currently has the maintained producer.
     // Never use the operator's snapshot for a different harness/workspace.
@@ -1035,7 +1039,7 @@ const defaults: PushChannelDeps = {
   legs: () => state.legs,
   context: async (input, paths, diagnostics) => {
     const [links, locks] = await Promise.allSettled([
-      timeResumeReadPhase(diagnostics, 'context.sourceLinks', () => readPushSourceLinks(input, paths)),
+      timeResumeReadPhase(diagnostics, 'context.sourceLinks', () => readPushSourceLinks(input, paths, undefined, diagnostics)),
       timeResumeReadPhase(diagnostics, 'context.liveLockHoldings', () => liveLockHoldingsStrict({
         onPhase: event => {
           if (!diagnostics) return;
@@ -1080,6 +1084,12 @@ async function readResumeWithLinks(input: PushInput, deps: PushChannelDeps,
 
 /** A failed optional push never drops memory, worn rules, or the failure hint. */
 export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps: PushChannelDeps = defaults): Promise<string> {
+  // Capture is independent of push flags, snapshot warmth and available text budget.
+  if (input.owner && input.workspace && input.calls.length && deps.research) {
+    await withBoundedTimeout(() => deps.research!(input), {
+      timeoutMs: 100, fallback: undefined, label: 'code-intel-research-trail',
+    });
+  }
   if (!input.owner || !input.workspace || !input.calls.length || !deps.legs().size) return '';
   // WI-6554700010018441: every leg classifies the call a `tools:invoke` wrapper dispatched.
   input = { ...input, calls: input.calls.map(normalizePushCall) };

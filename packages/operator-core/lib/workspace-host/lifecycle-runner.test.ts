@@ -769,6 +769,10 @@ describe('runWorkspaceHostLifecycle', () => {
       ...(isCanary ? { canary } : {}),
     });
 
+    const providerContext = planProvider.mock.calls[0]?.[1];
+    if (isCanary) expect(providerContext).toMatchObject({ canaryTeardownDeadlineAt: canary.teardownDeadlineAt });
+    else expect(providerContext).not.toHaveProperty('canaryTeardownDeadlineAt');
+
     expect(store.upsertHost).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: 'workspace-1',

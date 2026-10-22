@@ -1524,6 +1524,58 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(advice.indexOf('events:await')).toBeLessThan(advice.indexOf(stop));
     });
 
+    it('renders loop:end only for legitimate completion or stop when unfinished obligations are retained', () => {
+      const { advice } = fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        planTerminality: { planSlugs: ['finished'], terminalPlanSlugs: ['finished'], allTerminal: true },
+      });
+      // Finishing the shared plan does not establish that this caller's other obligations ended.
+      const permission = advice.indexOf('Only after a guaranteed wake is registered');
+      const stop = advice.indexOf('call loop:end');
+      expect(permission).toBeGreaterThanOrEqual(0);
+      expect(stop).toBeGreaterThan(permission);
+      expect(advice.slice(permission, stop)).toContain('no unfinished obligations remain');
+      expect(advice.slice(permission, stop)).toContain('a verified stop/handoff has disposed of them');
+      expect(advice.slice(permission, stop)).toContain('release only finished lane resources');
+      expect(advice.slice(permission, stop)).toContain('retained blocked claims stay held');
+      expect(advice.indexOf('If work remains blocked')).toBeLessThan(permission);
+    });
+
+    it('renders continue-independent-work guidance for a partially blocked agent', () => {
+      const { advice } = fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1,
+          inFlightMatchedByFilter: 1, parkedMatchedByFilter: 0 },
+      });
+      const independent = advice.indexOf('First finish independent work on held items');
+      const reassess = advice.indexOf('After that work completes, reassess the remaining held obligations in this same turn');
+      const blocked = advice.indexOf('If work remains blocked');
+      expect(independent).toBeGreaterThanOrEqual(0);
+      expect(reassess).toBeGreaterThan(independent);
+      expect(blocked).toBeGreaterThan(reassess);
+      expect(advice.indexOf('call loop:end')).toBeGreaterThan(blocked);
+      expect(advice).toContain('a blocked item you still hold stays held');
+      expect(advice).toContain('Keep the existing loop armed until registration succeeds');
+    });
+
+    it('renders a bounded exact-event wake with timeout for a fully blocked agent', () => {
+      const { advice } = fleetScopedMiss(issueScope, [], { issueBreakdown: zeroMatchBreakdown });
+      const missing = advice.indexOf('If no independently actionable blocker event is recorded');
+      const supplied = advice.indexOf('Otherwise copy the supplied dependency event key exactly');
+      expect(missing).toBeGreaterThanOrEqual(0);
+      expect(supplied).toBeGreaterThan(missing);
+      expect(advice.slice(missing, supplied)).toContain('do not call work_items:set_blocker or events:await');
+      expect(advice.slice(missing, supplied)).toContain('Never fabricate a blocker ref or derive an event key from an item id');
+      const registration = advice.slice(supplied, advice.indexOf('Only after a guaranteed wake is registered'));
+      expect(registration).toContain('record its typed blocker with work_items:set_blocker if not already recorded');
+      expect(registration).toContain('events:await for the exact recorded blocker event');
+      expect(registration).toContain('positive timeout_sec matched to its recheckAt and on_timeout:"wake"');
+      expect(registration).toContain('register it before ending this turn');
+      expect(registration).toContain('Keep the existing loop armed until registration succeeds');
+      expect(registration).toContain('do not invent an event from blocked status or await a lifecycle transition that this session itself must perform');
+      expect(registration).toContain('A standing work-item:claimable watch is backlog interest only');
+    });
+
     it('EI-20260781488788952: reports a completed bound plan as a successful plan wind-down', () => {
       const completedPlanScope = {
         ...issueScope,

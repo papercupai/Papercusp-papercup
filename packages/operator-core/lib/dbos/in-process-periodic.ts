@@ -140,6 +140,19 @@ export async function runPeriodicCheck(
 // registerWorkflow → no persisted workflow_status row). Lazy imports inside the
 // ticks keep boot light and defer the heavy module loads to first fire.
 
+// Must remain outside DBOS and outside heavy-tick shedding: it detects the
+// history growth that can freeze the executor itself. One direct count per host.
+const dbosHistoryCeilingCheck: PeriodicCheck = {
+  name: 'dbos-history-ceiling',
+  intervalMs: 30_000,
+  fireOnArm: true,
+  classification: 'must-sample',
+  tick: async () => {
+    const { runDbosWorkflowHistoryAlarmOnce } = await import('./dbos-workflow-gc');
+    await runDbosWorkflowHistoryAlarmOnce();
+  },
+};
+
 // A warning is one line per sampling interval while persistence stays broken;
 // the ordinary 30-second health tick must not flood the journal.
 const perfSnapshotWarningAt = new Map<string, number>();
@@ -1508,6 +1521,7 @@ const timerRegistrationScanCheck: PeriodicCheck = {
 /** The converted ex-DBOS-workflow set. */
 export function buildDefaultChecks(): PeriodicCheck[] {
   return [
+    dbosHistoryCeilingCheck,
     systemHealthCheck,
     harnessStatusSweepCheck,
     connectionPressureCheck,

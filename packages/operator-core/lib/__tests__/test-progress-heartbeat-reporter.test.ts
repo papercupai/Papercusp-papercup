@@ -67,6 +67,39 @@ describe('TestProgressHeartbeatReporter — a per-test progress signal the watch
     // window; an interval at or above the window would reintroduce the false-stall reap.
     expect(TEST_PROGRESS_HEARTBEAT_INTERVAL_MS * 2).toBeLessThanOrEqual(TEST_FILE_WATCHDOG_STALL_WINDOW_MS);
   });
+
+  it('retains the active case and its outcome under the existing startup trace', () => {
+    const lines: string[] = [];
+    const reporter = new TestProgressHeartbeatReporter({ trace: true, write: (line: string) => lines.push(line) });
+    const testCase = { fullName: 'deadline > preparation', module: { moduleId: '/repo/deadline.test.ts' },
+      result: () => ({ state: 'failed' }) };
+    reporter.onTestCaseReady(testCase);
+    reporter.onTestCaseResult(testCase);
+    expect(lines[0]).toContain('"event":"started"');
+    expect(lines[0]).toContain('"name":"deadline > preparation"');
+    expect(lines[1]).toContain('"event":"finished"');
+    expect(lines[1]).toContain('"state":"failed"');
+  });
+
+  it('bounds case diagnostics and excludes filtered cases from the trace budget', () => {
+    const lines: string[] = [];
+    const reporter = new TestProgressHeartbeatReporter({ trace: true, write: (line: string) => lines.push(line) });
+    const skipped = { fullName: 'filtered', result: () => ({ state: 'skipped' }) };
+    for (let i = 0; i < 100; i++) reporter.onTestCaseResult(skipped);
+    for (let i = 0; i < 40; i++) reporter.onTestCaseReady({ fullName: 'x'.repeat(2000) });
+    const traces = lines.filter(line => line.startsWith('TEST_FILE_CASE_TRACE '));
+    expect(traces).toHaveLength(32);
+    expect(traces.every(line => line.length < 800)).toBe(true);
+  });
+
+  it('keeps case tracing silent when disabled and tolerates malformed diagnostics', () => {
+    const lines: string[] = [];
+    const reporter = new TestProgressHeartbeatReporter({ trace: false, write: (line: string) => lines.push(line) });
+    reporter.onTestCaseReady({ fullName: 'quiet' });
+    expect(lines).toEqual([]);
+    const broken = new TestProgressHeartbeatReporter({ trace: true, write: () => { throw new Error('sink gone'); } });
+    expect(() => broken.onTestCaseReady({ fullName: 'safe' })).not.toThrow();
+  });
 });
 
 describe('withInjectedJsonReport — retains the heartbeat reporter for router runs', () => {

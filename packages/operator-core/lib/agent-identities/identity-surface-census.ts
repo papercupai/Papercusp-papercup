@@ -93,7 +93,8 @@ export const IDENTITY_SURFACE_CENSUS_GENERATOR = 'npm run gen:identity-surface-c
 /** Superproject-relative path of the checked-in inventory. */
 export const IDENTITY_SURFACE_CENSUS_REL = 'packages/operator-core/lib/agent-identities/identity-surface-census.generated.json';
 /** D-008: the su prompt's parity baseline is IDOP's frozen render, not a second one rendered here. */
-export const SU_RENDER_PARITY_BASELINE = 'pending: identity-definitions-own-policy-2026-10-17#P-001 (frozen su render)';
+export const SU_RENDER_PARITY_BASELINE =
+  'docs/evidence/idop-p001-baseline-2026-10-22.json#base (identity-definitions-own-policy-2026-10-17#P-001)';
 
 const SUBMODULE = 'libs/papercusp';
 const HARNESS_REL = `${SUBMODULE}/packages/harness`;

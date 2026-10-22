@@ -6,6 +6,7 @@ import { assessDreamActionDecisions, assessDreamAdmission, assessGymAdmissionDec
 import { DREAM_ACTION_DECISION_PREFIX, DREAM_ADMISSION_GATES } from './dream-config';
 import { GYM_ADMISSION_DECISION_PREFIX, GYM_ADMISSION_GATES } from '../gym/autoloop-tick';
 import type { JournalReadResult } from '../journal-read';
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from '../agent-tools/db-diagnostic-correlation-wiring';
 
 const now = Date.parse('2026-10-17T12:00:00Z');
 const runtime = { host: 'port-3170', processId: 'linux:boot:1234', buildSha: 'loaded-build' };
@@ -46,6 +47,27 @@ function fixture(change: Record<string, readonly Row[]> = {}) {
 
 afterEach(() => vi.unstubAllEnvs());
 describe('mutation-free Dream/Gym/Scout control observations', () => {
+  it('retains the pending flags subread while independent SQL observations finish', async () => {
+    let release!: (value: Awaited<ReturnType<typeof deps.flags>>) => void;
+    const pendingFlags = new Promise<Awaited<ReturnType<typeof deps.flags>>>(resolve => { release = resolve; });
+    const { sql } = fixture();
+    await withNamedQueryDiagnosticContext('learning.dream', async () => {
+      const pending = readDreamControlObservations(sql, scope, { ...deps, flags: () => pendingFlags });
+      try {
+        await vi.waitFor(() => expect(namedQueryStageTimings()?.stages).toContainEqual({
+          stage: 'dream-observation-spend', outcome: 'fulfilled', elapsedMs: expect.any(Number),
+        }));
+        expect(namedQueryStageTimings()?.stages).toContainEqual({
+          stage: 'dream-observation-flags', outcome: 'pending', elapsedMs: expect.any(Number),
+        });
+      } finally {
+        release(await deps.flags());
+      }
+      const value = await pending;
+      expect(value.observations?.flags.status).toBe('observed');
+    });
+  });
+
   async function clauseFixture(fault = '') {
     const scoped = { ...scope, actionJournalUnit: 'bg.service', expectedActionRuntime: runtime,
       gymJournalUnit: 'bg.service', expectedGymRuntime: runtime };

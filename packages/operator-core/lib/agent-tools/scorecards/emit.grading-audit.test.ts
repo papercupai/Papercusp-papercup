@@ -674,7 +674,7 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
   });
 
-  it('triggers bounded pending-audit dispatch after a newly filed non-audit scorecard', async () => {
+  it('targets the newly filed card even without an explicit grading launch profile', async () => {
     const launchContext = { workspaceId: 'ws-test', harnessSlug: 'papercusp' };
     const res = await emitScorecard(
       { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
@@ -684,10 +684,24 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     expect(res.ok).toBe(true);
     await vi.waitFor(() => expect(dispatchPendingGradingAudits).toHaveBeenCalledOnce());
     expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
-      targetIds: [],
+      targetIds: ['EI-AUDIT-1'],
       ctx: launchContext,
       harness: 'papercusp',
     });
+  });
+
+  it('names targeted repair instead of promising automatic dispatch without a launch context', async () => {
+    const res = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(res).toMatchObject({ ok: true, issueId: 'EI-AUDIT-1', gradingAuditPending: true });
+    expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
+    expect((res as { gradingAuditNextStep?: string }).gradingAuditNextStep)
+      .toContain("scorecards:repair { targetIds:['EI-AUDIT-1'] }");
+    expect((res as { gradingAuditNextStep?: string }).gradingAuditNextStep)
+      .not.toContain('automatically selects');
   });
 
   it('a terminal standard-rubric card is stamped pending and says so in the result', async () => {
@@ -703,7 +717,7 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     // THIS card, plus the two traps (self-audit refused, re-emit files a duplicate).
     const nextStep = (res as { gradingAuditNextStep?: string }).gradingAuditNextStep ?? '';
     expect(nextStep).toContain('NON-AUTHOR');
-    expect(nextStep).toContain('existing router automatically selects');
+    expect(nextStep).toContain("scorecards:repair { targetIds:['EI-AUDIT-1'] }");
     expect(nextStep).toContain('grading-integrity');
     expect(nextStep).toContain("subject:{ kind:'scorecard'");
     expect(nextStep).toMatch(/self-audits are refused/i);

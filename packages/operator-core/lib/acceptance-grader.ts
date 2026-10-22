@@ -1,7 +1,7 @@
 /** Dedicated, frozen acceptance-grader launch for the plan completion gate. */
 import { createHash } from 'node:crypto';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
-import { nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
+import { launchTaskForKickoffRecovery, nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
 import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
@@ -3466,26 +3466,13 @@ export async function launchAcceptanceGrader(
       };
       const launchData = result.data?.launch as
         | (NativeTranscriptLaunchReceipt & {
-            tasks?: Array<{
-              taskId?: unknown;
-              logPath?: unknown;
-              /**
-               * WI-10002155: the launcher's structured kickoff receipt. Absent
-               * when no process was spawned (a discovery 'assigned' launch).
-               * `persisted:false` means the native marker was not confirmed by
-               * its deadline; only `kickoff-not-submitted:*` is conclusive by
-               * itself. Pair other negative receipts with `agentStarted`.
-               */
-              kickoffProof?: { persisted?: unknown; reason?: unknown; nativeRef?: unknown } | null;
-              nativeSession?: { backend?: unknown; sessionId?: unknown } | null;
-            }>;
             // EI-21923986145923904: present only when the fresh-launch verification
             // path ran (see FreshLaunchVerdict.agentStarted); absent for a discovery
             // 'assigned' launch, which never spawns.
             agentStarted?: boolean | null;
           })
         | undefined;
-      const launchedTask = launchData?.tasks?.[0];
+      const launchedTask = launchTaskForKickoffRecovery(launchData);
       const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
       const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
 

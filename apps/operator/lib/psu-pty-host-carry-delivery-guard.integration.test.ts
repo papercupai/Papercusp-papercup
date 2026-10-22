@@ -468,6 +468,8 @@ describe('carry-respawn native-turn delivery authority', () => {
           PAPERCUSP_AGENT: 'claude',
           CLAUDE_CONFIG_DIR: claudeConfig,
           PAPERCUSP_PSU_HEADLESS: '0',
+          // Reach native delivery proof without an unrelated SU /mcp dialog.
+          PAPERCUSP_ROLE: 'researcher',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
@@ -569,7 +571,7 @@ describe('carry-respawn native-turn delivery authority', () => {
   );
 
   it(
-    'books a verifier-exhausted RECYCLE carry as dropped, cleans up fatally, and never emits delivered',
+    'records verifier exhaustion and missing native proof without ending the recycled child or claiming delivery',
     async () => {
       const ownerId = `su-carry-verifier-drop-${process.pid}-${Math.floor(performance.now())}`;
       const socketPath = socketPathFor(ownerId);
@@ -631,17 +633,32 @@ describe('carry-respawn native-turn delivery authority', () => {
         }
 
         expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(2);
+        // Raw recycle controls now gain a host-owned carry marker. Submitted
+        // bytes therefore defer to native proof instead of killing the host.
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'control-carry-origin-stamped', mode: 'recycle', origin: 'host-control',
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'startup-turn-dropped', reason: 'submit-verification-exhausted',
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'turn-start-unverified', detail: 'missing-native-id',
+        }));
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'respawn-carry-dropped',
-          reason: 'submit-verification-exhausted',
+          reason: 'turn-start-unverified',
           attempts: 1,
           outputSeen: true,
+          turnStartVerified: false,
         }));
         expect(events).not.toContainEqual(expect.objectContaining({
           kind: 'respawn-carry-delivered',
         }));
-        expect(await done).toBe(1);
-        expect(exitCode).toBe(1);
+        expect(existsSync(socketPath)).toBe(true);
+        expect(JSON.parse(readFileSync(metaPath, 'utf8')).carryDropCount).toBe(1);
+        await injectRaw(socketPath, 'QUIT\n');
+        expect(await done).toBe(0);
+        expect(exitCode).toBe(0);
         expect(existsSync(socketPath)).toBe(false);
         expect(existsSync(metaPath)).toBe(false);
       } finally {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   chmodSync,
@@ -178,6 +178,8 @@ function createManifestResolutionFixture({
     "  }",
     "  const foreignWorkspace = process.env.NPM_INSTALL_SAFE_TEST_FOREIGN_WORKSPACE;",
     "  if (foreignWorkspace && phase === \"resolve\" && !fs.existsSync(path.join(process.cwd(), foreignWorkspace, \"package.json\"))) throw new Error(\"npm workspace omitted from resolver scratch tree\");",
+    "  const archive = process.env.NPM_INSTALL_SAFE_TEST_ARCHIVE;",
+    "  if (archive && phase === \"resolve\" && fs.readFileSync(path.join(process.cwd(), archive), \"utf8\") !== \"packed fixture\") throw new Error(\"local archive omitted or changed in resolver snapshot\");",
     "  if (process.env.NPM_INSTALL_SAFE_TEST_FOREIGN_FALLBACK === \"1\") {",
     "    if (phase === \"resolve\" || writerAcquired || process.cwd() !== repoRoot) throw new Error(\"unsupported foreign workspace must use the original tree under its writer\");",
     "    record(\"fallback\");",
@@ -210,6 +212,8 @@ function createManifestResolutionFixture({
     "      fs.writeFileSync(livePath, JSON.stringify(liveManifest, null, 2) + \"\\n\");",
     "    }",
     "    record(phase);",
+    "    const resolveGate = process.env.NPM_INSTALL_SAFE_TEST_RESOLVE_GATE;",
+    "    if (resolveGate) while (!fs.existsSync(resolveGate)) await new Promise(resolve => setTimeout(resolve, 5));",
     "    return;",
     "  }",
     "  if (writerAcquired) throw new Error(phase + \" ran without the repo writer\");",
@@ -446,6 +450,85 @@ test("lock-only fallback does not verify or publish the unchanged installed tree
       assert.deepEqual(readFileSync(fixture.tracePath, 'utf8').trim().split('\n'), ['cache-verify', 'fallback']);
       assert.equal(existsSync(join(fixture.repoRoot, 'node_modules')), false);
     } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+  }
+});
+
+test("manifest resolution includes local archives from other workspaces without a writer fallback", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture();
+  const consumer = "packages/archive-consumer";
+  const archive = "vendor/local.tgz";
+  mkdirSync(join(fixture.repoRoot, consumer), { recursive: true });
+  mkdirSync(join(fixture.repoRoot, "vendor"), { recursive: true });
+  writeFileSync(join(fixture.repoRoot, archive), "packed fixture");
+  const manifest = { name: "@fixture/archive-consumer", version: "1.0.0", dependencies: { "local-archive": "file:../../vendor/local.tgz" } };
+  writeFileSync(join(fixture.repoRoot, consumer, "package.json"), JSON.stringify(manifest));
+  const lockPath = join(fixture.repoRoot, "package-lock.json");
+  const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+  lock.packages[consumer] = manifest;
+  writeFileSync(lockPath, JSON.stringify(lock));
+  try {
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8", timeout: 15_000,
+      env: { ...fixture.env, NPM_INSTALL_SAFE_TEST_FOREIGN_WORKSPACE: consumer, NPM_INSTALL_SAFE_TEST_ARCHIVE: archive },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const phases = readFileSync(fixture.tracePath, "utf8").trim().split("\n");
+    assert.equal(phases.includes("resolve"), true, phases.join(", "));
+    assert.equal(phases.includes("fallback"), false);
+    assert.equal(readFileSync(join(fixture.repoRoot, archive), "utf8"), "packed fixture");
+  } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
+
+test("incompatible installed dependencies reserve the writer while existing readers finish", { timeout: 25_000 }, async () => {
+  const fixture = createManifestResolutionFixture({ flagOnlyDuringResolve: true });
+  const packageDir = join(fixture.repoRoot, "node_modules", "fixture-pkg");
+  mkdirSync(packageDir, { recursive: true });
+  writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "fixture-pkg", version: "0.1.0" }));
+  const gate = join(fixture.tempRoot, "resolve-ready");
+  const lockRootDir = fixture.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  const name = repoLockName(fixture.repoRoot);
+  const child = spawn(process.execPath, [fixture.cli, ...fixture.args], {
+    env: { ...fixture.env, NPM_INSTALL_SAFE_TEST_RESOLVE_GATE: gate },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", data => { output += data; });
+  child.stderr.on("data", data => { output += data; });
+  const ended = new Promise(resolve => child.once("close", resolve));
+  const waitFor = async predicate => {
+    const deadline = Date.now() + 10_000;
+    while (!predicate()) {
+      assert.ok(Date.now() < deadline, output);
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  };
+  let releaseReader = () => {};
+  let reader;
+  try {
+    await waitFor(() => existsSync(fixture.tracePath) && readFileSync(fixture.tracePath, "utf8").split("\n").includes("resolve"));
+    let markReady;
+    const ready = new Promise(resolve => { markReady = resolve; });
+    const held = new Promise(resolve => { releaseReader = resolve; });
+    reader = withFsMutexRead(name, async () => { markReady(); await held; }, { lockRootDir });
+    await ready;
+    writeFileSync(gate, "go");
+    await waitFor(() => existsSync(join(lockRootDir, name + ".lock")));
+    await assert.rejects(
+      withFsMutexRead(name, async () => { throw new Error("new reader entered ahead of repair"); }, { lockRootDir, timeoutMs: 50, retryMs: 5 }),
+      /Timed out/,
+    );
+    releaseReader();
+    await reader;
+    assert.equal(await ended, 0, output);
+  } finally {
+    releaseReader();
+    await reader;
+    if (child.exitCode === null) child.kill("SIGTERM");
+    await ended;
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
   }
 });
 

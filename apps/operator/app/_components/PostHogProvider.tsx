@@ -8,8 +8,10 @@
  *   2. If `enabled === false` → DO NOTHING (no posthog-js import, no
  *      cookies set, no network requests to PostHog).
  *   3. If `enabled === true` AND host + project_key are present →
- *      dynamic-import posthog-js, init it with autocapture +
- *      pageview tracking, alias the workspace id as distinct id.
+ *      dynamic-import posthog-js for explicitly consented event capture.
+ *      Automatic pageview, pageleave, autocapture, and session recording are
+ *      disabled. The shared consent check and implementation live in
+ *      `packages/operator-ui/src/browser-telemetry.tsx`.
  *
  * The dynamic import is deliberate — when telemetry is off, the
  * posthog-js bundle never even ships to the user.

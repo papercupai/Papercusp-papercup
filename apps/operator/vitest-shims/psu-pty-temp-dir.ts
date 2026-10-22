@@ -24,6 +24,9 @@ export function hermeticEnv(
     'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_SESSION_ID',
     'PI_CONFIG_DIR', 'PI_CODING_AGENT_DIR',
     'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+    // Backend-specific compaction switches must be opted into by each fixture.
+    // A caller launched through Claude can otherwise contaminate Codex handoffs.
+    'DISABLE_AUTO_COMPACT', 'DISABLE_COMPACT',
     // These children execute inline fixture programs. A caller's Node preload
     // would run unrelated code before their readiness banner and spend the
     // fixture's startup deadline. Explicit fixture overrides still win below.

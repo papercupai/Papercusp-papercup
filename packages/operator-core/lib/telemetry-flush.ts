@@ -65,10 +65,12 @@ export async function resolveTelemetryConfig(): Promise<{
   /** True iff this build is the maintainer-internal channel — telemetry
    *  forwards regardless of user opt-in. Default: false. */
   internalBuild: boolean;
+  consentSince?: number;
 }> {
-  const state = await readOperatorState<{ telemetry_enabled?: boolean }>('setup_wizard_state');
+  const state = await readOperatorState<{ telemetry_enabled?: boolean; telemetry_consent_since?: number }>('setup_wizard_state');
   const optedIn = Boolean(state?.telemetry_enabled);
   const internalBuild = process.env.PAPERCUSP_INTERNAL_BUILD === 'true';
+  const consentSince = !internalBuild && typeof state?.telemetry_consent_since === 'number' ? state.telemetry_consent_since : undefined;
   const distinctId = await ensureInstallId();
 
   // Host/key resolution for capture (write-side keys not required):
@@ -78,7 +80,7 @@ export async function resolveTelemetryConfig(): Promise<{
   const envHost = process.env.PAPERCUSP_POSTHOG_HOST;
   const envKey = process.env.PAPERCUSP_POSTHOG_KEY;
   if (envHost && envKey) {
-    return { host: envHost, projectKey: envKey, distinctId, optedIn, internalBuild };
+    return { host: envHost, projectKey: envKey, distinctId, optedIn, internalBuild, consentSince };
   }
   const phResolved = getPosthogConfigWithSource();
   if (phResolved.config) {
@@ -88,6 +90,7 @@ export async function resolveTelemetryConfig(): Promise<{
       distinctId,
       optedIn,
       internalBuild,
+      consentSince,
     };
   }
   return {
@@ -96,6 +99,7 @@ export async function resolveTelemetryConfig(): Promise<{
     distinctId,
     optedIn,
     internalBuild,
+    consentSince,
   };
 }
 

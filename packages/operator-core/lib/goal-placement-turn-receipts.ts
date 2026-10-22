@@ -1,7 +1,7 @@
 /** Exact goal-plan exposure + native final-turn receipts, on existing stores. */
 import { z } from 'zod';
 import { formatAgentObligationLine, type AgentObligation } from './agent-obligations';
-import type { AgentObligationBrief, AgentObligationAgendaRead } from './agent-obligation-reader';
+import type { AgentObligationBrief, AgentObligationAgendaRead, AgentObligationReadStageRunner } from './agent-obligation-reader';
 import type { TranscriptTailTurn } from './turn-journal';
 import type { SelfSession } from './search/self-session';
 import type { ActivityRecord } from '@papercusp/activity-bridge';
@@ -134,7 +134,7 @@ export const GOAL_PLACEMENT_TURN_END_MAX_LAG_MS = 60_000;
 export const GOAL_PLACEMENT_TURN_END_SETTLE_POLLS = 10;
 export const GOAL_PLACEMENT_TURN_END_SETTLE_POLL_MS = 200;
 export interface GoalPlacementTurnEndDeps extends Pick<GoalPlacementTurnReceiptDeps, 'current' | 'tail' | 'append' | 'now'> {
-  goalSubject: (ownerId: string, workspaceId: string) => Promise<string | null>;
+  goalSubject: (ownerId: string, workspaceId: string, runStage?: AgentObligationReadStageRunner) => Promise<string | null>;
   goalHarness: (goalId: string, workspaceId: string) => Promise<string | null>;
   agenda: (ownerId: string, workspaceId: string) => Promise<AgentObligationAgendaRead>;
   pending?: (ownerId: string, workspaceId: string) => Promise<unknown>;
@@ -164,6 +164,23 @@ export interface GoalPlacementTurnEndResult {
   recorded: boolean;
   reason: string;
   diagnostics?: GoalPlacementTurnEndDiagnostics;
+  outcomeAppendTiming?: GoalPlacementTurnEndOutcomeAppendTiming;
+}
+
+export interface GoalPlacementTurnEndOutcomeAppendTiming {
+  status: 'skipped' | 'completed' | 'timeout' | 'failed' | 'error';
+  recorded: boolean;
+  elapsedMs: number;
+}
+
+interface GoalPlacementTurnEndOutcomeAppendCompletion {
+  status: 'completed' | 'error';
+  outcomeObservedAt: string;
+  outcomeToolUseId: string;
+  startedAtMs: number;
+  completedAtMs: number;
+  elapsedMs: number;
+  errorName?: string;
 }
 
 type GoalPlacementTurnEndStageObserver = (timing: GoalPlacementTurnEndStageTiming) => void;
@@ -286,8 +303,12 @@ export async function recordGoalPlacementTurnEnd(input: {
 }, deps: GoalPlacementTurnEndDeps = { ...defaults,
   pending: readPendingDelivery,
   goalHarness: readGoalHarness,
-  goalSubject: async (ownerId, workspaceId) =>
-    (await import('./agent-obligation-reader')).defaultAgentObligationReaderDeps().goalSubject(workspaceId, ownerId),
+  goalSubject: async (ownerId, workspaceId, runStage) => {
+    const reader = await (runStage
+      ? runStage('goal-subject-reader-module-import', () => import('./agent-obligation-reader'))
+      : import('./agent-obligation-reader'));
+    return reader.defaultAgentObligationReaderDeps().goalSubject(workspaceId, ownerId, runStage);
+  },
   agenda: async (ownerId, workspaceId) => (await import('./agent-obligation-reader')).readAgentObligationAgenda({ ownerId, workspaceId }),
 }, observeStage?: GoalPlacementTurnEndStageObserver): Promise<{ recorded: boolean; reason: string }> {
   // Most journal callers do not hold a GOAL. One indexed mode read avoids
@@ -439,9 +460,20 @@ export async function recordGoalPlacementTurnEndOutcome(
   input: Parameters<typeof recordGoalPlacementTurnEnd>[0],
   outcome: GoalPlacementTurnEndResult,
   deps: Pick<GoalPlacementTurnReceiptDeps, 'append' | 'now'> = defaults,
+  onAppendCompletion?: (completion: GoalPlacementTurnEndOutcomeAppendCompletion) => void,
 ): Promise<boolean> {
   if (outcome.recorded || outcome.reason === 'no-canonical-goal') return false;
   const observedAt = new Date(deps.now()).toISOString();
+  const outcomeToolUseId = `goal-placement-turn-end-outcome:${input.sourceKind}:${input.nativeSessionId}:${observedAt}`;
+  const reportCompletion = (completion: Omit<GoalPlacementTurnEndOutcomeAppendCompletion,
+    'outcomeObservedAt' | 'outcomeToolUseId'>) => {
+    try {
+      onAppendCompletion?.({ ...completion, outcomeObservedAt: observedAt, outcomeToolUseId });
+    } catch {
+      // Diagnostics must never change the fail-soft turn-end result.
+    }
+  };
+  const startedAtMs = Date.now();
   try {
     await deps.append({
       workspaceId: input.workspaceId,
@@ -452,15 +484,20 @@ export async function recordGoalPlacementTurnEndOutcome(
       kind: 'lifecycle',
       toolName: null,
       phase: null,
-      toolUseId: `goal-placement-turn-end-outcome:${input.sourceKind}:${input.nativeSessionId}:${observedAt}`,
+      toolUseId: outcomeToolUseId,
       summary: 'Goal placement policy turn-end observation was not recorded',
       status: null,
       cwd: null,
       detail: { goalPlacementTurnEndOutcome: { version: 1, recorded: false, reason: outcome.reason, observedAt,
         ...(outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}) } },
     });
+    const completedAtMs = Date.now();
+    reportCompletion({ status: 'completed', startedAtMs, completedAtMs, elapsedMs: Math.max(0, completedAtMs - startedAtMs) });
     return true;
-  } catch {
+  } catch (error) {
+    const completedAtMs = Date.now();
+    reportCompletion({ status: 'error', startedAtMs, completedAtMs,
+      elapsedMs: Math.max(0, completedAtMs - startedAtMs), errorName: describeTurnEndError(error).name });
     return false;
   }
 }
@@ -469,19 +506,59 @@ export async function recordGoalPlacementTurnEndOutcome(
 export async function boundedRecordGoalPlacementTurnEndOutcome(
   input: Parameters<typeof recordGoalPlacementTurnEnd>[0],
   outcome: { recorded: boolean; reason: string },
-): Promise<boolean> {
-  if (outcome.recorded || outcome.reason === 'no-canonical-goal') return false;
+  deps: Pick<GoalPlacementTurnReceiptDeps, 'append' | 'now'> = defaults,
+): Promise<GoalPlacementTurnEndOutcomeAppendTiming> {
+  if (outcome.recorded || outcome.reason === 'no-canonical-goal') {
+    return { status: 'skipped', recorded: false, elapsedMs: 0 };
+  }
   try {
     const [{ withBoundedTimeout }, { trackDetached }] = await Promise.all([
       import('./bounded-timeout'), import('./detached-imports'),
     ]);
-    return (await withBoundedTimeout(trackDetached(recordGoalPlacementTurnEndOutcome(input, outcome)), {
+    const bounded = await withBoundedTimeout(() => trackDetached(recordGoalPlacementTurnEndOutcome(input, outcome, deps,
+      (completion) => {
+        try {
+          const observedAt = new Date(deps.now()).toISOString();
+          void trackDetached(deps.append({
+            workspaceId: input.workspaceId,
+            owner: input.ownerId,
+            agent: input.sourceKind,
+            sessionId: input.nativeSessionId,
+            scope: null,
+            kind: 'lifecycle',
+            toolName: null,
+            phase: null,
+            toolUseId: `goal-placement-turn-end-outcome-append:${input.sourceKind}:${input.nativeSessionId}:${completion.startedAtMs}`,
+            summary: 'Goal placement turn-end outcome append timing',
+            status: completion.status === 'completed' ? 'ok' : 'error',
+            cwd: null,
+            detail: { goalPlacementTurnEndOutcomeAppendTiming: {
+              version: 1,
+              outcomeToolUseId: completion.outcomeToolUseId,
+              outcomeObservedAt: completion.outcomeObservedAt,
+              state: completion.status,
+              startedAtMs: completion.startedAtMs,
+              completedAtMs: completion.completedAtMs,
+              elapsedMs: completion.elapsedMs,
+              ...(completion.errorName ? { errorName: completion.errorName } : {}),
+              observedAt,
+            } },
+          })).catch(() => {});
+        } catch {
+          // A failed timing receipt must not affect the bounded outcome writer.
+        }
+      })), {
       timeoutMs: 500,
       label: 'goal-placement-turn-end-outcome',
       fallback: false,
-    })).value;
+    });
+    return {
+      status: bounded.reason === 'timeout' ? 'timeout' : bounded.reason ? 'error' : bounded.value ? 'completed' : 'failed',
+      recorded: !bounded.degraded && bounded.value,
+      elapsedMs: bounded.elapsedMs,
+    };
   } catch {
-    return false;
+    return { status: 'error', recorded: false, elapsedMs: 0 };
   }
 }
 

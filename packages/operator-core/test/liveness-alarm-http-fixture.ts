@@ -10,8 +10,12 @@ import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateO
 import { writeSharedSnapshot } from '../lib/derived-reads/shared-snapshot';
 import { createPrivateHealthSnapshot } from './private-http-workspace-preflight';
 import { AGENT_STRANDED_ALARM_THRESHOLD, AGENT_WEDGED_ALARM_THRESHOLD,
-  type AgentStrandHealth } from '../lib/system-health/agent-strand-census';
-import type { CoordinationHealth, InfraHealth } from '../lib/system-health/types';
+  summarizeAgentStrand, WEDGE_CLASSES, type AgentStrandHealth } from '../lib/system-health/agent-strand-census';
+import { strandMetrics } from '../lib/system-health/compute';
+import { coordinationStatus } from '../lib/system-health/thresholds';
+import { readOperatorState, updateOperatorState } from '../lib/operator-state-pg';
+import type { FlapState } from '../lib/system-health/liveness-alarm';
+import type { CoordinationHealth, InfraHealth, SystemHealth } from '../lib/system-health/types';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -33,9 +37,10 @@ async function main() {
   const e = process.env;
   const requested = e.LIVENESS_ALARM_HTTP_SUBJECT;
   const signal = ['agents-stranded', 'hosted-control-plane-degraded', 'hosted-reverse-connector-lost',
-    'platform-lifecycle-budget-exceeded'].includes(requested ?? '') ? requested! : 'agents-wedged';
+    'platform-lifecycle-budget-exceeded', 'population-acceptance'].includes(requested ?? '') ? requested! : 'agents-wedged';
   const strandedSubject = signal === 'agents-stranded';
-  const hostedSubject = signal !== 'agents-wedged' && !strandedSubject;
+  const populationSubject = signal === 'population-acceptance';
+  const hostedSubject = signal !== 'agents-wedged' && !strandedSubject && !populationSubject;
   const threshold = hostedSubject ? 1 : strandedSubject ? AGENT_STRANDED_ALARM_THRESHOLD : AGENT_WEDGED_ALARM_THRESHOLD;
   const workspace = e.PAPERCUSP_WORKSPACE_ID!;
   const base = e.PAPERCUSP_OPERATOR_URL!;
@@ -53,6 +58,10 @@ async function main() {
   const sources = ['packages/operator-core/lib/system-health/liveness-alarm.ts',
     'packages/operator-core/lib/system-health/agent-strand-census.ts',
     'packages/operator-core/lib/system-health/compute.ts',
+    'packages/operator-core/lib/system-health/thresholds.ts',
+    'packages/operator-core/lib/attention-notify.ts',
+    'packages/operator-core/lib/attention-notify-store.ts',
+    'packages/operator-core/lib/operator-state-pg.ts',
     'packages/operator-core/lib/derived-reads/shared-snapshot.ts',
     'packages/operator-core/lib/agent-tools/coordination/escalations.ts',
     'packages/operator-core/lib/workspace-host/observability-store.ts',
@@ -176,6 +185,147 @@ async function main() {
     assert.equal(rows.length, 1, 'threshold alarm must remain durably open');
     assert.equal((await resolutions(id)).length, 0, 'absence of evidence cannot resolve a standing alarm');
     assert.equal((await raisesFor(signature)).length, 1, 'one threshold episode must have one alarm');
+  }
+  if (populationSubject) {
+    const signatures = ['agents-wedged', 'agents-stranded'] as const;
+    const classCounts = [1, 2, 3, 4];
+    const witness = 'hosted-control-plane-degraded';
+    const controls: string[] = [];
+    const unknownControls: string[] = [];
+    const attention = async (signature: string) => await sql`SELECT id, desktop_attempted
+      FROM harness_shared.attention_notifications WHERE workspace_id = ${workspace}
+        AND title = 'Infra-liveness BLOCKER' AND data->>'signal' = ${signature} ORDER BY id`;
+    async function publish(counts: number[] | null, stranded: number | null, unhealthy = 1,
+      independentPanel = false) {
+      const health = createPrivateHealthSnapshot(workspace, false, Date.now());
+      const verdicts = new Map<string, { wedged: typeof WEDGE_CLASSES[number] }>();
+      for (const [index, count] of (counts ?? []).entries()) {
+        for (let i = 0; i < count; i++) verdicts.set(`class-${index}-${i}`, { wedged: WEDGE_CLASSES[index] });
+      }
+      const census = summarizeAgentStrand(counts === null ? null : verdicts,
+        stranded === null ? null : Array.from({ length: stranded }, (_, i) => `stranded-${i}`));
+      const data: CoordinationHealth = { unansweredAgents: 0, unansweredTotal: independentPanel ? 1 : 0,
+        unansweredOldestMs: independentPanel ? 3_600_000 : null, criticalContext: 0, highContext: 0,
+        activeAwaits: 0, staleAwaits: 0, leaderlessFleets: 0, liveFleets: 0, orphanedClaims: 0,
+        stalledClaims: 0, coverageCollisions: 0, parkedMembers: 0, agentStrand: census };
+      health.panels.coordination.data = data;
+      health.panels.coordination.status = coordinationStatus(data);
+      health.panels.coordination.metrics = strandMetrics(census);
+      health.panels.infra.data = { hostedControlPlane: {
+        observedAt: health.evaluatedAt, windowMs: 3_600_000, lifecycle: null, api: null,
+        hosts: { expectedRunning: 1, unhealthy, unobserved: 0, platformOwnedRunning: 1 },
+        providerConnections: { connected: 1, degraded: 0 }, reverseConnectors: { active: 1, lost: 0 },
+        ownedCost: { estimatedUsdCents: 0, estimates: 1, unpriced: 0, breachedBudgets: 0 },
+      } } as InfraHealth;
+      await writeSharedSnapshot('system.health', workspace, health, 1);
+      return health;
+    }
+    async function readPanel(expected: SystemHealth) {
+      return until('HTTP Health snapshot generation', async () => {
+        const response = await fetch(base + '/api/zero-harness/rest-query?name=health.snapshot&args=%7B%7D',
+          { headers, signal: AbortSignal.timeout(5_000) });
+        assert.equal(response.status, 200, 'private Health query refused');
+        return await response.json() as { rows: SystemHealth[] };
+      }, body => body.rows?.length === 1 && body.rows[0].workspaceId === workspace &&
+        body.rows[0].evaluatedAt === expected.evaluatedAt);
+    }
+    // An independent fresh alarm witnesses that the real worker processed each
+    // control snapshot. Reconciliation precedes escalation in the same tick.
+    async function observe(counts: number[] | null, stranded: number | null, independentPanel = false) {
+      const prior = await raisesFor(witness);
+      const last = prior.at(-1);
+      if (last && (await resolutions(last.msg_id)).length === 0) {
+        await publish(counts, stranded, 0, independentPanel);
+        await until('control witness recovery', () => resolutions(last.msg_id), rows => rows.length === 1);
+      }
+      const snapshot = await publish(counts, stranded, 1, independentPanel);
+      await until('control snapshot pickup', () => raisesFor(witness), rows => rows.some(row =>
+        row.hostedControlPlaneObservation?.snapshotAtMs === snapshot.evaluatedAt));
+      const response = await readPanel(snapshot);
+      const panel = response.rows[0].panels.coordination;
+      assert.deepEqual(panel.data, snapshot.panels.coordination.data);
+      assert.deepEqual(panel.metrics, snapshot.panels.coordination.metrics);
+      assert.equal(panel.status, snapshot.panels.coordination.status);
+      return panel;
+    }
+    await publish([0, 0, 0, 0], 0, 0);
+    const first = await startHost();
+    const wedgedOnly = await observe(classCounts, 0);
+    assert.equal(wedgedOnly.status, 'warn'); controls.push('wedged-only');
+    const actualMetrics = Object.fromEntries(wedgedOnly.metrics.map(metric => [metric.label, metric.value]));
+    for (const [index, cls] of WEDGE_CLASSES.entries()) assert.equal(actualMetrics[`wedged · ${cls}`], classCounts[index]);
+    assert.equal(actualMetrics.wedged, AGENT_WEDGED_ALARM_THRESHOLD);
+    assert.equal(actualMetrics.stranded, 0);
+    await until('wedged owner attention', () => attention(signatures[0]), rows => rows.length === 1 && rows[0].desktop_attempted);
+    // Recover one population while activating the other: both independent legs
+    // and their separate thresholds are exercised through the same worker.
+    const strandedOnly = await observe([0, 0, 0, 0], AGENT_STRANDED_ALARM_THRESHOLD);
+    assert.equal(strandedOnly.status, 'warn'); controls.push('stranded-only');
+    assert.equal(strandedOnly.metrics.find(metric => metric.label === 'stranded')?.value, AGENT_STRANDED_ALARM_THRESHOLD);
+    const both = await observe(classCounts, AGENT_STRANDED_ALARM_THRESHOLD);
+    assert.equal(both.status, 'warn'); controls.push('both');
+    // Wedged has fired twice and stranded once so far. Repeated observations
+    // while open must neither re-open an escalation nor invoke owner attention.
+    for (let i = 0; i < 2; i++) await observe(classCounts, AGENT_STRANDED_ALARM_THRESHOLD);
+    assert.equal((await raisesFor(signatures[0])).length, 2);
+    assert.equal((await raisesFor(signatures[1])).length, 1);
+    assert.equal((await attention(signatures[0])).length, 2);
+    assert.equal((await attention(signatures[1])).length, 1);
+    for (const leg of ['wedged', 'stranded'] as const) {
+      const panel = await observe(leg === 'wedged' ? null : classCounts,
+        leg === 'stranded' ? null : AGENT_STRANDED_ALARM_THRESHOLD);
+      assert.equal(panel.metrics.find(metric => metric.label === leg)?.value, 'unreadable');
+      if (leg === 'wedged') assert.equal(panel.metrics.filter(metric => metric.label.startsWith('wedged · ')).length, 0);
+      unknownControls.push(leg);
+    }
+    assert.equal((await raisesFor('panel:coordination')).length, 0);
+    // An unrelated coordination warning must still be allowed its own signal.
+    await observe(classCounts, AGENT_STRANDED_ALARM_THRESHOLD, true);
+    assert.equal((await raisesFor('panel:coordination')).length, 1);
+    for (const signature of signatures) {
+      while ((await raisesFor(signature)).length < 3) {
+        await observe(signature === 'agents-wedged' ? [0, 0, 0, 0] : classCounts,
+          signature === 'agents-stranded' ? 0 : AGENT_STRANDED_ALARM_THRESHOLD);
+        await observe(classCounts, AGENT_STRANDED_ALARM_THRESHOLD);
+      }
+    }
+    // Both populations now have three durable fires but only two owner pages.
+    for (const signature of signatures) {
+      assert.equal((await raisesFor(signature)).length, 3);
+      assert.equal((await attention(signature)).length, 2);
+    }
+    await observe([0, 0, 0, 0], 0);
+    const state = await readOperatorState<FlapState>('operator_liveness_flap_state', workspace, { fresh: true });
+    for (const signature of signatures) {
+      assert.equal(state?.[signature].fireCount, 3);
+      assert.equal(typeof state?.[signature].quietSinceMs, 'number');
+    }
+    // Advance only the persisted historical quiet input in this private DB.
+    // Keep the production 30-minute policy and real worker clock unchanged.
+    const durationMs = 1_800_001;
+    await updateOperatorState<FlapState>('operator_liveness_flap_state', {}, current => {
+      for (const signature of signatures) current[signature].quietSinceMs = Date.now() - durationMs;
+      return current;
+    }, workspace);
+    await until('documented quiet boundary settle', () => readOperatorState<FlapState>(
+      'operator_liveness_flap_state', workspace, { fresh: true }), current =>
+      !!current && signatures.every(signature => !current[signature]));
+    await observe(classCounts, AGENT_STRANDED_ALARM_THRESHOLD);
+    const episodes: Record<string, { alarms: number; attentionIntents: number }> = {};
+    for (const signature of signatures) {
+      const notices = await until('new episode owner attention', () => attention(signature),
+        rows => rows.length === 3 && rows.every(row => row.desktop_attempted));
+      episodes[signature] = { alarms: (await raisesFor(signature)).length, attentionIntents: notices.length };
+      assert.equal(episodes[signature].alarms, 4);
+    }
+    assert.deepEqual(fingerprint(), sourceBefore, 'source changed during population journey');
+    await stopHost();
+    console.log('LIVENESS_ALARM_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostStopped: true, signal,
+      sourceUnchanged: true, sourceFingerprints: sourceBefore, bundleSha256, intervalMs, first,
+      population: { classCounts, stranded: AGENT_STRANDED_ALARM_THRESHOLD, severityControls: controls,
+        unknownControls, genericPopulationPages: 0, independentPanelPage: true, episodes,
+        quietBoundary: { persistedHistoryAdvanced: true, durationMs } } }));
+    return;
   }
   // The below/at boundary is witnessed on the same worker and independently of
   // any wedged sessions, rather than inferred from a timer with no pickup proof.

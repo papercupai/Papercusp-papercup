@@ -5221,12 +5221,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .refine(args => Boolean(args.gymJournalUnit) === Boolean(args.expectedGymRuntime), 'Gym journal requires its exact expected runtime'),
     resolve: async (raw: unknown) => {
       const args = raw as { potSlug: string; mode?: 'manual' | 'auto'; view?: 'controls' | 'metrics' | 'history' | 'run' | 'observations'; since?: string; until?: string; cursor?: string; runId?: string; expectedRuntime?: { host: string; processId: string; buildSha: string }; actionJournalUnit?: string; expectedActionRuntime?: { host: string; processId: string; buildSha: string }; gymJournalUnit?: string; expectedGymRuntime?: { host: string; processId: string; buildSha: string } };
-      const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await Promise.all([
+      const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await traceNamedQueryStage('dream-dependencies-import', () => Promise.all([
         import('../workspace-registry'), import('../route-workspace'), import('../dream/dream-control'),
-      ]);
+      ]));
       const workspaceId = activeWorkspaceId();
       if (args.view === 'observations') {
-        const { readDreamControlObservations } = await import('../dream/dream-control-observations');
+        const { readDreamControlObservations } = await traceNamedQueryStage('dream-observation-import',
+          () => import('../dream/dream-control-observations'));
         const scope = { workspaceId, potSlug: args.potSlug, since: args.since!, until: args.until!, expectedRuntime: args.expectedRuntime!,
           ...(args.actionJournalUnit ? { actionJournalUnit: args.actionJournalUnit, expectedActionRuntime: args.expectedActionRuntime } : {}),
           ...(args.gymJournalUnit ? { gymJournalUnit: args.gymJournalUnit, expectedGymRuntime: args.expectedGymRuntime } : {}) };
@@ -5235,25 +5236,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // the existing 6s read deadline. A missed source stays UNKNOWN through
         // the observation reader's error path; never substitute an empty log.
         const withinJournalBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
-        const [{ readJournal }, { DREAM_ACTION_DECISION_PREFIX }, { GYM_ADMISSION_DECISION_PREFIX }] = await Promise.all([
+        const [{ readJournal }, { DREAM_ACTION_DECISION_PREFIX }, { GYM_ADMISSION_DECISION_PREFIX }] = await traceNamedQueryStage('dream-journal-dependencies-import', () => Promise.all([
           import('../journal-read'), import('../dream/dream-config'), import('../gym/autoloop-tick'),
-        ]);
-        const captureJournal = (unit: string, grep: string, limit: number, label: string) =>
+        ]));
+        const captureJournal = (unit: string, grep: string, limit: number, label: string,
+          stage: 'dream-action-journal' | 'dream-gym-journal') => traceNamedQueryStage(stage, () =>
           withinJournalBudget(readJournal({ units: [unit], since: `@${Date.parse(args.since!) / 1000}`,
-            until: `@${Date.parse(args.until!) / 1000}`, grep, limit }), label)
+            until: `@${Date.parse(args.until!) / 1000}`, grep, limit }), label))
             .then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
         const [journal, gymJournal] = await Promise.all([
-          args.actionJournalUnit ? captureJournal(args.actionJournalUnit, DREAM_ACTION_DECISION_PREFIX, 20, 'dream-action-journal') : null,
-          args.gymJournalUnit ? captureJournal(args.gymJournalUnit, GYM_ADMISSION_DECISION_PREFIX, 1000, 'gym-admission-journal') : null,
+          args.actionJournalUnit ? captureJournal(args.actionJournalUnit, DREAM_ACTION_DECISION_PREFIX, 20, 'dream-action-journal', 'dream-action-journal') : null,
+          args.gymJournalUnit ? captureJournal(args.gymJournalUnit, GYM_ADMISSION_DECISION_PREFIX, 1000, 'gym-admission-journal', 'dream-gym-journal') : null,
         ]);
-        return routeWithWorkspace(async tx => [await (journal || gymJournal
+        return traceNamedQueryStage('dream-workspace-transaction', () => routeWithWorkspace(async tx => [await traceNamedQueryStage('dream-observation-read', () => journal || gymJournal
           ? readDreamControlObservations(tx as unknown as import('postgres').Sql, scope, { journal: async request => {
             const captured = request.grep === GYM_ADMISSION_DECISION_PREFIX ? gymJournal : journal;
             if (!captured) throw new Error('Requested journal was not captured before transaction');
             if (!captured.ok) throw captured.error;
             return captured.value;
           } })
-          : readDreamControlObservations(tx as unknown as import('postgres').Sql, scope))]);
+          : readDreamControlObservations(tx as unknown as import('postgres').Sql, scope))]));
       }
       if (args.view === 'run') {
         const { readDreamDetail } = await import('../dream/dream-read');

@@ -45,6 +45,7 @@ import type postgres from 'postgres';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { deriveIndexFromContent } from '../agent-tools/plans/source';
 import { writePlanIndexRows } from '../agent-tools/plans/plan-index-rows';
+import { resolveNewPlanVerificationProfile } from '../agent-tools/plans/plan-verification-profile-stamp';
 import type { SpecClauseSql } from '../agent-tools/plans/spec-clauses-store';
 import {
   AcceptanceBarSeedAbort,
@@ -161,6 +162,10 @@ export async function ensureFlagshipPlan(
   const decisionsJson = JSON.stringify(idx.decisions);
   const inputSchemaJson = JSON.stringify(spec.inputSchema);
   const contentHash = hashPlanContent(spec.content);
+  const profileStamp = await resolveNewPlanVerificationProfile({
+    harnessSlug: spec.harnessSlug,
+    workspaceId,
+  });
 
   return sql.begin(async (tx) => {
     const lockKey = [workspaceId, spec.harnessSlug, spec.planSlug].join(':');
@@ -228,14 +233,14 @@ export async function ensureFlagshipPlan(
       INSERT INTO harness_shared.harness_plans (
         workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
         version, created, updated, is_legacy, items, decisions, now_state, now_next,
-        input_schema, origin
+        input_schema, origin, verification_profile, verification_profile_source
       ) VALUES (
         ${workspaceId}, ${spec.harnessSlug}, ${spec.planSlug},
         ${idx.title}, ${idx.status}, ${spec.content},
         ${contentHash}, 1,
         ${idx.created}, ${idx.updated}, ${idx.isLegacy}, ${itemsJson}::text::jsonb,
         ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext},
-        ${inputSchemaJson}::text::jsonb, 'local'
+        ${inputSchemaJson}::text::jsonb, 'local', ${profileStamp.profile}, ${profileStamp.source}
       )`;
     await recordFlagshipRevision(tx, workspaceId, spec, contentHash, 'flagship plan seeded from its built-in spec');
     await writePlanIndexRows(

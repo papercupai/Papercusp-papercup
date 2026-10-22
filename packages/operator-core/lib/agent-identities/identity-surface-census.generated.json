@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generator": "npm run gen:identity-surface-census",
-  "suRenderParityBaseline": "pending: identity-definitions-own-policy-2026-10-17#P-001 (frozen su render)",
+  "suRenderParityBaseline": "docs/evidence/idop-p001-baseline-2026-10-22.json#base (identity-definitions-own-policy-2026-10-17#P-001)",
   "counts": {
     "flat-role-prompt": 109,
     "prompt-constant": 87,

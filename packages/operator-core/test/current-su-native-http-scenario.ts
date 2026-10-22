@@ -219,11 +219,15 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
           WHERE a.workspace_id=${workspace}`;
         assert.equal(rows.length, 1, JSON.stringify(rows));
         const row = rows[0];
-        if (!predecessor) predecessor = { ownerId: row.coord_owner_id, taskId: row.task_id, sessionId: row.session_id };
         let wire: string;
         try {
-          wire = protocol.respond(body, { predecessorSessionId: predecessor.sessionId,
+          wire = protocol.respond(body, { predecessorSessionId: row.session_id,
             editApplied: () => readFileSync(join(taskCheckout, 'answer.txt'), 'utf8') === 'after\n' });
+          if (protocol.predecessorSessionId && !predecessor) {
+            assert.match(protocol.predecessorSessionId, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i,
+              'Managed carry requires the native predecessor bound before compaction');
+            predecessor = { ownerId: row.coord_owner_id, taskId: row.task_id, sessionId: protocol.predecessorSessionId };
+          }
         } finally {
           // The protocol can fail before launch's readiness promise returns.
           // Retain the CLI's own MCP error at that boundary, independently of

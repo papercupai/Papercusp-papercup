@@ -19,6 +19,17 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// This unit suite exercises receipt timing with real short-lived commands.
+// Forkserver/task-ledger containment is covered by forkserver.integration.test.
+vi.mock('./forkserver/forkserver-client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./forkserver/forkserver-client')>()),
+  spawnSidecarChild: async (req: import('./forkserver/forkserver-client').SidecarSpawnRequest) => {
+    const { spawn } = await import('node:child_process');
+    return spawn(req.command, req.args, { cwd: req.cwd, env: req.env, detached: req.detached,
+      stdio: [req.stdin?.fd ?? 'ignore', req.stdout?.fd ?? 'pipe', 'pipe'] });
+  },
+}));
+
 import type { AdmissionContext } from '../resource-governor/admission';
 import type { GovernedExecution } from '../resource-governor/execution';
 import { buildGitBatchInvocation, isReadOnlyGitBatchExec } from '../git-batch';

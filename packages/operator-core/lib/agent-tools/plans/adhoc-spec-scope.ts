@@ -29,6 +29,10 @@
  */
 
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
+import {
+  resolveNewPlanVerificationProfile,
+  stampNewPlanVerificationProfile,
+} from './plan-verification-profile-stamp';
 import type postgres from 'postgres';
 
 /**
@@ -145,6 +149,13 @@ export async function resolveSpecScopeSlug(
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
     RETURNING plan_slug`;
   if (materialised.length > 0) {
+    const profileStamp = await resolveNewPlanVerificationProfile({ harnessSlug, workspaceId });
+    await stampNewPlanVerificationProfile(
+      tx as unknown as Parameters<typeof stampNewPlanVerificationProfile>[0],
+      { workspaceId, harnessSlug },
+      ADHOC_WORK_ITEM_SPEC_SCOPE,
+      profileStamp,
+    );
     // WI-10006321: a raw content write outside withPlanLock records its own revision in the
     // caller's transaction, so every live plan body has one. Lazy: this module is a leaf
     // the spec stores import, and revisions.ts reaches back into the plan-source graph.

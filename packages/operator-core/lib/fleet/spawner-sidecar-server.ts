@@ -74,6 +74,7 @@ import { armSpawnerSidecarOrphanWatchdog } from './spawner-sidecar-orphan-watchd
 import { createAdmissionWedgeBreaker, createAdmissionWedgeExitHandler } from './sidecar-admission-wedge';
 import { getBuildInfo } from '../build-info';
 import { createSpawnerSidecarLoopDelay } from './spawner-sidecar-loop-delay';
+import { forkserverContainmentIdentity, prepareForkserverContainment } from './forkserver/forkserver-client';
 
 const SAFE_PROCESS_EXEC_CALLER_LABELS = new Set<ProcessExecCallerLabel>(
   Object.values(PROCESS_EXEC_CALLER_LABELS),
@@ -329,7 +330,8 @@ export function runSpawnerSidecarServer(deps: {
           return;
         }
         const params = (req.params ?? {}) as ExecParams;
-        if (params.fence && (params.fence.serverGeneration !== serverGeneration || params.fence.connectionId !== connectionId)) {
+        if (params.fence && (params.fence.serverGeneration !== serverGeneration || params.fence.connectionId !== connectionId ||
+            !Object.hasOwn(params.fence, 'forkserverIdentity'))) {
           write(rpcResult({ code: -1, stdout: '', stderr: 'spawner sidecar execution fence mismatch before spawn' }, id));
           return;
         }
@@ -451,16 +453,19 @@ export function runSpawnerSidecarServer(deps: {
       }
 
       if (req.method === 'spawn:cancel') {
-        const p = (req.params ?? {}) as { requestId?: number | string };
+        const p = (req.params ?? {}) as { requestId?: number | string; prepareProcessExec?: boolean };
         const controller = p.requestId != null ? requests.get(p.requestId) : undefined;
         if (controller) controller.abort();
+        const forkserver = p.prepareProcessExec ? await prepareForkserverContainment() : null;
+        const containment = captureSidecarContainment(process.env[SPAWNER_SCOPE_ENV]);
         // cancelled acknowledges the signal, not child exit. The original
         // process:exec result is sent only after the child closes.
         if (id !== null) write(rpcResult({
           cancelled: !!controller, processExecCancellation: true,
-          processExecFence: { serverGeneration, connectionId },
+          processExecFence: { serverGeneration, connectionId,
+            ...(p.prepareProcessExec ? { forkserverIdentity: forkserver ? forkserverContainmentIdentity(forkserver) : null } : {}) },
           processExecIdentity,
-          processExecContainment: captureSidecarContainment(process.env[SPAWNER_SCOPE_ENV]),
+          processExecContainment: containment && forkserver ? { ...containment, forkserver } : containment,
           eventLoopDelayP99Ms: loopDelay.readP99Ms(),
         }, id));
         return;

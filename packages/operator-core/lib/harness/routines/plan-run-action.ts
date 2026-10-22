@@ -36,6 +36,7 @@ import { routineStorageSlug } from '../../pot-membership';
 import { retireRunInstancePlan } from './retire-run-instance-plan';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
+import { resolveNewPlanVerificationProfile } from '../../agent-tools/plans/plan-verification-profile-stamp';
 import { deriveIndexFromContent, type PlanIndexDecision, type PlanIndexItem } from '../../agent-tools/plans/source';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
 import {
@@ -288,11 +289,13 @@ async function runScheduledPlanFireTx(
       template_data: unknown;
       input_schema: unknown;
       output_schema: unknown;
+      verification_profile: 'coding' | 'general' | null;
+      verification_profile_source: string | null;
       acceptance_bar_epoch: number | string | null;
     }>
   >`
     SELECT content, content_hash, version, title, items, decisions, schedule, template, template_data, input_schema,
-           output_schema, acceptance_bar_epoch
+           output_schema, verification_profile, verification_profile_source, acceptance_bar_epoch
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${planStorageSlug}
        AND plan_slug = ${templateSlug}
@@ -671,16 +674,28 @@ async function runScheduledPlanFireTx(
     Array.isArray(template.decisions) && template.decisions.length > 0 ? template.decisions : contentIndex.decisions;
   const itemsJson = JSON.stringify(instanceItems);
   const decisionsJson = JSON.stringify(instanceDecisions);
+  let verificationProfile = template.verification_profile;
+  let verificationProfileSource = template.verification_profile_source;
+  if (verificationProfile === null) {
+    const fallbackProfile = await resolveNewPlanVerificationProfile({
+      harnessSlug: appPlanStorageSlug,
+      workspaceId,
+    });
+    verificationProfile = fallbackProfile.profile;
+    verificationProfileSource = fallbackProfile.source;
+  } else if (verificationProfileSource === null) {
+    verificationProfileSource = 'harness-default';
+  }
   const insertedInstance = await sql<Array<{ plan_slug: string }>>`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
        items, decisions, template_slug, run_seq, origin, template, template_data, input_schema,
-       output_schema)
+       output_schema, verification_profile, verification_profile_source)
     VALUES (${workspaceId}, ${appPlanStorageSlug}, ${instanceSlug}, ${template.title}, 'active',
             ${instanceContent}, ${instanceContentHash}, ${itemsJson}::text::jsonb, ${decisionsJson}::text::jsonb,
             ${templateSlug}, ${runSeq}, 'local',
             ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb,
-            ${outputSchemaJson}::text::jsonb)
+            ${outputSchemaJson}::text::jsonb, ${verificationProfile}, ${verificationProfileSource})
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
     RETURNING plan_slug
   `;

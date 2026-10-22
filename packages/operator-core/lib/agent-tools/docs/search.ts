@@ -30,6 +30,7 @@ import {
 import { resolveDocsEmbedder, docSectionsRanker, type DocSemanticHit } from './semantic-leg';
 import { interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { summarizeDocsLexicalTiming } from './search-timing';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
 // same side-effect import every other engine caller uses. Without it this
 // surface would call the engine and inherit NO floor, which is the exact
@@ -59,40 +60,6 @@ const CROSS_SURFACE_PROBE_LIMIT = 5;
 // breadcrumb for a phase that remains active past this point, without logging
 // the query or adding a timeout that changes search behavior.
 const DOCS_SEARCH_PHASE_WARN_MS = 20_000;
-
-const DOCS_LEXICAL_TIMING_PHASES = ['listPages', 'getContent', 'ranking'] as const;
-
-/** Query-free summary of the docs-engine's internal lexical phase metadata. */
-function summarizeDocsLexicalTiming(value: unknown): string | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const timing = value as Record<string, unknown>;
-  const completed = timing.completedMs && typeof timing.completedMs === 'object' && !Array.isArray(timing.completedMs)
-    ? timing.completedMs as Record<string, unknown>
-    : {};
-  const phases = DOCS_LEXICAL_TIMING_PHASES.flatMap((phase) => {
-    const duration = completed[phase];
-    return typeof duration === 'number' && Number.isFinite(duration)
-      ? [`${phase}=${Math.max(0, Math.round(duration))}ms`]
-      : [];
-  });
-  const pages = timing.pages && typeof timing.pages === 'object' && !Array.isArray(timing.pages)
-    ? timing.pages as Record<string, unknown>
-    : {};
-  const pageCounts = ['listed', 'searchable', 'loaded'].flatMap((key) => {
-    const count = pages[key];
-    return typeof count === 'number' && Number.isFinite(count) ? [Math.max(0, Math.trunc(count))] : [];
-  });
-  const fields: string[] = [];
-  if (typeof timing.totalElapsedMs === 'number' && Number.isFinite(timing.totalElapsedMs)) {
-    fields.push(`total=${Math.max(0, Math.round(timing.totalElapsedMs))}ms`);
-  }
-  if (timing.outcome === 'complete' || timing.outcome === 'cancelled' || timing.outcome === 'failed') {
-    fields.push(`outcome=${timing.outcome}`);
-  }
-  if (phases.length > 0) fields.push(`phases=${phases.join(',')}`);
-  if (pageCounts.length === 3) fields.push(`pages=${pageCounts.join('/')}`);
-  return fields.length > 0 ? `docsLexicalTiming ${fields.join(' ')}` : undefined;
-}
 
 export const RETIREMENT_AUTHORITY_SLUG = 'agent-insights/mug-kettle-cup-tier-is-retired';
 
@@ -431,7 +398,13 @@ export default defineTool({
       const timer = setTimeout(() => {
         if (!docsSearchActivePhases.has(phase)) return;
         warned = true;
-        ctxAny.log?.('[docs:search timing] ' + phase + ' still pending after at least ' + DOCS_SEARCH_PHASE_WARN_MS + 'ms');
+        const lexicalDetails = phase === 'lexicalSearch'
+          ? summarizeDocsLexicalTiming(innerMeta.docsLexicalTiming)
+          : undefined;
+        ctxAny.log?.(
+          '[docs:search timing] ' + phase + ' still pending after at least ' + DOCS_SEARCH_PHASE_WARN_MS + 'ms' +
+          (lexicalDetails ? '; ' + lexicalDetails : ''),
+        );
       }, DOCS_SEARCH_PHASE_WARN_MS);
       try {
         return await operation();

@@ -20,6 +20,8 @@ import type { CommittedReaderObservationCohort, CommittedReaderObservationIdenti
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
 // @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
 import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
+// @ts-ignore -- reuse install:safe's maintained direct-dependency range detector.
+import { findUnsatisfiedDeclaredDepRanges } from '../../../scripts/check-declared-deps-extracted.mjs';
 
 export interface PrivateUnrelatedCheckpointObservation {
   workspace: string;
@@ -866,6 +868,14 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
   builder?: PrivateBundleBuilder): PrivateBundleReceipt;
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string, builder?: PrivateBundleBuilder) {
+  // EI-26701352410915960: a readable but out-of-range SDK survived the lock/tree
+  // audit and cost an entire private build before failing at host startup.
+  // Use the installer's Node-resolution check before allocating build artifacts.
+  const invalidDependencies = findUnsatisfiedDeclaredDepRanges({ repoRoot: root,
+    workspaceDirs: ['packages/operator-core'] });
+  assert.equal(invalidDependencies.length, 0, `Private operator dependencies violate their declared ranges: ${
+    invalidDependencies.map(({ dep, declared, installed }: { dep: string; declared: string; installed: string }) =>
+      `${dep}: declared ${declared}, installed ${installed}`).join('; ')}`);
   const path = join(evidenceDir, 'hono-host.mjs');
   const stepPath = `${path}.build-steps.jsonl`;
   const timeoutMs = builder?.timeoutMs ?? 240_000;

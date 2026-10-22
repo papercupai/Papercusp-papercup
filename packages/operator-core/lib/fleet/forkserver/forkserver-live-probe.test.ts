@@ -5,6 +5,9 @@ import { parseLiveForkserverCheck } from './live-instrument';
 
 const instrument = fileURLToPath(new URL('../../../../../docs/evidence/sidecar-forkserver-live-probe.py', import.meta.url));
 
+const coverage = { attachedThroughWindow: true, aliveAtWindowEnd: true,
+  tracerIdentityAtStart: '91:100', tracerIdentityAtEnd: '91:100', exitCode: 0, stopRequested: true };
+
 function summarize(trace: string) {
   const script = 'import json,runpy,sys; print(json.dumps(runpy.run_path(sys.argv[1])["summarize_trace"](sys.stdin.buffer.read())))';
   return JSON.parse(execFileSync('python3', ['-c', script, instrument], { input: trace, encoding: 'utf8' }));
@@ -41,7 +44,8 @@ describe('live forkserver trace instrument', () => {
       kind: 'operational-test-evidence', finishedAt: new Date(measuredAt).toISOString(),
       windowSeconds: 3, sidecarBlockedPercent: 10,
       assertions: assertionIds.map(id => ({ id, passed: id !== 'sidecar-fork-and-read-budget' })),
-      traces: [{ label: 'sidecar', forkCallCount: 0, forkSeconds: 0, readSeconds: 0.3, unmeasuredCallCount: 0 }],
+      traces: [{ label: 'sidecar', forkCallCount: 0, forkSeconds: 0, readSeconds: 0.3, unmeasuredCallCount: 0,
+        coverage: { ...coverage } }],
       runtime: { forkserverPids: [40] },
       gitSyncWitness: { before, after: { ...before, atWindowSeconds: 0.2, rchar: 20 } },
     };
@@ -58,11 +62,22 @@ describe('live forkserver trace instrument', () => {
       (r: any) => { r.gitSyncWitness.after.atWindowSeconds = 4; },
       (r: any) => { r.gitSyncWitness.before.marker = 'unrelated'; },
       (r: any) => { r.runtime.forkserverPids = [99]; },
+      (r: any) => { r.windowSeconds = 4; },
+      (r: any) => { delete r.traces[0].coverage; },
+      (r: any) => { r.traces[0].coverage.attachedThroughWindow = false; },
+      (r: any) => { r.traces[0].coverage.aliveAtWindowEnd = false; },
+      (r: any) => { r.traces[0].coverage.tracerIdentityAtEnd = '92:100'; },
+      (r: any) => { r.traces[0].coverage.exitCode = 1; },
+      (r: any) => { r.traces[0].coverage.exitCode = -2; r.traces[0].coverage.stopRequested = false; },
     ]) {
       const invalid = JSON.parse(valid); mutate(invalid);
       expect(parseLiveForkserverCheck(JSON.stringify(invalid), { now: measuredAt })).toBeNull();
     }
     expect(parseLiveForkserverCheck(JSON.stringify(result), { now: measuredAt + 31_000 })).toBeNull();
+    result.sidecarBlockedPercent = 5;
+    result.traces[0]!.readSeconds = 0.15;
+    result.assertions[5]!.passed = false;
+    expect(parseLiveForkserverCheck(JSON.stringify(result), { now: measuredAt })).toBe(0);
     result.assertions[1]!.passed = false;
     expect(parseLiveForkserverCheck(JSON.stringify(result), { now: measuredAt })).toBeNull();
   });
@@ -72,8 +87,8 @@ describe('live forkserver trace instrument', () => {
   });
 
   it('requires complete sidecar timing while allowing the forkserver to wait in IPC', () => {
-    const sidecar = { label: 'sidecar', instrumentErrors: [], traceLineCount: 1, unmeasuredCallCount: 0 };
-    const forkserver = { label: 'forkserver', instrumentErrors: [], traceLineCount: 2, unmeasuredCallCount: 1 };
+    const sidecar = { label: 'sidecar', instrumentErrors: [], traceLineCount: 1, unmeasuredCallCount: 0, coverage };
+    const forkserver = { label: 'forkserver', instrumentErrors: [], traceLineCount: 2, unmeasuredCallCount: 1, coverage };
     const script = 'import json,runpy,sys; m=runpy.run_path(sys.argv[1]); p=json.load(sys.stdin); print(json.dumps(m["trace_instrument_available"](p["traces"],p["attached"])))';
     const available = (traces: object[], attached = true) => JSON.parse(execFileSync('python3',
       ['-c', script, instrument], { input: JSON.stringify({ traces, attached }), encoding: 'utf8' }));
@@ -81,6 +96,35 @@ describe('live forkserver trace instrument', () => {
     expect(available([{ ...sidecar, unmeasuredCallCount: 1 }, forkserver])).toBe(false);
     expect(available([sidecar, { ...forkserver, instrumentErrors: ['ptrace refused'] }])).toBe(false);
     expect(available([sidecar, forkserver], false)).toBe(false);
+    expect(available([{ ...sidecar, coverage: { ...coverage, attachedThroughWindow: false } }, forkserver])).toBe(false);
+    expect(available([{ ...sidecar, coverage: { ...coverage, tracerIdentityAtEnd: '92:100' } }, forkserver])).toBe(false);
+    expect(available([sidecar, { ...forkserver, coverage: { ...coverage, exitCode: 1 } }])).toBe(false);
+  });
+
+  it('detects a tracer process that terminates halfway even when its retained trace is valid', () => {
+    const script = `import json,runpy,subprocess,sys,tempfile
+from pathlib import Path
+m=runpy.run_path(sys.argv[1])
+with tempfile.TemporaryDirectory() as d:
+ p=Path(d); target=p/'40'; target.mkdir()
+ tracer=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])
+ try:
+  (target/'status').write_text('TracerPid: '+str(tracer.pid))
+  entry=p/str(tracer.pid); entry.mkdir()
+  (entry/'stat').write_text('1 (strace) '+' '.join(['S']+['0']*18+['100']))
+  jobs=[('sidecar',40,None,None,tracer)]
+  before=m['attached_tracer_identities'](jobs,p)
+  tracer.terminate(); tracer.wait(timeout=5)
+  after=m['attached_tracer_identities'](jobs,p)
+  trace=dict(label='sidecar',instrumentErrors=[],traceLineCount=2,unmeasuredCallCount=0,
+   coverage=dict(attachedThroughWindow=False,aliveAtWindowEnd=False,
+    tracerIdentityAtStart=before['sidecar'],tracerIdentityAtEnd=None,exitCode=tracer.returncode,stopRequested=False))
+  print(json.dumps(dict(before=before,after=after,available=m['trace_instrument_available']([trace],True))))
+ finally:
+  if tracer.poll() is None: tracer.kill(); tracer.wait(timeout=5)`;
+    const result = JSON.parse(execFileSync('python3', ['-c', script, instrument], { encoding: 'utf8' }));
+    expect(result.before.sidecar).toMatch(/^[1-9]\d*:100$/);
+    expect(result).toMatchObject({ after: null, available: false });
   });
 
   it('observes only git-sync marked Git children and requires progress inside the trace window', () => {

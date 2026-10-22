@@ -12,6 +12,11 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { prepareRuntimeReader } from '../../vitest.e2e.config';
 
 const execute = promisify(execFile);
+type ReadCommand = (
+  file: string,
+  args: readonly string[],
+  options: { cwd: string; timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string; stderr: string }>;
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
 const selectedProfile = profilePath ? JSON.parse(readFileSync(resolve(root, profilePath), 'utf8')) : undefined;
@@ -36,7 +41,7 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
     expect(witness?.units).toEqual(profile.runtimeUnits);
   });
 
-  async function read(script: string, missingReportExpected = false, run = execute) {
+  async function read(script: string, missingReportExpected = false, run: ReadCommand = execute) {
     // The installed shim may select the release checkout. Keep the transport
     // caller on the same committed source as this verification instrument.
     const launcher = resolve(root, 'apps/operator/scripts/ptool.mjs');
@@ -72,7 +77,7 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
       code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true,
       stdout: 'x'.repeat(5_000), stderr: 'y'.repeat(7_000),
     });
-    const run = vi.fn<typeof execute>().mockRejectedValueOnce(failure);
+    const run = vi.fn<ReadCommand>().mockRejectedValueOnce(failure);
     const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       await expect(read('return {};', false, run)).rejects.toThrow('Live acceptance read failed:');

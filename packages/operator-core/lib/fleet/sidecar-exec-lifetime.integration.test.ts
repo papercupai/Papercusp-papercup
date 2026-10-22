@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -94,6 +94,7 @@ it.runIf(process.platform === 'linux')(
     const socketPath = join(dir, 'sidecar.sock');
     const barrier = join(dir, 'admission');
     const marker = join(dir, 'mutation');
+    const helperPath = join(dir, 'detached-helper');
     const taskId = newTaskId();
     const argv = ['--import', 'tsx', fileURLToPath(new URL('./fixtures/sidecar-lifetime-server.ts', import.meta.url))];
     const task = await managedSpawn(process.execPath, argv, {
@@ -120,9 +121,15 @@ it.runIf(process.platform === 'linux')(
     const snapshot = capabilities.processExecContainment;
     expect(sidecarContainmentCurrent(snapshot)).toBe(true);
     vi.stubEnv('PAPERCUSP_SPAWNER_IPC_SOCKET', socketPath);
-    const script = `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'one\\n'); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);`;
+    const script = `const helper = require('node:child_process').spawn('sleep', ['30'], {detached:true, stdio:'ignore'}); require('node:fs').writeFileSync(${JSON.stringify(helperPath)}, String(helper.pid)); require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'one\\n'); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);`;
     let killed = false;
     const killServer = () => {
+      if (!killed && phase === 'after-mutation') {
+        // Keep the exact test-owned companion scope for failure cleanup too.
+        const helper = Number(readFileSync(helperPath, 'utf8'));
+        const unit = readFileSync(`/proc/${helper}/cgroup`, 'utf8').trim().split('/').at(-1)!;
+        if (unit !== task.scopeUnit) scopes.push({ unit, child: task.child });
+      }
       if (!killed) { killed = true; process.kill(snapshot.pid, 'SIGKILL'); }
     };
     // This deliberate server death emits correlated transport diagnostics. Assert
@@ -142,7 +149,15 @@ it.runIf(process.platform === 'linux')(
       expect(result.stderr).toContain('not replayed');
       expect(isSidecarInfrastructureFault(result)).toBe(false);
       expect(observeSidecarExit(snapshot)).toBe('exited');
-      if (phase === 'after-mutation') expect(await readFile(marker, 'utf8')).toBe('one\n');
+      if (phase === 'after-mutation') {
+        expect(await readFile(marker, 'utf8')).toBe('one\n');
+        const helper = Number(await readFile(helperPath, 'utf8'));
+        // A detached process group cannot hide behind the known command's
+        // group kill or the original sidecar's already-empty scope.
+        let state = 'gone';
+        try { state = readFileSync(`/proc/${helper}/stat`, 'utf8').split(') ').at(-1)!.split(' ')[0]!; } catch { /* gone */ }
+        expect(['gone', 'Z', 'X']).toContain(state);
+      }
       else await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 
       const execution = warning.mock.calls[1]?.[1] as {

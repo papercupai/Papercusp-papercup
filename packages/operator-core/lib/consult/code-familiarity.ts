@@ -5,8 +5,8 @@
  * Measures what each candidate actually DID with the files a question is about:
  *
  *   - edits — `edit_attribution_ledger` rows naming the file (strong signal);
- *   - reads — MCP code reads and code queries in `tool_invocations` whose
- *     arguments name the file (weak "familiarity" signal; the tool set is the
+ *   - reads — successful MCP code reads and code queries in `tool_invocations`
+ *     whose file arguments identify the file (weak "familiarity" signal; the tool set is the
  *     one the code working set already uses, `WORKING_SET_TOOLS`).
  *
  * Counts are ALL-TIME (relevance-router D-007) and carry no time term (D-001
@@ -99,14 +99,27 @@ export async function measureCodeFamiliarity(
 
   let reads: CodeFamiliarityMeasurement['reads'] = 'measured';
   try {
-    const argPatterns = exact.map((f) => `%${escapeLike(f)}%`);
     const rows = await withStatementTimeout(sql, input.readTimeoutMs ?? CODE_FAMILIARITY_READ_TIMEOUT_MS, (tx) => tx`
       SELECT coord_owner_id AS owner, count(*)::int AS c
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ANY(${owners}::text[])
          AND workspace_id = ${input.workspaceId}
          AND tool_name = ANY(${[...WORKING_SET_TOOLS]}::text[])
-         AND args_json::text LIKE ANY(${argPatterns}::text[])
+         AND status = 'ok'
+         AND EXISTS (
+           SELECT 1 FROM (
+             SELECT COALESCE(args_json->>'file_path', args_json->>'path') AS file
+              WHERE tool_name IN ('capability:read', 'capability:edit', 'capability:write')
+             UNION ALL
+             SELECT args_json->>'file'
+              WHERE tool_name IN ('lsp:query', 'graph:query')
+             UNION ALL
+             SELECT jsonb_array_elements_text(
+               CASE WHEN jsonb_typeof(args_json->'paths') = 'array' THEN args_json->'paths' ELSE '[]'::jsonb END)
+              WHERE tool_name IN ('lsp:query', 'graph:query')
+           ) AS named_files
+           WHERE named_files.file = ANY(${exact}::text[]) OR named_files.file LIKE ANY(${suffix}::text[])
+         )
          AND (${before}::timestamptz IS NULL OR invoked_at < ${before}::timestamptz)
     GROUP BY coord_owner_id`) as unknown as Array<{ owner: string; c: number }>;
     for (const r of rows) entry(r.owner).reads = Number(r.c);

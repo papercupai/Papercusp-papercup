@@ -102,12 +102,13 @@ export function recordRouteInvocation(exec: RouteExecution): void {
     && repairAttempt.length === 36
     && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(repairAttempt);
   let metadataJson: string | null = null;
-  if (validRepairAttempt) {
-    const metadata: Record<string, unknown> = {
-      codexHomeRepairAttemptId: repairAttempt.toLowerCase(),
-    };
-    // Route diagnostics are opt-in at the metadata boundary: only the
-    // launcher's validated repair-attempt correlation may carry them. Keep
+  const sessionPortInspection = exec.def.method === 'POST'
+    && ['/adv/sessions/port/inspect', '/adv/sessions/port/prepare'].includes(exec.def.path);
+  if (validRepairAttempt || sessionPortInspection) {
+    const metadata: Record<string, unknown> = validRepairAttempt
+      ? { codexHomeRepairAttemptId: repairAttempt.toLowerCase() }
+      : {};
+    // Only these explicitly selected routes carry diagnostic phases. Keep
     // the persisted values numeric, finite, and bounded even if a route
     // supplies a custom diagnostics implementation in a test or host.
     try {
@@ -122,7 +123,7 @@ export function recordRouteInvocation(exec: RouteExecution): void {
     } catch {
       // Diagnostics are observational and must never affect the route result.
     }
-    metadataJson = JSON.stringify(metadata);
+    if (Object.keys(metadata).length > 0) metadataJson = JSON.stringify(metadata);
   }
 
   // Snapshot everything off `exec` synchronously — `exec` is mutable and

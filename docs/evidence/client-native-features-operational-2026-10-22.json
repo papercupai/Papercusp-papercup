@@ -10,24 +10,24 @@
     "node scripts/test-files.mjs apps/operator/scripts/__tests__/psu-native-compaction-switches.test.ts"
   ],
   "startedAt": "2026-10-22T14:02:59Z",
-  "finishedAt": "2026-10-22T14:35:36.298520+00:00",
+  "finishedAt": "2026-10-22T17:37:12Z",
   "exitCode": 0,
   "summary": "Actual private hook rows and installed compaction gate semantics, plus re-resolved versioned Codex and Channels receipts. No implementation acceptance or shipment is inferred.",
   "assertions": [
     {
       "id": "stopfailure-persisted",
       "passed": true,
-      "evidence": "Actual stop-failure-record.mjs entry point -> staging operator activity:report -> agent_activity row 8957862, with synthetic session, error kind and server timestamp."
+      "evidence": "Current review54 stop-failure-record.mjs entry point -> staging operator activity:report -> agent_activity row 8979862 at 17:36:33.509471Z, with private session acceptance-review54-c5ca-20261022-1735 and error review54_synthetic_stop. The 4s acknowledgement timed out and was preserved; server readback confirmed persistence later. Earlier row8957862 remains archived below."
     },
     {
       "id": "tool-error-persisted",
       "passed": true,
-      "evidence": "Actual posttooluse-failure-record.mjs entry point -> row 8957864, error/post, tool correlation and scalar-only detail; nested input absent."
+      "evidence": "Current review54 posttooluse-failure-record.mjs entry point -> row 8979879 at 17:36:41.535747Z, error/post, tool review54_acceptance_probe, correlation review54_error and scalar-only detail. Acknowledgement timed out and was preserved; server readback confirmed persistence later. Earlier row8957864 remains archived below."
     },
     {
       "id": "tool-interrupt-persisted",
       "passed": true,
-      "evidence": "Actual posttooluse-failure-record.mjs entry point -> row 8960206, interrupted/post with the exact private correlation id."
+      "evidence": "Current review54 posttooluse-failure-record.mjs entry point -> row 8979888 at 17:36:45.134004Z, interrupted/post, correlation review54_interrupt. Acknowledgement timed out and was preserved; server readback confirmed persistence later. Earlier row8960206 remains archived below."
     },
     {
       "id": "codex-creation-time-policy",
@@ -45,6 +45,14 @@
       "evidence": "Current installed Claude2.1.293 gate bodies were extracted from the installed binary and executed in a VM with controlled env/settings. Full 21-case file passed with no skips. Controls: no switches permits auto/manual and reaches prefix_changed; idle setting false returns idle_compaction_off; either disabling env stops auto/idle; DISABLE_COMPACT also disables manual; psu env disables all. This measures decision semantics, not a live session timer."
     }
   ],
+  "review54HookPersistence": {
+    "session": "acceptance-review54-c5ca-20261022-1735",
+    "operatorRoute": "http://127.0.0.1:3170",
+    "runtimeIdentity": "Pre-probe pipeline read observed 4ad5a574aa; exact invocation-time runtime SHA was not captured.",
+    "rowIds": ["8979862", "8979879", "8979888"],
+    "acknowledgements": "All three helper calls exceeded their 4s bound and retained private recovery files. No confirmed acknowledgement or safe automatic retry is claimed; the rows were independently read after the calls.",
+    "regressionEvidence": "The maintained posttooluse-failure-record.test.ts now executes both hook entrypoints against a local HTTP server: confirmed SSE insertion and HTTP-200 JSON-RPC rejection. It also checks tool isError, structured/text ok:false, dropped id:null, malformed replies and pretty JSON; rejected reports preserve their exact arguments without credential bytes."
+  },
   "hookPersistence": {
     "workspace": "papercusp-workspace",
     "operatorRoute": "http://127.0.0.1:3170",

@@ -60,6 +60,25 @@ afterEach(() => {
   unsafeCalls = [];
 });
 
+describe('recordRouteInvocation — session port diagnostics', () => {
+  it.each(['/adv/sessions/port/inspect', '/adv/sessions/port/prepare'])(
+    'persists completed phases on a timed-out %s without request content', async (path) => {
+      const exec = execWith({ method: 'POST', path, status: 'timeout',
+        headers: { authorization: 'Bearer private-auth-marker' } });
+      exec.routeDiagnostics = { measure: async (_phase, work) => work(),
+        snapshot: () => ({ 'port.launch-spec': 24_000, 'port.acquire-source': 12, 'private text': 1, invalid: NaN }) };
+      recordRouteInvocation(exec);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const call = findInsertCall();
+      const metadata = call.params.find((value) => typeof value === 'string' && value.includes('routePhaseTimingsMs'));
+      expect(JSON.parse(String(metadata))).toEqual({ routePhaseTimingsMs: {
+        'port.launch-spec': 24_000, 'port.acquire-source': 12,
+      } });
+      expect(JSON.stringify(call.params)).not.toContain('private-auth-marker');
+    },
+  );
+});
+
 describe('recordRouteInvocation — sampling gate', () => {
   it('sampleRate 0 → never touches PG', () => {
     recordRouteInvocation(execWith({ sampleRate: 0 }));

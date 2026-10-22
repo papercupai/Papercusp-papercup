@@ -36,12 +36,15 @@
 
 import type { CellOwnership } from './coord/gate-ownership';
 import type { GateFailingTestsProvenance } from './git-pipeline-stats';
+import type { GateCandidateFailures } from './gate-candidate-failures';
 import type {
   FrozenCandidateBlockedReason,
   FrozenRepairAdmission,
+  FrozenRepairConvergenceCellProjection,
   RepairSignatureEntry,
 } from './release/frozen-candidate-repair-queue';
 import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
+import type { TestPassReuseHealth } from './release/test-pass-reuse-report';
 
 /** The closed answer vocabulary — mirrored by the cell registration's assessment codes. */
 export type GateOwnerBriefAnswer =
@@ -292,6 +295,8 @@ export interface GateOwnerBrief {
    * honest answer when nothing was stamped, never an absent field.
    */
   attestations: GateOwnerBriefAttestations;
+  /** Compact retrieval of count, trend and reuse evidence from this same read. */
+  testProgress: ReturnType<typeof composeTestProgress>;
   /** Legs that could not be read, named — so absence is never silent. */
   unknownLegs: Array<{ leg: string; why: string }>;
 }
@@ -356,6 +361,80 @@ export interface GateOwnerBriefInput {
    * all-clear while a leg is red, and must name the leg.
    */
   nonTestLegs?: { measured: 'measured' | 'not-recorded'; outstanding: readonly string[] } | null | undefined;
+  candidateFailures?: Pick<GateCandidateFailures,
+    'candidateSha' | 'repairHeadSha' | 'filesJudged' | 'failingFileCount' | 'scope' | 'unavailable' | 'truncated'
+  > | null;
+  convergence?: FrozenRepairConvergenceCellProjection | null;
+  testPassReuse?: TestPassReuseHealth | null;
+}
+
+/** No new reads: retain each existing instrument's units, identity and missingness. */
+function composeTestProgress(inp: GateOwnerBriefInput) {
+  const files = inp.candidateFailures;
+  const filesMeasured = files != null && files.unavailable === null;
+  const convergence = inp.convergence;
+  const frozenCandidate = inp.repairQueue?.frozenCandidate ?? inp.repairQueue?.candidate ?? null;
+  const sameSubject = frozenCandidate != null && convergence?.candidate === frozenCandidate &&
+    inp.repairQueue?.repairHead != null && convergence.repairHead === inp.repairQueue.repairHead;
+  const newerAbort = inp.inconclusive?.observedAtMs != null &&
+    convergence?.observedAtMs != null && inp.inconclusive.observedAtMs >= convergence.observedAtMs;
+  const comparable = convergence != null && !convergence.unmeasured && sameSubject && !newerAbort;
+  const reuse = inp.testPassReuse;
+  return {
+    fullSuiteFailingCases: {
+      value: null,
+      unit: 'test-cases' as const,
+      status: 'not-measured' as const,
+      reason: 'The available file, signature and reuse counters do not establish a complete full-suite failing-case total.',
+    },
+    candidateFiles: {
+      status: filesMeasured ? 'measured-in-radius' as const : 'unavailable' as const,
+      value: filesMeasured ? files.failingFileCount : null,
+      unit: 'test-files' as const,
+      candidateSha: files?.candidateSha ?? null,
+      repairHeadSha: files?.repairHeadSha ?? null,
+      filesJudged: filesMeasured ? files.filesJudged : null,
+      detailsTruncated: files?.truncated ?? null,
+      readAtMs: inp.nowMs,
+      source: 'gate.candidateFailures',
+      scope: files?.scope ?? 'Only the candidate affected-test radius; not a complete full-suite verdict.',
+      reason: files?.unavailable ?? (files == null ? 'Candidate failure evidence was not recorded.' : null),
+    },
+    trend: {
+      status: comparable ? convergence.code : 'incomparable' as const,
+      unit: 'queue-failure-signatures' as const,
+      candidateSha: convergence?.candidate ?? null,
+      repairHeadSha: convergence?.repairHead ?? null,
+      observedAtMs: convergence?.observedAtMs ?? null,
+      baseline: comparable ? convergence.failingFirst : null,
+      latest: comparable ? convergence.failingNow : null,
+      decrease: comparable ? convergence.shrinkTotal : null,
+      rounds: comparable ? convergence.shrinkPerRound : [],
+      scope: 'The queue-admitted failing set includes non-test legs; it is not a full-suite test-case trend.',
+      reason: comparable ? null
+        : convergence == null || convergence.unmeasured ? 'No measured convergence record is available.'
+        : !sameSubject ? 'The recorded trend does not describe the current frozen candidate and repair head.'
+        : 'A newer inconclusive attempt did not establish an updated failure count or trend.',
+    },
+    passReuse: {
+      status: reuse == null ? 'not-recorded' as const : 'recorded' as const,
+      judgedSha: reuse?.judgedSha ?? null,
+      recordedAtMs: reuse?.recordedAtMs ?? null,
+      candidates: reuse?.candidates ?? null,
+      selectedForReuse: reuse?.reused ?? null,
+      consumerSkippedFiles: null,
+      unit: 'test-file-selections' as const,
+      source: 'gate_health.testPassReuse',
+      scope: 'Selector decisions, not confirmed runner skips or elapsed wall-clock savings.',
+    },
+    lastAttempt: {
+      inconclusiveStatus: inp.inconclusive?.status ?? null,
+      detail: inp.inconclusive?.detail ?? null,
+      observedAtMs: inp.inconclusive?.observedAtMs ?? null,
+      lastVerdictAtMs: inp.verdictObservedAtMs ?? null,
+      source: 'gate_health inconclusive record and verdict timestamp',
+    },
+  };
 }
 
 const vintage = (observedAtMs: number | null | undefined, source: string, nowMs: number): GateOwnerBriefVintage => ({
@@ -716,6 +795,7 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     // number and the per-leg breakdown that explains it are one derivation.
     vintageSpreadMs: attestations.spreadMs,
     attestations,
+    testProgress: composeTestProgress(inp),
     unknownLegs,
   };
 }

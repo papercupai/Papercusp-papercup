@@ -16,7 +16,7 @@
  * directive, 2026-06-19): VALIDATED live on 2026-06-19 — this GC drained workflow_status
  * 253MB→3MB and immediately un-froze the routine engine. It MUST run recurring or the
  * table re-bloats; disable only with PAPERCUSP_DBOS_WORKFLOW_GC=0. Retention is env-tunable
- * (PAPERCUSP_DBOS_WORKFLOW_GC_DAYS, default 2 — small enough that a daily run holds the
+ * (PAPERCUSP_DBOS_WORKFLOW_GC_DAYS, default 2 — hourly bounded passes keep the
  * table far under the ~300k freeze threshold).
  *
  * ROOT CAUSE (corrected 2026-06-19): the freeze WAS the workflow_status bloat — 328k rows
@@ -29,6 +29,8 @@
  * is the real catch-up source-fix; bounded-catch-up is the maintenance backstop.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_ALARM_ESCALATION_COOLDOWN_MS, escalateAlarm, resolveAlarm,
+  type AlarmAttentionDeps } from '../alarm-attention';
 
 export const DBOS_TERMINAL_STATUSES = [
   'SUCCESS',
@@ -37,7 +39,8 @@ export const DBOS_TERMINAL_STATUSES = [
   'CANCELLED',
 ] as const;
 
-const DEFAULT_RETENTION_DAYS = 2; // keep ~2d of terminal history — small enough that a daily GC holds workflow_status far under the ~300k freeze threshold (re-bloat prevention; owner durable-stability directive 2026-06-19). Tune via PAPERCUSP_DBOS_WORKFLOW_GC_DAYS.
+export const DBOS_WORKFLOW_GC_CRONTAB = '0 30 * * * *';
+const DEFAULT_RETENTION_DAYS = 2; // Tune via PAPERCUSP_DBOS_WORKFLOW_GC_DAYS.
 const DEFAULT_BATCH_LIMIT = 5000;
 /**
  * Per-invocation maintenance budget. This is a liveness policy, not a
@@ -62,9 +65,53 @@ export function dbosWorkflowGcRetentionDays(): number {
   return Number.isFinite(d) && d > 0 ? d : DEFAULT_RETENTION_DAYS;
 }
 
+export const DBOS_HISTORY_CEILING_CONDITION_KEY = 'alarm:dbos-workflow-history-ceiling';
+const DEFAULT_HISTORY_CEILING_ROWS = 300_000;
+
+/** Extend the existing GC environment knobs; this threshold is rows, not bytes. */
+export function dbosWorkflowHistoryCeiling(): number {
+  const rows = Number(process.env.PAPERCUSP_DBOS_WORKFLOW_HISTORY_CEILING);
+  return Number.isSafeInteger(rows) && rows > 0 ? rows : DEFAULT_HISTORY_CEILING_ROWS;
+}
+
+export interface DbosHistoryAlarmDeps extends AlarmAttentionDeps {
+  readCount?: () => Promise<number>;
+}
+
+/** Direct PG observation and the shared attention rail; no DBOS executor is needed. */
+export async function runDbosWorkflowHistoryAlarmOnce(opts: {
+  ceilingRows?: number;
+  deps?: DbosHistoryAlarmDeps;
+} = {}): Promise<{ count: number; ceilingRows: number; breached: boolean }> {
+  const ceilingRows = opts.ceilingRows ?? dbosWorkflowHistoryCeiling();
+  if (!Number.isSafeInteger(ceilingRows) || ceilingRows <= 0) throw new Error('Invalid DBOS history row ceiling');
+  const deps = opts.deps ?? {};
+  const count = await (deps.readCount ?? (async () => {
+    const rows = await getOrgPg().sql<Array<{ n: number | string }>>`
+      SELECT count(*)::bigint AS n FROM dbos.workflow_status`;
+    return Number(rows[0]?.n);
+  }))();
+  // A failed/unreadable measurement must never be interpreted as zero or recovery.
+  if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid DBOS history row count');
+  const breached = count > ceilingRows;
+  if (breached) {
+    await escalateAlarm({
+      title: 'DBOS workflow history exceeds its row ceiling',
+      body: `Workflow history has ${count} rows, above its ${ceilingRows}-row ceiling. Check cleanup progress and high-volume producers.`,
+      source: 'dbos-history-ceiling',
+      conditionKey: DBOS_HISTORY_CEILING_CONDITION_KEY,
+      cooldownMs: DEFAULT_ALARM_ESCALATION_COOLDOWN_MS,
+      data: { rowCount: count, ceilingRows },
+    }, deps);
+  } else {
+    await resolveAlarm(DBOS_HISTORY_CEILING_CONDITION_KEY, 'dbos-history-ceiling', deps);
+  }
+  return { count, ceilingRows, breached };
+}
+
 /** Injectable query seams (sql-backed in production; faked in tests). */
 export interface DbosGcDeps {
-  /** Terminal workflow_uuids with updated_at < cutoff, up to `limit`. */
+  /** Terminal workflow_uuids with updated_at < cutoff, oldest created_at/uuid first. */
   selectTerminalVictims: (cutoffMs: number, limit: number) => Promise<string[]>;
   /** Delete operation_outputs for these workflow_uuids; returns rows deleted. */
   deleteOutputs: (ids: string[]) => Promise<number>;
@@ -79,12 +126,13 @@ export interface DbosWorkflowGcResult {
   cutoffMs: number | null;
   batches: number;
   budgetExhausted?: boolean;
+  durationMs: number;
 }
 
 type SqlLike = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
 
 /** Build the production sql-backed query seams. */
-function sqlDeps(sql: SqlLike): DbosGcDeps {
+export function dbosWorkflowGcSqlDeps(sql: SqlLike): DbosGcDeps {
   const statuses = [...DBOS_TERMINAL_STATUSES];
   return {
     selectTerminalVictims: async (cutoffMs, limit) => {
@@ -92,6 +140,7 @@ function sqlDeps(sql: SqlLike): DbosGcDeps {
         SELECT workflow_uuid FROM dbos.workflow_status
          WHERE status = ANY(${statuses})
            AND updated_at < ${cutoffMs}
+         ORDER BY created_at ASC, workflow_uuid ASC
          LIMIT ${limit}`;
       return rows.map((r) => r.workflow_uuid);
     },
@@ -127,50 +176,59 @@ export async function runDbosWorkflowGcOnce(
     deps?: DbosGcDeps;
   } = {},
 ): Promise<DbosWorkflowGcResult> {
+  const nowClockMs = opts.nowClockMs ?? Date.now;
+  const startedAtMs = nowClockMs();
+  const finish = (result: Omit<DbosWorkflowGcResult, 'durationMs'>): DbosWorkflowGcResult => {
+    const measured = { ...result, durationMs: Math.max(0, nowClockMs() - startedAtMs) };
+    console.log(`[dbos-workflow-gc] ${JSON.stringify(measured)}`);
+    return measured;
+  };
   const enabled = opts.enabled ?? dbosWorkflowGcEnabled();
-  if (!enabled) return { skipped: true, deletedWorkflows: 0, deletedOutputs: 0, cutoffMs: null, batches: 0 };
+  if (!enabled) return finish({ skipped: true, deletedWorkflows: 0, deletedOutputs: 0, cutoffMs: null, batches: 0, budgetExhausted: false });
 
   const days = opts.retentionDays ?? dbosWorkflowGcRetentionDays();
   const batchLimit = opts.batchLimit ?? DEFAULT_BATCH_LIMIT;
   const nowMs = opts.nowMs ?? Date.now();
   const timeBudgetMs = opts.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
-  const nowClockMs = opts.nowClockMs ?? Date.now;
-  const startedAtMs = nowClockMs();
   const cutoffMs = nowMs - days * 86_400_000;
-  const deps = opts.deps ?? sqlDeps(getOrgPg().sql as SqlLike);
 
   let deletedWorkflows = 0;
   let deletedOutputs = 0;
   let batches = 0;
   let budgetExhausted = false;
-  while (true) {
-    if (nowClockMs() - startedAtMs >= timeBudgetMs) {
-      budgetExhausted = true;
-      break;
+  try {
+    const deps = opts.deps ?? dbosWorkflowGcSqlDeps(getOrgPg().sql as SqlLike);
+    while (true) {
+      if (nowClockMs() - startedAtMs >= timeBudgetMs) {
+        budgetExhausted = true;
+        break;
+      }
+      const ids = await deps.selectTerminalVictims(cutoffMs, batchLimit);
+      // Selection can consume the remaining budget. Leave those victims for
+      // the next pass rather than starting deletion after the liveness window.
+      if (nowClockMs() - startedAtMs >= timeBudgetMs) {
+        budgetExhausted = true;
+        break;
+      }
+      if (ids.length === 0) break;
+      batches += 1;
+      // operation_outputs first (FK order), then the workflow rows.
+      deletedOutputs += await deps.deleteOutputs(ids);
+      deletedWorkflows += await deps.deleteWorkflows(ids);
+      // Finish the committed batch, then yield before admitting another.
+      if (nowClockMs() - startedAtMs >= timeBudgetMs) {
+        budgetExhausted = true;
+        break;
+      }
+      if (ids.length < batchLimit) break;
     }
-    const ids = await deps.selectTerminalVictims(cutoffMs, batchLimit);
-    // A victim query itself can consume the remaining budget. Do not start a
-    // DELETE once that happens: leave the selected ids for the next routine
-    // tick rather than claiming a third batch after the liveness window.
-    if (nowClockMs() - startedAtMs >= timeBudgetMs) {
-      budgetExhausted = true;
-      break;
-    }
-    if (ids.length === 0) break;
-    batches += 1;
-    // operation_outputs first (FK order), then the workflow rows.
-    deletedOutputs += await deps.deleteOutputs(ids);
-    deletedWorkflows += await deps.deleteWorkflows(ids);
-    // Check again after the committed batch. A query/delete can consume the
-    // entire liveness budget; checking only at the top of the loop would start
-    // one extra batch after the budget has already elapsed (and make the
-    // budget a soft throughput ceiling rather than an honest per-invocation
-    // liveness bound).
-    if (nowClockMs() - startedAtMs >= timeBudgetMs) {
-      budgetExhausted = true;
-      break;
-    }
-    if (ids.length < batchLimit) break;
+  } catch (error) {
+    console.error(`[dbos-workflow-gc] ${JSON.stringify({
+      skipped: false, deletedWorkflows, deletedOutputs, cutoffMs, batches,
+      budgetExhausted, durationMs: Math.max(0, nowClockMs() - startedAtMs),
+      error: error instanceof Error ? error.message : String(error),
+    })}`);
+    throw error; // Preserve DBOS failure/retry semantics after recording partial progress.
   }
-  return { skipped: false, deletedWorkflows, deletedOutputs, cutoffMs, batches, budgetExhausted };
+  return finish({ skipped: false, deletedWorkflows, deletedOutputs, cutoffMs, batches, budgetExhausted });
 }

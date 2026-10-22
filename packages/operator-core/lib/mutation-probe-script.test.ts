@@ -1735,7 +1735,7 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(readFileSync(s, 'utf8')).toBe('keep\n');
   });
 
-  it.skipIf(!containWorks)('splits a checkout with a mount point under it and names the root-level writes it could not contain', () => {
+  it.skipIf(!containWorks)('splits a checkout with a mount point under it and discards root-level writes', () => {
     const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-mounted-repo');
     // A bind under the root, like the shared papercusp tree's .gitnexus: overlayfs will not take
     // the root whole from a user namespace, so the probe overlays each subtree instead.
@@ -1753,10 +1753,49 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     // Inside a covered subtree the mutant build is still discarded...
     expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8')).toBe('keep\n');
     expect(readdirSync(join(repo, 'out')).sort()).toEqual(['built-by-baseline', 'index.html']);
-    // ...while each write at the uncovered root level is named, per post-baseline leg.
-    expect(out).toContain(`MUTATION_PROBE_CONTAINMENT_LEAK phase=copy-baseline path=${join(repo, 'rootlevel-copy-baseline')}`);
-    expect(out).toContain(`MUTATION_PROBE_CONTAINMENT_LEAK phase=mutant path=${join(repo, 'rootlevel-mutant')}`);
+    // The baseline is real; new entries in each later leg stay private too.
+    expect(existsSync(join(repo, 'rootlevel-baseline'))).toBe(true);
+    expect(existsSync(join(repo, 'rootlevel-copy-baseline'))).toBe(false);
+    expect(existsSync(join(repo, 'rootlevel-mutant'))).toBe(false);
+    expect(out).not.toContain(`MUTATION_PROBE_CONTAINMENT_LEAK phase=copy-baseline path=${join(repo, 'rootlevel-copy-baseline')}`);
+    expect(out).not.toContain(`MUTATION_PROBE_CONTAINMENT_LEAK phase=mutant path=${join(repo, 'rootlevel-mutant')}`);
     expect(out).not.toContain('phase=baseline path=');
+  });
+
+  it.skipIf(!containWorks)('isolates root configuration writes and atomic replacement in a split checkout', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('root-config-mounted-repo');
+    const config = join(repo, '.mcp.json');
+    const replacement = join(repo, '.mcp.next');
+    writeFileSync(config, 'pre-probe\n');
+    const empty = join(dir, 'root-config-mount-source');
+    mkdirSync(empty);
+    writeFileSync(join(empty, 'dependency.txt'), 'available\n');
+    mkdirSync(join(repo, 'mnt'));
+    const q = (p: string) => JSON.stringify(p);
+    // Both ordinary writes and rename-based writers must retain their normal
+    // semantics. A file bind would reject the rename with EBUSY and manufacture
+    // a guard failure; a private directory must let it succeed in every leg.
+    const configGuard = [
+      `cp {} ${q(config)}`,
+      `cp {} ${q(replacement)}`,
+      `mv ${q(replacement)} ${q(config)}`,
+      `cmp -s {} ${q(config)}`,
+      `test "$(cat ${q(join(repo, 'mnt', 'dependency.txt'))})" = available`,
+      guard,
+    ].join(' && ');
+    const r = spawnSync('bwrap', [
+      '--dev-bind', '/', '/', '--bind', empty, join(repo, 'mnt'), '--die-with-parent', '--',
+      'bash', SCRIPT, '--file', s, '--mutate', 's/keep/KEEP/', '--test', configGuard,
+    ], { encoding: 'utf8', timeout: 60_000, cwd: repo });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).not.toContain('COPY-BASELINE FAILED');
+    expect(r.status).toBe(0);
+    // The baseline is deliberately real; subsequent legs must leave its bytes.
+    expect(readFileSync(config, 'utf8')).toBe('keep\n');
+    expect(existsSync(replacement)).toBe(false);
+    expect(readFileSync(join(empty, 'dependency.txt'), 'utf8')).toBe('available\n');
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
   });
 
   /**

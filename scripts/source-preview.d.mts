@@ -157,9 +157,9 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
  * @param {string} command
  * @param {string[]} args
  * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
- *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal }} options
+ *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal, cutoffEpochMs?: number | null, now?: () => number }} options
  */
-export function runVerifierDependencyCommand(command: string, args: string[], { cwd, env, timeoutMs, maxMs, stallWindowMs, extensionMs, signal }: {
+export function runVerifierDependencyCommand(command: string, args: string[], { cwd, env, timeoutMs, maxMs, stallWindowMs, extensionMs, signal, cutoffEpochMs, now }: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     timeoutMs?: number;
@@ -167,17 +167,27 @@ export function runVerifierDependencyCommand(command: string, args: string[], { 
     stallWindowMs?: number;
     extensionMs?: number;
     signal?: AbortSignal;
+    cutoffEpochMs?: number | null;
+    now?: () => number;
 }): Promise<string>;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal }} options
+ * An explicit allowance is shared across phases and requires a finite caller
+ * deadline. Neither progress nor a forecast grants more time. Keep the default
+ * dependency ceiling when omitted, and reserve the parent's cleanup window.
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal,
+ *   env?: NodeJS.ProcessEnv, maxMs?: number, cutoffEpochMs?: number | null, now?: () => number }} options
  */
-export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, signal }: {
+export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, signal, env, maxMs, cutoffEpochMs, now }: {
     donor: string;
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
     runPhase?: VerifierPhaseRunner;
     signal?: AbortSignal;
+    env?: NodeJS.ProcessEnv;
+    maxMs?: number;
+    cutoffEpochMs?: number | null;
+    now?: () => number;
 }): Promise<{
     schemaVersion: string;
     scope: string;
@@ -197,11 +207,12 @@ export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, si
  * product-owned tree population and the source verifier's exact file census.
  * Workspace link targets still need source verification; this receipt does
  * not claim final transformed code or a complete runtime import closure.
- * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, env?: NodeJS.ProcessEnv }} options
  */
-export function captureVerifierDependencies({ dest, receipt }: {
+export function captureVerifierDependencies({ dest, receipt, env }: {
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+    env?: NodeJS.ProcessEnv;
 }): {
     schemaVersion: string;
     scope: string;
@@ -232,11 +243,11 @@ export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
 }): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number,
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number,
  *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, clock }: {
+export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, clock }: {
     repo: string;
     ref: string;
     receiptPath: string;
@@ -247,6 +258,7 @@ export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile,
     env?: NodeJS.ProcessEnv;
     budgetFrom?: string;
     childEstimateMs?: number;
+    preparationMaxMs?: number;
     clock?: {
         now: () => number;
         setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;

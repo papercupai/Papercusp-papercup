@@ -338,6 +338,29 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     expect(b.results[0].completionAssertionWarning).toBeUndefined();
   });
 
+  it('does not attribute a closed continuation gate to a later held item reference', async () => {
+    const heldItem = 'EI-25808080765499113';
+    const messageBody =
+      'I understand EI-26230276858390783 is a new instrument change, distinct from EI-25715022243880956. ' +
+      'Concrete capacity refusal for this turn: the cold-loop continuation gate is closed at 76% context ' +
+      'after I completed one review, and I still hold EI-25808080765499113. I cannot start another independent ' +
+      'review before settling. On the next wake I will re-read this item’s pending round and current claim state.';
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-closed-continuation-gate-held-item',
+        ts: '2026-10-17T13:23:07.046Z',
+        from: 'me',
+        summary: 'Capacity refusal this turn; I’ll recheck this distinct S41 review next wake.',
+        body: messageBody,
+        sections: [{ text: messageBody }],
+      } as never,
+    ]);
+
+    const b = await body({ id: heldItem });
+    expect(outboxM).toHaveBeenCalledWith('me', {}, expect.objectContaining({ enough: expect.any(Function) }));
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
   it('still recognizes explicit item completion after a bounded activity in the same clause', async () => {
     outboxM.mockResolvedValue([
       {

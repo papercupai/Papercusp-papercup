@@ -65,14 +65,33 @@ export type NativeSessionHandle =
   | CodexNativeSessionHandle
   | OmpNativeSessionHandle;
 
-/** Native failure evidence carried by a launch, including pre-handle Codex receipts. */
-export interface NativeTranscriptLaunchReceipt {
-  tasks?: Array<{
+export interface NativeLaunchTaskReceipt {
+    taskId?: unknown;
+    logPath?: unknown;
     ownerId?: unknown;
     nativeSession?: { backend?: unknown; ownerId?: unknown; sessionId?: unknown; rolloutId?: unknown } | null;
-    kickoffProof?: { nativeRef?: unknown } | null;
-  }>;
+    kickoffProof?: { persisted?: unknown; reason?: unknown; nativeRef?: unknown } | null;
+}
+
+/** Native failure evidence carried by a launch, including pre-handle Codex receipts. */
+export interface NativeTranscriptLaunchReceipt {
+  opened?: unknown;
+  tasks?: NativeLaunchTaskReceipt[];
+  failures?: NativeLaunchTaskReceipt[];
   freshVerdict?: { sessions?: Array<{ ownerId?: unknown; sessionId?: unknown }> };
+}
+
+/** Prefer a live task; a reaped failure needs one explicit unsubmitted kickoff.
+ * An empty task list, prose, or an expired proof deadline alone is uncertainty. */
+export function launchTaskForKickoffRecovery(
+  receipt: NativeTranscriptLaunchReceipt | undefined,
+): NativeLaunchTaskReceipt | undefined {
+  const task = receipt?.tasks?.[0];
+  if (task) return task;
+  const failed = receipt?.opened === 0 && receipt.failures?.length === 1 ? receipt.failures[0] : undefined;
+  const proof = failed?.kickoffProof;
+  return proof?.persisted === false && typeof proof.reason === 'string' &&
+    proof.reason.startsWith('kickoff-not-submitted:') ? failed : undefined;
 }
 
 /** Reuse the launch's exact owner/session binding; never infer identity from a filename. */

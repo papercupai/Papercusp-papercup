@@ -5,6 +5,7 @@ export declare const PAPERCUSP_CLAUDE_MARKETPLACE_NAME: 'papercusp-local';
 export declare const PAPERCUSP_CLAUDE_PLUGIN_ID: 'papercusp@papercusp-local';
 export declare const PAPERCUSP_CLAUDE_PLUGIN_SUBDIR: string;
 export declare const PAPERCUSP_CLAUDE_PLUGIN_HOOKS_RELPATH: string;
+export declare const REQUIRED_CLAUDE_HOOKS: Record<string, string[]>;
 
 export type ClaudeHookCommand = { type: 'command'; command: string; timeout?: number };
 export type ClaudeHookGroup = { matcher?: string; hooks: ClaudeHookCommand[] };
@@ -34,6 +35,8 @@ export interface ClaudeHookCarrierVerdict {
 export declare function papercuspMarketplaceRoot(cfg: unknown): string | null;
 export declare function papercuspPluginEnabledState(cfg: unknown): PapercuspPluginEnabledState;
 export declare function commandScriptNames(command: unknown): Set<string>;
+export declare function enrollPapercuspClaudePlugin(cfg: Record<string, any>, root: string): Record<string, any>;
+export declare function stripPluginCarriedInlineHooks(cfg: Record<string, any>, pluginHooks: ClaudeHookMap): number;
 export declare function hookCommandsForEvent(hooks: unknown, event: string): string[];
 export declare function claudeHookCarrierVerdict(input?: ClaudeHookCarrierInput): ClaudeHookCarrierVerdict;
 export declare function effectiveClaudeHookCommands(input: ClaudeHookCarrierInput, event: string): string[];

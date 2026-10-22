@@ -18,9 +18,22 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { currentForkserverProcess, FORKSERVER_LOST_CODE, forkserverStats, spawnSidecarChild, type SidecarChild } from './forkserver-client';
-import { execProcess } from '../sidecar-exec-process';
+import { currentForkserverProcess, FORKSERVER_LOST_CODE, forkserverStats, spawnSidecarChild,
+  forkserverContainmentIdentity, prepareForkserverContainment, type SidecarChild } from './forkserver-client';
+import { execProcess, type ExecProcessDeps } from '../sidecar-exec-process';
 import type { GovernedExecution } from '../../resource-governor/execution';
+import { captureSidecarContainment, observeSidecarExit } from '../sidecar-exec-lifetime';
+import { execFileViaSidecar, isSidecarInfrastructureFault } from '../git-via-sidecar';
+import { readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+
+// Keep the production launcher and real kernel scopes; only the unrelated
+// durable ledger/flag stores are hermetic in this process integration suite.
+vi.mock('../../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
+vi.mock('../../task-manager/store', () => ({
+  registerTask: async (_spec: unknown, opts: { taskId: string }) => ({ taskId: opts.taskId, state: 'pending' }),
+  markSpawned: async () => {}, closeTask: async () => {},
+}));
 
 const linux = process.platform === 'linux';
 let dir = '';
@@ -69,7 +82,167 @@ function governedStub(): GovernedExecution {
   } as unknown as GovernedExecution;
 }
 
+async function measuredExecBurst(spawnChild?: ExecProcessDeps['spawnChild']) {
+  const histogram = monitorEventLoopDelay({ resolution: 1 });
+  histogram.enable();
+  try {
+    // Arm the timer before synchronous spawn work begins, and include its final
+    // delayed tick. An empty histogram must never certify a responsive parent.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(histogram.count).toBeGreaterThan(0);
+    histogram.reset();
+    const results = await Promise.all(Array.from({ length: 50 }, (_, i) => execProcess({
+      command: 'sh', args: ['-c', `exit ${i % 5}`], timeoutMs: 10_000,
+    }, { beginExecution: async () => governedStub(), ...(spawnChild ? { spawnChild } : {}) })));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(histogram.count).toBeGreaterThan(0);
+    expect(results.map((result) => result.code)).toEqual(Array.from({ length: 50 }, (_, i) => i % 5));
+    return { p99Ms: histogram.percentile(99) / 1e6, samples: histogram.count };
+  } finally {
+    histogram.disable();
+  }
+}
+
 describe.runIf(linux)('sidecar forkserver', () => {
+  it('rejects a stale preflight generation before executing any command', async () => {
+    const snapshot = (await prepareForkserverContainment())!;
+    expect(snapshot).not.toBeNull();
+    const token = forkserverContainmentIdentity(snapshot);
+    const previous = currentForkserverProcess()!;
+    previous.kill('SIGKILL');
+    expect(await waitFor(() => currentForkserverProcess() === null, 2000)).toBe(true);
+    expect((await viaForkserver('true', [])).code).toBe(0);
+    const effect = join(dir, 'stale-fence-effect');
+    await expect(spawnSidecarChild({ command: 'sh', args: ['-c', 'echo once > "$1"', 'sh', effect],
+      detached: true, env, forkserverIdentity: token })).rejects.toMatchObject({ code: 'SIDECAR_FORKSERVER_FENCE' });
+    await expect(readFile(effect, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each(['abort', 'deadline'] as const)('bounds %s during startup without dispatching or leaking a late generation', async (control) => {
+    const previous = currentForkserverProcess();
+    previous?.kill('SIGKILL');
+    if (previous) expect(await waitFor(() => currentForkserverProcess() === null, 2000)).toBe(true);
+    const launcher = await import('../../task-manager/managed-spawn');
+    const launch = launcher.managedSpawn;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const delayed = vi.spyOn(launcher, 'managedSpawn').mockImplementation(async (...args) => {
+      await gate;
+      return launch(...args);
+    });
+    const effect = join(dir, `startup-${control}`);
+    const controller = new AbortController();
+    const started = Date.now();
+    try {
+      const pending = execProcess({ command: 'sh', args: ['-c', 'printf once >> "$1"', 'sh', effect],
+        timeoutMs: control === 'deadline' ? 150 : 5000 }, {
+        signal: controller.signal, beginExecution: async () => governedStub(),
+      });
+      if (control === 'abort') setTimeout(() => controller.abort(), 100);
+      const result = await pending;
+      expect(result.error?.code).toBe(control === 'abort' ? 'ABORT_ERR' : 'ETIMEDOUT');
+      expect(isSidecarInfrastructureFault(result)).toBe(false);
+      expect(Date.now() - started).toBeLessThan(1000);
+      await expect(readFile(effect, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      release();
+      expect(await waitFor(() => currentForkserverProcess() !== null, 5000)).toBe(true);
+      const late = currentForkserverProcess()!.pid;
+      const starts = forkserverStats().starts;
+      const results = await Promise.all(Array.from({ length: 8 }, () => viaForkserver('true', [])));
+      expect(results.every((r) => r.code === 0)).toBe(true);
+      expect(currentForkserverProcess()?.pid).toBe(late);
+      expect(forkserverStats().starts).toBe(starts);
+      expect(delayed).toHaveBeenCalledTimes(1);
+      await expect(readFile(effect, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { release(); delayed.mockRestore(); }
+  });
+
+  it.each(['before-spawn', 'before-ack', 'after-ack', 'close'] as const)(
+    'contains commands and never replays through execFileViaSidecar when loss occurs at %s', async (boundary) => {
+      await viaForkserver('true', []);
+      const server = currentForkserverProcess()!;
+      const scopeUnit = readFileSync(`/proc/${server.pid}/cgroup`, 'utf8').trim().split('/').at(-1)!;
+      const containment = captureSidecarContainment(scopeUnit, server.pid)!;
+      expect(containment).not.toBeNull();
+      const effect = join(dir, `effect-${boundary}`);
+      const pids = join(dir, `pids-${boundary}`);
+      const emit = EventEmitter.prototype.emit.bind(server);
+      let stopped = false;
+      const messages = vi.spyOn(server, 'emit').mockImplementation((event: string | symbol, ...args: unknown[]) => {
+        const m = args[0] as { t?: string };
+        if (event === 'message' && m?.t === 'spawned' && boundary === 'before-ack') {
+          // The fork has happened but the caller never learns its PID. Let it
+          // create a detached descendant and a durable effect before the crash.
+          stopped = true;
+          return true;
+        }
+        if (event === 'message' && stopped) return true;
+        return emit(event, ...args);
+      });
+      const send = boundary === 'before-spawn' ? vi.spyOn(server, 'send').mockImplementationOnce(() => {
+        server.kill('SIGKILL'); return true;
+      }) : null;
+      let childPid = 0;
+      const local = vi.fn();
+      const result = execFileViaSidecar('sh', ['-c',
+        'printf once >> "$1"; setsid sleep 30 >/dev/null 2>&1 & echo "$!" > "$2"; wait', 'sh', effect, pids],
+      { timeoutMs: 10_000, subsystem: 'forkserver-crash-window-test' }, {
+        sidecarEnabled: () => true, local,
+        viaSidecar: (command, args) => execProcess({ command, args, timeoutMs: 10_000 }, {
+          beginExecution: async () => governedStub(), onPid: (pid) => { childPid = pid; },
+        }),
+      }).catch((e: unknown) => e);
+      try {
+        if (boundary !== 'before-spawn') {
+          await vi.waitFor(async () => expect(await readFile(effect, 'utf8')).toBe('once'));
+          await vi.waitFor(async () => expect(Number(await readFile(pids, 'utf8'))).toBeGreaterThan(0));
+          if (boundary === 'after-ack') expect(await waitFor(() => childPid > 0, 2000)).toBe(true);
+          if (boundary === 'close') {
+            expect(await waitFor(() => childPid > 0, 2000)).toBe(true);
+            // Exercise a terminal reply racing loss: kill the command's group
+            // and detached descendant, so a close message is genuinely produced.
+            process.kill(Number(await readFile(pids, 'utf8')), 'SIGKILL');
+            process.kill(-childPid, 'SIGKILL');
+            messages.mockRestore();
+            vi.spyOn(server, 'emit').mockImplementation((event: string | symbol, ...args: unknown[]) => {
+              const returned = emit(event, ...args);
+              if (event === 'message' && (args[0] as { t?: string })?.t === 'close') server.kill('SIGKILL');
+              return returned;
+            });
+          } else server.kill('SIGKILL');
+        }
+        const outcome = await result;
+        expect(outcome).toBeInstanceOf(Error);
+        expect(local).not.toHaveBeenCalled();
+        if (boundary !== 'close') expect((outcome as { stderr: string }).stderr).toContain('not re-run');
+        expect(await waitFor(() => observeSidecarExit(containment) === 'exited', 5000)).toBe(true);
+        if (boundary !== 'before-spawn') expect(await readFile(effect, 'utf8')).toBe('once');
+      } finally { send?.mockRestore(); vi.restoreAllMocks(); }
+      const next = await viaForkserver('true', []);
+      expect(next.code).toBe(0);
+      expect(currentForkserverProcess()?.pid).not.toBe(server.pid);
+    }, 20_000);
+
+  it.each(['abort', 'deadline'] as const)('bounds a stopped ACK with %s and verifies the scope empty before returning', async (control) => {
+    await viaForkserver('true', []);
+    const server = currentForkserverProcess()!;
+    const scope = readFileSync(`/proc/${server.pid}/cgroup`, 'utf8').trim().split('/').at(-1)!;
+    const containment = captureSidecarContainment(scope, server.pid)!;
+    server.kill('SIGSTOP');
+    const controller = new AbortController();
+    const start = Date.now();
+    const pending = execProcess({ command: 'sh', args: ['-c', 'echo should-not-run'], timeoutMs: control === 'deadline' ? 150 : 5000 }, {
+      signal: controller.signal, beginExecution: async () => governedStub(),
+    });
+    if (control === 'abort') setTimeout(() => controller.abort(), 100);
+    const result = await pending;
+    expect(result.error?.code).toBe(FORKSERVER_LOST_CODE);
+    expect(isSidecarInfrastructureFault(result)).toBe(false);
+    expect(Date.now() - start).toBeLessThan(5000);
+    expect(observeSidecarExit(containment)).toBe('exited');
+    expect((await viaForkserver('true', [])).code).toBe(0);
+  });
+
   it('a command run through the forkserver exits with the same code as a direct spawn', async () => {
     const script = 'printf out; printf err >&2; exit 3';
     const [a, b] = [await viaForkserver('sh', ['-c', script]), await direct('sh', ['-c', script])];
@@ -78,13 +251,45 @@ describe.runIf(linux)('sidecar forkserver', () => {
       .toEqual({ code: b.code, signal: b.signal, stdout: b.stdout, stderr: b.stderr, events: b.events });
   });
 
-  it('every child has the forkserver, not this process, as its parent', async () => {
-    const r = await viaForkserver(process.execPath, ['-e', 'process.stdout.write(String(process.ppid))']);
+  it('preserves output when spawn acknowledgement and close arrive in the same IPC batch', async () => {
+    await viaForkserver('true', []);
+    const server = currentForkserverProcess()!;
+    const send = vi.spyOn(server, 'send').mockImplementationOnce((message) => {
+      const { id } = message as { id: number };
+      // IPC arrives from an event-loop callback, where nextTick stream drains
+      // precede promise continuations. Deliver the complete protocol in one batch.
+      setImmediate(() => {
+        server.emit('message', { t: 'spawned', id, pid: server.pid });
+        server.emit('message', { t: 'spawn', id });
+        server.emit('message', { t: 'out', id, d: Buffer.from('committed-blob\n') });
+        server.emit('message', { t: 'err', id, d: Buffer.from('diagnostic\n') });
+        server.emit('message', { t: 'out-end', id });
+        server.emit('message', { t: 'err-end', id });
+        server.emit('message', { t: 'exit', id, code: 0, signal: null });
+        server.emit('message', { t: 'close', id, code: 0, signal: null });
+      });
+      return true;
+    });
+    try {
+      const result = await viaForkserver('git', ['ls-tree', 'HEAD']);
+      expect(result).toMatchObject({ code: 0, stdout: 'committed-blob\n', stderr: 'diagnostic\n' });
+      expect(result.events.at(-1)).toBe('close');
+    } finally {
+      send.mockRestore();
+    }
+  });
+
+  it('the production execProcess route gives children the forkserver as their parent', async () => {
+    const fallbacks = forkserverStats().fallbacks;
+    const r = await execProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write(String(process.ppid))'] },
+    { beginExecution: async () => governedStub() });
     expect(r).toMatchObject({ code: 0, stderr: '' });
     expect(r.stdout).toMatch(/^[1-9]\d*$/);
     const ppid = Number(r.stdout.trim());
     expect(ppid).toBe(currentForkserverProcess()?.pid);
     expect(ppid).not.toBe(process.pid);
+    expect(forkserverStats().fallbacks).toBe(fallbacks);
   });
 
   it('reports a missing command with the same error a direct spawn reports', async () => {
@@ -151,12 +356,53 @@ describe.runIf(linux)('sidecar forkserver', () => {
 
   it('during a burst of 50 concurrent execs this process keeps its event-loop delay p99 under 20 ms', async () => {
     await viaForkserver('true', []); // warm: the forkserver is running before measuring
-    const h = monitorEventLoopDelay({ resolution: 1 });
-    h.enable();
-    const results = await Promise.all(Array.from({ length: 50 }, (_, i) => viaForkserver('sh', ['-c', `exit ${i % 5}`])));
-    h.disable();
-    expect(results.map((r) => r.code)).toEqual(Array.from({ length: 50 }, (_, i) => i % 5));
-    const p99Ms = h.percentile(99) / 1e6;
-    expect(p99Ms).toBeLessThan(20);
+    const fallbacks = forkserverStats().fallbacks;
+    const measured = await measuredExecBurst();
+    expect(measured.p99Ms).toBeLessThan(20);
+    expect(forkserverStats().fallbacks).toBe(fallbacks);
+  });
+
+  it('the same production-route timing assertion detects parent-loop spawn blocking', async () => {
+    let priorSpawn = Promise.resolve();
+    const measured = await measuredExecBurst((request) => {
+      // Counterfactual: put the measured ~25 ms fork/exec wait back on the
+      // calling loop. Use real children and the same execProcess guards/oracle.
+      // Yield between starts so the timer observes repeated stalls; one long
+      // batch could otherwise be discarded by the 99th-percentile statistic.
+      const next = priorSpawn.then(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        const until = performance.now() + 25;
+        while (performance.now() < until) { /* injected parent fork/exec stall */ }
+        return spawn(request.command, request.args, { cwd: request.cwd, env: request.env,
+          detached: request.detached, stdio: ['ignore', 'pipe', 'pipe'] }) as unknown as SidecarChild;
+      });
+      priorSpawn = next.then(() => {});
+      return next;
+    });
+    expect(measured.p99Ms, JSON.stringify(measured)).toBeGreaterThanOrEqual(20);
+  });
+
+  it('does not fall back after startup rejection crosses the caller deadline before its timer runs', async () => {
+    const server = currentForkserverProcess()!;
+    const scope = readFileSync(`/proc/${server.pid}/cgroup`, 'utf8').trim().split('/').at(-1)!;
+    const snapshot = captureSidecarContainment(scope, server.pid)!;
+    server.kill('SIGKILL');
+    expect(await waitFor(() => observeSidecarExit(snapshot) === 'exited', 2000)).toBe(true);
+    const launcher = await import('../../task-manager/managed-spawn');
+    const delayedFailure = vi.spyOn(launcher, 'managedSpawn').mockImplementation(async () => {
+      const until = performance.now() + 30;
+      while (performance.now() < until) { /* timers cannot run during this failure callback */ }
+      throw new Error('scope startup unavailable');
+    });
+    const effect = join(dir, 'expired-startup-effect');
+    const fallbacks = forkserverStats().fallbacks;
+    try {
+      const result = await execProcess({ command: 'sh', args: ['-c', 'echo once > "$1"', 'sh', effect], timeoutMs: 1 },
+        { beginExecution: async () => governedStub() });
+      expect(result.error?.code).toBe('ETIMEDOUT');
+      expect(isSidecarInfrastructureFault(result)).toBe(false);
+      expect(forkserverStats().fallbacks).toBe(fallbacks);
+      await expect(readFile(effect, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { delayedFailure.mockRestore(); }
   });
 });

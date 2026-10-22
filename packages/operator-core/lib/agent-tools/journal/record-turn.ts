@@ -14,6 +14,7 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import type { GoalPlacementTurnEndResult } from '../../goal-placement-turn-receipts';
 import { requireWorkspaceId, resolveAgentIdentity } from '../coordination/identity';
 import {
   detectClaimLedgerMismatch,
@@ -68,14 +69,15 @@ export default defineTool({
     // workspace. Resolved once here so both rows land in the same partition.
     const journalWorkspaceId = requireWorkspaceId(identity, 'journal:record-turn');
 
-    let goalPlacementTurnEnd: { recorded: boolean; reason: string } | null = null;
+    let goalPlacementTurnEnd: GoalPlacementTurnEndResult | null = null;
     if (ownerId && ownerId === identity.ownerId) {
       const input = { ownerId, workspaceId: journalWorkspaceId, nativeSessionId: args.session_id, sourceKind };
       try {
         const receipts = await import('../../goal-placement-turn-receipts');
         goalPlacementTurnEnd = await receipts.boundedRecordGoalPlacementTurnEnd(input);
         if (!goalPlacementTurnEnd.recorded && goalPlacementTurnEnd.reason !== 'no-canonical-goal') {
-          await receipts.boundedRecordGoalPlacementTurnEndOutcome(input, goalPlacementTurnEnd);
+          const outcomeAppendTiming = await receipts.boundedRecordGoalPlacementTurnEndOutcome(input, goalPlacementTurnEnd);
+          goalPlacementTurnEnd = { ...goalPlacementTurnEnd, outcomeAppendTiming };
         }
       } catch {
         goalPlacementTurnEnd ??= { recorded: false, reason: 'turn-end-read-unavailable' };

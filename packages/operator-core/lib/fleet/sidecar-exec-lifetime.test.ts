@@ -24,6 +24,35 @@ function fixture() {
 }
 
 describe('sidecar kernel lifetime proof', () => {
+  it('retains a dead sidecar lease until its separately scoped forkserver is also verified empty', async () => {
+    const f = fixture();
+    const otherPath = path.replace('pc-abcd1234.scope', 'pc-fork1234.scope');
+    Object.assign(f.files, {
+      '/proc/456/stat': procStat('99').replace(/^123 /, '456 '),
+      '/proc/456/cgroup': `0::${otherPath}\n`,
+      [`${root}${otherPath}/cgroup.events`]: 'populated 1\n',
+    });
+    f.ids[`${root}${otherPath}`] = '9:3';
+    const companion = captureSidecarContainment('pc-fork1234.scope', 456, f.fs)!;
+    expect(companion).not.toBeNull();
+    const snapshot = { ...f.snapshot, forkserver: companion };
+    delete f.files['/proc/123/stat'];
+    f.files[`${root}${path}/cgroup.events`] = 'populated 0\n';
+    expect(observeSidecarExit(f.snapshot, f.fs)).toBe('exited');
+    expect(observeSidecarExit(snapshot, f.fs)).toBe('populated');
+    const kill = vi.fn(async (unit: string) => {
+      if (unit === companion.scopeUnit) {
+        delete f.files['/proc/456/stat'];
+        f.files[`${root}${otherPath}/cgroup.events`] = 'populated 0\n';
+      }
+    });
+    expect(await reapDeadSidecar(snapshot, { fs: f.fs, kill })).toBe(true);
+    expect(kill).toHaveBeenCalledWith(companion.scopeUnit);
+    expect(observeSidecarExit(snapshot, f.fs)).toBe('exited');
+    f.errors.set('/proc/456/stat', 'EIO');
+    expect(observeSidecarExit(snapshot, f.fs)).toBe('unknown');
+  });
+
   it('refuses unconfined/inherited scope and unreadable preflight', () => {
     const f = fixture();
     expect(captureSidecarContainment(undefined, 123, f.fs)).toBeNull();

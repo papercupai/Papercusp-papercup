@@ -1416,23 +1416,26 @@ export default defineTool({
       !args.checkDuplicatesOnly &&
       effectiveLane !== 'observation' &&
       (effectiveKind === 'change' || effectiveKind === 'feature');
-    // A caller-supplied conditionKey is the stable correlation identity. A
-    // partial tool-failure report with a concrete field path also has a stable
-    // D-010 row identity; use it when errorCode is absent so a generic wrapper
-    // prefix cannot fold distinct causes together. The probation payload keeps
-    // the original watchdog message key for exact invocation correlation.
+    // A caller-supplied conditionKey is the stable correlation identity. For
+    // non-volume-gated failures, D-010's signature keeps the filed row keyed by
+    // failure family, code, and field while the probation payload retains its
+    // original watchdog key for invocation correlation. Volume-gated transient
+    // and rate-limit failures keep their broad watchdog key so distinct message
+    // wording does not split one shared-infrastructure signal into many rows.
     const hasConcreteFieldPath = typeof reportedToolFailure?.fieldPath === 'string' &&
       reportedToolFailure.fieldPath.trim() !== '' &&
       reportedToolFailure.fieldPath.trim().toLowerCase() !== 'field-unknown';
     const hasExplicitErrorCode = typeof reportedToolFailure?.errorCode === 'string' &&
       reportedToolFailure.errorCode.trim() !== '';
     const toolFailureRowKey = normalizedToolFailure && reportedToolFailure
-      ? !hasExplicitErrorCode && hasConcreteFieldPath
-        ? toolFailureSignatureKey(
-            { ...reportedToolFailure, errorCode: reportedToolFailure.status },
-            normalizedToolFailure.class,
-          )
-        : normalizedToolFailure.watchdogKey
+      ? hasExplicitErrorCode && !isVolumeGatedToolErrorClass(normalizedToolFailure.class)
+        ? toolFailureSignatureKey(reportedToolFailure, normalizedToolFailure.class)
+        : !hasExplicitErrorCode && hasConcreteFieldPath
+          ? toolFailureSignatureKey(
+              { ...reportedToolFailure, errorCode: reportedToolFailure.status },
+              normalizedToolFailure.class,
+            )
+          : normalizedToolFailure.watchdogKey
       : undefined;
     const captureWatchdogKey =
       args.conditionKey ??

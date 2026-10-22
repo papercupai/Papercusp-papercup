@@ -38,6 +38,8 @@ export interface SetupWizardState {
   finished_at?: string;
   update_channel?: UpdateChannel;
   telemetry_enabled?: boolean;
+  /** Latest opt-in epoch: queued diagnostics from an earlier grant are excluded. */
+  telemetry_consent_since?: number;
   install_id?: string;
   /** macOS-only client-side probe result. The server can't read TCC
    *  from Node, so StepOsPermissions PATCHes this when its
@@ -120,6 +122,9 @@ export async function mergeSetupWizardState(
   }
   if (typeof body.telemetry_enabled === 'boolean') {
     next.telemetry_enabled = body.telemetry_enabled;
+    if (body.telemetry_enabled && (!current.telemetry_enabled || !current.telemetry_consent_since)) {
+      next.telemetry_consent_since = Date.now();
+    }
   }
   if (typeof body.os_permissions_ok === 'boolean') {
     next.os_permissions_ok = body.os_permissions_ok;

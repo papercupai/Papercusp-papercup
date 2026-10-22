@@ -21,6 +21,7 @@ export const TABLE_RETENTION_TARGETS: readonly TableRetentionTarget[] = [
   { category: 'harness-run-output', retentionDays: 30, rationale: 'local run output telemetry' },
   { category: 'agent-activity', retentionDays: 30, rationale: 'fleet activity telemetry' },
   { category: 'memory-recall-query-text', retentionDays: 3, rationale: 'agent-authored retrieval text' },
+  { category: 'code-intel-research-trails', retentionDays: 7, rationale: 'optional recent caller-session code subjects' },
 ];
 
 export function tableRetentionTargets(): Array<{ category: string; retention_days: number }> {

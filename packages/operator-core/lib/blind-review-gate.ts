@@ -24,6 +24,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { parsePlan } from '@papercusp/plan-parser';
+import { createHash } from 'node:crypto';
 import { activeWorkspaceId } from './workspace-registry';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { fetchSourceTurns } from './activation-item-provenance';
@@ -323,7 +324,8 @@ export type BlindReviewWriteRefusal =
   | 'activation_audit_mismatch'
   | 'review_not_found'
   | 'gap_not_found'
-  | 'disposition_target_missing';
+  | 'disposition_target_missing'
+  | 'idempotency_conflict';
 
 export type BlindReviewWriteResult =
   | { ok: true; id: number; activationAuditSeq: number; gapIds: string[] }
@@ -356,13 +358,62 @@ export async function recordBlindReview(
     };
   }
   const gaps = input.gaps.map((g, i) => ({ id: `G-${i + 1}`, text: g.text }));
+  const idempotencyKey = `blind-review:v1:${createHash('sha256')
+    .update(`${input.workspaceId}\u0000${input.planSlug}\u0000${anchor}\u0000${input.createdBy}`)
+    .digest('hex')}`;
+  const samePost = (row: { activation_audit_seq: number | string; gaps: unknown }) =>
+    Number(row.activation_audit_seq) === anchor && JSON.stringify(row.gaps) === JSON.stringify(gaps);
+  const [existing] = await sql<Array<{ id: number | string; activation_audit_seq: number | string; gaps: unknown }>>`
+    SELECT id, activation_audit_seq, gaps
+      FROM harness_shared.plan_blind_reviews
+     WHERE workspace_id = ${input.workspaceId}
+       AND record_kind = 'review'
+       AND idempotency_key = ${idempotencyKey}
+     LIMIT 1`;
+  if (existing) {
+    if (!samePost(existing)) {
+      return {
+        ok: false,
+        code: 'idempotency_conflict',
+        message: 'this reviewer session already posted different gaps for the current activation audit',
+      };
+    }
+    return {
+      ok: true,
+      id: Number(existing.id),
+      activationAuditSeq: anchor,
+      gapIds: gaps.map((g) => g.id),
+    };
+  }
   const [row] = await sql<Array<{ id: number | string }>>`
     INSERT INTO harness_shared.plan_blind_reviews
-      (workspace_id, harness_slug, plan_slug, record_kind, activation_audit_seq, gaps, summary, created_by)
+      (workspace_id, harness_slug, plan_slug, record_kind, activation_audit_seq, gaps, summary, created_by, idempotency_key)
     VALUES (${input.workspaceId}, ${facts.plan.harness_slug}, ${input.planSlug}, 'review', ${anchor},
-            ${sql.json(gaps as never)}, ${input.summary ?? null}, ${input.createdBy})
+            ${sql.json(gaps as never)}, ${input.summary ?? null}, ${input.createdBy}, ${idempotencyKey})
+    ON CONFLICT (workspace_id, idempotency_key)
+      WHERE record_kind = 'review' AND idempotency_key IS NOT NULL
+      DO NOTHING
     RETURNING id`;
-  return { ok: true, id: Number(row.id), activationAuditSeq: anchor, gapIds: gaps.map((g) => g.id) };
+  if (row) return { ok: true, id: Number(row.id), activationAuditSeq: anchor, gapIds: gaps.map((g) => g.id) };
+
+  // The unique index serializes simultaneous retries. A conflict means another
+  // request won the insert between our first read and write; return that same
+  // receipt only if it carries the identical activation anchor and gaps.
+  const [raced] = await sql<Array<{ id: number | string; activation_audit_seq: number | string; gaps: unknown }>>`
+    SELECT id, activation_audit_seq, gaps
+      FROM harness_shared.plan_blind_reviews
+     WHERE workspace_id = ${input.workspaceId}
+       AND record_kind = 'review'
+       AND idempotency_key = ${idempotencyKey}
+     LIMIT 1`;
+  if (raced && samePost(raced)) {
+    return { ok: true, id: Number(raced.id), activationAuditSeq: anchor, gapIds: gaps.map((g) => g.id) };
+  }
+  return {
+    ok: false,
+    code: 'idempotency_conflict',
+    message: 'the review post conflicted with an existing idempotency receipt; retry only after checking the stored review',
+  };
 }
 
 export async function recordBlindGapDispositions(

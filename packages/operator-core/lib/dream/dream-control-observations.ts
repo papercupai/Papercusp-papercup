@@ -20,6 +20,7 @@ import { GYM_ADMISSION_DECISION_PREFIX, GYM_ADMISSION_GATES } from '../gym/autol
 import { readJournal, type JournalReadResult } from '../journal-read';
 import { dreamLoopId, sumDreamSpendSince, DREAM_ROLLING_WINDOW_MS } from './dream-governor';
 import { resolveScoutBudget } from '../scout/budget';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 
 const nonempty = z.string().trim().min(1).max(500);
 export const controlObservationRuntimeSchema = z.object({
@@ -49,8 +50,8 @@ export type ControlObservation<T> =
 const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const unknown = (reason: string, sourceRefs: string[]): ControlObservation<never> =>
   ({ status: 'unknown', value: null, reason, sourceRefs });
-async function observe<T>(sourceRefs: string[], read: () => Promise<T>): Promise<ControlObservation<T>> {
-  try { return { status: 'observed', value: await read(), sourceRefs }; }
+async function observe<T>(stage: Parameters<typeof traceNamedQueryStage>[0], sourceRefs: string[], read: () => Promise<T>): Promise<ControlObservation<T>> {
+  try { return { status: 'observed', value: await traceNamedQueryStage(stage, read), sourceRefs }; }
   catch (err) { return unknown(err instanceof Error ? err.message : 'read-failed', sourceRefs); }
 }
 function requireValue(condition: unknown, reason: string): asserts condition {
@@ -374,7 +375,7 @@ export async function readDreamControlObservations(
   }
 
   const [flags, dream, gym, governors, activity, rollingSpend] = await Promise.all([
-    observe(['flags:DREAM_CYCLE', 'flags:LEARNING_GOVERNOR'], async () => {
+    observe('dream-observation-flags', ['flags:DREAM_CYCLE', 'flags:LEARNING_GOVERNOR'], async () => {
       const value = await deps.flags();
       for (const [name, key] of [['dream', FLAGS.DREAM_CYCLE], ['learningGovernor', FLAGS.LEARNING_GOVERNOR]] as const) {
         const flag = value[name];
@@ -386,7 +387,7 @@ export async function readDreamControlObservations(
       }
       return { dream: value.dream.resolvedValue, learningGovernor: value.learningGovernor.resolvedValue, attestations: value };
     }),
-    observe(['harness_shared.routines', 'dream-config:resolveDreamCycleConfig'], async () => {
+    observe('dream-observation-routines', ['harness_shared.routines', 'dream-config:resolveDreamCycleConfig'], async () => {
       const routines = await readDreamRoutineControls(sql, scope);
       const resolved: Partial<Record<'manual' | 'auto', DreamCycleConfig>> = {};
       for (const mode of ['manual', 'auto'] as const) {
@@ -400,7 +401,7 @@ export async function readDreamControlObservations(
       }
       return { routines, resolved };
     }),
-    observe(['harness_shared.gym_autoloop_config', 'harness_shared.operator_gym_gates', 'gym/autoloop-tick:isEligibleAutoloop'], async () => {
+    observe('dream-observation-gym', ['harness_shared.gym_autoloop_config', 'harness_shared.operator_gym_gates', 'gym/autoloop-tick:isEligibleAutoloop'], async () => {
       const autoloop = await getAutoloop(sql, { workspaceId: scope.workspaceId, harnessSlug: scope.potSlug });
       requireValue(autoloop && autoloop.workspaceId === scope.workspaceId && autoloop.harnessSlug === scope.potSlug, 'missing-or-wrong-scope-gym-control');
       requireValue(typeof autoloop.enabled === 'boolean' && ['idle', 'running', 'paused', 'exhausted'].includes(autoloop.status) &&
@@ -418,7 +419,7 @@ export async function readDreamControlObservations(
         cycleHardCapUsd: remainingBudgetUsd(autoloop),
         nullBudgetRefusesUnattended: !isEligibleAutoloop({ ...autoloop, enabled: true, status: 'idle', budgetUsd: null }, budgetFloorUsd) };
     }),
-    observe(['harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.pot_settings'], async () => {
+    observe('dream-observation-governors', ['harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.pot_settings'], async () => {
       const loopIds = [dreamLoopId(scope.potSlug), gymLoopId(scope.potSlug), scoutLoopId(scope.potSlug)];
       const loops = await Promise.all(loopIds.map(loopId => getLearningLoop(sql, { workspaceId: scope.workspaceId, loopId })));
       for (const [index, row] of loops.entries()) {
@@ -454,7 +455,7 @@ export async function readDreamControlObservations(
         admission: 'not-evaluated' as const, // includes open reservations and live gates; do not reconstruct from mirrors
       };
     }),
-    observe(['harness_shared.dream_runs', 'harness_shared.scout_ticks'], async () => {
+    observe('dream-observation-activity', ['harness_shared.dream_runs', 'harness_shared.scout_ticks'], async () => {
       const dreamRuns = await sql<Row[]>`SELECT workspace_id, pot_slug, run_id, cycle_id, mode, status,
           dreamer_model, reviewer_model, dream_usage, review_usage, input_tokens, output_tokens,
           cost_usd, routed_ref, started_at, completed_at, updated_at,
@@ -482,7 +483,7 @@ export async function readDreamControlObservations(
         preLedgerPolicySkips: 'not-recorded-in-attempt-ledger' as const,
       };
     }),
-    observe(['dream-governor:sumDreamSpendSince', 'harness_shared.learning_spend_events', 'harness_shared.dream_runs'], async () => {
+    observe('dream-observation-spend', ['dream-governor:sumDreamSpendSince', 'harness_shared.learning_spend_events', 'harness_shared.dream_runs'], async () => {
       const sinceMs = startedAt - DREAM_ROLLING_WINDOW_MS;
       const value = await sumDreamSpendSince(sql, { workspaceId: scope.workspaceId, sinceMs });
       requireValue(nonnegative(value.totalUsd) && Number.isInteger(value.loopCount) && value.loopCount >= 0, 'invalid-rolling-spend');
@@ -491,7 +492,7 @@ export async function readDreamControlObservations(
     }),
   ]);
   const actionDecisions = scope.actionJournalUnit && scope.expectedActionRuntime
-    ? await observe(['journal:readJournal'], async () => {
+    ? await observe('dream-action-journal', ['journal:readJournal'], async () => {
       // Journal windows are resolved by @epoch, never local-time ISO strings.
       const journal = await deps.journal({ units: [scope.actionJournalUnit!],
         since: `@${Date.parse(scope.since) / 1000}`, until: `@${Date.parse(scope.until) / 1000}`,
@@ -499,7 +500,7 @@ export async function readDreamControlObservations(
       return { journal, assessment: assessDreamActionDecisions(journal, scope) };
     }) : unknown('action-runtime-and-unit-required', ['journal:readJournal']);
   const gymDecisions = scope.gymJournalUnit && scope.expectedGymRuntime
-    ? await observe(['journal:readJournal'], async () => {
+    ? await observe('dream-gym-journal', ['journal:readJournal'], async () => {
       const journal = await deps.journal({ units: [scope.gymJournalUnit!],
         since: `@${Date.parse(scope.since) / 1000}`, until: `@${Date.parse(scope.until) / 1000}`,
         grep: GYM_ADMISSION_DECISION_PREFIX, limit: 1000 });

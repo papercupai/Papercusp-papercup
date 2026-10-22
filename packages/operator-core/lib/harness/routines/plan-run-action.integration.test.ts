@@ -651,6 +651,10 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
 
   it('mints a run: instance plan + plan_runs row + run-scoped work_items', async () => {
     await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET verification_profile = 'general', verification_profile_source = 'declared'
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
     const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
     expect(res).not.toBeNull();
     expect(res!.replayed).toBe(false);
@@ -673,6 +677,14 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(inst[0].template_slug).toBe(TEMPLATE);
     expect(inst[0].run_seq).toBe(0);
     expect(inst[0].content).toContain('Monitor X');
+    const [instanceProfile] = await sql<Array<{
+      verification_profile: string | null;
+      verification_profile_source: string | null;
+    }>>`
+      SELECT verification_profile, verification_profile_source
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${res!.instanceSlug}`;
+    expect(instanceProfile).toEqual({ verification_profile: 'general', verification_profile_source: 'declared' });
 
     // plan_runs ledger row, keyed on the TEMPLATE slug.
     const run = await sql<

@@ -1146,6 +1146,11 @@ export function codexAdvSessionMetadata(
 
 const HOME = homedir();
 
+/** psu homes created before workspace-scoped state remain live across upgrades. */
+function managedTranscriptRoots(directory: string): string[] {
+  return [...new Set([papercuspPath(directory), join(HOME, '.papercusp', directory)])];
+}
+
 export const FILE_ADAPTERS: FileAdapter[] = [
   {
     sourceKind: 'claude',
@@ -1154,7 +1159,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
       // ~/.claude/projects/<munged-cwd>/<uuid>.jsonl
       { root: join(HOME, '.claude', 'projects'), dirDepth: 1 },
       // ~/.papercusp/session-claude/<ownerId>/projects/<munged-cwd>/<uuid>.jsonl
-      { root: papercuspPath('session-claude'), dirDepth: 3 },
+      ...managedTranscriptRoots('session-claude').map((root) => ({ root, dirDepth: 3 })),
     ],
     parseLine: parseClaudeLine,
     classifyLine: classifyClaudeLine,
@@ -1177,7 +1182,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
       // carried its psu root for a while; this pair must not drift again — guarded by
       // session-ingest-psu-roots.test.ts.
       // ~/.papercusp/su-omp-homes/session-<advSessionId>/agent/sessions/<munged-cwd>/<ts>_<uuid>.jsonl
-      { root: papercuspPath('su-omp-homes'), dirDepth: 4 },
+      ...managedTranscriptRoots('su-omp-homes').map((root) => ({ root, dirDepth: 4 })),
     ],
     parseLine: parseOmpLine,
     classifyLine: classifyOmpLine,
@@ -1193,11 +1198,11 @@ export const FILE_ADAPTERS: FileAdapter[] = [
       // previously had ZERO session_turns rows — only the shared ~/.codex was
       // walked. descend pins level 2 to 'sessions' so the walk never
       // enumerates the ~20 unrelated subdirs of every home.
-      {
-        root: papercuspPath('su-codex-homes'),
+      ...managedTranscriptRoots('su-codex-homes').map((root) => ({
+        root,
         dirDepth: 5,
-        descend: (name, level) => (level === 2 ? name === 'sessions' : true),
-      },
+        descend: (name: string, level: number) => (level === 2 ? name === 'sessions' : true),
+      })),
     ],
     parseLine: parseCodexLine,
     classifyLine: classifyCodexLine,

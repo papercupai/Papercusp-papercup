@@ -1062,6 +1062,52 @@ describe('consultCloseCore', () => {
     ).toMatchObject({ error: 'consult_not_open', state: 'closed_cant_help' });
   });
 
+  it.each(['no_qualified_responder', 'no_launchable_responder'])('requester can retire an undelivered %s consult without dispatching another reviewer', async (state) => {
+    const id = await seedConsult({ state, responderId: null, routing: menuSnapshot([RESPONDER, 'resp-next']) });
+    const { deps, posts, emits, dispatchCalls, settlements } = makeDeps({ withSettlement: true });
+    const reason = 'The saved reviewer menu is exhausted without a critique.';
+    expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'cant_help' }, deps))
+      .toEqual({ error: 'reason_required' });
+    const result = await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'cant_help', reason }, deps);
+    expect(result).toMatchObject({ ok: true, state: 'closed_cant_help' });
+    const row = await stateRow(id);
+    expect(row).toMatchObject({ state: 'closed_cant_help', outcome: { reason }, responder_id: null });
+    expect(row.closed_at).not.toBeNull();
+    const [conversation] = await rootSql`
+      SELECT state, accepted_answer FROM harness_shared.coord_conversations
+       WHERE workspace_id = ${WS} AND id = ${id}`;
+    expect(conversation).toMatchObject({ state: 'closed', accepted_answer: null });
+    expect(posts).toHaveLength(1);
+    expect(settlements).toHaveLength(1);
+    expect(dispatchCalls).toEqual([]);
+    expect(emits).toEqual([]);
+    expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'cant_help', reason }, deps))
+      .toMatchObject({ error: 'consult_not_open', state: 'closed_cant_help' });
+    expect(posts).toHaveLength(1);
+  });
+
+  it.each(['no_qualified_responder', 'no_launchable_responder'])('undelivered %s disposition stays requester-only and cannot manufacture an answer', async (state) => {
+    const id = await seedConsult({ state, responderId: null, routing: menuSnapshot([RESPONDER]) });
+    const { deps, posts, dispatchCalls } = makeDeps({ withMint: true });
+    for (const authorId of [RESPONDER, 'unassigned']) {
+      expect(await consultCloseCore({ workspaceId: WS, authorId, conversationId: id, outcome: 'cant_help', reason: 'foreign' }, deps))
+        .toMatchObject({ error: 'consult_not_open', state });
+    }
+    for (const outcome of ['answered', 'graduate'] as const) {
+      expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome, answer: 'unreviewed', reason: 'unreviewed' }, deps))
+        .toMatchObject({ error: 'consult_not_open', state });
+    }
+    const assigned = await seedConsult({ state, responderId: RESPONDER });
+    expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: assigned, outcome: 'cant_help', reason: 'still assigned' }, deps))
+      .toMatchObject({ error: 'consult_not_open', state });
+    await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()}::timestamptz
+      WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'cant_help', reason: 'already closed' }, deps))
+      .toMatchObject({ error: 'consult_not_open', state });
+    expect(posts).toEqual([]);
+    expect(dispatchCalls).toEqual([]);
+  });
+
   it('rolls back consult_state and close metadata when coarse settlement fails', async () => {
     const id = await seedConsult({ state: 'active' });
     const { deps } = makeDeps({ withSettlement: true, settlementError: 'coarse projection unavailable' });

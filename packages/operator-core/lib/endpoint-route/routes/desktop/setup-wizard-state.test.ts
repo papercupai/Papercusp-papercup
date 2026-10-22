@@ -27,6 +27,20 @@ describe('atomic onboarding merge', () => {
     await mergeSetupWizardState({ update_channel: 'stable', telemetry_enabled: false });
     expect(store.state).toMatchObject({ update_channel: 'stable', telemetry_enabled: false, install_id: 'install-a', dao_launches: { org: { revision: 4 } } });
   });
+  it('advances the telemetry consent epoch only on a new grant', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(100);
+    try {
+      await mergeSetupWizardState({ telemetry_enabled: true });
+      expect(store.state.telemetry_consent_since).toBe(100);
+      now.mockReturnValue(200);
+      await mergeSetupWizardState({ telemetry_enabled: true });
+      expect(store.state.telemetry_consent_since).toBe(100);
+      await mergeSetupWizardState({ telemetry_enabled: false });
+      now.mockReturnValue(300);
+      await mergeSetupWizardState({ telemetry_enabled: true });
+      expect(store.state.telemetry_consent_since).toBe(300);
+    } finally { now.mockRestore(); }
+  });
   it('keeps unrelated wizard progress writable when policy is invalid', async () => {
     vi.mocked(readManagedUpdateChannel).mockImplementation(() => { throw new ManagedUpdatePolicyError('managed_policy_invalid', 'Invalid administrator policy'); });
     await mergeSetupWizardState({ telemetry_enabled: false });

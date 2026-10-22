@@ -570,6 +570,8 @@ export interface WorkspaceHostProviderContext {
   durableTenantIdentity?: string;
   /** Immutable DB/workspace split from the server admission receipt, never the mutable desired spec. */
   durableStorageAllocation?: { dbGiB: number; workspaceGiB: number };
+  /** Validated controller admission: absolute canary expiry, never renewed by replay. */
+  canaryTeardownDeadlineAt?: string;
   log?: (
     level: WorkspaceHostLogLevel,
     message: string,

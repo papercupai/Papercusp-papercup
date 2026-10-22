@@ -320,9 +320,10 @@ describe('failed native turn → durable routine retry → native wake', () => {
       }
       expect(delivered).toBe(true);
       expect(f.output().match(/SUBMIT:/g)).toHaveLength(2);
-      expect(f.readHost()).toMatchObject({ pid: original.pid, ptyPid: original.ptyPid,
-        nativeSessionId: original.nativeSessionId,
+      const recoveredHost = f.readHost();
+      expect(recoveredHost).toMatchObject({ pid: original.pid, ptyPid: original.ptyPid,
         execution: { childGeneration: original.execution!.childGeneration } });
+      expect(recoveredHost.nativeSessionId).toBe(original.nativeSessionId);
     } finally { await f.close(); }
   }, 85_000);
 });

@@ -1392,6 +1392,9 @@ export type SpawnConsoleResult =
       code: number;
       /** Durable log for a headless spawn that created its log before failing. */
       logPath?: string;
+      /** Retired enrolled task and authoritative refusal, retained for recovery. */
+      taskId?: string;
+      kickoffProof?: KickoffProofResult;
     };
 
 /** Detached-child lifecycle evidence exposed after a spawn result is returned. */
@@ -2958,6 +2961,8 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
             kickoffQuotaLeverNote(kickoffProof.reason),
           code: 502,
           logPath,
+          taskId: enrolment.taskId,
+          kickoffProof,
         };
       }
     }

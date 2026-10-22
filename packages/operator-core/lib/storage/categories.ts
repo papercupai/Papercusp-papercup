@@ -144,6 +144,17 @@ export const STORAGE_CATEGORIES: readonly StorageCategory[] = [
       'Retrieval query TEXT joined to memory_recall_stats (migration 771). The only recall telemetry holding agent-authored text, so it is age-bounded deliberately — the stats row it hangs off is kept indefinitely and is unaffected by this prune.',
   },
   {
+    id: 'code-intel-research-trails',
+    label: 'Recent code research',
+    kind: 'pg',
+    schema: 'harness_shared',
+    table: 'code_intel_research_trails',
+    ageColumn: 'captured_at',
+    ageColumnType: 'timestamptz',
+    federation: 'local-diagnostic',
+    description: 'Optional caller-session code subjects. Seven-day retention; no source contents.',
+  },
+  {
     id: 'harness-run-output',
     label: 'Harness run output (logs)',
     kind: 'pg',

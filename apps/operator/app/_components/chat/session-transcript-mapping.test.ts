@@ -173,6 +173,31 @@ describe('sessionTimelineToChatMessages', () => {
     ]);
   });
 
+  it('strips raw OpenAI citation tokens from owner-facing assistant text', () => {
+    const entries: TimelineEntry[] = [
+      { kind: 'prompt', text: 'explain Kubernetes', ts: 't1' },
+      {
+        kind: 'text',
+        text:
+          'Kubernetes runs containerized applications. \uE200cite\uE202turn613222view0\uE201\n\n' +
+          'It reconciles the desired state. \uE200cite\uE202turn613222view1\uE201',
+        ts: 't2',
+      },
+    ];
+
+    const out = sessionTimelineToChatMessages(entries);
+    expect(out).toEqual([
+      { role: 'user', content: 'explain Kubernetes', id: 'prompt-0', ts: 't1' },
+      {
+        role: 'assistant',
+        content: 'Kubernetes runs containerized applications.\n\nIt reconciles the desired state.',
+        id: 'turn-0',
+        ts: 't2',
+      },
+    ]);
+    expect(JSON.stringify(out)).not.toMatch(/[\uE200-\uE202]/);
+  });
+
   it('the TOOL-NOISE FILTER: an ~90%-tool-calls turn collapses tool_use into chips and drops tool_result/status entirely', () => {
     const entries: TimelineEntry[] = [
       { kind: 'prompt', text: 'fix the bug', ts: 't0' },

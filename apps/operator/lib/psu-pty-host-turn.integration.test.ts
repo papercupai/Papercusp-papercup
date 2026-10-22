@@ -174,6 +174,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
     const projects = join(root, 'projects', 'fixture');
     mkdirSync(projects, { recursive: true });
     const transcript = join(projects, 'native.jsonl');
+    const releaseBusy = join(root, 'release-busy');
     const ownerId = uniqueOwner(`SUBMIT-${scenario}`);
     const sock = socketPathFor(ownerId);
     const log = eventLogPathForOwner(ownerId);
@@ -186,7 +187,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
     const childCode = [
       "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
       "let line='',crs=0;process.stdout.write('READY\\n');",
-      rearmed ? "const busy=setInterval(()=>process.stdout.write('BUSY\\n'),15);setTimeout(()=>clearInterval(busy),400);" : '',
+      rearmed ? "const busy=setInterval(()=>{if(fs.existsSync(process.env.TEST_BUSY_RELEASE))clearInterval(busy);else process.stdout.write('BUSY\\n');},15);" : '',
       "process.stdin.on('data',data=>{for(const c of data){",
       "if(c==='\\x04'){process.exit(0);return;}",
       "if(c!=='\\r'){line+=c;continue;}crs++;process.stdout.write('REPAINT:'+crs+'\\n');",
@@ -206,6 +207,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       bridgeTty: false, onExit: () => {},
       env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         CLAUDE_CONFIG_DIR: root, TEST_TRANSCRIPT: transcript, TEST_ACCEPT: scenario,
+        TEST_BUSY_RELEASE: releaseBusy,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
         PAPERCUSP_PSU_PTY_BUSY_CAP_MS: rearmed ? '100' : '3000',
         PAPERCUSP_PSU_PTY_REARM_CAP_MS: '2000',
@@ -221,14 +223,25 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       : [];
     try {
       expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      if (rearmed) {
+        expect(await waitForOutput(captured, 'BUSY', CHILD_START_OUTPUT_TIMEOUT_MS),
+          hostTestDiagnostics(ownerId, captured)).toBe(true);
+        // Exercise an injection after the old 400ms startup-relative cutoff.
+        // Busy output must last until the host proves it actually rearmed.
+        await sleep(450);
+      }
       const envelope = { mode: 'turn' as const, ownerId, data, deliveryId };
       // Acceptance remains immediate even though the real submit pipeline is
       // pending. The child's first Enter only repaints its unchanged composer.
       expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
-      expect(await waitForOutput(captured, 'REPAINT:1')).toBe(true);
       if (rearmed) {
-        expect(events()).toContainEqual(expect.objectContaining({ kind: 'wake-rearm-queued' }));
+        await vi.waitFor(() => {
+          expect(events(), hostTestDiagnostics(ownerId, captured))
+            .toContainEqual(expect.objectContaining({ kind: 'wake-rearm-queued' }));
+        }, { timeout: 4000 });
+        writeFileSync(releaseBusy, 'release\n');
       }
+      expect(await waitForOutput(captured, 'REPAINT:1'), hostTestDiagnostics(ownerId, captured)).toBe(true);
       expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
       const deadline = Date.now() + 4000;
       while (Date.now() < deadline && !events().some((row) =>

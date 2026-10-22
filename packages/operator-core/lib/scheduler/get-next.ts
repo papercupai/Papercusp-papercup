@@ -1030,6 +1030,8 @@ export interface IssueClaimFloorSpec {
 export const ISSUE_CLAIM_FLOORS = [
   { ok: 'ok_untaken', bucket: 'taken', field: 'taken', selfGuarded: true },
   { ok: 'ok_claim_hold', bucket: 'claim_hold', field: 'claimHold' },
+  // Queued/held admission recovery reserves the original item for its requested target.
+  { ok: 'ok_admission_recovery', bucket: 'admission_recovery', field: 'admissionRecovery' },
   // Strict owner capability: credential, physical device, or external-service action.
   { ok: 'ok_needs_owner_action', bucket: 'needs_owner_action', field: 'needsOwnerAction' },
   { ok: 'ok_agent_review', bucket: 'agent_review', field: 'agentReview' },
@@ -2287,6 +2289,7 @@ export interface IssueClaimabilityReading {
 export type IssueClaimabilityReadStage =
   | 'transaction-isolation'
   | 'statement-timeout'
+  | 'transaction-info'
   | 'candidate-materialization'
   | 'lane-scope-population'
   | 'claim-exclusion-breakdown'
@@ -2353,6 +2356,8 @@ export async function readIssueClaimability(
     statementTimeoutMs?: number;
     /** Optional best-effort per-stage timings for diagnosing slow claimability reads. */
     onStageTiming?: (stage: IssueClaimabilityReadStage, elapsedMs: number) => void;
+    /** Capture the effective timeout and backend for correlating a slow materialization. */
+    onTransactionInfo?: (info: { statementTimeout: string; backendPid: number }) => void;
   },
 ): Promise<IssueClaimabilityReading> {
   const sql = opts.client ?? getOrgPg().sql;
@@ -2399,6 +2404,20 @@ export async function readIssueClaimability(
     // the session-local temp table created below).
     await timed('transaction-isolation', () => tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'));
     await timed('statement-timeout', () => tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`));
+    if (readOpts.onTransactionInfo) {
+      try {
+        const rows = await timed('transaction-info', () => tx<{
+          statement_timeout: string;
+          backend_pid: number;
+        }[]>`SELECT current_setting('statement_timeout') AS statement_timeout, pg_backend_pid() AS backend_pid`);
+        const info = rows[0];
+        if (info) {
+          readOpts.onTransactionInfo({ statementTimeout: info.statement_timeout, backendPid: info.backend_pid });
+        }
+      } catch {
+        // Best-effort diagnostics must never change claimability or transaction semantics.
+      }
+    }
     const client = tx as unknown as OrgSql;
 
     // EI-18802055183255275: materialize the candidate set — the spec `view.filter` is

@@ -305,6 +305,15 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
        WHERE plan_slug = 'class-only-acceptance'
          AND template = 'rubric'`;
     expect(stored.template_data.ratingScale).toEqual(classScale);
+    const [profile] = await db.adminSql<Array<{
+      verification_profile: string | null;
+      verification_profile_source: string | null;
+    }>>`
+      SELECT verification_profile, verification_profile_source
+        FROM harness_shared.harness_plans
+       WHERE plan_slug = 'class-only-acceptance' AND template = 'rubric'`;
+    expect(profile?.verification_profile).toMatch(/^(coding|general)$/);
+    expect(profile?.verification_profile_source).toBe('harness-default');
 
     const hashAtClassRevision7 = acceptance.criteriaHash;
     expect(hashAtClassRevision7).toEqual((await rubrics.getRubric('class-only-acceptance'))?.criteriaHash);
@@ -794,6 +803,14 @@ Preserve this plan body.
       rubricId, characteristic: 'hive-coordination', title: 'Offset standard',
       criteria: sampleCriteria, by: 'author-a',
     });
+    const [existingPlanProfile] = await db.adminSql<Array<{
+      verification_profile: string | null;
+      verification_profile_source: string | null;
+    }>>`
+      SELECT verification_profile, verification_profile_source
+        FROM harness_shared.harness_plans
+       WHERE plan_slug = ${rubricId} AND template = 'rubric'`;
+    expect(existingPlanProfile).toEqual({ verification_profile: null, verification_profile_source: null });
     expect(proposed.revision).toBe(8);
     const ratified = await rubrics.ratifyRubric(rubricId, 'independent-reviewer');
     expect(ratified?.revision).toBe(9);

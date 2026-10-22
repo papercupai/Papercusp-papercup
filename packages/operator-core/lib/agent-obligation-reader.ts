@@ -40,6 +40,9 @@ import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-pref
 
 export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
 
+/** Optional timing seam for tracing a provider's sub-reads without changing its result. */
+export type AgentObligationReadStageRunner = <T>(stage: string, work: () => Promise<T>) => Promise<T>;
+
 /**
  * The goal-portfolio sections the obligation reader does NOT read, and so must not
  * pay for inside AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS. The reader reads only
@@ -68,7 +71,7 @@ export type PlanAcceptanceObligationRead = PlanClosureGateFields | {
 };
 
 export interface AgentObligationReaderDeps {
-  goalSubject: (workspaceId: string, ownerId: string) => Promise<string | null>;
+  goalSubject: (workspaceId: string, ownerId: string, runStage?: AgentObligationReadStageRunner) => Promise<string | null>;
   planSlugs: (workspaceId: string, ownerId: string) => Promise<string[]>;
   goalPortfolio: (workspaceId: string, goalId: string) => Promise<GoalPortfolioBrief | null>;
   goalPlacementProgress: (workspaceId: string, ownerId: string, goalId: string, planRefs: string[]) =>
@@ -953,12 +956,19 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       (await import('./fleet/fleet-staffing-read')).readLedFleetStaffing({ workspaceId, ownerId }),
     strandedGoalWork: async (workspaceId, goalId, nowMs) =>
       (await import('./goal-stranded-work')).readStrandedGoalWork({ workspaceId, goalId, nowMs }),
-    goalSubject: async (workspaceId, ownerId) => {
+    goalSubject: async (workspaceId, ownerId, runStage) => {
       const [{ getModes }, { goalIdFromModes }] = await Promise.all([
-        import('./modes/store'),
-        import('./modes/goal-session'),
+        runStage
+          ? runStage('goal-subject-mode-store-import', () => import('./modes/store'))
+          : import('./modes/store'),
+        runStage
+          ? runStage('goal-subject-goal-session-import', () => import('./modes/goal-session'))
+          : import('./modes/goal-session'),
       ]);
-      return goalIdFromModes(await getModes(workspaceId, ownerId));
+      const modes = await (runStage
+        ? runStage('goal-subject-get-modes', () => getModes(workspaceId, ownerId))
+        : getModes(workspaceId, ownerId));
+      return goalIdFromModes(modes);
     },
     planSlugs: async (_workspaceId, ownerId) => {
       const { getSessionBrief } = await import('./session-brief');

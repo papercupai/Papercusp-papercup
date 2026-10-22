@@ -88,6 +88,135 @@ function requiresRestart(paths: string[]): boolean {
   return r.status === 0;
 }
 
+function restartControlEndpoint(
+  healthyOrigin: string | string[], configuredOrigin = '',
+  compatibleOrigin = typeof healthyOrigin === 'string' ? healthyOrigin : healthyOrigin[0],
+) {
+  const binDir = mkdtempSync(join(tmpdir(), 'staging-control-endpoint-'));
+  const probeLog = join(binDir, 'probes');
+  const preflightLog = join(binDir, 'preflights');
+  writeFileSync(join(binDir, 'curl'), [
+    '#!/usr/bin/env bash',
+    'probe="${!#}"',
+    'printf "%s\\n" "$probe" >> "$TEST_CONTROL_PROBE_LOG"',
+    '[[ "$TEST_HEALTHY_CONTROL_ORIGINS" == *"|${probe%/api/health}|"* ]]',
+  ].join('\n'), { mode: 0o700 });
+  writeFileSync(join(binDir, 'ptool'), [
+    '#!/usr/bin/env bash',
+    'for arg in "$@"; do case "$arg" in --url=*) origin="${arg#--url=}" ;; esac; done',
+    'payload="$(cat)"',
+    'printf "%s|%s|%s\\n" "$origin" "$PAPERCUSP_SID" "$payload" >> "$TEST_CONTROL_PREFLIGHT_LOG"',
+    "[[ \"$payload\" == '{\"target\":\"staging\",\"confirm\":false}' ]] || exit 3",
+    '[[ "$PAPERCUSP_SID" == test-client ]] || exit 4',
+    'if [[ "$origin" == "$TEST_COMPATIBLE_CONTROL_ORIGIN" ]]; then',
+    "  printf '%s\\n' '{\"ok\":true,\"dry_run\":true,\"target\":\"staging\"}'",
+    'else',
+    "  printf '%s\\n' '{\"ok\":false,\"error\":\"unsupported-or-unauthorized\"}'",
+    'fi',
+  ].join('\n'), { mode: 0o700 });
+  try {
+    const result = runFn(['resolve_staging_restart_control_url'], 'resolve_staging_restart_control_url', {
+      env: {
+        PATH: binDir + ':' + (process.env.PATH ?? ''),
+        STAGING_PORT: '3170',
+        PAPERCUSP_OPERATOR_URL: configuredOrigin,
+        PTOOL_BIN: join(binDir, 'ptool'),
+        PTOOL_CLIENT_SID: 'test-client',
+        TEST_HEALTHY_CONTROL_ORIGINS: '|' + [healthyOrigin].flat().join('|') + '|',
+        TEST_COMPATIBLE_CONTROL_ORIGIN: compatibleOrigin ?? '',
+        TEST_CONTROL_PROBE_LOG: probeLog,
+        TEST_CONTROL_PREFLIGHT_LOG: preflightLog,
+      },
+    });
+    const probes = existsSync(probeLog) ? readFileSync(probeLog, 'utf8').trim().split('\n') : [];
+    const preflights = existsSync(preflightLog) ? readFileSync(preflightLog, 'utf8').trim().split('\n') : [];
+    return { ...result, probes, preflights };
+  } finally {
+    rmSync(binDir, { recursive: true, force: true });
+  }
+}
+
+describe('staging restart control endpoint recovery', () => {
+  it('uses healthy staging without probing another operator', () => {
+    const result = restartControlEndpoint('http://127.0.0.1:3170', 'http://localhost:3271');
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('http://127.0.0.1:3170');
+    expect(result.probes).toEqual(['http://127.0.0.1:3170/api/health']);
+    expect(result.preflights).toEqual([
+      'http://127.0.0.1:3170|test-client|{"target":"staging","confirm":false}',
+    ]);
+  });
+
+  it('recovers through the configured local operator when staging has no listener', () => {
+    const result = restartControlEndpoint('http://localhost:3271', 'http://localhost:3271/');
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('http://localhost:3271');
+    expect(result.probes).toEqual([
+      'http://127.0.0.1:3170/api/health', 'http://localhost:3271/api/health',
+    ]);
+  });
+
+  it('uses the local release operator when staging and the configured operator are unavailable', () => {
+    const result = restartControlEndpoint('http://127.0.0.1:3070', 'http://localhost:3271');
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('http://127.0.0.1:3070');
+    expect(result.probes).toEqual([
+      'http://127.0.0.1:3170/api/health', 'http://localhost:3271/api/health',
+      'http://127.0.0.1:3271/api/health',
+      'http://127.0.0.1:3070/api/health',
+    ]);
+  });
+
+  it('refuses before dispatch when neither local control endpoint is healthy', () => {
+    const result = restartControlEndpoint('', 'http://127.0.0.1:3170');
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('no compatible local operator');
+    expect(result.probes).toEqual([
+      'http://127.0.0.1:3170/api/health', 'http://127.0.0.1:3271/api/health',
+      'http://127.0.0.1:3070/api/health',
+    ]);
+    expect(result.preflights).toEqual([]);
+  });
+
+  it('uses the registered background operator when staging is unavailable', () => {
+    const result = restartControlEndpoint('http://127.0.0.1:3271');
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('http://127.0.0.1:3271');
+  });
+
+  it('skips an HTTP-healthy operator whose same-identity preview is refused', () => {
+    const result = restartControlEndpoint(
+      ['http://localhost:3281', 'http://127.0.0.1:3271'],
+      'http://localhost:3281', 'http://127.0.0.1:3271',
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('http://127.0.0.1:3271');
+    expect(result.preflights).toEqual([
+      'http://localhost:3281|test-client|{"target":"staging","confirm":false}',
+      'http://127.0.0.1:3271|test-client|{"target":"staging","confirm":false}',
+    ]);
+  });
+
+  it('refuses when HTTP health has no compatible authenticated control preview', () => {
+    const result = restartControlEndpoint('http://127.0.0.1:3070', '', '');
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('no compatible local operator');
+  });
+
+  it.each(['https://example.test:443', 'http://127.0.0.1:3271/not-an-origin'])(
+    'does not send recovery to an unadmitted configured endpoint %s', (configuredOrigin) => {
+      const result = restartControlEndpoint('http://127.0.0.1:3070', configuredOrigin);
+      expect(result.status).toBe(0);
+      expect(result.probes).toEqual([
+        'http://127.0.0.1:3170/api/health', 'http://127.0.0.1:3271/api/health',
+        'http://127.0.0.1:3070/api/health',
+      ]);
+    },
+  );
+});
+
 function execForcesLoopback(execStart: string): boolean {
   const r = runFn(
     ['staging_exec_forces_loopback'],
@@ -1754,7 +1883,8 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
       ].join('\n')], {
         encoding: 'utf8',
         env: { ...process.env, INTEGRATION_ROOT: dir, PTOOL_CLIENT_SID: 'test-client', PTOOL_BIN: cli,
-          STAGING_PORT: '3170', GIT_SYNC_DRAIN_SEC: '45', current: '12345678', target: 'abcdef12' },
+          STAGING_PORT: '3170', RESTART_CONTROL_URL: 'http://127.0.0.1:3170',
+          GIT_SYNC_DRAIN_SEC: '45', current: '12345678', target: 'abcdef12' },
       });
       expect(r.status, r.stderr).toBe(0);
       expect(JSON.parse(r.stdout)).toEqual({ ok: true, restarted: true });
@@ -1892,14 +2022,14 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
   it('passes the resolved identity to the audited dev:restart call', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     expect(script).toContain('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
-    expect(script).toContain('PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -');
+    expect(script).toContain('PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="$RESTART_CONTROL_URL" --json -');
     expect(script).not.toContain('"$PTOOL_BIN" dev:restart --json -');
   });
 
   it('downgrades its checkout lock before the final dev:restart so the staging collision guard admits cutover', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     const downgrade = script.lastIndexOf('staging_sync_lock_shared');
-    const restart = script.indexOf('"$PTOOL_BIN" dev:restart --url=');
+    const restart = script.indexOf('exec env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url=');
     const assignment = script.lastIndexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
     const downgradeEnd = script.indexOf('\n# The ptool result may be lost', downgrade);
     expect(downgrade).toBeGreaterThan(assignment);
@@ -2339,7 +2469,8 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
   });
 
   it('routes a required restart through audited dev:restart, never raw systemctl', () => {
-    expect(script).toContain('"$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -');
+    expect(script).toContain('RESTART_CONTROL_URL="$(resolve_staging_restart_control_url)" || exit 1');
+    expect(script).toContain('"$PTOOL_BIN" dev:restart --url="$RESTART_CONTROL_URL" --json -');
     expect(script).toContain('"confirm":true,"authorize":true');
     // vacuous-negative-ok: raw systemctl restart was replaced by audited dev:restart; pins the old form out (deploy.sh restarting "$u" is unrelated)
     expect(script).not.toContain('systemctl --user restart "$UNIT"');

@@ -55,9 +55,27 @@ it('attributes real PTY dialog submissions to machine control or human terminal 
     resume() {},
     pause() {},
   });
+  const selections = () => [...captured().matchAll(/DIALOG_SELECTION_(\{[^\r\n]*\})/g)]
+    .map((match) => JSON.parse(match[1]) as { n: number; selection: string; inputHex: string });
+  const childMenu = String.raw`
+    let n=0, input='';
+    process.stdin.setRawMode(true);
+    process.stdin.on('data', d => {
+      if(d.toString().includes('QUIT')) process.exit(0);
+      input += d.toString();
+      let end;
+      while((end=input.indexOf('\r')) >= 0) {
+        const keys=input.slice(0,end+1); input=input.slice(end+1);
+        const down=(keys.match(/\x1b\[B/g)||[]).length;
+        const selection=['first option','second option'][down%2];
+        process.stdout.write('DIALOG_SELECTION_'+JSON.stringify({n:++n,selection,inputHex:Buffer.from(keys).toString('hex')})+'\n');
+      }
+    });
+    process.stdout.write('DIALOG_READY\n');
+  `;
   const done = hostThroughPty({
     command: execPath,
-    args: ['-e', "let n=0;process.stdin.setRawMode(true);process.stdin.on('data',d=>{if(d.toString().includes('QUIT'))process.exit(0);process.stdout.write('DIALOG_KEY_'+(++n)+'\\n')});process.stdout.write('DIALOG_READY\\n')"],
+    args: ['-e', childMenu],
     cwd: process.cwd(),
     env,
     ownerId,
@@ -69,18 +87,24 @@ it('attributes real PTY dialog submissions to machine control or human terminal 
     await vi.waitFor(() => expect(captured()).toContain('DIALOG_READY'), { timeout: 5000 });
 
     openClaudeDialog(ownerId, 'native-session', 'machine-question', env);
+    const machineInput = '\x1b[B\r';
     expect(await injectIntoHost(socketPathFor(ownerId), {
-      mode: 'raw', data: '\r', ownerId,
+      mode: 'raw', data: machineInput, ownerId,
     })).toBe(true);
-    await vi.waitFor(() => expect(captured()).toContain('DIALOG_KEY_1'), { timeout: 3000 });
-    expect(finishClaudeDialog(ownerId, 'native-session', 'machine-question', 'first option', env))
-      .toContain('"source":"automatic"');
+    await vi.waitFor(() => expect(selections()).toHaveLength(1), { timeout: 3000 });
+    expect(selections()[0]).toEqual({ n: 1, selection: 'second option', inputHex: Buffer.from(machineInput).toString('hex') });
+    const machineContext = finishClaudeDialog(ownerId, 'native-session', 'machine-question', selections()[0].selection, env);
+    expect(machineContext).toContain('"source":"automatic"');
+    expect(machineContext).toContain('Answer: second option');
 
     openClaudeDialog(ownerId, 'native-session', 'human-question', env);
-    stdin.emit('data', Buffer.from('\r'));
-    await vi.waitFor(() => expect(captured()).toContain('DIALOG_KEY_2'), { timeout: 3000 });
-    expect(finishClaudeDialog(ownerId, 'native-session', 'human-question', 'second option', env))
-      .toContain('"source":"human"');
+    const humanInput = '\r';
+    stdin.emit('data', Buffer.from(humanInput));
+    await vi.waitFor(() => expect(selections()).toHaveLength(2), { timeout: 3000 });
+    expect(selections()[1]).toEqual({ n: 2, selection: 'first option', inputHex: Buffer.from(humanInput).toString('hex') });
+    const humanContext = finishClaudeDialog(ownerId, 'native-session', 'human-question', selections()[1].selection, env);
+    expect(humanContext).toContain('"source":"human"');
+    expect(humanContext).toContain('Answer: first option');
   } finally {
     stdin.emit('data', Buffer.from('QUIT'));
     await done;

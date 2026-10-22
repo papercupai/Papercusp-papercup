@@ -1007,6 +1007,8 @@ export async function runWorkspaceHostLifecycle(
     ...(target.hostedCustomerWorkspaceId ? { durableTenantIdentity:
       workspaceHostDurableTenantIdentity(workspaceId, target.hostedCustomerWorkspaceId) } : {}),
     ...(storageAdmission?.allocation ? { durableStorageAllocation: { ...storageAdmission.allocation } } : {}),
+    ...(input.action === 'restore' && input.canary
+      ? { canaryTeardownDeadlineAt: input.canary.teardownDeadlineAt } : {}),
     ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),

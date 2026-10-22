@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TOKEN_ESTIMATOR, SESSION_PORT_TRANSFORM_VERSION } from '../../session-port/types';
+import { createRouteDiagnostics } from '../route-stack';
 
 const state = vi.hoisted(() => ({
   sql: null as unknown,
@@ -120,7 +121,7 @@ beforeEach(async () => {
   `;
 });
 
-async function inspect(body: Record<string, unknown>): Promise<Response> {
+async function inspect(body: Record<string, unknown>, routeDiagnostics?: ReturnType<typeof createRouteDiagnostics>): Promise<Response> {
   const routes = (await import('../routes/adv/sessions')).default as Route[];
   const route = routes.find((candidate) => candidate.method === 'POST' && candidate.path === '/adv/sessions/port/inspect');
   if (!route) throw new Error('session-port inspection route was not registered');
@@ -131,7 +132,7 @@ async function inspect(body: Record<string, unknown>): Promise<Response> {
       workspace: WS, sourceAdvSessionId: 41, targetBackend: 'codex',
       consultEvidenceSpan: { sessionId: SESSION, turnIndices: [4, 2], contextTurns: 2 }, ...body,
     }),
-  }));
+  }), { routeDiagnostics });
 }
 
 describe('session-port live-source preflight (consult-backed-parking-2026-10-12#P-010)', () => {
@@ -170,6 +171,19 @@ describe('session-port live-source preflight (consult-backed-parking-2026-10-12#
 });
 
 describe('session-port evidence-span route (P-007)', () => {
+  it('retains content-free phase evidence for an isolated reviewer inspection', async () => {
+    const diagnostics = createRouteDiagnostics();
+    const response = await inspect({ targetOwnerId: 'su-answer-owner' }, diagnostics);
+    expect(response.status).toBe(200);
+    const phases = diagnostics.snapshot();
+    for (const phase of ['port.imports', 'port.storage-ready', 'port.tracked-source', 'port.evidence-turns',
+      'port.launch-spec', 'port.context-budget', 'port.acquire-source', 'port.transform', 'port.telemetry']) {
+      expect(phases[phase]).toEqual(expect.any(Number));
+    }
+    expect(JSON.stringify(phases)).not.toContain('first evidence');
+    expect(phases['port.owner-bindings']).toBeUndefined();
+  });
+
   it.each(['claude', 'codex', 'omp'] as const)('binds an isolated answer owner on the %s target without changing the source row', async (backend) => {
     const sourceBefore = structuredClone(state.sourceRow);
     const response = await inspect({ targetBackend: backend, targetOwnerId: 'su-answer-owner' });

@@ -20,8 +20,13 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { FORKSERVER_SOURCE } from './forkserver-source';
+import { managedSpawn, markManagedSpawnTeardown } from '../../task-manager/managed-spawn';
+import { newTaskId, scopeUnitForTask } from '../../task-manager/types';
+import { captureSidecarContainment, reapDeadSidecar, type SidecarContainment } from '../sidecar-exec-lifetime';
 
 export const FORKSERVER_LOST_CODE = 'SIDECAR_FORKSERVER_LOST';
+const START_TIMEOUT_MS = 10_000;
+const ACK_TIMEOUT_MS = 10_000;
 
 export interface SidecarSpawnRequest {
   command: string;
@@ -29,6 +34,11 @@ export interface SidecarSpawnRequest {
   cwd?: string;
   env: NodeJS.ProcessEnv;
   detached: boolean;
+  /** Local controls: these are never serialized over IPC. */
+  signal?: AbortSignal;
+  spawnTimeoutMs?: number;
+  /** Exact preflight generation, or null to stay in the sidecar's own scope. */
+  forkserverIdentity?: string | null;
   /** Handoff files: the forkserver opens them by path; a direct spawn uses the fd. */
   stdin?: { path: string; fd: number };
   stdout?: { path: string; fd: number };
@@ -99,20 +109,23 @@ class ForkedChild extends EventEmitter implements SidecarChild {
     }
   }
 
-  /** The forkserver is gone: kill this child's group and settle it as an infrastructure fault. */
+  /** Called only after the owning scope is verified empty. Never signal a stale PID. */
   lose(reason: string): void {
     if (this.closed) return;
     this.closed = true;
-    if (this.pid !== undefined) {
-      try { process.kill(-this.pid, 'SIGKILL'); } catch { try { process.kill(this.pid, 'SIGKILL'); } catch { /* gone */ } }
-    }
     const error = toError({ message: `spawner sidecar forkserver lost mid-exec (${reason}); not re-run`, code: FORKSERVER_LOST_CODE });
+    this.stdout?.push(null);
+    this.stderr.push(null);
     setImmediate(() => this.emit('error', error));
   }
 
   private async deliverClose(code: number | null, signal: NodeJS.Signals | null): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    // An IPC batch can acknowledge spawn and close before the promise's caller
+    // has attached stream listeners. Let that caller run before flushing unread
+    // stdio, or resume() discards a fast child's already-buffered output.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     // Node emits 'close' only after the stdio streams end; keep that order.
     const ends = [this.stdout, this.stderr].filter((s): s is Readable => s !== null).map((s) => {
       if (s.readableEnded) return Promise.resolve();
@@ -127,13 +140,19 @@ class ForkedChild extends EventEmitter implements SidecarChild {
 
 interface Forkserver {
   proc: ChildProcess;
+  scopeUnit: string;
+  containment: SidecarContainment | null;
+  retirement: Promise<void> | null;
+  lose: (reason: string) => Promise<void>;
   children: Map<number, ForkedChild>;
-  pending: Map<number, { child: ForkedChild; resolve: (c: SidecarChild) => void; reject: (e: Error) => void }>;
+  pending: Map<number, { child: ForkedChild; resolve: (c: SidecarChild) => void; reject: (e: Error) => void; cleanup: () => void }>;
   alive: boolean;
 }
 
 const state = pinModuleState('@papercusp/operator-core.fleet.forkserver-client', () => ({
   server: null as Forkserver | null,
+  starting: null as Promise<Forkserver> | null,
+  retiring: Promise.resolve(),
   nextId: 1,
   starts: 0,
   spawns: 0,
@@ -156,35 +175,62 @@ function refreshRef(server: Forkserver): void {
   else { server.proc.unref(); channel?.unref?.(); }
 }
 
-function startForkserver(): Forkserver {
-  const env = { ...process.env };
-  delete env.NODE_OPTIONS; // the forkserver loads no loaders; children get their own env per request
-  const proc = spawn(process.execPath, ['-e', FORKSERVER_SOURCE], {
-    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-    serialization: 'advanced',
-    env,
-  });
-  state.starts += 1;
-  const server: Forkserver = { proc, children: new Map(), pending: new Map(), alive: true };
-  const lose = (reason: string): void => {
-    if (!server.alive) return;
+async function retire(server: Forkserver, reason: string): Promise<void> {
+  if (server.retirement) return server.retirement;
+  server.retirement = (async () => {
     server.alive = false;
     if (state.server === server) state.server = null;
     if (inFlight(server) > 0) { state.losses += 1; state.lastLossReason = reason; }
+    // PID acknowledgement is not a birth boundary: a command can already have
+    // forked descendants. Kill the pre-declared scope, including unknown PIDs,
+    // and prove it empty BEFORE releasing any execution's caller/lease.
+    markManagedSpawnTeardown(server.proc);
+    try { server.proc.kill('SIGKILL'); } catch { /* already gone */ }
+    const { killScopeUnit } = await import('../../task-manager/control');
+    await killScopeUnit(server.scopeUnit, { signal: 'SIGKILL' }).catch(() => undefined);
+    if (server.containment) {
+      while (!(await reapDeadSidecar(server.containment))) {
+        // Fail closed on unavailable kernel proof. A signal receipt alone must
+        // never release a repository lease or permit a replacement generation.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
     for (const entry of server.pending.values()) {
-      entry.reject(toError({ message: `spawner sidecar forkserver lost before spawn (${reason})`, code: FORKSERVER_LOST_CODE }));
+      entry.cleanup();
+      entry.reject(toError({ message: `forkserver execution outcome unknown (${reason}); not re-run`, code: FORKSERVER_LOST_CODE }));
     }
     server.pending.clear();
     for (const child of server.children.values()) child.lose(reason);
     server.children.clear();
+    refreshRef(server);
+  })();
+  state.retiring = server.retirement;
+  return server.retirement;
+}
+
+function attachForkserver(proc: ChildProcess, scopeUnit: string, ready: () => void, failed: (e: Error) => void): Forkserver {
+  state.starts += 1;
+  const server: Forkserver = { proc, scopeUnit, containment: null, retirement: null,
+    children: new Map(), pending: new Map(), alive: true, lose: (reason) => retire(server, reason) };
+  const lose = (reason: string): void => {
+    failed(new Error(reason));
+    void server.lose(reason);
   };
   proc.on('message', (raw: unknown) => {
     const m = raw as { t?: string; id?: number; pid?: number | null; error?: ErrorInfo };
+    if (!server.alive) return;
+    if (m?.t === 'ready') {
+      server.containment = m.pid === proc.pid ? captureSidecarContainment(scopeUnit, proc.pid) : null;
+      if (server.containment) ready();
+      else lose('forkserver confinement could not be verified');
+      return;
+    }
     if (!m || typeof m.id !== 'number') return;
     if (m.t === 'spawned') {
       const entry = server.pending.get(m.id);
       if (!entry) return;
       server.pending.delete(m.id);
+      entry.cleanup();
       entry.child.pid = typeof m.pid === 'number' ? m.pid : undefined;
       if (m.error) {
         // spawn() threw before a ChildProcess existed. Keep that distinct from
@@ -215,6 +261,54 @@ function startForkserver(): Forkserver {
   return server;
 }
 
+async function startForkserver(): Promise<Forkserver> {
+  await state.retiring;
+  const taskId = newTaskId();
+  const scopeUnit = scopeUnitForTask(taskId);
+  let server: Forkserver | undefined;
+  let expired = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const ready = new Promise<Forkserver>((resolve, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      if (server) void server.lose('forkserver startup deadline');
+      reject(new Error('forkserver startup deadline'));
+    }, START_TIMEOUT_MS);
+    // No env option: managedSpawn's exact-env runner would consume Node's IPC
+    // descriptor. env(1) execs in place and strips only the inherited loader.
+    void managedSpawn('/usr/bin/env', ['-u', 'NODE_OPTIONS', process.execPath, '-e', FORKSERVER_SOURCE], {
+      class: 'sidecar', title: 'spawner forkserver', argv: [], launchedBy: 'system:spawner-forkserver',
+    }, { taskId, spawnOptions: { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], serialization: 'advanced' },
+      onSpawn: (proc) => {
+        server = attachForkserver(proc, scopeUnit, () => resolve(server!), reject);
+        if (expired) void server.lose('late forkserver startup');
+      },
+    }).then((managed) => {
+      if (!managed.confined) {
+        expired = true;
+        if (server) void server.lose('forkserver confinement unavailable');
+        reject(new Error('forkserver confinement unavailable'));
+      }
+    }, reject);
+  });
+  try {
+    const result = await ready;
+    if (!result.alive) throw new Error('forkserver died during startup');
+    // Publish even if the caller abandoned startup; otherwise a late ready
+    // process is leaked and the next caller creates a second generation.
+    state.server = result;
+    return result;
+  } catch (error) {
+    expired = true;
+    if (server) await server.lose('forkserver startup failed');
+    state.startFailures += 1;
+    state.disabledUntil = Date.now() + 60_000;
+    throw error;
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 function directSpawn(req: SidecarSpawnRequest): SidecarChild {
   state.fallbacks += 1;
   return spawn(req.command, req.args, {
@@ -223,6 +317,44 @@ function directSpawn(req: SidecarSpawnRequest): SidecarChild {
     stdio: [req.stdin ? req.stdin.fd : 'ignore', req.stdout ? req.stdout.fd : 'pipe', 'pipe'],
     detached: req.detached,
   }) as unknown as SidecarChild;
+}
+
+function ensureForkserver(): Promise<Forkserver> {
+  if (state.server?.alive) return Promise.resolve(state.server);
+  if (state.starting) return state.starting;
+  const starting = state.starting = startForkserver();
+  const clear = () => { if (state.starting === starting) state.starting = null; };
+  void starting.then(clear, clear);
+  return starting;
+}
+
+export function forkserverContainmentIdentity(snapshot: SidecarContainment): string {
+  return `${snapshot.scopeUnit}:${snapshot.identity}`;
+}
+
+/** Preflight captures the scope BEFORE a fenced command can be dispatched. A
+ * failed startup pins direct execution in the original sidecar scope instead. */
+export async function prepareForkserverContainment(): Promise<SidecarContainment | null> {
+  if (!forkserverApplies() || Date.now() < state.disabledUntil) return null;
+  try {
+    const server = await ensureForkserver();
+    return server.alive ? server.containment : null;
+  } catch { return null; }
+}
+
+/** A caller can abandon startup safely: it has sent no user command yet. The
+ * shared startup keeps its own deadline and reaps even a late managed spawn. */
+function awaitStartup(starting: Promise<Forkserver>, req: SidecarSpawnRequest, deadline: number): Promise<Forkserver> {
+  let cleanup = () => {};
+  return new Promise<Forkserver>((resolve, reject) => {
+    const fail = (code: string) => reject(toError({ message: `spawn ${code} before dispatch`, code }));
+    const onAbort = () => fail('ABORT_ERR');
+    const timer = setTimeout(() => fail('ETIMEDOUT'), Math.max(1, deadline - Date.now()));
+    cleanup = () => { clearTimeout(timer); req.signal?.removeEventListener('abort', onAbort); };
+    req.signal?.addEventListener('abort', onAbort, { once: true });
+    if (req.signal?.aborted) onAbort();
+    starting.then(resolve, reject);
+  }).finally(() => cleanup());
 }
 
 /** Whether execs on this host go through the forkserver (Linux, where fork is the cost). */
@@ -236,23 +368,49 @@ export function forkserverApplies(): boolean {
  * dies before acknowledging.
  */
 export async function spawnSidecarChild(req: SidecarSpawnRequest): Promise<SidecarChild> {
+  const deadline = Date.now() + (req.spawnTimeoutMs && req.spawnTimeoutMs > 0 ? req.spawnTimeoutMs : START_TIMEOUT_MS + ACK_TIMEOUT_MS);
+  if (req.signal?.aborted) throw toError({ message: 'spawn aborted before dispatch', code: 'ABORT_ERR' });
+  if (req.forkserverIdentity === null) return directSpawn(req);
+  if (req.forkserverIdentity !== undefined) {
+    const pinned = state.server;
+    if (!pinned?.alive || !pinned.containment ||
+        forkserverContainmentIdentity(pinned.containment) !== req.forkserverIdentity) {
+      throw toError({ message: 'forkserver generation changed before dispatch', code: 'SIDECAR_FORKSERVER_FENCE' });
+    }
+  }
   if (!forkserverApplies() || Date.now() < state.disabledUntil) return directSpawn(req);
   let server = state.server;
   if (!server || !server.alive) {
-    server = startForkserver();
+    const starting = ensureForkserver();
+    try { server = await awaitStartup(starting, req, deadline); }
+    catch (error) {
+      if (['ABORT_ERR', 'ETIMEDOUT'].includes((error as NodeJS.ErrnoException)?.code ?? '')) throw error;
+      if (req.signal?.aborted) throw toError({ message: 'spawn aborted before dispatch', code: 'ABORT_ERR' });
+      if (Date.now() >= deadline) throw toError({ message: 'spawn deadline before fallback dispatch', code: 'ETIMEDOUT' });
+      return directSpawn(req); // no user command was dispatched
+    }
     state.server = server;
   }
+  if (req.signal?.aborted) throw toError({ message: 'spawn aborted before dispatch', code: 'ABORT_ERR' });
+  if (Date.now() >= deadline) throw toError({ message: 'spawn deadline before dispatch', code: 'ETIMEDOUT' });
+  if (!server.alive) throw toError({ message: 'forkserver lost before dispatch; not re-run', code: FORKSERVER_LOST_CODE });
   const id = state.nextId++;
   const child = new ForkedChild(!req.stdout);
   state.spawns += 1;
   const acked = new Promise<SidecarChild>((resolve, reject) => {
-    server!.pending.set(id, { child, resolve, reject });
+    const onAbort = () => { void server!.lose('spawn acknowledgement aborted'); };
+    const timer = setTimeout(() => { void server!.lose('spawn acknowledgement deadline'); },
+      Math.min(ACK_TIMEOUT_MS, Math.max(1, deadline - Date.now())));
+    const cleanup = () => { clearTimeout(timer); req.signal?.removeEventListener('abort', onAbort); };
+    server!.pending.set(id, { child, resolve, reject, cleanup });
+    req.signal?.addEventListener('abort', onAbort, { once: true });
   });
   refreshRef(server);
-  server.proc.send({
+  try { server.proc.send({
     t: 'spawn', id, command: req.command, args: req.args, cwd: req.cwd, env: req.env, detached: req.detached,
     stdinPath: req.stdin?.path ?? null, stdoutPath: req.stdout?.path ?? null,
-  });
+  }, (error) => { if (error) void server!.lose(`spawn IPC send failed: ${error.message}`); }); }
+  catch (error) { void server.lose(`spawn IPC send threw: ${String(error)}`); }
   return acked;
 }
 

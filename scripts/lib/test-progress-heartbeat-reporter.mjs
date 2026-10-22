@@ -26,15 +26,37 @@ export default class TestProgressHeartbeatReporter {
     intervalMs = TEST_PROGRESS_HEARTBEAT_INTERVAL_MS,
     now = () => Date.now(),
     write = (line) => process.stderr.write(line),
+    trace = ['1', 'vitest-descendant'].includes(process.env.PAPERCUSP_TEST_STARTUP_TRACE),
   } = {}) {
     this.intervalMs = intervalMs;
     this.now = now;
     this.write = write;
     this.completedCases = 0;
     this.lastEmitAt = null;
+    this.trace = trace;
+    this.traceRemaining = 32;
   }
 
-  onTestCaseResult() {
+  traceCase(event, testCase) {
+    if (!this.trace || !testCase || this.traceRemaining <= 0) return;
+    try {
+      const result = event === 'finished' ? testCase.result() : undefined;
+      if (result?.state === 'skipped') return;
+      this.traceRemaining -= 1;
+      this.write(`TEST_FILE_CASE_TRACE ${JSON.stringify({ event,
+        file: String(testCase.module?.moduleId ?? '').slice(-300),
+        name: String(testCase.fullName ?? testCase.name ?? '').slice(0, 600),
+        ...(result ? { state: result.state } : {}),
+      })}\n`);
+    } catch { /* Passive diagnostics must never change a test verdict. */ }
+  }
+
+  onTestCaseReady(testCase) {
+    this.traceCase('started', testCase);
+  }
+
+  onTestCaseResult(testCase) {
+    this.traceCase('finished', testCase);
     this.completedCases += 1;
     const at = this.now();
     if (this.lastEmitAt !== null && at - this.lastEmitAt < this.intervalMs) return;

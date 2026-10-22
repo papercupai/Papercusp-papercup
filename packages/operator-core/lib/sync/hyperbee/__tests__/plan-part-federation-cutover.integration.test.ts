@@ -149,6 +149,8 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(), -- read by the boot reconcile sweep (WI-10006276)
       archived      BOOLEAN NOT NULL DEFAULT false,
       is_legacy     BOOLEAN NOT NULL DEFAULT false,
+      items         JSONB NOT NULL DEFAULT '[]'::jsonb, -- mig 675 derived plan index
+      decisions     JSONB NOT NULL DEFAULT '[]'::jsonb, -- mig 675 derived plan index
       template      TEXT,            -- mig 329 (plan-template-mechanism)
       template_data JSONB,           -- mig 329 (plan-template-mechanism)
       promote_policy JSONB,          -- mig 331 (promote-policy-column)
@@ -173,6 +175,8 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       acceptance_bar_seeded_at         TIMESTAMPTZ,
       acceptance_bar_seeded_by         TEXT,
       acceptance_bar_verified_revision BIGINT,
+      verification_profile             TEXT,
+      verification_profile_source      TEXT,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
   `);
@@ -373,6 +377,14 @@ describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no cl
     const c0 = planMarkdown('one', 'two');
     await p.recvWholeBlob(c0, 100);
     expect((await p.getPlan())!.content).toBe(c0);
+    const [profile] = await db.sql<Array<{
+      verification_profile: string | null;
+      verification_profile_source: string | null;
+    }>>`
+      SELECT verification_profile, verification_profile_source
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${H} AND plan_slug = ${SLUG}`;
+    expect(profile).toEqual({ verification_profile: 'coding', verification_profile_source: 'harness-default' });
     // WI-10006275: the bootstrap is this node's first write of the plan, so its bytes
     // get exactly one (system) revision row.
     const revs = await p.revisions();

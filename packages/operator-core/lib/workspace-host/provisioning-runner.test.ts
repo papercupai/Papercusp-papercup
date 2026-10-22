@@ -348,6 +348,9 @@ describe('runWorkspaceHostProvisioning', () => {
       ...runInput(provider, store), desired: canaryDesired, canary,
     })).resolves.toMatchObject({ status: 'succeeded' });
     expect(apply).toHaveBeenCalledOnce();
+    expect(provider.plan).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      canaryTeardownDeadlineAt: canary.teardownDeadlineAt,
+    }));
   });
 
   it('persists intent and every resource plan before the first provider mutation', async () => {

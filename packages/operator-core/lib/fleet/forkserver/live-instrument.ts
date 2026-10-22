@@ -3,6 +3,14 @@ import type { CommandInstrument, InstrumentParseContext } from '../../rubric-ins
 
 export const LIVE_FORKSERVER_INSTRUMENT_KEY = 'sidecar:live-fork-offload-check';
 
+function hasTraceCoverage(trace: Record<string, any>): boolean {
+  const c = trace.coverage;
+  return c?.attachedThroughWindow === true && c.aliveAtWindowEnd === true
+    && typeof c.tracerIdentityAtStart === 'string' && /^[1-9]\d*:\d+$/.test(c.tracerIdentityAtStart)
+    && c.tracerIdentityAtEnd === c.tracerIdentityAtStart
+    && (c.exitCode === 0 || (c.stopRequested === true && c.exitCode === -2));
+}
+
 function hasGitSyncProgress(result: Record<string, any>): boolean {
   const before = result.gitSyncWitness?.before;
   const after = result.gitSyncWitness?.after;
@@ -29,7 +37,9 @@ export function parseLiveForkserverCheck(stdout: string, context: InstrumentPars
     if (result.kind !== 'operational-test-evidence' || !Array.isArray(result.assertions)
       || !Array.isArray(result.traces) || !Number.isFinite(result.sidecarBlockedPercent)
       || result.sidecarBlockedPercent < 0 || !Number.isFinite(result.windowSeconds)
-      || result.windowSeconds < 3 || result.windowSeconds > 10) return null;
+      // The contract is three seconds; allow only 100 ms of scheduling overrun.
+      || result.windowSeconds < 3 || result.windowSeconds > 3.1
+      || result.traces.length === 0 || !result.traces.every(hasTraceCoverage)) return null;
     const finished = Date.parse(result.finishedAt);
     if (!Number.isFinite(finished) || context.now < finished || context.now - finished > 30_000) return null;
     const assertions = new Map<string, boolean>();

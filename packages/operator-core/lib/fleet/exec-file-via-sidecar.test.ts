@@ -16,6 +16,7 @@ import {
   type ExecFileLikeError,
 } from './git-via-sidecar';
 import type { ExecParams, ExecResult } from './sidecar-exec-process';
+import { markSidecarPostDispatchFault } from './sidecar-dispatch-fault';
 
 const opts = { timeoutMs: 1234, rpcTimeoutMs: 5678, subsystem: 'test-subsystem', cwd: '/tmp', maxBuffer: 99 };
 
@@ -87,6 +88,17 @@ describe('execFileViaSidecar', () => {
     });
     expect(res).toEqual({ stdout: 'local-out', stderr: '' });
     expect(getSidecarFallbackStats().bySubsystem['test-subsystem']?.count).toBe(1);
+  });
+
+  it('preserves a post-dispatch transport fault and never replays the uncertain command locally', async () => {
+    const fault = markSidecarPostDispatchFault(new Error('socket lost after command dispatch'), 17);
+    const local = vi.fn(async () => ({ stdout: 'duplicated-effect', stderr: '' }));
+    const result = await execFileViaSidecar('git', ['update-ref', 'refs/heads/example', 'HEAD'], opts, {
+      sidecarEnabled: () => true, viaSidecar: async () => { throw fault; }, local,
+    }).catch((error: unknown) => error);
+    expect(result).toBe(fault);
+    expect(local).not.toHaveBeenCalled();
+    expect(getSidecarFallbackStats().total).toBe(0);
   });
 
   it('spawns locally, without touching the sidecar, when the route is disabled', async () => {

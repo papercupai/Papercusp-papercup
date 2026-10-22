@@ -7,6 +7,7 @@ import {
   type StalledLoopsSweepDeps,
 } from './stalled-loops-guard';
 import { turnsStalledFloorMs, type LoopStatus } from './loop';
+import { evaluateSilentHalt } from './silent-halt-reconcile';
 import type { StalledLoopHostReading } from '../../events/await/host-recovery-eligibility';
 import { findLiveHostAsync, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
 
@@ -205,6 +206,37 @@ const wakeStarvedProbe = () =>
   }));
 
 describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving it inert)', () => {
+  it('leaves a disarmed actionable AUTO session visible to silent-halt without creating an exempting await', async () => {
+    for (const intervalSec of [60, 600]) {
+      const ownerId = `su-disarm-fallback-${intervalSec}`;
+      const loop = status({ ownerId, turnsStalled: true, intervalSec });
+      const sql = fakeSql([{ id: 'rt-fallback', target_owner_id: ownerId }]);
+      const autoPause = vi.fn<AutoPauseFn>(async () => { loop.active = false; });
+      const armWake = vi.fn<ArmWakeFn>(async () => {});
+      const result = await sweepStalledLoops({ sql, workspaceId: 'ws' }, {
+        getStatuses: async () => new Map([[ownerId, loop]]),
+        autoPause, armWake, probeReachability: reach(false),
+        broadcast: vi.fn<BroadcastFn>(async () => true),
+        notify: vi.fn<NotifyFn>(async () => {}),
+      });
+      expect(result.paused).toBe(1);
+      expect(autoPause).toHaveBeenCalledExactlyOnceWith(sql, 'rt-fallback', expect.any(String));
+      expect(loop.active).toBe(false);
+      expect(armWake).not.toHaveBeenCalled();
+
+      const floor = Math.max(30 * MIN, 5 * intervalSec * 1000);
+      const input = { loopActive: loop.active, hasPosture: true, pendingAwaits: 0,
+        heartbeatAgeMs: 1000, lastRealTurnAgeMs: 120 * MIN,
+        inactiveForMs: floor, intervalSec, heldWorkItems: 1 };
+      expect(evaluateSilentHalt(input)).toMatchObject({ halted: false, staleFloorMs: floor });
+      expect(evaluateSilentHalt({ ...input, inactiveForMs: floor + 1 }))
+        .toMatchObject({ halted: true, staleFloorMs: floor });
+      // A genuine external await remains a wake source after the same disarm.
+      expect(evaluateSilentHalt({ ...input, inactiveForMs: floor + 1, pendingAwaits: 1 }))
+        .toMatchObject({ halted: false, exemption: 'pending-await x1 (a live wake source)' });
+    }
+  });
+
   it('no active loop-% rows and nothing to revive → no status read, no auto-pause, no broadcast', async () => {
     const sql = fakeSql([]);
     const getStatuses = vi.fn();

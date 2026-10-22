@@ -140,8 +140,11 @@ describe('buildMcpSessionSurfaceTraceEvent', () => {
 });
 
 describe('logMcpRequestTrace', () => {
-  it('preserves scratch progress and terminal phase timings in trace output', () => {
+  it('timestamps each emitted record while preserving scratch phase timings', () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const firstObservedAtMs = Date.UTC(2026, 9, 22, 16, 2);
+    const secondObservedAtMs = firstObservedAtMs + 30_007;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(firstObservedAtMs);
     const prefix = '[mcp-request-trace] ';
     try {
       logMcpRequestTrace({
@@ -159,6 +162,7 @@ describe('logMcpRequestTrace', () => {
           refreshActive: false,
         },
       });
+      now.mockReturnValue(secondObservedAtMs);
       logMcpRequestTrace({
         traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
         toolName: 'work_items:get',
@@ -183,6 +187,7 @@ describe('logMcpRequestTrace', () => {
           toolName: 'work_items:get',
           stage: 'scratch_write_progress',
           elapsedMs: 5_000,
+          observedAtMs: firstObservedAtMs,
           scratchWriteProgress: {
             phase: 'file-write',
             phaseElapsedMs: 5_000,
@@ -198,6 +203,7 @@ describe('logMcpRequestTrace', () => {
           toolName: 'work_items:get',
           stage: 'scratch_write_settled',
           elapsedMs: 30_007,
+          observedAtMs: secondObservedAtMs,
           scratchWriteTimings: {
             quotaWaitMs: 3,
             refreshWaitMs: 0,
@@ -208,6 +214,7 @@ describe('logMcpRequestTrace', () => {
         },
       ]);
     } finally {
+      now.mockRestore();
       info.mockRestore();
     }
   });

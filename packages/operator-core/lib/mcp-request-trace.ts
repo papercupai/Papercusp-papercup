@@ -240,10 +240,10 @@ export function buildMcpSessionSurfaceTraceEvent(input: McpSessionSurfaceTraceIn
   };
 }
 
-/** Emit bounded, argument-free MCP handler evidence without changing request behavior. */
+/** Emit bounded, argument-free evidence with an epoch-ms clock for file-backed logs. */
 export function logMcpRequestTrace(event: McpRequestTraceEvent): void {
   try {
-    console.info(`[mcp-request-trace] ${JSON.stringify(event)}`);
+    console.info(`[mcp-request-trace] ${JSON.stringify({ ...event, observedAtMs: Date.now() })}`);
   } catch {
     // Diagnostics must never change the request result.
   }

@@ -194,12 +194,16 @@ describe('native Settings route coverage', () => {
     // A failed crawl/parser must not turn coverage into a vacuous green.
     expect(calls).toContainEqual({ file: 'expert-routing/page.tsx', method: 'POST', path: '/api/agent-mcp/consult-expert-routing-set' });
     // These Settings calls belong to separate route planes, not operator-http:
-    // customer data uses hosted-runtime routes, while device session grants and
-    // server-tool execution are loopback-only. Keep all four outside the relay.
+    // customer data, browser authentication and connector revocation use hosted-runtime
+    // routes, while device session grants and server-tool execution are loopback-only.
+    // Keep each call outside the workspace operator relay.
     const intentionallyNotRelayed = [
       { file: 'profile/CustomerDataControls.tsx', method: 'POST', path: '/api/hosted/browser/data/example/export' },
       { file: 'profile/CustomerDataControls.tsx', method: 'POST', path: '/api/hosted/browser/data/example/delete' },
       { file: 'remote-access/page.tsx', method: 'POST', path: '/api/device/desktop/devices/example/agent-sessions' },
+      { file: 'remote-access/page.tsx', method: 'GET', path: '/api/hosted/auth/session' },
+      { file: 'remote-access/page.tsx', method: 'POST', path: '/api/hosted/auth/logout' },
+      { file: 'remote-access/page.tsx', method: 'POST', path: '/api/hosted/workspaces/example/connectors/revoke' },
       { file: 'storage/page.tsx', method: 'POST', path: '/api/agent-mcp/run-tool' },
     ];
     const refused = calls.filter(({ method, path }) => !decideOperatorHttpRoute(method, path).ok);

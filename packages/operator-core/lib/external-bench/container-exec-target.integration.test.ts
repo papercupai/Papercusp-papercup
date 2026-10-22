@@ -19,8 +19,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createScopedNativeSandboxSpawn, NATIVE_CONTAINER_EXEC_ENV } from '@papercusp/orchestrator/fleet-srt-spawn';
-import { codexSessionFrameObserved } from '../../../../apps/operator/scripts/psu-pty-host.mjs';
-import { ensureCodexHomeViaOperator } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import { codexSessionFrameObserved, resolveLinuxCodexStartupPid } from '../../../../apps/operator/scripts/psu-pty-host.mjs';
+import { codexContainerProcessForPty, codexNativeIdForPty, codexThreadWriterHolder, ensureCodexHomeViaOperator } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 import { backendBinOverrideEnvKey, resolveBackendLaunch } from '../backend-bin-resolve.mjs';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../inference-gateway/codex-cli-bridge';
@@ -115,6 +115,99 @@ afterAll(async () => {
 });
 
 describe('container exec target against a live container', () => {
+  it.runIf(process.platform === 'linux').each(['host', 'root'] as const)('binds the exact Docker native writer to its host wrapper PTY (%s)', async user => {
+    const base = mkdtempSync(join(root, 'native-writer-'));
+    const homes = join(base, 'homes'), home = join(homes, 'session-1'), perHomes = join(base, 'task-homes');
+    mkdirSync(home, { recursive: true }); mkdirSync(perHomes);
+    writeFileSync(join(home, 'config.toml'), [
+      'model = "gpt-6-luna"', 'model_provider = "offline"', 'web_search = "disabled"',
+      '[features]', 'apps = false', 'plugins = false', 'remote_plugin = false',
+      '[model_providers.offline]', 'name = "No provider fixture"',
+      'base_url = "http://127.0.0.1:9/v1"', 'wire_api = "responses"',
+      'requires_openai_auth = false', 'supports_websockets = false',
+      'request_max_retries = 0', 'stream_max_retries = 0', '',
+    ].join('\n'), { mode: 0o600 });
+    const cid = await startContainer(['--user', user === 'root' ? '0' : `${process.getuid!()}:${process.getgid!()}`,
+      '-v', `${perHomes}:${homes}`, '-v', `${resolveContainerCodexBinary()}:${CONTAINER_CODEX_BIN_PATH}:ro`]);
+    let primaryError: unknown, writerWrapper: string | undefined;
+    try {
+      const name = user === 'root' ? await command('docker', ['inspect', '--format', '{{.Name}}', cid]) : undefined;
+      if (name) expect(name.status, JSON.stringify(name)).toBe(0);
+      const containerId = name ? name.stdout.trim().replace(/^\//, '') : cid;
+      const { wrapperPath, nativeBoundary } = materializeDockerExecWrapper({ kind: 'docker-exec', containerId,
+        workdir: '/tmp', binPath: CONTAINER_CODEX_BIN_PATH,
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } },
+      { dir: mkdtempSync(join(root, 'writer-wrapper-')) });
+      writerWrapper = wrapperPath;
+      const env = { PATH: process.env.PATH, CODEX_HOME: home, TERM: 'xterm-256color', PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9', PAPERCUSP_BACKEND_BIN_CODEX: wrapperPath,
+        PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: 'http://127.0.0.1:9', token: 'a'.repeat(32) }),
+        [NATIVE_CONTAINER_EXEC_ENV]: JSON.stringify(nativeBoundary) };
+      const child = createRequire(import.meta.url)('@lydell/node-pty').spawn(wrapperPath,
+        ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust'],
+        { env, cwd: base, cols: 120, rows: 30 });
+      const proof = await new Promise<{ sessionId: string | null; nativeId: string | null; startupPid: number | null; holderPid: number | null; output: string }>((resolve, reject) => {
+        let output = '', probes = '', submitted = false, finished = false;
+        const finish = (error?: Error) => {
+          if (finished) return;
+          finished = true;
+          clearInterval(poll); clearTimeout(deadline); clearTimeout(enter);
+          try {
+          const containerProof = codexContainerProcessForPty(env, child.pid);
+          const nativeId = codexNativeIdForPty(home, child.pid, { env });
+          // The host-user case also has an independent global-lock oracle;
+          // root's private directory is intentionally unreadable to the host.
+          const holder = user === 'host' ? codexThreadWriterHolder(home, null)
+            : { sessionId: nativeId, pid: containerProof?.pid };
+          const result = { sessionId: holder.sessionId, holderPid: holder.pid,
+            nativeId, startupPid: resolveLinuxCodexStartupPid(child.pid), output };
+          if (!error) {
+            expect(codexNativeIdForPty(home, child.pid + 1, { env })).toBeNull();
+            const receipt = `${wrapperPath}.native-${child.pid}.json`, saved = readFileSync(receipt, 'utf8');
+            try {
+              writeFileSync(receipt, JSON.stringify({ ...JSON.parse(saved), start: 'stale' }));
+              expect(codexNativeIdForPty(home, child.pid, { env })).toBeNull();
+            } finally { writeFileSync(receipt, saved); }
+            const source = readFileSync(wrapperPath, 'utf8');
+            try {
+              writeFileSync(wrapperPath, source + '\n');
+              expect(codexNativeIdForPty(home, child.pid, { env })).toBeNull();
+            } finally { writeFileSync(wrapperPath, source); }
+          }
+          if (error) reject(error); else resolve(result);
+          } catch (failure) { reject(failure); }
+          finally { child.kill('SIGTERM'); data.dispose(); }
+        };
+        let enter: ReturnType<typeof setTimeout>;
+        const poll = setInterval(() => { if (codexNativeIdForPty(home, child.pid, { env })) finish(); }, 250);
+        const deadline = setTimeout(() => finish(new Error(`Native writer did not appear: ${output}`)), 20_000);
+        const data = child.onData((chunk: string) => {
+          output = (output + chunk).slice(-32768); probes += chunk;
+          if (probes.includes('\x1b[6n')) child.write('\x1b[1;1R');
+          probes = probes.slice(-3);
+          if (!submitted && codexSessionFrameObserved(output, { dims: { cols: 120, rows: 30 } })) {
+            submitted = true; child.write('offline writer identity');
+            enter = setTimeout(() => child.write('\r'), 100);
+          }
+        });
+        child.onExit(() => { if (!finished) finish(new Error(`Native exited before writer proof: ${output}`)); });
+      });
+      console.info('NATIVE_CONTAINER_WRITER_PROOF', JSON.stringify(proof));
+      expect(proof.sessionId, proof.output).toMatch(/^[a-f0-9-]{36}$/);
+      expect(proof.holderPid).toBeGreaterThan(0);
+      expect(proof.nativeId).toBe(proof.sessionId);
+    } catch (error) { primaryError = error; throw error; }
+    finally {
+      try {
+        if (writerWrapper) {
+          const handback = await command(writerWrapper, ['--papercusp-return-session-ownership'],
+            { PATH: process.env.PATH, CODEX_HOME: home });
+          expect(handback.status, JSON.stringify(handback)).toBe(0);
+        }
+      } finally { await removeContainer(cid, primaryError); }
+    }
+  }, 90_000);
+
   it.runIf(process.platform === 'linux' && process.getuid?.() !== 0)(
     'restores the carry route after private native config replacement without touching sibling sessions', async () => {
     const base = mkdtempSync(join(root, 'carry-handback-'));

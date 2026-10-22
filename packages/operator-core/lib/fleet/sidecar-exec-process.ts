@@ -29,7 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import type { ChildProcess } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
-import { spawnSidecarChild, type SidecarChild, type SidecarSpawnRequest } from './forkserver/forkserver-client';
+import { FORKSERVER_LOST_CODE, spawnSidecarChild, type SidecarChild, type SidecarSpawnRequest } from './forkserver/forkserver-client';
 import { SIDECAR_PROCESS_KILL_GRACE_MS } from './sidecar-exec-lifetime';
 import { observeAdmission, type AdmissionHealthObserver } from './sidecar-admission-wedge';
 
@@ -91,7 +91,7 @@ export interface ExecParams {
   admissionContext?: AdmissionContext;
   /** Bind dispatch to the server/connection observed before starting work.
    * Validated by the IPC server before admission, never by a durable receipt. */
-  fence?: { serverGeneration: string; connectionId: string };
+  fence?: { serverGeneration: string; connectionId: string; forkserverIdentity?: string | null };
 }
 
 export interface ExecResult {
@@ -363,6 +363,10 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       // Own the command's helper processes too. Keep the child referenced;
       // detached here creates a POSIX process group, not a fire-and-forget job.
       detached: process.platform !== 'win32',
+      signal: deps.signal,
+      spawnTimeoutMs: params.timeoutMs,
+      ...(params.fence && Object.hasOwn(params.fence, 'forkserverIdentity')
+        ? { forkserverIdentity: params.fence.forkserverIdentity } : {}),
       ...(stdinHandle && params.stdinPath ? { stdin: { path: params.stdinPath, fd: stdinHandle.fd } } : {}),
       ...(stdoutHandle && params.stdoutPath ? { stdout: { path: params.stdoutPath, fd: stdoutHandle.fd } } : {}),
     });
@@ -598,7 +602,14 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
     } catch (cancelError) {
       settlementError = `; admission cancellation failed: ${String(cancelError)}`;
     }
-    result = { code: -1, stdout: '', stderr: `spawner sidecar could not spawn process: ${String(e)}${settlementError}` };
+    const uncertain = (e as NodeJS.ErrnoException)?.code === FORKSERVER_LOST_CODE;
+    const controlled = ['ABORT_ERR', 'ETIMEDOUT'].includes((e as NodeJS.ErrnoException)?.code ?? '');
+    result = { code: -1, stdout: '',
+      // The generic spawn prefix permits local fallback. An acknowledged-or-
+      // unknown execution is terminal, including a lost pre-PID reply.
+      stderr: `${uncertain ? 'forkserver execution failed; outcome unknown; not re-run' : controlled ? 'process spawn cancelled before dispatch' : 'spawner sidecar could not spawn process'}: ${String(e)}${settlementError}`,
+      ...((uncertain || controlled) ? { error: { code: (e as NodeJS.ErrnoException).code!, signal: null, killed: uncertain } } : {}),
+    };
   }
 
   reportStage('handoff-close');

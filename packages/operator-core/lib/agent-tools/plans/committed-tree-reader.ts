@@ -384,13 +384,19 @@ const repoDir = (root: string, repo: string) => (repo === '.' ? root : posix.joi
 /** `ls-tree -z` entries keyed by the path relative to the listed repository. */
 function parseLsTreeZ(output: string): Map<string, { mode: string; type: string; object: string; size?: number }> {
   const entries = new Map<string, { mode: string; type: string; object: string; size?: number }>();
-  for (const record of output.split('\0')) {
+  // An empty, successful listing proves absence. A damaged reply does not.
+  if (output && !output.endsWith('\0')) throw new Error('repo_measurement_invalid_ls_tree:unterminated_record');
+  for (const record of output.split('\0').slice(0, -1)) {
     const tab = record.indexOf('\t');
-    if (tab < 0) continue;
-    const [mode, type, object, bytes] = record.slice(0, tab).trim().split(/\s+/);
-    if (mode && type && object) entries.set(record.slice(tab + 1), {
-      mode, type, object, ...(bytes && /^\d+$/.test(bytes) ? { size: Number(bytes) } : {}),
-    });
+    if (tab < 0 || tab === record.length - 1) throw new Error('repo_measurement_invalid_ls_tree:missing_path');
+    const header = /^(040000|100644|100755|120000|160000) +(blob|tree|commit) +([a-f0-9]{40}|[a-f0-9]{64})(?: +([0-9]+|-))?$/.exec(record.slice(0, tab));
+    if (!header) throw new Error('repo_measurement_invalid_ls_tree:invalid_header');
+    const [, mode, type, object, bytes] = header;
+    const expectedType = mode === '040000' ? 'tree' : mode === '160000' ? 'commit' : 'blob';
+    if (type !== expectedType) throw new Error('repo_measurement_invalid_ls_tree:invalid_type');
+    const size = bytes && bytes !== '-' ? Number(bytes) : undefined;
+    if (size !== undefined && !Number.isSafeInteger(size)) throw new Error('repo_measurement_invalid_ls_tree:invalid_size');
+    entries.set(record.slice(tab + 1), { mode: mode!, type: type!, object: object!, ...(size === undefined ? {} : { size }) });
   }
   return entries;
 }

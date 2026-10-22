@@ -1108,7 +1108,13 @@ export async function consultCloseCore(
   const rawRow = await readState(sql, req.workspaceId, req.conversationId);
   if (!rawRow) return { error: 'not_a_consult' };
   const lateDisposition = rawRow.state === 'expired' && req.authorId === rawRow.requester_id;
-  if (!lateDisposition) {
+  // EI-26702272071702798: a failed/exhausted launch menu has no responder
+  // who can close it. Let its requester record an honest terminal reason,
+  // without admitting replies, fabricated answers or another dispatch.
+  const undeliveredDisposition = req.authorId === rawRow.requester_id &&
+    req.outcome === 'cant_help' && rawRow.closed_at === null && rawRow.responder_id === null &&
+    (rawRow.state === 'no_qualified_responder' || rawRow.state === 'no_launchable_responder');
+  if (!lateDisposition && !undeliveredDisposition) {
     const gated = gateCommon(rawRow);
     if ('error' in gated) return gated;
   }

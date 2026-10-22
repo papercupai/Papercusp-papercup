@@ -1292,6 +1292,47 @@ describe('launchAcceptanceGrader', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('recovers a retired headless kickoff from structured failures through the bounded fallback', async () => {
+    const launch = vi.fn().mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: 'text', text: 'headless kickoff was not submitted' }],
+      data: { launch: { opened: 0, tasks: [], failures: [{
+        taskId: 'task-retired', logPath: '/tmp/retired-judge.log',
+        kickoffProof: { persisted: false, nativeRef: null, reason: 'kickoff-not-submitted:role-mcp-unavailable' },
+      }] } },
+    }).mockResolvedValueOnce({ data: { launch: { tasks: [{ taskId: 'task-fallback' }] } } });
+    const d = deps(launch);
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, d);
+    expect(result.state).toBe('launched');
+    expect(result.terminalRecovery).toMatchObject({
+      retiredTaskIds: ['task-retired'], codes: ['launch_kickoff_not_persisted'],
+    });
+    expect(d.killTask).toHaveBeenCalledWith('task-retired', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[1][0]).toMatchObject({ agent: 'codex', account: 'auto', independent: true });
+  });
+
+  it.each(['missing', 'timeout', 'untracked'])(
+    'does not replace a failed launch on %s proof', async proofKind => {
+      const launch = vi.fn().mockResolvedValue({
+        isError: true,
+        content: [{ type: 'text', text: 'kickoff-not-submitted:role-mcp-unavailable task-retired' }],
+        data: { launch: { opened: 0, tasks: [], failures: [{
+          ...(proofKind === 'untracked' ? {} : { taskId: 'task-retired' }),
+          ...(proofKind === 'missing' ? {} : { kickoffProof: {
+            persisted: false, nativeRef: null,
+            reason: proofKind === 'timeout' ? 'kickoff-proof-timeout' : 'kickoff-not-submitted:role-mcp-unavailable',
+          } }),
+        }] } },
+      });
+      const d = deps(launch);
+      const result = await launchAcceptanceGrader('ship-the-thing', ctx, d);
+      expect(result.state).toBe('failed');
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(d.killTask).not.toHaveBeenCalled();
+    },
+  );
+
   it('WI-10002155: a dropped kickoff is TERMINAL from the launcher receipt alone — never reported as launched', async () => {
     const kill = vi.fn(async () => ({ ok: true }));
     const readLogTail = vi.fn(() => '');

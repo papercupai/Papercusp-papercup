@@ -259,6 +259,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
       [
         'completion-ref-verify',
         'connection-pressure',
+        'dbos-history-ceiling',
         'federation-drain-reconcile',
         'harness-status-sweep',
         'host-contention-sampler',
@@ -281,6 +282,8 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   });
 
   it('preserves each check cadence (no frequency cuts — the row-cost is already gone)', () => {
+    expect(byName.get('dbos-history-ceiling')!).toMatchObject({ intervalMs: 30_000, fireOnArm: true, classification: 'must-sample' });
+    expect(byName.get('dbos-history-ceiling')!.shed).not.toBe(true);
     expect(byName.get('system-health')!.intervalMs).toBe(30_000);
     expect(byName.get('harness-status-sweep')!.intervalMs).toBe(30_000);
     expect(byName.get('connection-pressure')!.intervalMs).toBe(30_000);

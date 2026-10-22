@@ -1113,6 +1113,7 @@ export async function runWorkspaceHostProvisioning(
     ...(input.hostedCustomerWorkspaceId ? { durableTenantIdentity:
       workspaceHostDurableTenantIdentity(workspaceId, input.hostedCustomerWorkspaceId) } : {}),
     ...(durableStorageAllocation ? { durableStorageAllocation } : {}),
+    ...(input.canary ? { canaryTeardownDeadlineAt: input.canary.teardownDeadlineAt } : {}),
     ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),

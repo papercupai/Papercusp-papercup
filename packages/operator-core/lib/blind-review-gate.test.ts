@@ -5,7 +5,12 @@
  * plan-acceptance-gate-blind-review.integration.test.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { BLIND_REVIEW_REQUIRED_AFTER, evaluateBlindReviewGate, type BlindReviewGateDeps } from './blind-review-gate';
+import {
+  BLIND_REVIEW_REQUIRED_AFTER,
+  evaluateBlindReviewGate,
+  recordBlindReview,
+  type BlindReviewGateDeps,
+} from './blind-review-gate';
 
 const SLUG = 'demo-plan';
 const AFTER = new Date(Date.parse(BLIND_REVIEW_REQUIRED_AFTER) + 3_600_000);
@@ -78,6 +83,47 @@ const evaluate = (sql: BlindReviewGateDeps['sql'], related?: string[]) =>
 
 const review = (id: number, by: string, seq = 3, gaps: Review['gaps'] = []): Review =>
   ({ id, record_kind: 'review', activation_audit_seq: seq, gaps, created_by: by });
+
+function recordingSql() {
+  const rows: Array<Record<string, unknown>> = [];
+  let inserts = 0;
+  const fn = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('?');
+    if (text.includes('harness_plans')) {
+      return [{ harness_slug: 'h', created_at: AFTER, owner: 'su-owner', content: BODY }];
+    }
+    if (text.includes('plan_audits')) {
+      return [{ audit_seq: 3, activation: { mappings: [] } }];
+    }
+    if (text.includes('SELECT id, activation_audit_seq, gaps')) {
+      return rows.filter((row) => row.workspace_id === values[0] && row.idempotency_key === values[1]);
+    }
+    if (text.includes('INSERT INTO harness_shared.plan_blind_reviews')) {
+      inserts++;
+      const [workspaceId, harnessSlug, planSlug, activationAuditSeq, gaps, summary, createdBy, idempotencyKey] = values;
+      const existing = rows.find((row) => row.workspace_id === workspaceId && row.idempotency_key === idempotencyKey);
+      if (existing) return [];
+      const row = {
+        id: rows.length + 1,
+        workspace_id: workspaceId,
+        harness_slug: harnessSlug,
+        plan_slug: planSlug,
+        activation_audit_seq: activationAuditSeq,
+        gaps,
+        summary,
+        created_by: createdBy,
+        idempotency_key: idempotencyKey,
+      };
+      rows.push(row);
+      return [{ id: row.id }];
+    }
+    if (text.includes('plan_blind_reviews')) return rows;
+    throw new Error(`unexpected query: ${text}`);
+  };
+  const sql = fn as unknown as NonNullable<BlindReviewGateDeps['sql']>;
+  (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
+  return { sql, rows, get inserts() { return inserts; } };
+}
 
 describe('evaluateBlindReviewGate', () => {
   it('fails closed with blind_review_unavailable when a read throws', async () => {
@@ -153,5 +199,29 @@ describe('evaluateBlindReviewGate', () => {
 
   it('a counted review with no gaps satisfies the door', async () => {
     expect(await evaluate(fakeSql({ activationSeq: 3, reviews: [review(1, 'su-blind')] }))).toMatchObject({ satisfied: true, acceptedReviewIds: [1] });
+  });
+});
+
+describe('recordBlindReview idempotency', () => {
+  it('returns the original review for identical retries and refuses a changed retry', async () => {
+    const fixture = recordingSql();
+    const input = {
+      workspaceId: 'ws',
+      planSlug: SLUG,
+      harnessSlug: 'h',
+      createdBy: 'su-blind-reviewer',
+      gaps: [{ text: 'CSV export omits the invoice currency.' }],
+      activationAuditSeq: 3,
+    };
+
+    const first = await recordBlindReview(input, { sql: fixture.sql });
+    const retry = await recordBlindReview(input, { sql: fixture.sql });
+    expect(first).toEqual({ ok: true, id: 1, activationAuditSeq: 3, gapIds: ['G-1'] });
+    expect(retry).toEqual(first);
+    expect(fixture.inserts).toBe(1);
+
+    const changed = await recordBlindReview({ ...input, gaps: [{ text: 'A different report.' }] }, { sql: fixture.sql });
+    expect(changed).toMatchObject({ ok: false, code: 'idempotency_conflict' });
+    expect(fixture.inserts).toBe(1);
   });
 });

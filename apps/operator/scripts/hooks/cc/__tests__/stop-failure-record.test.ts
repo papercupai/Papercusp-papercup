@@ -7,7 +7,10 @@
  * builds (`hook_event_name`, `error`, `error_details`, `last_assistant_message` on
  * top of the common `session_id` / `transcript_path` / `cwd` fields).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildStopFailureReport,
   postStopFailureReport,
@@ -30,6 +33,9 @@ const payload = {
   error_details: '429 Too Many Requests',
   last_assistant_message: 'Working on it',
 };
+
+beforeEach(() => { env.PAPERCUSP_HOME = mkdtempSync(join(tmpdir(), 'stop-failure-test-')); });
+afterEach(() => { rmSync(env.PAPERCUSP_HOME!, { recursive: true, force: true }); });
 
 describe('buildStopFailureReport', () => {
   it('records the session, the error kind and the details as one lifecycle error row', () => {
@@ -81,12 +87,12 @@ describe('buildStopFailureReport', () => {
 
 describe('postStopFailureReport', () => {
   it('POSTs activity:report to the operator MCP endpoint as the session owner', async () => {
-    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('{}', { status: 200 }));
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"ok":true,"id":123}' }] } }), { status: 200 }));
     const args = buildStopFailureReport(payload, env);
     await expect(postStopFailureReport(args, { env, token: 'tok', fetchImpl })).resolves.toBe(true);
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(String(url)).toBe(
-      'http://127.0.0.1:3070/api/mcp?superuser=1&origin=hook&client=su-abc&workspace=papercusp-workspace',
+      'http://127.0.0.1:3070/api/mcp?superuser=1&origin=hook&client=su-abc&format=json&workspace=papercusp-workspace',
     );
     expect(init?.method).toBe('POST');
     expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer tok');

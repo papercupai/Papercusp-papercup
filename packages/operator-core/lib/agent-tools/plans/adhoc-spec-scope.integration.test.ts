@@ -44,6 +44,15 @@ describe('resolveSpecScopeSlug materialises a scope whose body has a content clo
     expect(plan!.content).toBe(ADHOC_SCOPE_CONTENT);
     // Calibration: the stored hash is the canonical one, not the column's '' default.
     expect(plan!.content_hash).toBe(hashPlanContent(ADHOC_SCOPE_CONTENT));
+    const [profile] = await db.adminSql<Array<{
+      verification_profile: string | null;
+      verification_profile_source: string | null;
+    }>>`
+      SELECT verification_profile, verification_profile_source
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
+    expect(profile?.verification_profile).toMatch(/^(coding|general)$/);
+    expect(profile?.verification_profile_source).toBe('harness-default');
 
     // The exact predicate plan-parts/reconcile.ts defaultLoadPlans joins on.
     const matched = await db.adminSql<Array<{ seq: number; author_id: string }>>`

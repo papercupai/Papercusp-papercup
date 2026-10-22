@@ -378,7 +378,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
-  it('promotes a timed-out volatile fallback only after the primary scratch deadline', async () => {
+  it('promotes a timed-out volatile fallback when durable recovery outlasts the former sub-budget', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     let rejectWrite!: (error: Error) => void;
@@ -395,6 +395,9 @@ describe('result-door deferred spill (WI-10004533)', () => {
       scratchReference,
       'persistVolatileScratchReference',
     ).mockImplementation(async (uri, caller) => {
+      // Durable recovery can need several seconds for the PG payload-spool contention
+      // retries; it must still complete within the remaining transport budget.
+      await new Promise<void>((resolve) => setTimeout(resolve, 6_000));
       persistedFallbackText = readVolatileText(
         { uri },
         caller.workspaceId ?? 'ws-1',
@@ -412,8 +415,13 @@ describe('result-door deferred spill (WI-10004533)', () => {
       expect(durablePersist).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(6_000);
       const result = await resultPromise;
       expect(durablePersist).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('[bounded-timeout] result-door durable timeout recovery'),
+      );
       expect(durablePersist).toHaveBeenCalledWith(expect.stringMatching(/^papercusp:\/\/scratch-memory\//), {
         workspaceId: 'ws-1',
         ownerId: 'su-1',
@@ -1482,6 +1490,75 @@ describe('result-door deferred spill (WI-10004533)', () => {
       });
       expect(readVolatileText(cursor)).toContain(original);
       expect(JSON.stringify(out.content)).not.toContain(sandbox);
+    });
+
+    it('includes cursor args in the model-facing aggregate envelope after scratch quota mutex timeout', async () => {
+      const aggregateScope = beginResultDoorAggregate({ sessionKey: 'facts-list-timeout-test', outputGroupId: 'turn-1' });
+      const fill = { content: [{ type: 'text' as const, text: 'f'.repeat(BUDGET_CHARS) }] };
+      await applyResultDoorAsync(fill, { ...OPTS, toolName: 'facts:list', aggregateScope });
+      await applyResultDoorAsync(fill, { ...OPTS, toolName: 'facts:list', aggregateScope });
+
+      const original = JSON.stringify({
+        ok: true,
+        count: 200,
+        total: 1_522,
+        truncatedByLimit: true,
+        facts: Array.from({ length: 200 }, (_, index) => `guard-${index}`),
+      });
+      const failure = Object.assign(
+        new Error('Timed out after 5000ms waiting for fs-mutex "papercusp-scratch-quota".'),
+        { code: 'ETIMEDOUT' },
+      );
+      const originalWriteWithScratchQuota = scratchGc.writeWithScratchQuota;
+      const spillWriter = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((opts, write) => {
+        if (opts.filePath.includes('result-door-')) return Promise.reject(failure);
+        return originalWriteWithScratchQuota(opts, write);
+      });
+      const durableFallbackWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const out = await applyResultDoorAsync(
+          { content: [{ type: 'text' as const, text: original }] },
+          { ...OPTS, toolName: 'facts:list', aggregateScope },
+        );
+        const envelope = JSON.parse((out.content[0] as { text: string }).text) as {
+          state?: string;
+          content?: Array<{ kind?: string; uri?: string }>;
+          incomplete?: { reason?: string; note?: string };
+          _projection?: {
+            cursor?: {
+              kind?: string;
+              tool?: string;
+              errorCode?: string;
+              uri?: string;
+              args?: { uri?: string; byte_offset?: number; byte_limit?: number };
+            };
+          };
+        };
+        const cursor = envelope._projection?.cursor;
+
+        expect(envelope).toMatchObject({
+          state: 'incomplete',
+          incomplete: { reason: 'aggregate-output-budget-exceeded' },
+        });
+        expect(cursor).toMatchObject({
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
+          errorCode: 'ETIMEDOUT',
+          args: { uri: cursor?.uri, byte_offset: 0, byte_limit: 3_072 },
+        });
+        expect(cursor?.args?.uri).toBe(cursor?.uri);
+        expect(envelope.content?.[0]).toMatchObject({ kind: 'reference', uri: cursor?.uri });
+        expect(envelope.incomplete?.note).toContain('Read _projection.cursor.args with capability:read');
+        if (!cursor) throw new Error('missing model-facing recovery cursor');
+        expect(readVolatileText(cursor)).toContain(original);
+        expect(durableFallbackWarning).toHaveBeenCalledWith(
+          expect.stringContaining('[bounded-timeout] result-door durable timeout recovery failed'),
+        );
+      } finally {
+        spillWriter.mockRestore();
+        durableFallbackWarning.mockRestore();
+      }
     });
   });
 });

@@ -18,7 +18,9 @@ export function readSuperuserToken(env: NodeJS.ProcessEnv): string;
 export function readHookStdin(timeoutMs: number): Promise<string>;
 /**
  * POST one `activity:report` call to the operator's MCP endpoint as `args.owner`.
- * Returns true when the operator answered 2xx; never throws.
+ * Returns true only for a confirmed inserted row. Reuses the managed hook MCP
+ * parser (JSON/SSE, structuredContent, text content). Undelivered records are
+ * retained privately in hook-state for recovery; stdout and exit remain silent.
  * @param {{ owner: string } & Record<string, unknown> | null | undefined} args
  * @param {{ env?: NodeJS.ProcessEnv, token: string, fetchImpl?: typeof fetch }} opts
  * @returns {Promise<boolean>}

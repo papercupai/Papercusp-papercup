@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, normalizePushCall, shellReadPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
+import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, normalizePushCall, readPushSourceLinks, shellReadPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
@@ -26,7 +26,39 @@ function deps(): PushChannelDeps {
     commit: vi.fn(async (_input, _snapshot, facts: readonly PushFact[]) => facts.map(f => f.text).join('\n')) };
 }
 
+describe('first-touch source-link diagnostics', () => {
+  it.each([
+    ['harness_docs', 'context.sourceLinks.docs'],
+    ['spec_evidence_bindings', 'context.sourceLinks.specs'],
+  ])('attributes SQLSTATE 57014 to the %s statement', async (table, phase) => {
+    const failure = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    const tx = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes(`harness_shared.${table}`)) throw failure;
+      return [];
+    });
+    const sql = { begin: async (run: (tx: unknown) => unknown) => run(tx) } as unknown as Parameters<typeof readPushSourceLinks>[2];
+    const diagnostics: NonNullable<Parameters<typeof readPushSourceLinks>[3]> = {
+      readId: 'source-links-test', startedAtMs: Date.now(), phaseMs: {}, phaseOutcomes: {},
+    };
+
+    await expect(readPushSourceLinks(input, ['lib/target.ts'], sql, diagnostics)).rejects.toBe(failure);
+    expect(diagnostics.phaseOutcomes[phase]).toBe('error');
+    expect(diagnostics.phaseErrors?.[phase]).toBe('Error: [57014]: canceling statement due to statement timeout');
+  });
+});
+
 describe('shared snapshot-backed push channel', () => {
+  it('captures research before no-snapshot, disabled-leg and text-budget early returns', async () => {
+    const d = deps();
+    d.research = vi.fn(async () => {});
+    d.snapshot = vi.fn(async () => null);
+    expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS, d)).toBe('');
+    expect(d.research).toHaveBeenCalledWith(input);
+    d.legs = () => new Map();
+    await codeIntelPushText(input, 0, d);
+    expect(d.research).toHaveBeenCalledTimes(2);
+  });
   it('corroborates scoped recent symbol observations and rejects stale or changed source', async () => {
     const root = await mkdtemp(join(tmpdir(), 'push-incident-source-'));
     const text = 'export const changed = 3;';

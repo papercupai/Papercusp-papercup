@@ -132,6 +132,7 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, migration('1111-acceptance-bar-contract-seed.sql'));
   // The canonical seed writer clears the receiver-local verification pin.
   await applyMigrationForTest(db.sql, migration('1258-acceptance-bar-verified-revision.sql'));
+  await applyMigrationForTest(db.sql, migration('1536-plan-verification-profile-columns.sql'));
 }, 90_000);
 
 afterAll(async () => {
@@ -385,6 +386,26 @@ describe('runAcceptanceBarMigrationInDatabase', () => {
       workspaceId: WORKSPACE, harnessSlug: HARNESS, actorId: 'su-migration-test', planSlug: 'strict-late-bars',
     });
     expect(replay.outcomes).toEqual([]);
+  });
+
+  it('records backfilled provenance for an already-started draft in preview and storage', async () => {
+    const slug = 'started-draft';
+    const content = validContent(slug).replace('`todo`', '`wip`');
+    await insertPlan(slug, content, 'draft');
+    await db.sql`UPDATE harness_shared.plan_items SET status='wip' WHERE plan_slug=${slug}`;
+    const args = { workspaceId: WORKSPACE, harnessSlug: HARNESS, actorId: 'su-migration-test', planSlug: slug };
+    const preview = await runAcceptanceBarMigrationInDatabase({ ...args, dryRun: true });
+    expect(preview.outcomes[0]).toMatchObject({
+      status: 'dry-run', decision: { action: 'legacy-backfill', cohort: 'post-epoch' },
+    });
+    expect(JSON.parse(preview.outcomes[0]!.detail).provenance).toBe('legacy-backfilled');
+    const applied = await runAcceptanceBarMigrationInDatabase(args);
+    expect(applied.outcomes[0], applied.outcomes[0]!.detail).toMatchObject({ status: 'applied' });
+    const [rubric] = await db.sql`SELECT template_data FROM harness_shared.harness_plans
+      WHERE plan_slug=${`acceptance-${slug}`}`;
+    expect(rubric.template_data.barContract.cohort).toBe('post-epoch');
+    expect(rubric.template_data.criteria[0].barProvenance.lifecycle).toBe('legacy-backfilled');
+    expect((await runAcceptanceBarMigrationInDatabase(args)).outcomes).toEqual([]);
   });
 
   it('dry-runs, applies through the canonical writer, and converges on rerun', async () => {

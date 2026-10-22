@@ -3,6 +3,8 @@ import { getRegistryEntryV2, resolveNamedQueryV2 } from './index';
 import { queryNamesForTriggerEvent } from './table-to-query-names';
 import { DREAM_ACTION_DECISION_PREFIX } from '../dream/dream-config';
 import { GYM_ADMISSION_DECISION_PREFIX } from '../gym/autoloop-tick';
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from '../agent-tools/db-diagnostic-correlation-wiring';
+import { observeResolve } from './resolve-observability';
 
 const mocks = vi.hoisted(() => ({
   metrics: vi.fn(), controls: vi.fn(), history: vi.fn(), detail: vi.fn(), observations: vi.fn(), journal: vi.fn(), tx: {},
@@ -130,5 +132,35 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     await expect(supplied.journal({ grep: DREAM_ACTION_DECISION_PREFIX })).resolves.toBe(retained);
     await expect(supplied.journal({ grep: GYM_ADMISSION_DECISION_PREFIX })).rejects.toThrow(
       failure === 'pending' ? 'gym-admission-journal exceeded the read budget' : 'gym journal unavailable');
+  });
+
+  it('identifies a pending journal separately from the workspace read in the timeout diagnostic', async () => {
+    let release!: (value: { journalAvailable: boolean; entries: never[] }) => void;
+    mocks.journal.mockReset().mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    const runtime = { host: 'read', processId: 'p', buildSha: 'current' };
+    await withNamedQueryDiagnosticContext('learning.dream', async requestId => {
+      const pending = resolveNamedQueryV2('learning.dream', { potSlug: 'pot', view: 'observations',
+        since: '2026-10-16T12:00:00Z', until: '2026-10-17T12:00:00Z', expectedRuntime: runtime,
+        actionJournalUnit: 'bg.service', expectedActionRuntime: runtime });
+      try {
+        await vi.waitFor(() => expect(mocks.journal).toHaveBeenCalledTimes(1));
+        const lines: string[] = [];
+        observeResolve({ name: 'learning.dream', argsJson: '{}', elapsedMs: 10_000,
+          error: { name: 'QueryResolveTimeoutError', message: 'deadline' }, now: Date.now() + 120_000,
+          emit: line => lines.push(line) });
+        expect(lines).toHaveLength(1);
+        const diagnostic = JSON.parse(lines[0].split(' stages=')[1]);
+        expect(diagnostic).toMatchObject({ requestId });
+        expect(diagnostic.stages).toContainEqual({ stage: 'dream-action-journal', outcome: 'pending', elapsedMs: expect.any(Number) });
+        expect(diagnostic.stages.some((stage: { stage: string }) => stage.stage === 'dream-workspace-transaction')).toBe(false);
+      } finally {
+        release({ journalAvailable: true, entries: [] });
+        await pending;
+      }
+      expect(namedQueryStageTimings()?.stages).toEqual(expect.arrayContaining([
+        { stage: 'dream-workspace-transaction', outcome: 'fulfilled', elapsedMs: expect.any(Number) },
+        { stage: 'dream-observation-read', outcome: 'fulfilled', elapsedMs: expect.any(Number) },
+      ]));
+    });
   });
 });

@@ -64,6 +64,29 @@ describe('acceptance BAR cohort migration policy (P-010)', () => {
     });
   });
 
+  it.each(['wip', 'done', 'blocked', 'needs-human'])(
+    'backfills a draft containing %s work without removing strict enforcement', (status) => {
+      const content = `${plan().content}\n\n## Phase 1 — Build\n\n- **P-001** \`${status}\` implement the outcome\n`;
+      expect(classifyAcceptanceBarMigration(plan({ status: 'draft', content }))).toMatchObject({
+        action: 'legacy-backfill', cohort: 'post-epoch',
+      });
+    },
+  );
+
+  it.each(['todo', 'dropped'])('keeps a draft with only %s items prospective', (status) => {
+    const content = `${plan().content}\n\n## Phase 1 — Build\n\n- **P-001** \`${status}\` implement the outcome\n`;
+    expect(classifyAcceptanceBarMigration(plan({ status: 'draft', content }))).toMatchObject({
+      action: 'seed-strict', cohort: 'post-epoch',
+    });
+  });
+
+  it('refuses to invent requirements for an already-started draft', () => {
+    const content = '## Phase 1 — Build\n\n- **P-001** `wip` implement the outcome\n';
+    expect(classifyAcceptanceBarMigration(plan({ status: 'draft', content }))).toMatchObject({
+      action: 'bar-backfill-required',
+    });
+  });
+
   it('legacy-backfills only from Requirements or an explicit live mapped criterion', () => {
     expect(classifyAcceptanceBarMigration(plan())).toMatchObject({ action: 'legacy-backfill' });
     expect(classifyAcceptanceBarMigration(plan({ acceptanceBarCohort: 'post-epoch' }))).toMatchObject({

@@ -8,7 +8,14 @@
  * `error`, `is_interrupt`, `duration_ms` on top of the common `session_id` /
  * `transcript_path` / `cwd` fields).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildStopFailureReport, postStopFailureReport } from '../stop-failure-record.mjs';
 import {
   buildToolFailureReport,
   reduceToolInput,
@@ -35,6 +42,9 @@ const payload = {
   is_interrupt: false,
   duration_ms: 12,
 };
+
+beforeEach(() => { env.PAPERCUSP_HOME = mkdtempSync(join(tmpdir(), 'tool-failure-test-')); });
+afterEach(() => { rmSync(env.PAPERCUSP_HOME!, { recursive: true, force: true }); });
 
 describe('buildToolFailureReport', () => {
   it('records the tool name, the session and the failure as one post-phase tool row', () => {
@@ -99,13 +109,53 @@ describe('reduceToolInput', () => {
 });
 
 describe('postActivityReport', () => {
+  for (const [name, body] of Object.entries({
+    rpc: { jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'no row stored' } },
+    tool: { result: { isError: true, content: [{ type: 'text', text: '{"ok":true,"id":12}' }] } },
+    rejected: { result: { structuredContent: { ok: false, id: 12 } } },
+    textRejected: { result: { content: [{ type: 'text', text: '{"ok":false,"id":12}' }] } },
+    dropped: { result: { structuredContent: { ok: true, id: null, dropped: 'contention' } } },
+    empty: {},
+  })) {
+    for (const hook of ['StopFailure', 'PostToolUseFailure']) {
+      it(`${hook} preserves an unconfirmed ${name} response without claiming insertion`, async () => {
+        const args = hook === 'StopFailure'
+          ? buildStopFailureReport({ ...payload, hook_event_name: hook }, env)
+          : buildToolFailureReport(payload, env);
+        const fetchImpl = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+        const options = { env, token: 'secret-not-for-disk', fetchImpl };
+        const sent = hook === 'StopFailure'
+          ? await postStopFailureReport(buildStopFailureReport({ ...payload, hook_event_name: hook }, env), options)
+          : await postActivityReport(args, options);
+        expect(sent).toBe(false);
+        const dir = join(env.PAPERCUSP_HOME!, 'hook-state', 'undelivered-activity');
+        const files = readdirSync(dir);
+        expect(files).toHaveLength(1);
+        const raw = readFileSync(join(dir, files[0]!), 'utf8');
+        expect(raw).not.toContain('secret-not-for-disk');
+        expect(JSON.parse(raw).args).toEqual(args);
+      });
+    }
+  }
+
+  for (const sse of [false, true]) {
+    it(`accepts a confirmed insertion from ${sse ? 'SSE' : 'pretty JSON'} structuredContent`, async () => {
+      const rpc = { jsonrpc: '2.0', id: 1, result: { structuredContent: { ok: true, id: 99 } } };
+      const body = sse ? `event: message\ndata: ${JSON.stringify(rpc)}\n\n` : JSON.stringify(rpc, null, 2);
+      expect(await postActivityReport(buildToolFailureReport(payload, env), {
+        env, token: 'tok', fetchImpl: async () => new Response(body),
+      })).toBe(true);
+      expect(readdirSync(env.PAPERCUSP_HOME!)).toEqual([]);
+    });
+  }
+
   it('POSTs activity:report to the operator MCP endpoint as the session owner', async () => {
-    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('{}', { status: 200 }));
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"ok":true,"id":123}' }] } }), { status: 200 }));
     const args = buildToolFailureReport(payload, env);
     await expect(postActivityReport(args, { env, token: 'tok', fetchImpl })).resolves.toBe(true);
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(String(url)).toBe(
-      'http://127.0.0.1:3070/api/mcp?superuser=1&origin=hook&client=su-abc&workspace=papercusp-workspace',
+      'http://127.0.0.1:3070/api/mcp?superuser=1&origin=hook&client=su-abc&format=json&workspace=papercusp-workspace',
     );
     expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer tok');
     const body = JSON.parse(String(init?.body));
@@ -124,4 +174,63 @@ describe('postActivityReport', () => {
     });
     expect(await postActivityReport(buildToolFailureReport(payload, env), { env, token: 'tok', fetchImpl: boom })).toBe(false);
   });
+});
+
+describe('failure-hook executable delivery', () => {
+  for (const hook of ['stop', 'posttooluse']) {
+    for (const accepted of [false, true]) {
+      it(`${hook} entrypoint ${accepted ? 'confirms insertion' : 'preserves an HTTP-200 rejection'}`, async () => {
+        const requests: unknown[] = [];
+        const server = createServer(async (req, res) => {
+          let body = '';
+          for await (const chunk of req) body += chunk;
+          requests.push(JSON.parse(body));
+          res.setHeader('Content-Type', 'text/event-stream');
+          const reply = accepted
+            ? { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"ok":true,"id":123}' }] } }
+            : { jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'deliberately rejected; no row stored' } };
+          res.end(`event: message\ndata: ${JSON.stringify(reply)}\n\n`);
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        try {
+          const home = env.PAPERCUSP_HOME!;
+          writeFileSync(join(home, 'superuser-token'), 'test-token', { mode: 0o600 });
+          // Isolate the already-tested nested-CLI guard: this process is the
+          // managed CLI parent in the fixture, not another live agent's cache.
+          const cache = join(home, 'nested-cache');
+          mkdirSync(cache);
+          const fields = readFileSync(`/proc/${process.pid}/stat`, 'utf8').split(') ').at(-1)!.trim().split(/\s+/);
+          writeFileSync(join(cache, `${process.pid}-${fields[19]}`), 'managed');
+          const port = (server.address() as { port: number }).port;
+          const entry = fileURLToPath(new URL(`../${hook}-failure-record.mjs`, import.meta.url));
+          const input = { ...payload, hook_event_name: hook === 'stop' ? 'StopFailure' : 'PostToolUseFailure' };
+          const child = spawn(process.execPath, [entry], { env: { ...process.env, ...env,
+            PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`, PC_NESTED_CLI_CACHE_DIR: cache },
+            stdio: ['pipe', 'pipe', 'pipe'] });
+          let stdout = ''; let stderr = '';
+          child.stdout.on('data', (chunk) => { stdout += chunk; });
+          child.stderr.on('data', (chunk) => { stderr += chunk; });
+          const exit = new Promise<number | null>((resolve, reject) => {
+            child.on('close', resolve); child.on('error', reject);
+          });
+          child.stdin.end(JSON.stringify(input));
+          expect(await exit).toBe(0);
+          expect(stdout).toBe('');
+          expect(requests).toHaveLength(1);
+          const dir = join(home, 'hook-state', 'undelivered-activity');
+          if (accepted) {
+            expect(existsSync(dir)).toBe(false);
+            expect(stderr).toBe('');
+          } else {
+            const files = readdirSync(dir);
+            expect(files).toHaveLength(1);
+            const record = JSON.parse(readFileSync(join(dir, files[0]!), 'utf8'));
+            expect(record.args.session_id).toBe(input.session_id);
+            expect(record.args.tool_input).toBeDefined();
+            expect(stderr).toContain('activity report unconfirmed; preserved at');
+          }
+        } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+      }, 20_000);
+    }
+  }
 });

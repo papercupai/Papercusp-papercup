@@ -14,7 +14,7 @@ const options = isolatedWorkerOptions(480_000);
 // R-12 needs a real request worker and durable ledger, independently of the unit
 // alarm seam. Reuse the maintained private operator profile and lifetime proof.
 async function verifyAlarm(subject: 'agents-wedged' | 'agents-stranded' | 'hosted-control-plane-degraded' |
-  'hosted-reverse-connector-lost' | 'platform-lifecycle-budget-exceeded', context?: TestContext) {
+  'hosted-reverse-connector-lost' | 'platform-lifecycle-budget-exceeded' | 'population-acceptance', context?: TestContext) {
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/system-health/liveness-alarm-current-build.e2e.test.ts',
@@ -28,6 +28,10 @@ async function verifyAlarm(subject: 'agents-wedged' | 'agents-stranded' | 'hoste
       'packages/operator-core/lib/system-health/agent-strand-census.ts',
       'packages/operator-core/lib/system-health/liveness-alarm.ts',
       'packages/operator-core/lib/system-health/compute.ts',
+      'packages/operator-core/lib/system-health/thresholds.ts',
+      'packages/operator-core/lib/attention-notify.ts',
+      'packages/operator-core/lib/attention-notify-store.ts',
+      'packages/operator-core/lib/operator-state-pg.ts',
       'packages/operator-core/lib/workspace-host/observability-store.ts',
       'packages/operator-core/lib/severe-event-owner.ts',
       'packages/operator-core/lib/derived-reads/shared-snapshot.ts',
@@ -61,6 +65,17 @@ async function verifyAlarm(subject: 'agents-wedged' | 'agents-stranded' | 'hoste
       const line = result.output.split('\n').find(row => row.startsWith('LIVENESS_ALARM_HTTP_RECEIPT '));
       expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('LIVENESS_ALARM_HTTP_RECEIPT '.length));
+      if (subject === 'population-acceptance') {
+        expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
+          signal: subject, sourceUnchanged: true, bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          population: { classCounts: [1, 2, 3, 4], stranded: AGENT_STRANDED_ALARM_THRESHOLD,
+            severityControls: ['wedged-only', 'stranded-only', 'both'], unknownControls: ['wedged', 'stranded'],
+            genericPopulationPages: 0, independentPanelPage: true,
+            episodes: { 'agents-wedged': { alarms: 4, attentionIntents: 3 },
+              'agents-stranded': { alarms: 4, attentionIntents: 3 } },
+            quietBoundary: { persistedHistoryAdvanced: true, durationMs: 1_800_001 } },
+        });
+      } else {
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
         signal: subject, threshold: subject === 'agents-wedged' ? 10 : subject === 'agents-stranded' ? AGENT_STRANDED_ALARM_THRESHOLD : 1,
         alarmCount: 1, restartDedupCount: 1, belowThreshold: subject === 'agents-wedged' ? 9 : subject === 'agents-stranded' ? AGENT_STRANDED_ALARM_THRESHOLD - 1 : 0,
@@ -88,6 +103,7 @@ async function verifyAlarm(subject: 'agents-wedged' | 'agents-stranded' | 'hoste
         expect(reading.hosts.unhealthy).toBe(0);
       }
       expect(receipt.recovered.note).not.toContain('no per-signature evidence');
+      }
       const start = events.find(event => event.kind === 'isolated-runtime-start');
       const end = events.find(event => event.kind === 'isolated-runtime-end');
       expect(start).toMatchObject({ root, workspace: receipt.workspace });
@@ -121,3 +137,14 @@ it('delivers one connector-loss alarm and resolves reconnection across restart a
   context => verifyAlarm('hosted-reverse-connector-lost', context), options.testTimeoutMs);
 it('delivers one Papercusp-owned spend alarm and resolves a measured budget recovery',
   context => verifyAlarm('platform-lifecycle-budget-exceeded', context), options.testTimeoutMs);
+
+// These clauses share one isolated worker journey and its ledger-backed artifact.
+let populationProof: Promise<string> | undefined;
+async function verifyPopulation(context: TestContext) {
+  const runId = await (populationProof ??= verifyAlarm('population-acceptance'));
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+}
+it('publishes measured wedged class counts and stranded totals on the coordination panel', verifyPopulation, options.testTimeoutMs);
+it('keeps coordination population severity at WARN without a duplicate generic panel page', verifyPopulation, options.testTimeoutMs);
+it('pages once per population episode and permits a new page after documented recovery and flap suppression',
+  verifyPopulation, options.testTimeoutMs);

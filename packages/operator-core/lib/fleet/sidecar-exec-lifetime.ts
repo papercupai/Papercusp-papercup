@@ -19,6 +19,9 @@ export interface SidecarContainment {
   cgroupPath: string;
   rootIdentity: string;
   cgroupIdentity: string;
+  /** A separately enrolled forkserver is a sibling scope. Its exact incarnation
+   * must empty too; the sidecar's own cgroup does not contain those commands. */
+  forkserver?: SidecarContainment;
 }
 
 export interface LifetimeFs {
@@ -73,12 +76,13 @@ export function sidecarContainmentCurrent(snapshot: SidecarContainment): boolean
   const current = captureSidecarContainment(snapshot.scopeUnit, snapshot.pid);
   return current !== null && current.identity === snapshot.identity &&
     current.cgroupPath === snapshot.cgroupPath && current.rootIdentity === snapshot.rootIdentity &&
-    current.cgroupIdentity === snapshot.cgroupIdentity;
+    current.cgroupIdentity === snapshot.cgroupIdentity &&
+    (!snapshot.forkserver || sidecarContainmentCurrent(snapshot.forkserver));
 }
 
 /** Read every predicate afresh. Even ENOENT only proves absence after checking
  * the same boot and cgroup mount; EACCES/EIO and malformed data stay unknown. */
-export function observeSidecarExit(snapshot: SidecarContainment, fs: LifetimeFs = kernelFs): SidecarExitState {
+function observeSingleScopeExit(snapshot: SidecarContainment, fs: LifetimeFs): SidecarExitState {
   if (!Number.isSafeInteger(snapshot.pid) || snapshot.pid <= 0 ||
       !validScope(snapshot.scopeUnit, snapshot.cgroupPath)) return 'unknown';
   try {
@@ -113,6 +117,13 @@ export function observeSidecarExit(snapshot: SidecarContainment, fs: LifetimeFs 
   }
 }
 
+export function observeSidecarExit(snapshot: SidecarContainment, fs: LifetimeFs = kernelFs): SidecarExitState {
+  const own = observeSingleScopeExit(snapshot, fs);
+  if (own !== 'exited' || !snapshot.forkserver) return own;
+  const companion = observeSidecarExit(snapshot.forkserver, fs);
+  return companion === 'exited' ? 'exited' : companion === 'unknown' ? 'unknown' : 'populated';
+}
+
 /** How long to keep re-observing a `populated` scope after a signal was sent. The kernel
  * clears `cgroup.events` `populated` (and systemd removes the scope) only AFTER the
  * signalled tasks are torn down and reaped, so the first read after a successful SIGKILL
@@ -139,14 +150,18 @@ export async function reapDeadSidecar(
   const state = observeSidecarExit(snapshot, deps.fs);
   if (state === 'exited') return true;
   if (state !== 'populated') return false;
+  const kill = deps.kill ?? (async (scopeUnit: string) => {
+    const { killScopeUnit } = await import('../task-manager/control');
+    return killScopeUnit(scopeUnit, { signal: 'SIGKILL' });
+  });
   try {
-    if (deps.kill) await deps.kill(snapshot.scopeUnit);
-    else {
-      const { killScopeUnit } = await import('../task-manager/control');
-      await killScopeUnit(snapshot.scopeUnit, { signal: 'SIGKILL' });
+    await kill(snapshot.scopeUnit);
+  } catch { /* always require positive observation below */ }
+  if (snapshot.forkserver) {
+    const companion = observeSingleScopeExit(snapshot.forkserver, deps.fs ?? kernelFs);
+    if (companion === 'alive' || companion === 'populated') {
+      try { await kill(snapshot.forkserver.scopeUnit); } catch { /* observation owns settlement */ }
     }
-  } catch {
-    // A failed signal must still be followed by positive observation.
   }
   const settleMs = deps.settleMs ?? SIDECAR_REAP_SETTLE_MS;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));

@@ -740,6 +740,9 @@ test('connection focus stays visible when the docked rail reserves width after o
   await expect(label).toBeFocused();
   await expect(label).toBeInViewport({ ratio: 1 });
   expect(fixture.writes).toEqual([]);
+  await test.info().attach('connection-focus-after-rail-resize', {
+    body: await page.screenshot(), contentType: 'image/png',
+  });
 });
 
 test('reload resumes saved pause, AI outage leaves controls operable, and Help replays without product writes', async ({ page }) => {

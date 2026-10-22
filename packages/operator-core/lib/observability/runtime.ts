@@ -2,7 +2,7 @@
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
-import { createTracing, enableTracingContext } from './tracing';
+import { createTracing } from './tracing';
 import { PosthogSpanExporter } from './posthog-exporter';
 
 type DispatchStart = Parameters<NonNullable<DispatchProjectedDeps['onDispatchStart']>>[0];
@@ -17,6 +17,7 @@ export async function runtimeTraceDeliveryConfig() {
   return {
     allowed: process.env.NODE_ENV === 'production' && !customerAgentExecutionRequired() && (config.optedIn || config.internalBuild),
     host: config.host ?? '', projectKey: config.projectKey ?? '', distinctId: config.distinctId,
+    consentSince: config.consentSince,
   };
 }
 
@@ -24,15 +25,21 @@ const state = pinModuleState('@papercusp/operator-core.otel-runtime', () => ({
   runtime: null as ReturnType<typeof createTracing> | null,
   exporter: null as PosthogSpanExporter | null,
   observerFailures: 0,
+  registration: null as ReturnType<ReturnType<typeof createTracing>['register']> | null,
 }));
 
 function runtime() {
   if (!state.runtime) {
-    enableTracingContext();
     state.exporter = new PosthogSpanExporter(runtimeTraceDeliveryConfig);
     state.runtime = createTracing({ exporter: state.exporter });
+    state.registration = state.runtime.register();
   }
   return state.runtime;
+}
+
+/** Called during host boot before DBOS can install a competing global provider. */
+export function initializeRuntimeObservability(): void {
+  try { runtime(); } catch { state.observerFailures++; }
 }
 
 export function beginToolTrace(event: DispatchStart): void {
@@ -59,7 +66,8 @@ export function finishToolTrace(input: Invocation) {
 }
 
 export function beginGatewayTrace(key: string, provider: string, headers: Record<string, string>) {
-  try { runtime().begin(key, 'papercusp.model', { 'gen_ai.operation.name': 'chat', 'gen_ai.provider.name': provider }, headers); }
+  try { runtime().begin(key, 'papercusp.model', { 'gen_ai.operation.name': 'chat', 'gen_ai.provider.name': provider,
+    'papercusp.request_id': key }, headers); }
   catch { state.observerFailures++; }
 }
 
@@ -82,7 +90,16 @@ export function finishGatewayTrace(key: string, timeline: GatewayRequestTimeline
 
 export function runtimeObservabilityHealth() {
   return { initialized: state.runtime !== null, observerFailures: state.observerFailures,
+    globalProviderRegistered: state.registration?.registered ?? false,
     tracing: state.runtime?.health() ?? null, posthog: state.exporter?.health() ?? null };
 }
 
 export async function flushRuntimeObservability(): Promise<void> { await state.runtime?.flush(); }
+
+export async function shutdownRuntimeObservability(): Promise<void> {
+  state.registration?.disable();
+  await state.runtime?.shutdown();
+  state.runtime = null;
+  state.exporter = null;
+  state.registration = null;
+}

@@ -192,7 +192,9 @@ import {
 import { SU_TIER_ROLES } from "../../../packages/operator-core/lib/su-tier-roles.mjs";
 import {
   claudeHookCarrierVerdict,
+  enrollPapercuspClaudePlugin,
   effectiveClaudeHookCommands,
+  stripPluginCarriedInlineHooks,
 } from "../../../packages/operator-core/lib/claude-plugin/plugin-rails.mjs";
 // P-021/D-013: the ONE local-model predicate, shared with the server-side
 // OMP_NATIVE_LSP_BUILTIN tier gate in bootstrap-{su,role}.ts. This file used to
@@ -8317,7 +8319,7 @@ export function persistPsuClaudeSessionSettings({
     if (!isClaudeWrapperBin(wrapperBin)) return false;
     const dir = (env?.CLAUDE_CONFIG_DIR ?? "").trim();
     if (!dir) return false;
-    if (resolvePath(dir) === resolvePath(userClaudeDir)) return false;
+    if (!isIsolatedClaudeSettings(join(dir, "settings.json"), userClaudeDir)) return false;
     const path = join(dir, "settings.json");
     let current = {};
     try {
@@ -8342,6 +8344,23 @@ export function persistPsuClaudeSessionSettings({
     }
     return false;
   }
+}
+
+/** Filesystem identity, not path spelling, protects the owner's settings.
+ * Refuse a settings symlink even when dangling; never replace an alias. */
+function isIsolatedClaudeSettings(path, userClaudeDir = join(homedir(), ".claude")) {
+  if (resolvePath(dirname(path)) === resolvePath(userClaudeDir)) return false;
+  const sessionDir = realpathSync(dirname(path));
+  if (existsSync(userClaudeDir) && sessionDir === realpathSync(userClaudeDir)) return false;
+  try {
+    const target = lstatSync(path);
+    if (target.isSymbolicLink()) return false;
+    const owner = statSync(join(userClaudeDir, "settings.json"));
+    if (target.dev === owner.dev && target.ino === owner.ino) return false;
+  } catch (e) {
+    if (e?.code !== "ENOENT") throw e;
+  }
+  return true;
 }
 
 /**
@@ -12464,7 +12483,7 @@ function readTextOrNull(path) {
 export function ensureClaudePluginRails(
   env,
   {
-    settingsPath = join(homedir(), ".claude", "settings.json"),
+    settingsPath = join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json"),
     readFile = readTextOrNull,
     repair = repairCcHooksViaInstallRoute,
     log = (line) => console.error(line),
@@ -12476,7 +12495,7 @@ export function ensureClaudePluginRails(
   let verdict = check();
   if (verdict.problems.length === 0) return verdict;
   const before = verdict.problems;
-  repair();
+  repair(settingsPath, env);
   verdict = check();
   if (verdict.problems.length === 0) {
     log(`psu: papercusp Claude plugin rails repaired via the operator install route (${before.join("; ")}).`);
@@ -12491,7 +12510,10 @@ export function ensureClaudePluginRails(
         ? "   This session has NO papercusp hooks: no file-lock arbitration, no coord delivery, no guards."
         : verdict.carrier === "double"
           ? "   Every hook listed above fires twice in this session."
-          : "   Hooks still run, from settings.json.",
+          : verdict.carrier === "inline"
+            ? "   Hooks still run, from settings.json."
+            : "   The enabled plugin is missing required hook coverage.",
+      `   Effective settings: ${settingsPath}`,
       `   Fix: curl -X POST ${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`,
       "   Launching anyway.",
       "",
@@ -12503,30 +12525,48 @@ export function ensureClaudePluginRails(
 /** Re-run the operator's idempotent hook install (the same merge every operator
  *  boot runs). Loopback-only; short timeout; failure is left to the caller's
  *  re-verify. */
-function repairCcHooksViaInstallRoute() {
+export function repairCcHooksViaInstallRoute(settingsPath, env, {
+  globalPath = join(homedir(), ".claude", "settings.json"),
+  install = () => spawnSync("curl",
+    ["-fsS", "-m", "4", "-X", "POST", `${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`],
+    { encoding: "utf8", timeout: 6000 }),
+} = {}) {
   try {
-    spawnSync(
-      "curl",
-      ["-fsS", "-m", "4", "-X", "POST", `${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`],
-      { encoding: "utf8", timeout: 6000 },
-    );
+    install();
   } catch {
     /* unreachable operator → the caller's banner */
   }
+  // The child already has a settings COPY. Repair that same effective file,
+  // keeping its session-only keys and foreign hooks/plugins intact.
+  if (!settingsPath || resolvePath(settingsPath) === resolvePath(globalPath)) return;
+  try {
+    if (!isIsolatedClaudeSettings(settingsPath, dirname(globalPath))) return;
+    const source = JSON.parse(readFileSync(globalPath, "utf8"));
+    const verdict = claudeHookCarrierVerdict({ settings: source, readFile: readTextOrNull });
+    if (verdict.problems.length || !verdict.pluginHooks) return;
+    const cfg = JSON.parse(readFileSync(settingsPath, "utf8"));
+    enrollPapercuspClaudePlugin(cfg, verdict.marketplaceRoot);
+    cfg.disableAllHooks = false;
+    stripPluginCarriedInlineHooks(cfg, verdict.pluginHooks);
+    const tmp = `${settingsPath}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(cfg, null, 2));
+    renameSync(tmp, settingsPath);
+  } catch { /* the caller re-verifies and reports the effective file */ }
 }
 
-function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
+export function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote,
+  readFile = readTextOrNull, scriptExists = existsSync,
+  repair = repairCcHooksViaInstallRoute, log = console.error }) {
   if ((env.PAPERCUSP_AGENT || "") !== "claude") return; // codex bakes per-session hooks.json; omp uses its own coord-hook
-  const settingsPath = join(homedir(), ".claude", "settings.json");
+  const settingsPath = join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json");
   const read = () => {
     try {
-      return readFileSync(settingsPath, "utf8");
+      return readFile(settingsPath) || "";
     } catch {
       return "";
     }
   };
-  const probe = (p) => existsSync(p);
-  const readFile = readTextOrNull;
+  const probe = scriptExists;
   let verdict = ccHookEnrollment(read(), {
     event,
     hookName,
@@ -12537,33 +12577,15 @@ function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
   // Self-repair: the operator re-runs the same idempotent hook merge its boot
   // path uses. Loopback-only route; short timeout; failure falls through to the
   // banner. curl keeps this synchronous (the spawn follows immediately).
-  try {
-    spawnSync(
-      "curl",
-      [
-        "-fsS",
-        "-m",
-        "4",
-        "-X",
-        "POST",
-        `${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`,
-      ],
-      {
-        encoding: "utf8",
-        timeout: 6000,
-      },
-    );
-  } catch {
-    /* unreachable operator → banner below */
-  }
+  repair(settingsPath, env);
   verdict = ccHookEnrollment(read(), { event, hookName, scriptExists: probe, readFile });
   if (verdict.enrolled) {
-    console.error(
-      `psu: ${hookName} was missing from ~/.claude/settings.json — repaired via the operator install route.`,
+    log(
+      `psu: ${hookName} was missing from ${settingsPath} — repaired via the operator install route.`,
     );
     return;
   }
-  console.error(
+  log(
     [
       "",
       `⚠⚠ ${label} NOT ENROLLED — ${degradedNote} ⚠⚠`,
@@ -13358,7 +13380,7 @@ export function runWrapper(options) {
         // Codex chooses its id at startup, before it persists a user turn.
         // Read the existing writer lock and accept only this PTY's process tree.
         resolveRespawnNativeId: env.PAPERCUSP_AGENT === "codex" && process.platform === "linux"
-          ? (pid) => codexNativeIdForPty(env.CODEX_HOME, pid)
+          ? (pid) => codexNativeIdForPty(env.CODEX_HOME, pid, { env })
           : null,
         onRespawn: (freshId, { onConfirmed } = {}) => {
           recordSessionOwner(freshId, ownerId, {
@@ -13882,21 +13904,59 @@ export function procAncestorPids(
 
 const readProcStatText = (pid) => readFileSync(`/proc/${pid}/stat`, "utf8");
 
+/** Ask the existing hash-bound container wrapper about its exact live exec.
+ * The host-private generation receipt and Docker daemon, not agent transcripts,
+ * connect the container PID to this wrapper PTY. */
+export function codexContainerProcessForPty(env, ptyPid) {
+  try {
+    const cwd = process.cwd();
+    const boundSpawn = createScopedNativeSandboxSpawn({ env, cwd });
+    const binding = JSON.parse(env[NATIVE_CONTAINER_EXEC_ENV]);
+    if (!boundSpawn) return null;
+    const result = boundSpawn(binding.command, ['--papercusp-native-process', String(ptyPid)],
+      { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000 }, spawnSync);
+    if (result.error || result.status !== 0) return null;
+    const proof = JSON.parse(result.stdout);
+    if (proof.ptyPid !== ptyPid || !Number.isSafeInteger(proof.pid) || proof.pid <= 0 ||
+        !Array.isArray(proof.locks) || proof.locks.length > 256 ||
+        proof.locks.some(lock => !UUID_RE.test(String(lock.name).replace(/\.lock$/, '')) ||
+          !Number.isSafeInteger(lock.dev) || !Number.isSafeInteger(lock.ino))) return null;
+    return proof;
+  } catch { return null; }
+}
+
 /** The startup native id of THIS PTY, never a sibling/nested writer in its home.
  * Reuses Codex's writer-lock oracle and the existing native-process reader.
  * @param {string | undefined} codexHome
  * @param {number} ptyPid
- * @param {{readHolder?: typeof codexThreadWriterHolder, readStartupPid?: typeof resolveLinuxCodexStartupPid}} [options]
+ * @param {{readHolder?: typeof codexThreadWriterHolder, readStartupPid?: typeof resolveLinuxCodexStartupPid,
+ * env?: NodeJS.ProcessEnv, readContainerProcess?: typeof codexContainerProcessForPty}} [options]
  */
 export function codexNativeIdForPty(codexHome, ptyPid, {
   readHolder = codexThreadWriterHolder,
   readStartupPid = resolveLinuxCodexStartupPid,
+  env = process.env,
+  readContainerProcess = codexContainerProcessForPty,
 } = {}) {
   if (!Number.isSafeInteger(ptyPid) || ptyPid <= 0) return null;
   try {
-    const nativePid = readStartupPid(ptyPid);
+    const container = env[NATIVE_CONTAINER_EXEC_ENV] !== undefined;
+    if (container && codexHome !== env.CODEX_HOME) return null;
+    const proof = container ? readContainerProcess(env, ptyPid) : null;
+    const nativePid = container ? proof?.pid : readStartupPid(ptyPid);
     if (!nativePid) return null;
-    const holder = readHolder(codexHome, null, { holderPid: nativePid });
+    // Exec inspection gives the root PID; a nested Codex descendant is not it.
+    if (container && readStartupPid(nativePid) !== nativePid) return null;
+    // A container may run as root: host fdinfo can then be unreadable. The
+    // kernel-wide lock view still filters to the exact daemon-attested PID.
+    const holder = readHolder(codexHome, null, { holderPid: nativePid,
+      ...(container ? { readProcLocks: readProcLocksText,
+        listDir: () => proof.locks.map(lock => ({ name: lock.name, isFile: () => true })),
+        statFile: path => {
+          const lock = proof.locks.find(lock => path === join(codexHome, 'thread-writer-locks', lock.name));
+          if (!lock) throw new Error('unattested native lock');
+          return lock;
+        } } : {}) });
     if (!holder.held || !holder.sessionId || !holder.pid) return null;
     if (holder.pid !== nativePid) return null;
     return holder.sessionId;

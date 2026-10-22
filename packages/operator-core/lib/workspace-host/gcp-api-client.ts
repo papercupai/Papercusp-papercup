@@ -28,6 +28,7 @@ import type {
   GcpFirewallInsertInput,
   GcpFirewallObservation,
   GcpInstanceInsertInput,
+  GcpInstanceFiniteCanaryScheduling,
   GcpInstanceMetadataInput,
   GcpInstanceGuestAttribute,
   GcpInstanceObservation,
@@ -444,6 +445,8 @@ interface RawInstance extends RawResource {
   status?: GcpComputeInstanceStatus;
   machineType?: string;
   scheduling?: {
+    terminationTime?: string;
+    maxRunDuration?: unknown;
     provisioningModel?: string;
     instanceTerminationAction?: string;
     automaticRestart?: boolean;
@@ -644,12 +647,37 @@ function asOperation(
   };
 }
 
+/** Shared by planning, readback and the final provider mutation boundary. */
+export function gcpFiniteCanaryScheduling(terminationTime: string, now?: string): GcpInstanceFiniteCanaryScheduling {
+  const deadline = Date.parse(terminationTime);
+  if (typeof terminationTime !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(terminationTime) ||
+      !Number.isFinite(deadline) || new Date(deadline).toISOString() !==
+        (terminationTime.includes('.') ? terminationTime : terminationTime.replace('Z', '.000Z'))) {
+    throw new Error('GCP finite canary terminationTime must be an absolute UTC timestamp');
+  }
+  if (now !== undefined && (!Number.isFinite(Date.parse(now)) || deadline <= Date.parse(now))) {
+    throw new Error('GCP finite canary terminationTime has expired');
+  }
+  return { provisioningModel: 'STANDARD', terminationTime, instanceTerminationAction: 'DELETE',
+    automaticRestart: false, onHostMaintenance: 'TERMINATE' };
+}
+
 /** Exported for tests: the insert request that re-creates `raw` with its retained data disk. */
 export function recreateInput(
   raw: RawInstance,
   bootDisk: RawDisk | undefined,
   zone: string,
 ): GcpInstanceInsertInput | undefined {
+  if (raw.scheduling?.maxRunDuration !== undefined) {
+    throw new Error('GCP recreation refuses relative maxRunDuration; retain an absolute terminationTime');
+  }
+  const finiteScheduling = raw.scheduling?.terminationTime !== undefined
+    ? gcpFiniteCanaryScheduling(raw.scheduling.terminationTime) : undefined;
+  if (finiteScheduling && (raw.scheduling?.provisioningModel !== 'STANDARD' ||
+      raw.scheduling.instanceTerminationAction !== 'DELETE' || raw.scheduling.automaticRestart !== false ||
+      raw.scheduling.onHostMaintenance !== 'TERMINATE')) {
+    throw new Error('GCP finite canary readback has inconsistent scheduling');
+  }
   const boot = raw.disks?.find((disk) => disk.boot === true);
   const data = raw.disks?.find((disk) => disk.boot !== true);
   const network = raw.networkInterfaces?.[0];
@@ -725,7 +753,7 @@ export function recreateInput(
     ...(account?.email ? { serviceAccounts: [{ email: account.email, scopes: account.scopes ?? [] }] as const } : {}),
     metadata: { items: metadata },
     // A spot host is re-created as spot, so an upgrade never silently moves it to on-demand.
-    ...(raw.scheduling?.provisioningModel === 'SPOT'
+    ...(finiteScheduling ? { scheduling: finiteScheduling } : raw.scheduling?.provisioningModel === 'SPOT'
       ? {
           scheduling: {
             provisioningModel: 'SPOT',
@@ -1422,6 +1450,17 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     requestId: string,
   ): Promise<GcpOperationRef> {
     const { zone: _zone, ...rest } = input;
+    const scheduling = rest.scheduling as (Record<string, unknown> | undefined);
+    const validateScheduling = () => {
+      if (scheduling?.maxRunDuration !== undefined) throw new Error('GCP canary maxRunDuration is not an absolute deadline');
+      if (scheduling?.terminationTime !== undefined) {
+        const expected = gcpFiniteCanaryScheduling(scheduling.terminationTime as string, this.now());
+        if (Object.entries(expected).some(([key, value]) => scheduling[key] !== value)) {
+          throw new Error('GCP finite canary scheduling must use STANDARD/DELETE without automatic restart');
+        }
+      }
+    };
+    validateScheduling();
     const region = zoneRegion(zone);
     const bootParams = rest.disks[0].initializeParams;
     // Never shrink a caller's larger request — only raise it to the image's floor.
@@ -1448,6 +1487,8 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
         { ...rest.disks[1], source: resourcePath(rest.disks[1].source, `zones/${zone}/disks`) },
       ],
     };
+    // Image discovery may outlive admission; check again immediately before POST.
+    validateScheduling();
     return this.mutate(
       projectId,
       'zone',

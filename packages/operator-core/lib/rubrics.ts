@@ -102,6 +102,10 @@ export {
   type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate, type PlanWritePreimage } from './agent-tools/plans/with-plan-lock';
+import {
+  resolveNewPlanVerificationProfile,
+  stampNewPlanVerificationProfile,
+} from './agent-tools/plans/plan-verification-profile-stamp';
 import { selectOrphanedAcceptanceBarWitness } from './acceptance-bar-contract-restore';
 import {
   withAcceptanceBarAmendmentTransaction,
@@ -3745,6 +3749,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
     ...(input.description !== undefined ? { description: input.description } : {}),
   });
 
+  let planCreated = false;
   // Single atomic write: upsert the body AND the validated template_data jsonb in one
   // locked transaction (one version bump). The mutator ignores `current` — an upsert, not a
   // read-modify-write — so template_data lands regardless of the in-transaction row read.
@@ -3763,6 +3768,14 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
         templateData,
         () => compatibilityAudit,
       ),
+      inTransaction: async (tx, _writtenBody, lockedScope) => {
+        if (!planCreated) return;
+        const profileStamp = await resolveNewPlanVerificationProfile({
+          harnessSlug: lockedScope.harnessSlug,
+          workspaceId: lockedScope.workspaceId,
+        });
+        await stampNewPlanVerificationProfile(tx, lockedScope, input.rubricId, profileStamp);
+      },
     },
     async (current) => {
       // The slug namespace is shared with ordinary work plans. Re-check under the
@@ -3777,6 +3790,8 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
               `choose a distinct rubricRef (for acceptance rubrics, use 'acceptance-${input.rubricId}')`,
           );
         }
+      } else if (current === null) {
+        planCreated = true;
       }
       // The boundary guard re-checks this write against the row it is replacing, INSIDE
       // the lock (EI-21972673091438558). Pass the caller's acknowledgements through so an

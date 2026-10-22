@@ -9,8 +9,15 @@
  * These tests pin the parse of the stated reset and the expiry that lets one deferred wake
  * through (a wall still in place repaints and re-latches).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import {
+  hostThroughPty,
+  metaPathFor,
   makeAuthBlockDetector,
   makeQuotaBlockDetector,
   parseQuotaResetAtMs,
@@ -25,6 +32,72 @@ const INCIDENT_WALL =
   'https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 14th, 2026 8:24 PM.';
 const INCIDENT_RESET = new Date(2026, 9, 14, 20, 24, 0, 0).getTime();
 const BEFORE_RESET = new Date(2026, 9, 11, 0, 5, 0, 0).getTime();
+
+describe('host discovery quota reset publication (R28)', () => {
+  const absoluteWall = 'You’ve hit your usage limit. Try again at Jun 1st, 2040 8:24 PM.';
+  const absoluteReset = new Date(2040, 5, 1, 20, 24).getTime();
+  const cases = [
+    { label: 'absolute local time', text: absoluteWall, expectedAtMs: absoluteReset },
+    { label: 'relative duration', text: 'You’ve hit your usage limit. Try again in 2 hours.', relativeMs: 7_200_000 },
+    { label: 'ANSI and wrapped output',
+      text: '\x1b[31mYou’ve hit your usage limit.\x1b[0m Try again\r\n at Jun 1st,\r\n 2040 8:24 PM.',
+      expectedAtMs: absoluteReset },
+    { label: 'newest statement', text: absoluteWall + '\nYou’ve hit your usage limit. Try again at Jun 2nd, 2040 9:30 PM.',
+      expectedAtMs: new Date(2040, 5, 2, 21, 30).getTime() },
+    { label: 'no stated reset', text: 'You’ve hit your usage limit.', expectedAtMs: null },
+  ] as const;
+
+  it.each(cases)('publishes the parsed provider reset instant as quotaResetAtMs on the host record [$label]', async fixture => {
+    const ownerId = `su-quota-publication-${randomUUID()}`;
+    const metadataPath = metaPathFor(ownerId);
+    const dataListeners: Array<(text: string) => void> = [];
+    const exitListeners: Array<(event: { exitCode: number; signal: number }) => void> = [];
+    // Exercise the production output detector and metadata writer; only the PTY is replaced.
+    // This PID exceeds Linux's PID range, so fixture cleanup cannot address a live process.
+    const child = {
+      pid: 999_999_999, write() {}, kill() {}, resize() {}, pause() {}, resume() {}, unref() {},
+      on() {},
+      onData(listener: (text: string) => void) { dataListeners.push(listener); return { dispose() {} }; },
+      onExit(listener: (event: { exitCode: number; signal: number }) => void) {
+        exitListeners.push(listener); return { dispose() {} };
+      },
+    };
+    const done = hostThroughPty({
+      command: process.execPath, ownerId,
+      env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex' }),
+      spawnPty: () => child,
+      io: { stdin: { isTTY: false, on() {}, off() {}, resume() {}, pause() {} },
+        stdout: { columns: 80, rows: 24, write() {}, on() {}, off() {} } },
+      bridgeTty: false, signalSource: new EventEmitter(),
+      onExit: () => {}, emitCompacted: () => null, reapScopeResidue: () => ({}),
+    });
+    try {
+      await vi.waitFor(async () => {
+        expect(JSON.parse(await readFile(metadataPath, 'utf8')))
+          .toMatchObject({ ownerId, quotaBlocked: false, quotaResetAtMs: null });
+      }, { timeout: 3000 });
+      expect(dataListeners.length).toBeGreaterThan(0);
+      const beforeOutput = Date.now();
+      for (const listener of dataListeners) listener(fixture.text);
+      const afterOutput = Date.now();
+      // The detected edge must publish without waiting for the host's 15s activity tick.
+      await vi.waitFor(async () => {
+        const record = JSON.parse(await readFile(metadataPath, 'utf8'));
+        expect(record).toMatchObject({ ownerId, quotaBlocked: true });
+        if ('relativeMs' in fixture) {
+          expect(record.quotaResetAtMs).toBeGreaterThanOrEqual(beforeOutput + fixture.relativeMs);
+          expect(record.quotaResetAtMs).toBeLessThanOrEqual(afterOutput + fixture.relativeMs);
+        } else {
+          expect(record.quotaResetAtMs).toBe(fixture.expectedAtMs);
+        }
+      }, { timeout: 3000 });
+    } finally {
+      for (const listener of exitListeners) listener({ exitCode: 0, signal: 0 });
+      await done;
+    }
+    expect(existsSync(metadataPath)).toBe(false);
+  }, 10_000);
+});
 
 describe('provider detector replay mode follows the replacement child', () => {
   it.each([

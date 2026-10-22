@@ -18,6 +18,7 @@ import { requireAllowedOriginOr403 } from '../../cors';
 import { readCookie } from '../../cookies';
 import { SESSION_COOKIE } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { RouteDiagnostics } from '@papercusp/tooldef';
 import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
 import type { TranscriptTurnHit } from '../../../adv-session-search';
 import { createQueryEmbedderWarmup } from '../../../search/query-embedder-warmup';
@@ -230,7 +231,9 @@ async function parseSessionPortBody(req: Request): Promise<SessionPortRequestBod
   }
 }
 
-async function resolveSessionPortInspection(req: Request, body: SessionPortRequestBody) {
+async function resolveSessionPortInspection(req: Request, body: SessionPortRequestBody, diagnostics?: RouteDiagnostics) {
+  const measure = <T>(phase: string, work: () => T | PromiseLike<T>): Promise<T> =>
+    diagnostics ? diagnostics.measure(phase, work) : Promise.resolve().then(work);
   const protocolError = sessionPortProtocolError(body.protocolVersion, body.transformVersion);
   if (protocolError) return { response: protocolError } as const;
   const sourceAdvSessionId = Number(body.sourceAdvSessionId);
@@ -248,19 +251,19 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     return { response: json({ ok: false, error: `contextSize: ${normalizedContextSize.error}` }, 400) } as const;
   }
   const contextSize = normalizedContextSize.contextSize;
-  const [{ activeWorkspaceId }, { getOrgPg }, { buildLaunchSpec }, service, budgetModule, store] = await Promise.all([
+  const [{ activeWorkspaceId }, { getOrgPg }, { buildLaunchSpec }, service, budgetModule, store] = await measure('port.imports', () => Promise.all([
     import('../../../workspace-registry'),
     import('@papercusp/db-org'),
     import('../../../role-launch-spec'),
     import('../../../session-port/service'),
     import('../../../model-context-budget.mjs'),
     import('../../../session-port/store'),
-  ]);
+  ]));
   const workspaceId = typeof body.workspace === 'string' && body.workspace.trim()
     ? body.workspace.trim()
     : activeWorkspaceId();
-  await store.assertSessionPortStorageReady();
-  const trackedRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
+  await measure('port.storage-ready', () => store.assertSessionPortStorageReady());
+  const trackedRow = await measure('port.tracked-source', () => getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId));
   if (!trackedRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
   service.resolveSessionPortTargetOwner(trackedRow.coordOwnerId ?? '', body.targetOwnerId);
   // consult-backed-parking-2026-10-12#P-010 (D-009): a port that continues the
@@ -274,7 +277,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   // surface a database error as a live-source conflict.
   if (body.targetOwnerId === undefined && trackedRow.coordOwnerId) {
     const { readPrePinnedOwnerBindings, describeLiveSourceRefusal } = await import('../agent-mcp/pre-pinned-owner-conflicts');
-    const bindings = await readPrePinnedOwnerBindings(trackedRow.coordOwnerId).catch(() => null);
+    const bindings = await measure('port.owner-bindings', () => readPrePinnedOwnerBindings(trackedRow.coordOwnerId!)).catch(() => null);
     if (bindings && bindings.conflicts.length > 0) {
       return {
         response: json({
@@ -300,7 +303,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     const selectedId = typeof body.sourceNativeSessionId === 'string' ? body.sourceNativeSessionId.trim() : '';
     if (!selectedId || (selectedId !== sourceNativeId &&
         (!RESUMABLE_NATIVE_SESSION_ID_RE.test(selectedId) ||
-         !(await evidenceIncarnationOwnedBy(getOrgPg().sql as unknown as import('postgres').Sql, trackedRow, selectedId))))) {
+         !(await measure('port.selected-incarnation', () => evidenceIncarnationOwnedBy(getOrgPg().sql as unknown as import('postgres').Sql, trackedRow, selectedId)))))) {
       return { response: json({ ok: false, error: 'sourceNativeSessionId must name the current source session or an earlier incarnation of its owner and backend' }, 400) } as const;
     }
     sourceRow = { ...sourceRow, sessionId: selectedId, ...(trackedRow.agent === 'omp' ? { ompThreadId: selectedId } : {}) };
@@ -326,7 +329,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     const { sql } = getOrgPg();
     if (sessionId !== sourceNativeId) {
       if (!RESUMABLE_NATIVE_SESSION_ID_RE.test(sessionId) ||
-          !(await evidenceIncarnationOwnedBy(sql as unknown as import('postgres').Sql, trackedRow, sessionId))) {
+          !(await measure('port.evidence-incarnation', () => evidenceIncarnationOwnedBy(sql as unknown as import('postgres').Sql, trackedRow, sessionId)))) {
         return {
           response: json({
             ok: false,
@@ -338,14 +341,14 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       }
       sourceRow = { ...trackedRow, sessionId, ...(trackedRow.agent === 'omp' ? { ompThreadId: sessionId } : {}) };
     }
-    const indexed = await sql<Array<{ turn_idx: number; timestamp: string | Date | null; speaker: string; text: string }>>`
+    const indexed = await measure('port.evidence-turns', () => sql<Array<{ turn_idx: number; timestamp: string | Date | null; speaker: string; text: string }>>`
       SELECT t.turn_idx, t.ts AS timestamp, t.speaker, t.text
         FROM harness_shared.session_turns t
        WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
          AND t.source_kind = ${sourceRow.agent}
          AND t.session_id = ${sessionId}
          AND t.turn_idx = ANY(${turnIndices as number[]}::int[])
-    `;
+    `);
     if (indexed.length !== turnIndices.length) {
       return { response: json({ ok: false, error: `consult evidence refs are not all present in the exact source session (${indexed.length}/${turnIndices.length})` }, 409) } as const;
     }
@@ -366,11 +369,11 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   const launchContextPath = typeof body.launchContext === 'string' && body.launchContext.trim() ? body.launchContext.trim() : null;
   let launchContextText = '';
   try {
-    launchContextText = budgetModule.readLaunchContextText(launchContextPath);
+    launchContextText = await measure('port.launch-context', () => budgetModule.readLaunchContextText(launchContextPath));
   } catch (error) {
     return { response: json({ ok: false, error: `read launchContext: ${error instanceof Error ? error.message : String(error)}` }, 400) } as const;
   }
-  const spec = await buildLaunchSpec({
+  const spec = await measure('port.launch-spec', () => buildLaunchSpec({
     kind: 'su',
     agent: targetBackend,
     workspaceId,
@@ -382,8 +385,8 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     planSlug: sourceRow.planSlug,
     planTitle: null,
     planNow: null,
-  });
-  const budget = budgetModule.buildContextBudget({
+  }));
+  const budget = await measure('port.context-budget', () => budgetModule.buildContextBudget({
     agent: targetBackend,
     model: targetModel,
     contextSize,
@@ -392,14 +395,14 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       : spec.promptText,
     additionalPromptText: targetBackend === 'codex' ? '' : launchContextText,
     home: os.homedir(),
-  });
+  }));
   if (budget.level === 'refuse') throw new Error('target launch prompt already exhausts the selected context window');
-  const stableSource = await service.acquireTrackedSessionSource(sourceRow);
+  const stableSource = await measure('port.acquire-source', () => service.acquireTrackedSessionSource(sourceRow));
   const modelProvider = targetBackend === 'codex'
     ? 'openai'
     : targetBackend === 'claude' ? 'anthropic'
     : (targetModel?.includes('/') ? targetModel.split('/')[0] : 'omp-configured-provider');
-  const inspection = service.inspectAcquiredSessionPort({
+  const inspection = await measure('port.transform', () => service.inspectAcquiredSessionPort({
     sourceRow,
     stableSource,
     target: {
@@ -415,7 +418,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     },
     currentInstruction: typeof body.currentInstruction === 'string' ? body.currentInstruction : null,
     ...(evidenceSpan ? { evidenceSpan } : {}),
-  });
+  }));
   return {
     inspection,
     service,
@@ -2333,17 +2336,19 @@ const sessionPortInspect = defineTool({
   method: 'POST',
   path: '/adv/sessions/port/inspect',
   auth: 'loopback',
-  async handler(req) {
+  async handler(req, ctx) {
     const parsed = await parseSessionPortBody(req);
     if (parsed instanceof Response) return parsed;
     try {
-      const resolved = await resolveSessionPortInspection(req, parsed);
+      const resolved = await resolveSessionPortInspection(req, parsed, ctx?.routeDiagnostics);
       if ('response' in resolved && resolved.response) return resolved.response;
-      await recordSessionPortTelemetry(telemetryFromInspection(
+      const recordTelemetry = () => recordSessionPortTelemetry(telemetryFromInspection(
         resolved.inspection.source.workspaceId,
         'inspected',
         resolved.inspection,
       ));
+      if (ctx?.routeDiagnostics) await ctx.routeDiagnostics.measure('port.telemetry', recordTelemetry);
+      else await recordTelemetry();
       return json({
         ok: true,
         inspection: resolved.service.publicSessionPortInspection(resolved.inspection),
@@ -2362,7 +2367,7 @@ const sessionPortPrepare = defineTool({
   method: 'POST',
   path: '/adv/sessions/port/prepare',
   auth: 'loopback',
-  async handler(req) {
+  async handler(req, ctx) {
     const parsed = await parseSessionPortBody(req);
     if (parsed instanceof Response) return parsed;
     const expectedSourceHash = typeof parsed.expectedSourceHash === 'string' ? parsed.expectedSourceHash.trim() : '';
@@ -2370,7 +2375,7 @@ const sessionPortPrepare = defineTool({
       return json({ ok: false, error: 'expectedSourceHash from inspect is required' }, 400);
     }
     try {
-      const resolved = await resolveSessionPortInspection(req, parsed);
+      const resolved = await resolveSessionPortInspection(req, parsed, ctx?.routeDiagnostics);
       if ('response' in resolved && resolved.response) return resolved.response;
       const { readSuperuserToken } = await import('../../../superuser-token');
       const tokenKey = readSuperuserToken();

@@ -23,7 +23,8 @@
  * drop an error carried there. `tool_input` is reduced to its scalar fields, each
  * clipped, so a failed Write of a large file cannot bloat the report.
  *
- * FAIL-OPEN + SILENT: stdout is always empty and the exit always 0. Scope guard:
+ * FAIL-OPEN: stdout is always empty and the exit always 0. Unconfirmed reports
+ * are preserved by the shared helper with a stderr recovery-path diagnostic. Scope guard:
  * psu sessions only (PAPERCUSP_SID + the superuser token), and never a CLI nested
  * inside another agent (it inherited the su's PAPERCUSP_SID).
  */
@@ -98,9 +99,8 @@ async function main() {
   try {
     const env = process.env;
     if (!env.PAPERCUSP_SID) return;
-    const token = readSuperuserToken(env);
-    if (!token) return;
     if (nestedCliCached({ env })) return;
+    const token = readSuperuserToken(env);
     const raw = await readHookStdin(STDIN_TIMEOUT_MS);
     const hook = raw.trim() ? JSON.parse(raw) : null;
     await postActivityReport(buildToolFailureReport(hook, env), { env, token });

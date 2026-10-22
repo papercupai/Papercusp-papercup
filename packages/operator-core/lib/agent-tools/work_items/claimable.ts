@@ -492,6 +492,7 @@ export default defineTool({
     // masquerade as "measured none" when the answer drives a drain/wind-down call.
     const readStartedAt = performance.now();
     const readStageMs: Partial<Record<IssueClaimabilityReadStage, number>> = {};
+    let readTransactionInfo: { statementTimeout: string; backendPid: number } | undefined;
     let reading;
     try {
       reading = await readIssueClaimability(
@@ -504,6 +505,9 @@ export default defineTool({
           onStageTiming: (stage, elapsedMs) => {
             readStageMs[stage] = elapsedMs;
           },
+          onTransactionInfo: (info) => {
+            readTransactionInfo = info;
+          },
         },
       );
     } catch (error) {
@@ -513,6 +517,7 @@ export default defineTool({
           outcome: 'error',
           readElapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
           readStageMs,
+          readTransactionInfo,
         })}`);
       } catch {
         // Diagnostic logging must not alter claimability failure behavior.
@@ -582,6 +587,7 @@ export default defineTool({
         outcome: 'ok',
         readElapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
         readStageMs,
+        readTransactionInfo,
         planLaneGuard: {
           elapsedMs: Math.max(0, Math.round(performance.now() - planLaneGuardStartedAt)),
           rowsScanned: claimableRows.length,

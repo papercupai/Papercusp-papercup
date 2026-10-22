@@ -113,6 +113,24 @@ beforeEach(async () => {
 });
 
 describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket for a broad (no-named-ids) spec', () => {
+  it('excludes queued and held admission recovery from survivors and reports their count and sample', async () => {
+    await seedIssue('WI-9431', { _admissionRecovery: { state: 'queued' } });
+    await seedIssue('WI-9432', { _admissionRecovery: { state: 'held' } });
+    // Delivery ends the reservation; an ordinary row never had one.
+    await seedIssue('WI-9433', { _admissionRecovery: { state: 'delivered' } });
+    await seedIssue('WI-9434', null);
+
+    const counts = await aggregateIssueClaimExclusions(undefined, { harness: H });
+    const rows = await listIssueClaimableRows(undefined, { harness: H }, 10);
+    const samples = await sampleIssueClaimExclusions(undefined, { harness: H }, 10);
+
+    expect(counts.matchedByFilter).toBe(4);
+    expect(counts.claimable).toBe(2);
+    expect(counts.excluded.admissionRecovery).toBe(2);
+    expect(rows.map((row) => row.id).sort()).toEqual(['WI-9433', 'WI-9434']);
+    expect(samples.admissionRecovery.sort()).toEqual(['WI-9431', 'WI-9432']);
+  });
+
   it('reproduces the incident: a stranded pool broken down by claim-hold, taken, plan-lane, and blocked-dep', async () => {
     await seedPlan('live-plan', 'active');
 
@@ -366,6 +384,13 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     const holder = await db.sql.reserve();
     let releasePromise: Promise<void> | undefined;
     let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+    let timeoutSetting: { statementTimeout: string; backendPid: number } | undefined;
+    let candidateConnection: { statementTimeout: string; backendPid: number } | undefined;
+    let reportedTransactionInfo: { statementTimeout: string; backendPid: number } | undefined;
+    let resolveTimeoutSetting!: () => void;
+    let resolveCandidateConnection!: () => void;
+    const timeoutSettingRead = new Promise<void>((resolve) => { resolveTimeoutSetting = resolve; });
+    const candidateConnectionRead = new Promise<void>((resolve) => { resolveCandidateConnection = resolve; });
     const release = () => {
       releasePromise ??= holder`ROLLBACK`.then(() => undefined);
       return releasePromise;
@@ -375,26 +400,84 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
       await holder`BEGIN`;
       await holder`LOCK TABLE harness_shared.work_items IN ACCESS EXCLUSIVE MODE`;
 
-      const timeoutMs = 300;
+      const timeoutMs = 800;
       const startedAt = performance.now();
       // Bound the failure case too: if statement_timeout stops applying, releasing the lock
       // lets the query finish and the SQLSTATE assertion fails instead of hanging the suite.
-      releaseTimer = setTimeout(() => { void release(); }, 1_600);
-      let readError: unknown;
-      try {
-        await readIssueClaimability(undefined, { harness: H, client: db.sql }, {
-          limit: 1,
-          breakdownOnly: true,
-          statementTimeoutMs: timeoutMs,
-        });
-      } catch (error) {
-        readError = error;
-      }
+      releaseTimer = setTimeout(() => { void release().catch(() => {}); }, 2_200);
+
+      // Intercept the real transaction's SET LOCAL, then read its effective setting and
+      // backend PID through that same transaction connection before it starts materializing.
+      const instrumentedClient = {
+        begin: <T>(callback: (tx: postgres.TransactionSql) => T | Promise<T>) => db.sql.begin(async (tx) => {
+          const unsafe = tx.unsafe.bind(tx);
+          const readTransactionInfo = async () => {
+            const rows = await unsafe<{ statement_timeout: string; backend_pid: number }[]>(
+              "SELECT current_setting('statement_timeout') AS statement_timeout, pg_backend_pid() AS backend_pid",
+            );
+            return { statementTimeout: rows[0].statement_timeout, backendPid: rows[0].backend_pid };
+          };
+          const instrumentedTx = new Proxy(tx, {
+            apply(target, thisArg, args) {
+              const firstString = Array.isArray(args[0]) ? String(args[0][0]).trimStart() : '';
+              const query = Reflect.apply(target, thisArg, args);
+              if (candidateConnection || !firstString.startsWith('CREATE TEMP TABLE ')) return query;
+              // Observe the active timeout and PID in this transaction immediately before
+              // forwarding the materialization through this same transaction connection.
+              return readTransactionInfo().then((info) => {
+                candidateConnection = info;
+                resolveCandidateConnection();
+                return query;
+              });
+            },
+            get(target, property, receiver) {
+              if (property === 'unsafe') {
+                return (...args: Parameters<typeof tx.unsafe>) => {
+                  const result = unsafe(...args);
+                  const query = args[0];
+                  if (typeof query === 'string' && query.startsWith('SET LOCAL statement_timeout')) {
+                    return result.then(async (value) => {
+                      timeoutSetting = await readTransactionInfo();
+                      resolveTimeoutSetting();
+                      return value;
+                    });
+                  }
+                  return result;
+                };
+              }
+              return Reflect.get(target, property, receiver);
+            },
+          });
+          return callback(instrumentedTx);
+        }),
+      } as unknown as NonNullable<Parameters<typeof readIssueClaimability>[1]['client']>;
+
+      const read = readIssueClaimability(undefined, { harness: H, client: instrumentedClient }, {
+        limit: 1,
+        breakdownOnly: true,
+        statementTimeoutMs: timeoutMs,
+        onTransactionInfo: (info) => { reportedTransactionInfo = info; },
+      }).then(
+        () => ({ error: undefined as unknown }),
+        (error: unknown) => ({ error }),
+      );
+
+      await Promise.race([
+        Promise.all([timeoutSettingRead, candidateConnectionRead]),
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+
+      const outcome = await read;
       const elapsedMs = performance.now() - startedAt;
 
-      expect(readError).toMatchObject({ code: '57014' });
+      if (!timeoutSetting) throw new Error('Transaction-local statement timeout was not observed');
+      expect(timeoutSetting.statementTimeout).toBe(`${timeoutMs}ms`);
+      expect(candidateConnection?.statementTimeout).toBe(`${timeoutMs}ms`);
+      expect(candidateConnection?.backendPid).toBe(timeoutSetting.backendPid);
+      expect(reportedTransactionInfo).toMatchObject(timeoutSetting);
+      expect(outcome.error).toMatchObject({ code: '57014' });
       expect(elapsedMs).toBeGreaterThanOrEqual(100);
-      expect(elapsedMs).toBeLessThan(1_300);
+      expect(elapsedMs).toBeLessThan(1_900);
     } finally {
       if (releaseTimer) clearTimeout(releaseTimer);
       await release();

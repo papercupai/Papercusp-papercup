@@ -16,7 +16,7 @@ vi.mock('./sidecar-exec-lifetime', () => ({ sidecarContainmentCurrent: mock.pref
 
 import { isSidecarInfrastructureFault, runCommandViaSpawnerSidecar, runGitStdinViaSpawnerSidecar } from './git-via-sidecar';
 
-const fence = { serverGeneration: 'original-server', connectionId: 'original-connection' };
+const fence = { serverGeneration: 'original-server', connectionId: 'original-connection', forkserverIdentity: null };
 const capabilities = { processExecFence: fence, processExecContainment: { pid: 123, identity: 'original' } };
 beforeEach(() => {
   vi.clearAllMocks();

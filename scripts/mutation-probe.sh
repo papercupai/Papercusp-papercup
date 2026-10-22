@@ -68,9 +68,10 @@
 # a private tmpfs and is DISCARDED when the run exits, so no mutant-built
 # artifact is ever visible to git-sync, a deployer or a peer. The probe scratch
 # dir and each root's .papercusp/scratch stay real, so receipts and evidence
-# logs written there persist. A subtree with a mount point under it cannot be
-# overlaid; its own entries are reported as uncovered, and any of them that
-# change during a mutant leg are named (MUTATION_PROBE_CONTAINMENT_LEAK). The
+# logs written there persist. A subtree with a mount point under it uses a
+# private shallow copy for its own entries, with child directories rebound
+# separately. Child subtrees added after planning and external aliases can
+# still be uncovered; outside changes are named without attributing a writer.
 # status line reads MUTATION_PROBE_CONTAINMENT status=contained|partial|
 # uncontained|disabled|sandbox-root|n/a. MUTATION_PROBE_CONTAIN_WRITES=0 turns
 # containment off (leaks are still reported).
@@ -2792,7 +2793,8 @@ contain_path_under() {
 # mounts beneath it (measured 2026-10-20: EINVAL on the shared papercusp root,
 # whose .gitnexus and sandbox binds are such mounts; the site clone overlays
 # whole). Such a directory is split instead: each child directory is planned in
-# turn, and the directory's OWN entries stay uncovered (see the leak report).
+# turn. Its own regular files and symlinks are copied into a private directory;
+# individual file binds would break atomic replacement with EBUSY.
 contain_plan_dir() {
   local d="$1" mp e has_sub=0
   for mp in ${CONTAIN_MOUNTS[@]+"${CONTAIN_MOUNTS[@]}"}; do
@@ -2813,7 +2815,7 @@ contain_plan_dir() {
     [ -e "$e" ] || [ -L "$e" ] || continue
     if [ -d "$e" ] && [ ! -L "$e" ]; then
       contain_plan_dir "$e"
-    else
+    elif [ ! -f "$e" ] && [ ! -L "$e" ]; then
       CONTAIN_UNCOVERED+=("$e")
     fi
   done
@@ -2834,6 +2836,51 @@ contain_write_setup() {
     printf 'work=%q\nfail=%q\nabort=%q\n' "$CONTAIN_WORK" "$SCRATCH/contain-failed" "$SCRATCH/contain-abort"
     printf ': > "$fail"\n'
     printf 'mount -t tmpfs -o mode=0700 tmpfs "$work" || { printf "%%s\\n" "tmpfs mount on $work failed" > "$abort"; exit 97; }\n'
+    printf 'levels=('
+    for p in ${CONTAIN_LEVELS[@]+"${CONTAIN_LEVELS[@]}"}; do
+      printf ' %q' "$p"
+    done
+    printf ' )\n'
+    cat <<'SHALLOW'
+# Snapshot only each split directory's own entries. Hold every child directory
+# BEFORE covering any ancestor, including children created by the baseline.
+# Rebinding these holds preserves dependency mounts without copying the tree.
+contain_abort() { printf '%s\n' "$*" > "$abort"; exit 97; }
+children=()
+holds=()
+for i in "${!levels[@]}"; do
+  p="${levels[i]}"
+  s="$work/s$i"
+  mkdir -p "$s" || contain_abort "could not stage split directory $p"
+  k=0
+  for e in "$p"/* "$p"/.[!.]* "$p"/..?*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    if [ -d "$e" ] && [ ! -L "$e" ]; then
+      h="$work/c$i.$k"
+      mkdir -p "$h" "$s/${e##*/}" && mount --bind "$e" "$h" \
+        || contain_abort "could not hold child directory $e"
+      children+=("$e")
+      holds+=("$h")
+      k=$((k + 1))
+    elif [ -f "$e" ] || [ -L "$e" ]; then
+      cp -Pp -- "$e" "$s/" || contain_abort "could not copy split-directory entry $e"
+    else
+      contain_abort "unsupported split-directory entry $e"
+    fi
+  done
+  chown --reference="$p" "$s" && chmod --reference="$p" "$s" \
+    || contain_abort "could not preserve split-directory permissions for $p"
+done
+for i in "${!levels[@]}"; do
+  p="${levels[i]}"
+  mount --bind "$work/s$i" "$p" || contain_abort "could not isolate split directory $p"
+  for j in "${!children[@]}"; do
+    [ "${children[j]%/*}" = "$p" ] || continue
+    mount --bind "${holds[j]}" "${children[j]}" \
+      || contain_abort "could not restore child directory ${children[j]}"
+  done
+done
+SHALLOW
     i=0
     for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
       printf 'h%d=0; mkdir -p "$work/h%d" && mount --bind %q "$work/h%d" && h%d=1\n' "$i" "$i" "$p" "$i" "$i"
@@ -2935,7 +2982,7 @@ contain_preflight() {
   contain_write_setup || { CONTAIN_REASON="could not write $SCRATCH/contain-setup.sh"; CONTAIN_SETUP=""; return 0; }
   # Positive control: the canary must be writable inside the namespace and
   # ABSENT outside it afterwards, or a "contained" claim would be untested.
-  for o in "${CONTAIN_OVERLAYS[@]}"; do
+  for o in ${CONTAIN_LEVELS[@]+"${CONTAIN_LEVELS[@]}"} "${CONTAIN_OVERLAYS[@]}"; do
     if [ -w "$o" ]; then
       canary_dir="$o"
       break
@@ -3009,7 +3056,7 @@ contain_report_leaks() {
     done < <(find "$level" -mindepth 1 -maxdepth 1 -newer "$stamp" -print 2>/dev/null)
   done
   if [ "$n" -gt 0 ]; then
-    log "⚠️  write containment is PARTIAL: $n uncovered checkout entr$( [ "$n" -eq 1 ] && echo y || echo ies) changed during the $phase leg (listed above; a concurrent peer can cause this too). Anything the guard wrote there is in the REAL tree."
+    log "⚠️  write containment is PARTIAL: $n outside checkout entr$( [ "$n" -eq 1 ] && echo y || echo ies) changed during the $phase leg (listed above). Inspect their writer: direct split-directory writes are private, but aliases and concurrent peers can change the real tree."
   fi
 }
 
@@ -3019,7 +3066,7 @@ case "$CONTAIN_STATUS" in
   contained)
     log "write containment: CONTAINED — post-baseline guard runs see $(IFS=' '; printf '%s' "${CONTAIN_ROOTS[*]}") copy-on-write; their writes are discarded at exit (the probe scratch and each .papercusp/scratch stay real)" ;;
   partial)
-    log "write containment: PARTIAL — ${#CONTAIN_OVERLAYS[@]} overlay(s) cover every subtree without a mount point under it. Entries directly in the ${#CONTAIN_LEVELS[@]} director$( [ "${#CONTAIN_LEVELS[@]}" -eq 1 ] && echo y || echo ies) that DO have one (${#CONTAIN_UNCOVERED[@]} now, plus any the guard creates) are not covered; each leg reports those that change"
+    log "write containment: PARTIAL — ${#CONTAIN_OVERLAYS[@]} overlay(s) cover planned subtrees; ${#CONTAIN_LEVELS[@]} split director$( [ "${#CONTAIN_LEVELS[@]}" -eq 1 ] && echo y || echo ies) use private shallow copies for their own entries. Child subtrees added after planning and external aliases may remain real; each leg reports outside entry changes without attributing their writer"
     for line in ${CONTAIN_FAILED[@]+"${CONTAIN_FAILED[@]}"}; do
       log "⚠️  write containment could not cover: $line"
     done ;;

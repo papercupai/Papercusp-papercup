@@ -1310,6 +1310,10 @@ describe('dispatchPendingGradingAudits', () => {
     );
     const brief = d.route.mock.calls[0]?.[0].brief ?? '';
     expect(brief).toContain("capability:git-evidence { op:'readFileAtCommit'");
+    expect(brief).toContain("tools:find { query:'capability:git-evidence', build:'staging' }");
+    expect(brief).toContain("Copy the returned servingGeneration unchanged and pass it plus build:'staging'");
+    expect(brief).toContain('If stale_tool_contract is returned, refresh from the same build and resume the exact cursor.');
+    expect(brief).toContain('Preserve a transport failure as a retrieval failure; never treat it as absent evidence.');
     expect(brief).toContain(`code:run uses a default script budget of ${DEFAULT_SCRIPT_TIMEOUT_MS.toLocaleString('en-US')} ms`);
     expect(brief).toContain(`explicit timeoutSec can raise it to the ${FOREGROUND_TIMEOUT_CEILING_MS.toLocaleString('en-US')} ms`);
     expect(brief).not.toContain('code:run has a 45-second foreground timeout ceiling');
@@ -3765,7 +3769,8 @@ describe('dispatchPendingGradingAudits', () => {
   // empty composer with no terminal log text. The launcher's own receipt is the
   // only signal, so the dispatcher must treat it as a failed launch rather than
   // report 'launched' and hold the reservation for the full TTL.
-  it('retires a judge whose launch receipt says the kickoff was never submitted, and relaunches once', async () => {
+  it.each(['tasks', 'failures'])(
+    'retires a judge whose %s receipt says the kickoff was never submitted, and relaunches once', async receiptKind => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-silent-kickoff')]);
     d.launch
@@ -3774,7 +3779,8 @@ describe('dispatchPendingGradingAudits', () => {
           deduped: false,
           launch: {
             agentStarted: null,
-            tasks: [
+            ...(receiptKind === 'failures' ? { opened: 0, tasks: [] } : {}),
+            [receiptKind]: [
               {
                 taskId: 'task-silent',
                 logPath: '/tmp/silent.log',

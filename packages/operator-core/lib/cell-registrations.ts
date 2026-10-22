@@ -938,6 +938,7 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
       // reader has to convert and judge for themselves.
       'gate.ownerBrief.attestations.verdict',
       'gate.ownerBrief.attestations.staleLegs',
+      'gate.ownerBrief.testProgress',
       'gate.ownerBrief.unknownLegs',
     ],
     // P-012: `failingLegs: []` is vouched for by `whyNot.measured` (WI-2143266 / D-002);

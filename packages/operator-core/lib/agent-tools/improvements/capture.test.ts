@@ -875,8 +875,9 @@ describe('improvements:capture tool envelope', () => {
       expect.objectContaining({
         kind: 'change',
         lane: 'observation',
-        // bug-inflow D-010: a caller failure keys ONCE per tool.
-        watchdogKey: 'repeated-tool-error:coord:send:caller',
+        // D-010 separates the filed row identity from the broad caller-class
+        // probation key, so different contract fields cannot merge together.
+        watchdogKey: 'tool-failure-signature:coord:send:caller:invalid_args:body',
         payloadExtra: {
           toolFailureProbation: expect.objectContaining({
             state: 'probation',
@@ -887,6 +888,51 @@ describe('improvements:capture tool envelope', () => {
         },
       }),
     );
+  });
+
+  it('files same-tool, same-code caller failures under their distinct contract fields', async () => {
+    const reports = [
+      {
+        fieldPath: 'items[].ref',
+        message: 'invalid_args: items[].ref is required by the handler',
+      },
+      {
+        fieldPath: 'defaultIfUnanswered',
+        message: 'invalid_args: defaultIfUnanswered is not accepted by this server',
+      },
+    ];
+
+    for (const report of reports) {
+      await callTool({
+        title: `work_items:set_blocker rejected ${report.fieldPath}`,
+        kind: 'bug',
+        toolFailure: {
+          toolName: 'work_items:set_blocker',
+          errorCode: 'invalid_args',
+          status: 'error',
+          schemaRevision: 'test-schema-v1',
+          runtimeVersion: 'test-runtime-v1',
+          ...report,
+        },
+      });
+    }
+
+    const inputs = mockCapture.mock.calls.map(([input]) => input as {
+      watchdogKey?: string;
+      payloadExtra?: { toolFailureProbation?: { watchdogKey?: string } };
+    });
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]?.watchdogKey).toMatch(
+      /^tool-failure-signature:work_items:set_blocker:caller:invalid_args:/,
+    );
+    expect(inputs[1]?.watchdogKey).toMatch(
+      /^tool-failure-signature:work_items:set_blocker:caller:invalid_args:/,
+    );
+    expect(inputs[0]?.watchdogKey).not.toBe(inputs[1]?.watchdogKey);
+    // Keep exact invocation/report correlation broad; only the filed item key
+    // carries the concrete error condition.
+    expect(inputs[0]?.payloadExtra?.toolFailureProbation?.watchdogKey)
+      .toBe(inputs[1]?.payloadExtra?.toolFailureProbation?.watchdogKey);
   });
 
   it('separates incomplete ptool bootstrap causes using the reported field path', async () => {
@@ -919,8 +965,8 @@ describe('improvements:capture tool envelope', () => {
     });
 
     const rowKeys = mockCapture.mock.calls.map(([input]) => input.watchdogKey);
-    // bug-inflow D-004: a structural key is `<tool>:structural:<code>:<field>`, no message digest.
-    expect(rowKeys[0]).toBe('repeated-tool-error:ptool:structural:sdk_bootstrap_failed:field-unknown');
+    // D-010 uses a build-independent filed row key while probation retains its broader key.
+    expect(rowKeys[0]).toBe('tool-failure-signature:ptool:structural:sdk_bootstrap_failed:field-unknown');
     expect(rowKeys[1]).toBe('tool-failure-signature:ptool:structural:enospc:tmp-pcv-fs-mutex-locks');
     expect(rowKeys[1]).not.toBe(rowKeys[0]);
     expect(rowKeys[2]).toBe(rowKeys[1]);
@@ -928,7 +974,9 @@ describe('improvements:capture tool envelope', () => {
       ?.toolFailureProbation as Record<string, unknown>;
     const enospcProbation = (mockCapture.mock.calls[1]?.[0].payloadExtra as Record<string, unknown>)
       ?.toolFailureProbation as Record<string, unknown>;
-    expect(firstProbation.watchdogKey).toBe(rowKeys[0]);
+    expect(firstProbation.watchdogKey).toBe(
+      'repeated-tool-error:ptool:structural:sdk_bootstrap_failed:field-unknown',
+    );
     expect(enospcProbation.watchdogKey).toBe(
       'repeated-tool-error:ptool:structural:error-code-unknown:field-unknown',
     );

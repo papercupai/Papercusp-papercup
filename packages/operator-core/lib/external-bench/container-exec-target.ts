@@ -313,6 +313,84 @@ function refuse(msg) {
   process.stderr.write('papercusp container-exec: ' + msg + '\\n');
   process.exit(126);
 }
+// Host-private, generation-specific identity. Docker exec processes belong to
+// the daemon's tree, not this wrapper's Linux descendants. The daemon's exec
+// record remains authoritative after the shell execs the native CLI.
+function processStart(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('invalid wrapper pid');
+  const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+  return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+}
+const tracksNative = cfg.codexWorkdirArgs.length > 0;
+const identityPath = pid => __filename + '.native-' + pid + '.json';
+function dockerJson(args) {
+  const result = spawnSync(cfg.dockerBin, [...cfg.dockerArgs, ...args],
+    { encoding: 'utf8', timeout: 3000, maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0) throw new Error('Docker identity read failed');
+  return JSON.parse(result.stdout);
+}
+function inspectExec(id) {
+  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('invalid exec id');
+  // Reuse Docker's own selected-daemon transport, including unix/TLS/SSH
+  // routing. HTTP/1.0 requests a non-chunked, connection-closed response.
+  const result = spawnSync(cfg.dockerBin, [...cfg.dockerArgs, 'system', 'dial-stdio'], {
+    input: 'GET /exec/' + id + '/json HTTP/1.0\\r\\nHost: docker\\r\\nConnection: close\\r\\n\\r\\n',
+    encoding: 'utf8', timeout: 3000, maxBuffer: 1024 * 1024,
+  });
+  const boundary = (result.stdout || '').indexOf('\\r\\n\\r\\n');
+  if (result.error || result.status !== 0 || boundary < 0 || !result.stdout.startsWith('HTTP/1.0 200 ') && !result.stdout.startsWith('HTTP/1.1 200 '))
+    throw new Error('Docker exec inspection failed');
+  return JSON.parse(result.stdout.slice(boundary + 4));
+}
+if (process.argv[2] === '--papercusp-native-process') {
+  try {
+    if (!tracksNative || process.argv.length !== 4) throw new Error('unsupported native identity request');
+    const pid = Number(process.argv[3]), file = identityPath(pid);
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.uid !== process.getuid() || (st.mode & 0o077) !== 0)
+      throw new Error('untrusted wrapper identity');
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (record.pid !== pid || record.start !== processStart(pid) || !/^[a-f0-9]{64}$/.test(record.marker))
+      throw new Error('stale wrapper identity');
+    const container = dockerJson(['inspect', '--format', '{"id":{{json .Id}},"execIds":{{json .ExecIDs}}}', cfg.containerId]);
+    if (!/^[a-f0-9]{64}$/.test(container.id)) throw new Error('invalid container identity');
+    const ids = container.execIds || [];
+    if (!Array.isArray(ids) || ids.length > 16) throw new Error('ambiguous Docker exec population');
+    const matches = [];
+    for (const id of ids) {
+      const info = inspectExec(id), pc = info.ProcessConfig;
+      if (info.ID === id && info.ContainerID === container.id && info.Running === true &&
+          pc?.entrypoint === '/bin/sh' && pc.arguments?.[0] === '-c' &&
+          pc.arguments?.[1] === 'exec "$@"' && pc.arguments?.[2] === record.marker &&
+          pc.arguments?.[3] === cfg.binPath && Number.isSafeInteger(info.Pid) && info.Pid > 0)
+        matches.push(info.Pid);
+    }
+    if (matches.length !== 1 || processStart(pid) !== record.start) throw new Error('native exec is not uniquely live');
+    // The task's root user can create a private lock directory that the host
+    // cannot enumerate. Read only file identities in this exact session home;
+    // the host still proves the lock's owner through its kernel-wide PID view.
+    const home = process.env[cfg.relocation.sessionEnv];
+    if (!home || path.resolve(path.dirname(home)) !== cfg.relocation.roots[0].hostRoot)
+      throw new Error('native identity home changed');
+    const stat = spawnSync(cfg.dockerBin, [...cfg.dockerArgs, 'exec', '-u', '0', cfg.containerId,
+      '/bin/sh', '-c', 'for f in "$1"/thread-writer-locks/*.lock; do [ -f "$f" ] && [ ! -L "$f" ] && stat -Lc "%d %i %n" "$f"; done',
+      'native-locks', home], { encoding: 'utf8', timeout: 3000, maxBuffer: 65536 });
+    if (stat.error || stat.status !== 0) throw new Error('native lock identities unavailable');
+    const locks = [];
+    for (const line of stat.stdout.trim().split('\\n')) {
+      const match = /^(\\d+) (\\d+) (.+)$/.exec(line);
+      if (!match) continue;
+      const name = path.basename(match[3]);
+      if (match[3] !== path.join(home, 'thread-writer-locks', name) ||
+          !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}\\.lock$/i.test(name)) continue;
+      const dev = Number(match[1]), ino = Number(match[2]);
+      if (Number.isSafeInteger(dev) && Number.isSafeInteger(ino)) locks.push({ name, dev, ino });
+    }
+    if (locks.length > 256 || processStart(pid) !== record.start) throw new Error('native lock population changed');
+    process.stdout.write(JSON.stringify({ ptyPid: pid, pid: matches[0], locks }));
+    process.exit(0);
+  } catch { refuse('exact native process is unavailable'); }
+}
 // Move this session's dir from each shared host root into the per-task dir mounted over that
 // root, leaving a host symlink. Idempotent: a resume finds the symlink and skips.
 function relocate(r) {
@@ -485,7 +563,16 @@ const argv = [...cfg.dockerArgs, 'exec', '-i'];
 if (process.stdin.isTTY && process.stdout.isTTY) argv.push('-t');
 argv.push('-w', cfg.workdir);
 for (const n of names) argv.push('-e', n);
-argv.push(cfg.containerId, cfg.binPath, ...cfg.codexWorkdirArgs, ...process.argv.slice(2));
+let identity;
+if (tracksNative) {
+  identity = { pid: process.pid, start: processStart(process.pid), marker: crypto.randomBytes(32).toString('hex') };
+  // This directory is host-only (never one of the session relocation mounts).
+  if ((fs.statSync(path.dirname(__filename)).mode & 0o077) !== 0) refuse('native identity directory must be private');
+  fs.writeFileSync(identityPath(process.pid), JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
+  process.on('exit', () => { try { fs.unlinkSync(identityPath(process.pid)); } catch {} });
+}
+argv.push(cfg.containerId, ...(identity ? ['/bin/sh', '-c', 'exec "$@"', identity.marker] : []),
+  cfg.binPath, ...cfg.codexWorkdirArgs, ...process.argv.slice(2));
 const child = spawn(cfg.dockerBin, argv, { stdio: 'inherit' });
 const relay = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 for (const sig of relay) process.on(sig, () => { try { child.kill(sig); } catch {} });

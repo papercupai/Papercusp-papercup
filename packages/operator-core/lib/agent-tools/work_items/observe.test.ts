@@ -37,4 +37,25 @@ describe('work_items:observe handler (bulk keyed-array)', () => {
     expect(b.results[0].ok).toBe(false);
     expect(String(b.results[0].error)).toMatch(/WI-1.*not found/i);
   });
+
+  it('stops the candidate walk after the caller aborts the active observation', async () => {
+    const controller = new AbortController();
+    obsM.mockImplementationOnce(async (_id, options) => {
+      expect(options?.signal).toBe(controller.signal);
+      controller.abort(new Error('bounded core leg timed out'));
+      return null as never;
+    });
+
+    const b = body(await tool.handler(
+      { ids: ['WI-1', 'WI-2', 'WI-3'], harness: 'web' } as never,
+      { signal: controller.signal } as never,
+    ) as Out);
+
+    expect(obsM).toHaveBeenCalledTimes(1);
+    expect(b.counts).toEqual({ ok: 0, failed: 3 });
+    expect(b.results.slice(1)).toMatchObject([
+      { ok: false, id: 'WI-2', error: 'observation aborted by parent signal' },
+      { ok: false, id: 'WI-3', error: 'observation aborted by parent signal' },
+    ]);
+  });
 });

@@ -7,13 +7,14 @@ describe('durable-headroom table retention policy', () => {
       expect(retentionDaysForTable(table), table).toBe(30);
     }
     expect(retentionDaysForTable('memory-recall-query-text')).toBe(3);
+    expect(retentionDaysForTable('code-intel-research-trails')).toBe(7);
   });
 
   it('projects the same policy shape consumed by the existing scheduled janitor', () => {
     expect(tableRetentionTargets()).toEqual(TABLE_RETENTION_TARGETS.map(({ category, retentionDays }) => ({
       category, retention_days: retentionDays,
     })));
-    expect(tableRetentionTargets()).toHaveLength(5);
+    expect(tableRetentionTargets()).toHaveLength(6);
   });
 
   it('does not assign a retention horizon to the lossless session archive', () => {

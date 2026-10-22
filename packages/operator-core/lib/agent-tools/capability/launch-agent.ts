@@ -1714,7 +1714,9 @@ export default defineTool({
     if (isResume && !fork && resumeOwnerId) {
       try {
         const targetLoop = await getLoopStatus(resumeOwnerId);
-        if (targetLoop) {
+        // A stopped loop's carry is historical, not the resumed session's
+        // current policy. Keep the canonical launch profile when it is inactive.
+        if (targetLoop?.active) {
           savedLaunchCarry = targetLoop.carry;
           notes.push(
             `✓ Applied target loop carry '${targetLoop.carry}' to the same-owner resume; it overrides the saved fleet launch carry.`,
@@ -2660,6 +2662,9 @@ export default defineTool({
               label: memberLabels[memberIndex],
               code: result.code,
               reason: result.error,
+              ...(result.taskId ? { taskId: result.taskId } : {}),
+              ...(result.logPath ? { logPath: result.logPath } : {}),
+              ...(result.kickoffProof ? { kickoffProof: result.kickoffProof } : {}),
             },
           ]
         : [],

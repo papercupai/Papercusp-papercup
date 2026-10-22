@@ -861,6 +861,35 @@ describe('default goalPortfolio dep reads only what the agenda consumes (EI-2530
   });
 });
 
+describe('default goalSubject dep stage timings', () => {
+  afterEach(() => {
+    vi.doUnmock('./modes/store');
+    vi.doUnmock('./modes/goal-session');
+  });
+
+  it('measures mode imports and the getModes read when a stage runner is supplied', async () => {
+    const getModes = vi.fn(async () => [{ mode: 'auto', subject: null }]);
+    const goalIdFromModes = vi.fn(() => 'goal-1');
+    vi.doMock('./modes/store', () => ({ getModes }));
+    vi.doMock('./modes/goal-session', () => ({ goalIdFromModes }));
+    const stages: string[] = [];
+    const runStage = async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+      stages.push(`${name}:active`);
+      const value = await work();
+      stages.push(`${name}:completed`);
+      return value;
+    };
+
+    await expect(defaultAgentObligationReaderDeps().goalSubject('ws', 'owner', runStage)).resolves.toBe('goal-1');
+    expect(getModes).toHaveBeenCalledExactlyOnceWith('ws', 'owner');
+    expect(stages).toEqual(expect.arrayContaining([
+      'goal-subject-mode-store-import:active', 'goal-subject-mode-store-import:completed',
+      'goal-subject-goal-session-import:active', 'goal-subject-goal-session-import:completed',
+      'goal-subject-get-modes:active', 'goal-subject-get-modes:completed',
+    ]));
+  });
+});
+
 describe('default planAcceptance dep serves the persisted gate verdict (D-039, WI-10004673)', () => {
   afterEach(() => {
     vi.doUnmock('./goals/plan-closure-observations');

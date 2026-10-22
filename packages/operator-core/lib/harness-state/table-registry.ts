@@ -330,6 +330,7 @@ const PEER_LOG_WORKSPACE_OWNED = [
 const WORKSPACE_OWNED_EXPLICIT = [
   // Native push dedupe/budget/telemetry is owned by a local workspace/session (P-034).
   'code_intel_pushes',
+  'code_intel_research_trails', // optional caller-session research, separate from delivered facts (P-011)
   'code_intel_push_skips',        // its budget-drop sibling (WI-6554700010018440), same owner/workspace keying
   'harness_prompt_overrides',     // the (workspace,harness,role) 3-tier override — across-workspaces Phase 1b
   'orchestrator_settings', 'setup_wizard_state', 'workspace_backup_settings',

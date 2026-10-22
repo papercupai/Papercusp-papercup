@@ -64,6 +64,36 @@ describe('Claude dialog answer provenance', () => {
     expect(finishClaudeDialog(OWNER, SESSION, TOOL, ANSWER, f.env)).toContain('"source":"automatic"');
   });
 
+  it('unproven-tool-receipt: rejects wrong and stale tools within the same session without consuming the current receipt', () => {
+    const f = fixture();
+    openClaudeDialog(OWNER, SESSION, TOOL, f.env); f.child.write('\r');
+    expect(finishClaudeDialog(OWNER, SESSION, 'other-tool', ANSWER, f.env)).toContain('"source":"unknown"');
+    expect(finishClaudeDialog(OWNER, SESSION, TOOL, ANSWER, f.env)).toContain('"source":"automatic"');
+
+    const nextTool = `${TOOL}-next`;
+    openClaudeDialog(OWNER, SESSION, nextTool, f.env); f.humanWrite('\r');
+    expect(finishClaudeDialog(OWNER, SESSION, TOOL, ANSWER, f.env)).toContain('"source":"unknown"');
+    expect(finishClaudeDialog(OWNER, SESSION, nextTool, ANSWER, f.env)).toContain('"source":"human"');
+    expect(finishClaudeDialog(OWNER, SESSION, nextTool, ANSWER, f.env)).toContain('"source":"unknown"');
+  });
+
+  it('unproven-history-receipt: retains current unknown provenance through indexed, raw, ref and relay readers', async () => {
+    const f = fixture();
+    openClaudeDialog(OWNER, SESSION, TOOL, f.env); f.child.write('\r'); f.humanWrite('\r');
+    const context = finishClaudeDialog(OWNER, SESSION, TOOL, ANSWER, f.env);
+    expect(context).toContain('"source":"unknown"');
+    const row = JSON.stringify(attachment(context));
+    const indexed = parseClaudeLine(row)!;
+    const raw = parseUserTurns(row)[0];
+    expect(indexed.text).toBe(raw.text);
+    expect(classifyRecordedTurn(indexed.text).verdict).toBe('unknown');
+    expect(classifyRecordedTurn(raw.text).verdict).toBe('unknown');
+    expect(parseHumanTurns(row)).toHaveLength(0);
+    const file = join(f.home, 'unknown-transcript.jsonl'); writeFileSync(file, row + '\n');
+    const verified = await verifyTurnRefs(OWNER, parseTurnRefs(`[turn:dialog-n@${TS}]`), { filePath: file, sessionId: SESSION });
+    expect(verified[0].verdict).toBe('unknown');
+  });
+
   it('unproven-input-receipt: does not count a failed write, or a headless stdin write, as a human answer', () => {
     const f = fixture();
     openClaudeDialog(OWNER, SESSION, TOOL, f.env);
@@ -98,7 +128,7 @@ describe('Claude dialog answer provenance', () => {
     expect(claudeDialogProvenanceAttachment(wrongHook)).toBeNull();
   });
 
-  it('automatic-hook-notice: the installed combined hook emits the source notice even when its operator mirror is unreachable', () => {
+  it.each(['automatic', 'human', 'unknown'] as const)('%s-hook-notice: the installed combined hook emits the source notice even when its operator mirror is unreachable', (source) => {
     const f = fixture();
     mkdirSync(join(f.home, '.papercusp'), { recursive: true });
     writeFileSync(join(f.home, '.papercusp', 'superuser-token'), 'test-token');
@@ -108,14 +138,18 @@ describe('Claude dialog answer provenance', () => {
     const pre = spawnSync('bash', [hook], { env: f.env, encoding: 'utf8',
       input: JSON.stringify({ ...event, hook_event_name: 'PreToolUse' }) });
     expect(pre.status).toBe(0); expect(pre.stdout.trim()).toBe('');
-    f.child.write('\r');
+    if (source === 'automatic') f.child.write('\r');
+    if (source === 'human') f.humanWrite('\r');
     const post = spawnSync('bash', [hook], { env: f.env, encoding: 'utf8',
       input: JSON.stringify({ ...event, hook_event_name: 'PostToolUse', tool_response: ANSWER }) });
     expect(post.status).toBe(0);
     const output = JSON.parse(post.stdout).hookSpecificOutput;
     expect(output.hookEventName).toBe('PostToolUse');
-    expect(output.additionalContext).toContain('"source":"automatic"');
-    expect(output.additionalContext).toContain('not a new owner instruction');
+    // Native PostToolUse additionalContext is the delivery boundary before the next continuation.
+    expect(output.additionalContext).toContain(`"source":"${source}"`);
+    const notice = source === 'automatic' ? 'not a new owner instruction'
+      : source === 'human' ? 'human terminal input path' : 'Do not attribute it to the owner';
+    expect(output.additionalContext).toContain(notice);
     // No selected labels or response payloads were stored in the local input receipt.
     expect(readFileSync(join(f.home, '.papercusp/hooks/cc/ask-gate-mirror.errors.log'), 'utf8')).not.toContain(ANSWER);
   });

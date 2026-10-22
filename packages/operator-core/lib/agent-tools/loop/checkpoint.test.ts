@@ -2186,6 +2186,39 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  it('records per-leg continuation read durations when the aggregate budget times out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const priorBoundedTimeout = withBoundedTimeout.getMockImplementation();
+    expect(priorBoundedTimeout).toBeDefined();
+    readWatermark.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { messages_since_ts: '' };
+    });
+    withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
+      const label = (options as { label?: string }).label;
+      if (label === 'loop:checkpoint continuation reads') {
+        const value = await (work as () => Promise<unknown>)();
+        return { value, degraded: true, reason: 'timeout', elapsedMs: 5_000 };
+      }
+      return priorBoundedTimeout!(work, options);
+    });
+
+    try {
+      await call({ next: 'continue after measurement' });
+      const diagnostic = warn.mock.calls
+        .map(([message]) => String(message))
+        .find((message) => message.startsWith('[loop:checkpoint] continuation-read-timeout '));
+      expect(diagnostic).toBeDefined();
+      const timing = JSON.parse(diagnostic!.slice('[loop:checkpoint] continuation-read-timeout '.length));
+      const watermark = timing.completed.find((entry: { name: string }) => entry.name === 'inbox.watermark');
+      expect(watermark?.elapsedMs).toBeGreaterThanOrEqual(15);
+      expect(watermark?.outcome).toBe('resolved');
+      expect(timing.active).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('bounds a stalled decision-ref advisory after the carry note is stored', async () => {
     const { CONTINUATION_READ_BUDGET_MS } = await import('./checkpoint');
     unresolvedPlanDecisionRefs.mockImplementation(() => new Promise(() => {}));

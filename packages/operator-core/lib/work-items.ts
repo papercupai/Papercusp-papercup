@@ -9846,9 +9846,32 @@ export interface WorkItemObservation {
  */
 export async function observeWorkItem(
   id: string,
-  opts: { harness?: string; revalidateHeld?: boolean; assignee?: string } = {},
+  opts: { harness?: string; revalidateHeld?: boolean; assignee?: string; signal?: AbortSignal } = {},
 ): Promise<WorkItemObservation | null> {
-  const wi = await getWorkItem(id, opts.harness);
+  const throwIfAborted = (): void => {
+    const signal = opts.signal;
+    if (!signal?.aborted) return;
+    if (signal.reason instanceof Error) throw signal.reason;
+    const error = new Error(
+      typeof signal.reason === 'string' && signal.reason
+        ? signal.reason
+        : 'work-item observation aborted',
+    );
+    error.name = 'AbortError';
+    throw error;
+  };
+  throwIfAborted();
+  // The base read uses the admin pool, which has no global statement_timeout.
+  // Reuse the repository's cancellable transaction seam when a parent signal is
+  // present so a timed-out orient leg cancels its active SQL query as well as
+  // preventing the next candidate from starting.
+  const wi = opts.signal
+    ? await boundedOrgTxn(
+        (tx) => getWorkItem(id, opts.harness, {}, tx),
+        { readOnly: true, signal: opts.signal, phase: 'work_items:observe:base-read' },
+      )
+    : await getWorkItem(id, opts.harness);
+  throwIfAborted();
   if (!wi) return null;
   // EI-15027: treat the literal 'unassigned' sentinel the same as NULL/empty. `wi` came
   // through getWorkItem's mapping layer (normalizeTakenBy already applied there), so this
@@ -9871,6 +9894,7 @@ export async function observeWorkItem(
     const category = await readNonAgentWorkCategory(
       id, wi.harness, wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
     );
+    throwIfAborted();
     if (category) return {
       item: wi, available: false, claimedBy: wi.assignee, gated: true, notAgentWork: category,
     };
@@ -9883,6 +9907,7 @@ export async function observeWorkItem(
       const read = opts.assignee
         ? await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), opts.assignee)
         : { status: 'none' as const };
+      throwIfAborted();
       const match = operationClaims.matchOperationWorkerClaim(read, wi);
       if (!match.allowed) return {
         item: wi, available: false, claimedBy: wi.assignee,
@@ -9890,12 +9915,13 @@ export async function observeWorkItem(
       };
     }
   }
-  if (
-    checkAdmission &&
-    !(await isWorkItemDuplicateAdmitted(id, {
-      workspaceId: wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
-    }))
-  ) {
+  const duplicateAdmitted = checkAdmission
+    ? await isWorkItemDuplicateAdmitted(id, {
+        workspaceId: wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
+      })
+    : true;
+  throwIfAborted();
+  if (checkAdmission && !duplicateAdmitted) {
     return {
       item: wi,
       available: false,
@@ -9911,6 +9937,7 @@ export async function observeWorkItem(
     let pickable = isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, undefined);
     if (!pickable) {
       const trusted = await loadTrustedGithubUserIds(activeWorkspaceId()).catch(() => new Set<number>());
+      throwIfAborted();
       pickable = isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trusted);
     }
     if (!pickable) return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
@@ -9943,8 +9970,10 @@ export async function observeWorkItem(
              AND ${isIssueLocallyClaimableWhereSql(sql, ws)}`;
         ownNodeClaimable = rows.length > 0;
       } catch {
+        throwIfAborted();
         ownNodeClaimable = false;
       }
+      throwIfAborted();
     }
     if (!ownNodeClaimable) return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
   }
@@ -9967,7 +9996,9 @@ export async function observeWorkItem(
   // avoid a module-cycle with the scheduler layer (which imports work-items types).
   if (unclaimed) {
     const { planItemLaneBlockReason, planItemLiveClaimReason } = await import('./scheduler/plan-item-lane-guard');
+    throwIfAborted();
     const blocked = await planItemLaneBlockReason(wi);
+    throwIfAborted();
     if (blocked) {
       return {
         item: wi,
@@ -9984,6 +10015,7 @@ export async function observeWorkItem(
     // floor above passed. Surface it the same way (see planItemLiveClaimReason's
     // doc comment for the WI-5137 incident this closes).
     const liveClaim = await planItemLiveClaimReason(wi);
+    throwIfAborted();
     if (liveClaim) {
       return {
         item: wi,
@@ -9997,7 +10029,9 @@ export async function observeWorkItem(
   if (checkAdmission) {
     const { isAcceptedReproductionStatus } = await import('./attention/bug-reproduction');
     const { verifyAcceptedWorkItemBugReproduction } = await import('./attention/intake-promotion');
+    throwIfAborted();
     const reproduction = await verifyAcceptedWorkItemBugReproduction(wi);
+    throwIfAborted();
     if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) return {
       item: wi, available: false, claimedBy: wi.assignee, gated: true, reproductionRefused: reproduction,
     };
@@ -10007,6 +10041,7 @@ export async function observeWorkItem(
   // is not read as "the scheduler will hand this out". Fail-soft, like claim.ts.
   if (unclaimed) {
     const blockers = await readUnresolvedDepBlockers(id, opts.harness ?? wi.harness ?? undefined).catch(() => null);
+    throwIfAborted();
     if (blockers && blockers.length > 0) {
       return { item: wi, available: true, claimedBy: wi.assignee, unresolvedDepBlockers: blockers };
     }

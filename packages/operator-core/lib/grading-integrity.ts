@@ -13,7 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
+import { launchTaskForKickoffRecovery, nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 import { observeFallback } from './degradation/fallback-observations';
@@ -1850,6 +1850,7 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,
     `Interim cards (terminal-re-rate): read them with ${interimCardRead}. It returns only the provisional cards for this subject, usually none. Do not page the rubric's whole card history to find them.`,
     `Historical source evidence: when a criterion cites a committed file, use capability:git-evidence { op:'readFileAtCommit', commitSha:'<full SHA from the stored evidence>', path:'<repository-relative path>' } to inspect that exact blob. Do not use capability:git or current-tree capability:read as proof of historical contents. If the stored evidence lacks the full commit SHA or path, state that exact gap and do not infer from HEAD.`,
+    `Historical evidence routing: when using tools:invoke for capability:git-evidence, discover it with tools:find { query:'capability:git-evidence', build:'staging' }. Copy the returned servingGeneration unchanged and pass it plus build:'staging' to every tools:invoke page request. If stale_tool_contract is returned, refresh from the same build and resume the exact cursor. Preserve a transport failure as a retrieval failure; never treat it as absent evidence.`,
     `Historical source page budgeting: code:run uses a default script budget of ${DEFAULT_SCRIPT_TIMEOUT_MS.toLocaleString('en-US')} ms (${DEFAULT_SCRIPT_TIMEOUT_MS / 1000} seconds); explicit timeoutSec can raise it to the ${FOREGROUND_TIMEOUT_CEILING_MS.toLocaleString('en-US')} ms (${FOREGROUND_TIMEOUT_CEILING_MS / 1000} seconds) foreground ceiling. Do not fan out byte-page chains for multiple large blobs in one call; read one oversized blob's chain per code:run. If a single blob's full chain might approach the ceiling, read a bounded page segment and continue its exact next_cursor in a separate call, or issue the page reads directly. Preserve the complete bytes for the cited blob's integrity check.`,
     `External-checkout source evidence: when the cited binding's repository measurement names rootHarnessSlug, copy that exact registered slug into capability:git-evidence { op:'readFileAtCommit', commitSha, path, rootHarnessSlug }. Evidence attributed to the plan harness may have executed in another registered repository. A commit lookup failure in the plan repository does not establish absence in the recorded evidence repository; do not guess a directory or substitute HEAD. Follow byte-page next_cursor unchanged so the registered root remains pinned.`,
     `Repository-pin recovery: before declaring a committed-file citation unresolvable, read the cited binding's full details with plans:get-spec-evidence and inspect measurementPin.files and measurementPin.repos. The recorded repo, head, gitlink, rootHarnessSlug and headBlob identify the source repository and exact blob; a test-run's shorter filePath does not replace the measurement pin's root-relative path. rootHarnessSlug selects a registered checkout, while repos[].repo may name a submodule inside it. For a nested pin (measurementPin.files[].repositoryPath/repo !== '.'), strip that repository prefix from the file path and pass it as repositoryPath in capability:git-evidence { op:'readFileAtCommit', commitSha, path:'<child-relative path>', repositoryPath:'<repo>' }; when rootHarnessSlug is absent, keep the plan harness as the resolved root. Do not send a submodule's commit to the parent repository and treat that lookup failure as absent evidence. Use only a supported exact-blob route for the recorded repository; if that route cannot express the pin, report the exact unsupported locator instead of claiming the stored repository pin is missing.`,
@@ -3050,16 +3051,10 @@ export async function dispatchPendingGradingAudits(
         };
         const launchData = result.data?.launch as
           | (NativeTranscriptLaunchReceipt & {
-              tasks?: Array<{
-                taskId?: unknown;
-                logPath?: unknown;
-                kickoffProof?: { persisted?: unknown; reason?: unknown; nativeRef?: unknown } | null;
-                nativeSession?: { backend?: unknown; sessionId?: unknown } | null;
-              }>;
               agentStarted?: boolean | null;
             })
           | undefined;
-        const launchedTask = launchData?.tasks?.[0];
+        const launchedTask = launchTaskForKickoffRecovery(launchData);
         const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
         const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
 

@@ -1448,6 +1448,38 @@ resolve_ptool_client_sid() {
   printf '%s\n' "$machine_sid"
 }
 
+# Select the control endpoint before dispatch. A failed staging boot cannot
+# receive its own recovery request. Keep this local, preserve the same client
+# identity, and never retry a dispatched mutation through another operator.
+resolve_staging_restart_control_url() {
+  local candidate seen='|' local_origin_pattern control_reply
+  local_origin_pattern='^http://(127[.]0[.]0[.]1|localhost|\[::1\]):[0-9]+/?$'
+  for candidate in "http://127.0.0.1:${STAGING_PORT:-3170}" "${PAPERCUSP_OPERATOR_URL:-}" 'http://127.0.0.1:3271' 'http://127.0.0.1:3070'; do
+    [[ "$candidate" =~ $local_origin_pattern ]] || continue
+    candidate="${candidate%/}"
+    [[ "$seen" == *"|$candidate|"* ]] && continue
+    seen+="$candidate|"
+    # Health alone can belong to a legacy operator whose MCP catalog cannot
+    # dispatch this tool. Use the SAME identity for a bounded read-only preview;
+    # no restart has been dispatched while another candidate is considered.
+    if curl --fail --silent --connect-timeout 2 --max-time 3 --output /dev/null "$candidate/api/health" &&
+       control_reply="$(timeout 30 env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="$candidate" --json - <<'JSON'
+{"target":"staging","confirm":false}
+JSON
+)" && node -e '
+      let value;
+      try { value = JSON.parse(require("node:fs").readFileSync(0, "utf8")); }
+      catch { process.exit(1); }
+      process.exit(value?.ok === true && value?.dry_run === true && value?.target === "staging" ? 0 : 1);
+    ' <<< "$control_reply"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' 'FATAL: no compatible local operator can receive the coordinated staging restart' >&2
+  return 1
+}
+
 PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)" || {
   log "FATAL: coordinated dev:restart requires PAPERCUSP_SID or the installer's valid machine identity at \$HOME/.papercusp/su-agent-id"
   exit 1
@@ -1471,7 +1503,9 @@ else
   exit "$STAGING_SYNC_SHARED_RC"
 fi
 
-# The ptool result may be lost when this request restarts its own :3170 server.
+RESTART_CONTROL_URL="$(resolve_staging_restart_control_url)" || exit 1
+
+# The ptool result may be lost when staging itself receives the request.
 log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
 restart_result_file="$(mktemp)"
 restart_diagnostics_file="$(mktemp)"
@@ -1480,16 +1514,15 @@ restart_tool_started_at="$(date +%s)"
 restart_tool_status=0
 restart_verified=0
 restart_pending=0
-# The default ptool endpoint is the older background operator (:9071),
-# whose identity kernel may not yet admit the installer's machine client.
-# The staging operator owns this target and accepts that same static client.
+# Prefer staging's current identity kernel while it is healthy; a failed boot
+# uses another healthy local operator and still must pass its authorization.
 # Run ptool in the background so this service can observe :3170 restarting. The
-# handler restarts the server that owns its HTTP stream, so a lost receipt is
+# handler may restart the server that owns its HTTP stream, so a lost receipt is
 # resolved by MainPID + exact-source proof instead of waiting out ptool's 345s
 # client deadline or retrying the mutation.
 (
   cd "$INTEGRATION_ROOT"
-  exec env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -
+  exec env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="$RESTART_CONTROL_URL" --json -
 ) >"$restart_result_file" 2>"$restart_diagnostics_file" <<JSON &
 {"target":"staging","confirm":true,"authorize":true,"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC},"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
 JSON

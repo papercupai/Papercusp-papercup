@@ -90,6 +90,69 @@ async function server() {
 }
 
 describe('owned native MCP client', () => {
+  it('keeps one HTTP client usable after a stateless endpoint restarts (EI-26677340494295865)', async () => {
+    const servers: Array<ReturnType<typeof createHttpServer>> = [];
+    const hosts: Array<{ host: McpServer; transport: StreamableHTTPServerTransport }> = [];
+    const calls: string[] = [];
+    const sessions: Array<string | string[] | undefined> = [];
+    const errors: unknown[] = [];
+    let connection: Awaited<ReturnType<typeof connectAgentMcp>> | undefined;
+    const stop = async (http: ReturnType<typeof createHttpServer>) => {
+      if (!http.listening) return;
+      http.closeAllConnections();
+      await new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve()));
+    };
+    const start = async (generation: string, port = 0) => {
+      const http = createHttpServer(async (request, response) => {
+        // Isolate MCP session state from idle TCP socket reuse. This control
+        // does not reproduce Codex's Rust transport or an in-flight reset.
+        response.setHeader('connection', 'close');
+        sessions.push(request.headers['mcp-session-id']);
+        const host = new McpServer({ name: 'restart-fixture', version: '1' }, { capabilities: { tools: {} } });
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+        hosts.push({ host, transport });
+        host.server.setRequestHandler(CallToolRequestSchema, async request => {
+          if (request.params.name !== 'read_generation') throw new Error('unknown_fixture_tool');
+          calls.push(generation);
+          return { content: [{ type: 'text' as const, text: generation }] };
+        });
+        try {
+          await host.connect(transport);
+          await transport.handleRequest(request, response);
+        } catch (error) {
+          errors.push(error);
+          if (!response.headersSent) response.writeHead(500);
+          response.end();
+        }
+      });
+      servers.push(http);
+      http.listen(port, '127.0.0.1');
+      await once(http, 'listening');
+      return http;
+    };
+    try {
+      const first = await start('before-restart');
+      const address = first.address();
+      if (!address || typeof address === 'string') throw new Error('missing_http_restart_port');
+      connection = await connectAgentMcp({ url: `http://127.0.0.1:${address.port}/api/mcp`, mode: 'http' });
+      expect(await connection.client.callTool({ name: 'read_generation' }))
+        .toMatchObject({ content: [{ text: 'before-restart' }] });
+      await stop(first);
+      await start('after-restart', address.port);
+      expect(await connection.client.callTool({ name: 'read_generation' }))
+        .toMatchObject({ content: [{ text: 'after-restart' }] });
+      expect(calls).toEqual(['before-restart', 'after-restart']);
+      expect(sessions.every(session => session === undefined)).toBe(true);
+      expect(errors).toEqual([]);
+    } finally {
+      await connection?.client.close();
+      await Promise.allSettled(hosts.map(async ({ host, transport }) => {
+        await host.close(); await transport.close();
+      }));
+      await Promise.all(servers.map(stop));
+    }
+  });
+
   it('reconciles a dispatched unknown UDS mutation before explicit HTTP rollback, without replay', async () => {
     const { witness, fixture, register } = await server();
     const connection = await connectAgentMcp({

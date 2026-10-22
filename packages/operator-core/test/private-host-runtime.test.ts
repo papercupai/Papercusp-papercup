@@ -254,6 +254,40 @@ it('prepares every roster API bundle before the private execute phase', () => {
   expect(cleanupProofs).toBe(1);
 });
 
+it.each(['3.0.0', '2.11.0'])('refuses a private build before spawn when SDK %s violates its declared range', installed => {
+  const root = mkdtempSync(join(tmpdir(), 'private-dependency-range-')); dirs.push(root);
+  const workspace = join(root, 'packages/operator-core');
+  const sdk = join(workspace, 'node_modules/@opentelemetry/sdk-trace');
+  mkdirSync(sdk, { recursive: true });
+  writeFileSync(join(root, 'package.json'), '{}');
+  writeFileSync(join(workspace, 'package.json'), JSON.stringify({ dependencies: {
+    '@opentelemetry/sdk-trace': '^2.12.0' } }));
+  writeFileSync(join(sdk, 'package.json'), JSON.stringify({ version: installed }));
+  const spawned = join(root, 'spawned');
+  expect(() => buildPrivateOperatorApiBundle(root, root, { command: 'bash',
+    args: ['-c', 'touch "$1"', '_', spawned], timeoutMs: 1000 }))
+    .toThrow(`@opentelemetry/sdk-trace: declared ^2.12.0, installed ${installed}`);
+  expect(existsSync(spawned)).toBe(false);
+  expect(existsSync(join(root, 'operator-api-build.log'))).toBe(false);
+});
+
+it('allows a private build with a compatible hoisted SDK', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-dependency-range-')); dirs.push(root);
+  const workspace = join(root, 'packages/operator-core');
+  const sdk = join(root, 'node_modules/@opentelemetry/sdk-trace');
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(sdk, { recursive: true });
+  writeFileSync(join(root, 'package.json'), '{}');
+  writeFileSync(join(workspace, 'package.json'), JSON.stringify({ dependencies: {
+    '@opentelemetry/sdk-trace': '^2.12.0' } }));
+  writeFileSync(join(sdk, 'package.json'), JSON.stringify({ version: '2.12.1' }));
+  const bundle = join(root, 'hono-host.mjs');
+  const result = buildPrivateOperatorApiBundle(root, root, { command: 'bash',
+    args: ['-c', 'echo bundle > "$1"', '_', bundle], timeoutMs: 1000 });
+  expect(result.path).toBe(bundle);
+  expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
+});
+
 it('stops builder descendants on timeout and retains the original diagnostics', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const childFile = join(evidenceDir, 'descendant.pid');

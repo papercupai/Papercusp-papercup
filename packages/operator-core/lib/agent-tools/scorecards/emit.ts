@@ -4184,11 +4184,11 @@ export async function emitScorecard(
         },
       );
     }
-    // P-013 backlog repair: every newly filed non-audit scorecard is a cheap,
-    // durable trigger for the bounded oldest-first pending-audit dispatcher.
+    // Dispatch this card explicitly: a bounded backlog sweep can select older
+    // cards and leave the newly emitted card without its promised auditor.
     // Do not trigger from the audit card itself: its own emit would recursively
     // fan out the same backlog while the original dispatch is still in flight.
-    // The dispatcher is detached so a historical backlog cannot stretch the
+    // The dispatcher is detached so auditor selection cannot stretch the
     // scorecards:emit latency or fail a card that was already written.
     if (result.created && result.issue?.id && input.launchContext && args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF) {
       const dispatchAudits = deps.dispatchPendingGradingAudits ?? dispatchPendingGradingAudits;
@@ -4197,9 +4197,7 @@ export async function emitScorecard(
         : input.launchContext;
       void trackDetached(
         dispatchAudits({
-          // A caller's explicit profile belongs to this card, not the unrelated
-          // backlog. Preserve the ordinary bounded backlog sweep when omitted.
-          targetIds: args.gradingLaunch ? [result.issue.id] : [],
+          targetIds: [result.issue.id],
           ctx: auditLaunchContext,
           harness: input.ctxHarness,
         }).then(() => undefined),
@@ -4254,7 +4252,10 @@ export async function emitScorecard(
         ? {
             gradingAuditPending: true,
             gradingAuditNextStep:
-              'The existing router automatically selects an independent auditor; declines and expiry advance its cascade, with a bounded fresh-judge fallback when no candidate is available. ' +
+              (result.created && result.issue?.id && input.launchContext
+                ? 'Audit dispatch for this card was requested. The existing router automatically selects an independent auditor; declines and expiry advance its cascade, with a bounded fresh-judge fallback when no candidate is available. '
+                : 'This call did not request automatic audit dispatch. ') +
+              `If no dispatch reservation is present, use scorecards:repair { targetIds:['${result.issue?.id ?? '<this card id>'}'] }. ` +
               'This card does not satisfy a gate until a NON-AUTHOR audits it. A DIFFERENT agent must emit ' +
               `{ rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ` +
               `ref:'${result.issue?.id ?? '<this card id>'}' }, ratings:{...} }. Self-audits are refused, and ` +

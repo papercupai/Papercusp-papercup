@@ -153,10 +153,15 @@ describe('trigger-pack materialization (R-8)', () => {
     ]);
 
     // The plans exist in the INSTALLER's harness.
-    const plans = await sql<Array<{ slug: string }>>`
-      SELECT plan_slug AS slug FROM harness_shared.harness_plans
+    const plans = await sql<Array<{ slug: string; profile: string | null; profileSource: string | null }>>`
+      SELECT plan_slug AS slug,
+             verification_profile AS profile,
+             verification_profile_source AS "profileSource"
+        FROM harness_shared.harness_plans
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} ORDER BY plan_slug`;
     expect(plans.map((plan) => plan.slug)).toEqual(expect.arrayContaining([FOLLOW_SLUG, REPLY_SLUG]));
+    expect(plans.every((plan) => /^(coding|general)$/.test(plan.profile ?? '') && plan.profileSource === 'harness-default'))
+      .toBe(true);
 
     const rows = await sql<
       Array<{

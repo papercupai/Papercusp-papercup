@@ -314,6 +314,8 @@ async function startDbosOnce(): Promise<void> {
   const { DBOS } = await import('@dbos-inc/dbos-sdk');
   DBOS.setConfig({
     name: 'papercusp-operator',
+    // Reuse the host's standard provider; DBOS preserves context across durable steps.
+    tracingEnabled: true,
     systemDatabaseUrl: withDbosIdleTxGrace(url),
     systemDatabaseSchemaName: 'dbos',
     applicationVersion: PINNED_APP_VERSION,

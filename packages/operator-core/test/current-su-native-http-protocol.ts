@@ -70,6 +70,7 @@ export function createCurrentSuNativeProtocol() {
   let initialBody: Body | undefined, initialInput: string | undefined;
   let stage: 'initial' | 'edit' | 'compact' | 'queued' = 'initial';
   let carryInputSeen = false;
+  let predecessorSessionId: string | undefined;
   const census: Array<Record<string, unknown>> = [];
   const acknowledgement = (body: Body) => codexCliResponsesCompletionSse(codexCliResponsesBody({
     model: String(body.model), text: 'Private managed carry protocol acknowledgement.', inputTokens: 100, outputTokens: 8,
@@ -78,17 +79,19 @@ export function createCurrentSuNativeProtocol() {
     get initialBody() { return initialBody; },
     get carryRequested() { return stage === 'queued'; },
     get carryInputSeen() { return carryInputSeen; },
+    get predecessorSessionId() { return predecessorSessionId; },
     census,
     respond(body: Body, proof: { predecessorSessionId: string; editApplied: () => boolean }) {
       const input = JSON.stringify(body.input) ?? '';
       const items = Array.isArray(body.input) ? body.input as Array<Record<string, unknown>> : [];
       const outputs = items.filter(item => item && ['function_call_output', 'custom_tool_call_output'].includes(String(item.type)));
       const result = (kind: 'edit' | 'compact') => outputs.find(item => item.call_id === 'call_private_' + kind);
-      const lineage = input.includes('codex-carry-lineage predecessor:' + proof.predecessorSessionId);
+      const expectedPredecessorSessionId = predecessorSessionId ?? proof.predecessorSessionId;
+      const lineage = input.includes('codex-carry-lineage predecessor:' + expectedPredecessorSessionId);
       const tools = offeredTools(body);
       const row: Record<string, unknown> = { index: census.length + 1, at: new Date().toISOString(),
         stage, bodyKeys: Object.keys(body), inputBytes: Buffer.byteLength(input),
-        inputHash: createHash('sha256').update(input).digest('hex'), lineage,
+        inputHash: createHash('sha256').update(input).digest('hex'), lineage, expectedPredecessorSessionId,
         tools: tools.map(({ type, name, namespace }) => ({ type, name, namespace })),
         outputs: outputs.map(item => ({ type: item.type, callId: item.call_id,
           // Retain only our fixed protocol results, never the full launch prompt.
@@ -115,6 +118,12 @@ export function createCurrentSuNativeProtocol() {
         if ((stage === 'edit' || stage === 'compact') && result('edit')) {
           assert.ok(proof.editApplied(), 'Native scripted edit was not applied before compaction');
           const wire = scriptedTool(body, 'compact');
+          // Initial transport can precede native binding; after compaction the
+          // same database row can name the successor. Freeze at the boundary
+          // we actually drive, never infer identity from the carry text itself.
+          assert.ok(proof.predecessorSessionId, 'Native predecessor must be bound before compaction');
+          predecessorSessionId ??= proof.predecessorSessionId;
+          row.expectedPredecessorSessionId = predecessorSessionId;
           stage = 'compact'; row.action = 'compact';
           return wire;
         }

@@ -1280,9 +1280,9 @@ describe('agent-review grading lifecycle', () => {
     expect(h.deliverRevision).not.toHaveBeenCalled();
   });
 
-  it('resubmission increments the round and releases revision work for another reviewer', async () => {
+  it.each([null, 'su-filer'])('resubmission increments the round and releases revision work held by %s', async (assignee) => {
     const h = harness(issue({
-      assignee: 'su-filer',
+      assignee,
       payload: {
         agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
       },
@@ -1302,6 +1302,36 @@ describe('agent-review grading lifecycle', () => {
         evidence: { review: { submittedBy: 'su-filer', round: 2 } },
       },
     });
+  });
+
+  it.each(['su-successor', 'su-reviewer'])('refuses resubmission held by %s without mutating review state', async (assignee) => {
+    const h = harness(issue({
+      assignee,
+      payload: {
+        agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2 },
+        implementationReadiness: { status: 'not-ready', reason: 'agent-review-revision-requested' },
+        needsHuman: true,
+        needsOwnerAction: true,
+      },
+    }));
+    h.state.ledger = {
+      ideaId: 'WI-7',
+      workItemId: 'WI-7',
+      grade: 1,
+      feedback: 'revise this proposal',
+      gradedBy: 'su-reviewer',
+    };
+    const before = structuredClone(h.state);
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'revision-held-by-other',
+      state: { status: 'revision-requested', round: 2 },
+    });
+    expect(h.state).toEqual(before);
+    expect(h.clearLedgerGrade).not.toHaveBeenCalled();
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
   });
 
   it('clears the prior reviewer grade so a resubmitted round cannot replay stale feedback (WI-10005365)', async () => {

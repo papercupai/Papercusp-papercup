@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   record: vi.fn(async () => ({ recorded: true, reason: 'turn-end-policy-recorded-not-yet-graded' })),
-  persist: vi.fn(async () => true),
+  persist: vi.fn(async () => ({ status: 'completed', recorded: true, elapsedMs: 12 })),
   path: vi.fn(async (): Promise<string | null> => '/native/session'),
   turn: vi.fn(async (): Promise<{ text: string; ts: Date } | null> => null),
   extract: vi.fn(() => null as null | { note: string; source: string; flagged: boolean }),
@@ -46,7 +46,7 @@ function responseData(result: object): unknown {
 
 beforeEach(() => {
   h.record.mockReset().mockResolvedValue({ recorded: true, reason: 'turn-end-policy-recorded-not-yet-graded' });
-  h.persist.mockReset().mockResolvedValue(true);
+  h.persist.mockReset().mockResolvedValue({ status: 'completed', recorded: true, elapsedMs: 12 });
   h.path.mockReset().mockResolvedValue('/native/session');
   h.turn.mockReset().mockResolvedValue(null);
   h.extract.mockReset().mockReturnValue(null);
@@ -81,7 +81,9 @@ describe('journal native placement seam', () => {
     };
     h.record.mockResolvedValueOnce(outcome);
     const result = await tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never);
-    expect(result).toMatchObject({ data: { goalPlacementTurnEnd: outcome } });
+    expect(result).toMatchObject({ data: { goalPlacementTurnEnd: { ...outcome,
+      outcomeAppendTiming: { status: 'completed', recorded: true, elapsedMs: 12 },
+    } } });
     expect(h.persist).toHaveBeenCalledExactlyOnceWith(input, outcome);
   });
   it('returns but does not diagnose the no-canonical-goal outcome', async () => {

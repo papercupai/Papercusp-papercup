@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import { parsePlan } from '@papercusp/plan-parser';
 import { isNonAutomatedBehaviorClass } from './plan-verification-profile';
+import { resolveNewPlanVerificationProfile } from './agent-tools/plans/plan-verification-profile-stamp';
 import {
   acceptanceRubricCriterionSchema,
   rubricCriterionCheckSchema,
@@ -1313,17 +1314,21 @@ export async function seedAcceptanceBarsInTransaction(
     description: `Predeclared acceptance BARs seeded from ${input.planSlug}.`,
   });
   if (rubricChanged && !input.dryRun) {
+    const profileStamp = existing === null
+      ? await resolveNewPlanVerificationProfile({ harnessSlug: rubricHarness, workspaceId: input.workspaceId })
+      : null;
     const templateJson = JSON.stringify(built.templateData);
     const bodyHash = hashPlanContent(body);
     await sql`
       INSERT INTO harness_shared.harness_plans (
         workspace_id, harness_slug, plan_slug, content, content_hash, version,
         title, status, created, updated, owner, template, template_data,
-        items, decisions, now_state, now_next, origin
+        items, decisions, now_state, now_next, origin, verification_profile, verification_profile_source
       ) VALUES (
         ${input.workspaceId}, ${rubricHarness}, ${rubricSlug}, ${body}, ${bodyHash}, ${rubricRevision},
         ${title}, 'active', ${date}, ${date}, ${input.actorId}, 'rubric', ${templateJson}::text::jsonb,
-        '[]'::jsonb, '[]'::jsonb, 'Acceptance BAR rubric', 'Fill METHOD/checks against as-built work before grading', 'local'
+        '[]'::jsonb, '[]'::jsonb, 'Acceptance BAR rubric', 'Fill METHOD/checks against as-built work before grading', 'local',
+        ${profileStamp?.profile ?? null}, ${profileStamp?.source ?? null}
       )
       ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
         template_data = EXCLUDED.template_data,

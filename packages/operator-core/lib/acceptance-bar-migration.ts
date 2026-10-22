@@ -1,4 +1,5 @@
 import { withWorkspace } from '@papercusp/db-org';
+import { parsePlan } from '@papercusp/plan-parser';
 import { seedAcceptanceBarsInTransaction } from './acceptance-bar-seed';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import type { SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
@@ -62,7 +63,13 @@ export function classifyAcceptanceBarMigration(plan: AcceptanceBarMigrationPlan)
       reason: `terminal status '${status}' remains closed historical validation history`,
     };
   }
-  if (status === 'draft') {
+  // A stored draft can already contain implemented or in-flight items. Its
+  // enforcement cohort remains strict, but a newly seeded contract must not
+  // claim to have preceded work that the same document records as started.
+  const startedDraft = status === 'draft' && parsePlan(plan.content).items.some(
+    (item) => item.storedStatus !== 'todo' && item.storedStatus !== 'dropped',
+  );
+  if (status === 'draft' && !startedDraft) {
     return {
       planSlug: plan.planSlug,
       action: 'seed-strict',
@@ -72,7 +79,7 @@ export function classifyAcceptanceBarMigration(plan: AcceptanceBarMigrationPlan)
   }
   // Enforcement membership and when these BARs were authored are independent.
   // Backfilling a strict plan must not make it disappear from the adoption census.
-  const cohort = plan.acceptanceBarCohort === 'post-epoch' ||
+  const cohort = startedDraft || plan.acceptanceBarCohort === 'post-epoch' ||
     (plan.acceptanceBarEpoch != null && plan.acceptanceBarCohort !== 'legacy-backfilled')
     ? 'post-epoch' : 'legacy-backfilled';
   if (hasRequirementBars(plan.content)) {

@@ -3,6 +3,7 @@ import type { AdvSessionRow } from './adv-sessions';
 import {
   nativeSessionHandleForAdvSession,
   nativeTranscriptProofFromLaunchReceipt,
+  launchTaskForKickoffRecovery,
   nativeSessionHandleForSpawnedAgent,
   claudeHandleAfterRematerializeAttempt,
   type ClaudeNativeSessionHandle,
@@ -20,6 +21,32 @@ import type {
  * temp tree in session-config-dir.test.ts; duplicating it here would test the wrong seam.
  */
 const RESOLVED = '/home/x/.papercusp/session-claude/su-real';
+
+describe('launch task recovery identity', () => {
+  const failed = { taskId: 'task-retired', kickoffProof: {
+    persisted: false, nativeRef: null, reason: 'kickoff-not-submitted:role-mcp-unavailable',
+  } };
+
+  it('retains a conclusive single retired failure outside the opened task list', () => {
+    expect(launchTaskForKickoffRecovery({ opened: 0, tasks: [], failures: [failed] })).toBe(failed);
+  });
+
+  it('always preserves an opened task over a failure receipt', () => {
+    const live = { taskId: 'task-live' };
+    expect(launchTaskForKickoffRecovery({ opened: 0, tasks: [live], failures: [failed] })).toBe(live);
+  });
+
+  it.each([
+    { opened: 0, failures: [failed, failed] },
+    { opened: 1, failures: [failed] },
+    { failures: [failed] },
+    { opened: 0, failures: [{ taskId: 'task-retired' }] },
+    { opened: 0, failures: [{ ...failed, kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' } }] },
+    { opened: 0, failures: [{ ...failed, kickoffProof: { persisted: true, reason: failed.kickoffProof.reason } }] },
+  ])('refuses ambiguous, unmeasured or uncertain failed receipts: %j', receipt => {
+    expect(launchTaskForKickoffRecovery(receipt)).toBeUndefined();
+  });
+});
 
 describe('native transcript launch receipt proof', () => {
   const task = { ownerId: 'su-exact', kickoffProof: { nativeRef: 'exact.jsonl' }, nativeSession: null };

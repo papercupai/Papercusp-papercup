@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
-const SCHEMA_VERSION = "bundle-host-freshness-v1";
+const SCHEMA_VERSION = "bundle-host-freshness-v2";
 
 function parseArgs(argv) {
   const [operation, ...rest] = argv;
@@ -101,6 +101,62 @@ function sourceIdentity(repoRoot) {
   return { repoRoot: resolvedRoot, headSha };
 }
 
+// HEAD describes the requested dependencies, not the installed realization.
+// Pin npm's installed lock AND the actual package manifests/resolution paths:
+// a copied/stale hidden lock alone must not bless a physically different SDK.
+// Walk package boundaries only (including nested/workspace node_modules), not
+// caches or every dependency file; package-content integrity is npm's job.
+function dependencyIdentity(repoRoot, entry) {
+  const installedLock = join(repoRoot, "node_modules", ".package-lock.json");
+  if (!existsSync(installedLock))
+    throw new Error(`installed dependency lock is missing: ${installedLock}`);
+  const rows = [];
+  const seen = new Set();
+  const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+  const visit = (modules) => {
+    if (!existsSync(modules)) {
+      rows.push({ path: modules, absent: true });
+      return;
+    }
+    const actual = realpathSync(modules);
+    rows.push({
+      path: modules,
+      actual,
+      lockSha256: existsSync(join(actual, ".package-lock.json"))
+        ? digest(join(actual, ".package-lock.json"))
+        : null,
+    });
+    if (seen.has(actual)) return;
+    seen.add(actual);
+    const packages = [];
+    for (const name of readdirSync(actual).sort()) {
+      if (name.startsWith(".")) continue;
+      const path = join(actual, name);
+      if (name.startsWith("@")) {
+        for (const child of readdirSync(path).sort())
+          packages.push(join(path, child));
+      } else {
+        packages.push(path);
+      }
+    }
+    for (const path of packages) {
+      const target = realpathSync(path);
+      rows.push({ path, actual: target, manifestSha256: digest(join(target, "package.json")) });
+      visit(join(target, "node_modules"));
+    }
+  };
+  // Include local resolution roots even if this entry's workspace is not linked
+  // from root node_modules. A realpath set terminates workspace/symlink cycles.
+  for (let dir = dirname(entry); ; dir = dirname(dir)) {
+    visit(join(dir, "node_modules"));
+    if (dir === repoRoot) break;
+    if (dirname(dir) === dir) throw new Error("entry is outside repo root");
+  }
+  return {
+    sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex"),
+  };
+}
+
 function transientOutputName(path, manifestPath, outfile) {
   const name = basename(path);
   return (
@@ -180,6 +236,7 @@ function normalizedInputs(values) {
 
 function stamp(values) {
   const inputs = normalizedInputs(values);
+  const dependencies = dependencyIdentity(inputs.source.repoRoot, inputs.entry);
   const outputTree = outputTreeIdentity(inputs.outfile, inputs.manifest);
   const record = {
     schemaVersion: SCHEMA_VERSION,
@@ -187,6 +244,7 @@ function stamp(values) {
     headSha: inputs.source.headSha,
     entry: inputs.entry,
     outfile: inputs.outfile,
+    dependencies,
     outputTree,
     stampedAt: new Date().toISOString(),
   };
@@ -211,6 +269,9 @@ function check(values) {
     throw new Error("freshness manifest entry mismatch");
   if (record.outfile !== inputs.outfile)
     throw new Error("freshness manifest outfile mismatch");
+  const dependencies = dependencyIdentity(inputs.source.repoRoot, inputs.entry);
+  if (record.dependencies?.sha256 !== dependencies.sha256)
+    throw new Error("freshness manifest installed-dependency mismatch");
   const outputTree = outputTreeIdentity(inputs.outfile, inputs.manifest);
   if (
     record.outputTree?.fileCount !== outputTree.fileCount ||

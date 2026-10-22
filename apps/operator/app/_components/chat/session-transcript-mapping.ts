@@ -46,6 +46,18 @@ import { groupEntriesIntoTurns, type TimelineEntry } from '../../harness/AgentTh
 import { ownerVisiblePromptText } from '@papercusp/operator-core/lib/agent-tools/coordination/owner-chat-turn';
 
 /**
+ * Codex can persist OpenAI citation tokens inline in output_text while the
+ * corresponding annotations array is empty. This owner-facing view has no
+ * source URL to turn those IDs into links, so remove the private protocol token
+ * here. The underlying timeline stays intact for technical inspection.
+ */
+const RAW_OPENAI_CITATION_MARKER = /[ \t]*\uE200cite\uE202[^\uE201\r\n]*\uE201/g;
+
+function stripRawOpenAiCitationMarkers(text: string): string {
+  return text.replace(RAW_OPENAI_CITATION_MARKER, '');
+}
+
+/**
  * Map a flat live-thinking timeline into chat messages, oldest-first — the
  * order `OperatorChat`/`PapercupChat` expect.
  *
@@ -215,7 +227,7 @@ export function mapSessionTimeline(
     }
 
     const joinedText = textParts.join('\n\n').trim();
-    const content = joinedText || resultText.trim();
+    const content = stripRawOpenAiCitationMarkers(joinedText || resultText.trim()).trim();
     /* Follow the SAME branch the content did. A turn routinely has both a `text`
        stream and a trailing `result` record, and `text` wins the content — so
        tracking one shared "last content entry" would stamp the streamed answer

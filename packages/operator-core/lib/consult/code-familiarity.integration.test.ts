@@ -29,13 +29,14 @@ beforeAll(async () => {
       ts timestamptz NOT NULL DEFAULT now(), repo_root text, acquired_via text, dispatch_call_id text);
     CREATE TABLE harness_shared.tool_invocations (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL, harness_slug text, tool_name text NOT NULL,
-      coord_owner_id text, args_json jsonb, invoked_at timestamptz NOT NULL DEFAULT now());
+      coord_owner_id text, args_json jsonb, status text NOT NULL DEFAULT 'ok',
+      invoked_at timestamptz NOT NULL DEFAULT now());
   `);
   const edit = (agent: string, file: string, ts: string, ws = WS) =>
     sql`INSERT INTO harness_shared.edit_attribution_ledger (workspace_id, agent_id, file, ts) VALUES (${ws}, ${agent}, ${file}, ${ts})`;
-  const read = (owner: string, tool: string, args: object, ts: string) =>
-    sql`INSERT INTO harness_shared.tool_invocations (workspace_id, coord_owner_id, tool_name, args_json, invoked_at)
-        VALUES (${WS}, ${owner}, ${tool}, ${sql.json(args as never)}, ${ts})`;
+  const read = (owner: string, tool: string, args: object, ts: string, status = 'ok') =>
+    sql`INSERT INTO harness_shared.tool_invocations (workspace_id, coord_owner_id, tool_name, args_json, invoked_at, status)
+        VALUES (${WS}, ${owner}, ${tool}, ${sql.json(args as never)}, ${ts}, ${status})`;
   // editor: two edits, one of them a year old.
   await edit('editor', FILE, '2025-10-01T00:00:00Z');
   await edit('editor', FILE, '2026-10-20T00:00:00Z');
@@ -46,6 +47,20 @@ beforeAll(async () => {
   await read('reader', 'capability:read', { file_path: `/home/x/repo/${FILE}` }, '2026-10-19T00:00:00Z');
   await read('reader', 'lsp:query', { op: 'references', file: FILE }, '2026-10-19T00:00:00Z');
   await read('reader', 'coord:send', { body: FILE }, '2026-10-19T00:00:00Z');
+  for (const status of ['error', 'timeout', 'invalid-input', 'role-not-allowed', 'quota-exceeded', 'refused', 'replayed']) {
+    await read('failed-reader', 'capability:read', { file_path: FILE }, '2026-10-19T00:00:00Z', status);
+    await read('failed-reader', 'lsp:query', { file: FILE }, '2026-10-19T00:00:00Z', status);
+  }
+  await read('file-reader', 'capability:read', { file_path: '/home/x/repo/src/widget.ts' }, '2026-10-19T00:00:00Z');
+  await read('file-reader', 'capability:read', { path: 'src/widget.ts' }, '2026-10-19T00:00:00Z');
+  await read('file-reader', 'lsp:query', { file: 'src/widget.ts' }, '2026-10-19T00:00:00Z');
+  await read('file-reader', 'graph:query', { paths: ['src/other.ts', 'src/widget.ts'] }, '2026-10-19T00:00:00Z');
+  for (const file of ['src/widget.tsx', 'src/widget.ts.backup', 'xsrc/widget.ts']) {
+    await read('prefix-reader', 'capability:read', { file_path: file }, '2026-10-19T00:00:00Z');
+    await read('prefix-reader', 'graph:query', { paths: [file] }, '2026-10-19T00:00:00Z');
+  }
+  await read('prefix-reader', 'capability:read', { file_path: 'src/other.ts', note: 'src/widget.ts' }, '2026-10-19T00:00:00Z');
+  await read('prefix-reader', 'lsp:query', { file: 'src/other.ts', symbol: 'src/widget.ts' }, '2026-10-19T00:00:00Z');
   // noise: another workspace, another file, a file sharing only a name suffix.
   await edit('untouched', FILE, '2026-10-20T00:00:00Z', 'other-ws');
   await edit('untouched', 'packages/other/relevance-router.ts.bak', '2026-10-20T00:00:00Z');
@@ -77,9 +92,25 @@ describe('measureCodeFamiliarity (R-2)', () => {
   });
 
   it('matches a partial path from the question as a directory-bounded suffix', async () => {
-    const m = await measureCodeFamiliarity(sql, { workspaceId: WS, owners: ['editor', 'untouched'], files: ['consult/relevance-router.ts'] });
+    const m = await measureCodeFamiliarity(sql, { workspaceId: WS, owners: ['editor', 'reader', 'untouched'], files: ['consult/relevance-router.ts'] });
     expect(m.byOwner.get('editor')?.edits).toBe(2);
+    expect(m.byOwner.get('reader')?.reads).toBe(2);
     expect(m.byOwner.get('untouched')).toBeUndefined();
+  });
+
+  it('gives no familiarity credit to failed, refused or replayed code-tool attempts', async () => {
+    const m = await measureCodeFamiliarity(sql, { workspaceId: WS, owners: ['reader', 'failed-reader'], files: [FILE] });
+    expect(m.reads).toBe('measured');
+    expect(m.byOwner.get('reader')?.reads).toBe(2);
+    expect(m.byOwner.get('failed-reader')).toBeUndefined();
+    expect(codeAuthorshipScore(m.byOwner.get('failed-reader'))).toBe(0);
+  });
+
+  it('matches actual file arguments without crediting filename prefixes or incidental argument text', async () => {
+    const m = await measureCodeFamiliarity(sql, { workspaceId: WS, owners: ['file-reader', 'prefix-reader'], files: ['src/widget.ts'] });
+    expect(m.reads).toBe('measured');
+    expect(m.byOwner.get('file-reader')).toEqual({ edits: 0, reads: 4 });
+    expect(m.byOwner.get('prefix-reader')).toBeUndefined();
   });
 
   it('reports the read leg unmeasured, and gives no read credit, when it times out', async () => {

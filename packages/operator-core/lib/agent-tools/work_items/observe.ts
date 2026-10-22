@@ -48,10 +48,25 @@ export default defineTool({
     // cannot receive a positive preview for a pinned operation item.
     let assignee: string | undefined;
     try { assignee = resolveAgentIdentity(ctx).ownerId; } catch { assignee = undefined; }
+    const signal = ctx.signal;
+    const cancelled = (id: string) => ({
+      ok: false as const,
+      id,
+      error: 'observation aborted by parent signal',
+    });
     const env = await runBulk(
       ids,
       async (id) => {
-        const obs = await observeWorkItem(id, { harness: args.harness, ...(assignee ? { assignee } : {}) });
+        // coord:orient's boundedCore aborts this in-process read when its leg
+        // deadline expires. Do not keep issuing database reads for the remaining
+        // candidate IDs.
+        if (signal?.aborted) return cancelled(id);
+        const obs = await observeWorkItem(id, {
+          harness: args.harness,
+          ...(assignee ? { assignee } : {}),
+          ...(signal ? { signal } : {}),
+        });
+        if (signal?.aborted) return cancelled(id);
         return obs
           ? { ...obs, ok: true as const, id }
           : { ok: false as const, id, error: `work_item '${id}' not found` };

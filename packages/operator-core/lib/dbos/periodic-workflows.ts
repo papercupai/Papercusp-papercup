@@ -56,7 +56,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { reapEndedPresenceRows } from '../agent-tools/coordination/presence-reaper';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
-import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
+import { DBOS_WORKFLOW_GC_CRONTAB, runDbosWorkflowGcOnce, type DbosWorkflowGcResult } from './dbos-workflow-gc';
 import { gcGovernorReceipts } from '../resource-governor/receipt-gc';
 import { PgAdmissionCutoverQueueStore } from '../resource-governor/admission-cutover-store';
 import {
@@ -876,22 +876,16 @@ const outboxBackstopGcWorkflow = idempotentRegisterWorkflow('outboxBackstopGc', 
 );
 DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', crontab: '0 0 */6 * * *' });
 
-// Daily 04:30 (after coordNotifyGc 04:00, off the stampede): prune old TERMINAL
+// Hourly at :30 (off the :00 stampede): prune old TERMINAL
 // dbos.workflow_status + operation_outputs rows (R4-5 / EI-1607 defense-in-depth) —
 // 325k+ workflow rows accrue with no DBOS-native retention, bloating the system DB +
-// the scheduler/recovery scans that walk it. NO-OP unless PAPERCUSP_DBOS_WORKFLOW_GC=1
-// (a DELETE on DBOS's own system tables is arm-deliberately); only terminal statuses,
-// batched, NEVER in-flight (PENDING/ENQUEUED) rows. Heavy DELETE → shed under loop pressure.
-async function dbosWorkflowGcTick(): Promise<void> {
-  await DBOS.runStep(
+// the scheduler/recovery scans that walk it. Default ON; only terminal statuses,
+// batched, NEVER in-flight (PENDING/ENQUEUED) rows. Its per-pass budget bounds
+// maintenance; shedding this backstop would starve the repair when bloat causes pressure.
+async function dbosWorkflowGcTick(): Promise<DbosWorkflowGcResult> {
+  return DBOS.runStep(
     async () => {
-      if (shouldShedHeavyTick('dbos-workflow-gc')) return;
-      const r = await runDbosWorkflowGcOnce();
-      if (!r.skipped && (r.deletedWorkflows > 0 || r.deletedOutputs > 0)) {
-        console.log(
-          `[dbos-workflow-gc] pruned ${r.deletedWorkflows} terminal workflow(s) + ${r.deletedOutputs} operation_output(s) (${r.batches} batch(es), cutoff ${r.cutoffMs})`,
-        );
-      }
+      return runDbosWorkflowGcOnce();
     },
     { name: 'dbos-workflow-gc' },
   );
@@ -902,7 +896,7 @@ const dbosWorkflowGcWorkflow = idempotentRegisterWorkflow('dbosWorkflowGc', () =
     maxRecoveryAttempts: 5,
   }),
 );
-DBOS.registerScheduled(dbosWorkflowGcWorkflow, { name: 'dbosWorkflowGc', crontab: '0 30 4 * * *' });
+DBOS.registerScheduled(dbosWorkflowGcWorkflow, { name: 'dbosWorkflowGc', crontab: DBOS_WORKFLOW_GC_CRONTAB });
 
 // Hourly (:20, off the :00 stampede): reconcile the attention queue — auto-resolve
 // stale OPERATIONAL escalations (placement-watchdog cursed placements / aging

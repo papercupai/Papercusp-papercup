@@ -105,6 +105,16 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
     }));
     expect(first.ok).toBe(true);
     if (!first.ok) throw new Error(first.message);
+    const [profile] = await db.adminSql<Array<{
+      verification_profile: string | null;
+      verification_profile_source: string | null;
+    }>>`
+      SELECT verification_profile, verification_profile_source
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = ${first.rubricSlug}`;
+    expect(profile?.verification_profile).toMatch(/^(coding|general)$/);
+    expect(profile?.verification_profile_source).toBe('harness-default');
     const [snapshot] = await db.adminSql<{ content_snapshot: string }[]>`
       SELECT content_snapshot FROM harness_shared.plan_revisions
        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}

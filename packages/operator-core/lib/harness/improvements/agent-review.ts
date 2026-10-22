@@ -1118,6 +1118,15 @@ export async function resubmitAgentReview(
   if (current.status !== 'revision-requested') {
     return { resubmitted: false, state: current, reason: `not-revision-requested:${current.status}` };
   }
+  // Original submission authority does not release another agent's revision claim.
+  // Check the same holder used by the release CAS before clearing its grade or
+  // publishing a pending round; a late refusal would otherwise leave both changed.
+  const expectedAssignee = (isOrphanRebind || isProvenanceRepair) && workItem.assignee
+    ? workItem.assignee
+    : input.submittedBy;
+  if (workItem.assignee && workItem.assignee !== expectedAssignee) {
+    return { resubmitted: false, state: current, reason: 'revision-held-by-other' };
+  }
   // A pending round carries no revision kind; the next grade stamps a fresh one.
   const {
     revisionKind: _resolvedRevisionKind,
@@ -1176,7 +1185,7 @@ export async function resubmitAgentReview(
     // has already established the holder is adoptable.
     const released = await deps.releaseWorkItem(workItem.id, {
       ...(workItem.harness ? { harness: workItem.harness } : {}),
-      expectedAssignee: isOrphanRebind || isProvenanceRepair ? workItem.assignee : input.submittedBy,
+      expectedAssignee,
     });
     if (!released) throw new Error(`resubmitAgentReview: '${workItem.id}' is held by another agent`);
   }

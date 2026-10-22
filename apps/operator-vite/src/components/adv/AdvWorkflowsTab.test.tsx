@@ -366,6 +366,32 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); configureOperatorUi({ advNavigation: undefined }); });
 
 describe('Enterprise workspace — D-050', () => {
+  function expectEnterpriseJourney(root: HTMLElement) {
+    const route = within(root);
+    expect(route.getByRole('region', { name: 'Enterprise journey' })).toBeTruthy();
+    expect((route.getByRole('combobox', { name: 'Departmental workflow' }) as HTMLSelectElement).value)
+      .toBe('operation:papercusp:support-handoff');
+    const employee = within(route.getByRole('region', { name: 'Prepare support handoff' }));
+    expect(employee.getByLabelText('Support case reference')).toBeTruthy();
+    expect(employee.getByRole('combobox', { name: 'Requested action' })).toBeTruthy();
+    expect(employee.getByRole('button', { name: 'Prepare handoff' })).toBeTruthy();
+    expect(employee.getByText('a'.repeat(64))).toBeTruthy();
+    const reviewer = within(route.getByRole('region', { name: 'Operation result' }));
+    expect(reviewer.getByRole('heading', { name: 'Reviewer decision' })).toBeTruthy();
+    expect(reviewer.getByText(/Business outcome pending/)).toBeTruthy();
+    const administration = within(route.getByRole('region', { name: 'Workflow administration' }));
+    expect(administration.getByRole('button', { name: 'Refresh administration' })).toBeTruthy();
+    expect(administration.getByText(/Approved version, funding\/cost evidence, promotion, rollback, and history have not been read/))
+      .toBeTruthy();
+  }
+
+  function expectUnavailableInventory(root: HTMLElement) {
+    const route = within(root);
+    expect(route.getByText(/Departmental workflow inventory is unavailable: Inventory read refused/)).toBeTruthy();
+    expect(route.getByText('Inventory unavailable')).toBeTruthy();
+    expect(route.queryByText('No departmental workflow installed')).toBeNull();
+  }
+
   it.each([['Plans', 'create'], ['Calendar', 'scheduled'], ['Evaluations', 'evals'], ['Live work', 'hud'], ['Health', 'health'], ['Learning', 'learning']])(
     'opens %s through the portal host navigation while retaining the selected workflow and workspace', async (label, destination) => {
       configureOperatorUi({ advNavigation: { param: 'app', targets: ADV_TAB_SURFACE_KINDS } });
@@ -400,6 +426,38 @@ describe('Enterprise workspace — D-050', () => {
     expect(screen.getByText('a'.repeat(64))).toBeTruthy();
     expect(H.runTool).not.toHaveBeenCalled();
     expect(within(screen.getByRole('navigation', { name: 'Supporting workspace evidence' })).getAllByRole('button')).toHaveLength(6);
+    expectEnterpriseJourney(screen.getByRole('region', { name: 'Enterprise workspace' }));
+  });
+
+  it.each<[string, (root: HTMLElement) => void]>([
+    ['missing workflow selection', root => within(root).getByRole('combobox', { name: 'Departmental workflow' }).remove()],
+    ['missing approved version', root => within(root).getByText('a'.repeat(64)).remove()],
+    ['missing employee action', root => within(root).getByRole('button', { name: 'Prepare handoff' }).remove()],
+    ['missing reviewer decision', root => within(root).getByRole('region', { name: 'Operation result' }).remove()],
+    ['administration fragmented into another route', root => {
+      const otherRoute = document.createElement('section');
+      otherRoute.appendChild(within(root).getByRole('region', { name: 'Workflow administration' }));
+    }],
+    ['missing pending business state', root => within(root).getByText(/Business outcome pending/).remove()],
+    ['missing funding/cost evidence state', root => {
+      const state = within(root).getByText(/funding\/cost evidence, promotion, rollback, and history have not been read/);
+      state.textContent = state.textContent!.replace('funding/cost evidence, ', '');
+    }],
+    ['missing rollback/history state', root => {
+      const state = within(root).getByText(/funding\/cost evidence, promotion, rollback, and history have not been read/);
+      state.textContent = state.textContent!.replace('rollback, and history', '');
+    }],
+  ])('rejects the rendered journey with %s', async (_name, mutate) => {
+    H.enterpriseOperations = true;
+    renderTab({}, true);
+    await screen.findByRole('button', { name: 'Prepare handoff' });
+    const route = screen.getByRole('region', { name: 'Enterprise workspace' });
+    expectEnterpriseJourney(route);
+    // Mutate the real rendered output, leaving React's mounted tree intact.
+    // Each counterexample must fail the same oracle that accepts the intact route.
+    const counterexample = route.cloneNode(true) as HTMLElement;
+    mutate(counterexample);
+    expect(() => expectEnterpriseJourney(counterexample)).toThrow();
   });
 
   it('distinguishes an unavailable inventory from an installed-workflow count of zero', async () => {
@@ -408,6 +466,11 @@ describe('Enterprise workspace — D-050', () => {
     expect(await screen.findByText(/Departmental workflow inventory is unavailable: Inventory read refused/)).toBeTruthy();
     expect(screen.getByText('Inventory unavailable')).toBeTruthy();
     expect(screen.queryByText('No departmental workflow installed')).toBeNull();
+    const route = screen.getByRole('region', { name: 'Enterprise workspace' });
+    expectUnavailableInventory(route);
+    const counterexample = route.cloneNode(true) as HTMLElement;
+    within(counterexample).getByText('Inventory unavailable').textContent = 'No departmental workflow installed';
+    expect(() => expectUnavailableInventory(counterexample)).toThrow();
   });
 
   it('explains how to start when no departmental operation is installed', async () => {

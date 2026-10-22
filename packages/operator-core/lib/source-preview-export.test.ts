@@ -821,6 +821,83 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
+  it.each(['explicit-cap', 'cleanup-cutoff', 'explicit-pass', 'default', 'command-cap', 'command-pass'] as const)(
+    'bounds dependency preparation and preserves the caller environment (%s)', async mode => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-preparation-budget-' + mode));
+    git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    const script = 'scripts/source-preview.mjs';
+    const writer = 'scripts/dependency-progress.cjs';
+    const pidPath = join(tmp, mode + '-preparation.pid');
+    write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    const assertEnv = "if (process.env.VERIFIER_PREP_SENTINEL !== 'caller-only' || process.env.NODE_OPTIONS !== '' || process.env.NODE_PATH !== '') throw Error('caller environment lost');\n";
+    write(fixture.repo, script, assertEnv + "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, writer, assertEnv + [
+      "const fs = require('node:fs');",
+      "fs.writeFileSync(process.env.VERIFIER_PREP_PID, String(process.pid));",
+      "let completed = 0; const timer = setInterval(() => console.log('snapshot progress: completed=' + (++completed)), 100);",
+      "setTimeout(() => { clearInterval(timer); console.log('copy-complete'); }, 1800);",
+    ].join('\n'));
+    write(fixture.repo, helper, [
+      '#!/bin/bash', 'set -eu',
+      'test "$VERIFIER_PREP_SENTINEL" = caller-only',
+      'test -z "$NODE_OPTIONS"', 'test -z "$NODE_PATH"',
+      'if [ "$1" = trees ]; then echo node_modules; exit; fi',
+      '"$VERIFIER_PREP_NODE" "$3/scripts/dependency-progress.cjs"',
+      'cp -al -- "$2/node_modules" "$3/node_modules"',
+    ].join('\n'));
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', helper, script, writer, DEPENDENCY_POLICY_PATH, '.gitignore']);
+    git(fixture.repo, ['commit', '-qm', 'bounded dependency preparation fixture']);
+    installVerifierTsx(fixture.repo);
+    const dest = join(tmp, 'verifier-preparation-dest-' + mode);
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [script], gitCheckout: true });
+    const env = childEnv({ VERIFIER_PREP_SENTINEL: 'caller-only', VERIFIER_PREP_PID: pidPath,
+      VERIFIER_PREP_NODE: process.execPath, NODE_OPTIONS: '--import=/ambient/loader', NODE_PATH: '/ambient/dependencies' });
+    delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+    if (mode !== 'default') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + (mode === 'cleanup-cutoff' ? 121_000 : 300_000));
+    const maxMs = mode === 'explicit-cap' || mode === 'command-cap' ? 1000 : 15_000;
+    const receiptPath = join(tmp, mode + '-preparation.json');
+    const commandRun = mode === 'command-cap' || mode === 'command-pass';
+    const result = commandRun
+      ? runVerifierCommand({ repo: fixture.repo, ref: receipt.sourceCommit, inputs: [script], receiptPath,
+        command: [process.execPath, '-e', "console.log('provider-ran')"], env, preparationMaxMs: maxMs })
+      : prepareVerifierDependencies({ donor: fixture.repo, dest, receipt, env,
+        ...(mode === 'default' ? {} : { maxMs }) });
+    if (mode === 'explicit-cap' || mode === 'cleanup-cutoff' || mode === 'command-cap') {
+      await expect(result).rejects.toThrow('absolute-ceiling');
+      const pid = readFileSync(pidPath, 'utf8');
+      if (existsSync(`/proc/${pid}/stat`))
+        expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+      if (!commandRun) expect(existsSync(join(dest, 'node_modules'))).toBe(false);
+    } else if (commandRun) {
+      await expect(result).resolves.toBe(0);
+    } else {
+      await expect(result).resolves.toMatchObject({ sourceCommit: receipt.sourceCommit });
+    }
+    if (commandRun) {
+      const task = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+      expect(task.cleanup).toBe('completed');
+      expect(existsSync(task.ownedRoot)).toBe(false);
+      if (mode === 'command-cap') expect(existsSync(receiptPath + '.child.json')).toBe(false);
+    }
+    expect(env.NODE_OPTIONS).toBe('--import=/ambient/loader');
+    expect(env.NODE_PATH).toBe('/ambient/dependencies');
+  });
+
+  it.each(['missing', 'invalid', 'cleanup-exhausted'] as const)(
+    'refuses an explicit preparation grant before touching source or launching a child (%s)', async mode => {
+    const env = childEnv();
+    delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+    if (mode === 'invalid') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = 'NaN';
+    if (mode === 'cleanup-exhausted') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + 120_000);
+    const runPhase = vi.fn();
+    await expect(prepareVerifierDependencies({ donor: '/absent/donor', dest: '/absent/dest',
+      receipt: {} as Awaited<ReturnType<typeof prepareVerifierSource>>, env, maxMs: 5000, runPhase }))
+      .rejects.toThrow(mode === 'cleanup-exhausted' ? 'TASK_DEADLINE_REFUSAL' : 'finite caller task deadline');
+    expect(runPhase).not.toHaveBeenCalled();
+  });
+
   it.each(['copy', 'copy-lock'])('lets advancing %s progress cross the initial watchdog deadline', async kind => {
     const progressLine = kind === 'copy'
       ? "'copy progress: fixture written=' + (++written) + 'MiB'"

@@ -4,18 +4,24 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_TURN_CHARS, recordIntentTaskBrief, snapshotFirstTouchLeg, snapshotGrepLeg,
-  type PushFact, type PushInput, type PushLeg, type PushLegId } from './push-channel';
+  readNoteAnchorStaleness, readPushNotesContext, type PushFact, type PushInput, type PushLeg, type PushLegId } from './push-channel';
 import { parsePushSnapshot, type PushSnapshot } from './push-snapshot';
 import { readPushIncidentAttribution } from './push-channel';
+import { resolveCurrentTokens } from '../freshness/resolvers';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 
 let db: OrgTestDb;
+const dbOrgSpies = vi.hoisted(() => ({ getOrgPg: vi.fn(), withWorkspace: vi.fn() }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
   ...(await importOriginal<object>()),
-  withWorkspace: (ws: string, cb: (tx: unknown) => Promise<unknown>) => db.appSql.begin(async tx => {
-    await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
-    return cb(tx);
-  }),
+  getOrgPg: () => { dbOrgSpies.getOrgPg(); return { sql: db.adminSql }; },
+  withWorkspace: (ws: string, cb: (tx: unknown) => Promise<unknown>) => {
+    dbOrgSpies.withWorkspace(ws);
+    return db.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+      return cb(tx);
+    });
+  },
 }));
 const input = { workspace: 'push-integration-A', owner: 'agent-A', harness: 'papercusp', calls: [{ tool: 'Read' }] };
 const snapshot = () => parsePushSnapshot(JSON.stringify({ schema: 'graph-dependency-snapshot-v1',
@@ -34,6 +40,40 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     await db.adminSql.unsafe(await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1544-code-intel-push-skips.sql', import.meta.url), 'utf8'));
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });
+
+  it('WI-6554700010020557: folds first-touch notes through the workspace app transaction', async () => {
+    const workspace = 'push-notes-app-fold';
+    const path = 'pkg/target.ts';
+    const root = await mkdtemp(join(tmpdir(), 'code-intel-notes-app-'));
+    try {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await writeFile(join(root, path), 'export const retries = 3; // deliberate\n');
+      await readNoteAnchorStaleness([], { ...input, workspace, root }); // warm the production resolver before measuring the fold
+      const token = (await resolveCurrentTokens([`file:${path}`], {
+        workspaceId: workspace, harness: 'papercusp', repoRoot: root,
+      })).get(`file:${path}`);
+      expect(token).toBeTruthy();
+      const body = 'The retry count is deliberate and anchored to the current file.';
+      const dependency = { cell: `file:${path}`, observedAt: new Date().toISOString(), digest: token, observed: token };
+      await db.adminSql`INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, depends_on)
+        VALUES (${workspace}, 'harness', 'papercusp', 'code-note:app-fold', ${body}, 'push-test',
+          now() + interval '1 day', ${JSON.stringify([dependency])}::jsonb)`;
+
+      dbOrgSpies.getOrgPg.mockClear();
+      dbOrgSpies.withWorkspace.mockClear();
+      const context = await readPushNotesContext({ ...input, workspace, root }, [path]);
+
+      expect(context.fresh).toEqual([{
+        key: 'code-note:app-fold', body, paths: [path], scope: 'harness', scopeRef: 'papercusp',
+      }]);
+      expect(context.withheld).toEqual([]);
+      expect(dbOrgSpies.withWorkspace).toHaveBeenCalledWith(workspace);
+      expect(dbOrgSpies.getOrgPg).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it('joins edit-time items and open scoped paths without leaking foreign harnesses or inferring symbol authorship', async () => {
     const workspace = 'push-incident-join';

@@ -29,7 +29,7 @@ import { matchHarnessPattern, workScopeExceptionExpirySchema } from '../work-sco
  * derived from the provider API host by ./processing-route.ts; residency must be an allow list,
  * because a global endpoint's region is unresolved and matches no deny pattern.
  */
-export const GOVERNED_CATEGORIES = ['models', 'providers', 'regions', 'tools', 'plugins', 'egress', 'dataUse', 'actions'] as const;
+export const GOVERNED_CATEGORIES = ['models', 'providers', 'regions', 'tools', 'plugins', 'egress', 'dataUse', 'actions', 'resources'] as const;
 export type GovernedCategory = (typeof GOVERNED_CATEGORIES)[number];
 
 export const POLICY_LEVELS = ['organization', 'department', 'workspace'] as const;

@@ -134,7 +134,8 @@ beforeAll(async () => {
       ts timestamptz NOT NULL DEFAULT now(), repo_root text, acquired_via text, dispatch_call_id text);
     CREATE TABLE harness_shared.tool_invocations (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL, harness_slug text, tool_name text NOT NULL,
-      coord_owner_id text, args_json jsonb, invoked_at timestamptz NOT NULL DEFAULT now());
+      coord_owner_id text, args_json jsonb, status text NOT NULL DEFAULT 'ok',
+      invoked_at timestamptz NOT NULL DEFAULT now());
   `);
 
   // ── The corpus ───────────────────────────────────────────────────────────

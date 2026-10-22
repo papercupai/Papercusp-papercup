@@ -75,6 +75,56 @@ describe('deploymentPositionForPaths', () => {
     expect(result.unknownPaths).toEqual(['src/boom.ts']);
     expect(result.paths.map((entry) => entry.path)).toEqual(['src/ok.ts']);
   });
+
+  it('forwards one caller abort signal to every path probe and marks all aborted reads unknown', async () => {
+    const controller = new AbortController();
+    const signals: AbortSignal[] = [];
+    gitPipelinePosition.mockImplementation(
+      (_input: unknown, deps?: { gitReadBudget?: { signal?: AbortSignal } }) => {
+        const signal = deps?.gitReadBudget?.signal;
+        if (!signal) return Promise.resolve(null);
+        signals.push(signal);
+        return new Promise<null>((resolve) => {
+          const settle = () => resolve(null);
+          if (signal.aborted) settle();
+          else signal.addEventListener('abort', settle, { once: true });
+        });
+      },
+    );
+    const paths = Array.from(
+      { length: MAX_DEPLOYMENT_POSITION_PATHS },
+      (_, i) => 'src/signal-' + i + '.ts',
+    );
+
+    const resultPromise = deploymentPositionForPaths(paths, {
+      signal: controller.signal,
+      deadlineMs: Date.now() + 5_000,
+    });
+
+    expect(gitPipelinePosition).toHaveBeenCalledTimes(MAX_DEPLOYMENT_POSITION_PATHS);
+    expect(signals).toHaveLength(MAX_DEPLOYMENT_POSITION_PATHS);
+    expect(new Set(signals).size).toBe(1);
+    controller.abort();
+    const result = await resultPromise;
+
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(result).toEqual({
+      paths: [],
+      unknownPaths: paths,
+      totalPaths: paths.length,
+      truncated: false,
+    });
+  });
+
+  it('leaves shared path callers on the default pipeline budget when no evidence options are passed', async () => {
+    gitPipelinePosition.mockResolvedValue(position('src/a.ts'));
+
+    await expect(deploymentPositionForPaths(['src/a.ts'])).resolves.toMatchObject({
+      paths: [{ path: 'src/a.ts' }],
+      unknownPaths: [],
+    });
+    expect(gitPipelinePosition).toHaveBeenCalledWith({ path: 'src/a.ts' });
+  });
 });
 
 describe('citationDeploymentForPaths', () => {

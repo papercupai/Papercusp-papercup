@@ -58,6 +58,8 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setInterval as setRealInterval, clearInterval as clearRealInterval } from 'node:timers';
+import { configureScheduledRegistry, listManaged, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 import type postgres from 'postgres';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
@@ -743,6 +745,15 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
       const CYCLES = 5;
       const LEG_TIMEOUT_MS = 25_000;
 
+      // The maintained registry suppresses real background intervals in Vitest.
+      // This case explicitly exercises the production poll callback with real
+      // network/PG clocks; a nonzero mergePollMs alone does not arm that callback.
+      cleanups.push(() => resetScheduledRegistry());
+      configureScheduledRegistry({
+        setIntervalImpl: (fire, intervalMs) => setRealInterval(fire, intervalMs),
+        clearIntervalImpl: (timer) => clearRealInterval(timer as ReturnType<typeof setRealInterval>),
+      });
+
       // ── env-route getOrgPg (identical pattern to the sibling repro above) ──
       const orgDb: OrgTestDb = await createOrgTestDb();
       const prev = {
@@ -876,6 +887,11 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
       expect(member.handle.swarm, 'member did not join a swarm').not.toBeNull();
       expect(owner.handle.swarm!.topicHex).toBe(member.handle.swarm!.topicHex);
 
+      expect(listManaged().find((timer) => timer.name === 'hyperbee-merge-poll')).toMatchObject({
+        intervalMs: MERGE_POLL_MS,
+        instances: 2,
+      });
+
       const ownerLogKey = owner.handle.ownLog.keyHex;
 
       // ── Roster + initial content, via the REAL poll-driven merge only — no
@@ -917,6 +933,7 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
         { timeoutMs: LEG_TIMEOUT_MS, intervalMs: 300 },
       );
       expect(initOk, 'initial roster+feature federation never completed via the real poll-driven path').toBe(true);
+      expect(listManaged().find((timer) => timer.name === 'hyperbee-merge-poll')?.fires).toBeGreaterThan(0);
 
       // ── The soak: N cycles, alternating restart target exactly like
       // b8-replication-soak.sh (odd cycle → MEMBER, even cycle → OWNER). Each

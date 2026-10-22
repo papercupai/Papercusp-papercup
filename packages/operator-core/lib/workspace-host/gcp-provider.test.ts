@@ -2625,6 +2625,38 @@ describe('every role that drives the GCP provider holds what GCP checks on each 
 });
 
 describe('spot provisioning option (WI-10005210)', () => {
+  it('carries the original finite canary deadline into STANDARD DELETE scheduling', async () => {
+    const { provider } = providerAndClient();
+    const terminationTime = '2099-01-01T00:00:00Z';
+    const plan = await provider.plan({ action: 'provision', operationId: 'finite', idempotencyKey: 'finite', desired: desired() },
+      { ...context(), canaryTeardownDeadlineAt: terminationTime });
+    const input = plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput };
+    expect(input.request.scheduling).toEqual({ provisioningModel: 'STANDARD', terminationTime,
+      instanceTerminationAction: 'DELETE', automaticRestart: false, onHostMaintenance: 'TERMINATE' });
+    expect(input.request.disks[1].autoDelete).toBe(false);
+    expect(gcpInstanceInsertPermissions(input.request)).toContain('compute.instances.setScheduling');
+  });
+
+  it.each(['2020-01-01T00:00:00Z', '2099-01-01T00:00:00', '2099-02-30T00:00:00Z'])('refuses invalid or expired finite canary deadline %s', async (deadline) => {
+    const { provider, client } = providerAndClient();
+    let imageReads = 0;
+    client.getImageDiskSizeGb = async () => { imageReads++; return 30; };
+    await expect(provider.plan({ action: 'provision', operationId: 'finite', idempotencyKey: 'finite', desired: desired() },
+      { ...context(), canaryTeardownDeadlineAt: deadline })).rejects.toThrow(/terminationTime/);
+    expect(imageReads).toBe(0);
+  });
+
+  it('refuses finite SPOT canaries and caller-authored expiry settings', async () => {
+    const { provider } = providerAndClient();
+    for (const spec of [
+      { ...desired(), provider: { ...desired().provider, provisioningModel: 'spot' } },
+      { ...desired(), provider: { ...desired().provider, terminationTime: '2099-01-01T00:00:00Z' } },
+    ]) {
+      await expect(provider.plan({ action: 'provision', operationId: 'finite', idempotencyKey: 'finite', desired: spec },
+        { ...context(), canaryTeardownDeadlineAt: '2099-01-01T00:00:00Z' })).rejects.toThrow(/standard|controller admission/);
+    }
+  });
+
   async function plan(spec: WorkspaceHostDesiredSpec) {
     const { provider } = providerAndClient();
     return provider.plan({ action: 'provision', operationId: 'spot', idempotencyKey: 'spot', desired: spec }, context());

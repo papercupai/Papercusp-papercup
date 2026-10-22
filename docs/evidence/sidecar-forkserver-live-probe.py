@@ -10,6 +10,9 @@ import tempfile
 import time
 from pathlib import Path
 
+TRACE_WINDOW_SECONDS = 3
+MAX_TRACE_WINDOW_SECONDS = 3.1  # 100 ms scheduling tolerance, never a longer denominator.
+
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -44,7 +47,34 @@ def trace_instrument_available(traces, attached):
     return attached and bool(traces) and all(
         not trace['instrumentErrors'] and trace['traceLineCount'] > 0
         and (trace['label'] != 'sidecar' or trace['unmeasuredCallCount'] == 0)
+        and trace.get('coverage', {}).get('attachedThroughWindow') is True
+        and trace['coverage'].get('aliveAtWindowEnd') is True
+        and trace['coverage'].get('tracerIdentityAtStart')
+        == trace['coverage'].get('tracerIdentityAtEnd')
+        and bool(trace['coverage'].get('tracerIdentityAtStart'))
+        and (trace['coverage'].get('exitCode') == 0
+             or (trace['coverage'].get('stopRequested') is True
+                 and trace['coverage'].get('exitCode') == -signal.SIGINT))
         for trace in traces)
+
+
+def attached_tracer_identities(jobs, proc_root=Path('/proc')):
+    """A live sudo wrapper alone does not prove its strace still owns the target."""
+    identities = {}
+    try:
+        for label, pid, _, _, process in jobs:
+            if process.poll() is not None:
+                return None
+            tracer = int(next(line.split(':', 1)[1]
+                              for line in (proc_root / str(pid) / 'status').read_text().splitlines()
+                              if line.startswith('TracerPid:')))
+            if tracer <= 0:
+                return None
+            ticks = (proc_root / str(tracer) / 'stat').read_text().rsplit(')', 1)[1].split()[19]
+            identities[label] = f'{tracer}:{ticks}'
+    except (OSError, ValueError, StopIteration, IndexError):
+        return None
+    return identities or None
 
 
 def read_git_sync_samples(forkservers, window_start, proc_root=Path('/proc')):
@@ -127,6 +157,10 @@ def measure():
     traces = []
     witness = None
     first_git_samples = {}
+    traced_before = None
+    traced_after = None
+    attached = False
+    trace_continuous = False
     directory = Path(tempfile.mkdtemp(prefix='sidecar-forkserver-live-'))
     try:
         for label, pid in [('sidecar', sidecar)] + [('forkserver', p) for p in forkservers]:
@@ -140,36 +174,45 @@ def measure():
         # Popen returning is not proof that sudo/strace has attached yet.
         # Start the workload-witness clock only after every target is traced.
         attach_deadline = time.monotonic() + 2
-        attached = False
         while time.monotonic() < attach_deadline:
-            try:
-                attached = all(process.poll() is None and int(next(
-                    line.split(':', 1)[1] for line in Path(f'/proc/{pid}/status').read_text().splitlines()
-                    if line.startswith('TracerPid:'))) > 0 for _, pid, _, _, process in jobs)
-            except (OSError, ValueError, StopIteration):
-                attached = False
+            traced_before = attached_tracer_identities(jobs)
+            attached = traced_before is not None
             if attached:
                 break
             time.sleep(0.01)
         window_start = time.monotonic()
-        while time.monotonic() - window_start < 3:
+        trace_continuous = attached
+        while time.monotonic() - window_start < TRACE_WINDOW_SECONDS:
+            if attached_tracer_identities(jobs) != traced_before:
+                trace_continuous = False
             for sample in read_git_sync_samples(forkservers, window_start):
                 identity = (sample['pid'], sample['parentPid'], sample['startTicks'])
                 before = first_git_samples.setdefault(identity, sample)
-                if witness is None and git_sync_progress(before, sample, 3):
+                if witness is None and git_sync_progress(before, sample, TRACE_WINDOW_SECONDS):
                     witness = {'before': before, 'after': sample}
             time.sleep(0.01)
         window_seconds = time.monotonic() - window_start
+        traced_after = attached_tracer_identities(jobs)
+        trace_continuous = (trace_continuous and traced_after == traced_before
+                            and TRACE_WINDOW_SECONDS <= window_seconds <= MAX_TRACE_WINDOW_SECONDS)
     finally:
         for label, pid, path, output, process in jobs:
-            if process.poll() is None:
+            stop_requested = process.poll() is None
+            if stop_requested:
                 process.send_signal(signal.SIGINT)
-            process.wait(timeout=5)
+            exit_code = process.wait(timeout=5)
             output.close()
             raw = path.read_bytes()
             traces.append({
                 'label': label, 'pid': pid, 'startTicks': rows[pid]['startTicks'],
                 **summarize_trace(raw),
+                'coverage': {
+                    'attachedThroughWindow': trace_continuous,
+                    'aliveAtWindowEnd': traced_after is not None,
+                    'tracerIdentityAtStart': (traced_before or {}).get(label),
+                    'tracerIdentityAtEnd': (traced_after or {}).get(label),
+                    'exitCode': exit_code, 'stopRequested': stop_requested,
+                },
                 'rawEvidence': str(path), 'rawSha256': hashlib.sha256(raw).hexdigest(),
             })
     after = int(subprocess.check_output([

@@ -1,16 +1,20 @@
 /** Live OTel correlation. Existing invocation/workflow records remain authoritative. */
-import { context, trace, ROOT_CONTEXT, SpanStatusCode, type Attributes, type Context, type Span } from '@opentelemetry/api';
+import { context, trace, propagation, createContextKey, ROOT_CONTEXT, SpanStatusCode, TraceFlags, type Attributes, type Context, type Span } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
-import { BasicTracerProvider, BatchSpanProcessor, type SpanProcessor, type SpanExporter } from '@opentelemetry/sdk-trace-base';
+import { TracerProvider, BatchSpanProcessor, type SpanProcessor, type SpanExporter } from '@opentelemetry/sdk-trace';
+import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
+import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 
 export const TRACE_ATTRIBUTE_KEYS = new Set([
   'service.name', 'papercusp.workspace_id', 'papercusp.harness', 'papercusp.tool',
   'papercusp.call_id', 'papercusp.request_id', 'papercusp.session_id',
   'papercusp.outcome', 'papercusp.error_code', 'papercusp.request_ordinal',
   'gen_ai.provider.name', 'gen_ai.request.model', 'gen_ai.usage.input_tokens',
+  'gen_ai.usage.output_tokens',
   'gen_ai.usage.cache_read.input_tokens', 'gen_ai.operation.name',
   'papercusp.queue_wait_ms', 'papercusp.provider_wait_ms', 'papercusp.attempts',
+  'dbos.operation.workflow_id', 'operationUUID',
 ]);
 
 /** Strict, scalar-only export vocabulary: no args, exceptions, URLs or content. */
@@ -25,6 +29,7 @@ const getter = { keys: (carrier: Record<string, string>) => Object.keys(carrier)
   get: (carrier: Record<string, string>, key: string) => carrier[key] };
 const setter = { set: (carrier: Record<string, string>, key: string, value: string) => { carrier[key] = value; } };
 const propagator = new W3CTraceContextPropagator();
+const invocationAttributes = createContextKey('papercusp.invocation.attributes');
 
 export function extractTraceContext(carrier: Record<string, string> = {}, parent = ROOT_CONTEXT): Context {
   // Propagate trace identity only. Baggage is deliberately not accepted across trust boundaries.
@@ -38,23 +43,83 @@ export function injectTraceContext(parent = context.active()): Record<string, st
   return carrier;
 }
 
-export function createTracing(options: { exporter?: SpanExporter; processor?: SpanProcessor; service?: string; maxActive?: number } = {}) {
-  const processors = options.processor ? [options.processor] : options.exporter ? [new BatchSpanProcessor(options.exporter, {
-    maxQueueSize: 2048, maxExportBatchSize: 64, scheduledDelayMillis: 5_000, exportTimeoutMillis: 3_000,
+export function createTracing(options: { exporter?: SpanExporter; processor?: SpanProcessor; service?: string; maxActive?: number; maxQueued?: number; maxDurationMs?: number; now?: () => number } = {}) {
+  const maxQueued = options.maxQueued ?? 2048;
+  let queuedSpans = 0;
+  let queueDroppedSpans = 0;
+  let drained = Promise.resolve();
+  let resolveDrained = () => {};
+  const trackedExporter: SpanExporter | undefined = options.exporter ? {
+    export(spans, callback) {
+      options.exporter!.export(spans, result => {
+        queuedSpans -= spans.length;
+        if (queuedSpans === 0) resolveDrained();
+        callback(result);
+      });
+    },
+    shutdown: () => options.exporter!.shutdown(),
+  } : undefined;
+  const processors = options.processor ? [options.processor] : trackedExporter ? [new BatchSpanProcessor({ exporter: trackedExporter,
+    maxQueueSize: maxQueued, maxExportBatchSize: Math.min(64, maxQueued), scheduledDelayMillis: 5_000, exportTimeoutMillis: 3_000,
   })] : [];
-  const provider = new BasicTracerProvider({ spanProcessors: processors,
+  const inheritingProcessor: SpanProcessor = {
+    onStart(span, parent) {
+      const attributes = parent.getValue(invocationAttributes) as Attributes | undefined;
+      if (attributes) span.setAttributes(safeTraceAttributes(attributes));
+      for (const processor of processors) processor.onStart(span, parent);
+    },
+    onEnd(span) {
+      if (trackedExporter && !options.processor && (span.spanContext().traceFlags & TraceFlags.SAMPLED)) {
+        // Include in-flight exports in the cap. Account for loss before the SDK's
+        // internal queue can silently drop a span.
+        if (queuedSpans >= maxQueued) { queueDroppedSpans++; return; }
+        if (queuedSpans === 0) drained = new Promise<void>(resolve => { resolveDrained = resolve; });
+        queuedSpans++;
+      }
+      for (const processor of processors) processor.onEnd(span);
+    },
+    async forceFlush() { await Promise.all(processors.map(p => p.forceFlush())); },
+    async shutdown() { await Promise.all(processors.map(p => p.shutdown())); },
+  };
+  const provider = new TracerProvider({ spanProcessors: [inheritingProcessor],
     spanLimits: { attributeCountLimit: 32, attributeValueLengthLimit: 200, eventCountLimit: 0, linkCountLimit: 8 } });
   const tracer = provider.getTracer('papercusp.runtime', '1');
-  const active = new Map<string, { span: Span; context: Context }>();
+  const active = new Map<string, { span: Span; context: Context; startedAt: number }>();
+  const now = options.now ?? Date.now;
   let skipped = 0;
+  let expired = 0;
+  const expire = () => {
+    for (const [id, entry] of active) {
+      if (now() - entry.startedAt < (options.maxDurationMs ?? 30 * 60_000)) continue;
+      active.delete(id);
+      entry.span.setAttribute('papercusp.outcome', 'expired');
+      entry.span.setStatus({ code: SpanStatusCode.ERROR });
+      entry.span.end();
+      expired++;
+    }
+  };
   return {
     provider,
+    register() {
+      enableTracingContext();
+      const registered = trace.setGlobalTracerProvider(provider);
+      propagation.setGlobalPropagator(propagator);
+      // Only instrument requests with a tracked parent. Inbound HTTP is handled
+      // by the authorized dispatch boundary, including its hosted-customer fence.
+      const instrumentations = [
+        new UndiciInstrumentation({ requireParentforSpans: true }),
+        new HttpInstrumentation({ disableIncomingRequestInstrumentation: true, requireParentforOutgoingSpans: true }),
+      ];
+      for (const instrumentation of instrumentations) instrumentation.setTracerProvider(provider);
+      return { registered, disable: () => instrumentations.forEach(i => i.disable()) };
+    },
     begin(callId: string, name: string, attributes: Attributes, carrier?: Record<string, string>, startTime?: number) {
+      expire();
       if (active.has(callId) || active.size >= (options.maxActive ?? 1024)) { skipped++; return undefined; }
       const parent = carrier?.traceparent ? extractTraceContext(carrier) : context.active();
       const span = tracer.startSpan(name, { attributes: safeTraceAttributes({ 'service.name': options.service ?? 'papercusp-operator', ...attributes }), startTime }, parent);
-      const executionContext = trace.setSpan(parent, span);
-      active.set(callId, { span, context: executionContext });
+      const executionContext = trace.setSpan(parent, span).setValue(invocationAttributes, safeTraceAttributes(attributes));
+      active.set(callId, { span, context: executionContext, startedAt: now() });
       return span.spanContext();
     },
     async run<T>(callId: string, work: () => Promise<T>): Promise<T> {
@@ -80,8 +145,20 @@ export function createTracing(options: { exporter?: SpanExporter; processor?: Sp
       entry.span.end(endTime);
       return correlation;
     },
-    health: () => ({ active: active.size, skipped, maxActive: options.maxActive ?? 1024 }),
-    flush: () => provider.forceFlush(),
+    health: () => ({ active: active.size, skipped, expired, maxActive: options.maxActive ?? 1024,
+      queuedSpans, queueDroppedSpans, maxQueued }),
+    async flush() {
+      await provider.forceFlush();
+      // SDK forceFlush may finish while a previously triggered batch is still
+      // exporting. Join that batch too, without extending the delivery budget.
+      if (!queuedSpans) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([drained, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('trace_flush_timeout')), 3_000);
+        })]);
+      } finally { if (timer) clearTimeout(timer); }
+    },
     async shutdown() {
       for (const id of active.keys()) this.finish(id, 'shutdown');
       await provider.shutdown();

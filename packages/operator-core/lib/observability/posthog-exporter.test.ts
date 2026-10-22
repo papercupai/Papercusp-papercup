@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor, type ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { TracerProvider, InMemorySpanExporter, SimpleSpanProcessor, type ReadableSpan } from '@opentelemetry/sdk-trace';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { PosthogSpanExporter, spanCaptureEvents, type TraceDeliveryConfig } from './posthog-exporter';
 
 function span(error = false): ReadableSpan {
   const out = new InMemorySpanExporter();
-  const p = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(out)] });
+  const p = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter: out })] });
   const s = p.getTracer('test').startSpan('arbitrary secret span name', { attributes: {
     'papercusp.tool': 'test:tool', 'papercusp.call_id': 'call-1', 'gen_ai.operation.name': 'chat',
     'gen_ai.provider.name': 'test', 'gen_ai.request.model': 'model-test', 'gen_ai.usage.input_tokens': 10,

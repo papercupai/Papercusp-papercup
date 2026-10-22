@@ -226,7 +226,7 @@ function hasStructuredCompletionPremise(message: unknown, itemId: string): boole
  */
 function completionClauses(segment: string): string[] {
   return segment
-    .split(/(?:\r?\n|[.!?;]+|:\s+|,\s+(?=[A-Z0-9])|\s+(?:—|–|--)+\s+)/)
+    .split(/(?:\r?\n|[.!?;]+|:\s+|,\s+(?=(?:and|but|while|whereas|yet|or)\b|[A-Z0-9])|\s+(?:—|–|--)+\s+)/)
     .map((clause) => clause.trim())
     .filter(Boolean);
 }

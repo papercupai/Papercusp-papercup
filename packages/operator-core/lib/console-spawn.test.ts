@@ -869,6 +869,29 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     }
   });
 
+  it('retains the retired task and refusal when an unsubmitted kickoff is cleaned up', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7794));
+    const result = await spawnHeadless({
+      envelope,
+      label: 'retired-kickoff',
+      kickoffProof: true,
+      kickoffProofProbes: {
+        windowMs: 0,
+        readReceipt: (_path, token) => JSON.stringify({
+          token, persisted: false, nativeRef: null,
+          reason: 'kickoff-not-submitted:role-mcp-unavailable',
+        }),
+      },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(taskControl.kill).toHaveBeenCalledWith('task1234');
+    expect(result).toMatchObject({
+      status: 'error', code: 502, taskId: 'task1234', logPath: expect.any(String),
+      kickoffProof: { persisted: false, nativeRef: null, reason: 'kickoff-not-submitted:role-mcp-unavailable' },
+    });
+  });
+
   it('preserves a partial launch when cleanup of an unsubmitted kickoff fails', async () => {
     spawnMock.mockImplementation(() => fakeChild(7792));
     taskControl.kill.mockRejectedValueOnce(new Error('task store unavailable'));

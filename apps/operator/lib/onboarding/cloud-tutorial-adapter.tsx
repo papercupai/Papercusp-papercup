@@ -34,6 +34,20 @@ export function CloudTutorialHighlight({
     let current: HTMLElement | null = null;
     let disposed = false;
     let timeout: number | undefined;
+    let resizeFrame: number | undefined;
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+      // A late rail reservation can reflow the form after the guide focused it.
+      // Scroll after layout, and only while the user is still editing this target.
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = undefined;
+        if (disposed || !current || document.activeElement !== current) return;
+        const rect = current.getBoundingClientRect();
+        if (rect.top < 0 || rect.left < 0 || rect.bottom > innerHeight || rect.right > innerWidth) {
+          current.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
+        }
+      });
+    });
     const waitForTarget = () => {
       window.clearTimeout(timeout);
       statusRef.current?.("waiting");
@@ -47,9 +61,11 @@ export function CloudTutorialHighlight({
       const visible = found && getComputedStyle(found).display !== "none" && getComputedStyle(found).visibility !== "hidden";
       const next = visible ? found : null;
       if (next === current) return;
+      if (current) resizeObserver?.unobserve(current);
       current = next;
       setElement(next);
       if (next) {
+        resizeObserver?.observe(next);
         window.clearTimeout(timeout);
         statusRef.current?.("ready");
       } else {
@@ -63,6 +79,8 @@ export function CloudTutorialHighlight({
     return () => {
       disposed = true;
       observer.disconnect();
+      resizeObserver?.disconnect();
+      if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
       window.clearTimeout(timeout);
       if (focus?.isConnected) focus.focus({ preventScroll: true });
     };

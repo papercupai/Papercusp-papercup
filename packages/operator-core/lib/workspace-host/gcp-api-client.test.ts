@@ -1200,6 +1200,42 @@ describe('ADC-backed GCP workspace-host API client', () => {
 });
 
 describe('boot disk sizing against the source image', () => {
+  it('serializes the original finite canary deadline and refuses replay after expiry without a POST', async () => {
+    let current = NOW;
+    const fetchImpl = vi.fn(async () => json({ name: 'operation-1', status: 'PENDING', diskSizeGb: '30' })) as typeof fetch;
+    const client = new GoogleComputeWorkspaceHostApiClient({
+      acquireAuth: async () => ({ accessToken: TOKEN, projectId: PROJECT, identity: 'operator@example.com' }),
+      fetch: fetchImpl, now: () => current,
+    });
+    const input = { ...bootInstance(30), scheduling: { provisioningModel: 'STANDARD',
+      terminationTime: '2026-08-22T08:00:00Z', instanceTerminationAction: 'DELETE',
+      automaticRestart: false, onHostMaintenance: 'TERMINATE' } as const };
+    await client.insertInstance(PROJECT, ZONE, input, REQUEST_ID);
+    const posted = vi.mocked(fetchImpl).mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(JSON.parse(String(posted?.[1]?.body)).scheduling).toEqual(input.scheduling);
+    vi.mocked(fetchImpl).mockClear();
+    current = '2026-08-22T08:00:00Z';
+    await expect(client.insertInstance(PROJECT, ZONE, input, REQUEST_ID)).rejects.toThrow(/expired/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses a deadline crossed during image lookup before POST', async () => {
+    let current = NOW;
+    const fetchImpl = vi.fn(async () => {
+      current = '2026-08-22T08:00:00Z';
+      return json({ diskSizeGb: '30' });
+    }) as typeof fetch;
+    const client = new GoogleComputeWorkspaceHostApiClient({
+      acquireAuth: async () => ({ accessToken: TOKEN, projectId: PROJECT, identity: 'operator@example.com' }),
+      fetch: fetchImpl, now: () => current,
+    });
+    await expect(client.insertInstance(PROJECT, ZONE, { ...bootInstance(30), scheduling: {
+      provisioningModel: 'STANDARD', terminationTime: '2026-08-22T08:00:00Z',
+      instanceTerminationAction: 'DELETE', automaticRestart: false, onHostMaintenance: 'TERMINATE',
+    } }, REQUEST_ID)).rejects.toThrow(/expired/);
+    expect(vi.mocked(fetchImpl).mock.calls.every(([, init]) => init?.method !== 'POST')).toBe(true);
+  });
+
   function bootInstance(diskSizeGb: number): GcpInstanceInsertInput {
     return {
       name: 'pc-host-vm',
@@ -1280,6 +1316,14 @@ describe('boot disk sizing against the source image', () => {
 });
 
 describe('recreateInput keeps a spot host on spot (WI-10005210)', () => {
+  it('preserves finite STANDARD expiry through boot replacement without renewing it', () => {
+    const scheduling = { provisioningModel: 'STANDARD', terminationTime: '2026-08-22T08:00:00Z',
+      instanceTerminationAction: 'DELETE', automaticRestart: false, onHostMaintenance: 'TERMINATE' };
+    expect(gcpRecreateInput(raw(scheduling), boot, ZONE)?.scheduling).toEqual(scheduling);
+    expect(() => gcpRecreateInput(raw({ ...scheduling, instanceTerminationAction: 'STOP' }), boot, ZONE)).toThrow(/inconsistent/);
+    expect(() => gcpRecreateInput(raw({ maxRunDuration: { seconds: '3600' } }), boot, ZONE)).toThrow(/relative/);
+  });
+
   const raw = (scheduling?: Record<string, unknown>) =>
     ({
       name: 'pc-host-vm',

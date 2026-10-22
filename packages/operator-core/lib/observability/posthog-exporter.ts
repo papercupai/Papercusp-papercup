@@ -1,8 +1,8 @@
 /** OTel SpanExporter using the existing PostHog capture endpoint, not a new service. */
 import { createHash } from 'node:crypto';
-import { SpanStatusCode } from '@opentelemetry/api';
-import { ExportResultCode, type ExportResult } from '@opentelemetry/core';
-import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base';
+import { context, SpanStatusCode } from '@opentelemetry/api';
+import { suppressTracing, ExportResultCode, type ExportResult } from '@opentelemetry/core';
+import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace';
 import { safeTraceAttributes } from './tracing';
 
 export interface TraceDeliveryConfig {
@@ -31,6 +31,7 @@ export function spanCaptureEvents(span: ReadableSpan, distinctId: string): Trace
     $process_person_profile: false,
     ...(generation ? { $ai_provider: attributes['gen_ai.provider.name'], $ai_model: attributes['gen_ai.request.model'],
       $ai_input_tokens: attributes['gen_ai.usage.input_tokens'],
+      $ai_output_tokens: attributes['gen_ai.usage.output_tokens'],
       $ai_cache_read_input_tokens: attributes['gen_ai.usage.cache_read.input_tokens'] } : {}),
   };
   const make = (event: string, props: Record<string, unknown>): TraceCaptureEvent => {
@@ -72,10 +73,11 @@ export class PosthogSpanExporter implements SpanExporter {
     const url = new URL('/batch/', config.host);
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname))) throw new Error('insecure_export_host');
     if (url.username || url.password) throw new Error('invalid_export_host');
-    const response = await this.send(url, { method: 'POST', redirect: 'error',
+    // The exporter itself must never create another observation/export cycle.
+    const response = await context.with(suppressTracing(context.active()), () => this.send(url, { method: 'POST', redirect: 'error',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ api_key: config.projectKey, batch: allowed.flatMap(span => spanCaptureEvents(span, config.distinctId)) }),
-      signal: AbortSignal.timeout(2_000) });
+      signal: AbortSignal.timeout(2_000) }));
     if (!response.ok) throw new Error('capture_rejected');
     this.counters.exportedSpans += allowed.length;
     this.counters.batches++;

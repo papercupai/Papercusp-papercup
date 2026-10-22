@@ -1,11 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CURRENT_BUILD_TEST_CLASSES, SERVING_RUNTIMES } from './serving-runtimes';
 import { resolveFsMutexLockRoot } from '../../../scripts/lib/fs-mutex.mjs';
+import { isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
 
 const root = resolve(__dirname, '../../..');
 
@@ -407,6 +408,75 @@ describe('current-build execution route contract', () => {
       'drain-user-mailbox',
     ]));
     expect(existsSync(probeResult.home)).toBe(false);
+  }, 125_000);
+
+  it('attributes a real code-run worker in the isolated current-build runtime', () => {
+    const sourcePath = 'packages/operator-core/lib/agent-tools/code/run.ts';
+    const probe = `
+      import assert from 'node:assert/strict';
+      import { createHash } from 'node:crypto';
+      import { readFileSync } from 'node:fs';
+      import { performance } from 'node:perf_hooks';
+      const importStarted = performance.now();
+      const [{ default: tool }, { createPhaseTracker }, { listAllProjectedTools }] = await Promise.all([
+        import('./packages/operator-core/lib/agent-tools/code/run.ts'),
+        import('@papercusp/tooldef'),
+        import('@papercusp/agent-mcp'),
+      ]);
+      const importMs = Math.round(performance.now() - importStarted);
+      const phases = createPhaseTracker();
+      const startedAt = performance.now();
+      const result = await tool.handler({
+        script: 'return { isolatedPhaseProbe: "real-worker" };',
+        timeoutSec: 30,
+      }, {
+        workspaceId: process.env.PAPERCUSP_WORKSPACE_ID,
+        harnessSlug: process.env.PAPERCUSP_WORKSPACE_ID,
+        role: 'su', isSuperuser: true, uiClientId: 'su-isolated-code-run-phase',
+        log: () => {}, metadata: () => {}, progress: () => {}, phases,
+      });
+      const payload = JSON.parse(result.content.find(item => item.type === 'text').text);
+      if (payload.ok !== true) console.log('CODE_RUN_PHASE_FAILURE ' + JSON.stringify({
+        error: payload.error, payload, phases: phases.toMetadata(),
+        catalogSize: listAllProjectedTools().length,
+      }));
+      assert.equal(payload.ok, true);
+      assert.deepEqual(payload.summary, { isolatedPhaseProbe: 'real-worker' });
+      assert.equal(payload.dispatchCount, 0);
+      console.log('CODE_RUN_PHASE_PROBE ' + JSON.stringify({
+        importMs, elapsedMs: Math.round(performance.now() - startedAt),
+        phases: phases.toMetadata(),
+        catalogSize: listAllProjectedTools().length,
+        sourceSha256: createHash('sha256').update(readFileSync('${sourcePath}')).digest('hex'),
+        background: process.env.PAPERCUSP_BACKGROUND_WORKERS === '1',
+        workspaceScoped: process.env.PAPERCUSP_WORKSPACE === process.env.PAPERCUSP_WORKSPACE_ID,
+        home: process.env.HOME,
+      }));
+      process.exit(0);
+    `;
+    const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
+      cwd: root, encoding: 'utf8', timeout: 120_000,
+    });
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'code-run-phase-proof-'));
+    writeFileSync(join(evidenceDir, 'stdout.log'), result.stdout);
+    writeFileSync(join(evidenceDir, 'stderr.log'), result.stderr);
+    expect(result.status, `evidence: ${evidenceDir}\n${isolatedWorkerFailureDetail(result.stdout + '\n' + result.stderr)}`).toBe(0);
+    const line = result.stdout.match(/^CODE_RUN_PHASE_PROBE (.+)$/m)?.[1];
+    expect(line).toBeTruthy();
+    const observation = JSON.parse(line!);
+    process.stdout.write(`CODE_RUN_PHASE_OBSERVATION ${JSON.stringify(observation)}\n`);
+    expect(observation.background).toBe(true);
+    expect(observation.workspaceScoped).toBe(true);
+    expect(observation.sourceSha256).toBe(createHash('sha256')
+      .update(readFileSync(resolve(root, sourcePath))).digest('hex'));
+    expect(observation.phases.phases.map(({ phase }: { phase: string }) => phase))
+      .toEqual(expect.arrayContaining(['code:run:setup', 'code:run:preflight', 'code:run:worker',
+        'code:run:postprocessing:trace normalization']));
+    expect(observation.phases.pending).toEqual([]);
+    expect(JSON.stringify(observation.phases)).not.toContain('real-worker');
+    expect(existsSync(observation.home)).toBe(false);
+    rmSync(evidenceDir, { recursive: true, force: true });
   }, 125_000);
 
   it('mints a distinct device keychain identity for each isolated child', () => {
