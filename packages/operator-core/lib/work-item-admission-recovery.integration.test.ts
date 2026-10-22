@@ -212,6 +212,60 @@ describe('original-item durable admission recovery', () => {
     expect((await current()).payload._admissionRecovery).toMatchObject({ state: 'delivered', stage: 'await-pickup' });
   });
 
+  it.each(['unreviewed', 'admitted'])(
+    'holds a pending admission review after screening an %s row and resumes the same request after review', async (admission) => {
+      const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+      const review = { state: 'pending', reason: 'independent review still required' };
+      const d = deps({
+        screen: vi.fn(async (_scope, beforePersist) => {
+          await beforePersist();
+          await db.sql`UPDATE harness_shared.work_items SET admission = ${admission},
+            payload = payload || ${db.sql.json({ admissionReview: review })}`;
+        }),
+        dispatch: vi.fn(async () => ({ ok: true, wake: { queued: 1 } }) as
+          Awaited<ReturnType<AdmissionRecoveryDeps['dispatch']>>),
+      });
+      await runAdmissionRecoveries(scope, d, db.sql);
+      expect(d.screen).toHaveBeenCalledTimes(1);
+      expect(d.dispatch).not.toHaveBeenCalled();
+      const held = await current();
+      expect(held).toMatchObject({ admission, taken_by: null });
+      expect(held.payload.admissionReview).toEqual(review);
+      expect(held.payload._admissionRecovery).toMatchObject({
+        requestId: first.request.requestId, state: 'held', stage: 'screen', pickupConfirmed: false,
+        reason: expect.stringContaining('admission review is pending'),
+      });
+
+      await db.sql`UPDATE harness_shared.work_items SET admission = 'admitted',
+        payload = jsonb_set(payload, '{admissionReview,state}', '"reviewed"')`;
+      const retry = await requestAdmissionRecovery(input, { authorize }, db.sql);
+      expect(retry.request.requestId).toBe(first.request.requestId);
+      const resumed = deps();
+      await runAdmissionRecoveries(scope, resumed, db.sql);
+      expect(resumed.screen).not.toHaveBeenCalled();
+      expect(resumed.dispatch).toHaveBeenCalledTimes(1);
+      expect((await current()).payload._admissionRecovery).toMatchObject({
+        requestId: first.request.requestId, state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+      });
+    },
+  );
+
+  it('dispatches a reviewed unreviewed row without treating its fail-open admission label as a pending review', async () => {
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({
+      screen: vi.fn(async (_scope, beforePersist) => {
+        await beforePersist();
+        await db.sql`UPDATE harness_shared.work_items SET admission = 'unreviewed',
+          payload = payload || '{"admissionReview":{"state":"reviewed"}}'::jsonb`;
+      }),
+      dispatch: vi.fn(async () => ({ ok: true, wake: { queued: 1 } }) as
+        Awaited<ReturnType<AdmissionRecoveryDeps['dispatch']>>),
+    });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+    expect((await current()).payload._admissionRecovery).toMatchObject({ state: 'delivered', stage: 'await-pickup' });
+  });
+
   it('retains the canonical assignment refusal in the original request', async () => {
     await requestAdmissionRecovery(input, { authorize }, db.sql);
     const d = deps({ dispatch: vi.fn(async () => ({

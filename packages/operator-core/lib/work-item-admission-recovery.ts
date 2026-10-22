@@ -699,6 +699,15 @@ export async function runAdmissionRecoveries(
           }
           await assertAllowed();
           const screened = await readItem(sql, exact);
+          // Fail-open admission is not review clearance. The resume path also
+          // blocks this pending review, even if screening changed admission.
+          const review = screened.payload?.admissionReview as { state?: unknown } | undefined;
+          if (review?.state === 'pending') {
+            stage = 'screen';
+            throw new AdmissionRecoveryRefused(
+              'original item admission review is pending; finish its ordinary admission review and retry this same item',
+            );
+          }
           if (screened.admission === 'pending') {
             // Guarded component writes leave the rows unchanged, so their current
             // refusal lives in the screening receipt rather than admissionHold.

@@ -43,7 +43,10 @@ const ADDITIONS = [
   { label: 'X', ids: ['x-twitter'], matches: (p: ObjectValue) => strings(p.capabilities).includes('social.post') },
   { label: 'dev.to', ids: ['devto', 'dev-to'], matches: (p: ObjectValue) => strings(p.capabilities).length > 0 },
   { label: 'Hashnode', ids: ['hashnode'], matches: (p: ObjectValue) => strings(p.capabilities).length > 0 },
-  { label: 'Discord community bot', ids: ['discord'], matches: (p: ObjectValue) => strings(p.capabilities).length > 0 && p.sync !== false },
+  { label: 'Discord community bot', ids: ['discord'], matches: (p: ObjectValue) =>
+    strings(p.datatypes).includes('chat-message') && strings(p.capabilities).includes('chat.reply') &&
+    // A Gateway bot receives messages through socket ingress rather than polling.
+    (p.sync !== false || (strings(p.capabilities).includes('ingress.normalize') && object(p.ingress?.socket))) },
 ] as const;
 
 /** A manifest/directory placeholder is not a package. Load/install behavior is R-1. */
@@ -69,6 +72,8 @@ function positiveLiveClaim(text: string): boolean {
   const plain = text.replace(/[*_`]/g, '');
   const withoutNegatives = plain.replace(/\b(?:no|not|never|without)\b[^.!?\n;]{0,100}\blive(?:[- ]account)?(?:[- ]verification|[- ]verified)?[^.!?\n;]*/gi, '')
     .replace(/\blive(?:[- ]account)?[- ]verification\s+(?:is\s+)?pending\b/gi, '')
+    // Remove only the prerequisite's label, so a later positive claim still fails.
+    .replace(/\blive(?:[- ]account)?[- ]verification(?=\s+(?:needs?|requires?|awaits?)\b)/gi, '')
     .replace(/\b(?:fixture|fake|offline)[^.!?\n;]{0,100}(?:do(?:es)? not|cannot|never)[^.!?\n;]{0,100}\blive[^.!?\n;]*/gi, '');
   return /\blive[- ]verified\b|\bverified\s+live\b|\blive(?:[- ]account)?[- ]verification\b/i.test(withoutNegatives);
 }

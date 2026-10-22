@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -15,7 +15,10 @@ function completePopulation() {
   const linkedin = pkg('linkedin-company');
   Object.assign(linkedin.manifest.provider, { oauth: { scopes: ['w_organization_social'] },
     configSchema: { properties: { organizationId: { type: 'string' } } } });
-  return [linkedin, pkg('x-twitter'), pkg('devto'), pkg('hashnode'), pkg('discord')];
+  const discord = pkg('discord');
+  Object.assign(discord.manifest.provider, { datatypes: ['chat-message'], capabilities: ['chat.reply'],
+    verification: { capabilities: { 'chat.reply': '2026-10-16' } } });
+  return [linkedin, pkg('x-twitter'), pkg('devto'), pkg('hashnode'), discord];
 }
 
 describe('D-018 R6 requested provider additions detector', () => {
@@ -40,12 +43,55 @@ describe('D-018 R6 requested provider additions detector', () => {
       expect(measureRequestedProviderAdditions(packages).verdict, change).toBe('fail');
     }
   });
+  it('recognizes the delivered gateway community bot without polling sync', async () => {
+    const packages = completePopulation();
+    packages[4].manifest = JSON.parse(await readFile(
+      new URL('../../../../libs/papercusp/plugins/discord/papercusp.json', import.meta.url), 'utf8'));
+    expect(packages[4].manifest.provider.sync).toBe(false);
+    expect(measureRequestedProviderAdditions(packages)).toMatchObject({ verdict: 'pass', failures: [],
+      checked: ['LinkedIn company page', 'X', 'dev.to', 'Hashnode', 'Discord community bot'] });
+    for (const missing of ['messages', 'reply', 'normalizer', 'ingress']) {
+      const altered = structuredClone(packages);
+      const provider = altered[4].manifest.provider;
+      if (missing === 'messages') provider.datatypes = ['notification'];
+      if (missing === 'reply') provider.capabilities = provider.capabilities.filter((c: string) => c !== 'chat.reply');
+      if (missing === 'normalizer') provider.capabilities = provider.capabilities.filter((c: string) => c !== 'ingress.normalize');
+      if (missing === 'ingress') delete provider.ingress;
+      expect(measureRequestedProviderAdditions(altered), missing).toMatchObject({ verdict: 'fail',
+        failures: [{ package: 'Discord community bot' }] });
+    }
+  });
+  it('does not count notification-only Discord as a community bot even with polling enabled', () => {
+    const packages = completePopulation();
+    Object.assign(packages[4].manifest.provider, { sync: true, datatypes: ['notification'], capabilities: ['notify.send'] });
+    expect(measureRequestedProviderAdditions(packages)).toMatchObject({ verdict: 'fail',
+      failures: [{ package: 'Discord community bot' }] });
+  });
 });
 
 describe('D-018 R7 verification and capability claims detector', () => {
   it('accepts explicitly offline fake/conformance labels without calling contract dates live runs', () => {
     const linkedin = pkg('linkedin'); Object.assign(linkedin.manifest.provider, { sync: false, oauth: { scopes: ['openid', 'profile', 'w_member_social'] } });
     expect(measureProviderVerificationClaims([pkg('x-twitter'), linkedin])).toMatchObject({ verdict: 'pass', failures: [], unknown: [] });
+  });
+  it.each([
+    'Live verification needs a bot token with Message Content turned on',
+    'Live verification requires the owner to log in',
+    'Live verification awaits supplied credentials',
+  ])('keeps a future prerequisite separate from a positive live claim: %s', prerequisite => {
+    const subject = pkg('x-twitter'); subject.readme += '\nNot live-verified. ' + prerequisite + '.';
+    expect(measureProviderVerificationClaims([subject])).toMatchObject({ verdict: 'pass', failures: [], unknown: [] });
+    subject.readme += '\n' + prerequisite + ', but this package is Live-verified.';
+    expect(measureProviderVerificationClaims([subject]).failures).toContainEqual(expect.objectContaining({
+      package: 'x-twitter', reason: expect.stringContaining('independently resolved') }));
+  });
+  it('accepts the delivered Discord README while its live run is still a prerequisite', async () => {
+    const directory = new URL('../../../../libs/papercusp/plugins/discord/', import.meta.url);
+    const subject = pkg('discord');
+    subject.manifest = JSON.parse(await readFile(new URL('papercusp.json', directory), 'utf8'));
+    subject.readme = await readFile(new URL('README.md', directory), 'utf8');
+    expect(subject.readme).toContain('Live verification needs a bot token');
+    expect(measureProviderVerificationClaims([subject])).toMatchObject({ verdict: 'pass', failures: [], unknown: [] });
   });
   it.each(['Live-verified on a real account.', 'Verified live on a real account.', 'Live verification passed.'])('detects a false-live inverse appended after a pending label: %s', claim => {
     const subject = pkg('x-twitter'); subject.readme += '\n' + claim;
