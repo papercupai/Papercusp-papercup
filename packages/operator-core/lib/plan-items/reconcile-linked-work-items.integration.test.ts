@@ -1713,6 +1713,55 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
   });
 
   it.each([
+    { label: 'the matching holder', createdBy: 'su-holder', admitted: true },
+    { label: 'a different caller', createdBy: 'su-other', admitted: false },
+    { label: 'no authenticated caller', createdBy: undefined, admitted: false },
+  ])('D-050: admits a plan-authored edge behind an active dependant only for $label', async ({
+    createdBy,
+    admitted,
+  }) => {
+    const plan = 'p-dependency-author';
+    const target = stub({
+      id: 'F-target',
+      harness: 'sheets',
+      state: 'wip',
+      family: 'feature',
+      assignee: 'su-holder',
+    });
+    stub({ id: 'F-new', harness: 'sheets', state: 'todo', family: 'feature' });
+    await insertDependencyRows(['F-target', 'F-new']);
+    await rootSql`
+      UPDATE harness_shared.work_items
+         SET status = 'wip', taken_by = 'su-holder'
+       WHERE workspace_id = ${WS} AND harness_slug = 'sheets' AND feature_id = 'F-target'`;
+    await edge({ plan, item: 'P-002', srcKind: 'feature', srcRef: 'sheets#F-new' });
+    await edge({ plan, item: 'P-003', srcKind: 'feature', srcRef: 'sheets#F-target' });
+    h3.getPlanRow.mockResolvedValue({ items: [
+      { id: 'P-002', status: 'todo', blockedBy: [] },
+      { id: 'P-003', status: 'wip', blockedBy: ['P-002'] },
+    ] });
+
+    const result = await reconcilePlanAuthoredDependenciesNow(plan, 'P-003', null, createdBy);
+    const edges = await rootSql`
+      SELECT created_by FROM harness_shared.work_item_deps
+       WHERE blocked_ref = 'sheets#F-target' AND blocker_ref = 'sheets#F-new'`;
+
+    if (admitted) {
+      expect(result).toEqual({ canonicalId: 'F-target', desired: ['F-new'], resolved: ['F-new'] });
+      expect(edges).toEqual([{ created_by: 'su-holder' }]);
+      expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toEqual({
+        planSlug: plan,
+        itemId: 'P-003',
+        blockerWorkItemIds: ['F-new'],
+      });
+    } else {
+      expect(result).toBeNull();
+      expect(edges).toEqual([]);
+      expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toBeUndefined();
+    }
+  });
+
+  it.each([
     { label: 'empty provenance', prior: [] as string[] | null },
     { label: 'replaced provenance', prior: ['F-old'] },
     // WI-10006540: no marker at all (first reconcile) owns NO edges, so it must remove none.

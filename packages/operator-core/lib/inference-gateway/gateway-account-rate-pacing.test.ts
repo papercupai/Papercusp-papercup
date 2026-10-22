@@ -268,6 +268,85 @@ describe('production gateway account-governor wiring', () => {
     expect(affected.state.rpmFactor ?? 1).toBe(1);
   });
 
+  it('cancels a real governor waiter before any upstream send without leaking a permit or timeout feedback', async () => {
+    const governor = governorForBackend('codex', model, undefined, 'account-a');
+    const originalAcquire = governor.acquire.bind(governor);
+    let entered!: () => void;
+    let settled!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const finished = new Promise<void>(resolve => { settled = resolve; });
+    const acquire = vi.spyOn(governor, 'acquire').mockImplementation(async (...args) => {
+      // Create a real, bounded governor wait after routing has selected this account.
+      governor.state.pausedUntil = Date.now() + 250;
+      entered();
+      try { return await originalAcquire(...args); }
+      finally { settled(); }
+    });
+    const fetchImpl = vi.fn(async () => response()) as typeof fetch;
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      codexPool: accounts(), fetchImpl, upstreamHeadersTimeoutMs: 25, selfHeal: { enabled: false } });
+    const port = await gateway.listen(0);
+    const controller = new AbortController();
+    const result = fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST', signal: controller.signal,
+      headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'account-a' },
+      body: JSON.stringify({ model, input: 'Reply briefly.', stream: false }),
+    }).then(() => 'completed', (error: Error) => error.name);
+    await waiting;
+    controller.abort();
+    expect(await result).toBe('AbortError');
+    await finished;
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(governor.state.inFlight).toBe(0);
+    expect(governor.state.rpmFactor ?? 1).toBe(1);
+    await vi.waitFor(() => expect(gateway!.stats().requestStages.recent.at(-1)?.outcome).toBe('cancelled'));
+    expect(gateway.stats().requestStages.recent.at(-1)?.events.some(event => event.stage === 'upstreamTtfb')).toBe(false);
+  });
+
+  it('paces the first and destination retry accounts outside their upstream TTFB deadlines', async () => {
+    const events: string[] = [];
+    const waits: number[] = [];
+    const governors = ['account-a', 'account-b'].map(accountId => {
+      const governor = governorForBackend('codex', model, undefined, accountId);
+      const originalAcquire = governor.acquire.bind(governor);
+      vi.spyOn(governor, 'acquire').mockImplementation(async (...args) => {
+        events.push(`wait:${accountId}`);
+        governor.state.pausedUntil = Date.now() + 120;
+        const startedAt = Date.now();
+        const release = await originalAcquire(...args);
+        waits.push(Date.now() - startedAt);
+        events.push(`admit:${accountId}`);
+        return release ? () => { events.push(`release:${accountId}`); release(); } : null;
+      });
+      return governor;
+    });
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get('authorization') ?? '';
+      const accountId = auth.includes('token-account-a') ? 'account-a' : 'account-b';
+      events.push(`send:${accountId}`);
+      expect(events.at(-2)).toBe(`admit:${accountId}`);
+      return accountId === 'account-a'
+        ? Response.json({ error: { message: 'temporary burst throttle', type: 'rate_limit_error' } },
+          { status: 429, headers: { 'retry-after': '1' } })
+        : response();
+    }) as typeof fetch;
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      codexPool: accounts(), fetchImpl, upstreamHeadersTimeoutMs: 25, selfHeal: { enabled: false } });
+    const result = await send();
+    expect(result.status, result.body).toBe(200);
+    expect(events).toEqual([
+      'wait:account-a', 'admit:account-a', 'send:account-a', 'release:account-a',
+      'wait:account-b', 'admit:account-b', 'send:account-b', 'release:account-b',
+    ]);
+    // Each real local wait exceeds the upstream deadline; both sends still succeed.
+    expect(waits).toHaveLength(2);
+    expect(waits.every(wait => wait >= 100)).toBe(true);
+    expect(governors.map(governor => governor.state.inFlight)).toEqual([0, 0]);
+    expect(governors[0]!.state.rpmFactor).toBeLessThan(1);
+    expect(governors[1]!.state.rpmFactor ?? 1).toBe(1);
+  });
+
   const nonRateCases: Array<{ name: string; status: number; headers: Record<string, string> }> = [
     { name: 'quota exhaustion', status: 429, headers: {
       'x-codex-primary-used-percent': '100', 'x-codex-primary-window-minutes': '300',

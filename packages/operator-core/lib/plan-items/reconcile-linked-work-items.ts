@@ -1267,6 +1267,7 @@ export async function resyncPlanItemLaneNow(
   planSlug: string,
   itemId: string,
   harnessSlug?: string | null,
+  createdBy?: string | null,
 ): Promise<PlanLaneSyncResult | null> {
   try {
     const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined }).catch(() => null);
@@ -1284,7 +1285,7 @@ export async function resyncPlanItemLaneNow(
     // WI-40473 blocked on removed P-018/WI-40472 while plans:items reported it
     // actionable). Best-effort: a dependency-reconcile hiccup must never break the lane
     // sync that already succeeded.
-    await reconcilePlanAuthoredDependenciesNow(planSlug, itemId, harnessSlug).catch(() => null);
+    await reconcilePlanAuthoredDependenciesNow(planSlug, itemId, harnessSlug, createdBy).catch(() => null);
     return result;
   } catch {
     return null;
@@ -1365,6 +1366,7 @@ export async function reconcilePlanAuthoredDependenciesNow(
   planSlug: string,
   itemId: string,
   harnessSlug?: string | null,
+  createdBy?: string | null,
 ): Promise<PlanDependencyReconcileResult | null> {
   try {
     const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined }).catch(() => null);
@@ -1412,7 +1414,10 @@ export async function reconcilePlanAuthoredDependenciesNow(
     // No marker (prior === null) means this sync owns NO edges yet, so it removes none: pass
     // [] (add-only), never undefined, which would fall back to the full-replace contract and
     // drop blocker edges outside `live` (other families / harnesses) that this plan never wrote.
-    await syncFeatureBlockEdges(harness, canonical.id, desired, { priorBlockerIds: prior ?? [] });
+    await syncFeatureBlockEdges(harness, canonical.id, desired, {
+      priorBlockerIds: prior ?? [],
+      createdBy: createdBy ?? undefined,
+    });
     await mergeWorkItemPayload(
       canonical.id,
       { [PLAN_AUTHORED_BLOCKERS_KEY]: { planSlug, itemId, blockerWorkItemIds: resolved } },

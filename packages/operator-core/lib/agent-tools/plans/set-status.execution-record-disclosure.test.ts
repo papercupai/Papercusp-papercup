@@ -31,6 +31,9 @@ const claimMocks = vi.hoisted(() => ({
   claimForWork: vi.fn(async () => ({ ok: true, claimId: 'claim-1', alreadyHeld: false })),
   releaseOwnClaim: vi.fn(async () => null),
 }));
+const reconcileMocks = vi.hoisted(() => ({
+  resyncPlanItemLaneNow: vi.fn(async () => null),
+}));
 
 vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
@@ -65,6 +68,20 @@ vi.mock('../../plan-items/assignments', () => ({ unassignItem: vi.fn(async () =>
 vi.mock('../../plan-items/claim-discipline', () => ({
   claimForWork: claimMocks.claimForWork,
   releaseOwnClaim: claimMocks.releaseOwnClaim,
+}));
+vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
+  findAllLinkedWorkItems: vi.fn(async () => []),
+  reconcileLinkedWorkItemsForPlanItem: vi.fn(async () => ({
+    planSlug: 'plan-a',
+    itemId: 'P-003',
+    reconciled: [],
+    skippedInFlight: [],
+    skippedAlreadyTerminal: [],
+    skippedUnprovenLink: [],
+    skippedGatedState: [],
+  })),
+  resyncDependentPlanItemLanesNow: vi.fn(async () => []),
+  resyncPlanItemLaneNow: reconcileMocks.resyncPlanItemLaneNow,
 }));
 // Keep the conversion IO boundary closed without importing server startup.
 vi.mock('../../plan-items/convert', () => ({
@@ -205,5 +222,24 @@ describe('plans:set-status wip — execution-record disclosure (EI-2242774101424
     warn.mockRestore();
     expect(b.results[0].ok).toBe(true); // a convert failure never breaks the status flip
     expect(b.results[0].executionRecord).toBeUndefined();
+  });
+
+  it('passes the resolved caller identity to the plan lane/dependency resync', async () => {
+    mockResolvedTyped(convertM, {
+      status: 'refused',
+      reason: 'work item WI-fixture is held by su-peer, who is still live',
+      assignee: 'su-peer',
+    });
+    lockReturnsMutatorValue(new Set(['P-003']));
+
+    const b = await body({ slug: 'plan-a', item: 'P-003', status: 'wip' });
+
+    expect(b.results[0].ok).toBe(true);
+    expect(reconcileMocks.resyncPlanItemLaneNow).toHaveBeenCalledWith(
+      'plan-a',
+      'P-003',
+      null,
+      'su-caller',
+    );
   });
 });
